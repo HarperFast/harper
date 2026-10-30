@@ -29,6 +29,7 @@ import {
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
 import sortBy from 'lodash/sortBy.js';
@@ -179,6 +180,8 @@ import {
 	executeConditions,
 	resolveComparator,
 	filterByType,
+	matchesFilters,
+	relationshipRestriction,
 	fullTextComparatorMode,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
@@ -186,6 +189,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
 	addToChanges,
+	applyOwnChanges,
 	assignTrackedAccessors,
 	collapseChanges,
 	recordOwnBaseline,
@@ -775,9 +779,19 @@ const RELOAD_REFUSAL =
 const UNREADABLE_LOG_REFUSAL =
 	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
+const STRIP_BATCH_SIZE = 100;
+const STRIP_MAX_ATTEMPTS = 20;
+const STRIP_RETRY_BUDGET_MS = 30_000;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
+}
+class ConditionLockWait {
+	fullUpdate: boolean;
+	staged: Promise<unknown>;
+	constructor(fullUpdate: boolean) {
+		this.fullUpdate = fullUpdate;
+	}
 }
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
@@ -1242,6 +1256,7 @@ interface TableResourceClass {
 	get lockCoordinator(): LockCoordinator | undefined;
 	addAttributes(attributesToAdd: Attribute[]): Promise<any>;
 	removeAttributes(names: string[]): Promise<any>;
+	stripAttributeValues(names: string[]): Promise<void>;
 	/**
 	 * Get the size of the table in bytes (based on amount of pages stored in the database)
 	 */
@@ -2008,9 +2023,18 @@ export function makeTable(options): TableResourceClass {
 		if (matches && condition.finished) throw new ClientError('Conditional request already completed', 409);
 		return matches ? condition : undefined;
 	}
+	function awaitsConditionLock(condition): boolean {
+		return Boolean(condition?.lock) && isRocksDB && !condition.locked;
+	}
 	function lockConditionalWrite(resource, id: Id, condition) {
-		if (!condition?.lock || !isRocksDB || condition.locked) return;
-		return (condition.locking ??= resource.lock(id, { hold: true }).then((locked) => {
+		if (!awaitsConditionLock(condition)) return;
+		if (condition.locking) return condition.locking;
+		// read (once) by the #reloadLocked this lock() runs, to tell it apart from an application lock
+		condition.acquiring = resource;
+		const acquisition = resource.lock(id, { hold: true });
+		const settled = () => (condition.acquiring = undefined);
+		acquisition.then(settled, settled);
+		return (condition.locking = acquisition.then((locked) => {
 			if (condition.finished)
 				return locked.unlock().then(() => {
 					throw new ClientError('Conditional request already completed', 409);
@@ -4272,7 +4296,7 @@ export function makeTable(options): TableResourceClass {
 							this.#changes = updates;
 							// `when` awaits the embed hook (when `@embed` is active) before resolving,
 							// so the caller's `save()` doesn't run before the write is staged.
-							return when(this._writeUpdate(id, this.#changes, false), () => this);
+							return this.#whenStaged(this._writeUpdate(id, this.#changes, false));
 						});
 					});
 				}
@@ -4281,7 +4305,13 @@ export function makeTable(options): TableResourceClass {
 			// post/publish updates do not necessarily mutate or save the instance.
 			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
 			const recordRoot = updates === undefined ? this.#changes : updates;
-			return when(this._writeUpdate(id, recordRoot, fullUpdate), () => this);
+			return this.#whenStaged(this._writeUpdate(id, recordRoot, fullUpdate));
+		}
+		#whenStaged(staging: any) {
+			const updated = when(staging, () => this);
+			const saving = this.#savingOperation;
+			if (saving instanceof ConditionLockWait && staging === saving.staged) (updated as Promise<this>).catch(noop);
+			return updated;
 		}
 
 		/**
@@ -4289,6 +4319,11 @@ export function makeTable(options): TableResourceClass {
 		 */
 		save() {
 			const operation = this.#savingOperation;
+			if (operation instanceof ConditionLockWait) {
+				const saved = operation.staged.then(() => this.save());
+				saved.catch(noop);
+				return saved;
+			}
 			const lockHandle = operation ? operation.lockHandle : this.#lockHandle;
 			if (this.#lockWritable && lockHandle?.writeRefused) {
 				this.#rejectRefusedLockWrite(lockHandle);
@@ -4520,7 +4555,7 @@ export function makeTable(options): TableResourceClass {
 					if (
 						precedesExisting < 0 ||
 						(isCopyApply && precedesExisting === 0) ||
-						(!priorStagedOp &&
+						((!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
 							precedesExisting === 0 &&
 							existingEntry?.value &&
 							!(existingEntry.metadataFlags & (INVALIDATED | REPLICA)) &&
@@ -4599,7 +4634,7 @@ export function makeTable(options): TableResourceClass {
 					);
 					write.stagedEntry = {
 						value: partialRecord,
-						metadataFlags: INVALIDATED,
+						metadataFlags: INVALIDATED | (options?.localOnly ? LOCAL_ONLY : 0),
 						residencyId: residencyPolicy ? undefined : options?.residencyId,
 						residencySlot,
 					};
@@ -5111,7 +5146,13 @@ export function makeTable(options): TableResourceClass {
 						// the whole timeout, and `acquire` with no wait left still admits from a live delegation
 						// or a local grant without sending anything. Only if it cannot does the caller learn the
 						// guarantee was unavailable — which is not the same as the key being held.
-						const remaining = Math.max(0, resolved.timeout - (performance.now() - clusterStart));
+						// Capped by the native lease too: it started before this step, and a round that lands after
+						// it lapsed cannot join the handle, so waiting longer could only end in the same 503
+						// (record-locks.md §4.5).
+						const remaining = Math.max(
+							0,
+							Math.min(resolved.timeout - (performance.now() - clusterStart), handle.leaseRemainingMs?.() ?? Infinity)
+						);
 						const round = await coordinator.acquire(id, resolved.lease, remaining);
 						// Resolved through the getter rather than captured, so a transport swap between
 						// acquisition and release reaches the coordinator that now owns the delegation.
@@ -5257,7 +5298,11 @@ export function makeTable(options): TableResourceClass {
 			// current value the same way a chained write picks up its basis (priorStagedWrite): the
 			// record comes from the prior staged write, the rest of the entry (version, audit chain,
 			// blob metadata) stays the pre-transaction one.
-			const link = txnForContext(this.getContext());
+			const context = this.getContext();
+			const condition = context?.[WRITE_CONDITION];
+			const forCondition = condition?.acquiring === this && writeKeyId(id) === writeKeyId(condition.id);
+			if (forCondition) condition.acquiring = undefined;
+			const link = txnForContext(context);
 			let entryForReload: any = admitted ? admitted.entry : primaryStore.getEntry(id);
 			if (link.open === TRANSACTION_STATE.OPEN) {
 				const keyId = writeKeyId(id);
@@ -5296,7 +5341,14 @@ export function makeTable(options): TableResourceClass {
 			if (holdHandle != null) this.#lockHandle = holdHandle;
 			this.#baseReadTxn = undefined;
 			this.#baseReadEntry = undefined;
+			const callerRecord = this.#record;
 			TableResource._updateResource(this, entryForReload);
+			if (forCondition) {
+				// the precondition's own lock: refresh only what its predicate reads
+				if (callerRecord !== undefined && this.#savingOperation instanceof ConditionLockWait)
+					this.#record = callerRecord;
+				return this;
+			}
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload.
 			if (!preserveChanges) this.#changes = undefined;
@@ -5462,14 +5514,24 @@ export function makeTable(options): TableResourceClass {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
-			const locking = lockConditionalWrite(this, id, condition);
-			if (locking) {
-				const changes = this.#changes;
-				const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
-				return locking.then(() => {
-					this.#changes = changes;
-					return this._writeUpdate(id, updates, fullUpdate, options);
+			if (awaitsConditionLock(condition)) {
+				// Installed before lock(), whose re-entrant reload runs synchronously. Every deferral reacts to the
+				// one lock promise, so they stage in program order and the slot keeps the newest write, as on the
+				// unlocked path.
+				const prior = this.#savingOperation;
+				const wait = new ConditionLockWait(fullUpdate);
+				this.#savingOperation = wait;
+				const staging = lockConditionalWrite(this, id, condition).then(() => {
+					const pending = this.#savingOperation;
+					const staged = this._writeUpdate(id, recordUpdate, fullUpdate, options);
+					if (pending !== wait) this.#savingOperation = pending;
+					else if (this.#savingOperation === wait) this.#savingOperation = null;
+					return staged;
 				});
+				wait.staged = prior instanceof ConditionLockWait ? Promise.all([prior.staged, staging]) : staging;
+				// callers may discard update(); save(), or REST's 501 when nothing saves, reports the failure
+				wait.staged.catch(noop);
+				return wait.staged;
 			}
 			const transaction = txnForContext(context);
 			this.#evaluateWriteCondition(id, condition, transaction);
@@ -5599,8 +5661,38 @@ export function makeTable(options): TableResourceClass {
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
+					const rootUpdate = tracksInstance ? instanceChanges : recordUpdate;
+					if (!(context as any)?.source && (fullUpdate || rootUpdate !== undefined)) {
+						// A record must be a plain object. Reject primitive, string/number, bare-binary,
+						// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
+						// JSON string/number body, or a top-level JSON array. Such roots carry no primary
+						// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
+						// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
+						// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
+						// publish payloads are unaffected.)
+						const isBinaryRoot = ArrayBuffer.isView(rootUpdate) || rootUpdate instanceof ArrayBuffer;
+						if (rootUpdate === null || typeof rootUpdate !== 'object' || isBinaryRoot || Array.isArray(rootUpdate)) {
+							// Avoid dumping every byte of a large binary body or huge payload into the error.
+							let received: string;
+							if (isBinaryRoot) {
+								received = `${rootUpdate.constructor?.name ?? 'binary'} of ${rootUpdate.byteLength} bytes`;
+							} else {
+								const full = stringify(rootUpdate) ?? typeof rootUpdate;
+								received = full.length > 200 ? full.slice(0, 200) + '...' : full;
+							}
+							throw new ClientError(
+								`A record must be an object, but received ${received}. To store binary data, put it ` +
+									`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
+							);
+						}
+					}
+					let ownKeys: string[] | undefined;
+					let ownMerged = false;
 					if (tracksInstance) {
-						recordUpdate = collapseChanges(this, instanceChanges);
+						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
+						ownKeys = collapseOwn ? Object.keys(this) : [];
+						recordUpdate = collapseChanges(this, instanceChanges, ownKeys);
+						ownMerged = ownKeys.length > 0 && recordUpdate !== instanceChanges;
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
 						// blobs are found here; before/beforeIntermediate run after validate
 						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
@@ -5609,33 +5701,6 @@ export function makeTable(options): TableResourceClass {
 					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
-							// A record must be a plain object. Reject primitive, string/number, bare-binary,
-							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
-							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
-							// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
-							// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
-							// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
-							// publish payloads are unaffected.)
-							const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
-							if (
-								recordUpdate === null ||
-								typeof recordUpdate !== 'object' ||
-								isBinaryRoot ||
-								Array.isArray(recordUpdate)
-							) {
-								// Avoid dumping every byte of a large binary body or huge payload into the error.
-								let received: string;
-								if (isBinaryRoot) {
-									received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
-								} else {
-									const full = stringify(recordUpdate) ?? typeof recordUpdate;
-									received = full.length > 200 ? full.slice(0, 200) + '...' : full;
-								}
-								throw new ClientError(
-									`A record must be an object, but received ${received}. To store binary data, put it ` +
-										`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
-								);
-							}
 							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
 							// caching relies on it), so mutating in place would corrupt cached/shared state.
 							// validate() coerces values and we stamp created/updated times + the primary key
@@ -5646,7 +5711,10 @@ export function makeTable(options): TableResourceClass {
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
-							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
+							if (!committedBy.isReplay) {
+								this.validate(recordUpdate, !fullUpdate);
+								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
+							}
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
@@ -5764,6 +5832,7 @@ export function makeTable(options): TableResourceClass {
 							);
 						existingRecord = loadedEntry.value;
 					}
+					const priorChange = priorStaged?.unchanged ? undefined : priorStaged;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -5805,7 +5874,7 @@ export function makeTable(options): TableResourceClass {
 					// round, and must still go through the out-of-order merge below or its changes would be
 					// silently overwritten.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
-					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
+					if (priorChange && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					let type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
@@ -5897,7 +5966,7 @@ export function makeTable(options): TableResourceClass {
 							// in an origin's log a competing delivery shares the key, so only a minted key can tell).
 							let refBase: Partial<Entry> | undefined;
 							let readsOwnStaging = false;
-							if (!priorStaged) {
+							if (!priorChange) {
 								refBase =
 									identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
 								const ownMintedKey = isRocksDB ? reservedLocalKey(transaction) : undefined;
@@ -5914,7 +5983,7 @@ export function makeTable(options): TableResourceClass {
 									options?.nodeId
 								) === 0;
 							if (
-								!priorStaged &&
+								!priorChange &&
 								!readsOwnStaging &&
 								(refBase?.additionalAuditRefs?.some((ref) => ref.version === appendedLogKey && isSameOrigin(ref)) ||
 									(identityIsNotKey &&
@@ -5923,7 +5992,7 @@ export function makeTable(options): TableResourceClass {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
 							}
-							if (!priorStaged && isRocksDB && !replaying && refBase !== existingEntry) {
+							if (!priorChange && isRocksDB && !replaying && refBase !== existingEntry) {
 								const precedesCommitted = refBase ? precedesExistingVersion(txnTime, refBase, options?.nodeId) : 1;
 								if (precedesCommitted <= 0) {
 									// A same-transaction publish or relocate restamped existingEntry; restore the committed head.
@@ -6026,7 +6095,7 @@ export function makeTable(options): TableResourceClass {
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
 							}
 						}
-						// A publish or relocate of this transaction saves when it is added and restamps the head, before or
+						// A relocate, or a publish with nothing pending before it, saves when it is added and restamps the head, before or
 						// after this deferred write, so a tie it made says nothing about this write: order it against the
 						// committed head. LMDB commits pass no committedBy, so it keeps the predecessor exception below.
 						if (isRocksDB && !audit && precedesExisting === 0)
@@ -6893,13 +6962,15 @@ export function makeTable(options): TableResourceClass {
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
 							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
 							if (recordToStore !== undefined) {
-								write.stagedEntry = keepWriterReplica
-									? { value: recordToStore, metadataFlags: REPLICA, residencySlot }
-									: omitLocalRecord
-										? { value: recordToStore, metadataFlags: INVALIDATED, residencyId, residencySlot }
-										: residencySlot === undefined
-											? { value: recordToStore }
-											: { value: recordToStore, residencySlot };
+								const staged: Partial<Entry> = { value: recordToStore };
+								const stagedFlags =
+									(keepWriterReplica ? REPLICA : omitLocalRecord ? INVALIDATED : 0) |
+									(options?.localOnly ? LOCAL_ONLY : 0);
+								if (stagedFlags) staged.metadataFlags = stagedFlags;
+								if (residencyId !== undefined && !keepWriterReplica) staged.residencyId = residencyId;
+								if (expiresAt >= 0) staged.expiresAt = expiresAt;
+								if (residencySlot !== undefined) staged.residencySlot = residencySlot;
+								write.stagedEntry = staged;
 								// any record an earlier write in this transaction stored is now replaced, so mark those
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
 								// anything older was already superseded by its own staged successor earlier in this round
@@ -7082,7 +7153,13 @@ export function makeTable(options): TableResourceClass {
 						const slot = residencySlot ?? calculateResidencySlot(id);
 						captureResidencyOwners(write, slot, options?.isReplay, localShardingWrite, transaction);
 					}
-					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId, residencySlot };
+					const stagedRemoval = {
+						value: undefined,
+						localTime: txnLogKey,
+						nodeId: options?.nodeId,
+						metadataFlags: options?.localOnly ? LOCAL_ONLY : 0,
+						residencySlot,
+					};
 					if (
 						existingRecord == null &&
 						isAuditEntryWrite(removalBefore(write, existingEntry), { txnLogKey, nodeId: options?.nodeId })
@@ -7667,8 +7744,7 @@ export function makeTable(options): TableResourceClass {
 				(attribute.limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0))
 			)
 				throw new ClientError('Nested limit and offset must be non-negative safe integers');
-			const filterMap = filtered?.[attribute.name];
-			const childFiltered = Object.assign(Object.create(null), filterMap);
+			const childFiltered = Object.assign(Object.create(null), relationshipRestriction(filtered, attribute.name));
 			const rejectUnsupported = (conditions) => {
 				for (const condition of conditions) {
 					if (condition.conditions) rejectUnsupported(condition.conditions);
@@ -7699,9 +7775,13 @@ export function makeTable(options): TableResourceClass {
 					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
 					return predicate;
 				});
-				return operator === 'or'
+				const any = operator === 'or';
+				const combined: any = any
 					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
 					: (record, entry) => predicates.every((predicate) => predicate(record, entry));
+				if (predicates.some((predicate) => predicate.maybeAsync))
+					combined.maybeAsync = (record, entry) => matchesFilters(predicates, record, entry, any);
+				return combined;
 			};
 			const predicate = conditions.length ? compile(conditions, attribute.operator) : undefined;
 			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
@@ -7717,6 +7797,8 @@ export function makeTable(options): TableResourceClass {
 			let selectionStopped = false;
 			const relationshipSelection = (record, entry?, isSync = false) => {
 				if (selectionStopped) return undefined;
+				// per call: an OR-scope condition registers its restriction while the first row is filtered
+				const filterMap: any = relationshipRestriction(filtered, attribute.name);
 				const readsKeys =
 					!isSync && (filterMap ? !filterMap.hasMappings && resolver.toMany : Boolean(resolver.resolveKeys));
 				let value;
@@ -7761,6 +7843,9 @@ export function makeTable(options): TableResourceClass {
 							},
 						};
 					};
+					const readOptions = isSync ? { transaction: readTxn } : { transaction: readTxn, async: true };
+					const checkActive = getReadTransactionGuard(readTxn);
+					const matchCandidate = predicate && (isSync ? predicate : (predicate.maybeAsync ?? predicate));
 					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
 							if (stopped) return SKIP;
@@ -7768,10 +7853,17 @@ export function makeTable(options): TableResourceClass {
 							const entry =
 								typeof candidate === 'object' && candidate.key !== undefined
 									? candidate
-									: targetTable.primaryStore.getEntry(candidate, { transaction: readTxn });
-							return when(entry, (entry) =>
-								predicate && (!entry?.value || !predicate(entry.value, entry)) ? SKIP : entry
-							);
+									: when(targetTable.primaryStore.getEntry(candidate, readOptions), freezeRelatedEntry);
+							if (!predicate) return entry;
+							return when(entry, (entry) => {
+								if (stopped || !entry?.value) return SKIP;
+								checkActive?.();
+								return when(matchCandidate(entry.value, entry), (matches) => {
+									if (!matches || stopped) return SKIP;
+									checkActive?.();
+									return entry;
+								});
+							});
 						});
 					let examined = 0;
 					candidates = candidates.map((candidate) => {
@@ -8142,7 +8234,7 @@ export function makeTable(options): TableResourceClass {
 							for (let i = 0; i < clauseCount; i++) {
 								const clause = clauses[i];
 								const keys = orderedKeys[i];
-								const value = getAttributeValue(entry, clause.attribute, context, clause);
+								const value = getAttributeValue(entry, clause.attribute, context, clause, stopped);
 								if (value?.then) {
 									const position = keys.push(undefined) - 1;
 									(pending ??= []).push(
@@ -8226,7 +8318,8 @@ export function makeTable(options): TableResourceClass {
 													entry,
 													dbOrderedAttribute,
 													context,
-													(sort as any).dbOrderedSort
+													(sort as any).dbOrderedSort,
+													stopped
 												);
 												if (groupingValue?.then) {
 													groupingValue = await groupingValue;
@@ -8324,12 +8417,12 @@ export function makeTable(options): TableResourceClass {
 						// if it is a catchable thenable (promise)
 						if (typeof result?.catch === 'function')
 							return result.catch((error) => {
-								error.partialObject = { [primaryKey]: entry.key };
+								error.partialObject = { [primaryKey]: entry?.key ?? entry };
 								throw error;
 							});
 						return result;
 					} catch (error) {
-						error.partialObject = { [primaryKey]: entry.key };
+						error.partialObject = { [primaryKey]: entry?.key ?? entry };
 						throw error;
 					}
 				});
@@ -8463,11 +8556,21 @@ export function makeTable(options): TableResourceClass {
 					}
 				}
 				if (record == null) return canSkip ? SKIP : record;
-				// Recheck the explicit predicate here because `record` is now the final, materialized
-				// record — a caching table's source revalidation (above) may have replaced the local copy the
-				// query filters evaluated. The predicate sees a frozen view so application code can't
-				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
-				if (rowFilter && !rowFilter(frozenRecordView(record))) return canSkip ? SKIP : undefined;
+				// Source revalidation (above) may have replaced the record the query filters saw. The view is frozen
+				// because that revalidation's deferred commit still writes and encodes this record.
+				if (rowFilter) {
+					const matches = (!this?.isSync && rowFilter.maybeAsync ? rowFilter.maybeAsync : rowFilter)(
+						frozenRecordView(record)
+					);
+					if (!matches) return canSkip ? SKIP : undefined;
+					if (typeof matches.then === 'function')
+						return matches.then((matches) =>
+							matches && !selectionStopped ? selectRecord.call(this, record, entry) : canSkip ? SKIP : undefined
+						);
+				}
+				return selectRecord.call(this, record, entry);
+			};
+			const selectRecord = function (record, entry) {
 				if (select && !(select[0] === '*' && select.length === 1 && !(select as any).asArray)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -8487,7 +8590,7 @@ export function makeTable(options): TableResourceClass {
 								} else callback(selected, attribute_name);
 								return;
 							}
-							const filterMap = filtered?.[attribute_name];
+							const filterMap: any = relationshipRestriction(filtered, attribute_name);
 							if (filterMap) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
@@ -9634,13 +9737,17 @@ export function makeTable(options): TableResourceClass {
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
+			const keyed = id !== null;
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
-				entry: this.#entry,
+				entry: keyed ? entryBeforeWrite(this.#entry, id, transaction, true) : this.#entry,
+				baseReadTxn: keyed ? this.#commitBaseTxn(id) : undefined,
+				chainsStagedState: keyed,
+				reloadCommitBase: keyed,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
 				validate: () => {
@@ -9655,30 +9762,36 @@ export function makeTable(options): TableResourceClass {
 						? (this.constructor as any).source.publish.bind((this.constructor as any).source, id, message, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					// just need to update the version number of the record so it points to the latest audit record
-					// but have to update the version number of the record
-					// TODO: would be faster to use getBinaryFast here and not have the record loaded
-
+					write.stagedEntry = undefined;
+					write.completeResidencyRecord = undefined;
+					write.superseded = false;
 					if (existingEntry === undefined && trackDeletes && !audit) {
 						scheduleCleanup();
 					}
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					// A reserved handle's admitted key; an unreserved one is a remote apply keyed by its context.
 					const appendedLogKey = reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime;
-					// always audit this, but don't change existing version
+					const priorStagedOp = keyed ? priorStagedWrite(write) : undefined;
+					const base = priorStagedOp?.stagedEntry ?? existingEntry;
+					const value = base?.value ?? null;
+					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
-					return updateRecord(
+					const result = updateRecord(
 						id,
-						existingEntry?.value ?? null,
+						value,
 						existingEntry,
 						txnTime,
-						(existingEntry?.metadataFlags ?? 0) & (residencyPolicy ? LOCAL_ONLY | INVALIDATED | REPLICA : LOCAL_ONLY),
+						metadataFlags,
 						true,
 						{
 							user: (context as any)?.user,
+							// the message's residency routes it; the record keeps its own
 							residencyId: residencyPolicy ? undefined : options?.residencyId,
-							residencySlot: residencyPolicy?.byAttribute ? existingEntry?.residencySlot : undefined,
-							expiresAt: context?.expiresAt,
+							recordResidencyId: base?.residencyId ?? 0,
+							residencySlot: residencyPolicy?.byAttribute
+								? (base?.residencySlot ?? existingEntry?.residencySlot)
+								: undefined,
+							expiresAt: base?.expiresAt,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
@@ -9692,6 +9805,27 @@ export function makeTable(options): TableResourceClass {
 						false,
 						message
 					);
+					if (keyed) {
+						// a later delete's re-delivery check must see the removal it would without this publish
+						const removal = value === null ? removalBefore(write, existingEntry) : undefined;
+						write.stagedEntry = {
+							value,
+							metadataFlags,
+							residencyId: base?.residencyId,
+							expiresAt: base?.expiresAt,
+							residencySlot: residencyPolicy?.byAttribute
+								? (base?.residencySlot ?? existingEntry?.residencySlot)
+								: undefined,
+							localTime: removal?.localTime,
+							nodeId: removal?.nodeId,
+							additionalAuditRefs: removal?.additionalAuditRefs,
+							unchanged: !priorStagedOp || priorStagedOp.stagedEntry.unchanged === true,
+						};
+						write.completeResidencyRecord = priorStagedOp?.completeResidencyRecord;
+						write.blobsAuditReferenced = true;
+						if (priorStagedOp) priorStagedOp.superseded = true;
+					}
+					return result;
 				},
 			};
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
@@ -10079,6 +10213,11 @@ export function makeTable(options): TableResourceClass {
 		}
 		static async removeAttributes(names: string[]) {
 			TableResource.assertSchemaMutable('remove attributes');
+			// A table() call without schemaDefined can flag a different attribute than the storage key, and
+			// table() re-adds that flagged descriptor, so both names are the primary key here.
+			const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name;
+			if (names.includes(primaryKey) || (declaredPrimaryKey !== undefined && names.includes(declaredPrimaryKey)))
+				throw new ClientError('You cannot drop a hash attribute');
 			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
@@ -10087,6 +10226,20 @@ export function makeTable(options): TableResourceClass {
 				attributes: new_attributes,
 			});
 			return (TableResource as any).indexingOperation;
+		}
+		/**
+		 * Remove the named properties only after their schema attributes and indexes have been removed.
+		 */
+		static async stripAttributeValues(names: string[]) {
+			assertAttributesRemoved(names);
+			let keys: Id[] = [];
+			for (const key of primaryStore.getKeys({ start: true, snapshot: false })) {
+				keys.push(key);
+				if (keys.length < STRIP_BATCH_SIZE) continue;
+				await stripBatch(keys, names);
+				keys = [];
+			}
+			if (keys.length > 0) await stripBatch(keys, names);
 		}
 		/**
 		 * Get the size of the table in bytes (based on amount of pages stored in the database)
@@ -10302,6 +10455,18 @@ export function makeTable(options): TableResourceClass {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			const computedResolvers = new Map();
+			for (const attribute of this.attributes) {
+				if (!attribute.relationship && attribute.computed) {
+					if (typeof attribute.computed.from === 'function') {
+						computedResolvers.set(attribute, attribute.computed.from);
+					} else if (attribute.computedFromExpression) {
+						const attributesFallback: { [key: string]: undefined } = {};
+						for (const attr of this.attributes) attributesFallback[attr.name] = undefined;
+						computedResolvers.set(attribute, createComputedFrom(attribute.computedFromExpression, attributesFallback));
+					}
+				}
+			}
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			// Declarations are refused before they are saved; here a descriptor an earlier build
@@ -10313,7 +10478,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
 			this.decideAttributes = (this.attributes as any[]).filter((a) => a?.decide);
-			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
+			const nextExpiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed` / `@decide`, so a dropped
 			// directive doesn't leave a stale hook or block a default refresh on re-add.
 			const embedNames = new Set(this.embedAttributes.map((a) => a.name));
@@ -10324,7 +10489,7 @@ export function makeTable(options): TableResourceClass {
 			for (const name of this.userSetDeciders) if (!decideNames.has(name)) this.userSetDeciders.delete(name);
 			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
 			// (setPrototypeOf keeps fast properties; Object.create(null) starts in dictionary mode)
-			propertyResolvers = this.propertyResolvers = Object.setPrototypeOf(
+			const nextPropertyResolvers = Object.setPrototypeOf(
 				{
 					$id: (object, context, entry) => ({ value: entry.key }),
 					$updatedtime: (object, context, entry) => entry.version,
@@ -10355,10 +10520,13 @@ export function makeTable(options): TableResourceClass {
 				},
 				null
 			);
-			propertyResolvers.$highlights.directReturn = true;
-			primaryKeyAttribute = undefined;
+			nextPropertyResolvers.$highlights.directReturn = true;
+			let nextPrimaryKeyAttribute, nextCreatedTimeProperty, nextUpdatedTimeProperty;
+			let nextHasRelationships = false;
 			for (const attribute of this.attributes) {
-				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
+				if (attribute.isPrimaryKey) nextPrimaryKeyAttribute = attribute;
+				if (attribute.assignCreatedTime || attribute.name === '__createdtime__') nextCreatedTimeProperty = attribute;
+				if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') nextUpdatedTimeProperty = attribute;
 				attribute.resolve = null; // reset this
 				// Also the setter, or a reload that turns a @relationship into a @computed keeps the
 				// relationship's setter and writes a foreign key from a computed assignment.
@@ -10384,7 +10552,7 @@ export function makeTable(options): TableResourceClass {
 							`A relationship property is already computed and can not be combined with a computed function (the relationship will be given precedence)`
 						);
 					}
-					hasRelationships = true;
+					nextHasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
 							const searchRelated = (
@@ -10399,7 +10567,7 @@ export function makeTable(options): TableResourceClass {
 									attribute.elements.definition.tableClass,
 									{ allowFullScan: false }
 								) as any;
-							propertyResolvers[attribute.name] = attribute.resolve = (
+							nextPropertyResolvers[attribute.name] = attribute.resolve = (
 								object,
 								context,
 								entry,
@@ -10445,7 +10613,7 @@ export function makeTable(options): TableResourceClass {
 					} else if (relationship.from) {
 						const definition = attribute.definition || attribute.elements?.definition;
 						if (definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (
+							nextPropertyResolvers[attribute.name] = attribute.resolve = (
 								object,
 								context,
 								entry,
@@ -10528,19 +10696,7 @@ export function makeTable(options): TableResourceClass {
 						);
 					}
 				} else if (computed) {
-					if (typeof computed.from === 'function') {
-						this.setComputedAttribute(attribute.name, computed.from);
-					} else if (attribute.computedFromExpression) {
-						// build a fallback scope object with all attribute names set to undefined,
-						// matching the behavior in graphql.ts to prevent ReferenceErrors
-						const attributesFallback: { [key: string]: undefined } = {};
-						for (const attr of this.attributes) attributesFallback[attr.name] = undefined;
-						this.setComputedAttribute(
-							attribute.name,
-							createComputedFrom(attribute.computedFromExpression, attributesFallback)
-						);
-					}
-					propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
+					nextPropertyResolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
 						const value = typeof computed.from === 'string' ? object[computed.from] : object;
 						const userResolver = this.userResolvers[attribute.name];
 						if (userResolver) return userResolver(value, context, entry);
@@ -10561,7 +10717,7 @@ export function makeTable(options): TableResourceClass {
 					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
 					const customIndex = indices[attribute.name].customIndex;
-					propertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort, comparing) => {
+					nextPropertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort, comparing) => {
 						const value = object[attribute.name];
 						const sortAttribute = sort?.attribute;
 						const resolvesSort =
@@ -10570,9 +10726,16 @@ export function makeTable(options): TableResourceClass {
 								(Array.isArray(sortAttribute) && sortAttribute[sortAttribute.length - 1] === attribute.name));
 						return customIndex.propertyResolver(value, context, entry, resolvesSort ? sort : undefined);
 					};
-					propertyResolvers[attribute.name].directReturn = true;
+					nextPropertyResolvers[attribute.name].directReturn = true;
 				}
 			}
+			for (const [attribute, resolver] of computedResolvers) this.setComputedAttribute(attribute.name, resolver);
+			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
+			primaryKeyAttribute = nextPrimaryKeyAttribute;
+			expiresAtProperty = nextExpiresAtProperty;
+			hasRelationships = nextHasRelationships;
+			this.createdTimeProperty = createdTimeProperty = nextCreatedTimeProperty;
+			this.updatedTimeProperty = updatedTimeProperty = nextUpdatedTimeProperty;
 			assignTrackedAccessors(this, this);
 			assignTrackedAccessors(Updatable, this, true);
 			// updatedAttributes() re-runs on every schema reload, so rebuild these from scratch rather than
@@ -10620,8 +10783,11 @@ export function makeTable(options): TableResourceClass {
 			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
 			// Undefined rather than an empty set for a table with no resolved attributes: that is the
 			// check which keeps the projection off an unaffected store's write path.
-			primaryStore.encoder.resolvedAttributeNames =
-				resolvedAttributeNames.length > 0 ? new Set(resolvedAttributeNames) : undefined;
+			const resolvedAttributeNamesSet = resolvedAttributeNames.length > 0 ? new Set(resolvedAttributeNames) : undefined;
+			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? []) {
+				if (!resolvedAttributeNamesSet?.has(name)) delete primaryStore.encoder.structPrototype[name];
+			}
+			primaryStore.encoder.resolvedAttributeNames = resolvedAttributeNamesSet;
 			primaryStore.encoder.resolvedAttributeNamesList = resolvedAttributeNames;
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
@@ -11854,24 +12020,30 @@ export function makeTable(options): TableResourceClass {
 		if (TableResource.loadAsInstance === false) freezeRecord(entry?.value);
 		return entry;
 	}
-	function getAttributeValue(entry, attribute_name, context, sort?) {
+	function getAttributeValue(entry, attribute_name, context, sort?, stopped?: () => boolean) {
 		if (!entry) {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
-			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort);
+			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort, stopped);
 		}
 		const resolver = propertyResolvers[attribute_name];
 		if (resolver?.loadEntries)
-			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
+			return getPathValue(
+				record,
+				(resolver.path ??= [attribute_name]),
+				0,
+				propertyResolvers,
+				entry,
+				context,
+				sort,
+				stopped
+			);
 		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
 	}
-	function relatedValue(resolver, loaded) {
-		return resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value;
-	}
-	function getPathValue(value, path, start, resolvers, entry, context, sort) {
+	function getPathValue(value, path, start, resolvers, entry, context, sort, stopped?: () => boolean) {
 		for (let i = start, l = path.length; i < l; i++) {
 			const attribute = path[i];
 			const resolver = resolvers?.[attribute];
@@ -11881,10 +12053,13 @@ export function makeTable(options): TableResourceClass {
 				if (loaded?.then) {
 					const nextResolvers = resolvers;
 					return loaded.then((loaded) =>
-						getPathValue(relatedValue(resolver, loaded), path, i + 1, nextResolvers, null, context, sort)
+						stopped?.()
+							? undefined
+							: relatedPathValue(resolver, loaded, path, i + 1, nextResolvers, context, sort, stopped)
 					);
 				}
-				value = relatedValue(resolver, loaded);
+				if (resolver.toMany) return relatedPathValue(resolver, loaded, path, i + 1, resolvers, context, sort, stopped);
+				value = loaded?.value;
 			} else {
 				value =
 					resolver && value
@@ -11894,6 +12069,50 @@ export function makeTable(options): TableResourceClass {
 			entry = null; // can't use this in the nested object
 		}
 		return value;
+	}
+	function relatedPathValue(resolver, loaded, path, start, resolvers, context, sort, stopped) {
+		if (!resolver.toMany) return getPathValue(loaded?.value, path, start, resolvers, null, context, sort, stopped);
+		if (!loaded) return undefined;
+		const values = [];
+		for (let i = 0; i < loaded.length; i++) {
+			const value = getPathValue(loaded[i]?.value, path, start, resolvers, null, context, sort, stopped);
+			values.push(value);
+			if (value?.then)
+				return remainingRelatedPathValues(loaded, i + 1, values, path, start, resolvers, context, sort, stopped);
+		}
+		return values;
+	}
+	// one RELATED_READS_IN_FLIGHT budget per path: serial while a deeper to-many hop (with its own window) remains
+	async function remainingRelatedPathValues(loaded, start, values, path, pathStart, resolvers, context, sort, stopped) {
+		const checkActive = getReadTransactionGuard(txnForContext(context).getReadTxn());
+		const window = reachesToMany(path, pathStart, resolvers) ? 1 : RELATED_READS_IN_FLIGHT;
+		try {
+			for (let i = start; i < loaded.length; i++) {
+				if ((i - start + 1) % window === 0) {
+					await Promise.all(values.slice(i - window));
+					checkActive?.();
+					if (stopped?.()) {
+						Promise.all(values).catch(() => {});
+						return;
+					}
+				}
+				values.push(getPathValue(loaded[i]?.value, path, pathStart, resolvers, null, context, sort, stopped));
+			}
+			const resolved = await Promise.all(values);
+			checkActive?.();
+			return resolved;
+		} catch (error) {
+			Promise.all(values).catch(() => {});
+			throw error;
+		}
+	}
+	function reachesToMany(path, start, resolvers) {
+		for (let i = start; i < path.length; i++) {
+			const resolver = resolvers?.[path[i]];
+			if (resolver?.toMany) return true;
+			resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+		}
+		return false;
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
@@ -11978,7 +12197,7 @@ export function makeTable(options): TableResourceClass {
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
-	// Not stagedEntry: a publish restamps the record without staging it.
+	// Not stagedEntry: a relocate restamps the record without staging it, and a publish's restamp counts too.
 	function followsAppliedWrite(write: any): boolean {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
 			if (!prior.skipped) return true;
@@ -11987,7 +12206,7 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	// The commit base is the committed record unless another write to the key already saved without being
-	// skipped: a publish or relocate saves when it is added and restamps the base without staging it.
+	// skipped and restamped it: a relocate always saves when it is added, a publish when nothing before it is pending.
 	function identityBase(write: any, existingEntry: Entry, transaction: DatabaseTransaction | undefined) {
 		for (let other = transaction?.writesByKey?.get(write.store)?.get(write.keyId); other; other = other.priorWrite) {
 			if (other !== write && other.saved && !other.skipped) return committedEntry(write.key);
@@ -12175,7 +12394,7 @@ export function makeTable(options): TableResourceClass {
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
-				let updatedRecord, assignCreatedTime, sourceVersion;
+				let updatedRecord, createdTimeToAssign, sourceVersion;
 				let reusedCachedRecord = false;
 				let hasChanges, invalidated;
 				try {
@@ -12296,7 +12515,9 @@ export function makeTable(options): TableResourceClass {
 						assertLocalShardWrite(
 							residencyOwners(databaseName, calculateResidencySlot(id, updatedRecord), residencyPolicy.slots)
 						);
-					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;
+					// a reload can rebind createdTimeProperty before the commit below runs
+					createdTimeToAssign =
+						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
 					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null
@@ -12312,12 +12533,12 @@ export function makeTable(options): TableResourceClass {
 										? new Date(resolvedVersion).toISOString()
 										: resolvedVersion;
 						}
-						if (assignCreatedTime) {
-							updatedRecord[createdTimeProperty.name] =
-								existingRecord?.[createdTimeProperty.name] ??
-								(createdTimeProperty.type === 'Date'
+						if (createdTimeToAssign) {
+							updatedRecord[createdTimeToAssign.name] =
+								existingRecord?.[createdTimeToAssign.name] ??
+								(createdTimeToAssign.type === 'Date'
 									? new Date(resolvedVersion)
-									: createdTimeProperty.type === 'String'
+									: createdTimeToAssign.type === 'String'
 										? new Date(resolvedVersion).toISOString()
 										: resolvedVersion);
 						}
@@ -12430,10 +12651,10 @@ export function makeTable(options): TableResourceClass {
 							// a first fill replacing a record that landed during the source call keeps its created time,
 							// as a put would; copied, since the caller already holds updatedRecord
 							const racedCreatedTime =
-								assignCreatedTime && existingVersion == null ? currentRecord?.[createdTimeProperty.name] : undefined;
+								createdTimeToAssign && existingVersion == null ? currentRecord?.[createdTimeToAssign.name] : undefined;
 							if (racedCreatedTime != null) {
 								recordToStore = Object.setPrototypeOf({ ...updatedRecord }, Object.getPrototypeOf(updatedRecord));
-								recordToStore[createdTimeProperty.name] = racedCreatedTime;
+								recordToStore[createdTimeToAssign.name] = racedCreatedTime;
 								const fillEntry = entryMap.get(updatedRecord);
 								if (fillEntry) entryMap.set(recordToStore, fillEntry);
 							}
@@ -13339,6 +13560,85 @@ export function makeTable(options): TableResourceClass {
 				} catch {}
 				throw error;
 			}
+		);
+	}
+	function assertAttributesRemoved(names: string[]) {
+		const declaredName = names.find((name) => attributes.some((attribute) => attribute.name === name));
+		if (declaredName !== undefined)
+			throw new ClientError(
+				`Cannot strip ${declaredName} from ${tableName} while it is still declared; remove the attribute from the schema first`,
+				409
+			);
+	}
+	function stripBatch(
+		keys: Id[],
+		names: string[],
+		attempt = 1,
+		deadline = Date.now() + STRIP_RETRY_BUDGET_MS
+	): Promise<unknown> {
+		assertAttributesRemoved(names);
+		const completions: Promise<unknown>[] = [];
+		const stripKeys = (transaction?: RocksTransaction) => {
+			for (const key of keys) {
+				const entry = primaryStore.getEntry(key, transaction && { transaction, uncachedRead: true });
+				const completion = stripRecord(key, entry, names, transaction);
+				if (completion?.then) {
+					completion.then(undefined, () => {});
+					completions.push(completion);
+				}
+			}
+		};
+		// nested in an open lmdb-js write transaction, transaction() runs the callback inline and returns its result
+		if (!isRocksDB)
+			return when(
+				primaryStore.transaction(() => stripKeys()),
+				() => Promise.all(completions)
+			);
+		const transaction = new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
+		try {
+			stripKeys(transaction);
+		} catch (error) {
+			(transaction as any).abort();
+			throw error;
+		}
+		return commitRawTransaction(transaction).then((committed) => {
+			if (committed) return Promise.all(completions);
+			if (attempt >= STRIP_MAX_ATTEMPTS || Date.now() > deadline)
+				throw new ServerError(
+					`Could not remove ${names.join(', ')} from ${tableName}: a batch of records conflicted with other writes ${attempt} times; run drop_attribute again`,
+					503
+				);
+			// randomized so two strips crossing on the same keys stop retrying in lockstep
+			return sleep(Math.ceil(Math.min(attempt * 20, 1000) * Math.random())).then(() =>
+				stripBatch(keys, names, attempt + 1, deadline)
+			);
+		});
+	}
+
+	function stripRecord(key: Id, entry: Entry | undefined, names: string[], transaction?: RocksTransaction) {
+		const record = entry?.value;
+		if (record == null || typeof record !== 'object' || !names.some((name) => Object.hasOwn(record, name))) return;
+		const stripped = { ...record };
+		for (const name of names) delete stripped[name];
+		return updateRecord(
+			key,
+			stripped,
+			withoutBlobRelease(entry),
+			// a row a raw put stored has no version; RocksDB cannot decode a metadata word without one
+			entry.version ?? (isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime()),
+			// the record-state flags; the rest are re-derived from the payloads they announce
+			entry.metadataFlags & (INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY),
+			false,
+			{
+				expiresAt: entry.expiresAt,
+				residencyId: entry.residencyId,
+				recordNodeId: entry.nodeId,
+				additionalAuditRefs: entry.additionalAuditRefs,
+				receivedIdentityRefs: entry.receivedIdentityRefs,
+				transaction,
+			},
+			'put',
+			true // on LMDB, keeps the local time while its audit entry exists
 		);
 	}
 	function withoutBlobRelease(entry: Entry): Entry {

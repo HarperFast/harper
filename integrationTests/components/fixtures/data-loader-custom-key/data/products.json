@@ -1,0 +1,7 @@
+{
+	"table": "DataLoaderProduct",
+	"records": [
+		{ "sku": "SKU-1", "name": "One", "price": 10 },
+		{ "sku": "SKU-2", "name": "Two", "price": 20 }
+	]
+}

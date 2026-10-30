@@ -182,21 +182,8 @@ export class ResourceBridge extends BridgeMethods {
 	async dropAttribute(dropAttributeObj) {
 		const Table = getTable(dropAttributeObj);
 		await Table.removeAttributes([dropAttributeObj.attribute]);
-		if (!Table.schemaDefined) {
-			// legacy behavior of deleting all the property values
-			const property = dropAttributeObj.attribute;
-			let resolution;
-			const deleteRecord = (key, record, version): Promise<void> => {
-				record = { ...record };
-				delete record[property];
-				return Table.primaryStore.put(key, record, version);
-			};
-			for (const { key, value: record, version } of Table.primaryStore.getRange({ start: true, versions: true })) {
-				resolution = deleteRecord(key, record, version);
-				await new Promise((resolve) => setImmediate(resolve));
-			}
-			await resolution;
-		}
+		// legacy behavior of deleting all the property values
+		if (!Table.schemaDefined) await Table.stripAttributeValues([dropAttributeObj.attribute]);
 		return `successfully deleted ${dropAttributeObj.schema}.${dropAttributeObj.table}.${dropAttributeObj.attribute}`;
 	}
 

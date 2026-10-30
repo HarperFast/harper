@@ -75,7 +75,8 @@ export function executeConditions(
 	context,
 	transformToEntries,
 	filtered,
-	recordAccess?
+	recordAccess?,
+	inUnion?: boolean
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -114,7 +115,7 @@ export function executeConditions(
 			// during the graph walk instead of post-filtering an under-filled candidate set (#1241). They
 			// also stay in the post-filter chain as a deterministic, harmless re-check.
 			const siblings = conditions.slice(1);
-			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count);
+			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count, inUnion);
 			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 			// The sibling conditions a secondary-index range scan answers exactly can seed an allow-set
 			// the index admits from, instead of loading and decoding a record at every visited node.
@@ -136,7 +137,7 @@ export function executeConditions(
 		// General path: execute the lead FIRST — a leading join populates `filtered`, which the sibling
 		// filters read as they are built — then apply the sibling filters plus any record guards.
 		const results = executeCondition(firstSearch);
-		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count);
+		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, inUnion);
 		const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 		return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
 	}
@@ -150,8 +151,9 @@ export function executeConditions(
 				request,
 				context,
 				transformToEntries,
-				filtered
-				// recordAccess intentionally omitted: guards run once, at the top level (see above).
+				filtered,
+				undefined, // recordAccess intentionally omitted: guards run once, at the top level (see above).
+				inUnion || operator === 'or'
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
@@ -166,13 +168,18 @@ export function executeConditions(
 			resultOffset: request.offset || 0,
 		});
 	}
-	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
+	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, inUnion: boolean) {
 		return conditions
 			.map((condition, index) => {
 				if (condition.conditions) {
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
-					const filters = mapConditionsToFilters(condition.conditions, !union, estimatedIncomingCount);
+					const filters = mapConditionsToFilters(
+						condition.conditions,
+						!union,
+						estimatedIncomingCount,
+						inUnion || union
+					);
 					const groupFilter: any = union
 						? (record, entry) => filters.some((filter) => filter(record, entry))
 						: (record, entry) => filters.every((filter) => filter(record, entry));
@@ -181,7 +188,7 @@ export function executeConditions(
 					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
-				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount);
+				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount, inUnion);
 				if (intersection && index < conditions.length - 1 && estimatedIncomingCount) {
 					estimatedIncomingCount = intersectionEstimate(
 						table.primaryStore,
@@ -445,58 +452,64 @@ interface CandidateKeyCollection {
  * encoding the common key shapes, and the stores encode -0 and 0 apart where Set membership does not.
  * The rest go by writeKeyId, the encoder the stores index by — flattenKey joins composite keys with
  * NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'] — kept apart from the values because an encoded
- * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. An index scan
- * decodes an int64 as the number it encodes as when that is exact, while a traversal may report the
- * BigInt, so the two are the same key.
+ * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'.
  */
 export class CandidateKeySet {
 	#byValue = new Set<Id>();
 	#encoded = new Set<unknown>();
 	#zero = false;
 	#negativeZero = false;
-	#holdsBigInt = false;
 	add(primaryKey: Id): void {
+		if (typeof primaryKey === 'object' || typeof primaryKey === 'bigint') primaryKey = storedSpelling(primaryKey);
 		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
 			this.#byValue.add(primaryKey);
 		else if (primaryKey === 0) {
 			if (Object.is(primaryKey, -0)) this.#negativeZero = true;
 			else this.#zero = true;
-		} else {
-			if (typeof primaryKey === 'bigint') this.#holdsBigInt = true;
-			this.#encoded.add(writeKeyId(primaryKey));
-		}
+		} else this.#encoded.add(writeKeyId(primaryKey));
 	}
 	has(primaryKey: Id): boolean {
-		if (typeof primaryKey === 'string') return this.#byValue.has(primaryKey);
-		if (typeof primaryKey === 'number') {
-			if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
-			return this.#byValue.has(primaryKey) || (this.#holdsBigInt && this.#encoded.has(writeKeyId(primaryKey)));
-		}
-		if (typeof primaryKey === 'bigint') {
-			const number = Number(primaryKey);
-			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return true;
-		}
-		return this.#encoded.has(writeKeyId(primaryKey));
+		if (typeof primaryKey === 'object' || typeof primaryKey === 'bigint') primaryKey = storedSpelling(primaryKey);
+		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
+			return this.#byValue.has(primaryKey);
+		if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
+		return this.#encoded.size > 0 && this.#encoded.has(writeKeyId(primaryKey));
 	}
 	addIfAbsent(primaryKey: Id): boolean {
-		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
-			if (this.has(primaryKey)) return false;
-			this.add(primaryKey);
-			return true;
-		}
-		if (typeof primaryKey === 'bigint') {
-			const number = Number(primaryKey);
-			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
-			this.#holdsBigInt = true;
-		}
-		const identity = writeKeyId(primaryKey);
-		if (this.#encoded.has(identity)) return false;
-		this.#encoded.add(identity);
-		return true;
+		const size = this.size;
+		this.add(primaryKey);
+		return this.size !== size;
 	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
+}
+
+/**
+ * The string or number a key is stored as, when the key spells it another way: a BigInt a double holds
+ * exactly encodes as that double (an index scan decodes it as the number, a traversal may report the
+ * BigInt), and a one-element tuple encodes as its element when that is a string, or a number already at
+ * the full width a tuple element takes (negative or fractional ones); other numbers encode shorter alone.
+ */
+function storedSpelling(primaryKey: Id): Id {
+	if (typeof primaryKey === 'bigint') {
+		const number = Number(primaryKey);
+		return BigInt(number) === primaryKey ? number : primaryKey;
+	}
+	let element: unknown = primaryKey;
+	while (Array.isArray(element) && element.length === 1) element = element[0];
+	if (typeof element === 'string') return element;
+	// NaN's payload bits stay in its encoding, which Set membership would not keep apart
+	if ((typeof element !== 'number' && typeof element !== 'bigint') || element !== element) return primaryKey;
+	const number = element as Id;
+	if (writeKeyId(number) !== writeKeyId(primaryKey)) return primaryKey;
+	return typeof element === 'bigint' ? storedSpelling(number) : number;
+}
+
+function primaryKeyEquals(value: Id): (primaryKey: Id) => boolean {
+	const keys = new CandidateKeySet();
+	keys.add(value);
+	return (primaryKey) => keys.has(primaryKey);
 }
 
 export function distinctKeys(entries: any): any {
@@ -1061,6 +1074,12 @@ export function searchByIndex(
 				// start: [prefix, null], end: [prefix, MAXIMUM_KEY]
 				if (!Array.isArray(value)) value = [value, null];
 				else if (value[value.length - 1] != null) value = value.concat(null);
+				if (isPrimaryKey && value.length <= 1) {
+					// no prefix ([] or [null]): every key, from the primary store's floor above its metadata
+					start = openStart;
+					exclusiveStart = openStartExclusive;
+					break;
+				}
 				start = value;
 				end = value.slice(0);
 				end[end.length - 1] = MAXIMUM_KEY;
@@ -1564,6 +1583,22 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 			} catch {}
 	}
 }
+class RelationshipSelection {
+	filters: any[];
+	fromRecord: (record: any, sync?: boolean) => any;
+	constructor(filters: any[], fromRecord: (record: any, sync?: boolean) => any) {
+		this.filters = filters;
+		this.fromRecord = fromRecord;
+	}
+}
+// keys the join and selection maps keep for themselves, so a relationship of that name cannot be tracked in them
+const SELECTION_BOOKKEEPING = new Set(['filters', 'fromRecord', 'hasMappings']);
+// A query's `filtered` map holds, per relationship name, a leading join's Map or a selection with `fromRecord`.
+// Read it as an own property of that shape: a name can equal an inherited member or the maps' bookkeeping keys.
+export function relationshipRestriction(filtered, name: string) {
+	const restriction = filtered && Object.hasOwn(filtered, name) ? filtered[name] : undefined;
+	return restriction instanceof Map || typeof restriction?.fromRecord === 'function' ? restriction : undefined;
+}
 function someRelatedMatch(entries, match, start: number) {
 	for (let i = start; i < entries.length; i++) {
 		const value = entries[i]?.value;
@@ -1574,7 +1609,7 @@ function someRelatedMatch(entries, match, start: number) {
 	}
 	return false;
 }
-function matchesFilters(filters, record, entry, any: boolean, start = 0) {
+export function matchesFilters(filters, record, entry, any: boolean, start = 0) {
 	for (let i = start; i < filters.length; i++) {
 		const filter = filters[i];
 		const matches = (filter.maybeAsync ?? filter)(record, entry);
@@ -1794,15 +1829,25 @@ export function getNestedValue(record: any, path: string | string[]): any {
  * @param {SearchObject} searchCondition
  * @returns {({}) => boolean}
  */
-export function filterByType(searchCondition, Table, context, filtered, isPrimaryKey?, estimatedIncomingCount?) {
+export function filterByType(
+	searchCondition,
+	Table,
+	context,
+	filtered,
+	isPrimaryKey?,
+	estimatedIncomingCount?,
+	inUnion?: boolean
+) {
 	const comparator = searchCondition.comparator;
 	const negated = searchCondition.negated;
 	let attribute = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
-		if (attribute.length === 1) attribute = attribute[0];
-		else if (attribute.length > 1) {
+		if (attribute.length === 1) {
+			attribute = attribute[0];
+			isPrimaryKey = attribute === Table?.primaryKey;
+		} else if (attribute.length > 1) {
 			const firstAttributeName = attribute[0];
 			// get the relationship attribute (may be undefined for plain JSON paths)
 			const firstAttribute = findAttribute(Table?.attributes, firstAttributeName);
@@ -1829,7 +1874,67 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			}
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
-			const filterMap = filtered?.[firstAttributeName];
+			const filterMap = relationshipRestriction(filtered, firstAttributeName);
+			const join: any = filterMap instanceof Map ? filterMap : undefined;
+			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			const loadEntries = resolver?.loadEntries;
+			const getSubObject = (record, entry) => {
+				let subObject, subEntry, subEntries;
+				if (resolver) {
+					if (resolver.returnDirect) {
+						// indicates that the resolver will direct return the value instead of an entry
+						subObject = resolver(record, context, entry);
+						subEntry = lastMetadata;
+					} else {
+						subEntry = resolver(record, context, entry, true);
+						if (Array.isArray(subEntry)) {
+							subEntries = subEntry.filter((related) => related?.value != null);
+							subObject = subEntries.map((related) => related.value);
+							subEntry = null;
+						} else {
+							subObject = subEntry?.value;
+						}
+					}
+				} else subObject = record[firstAttributeName];
+				return { subObject, subEntry, subEntries };
+			};
+			const relatedSelection = (filters: any[]) =>
+				new RelationshipSelection(filters, (record, sync?: boolean) => {
+					// this is called when selecting the fields to include in results
+					if (loadEntries && !sync) {
+						return when(loadEntries(record, context), (loaded) => {
+							if (!resolver.toMany || !loaded) return loaded?.value;
+							const matches = mapSettlingOnThrow(
+								loaded,
+								(entry) => entry?.value != null && matchesFilters(filters, entry.value, entry, false)
+							);
+							const matchingKeys = (matches) =>
+								loaded
+									.filter((_entry, i) => matches[i])
+									.map((entry) => entry.key ?? entry.value[relatedTable.primaryKey]);
+							return matches.some((matches) => matches?.then)
+								? Promise.all(matches).then(matchingKeys)
+								: matchingKeys(matches);
+						});
+					}
+					const { subObject, subEntries } = getSubObject(record, undefined);
+					if (!Array.isArray(subObject)) return subObject;
+					const keys = [];
+					for (let i = 0; i < subObject.length; i++) {
+						const value = subObject[i];
+						const entry = subEntries?.[i];
+						if (filters.every((filter) => filter(value, entry)))
+							keys.push(entry?.key ?? value[relatedTable.primaryKey]);
+					}
+					return keys;
+				});
+			// AND scope: registered when built, so no row sees a partial set; OR scope: lazily, first branch wins
+			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
+			let selection;
+			if (!join && restrictsSelect && !inUnion) {
+				if (filterMap instanceof RelationshipSelection) selection = filterMap;
+				else if (!Object.hasOwn(filtered, firstAttributeName)) selection = relatedSelection([]);
+			}
 			const nextFilter = filterByType(
 				{
 					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
@@ -1839,95 +1944,69 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				},
 				relatedTable,
 				context,
-				filterMap?.[firstAttributeName]?.joined,
+				join ?? selection,
 				attribute[1] === relatedTable.primaryKey,
-				estimatedIncomingCount
+				estimatedIncomingCount,
+				inUnion
 			);
 			if (!nextFilter) return;
-			if (filterMap) {
-				if (!filterMap.filters) filterMap.filters = [];
-				filterMap.filters.push(nextFilter);
+			if (join) {
+				if (!join.filters) join.filters = [];
+				join.filters.push(nextFilter);
 				return;
 			}
-			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			if (selection) {
+				filtered[firstAttributeName] = selection;
+				selection.filters.push(nextFilter);
+			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
-			const getSubObject = (record, entry) => {
-				let subObject, subEntry;
-				if (resolver) {
-					if (resolver.returnDirect) {
-						// indicates that the resolver will direct return the value instead of an entry
-						subObject = resolver(record, context, entry);
-						subEntry = lastMetadata;
-					} else {
-						subEntry = resolver(record, context, entry, true);
-						if (Array.isArray(subEntry)) {
-							// if any array, map the values
-							subObject = subEntry.map((subEntry) => subEntry.value);
-							subEntry = null;
-						} else {
-							subObject = subEntry?.value;
-						}
-					}
-				} else subObject = record[firstAttributeName];
-				return { subObject, subEntry };
+			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
+			const usesIdFilter = () => nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
+			const preserveForSelect = () => {
+				if (inUnion && restrictsSelect && !Object.hasOwn(filtered, firstAttributeName))
+					filtered[firstAttributeName] = relatedSelection([nextFilter]);
 			};
 			const recordFilter = (record, entry) => {
-				if (resolver) {
-					if (nextFilter.idFilter) {
-						// if we are filtering by id, we can use the idFilter to avoid loading the record
-						if (!subIdFilter) {
-							if (nextFilter.idFilter.idSet?.size === 1) {
-								// if there is a single id we are looking for, we can create a new search condition that the
-								// attribute comparator could eventually use to create a recursive id set
-								// TODO: Eventually we should be able to handle multiple ids by creating a union
-								searchCondition = {
-									attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-									value: nextFilter.idFilter.onlyId,
-								};
-								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
-								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
-							} else
-								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, false, true);
-						}
-						const matches = subIdFilter(record);
-						if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
-						return matches;
+				if (resolver && usesIdFilter()) {
+					// if we are filtering by id, we can use the idFilter to avoid loading the record
+					if (!subIdFilter) {
+						// an array of foreign keys is tested per element; a single key (which may be a composite array) whole
+						const allowObjectMatching = Boolean(resolver.to) || !resolver.toMany;
+						if (nextFilter.idFilter.idSet?.size === 1) {
+							// if there is a single id we are looking for, we can create a new search condition that the
+							// attribute comparator could eventually use to create a recursive id set
+							// TODO: Eventually we should be able to handle multiple ids by creating a union
+							searchCondition = {
+								attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+								value: nextFilter.idFilter.onlyId,
+							};
+							subIdFilter = attributeComparator(
+								resolver.from ?? Table.primaryKey,
+								nextFilter.idFilter,
+								true,
+								allowObjectMatching
+							);
+						} else
+							subIdFilter = attributeComparator(
+								resolver.from ?? Table.primaryKey,
+								nextFilter.idFilter,
+								false,
+								allowObjectMatching
+							);
 					}
+					const matches = subIdFilter(record);
+					if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
+					if (matches) preserveForSelect();
+					return matches;
 				}
-				const { subObject, subEntry } = getSubObject(record, entry);
+				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
 				preserveForSelect();
-				return subObject.some(nextFilter);
+				return subObject.some((value, i) => nextFilter(value, subEntries?.[i]));
 			};
-			const loadEntries = resolver?.loadEntries;
 			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
-			const preserveForSelect = () => {
-				if (filtered && !filtered[firstAttributeName]) {
-					// establish a filtering that can preserve this filter for the select() results of these sub objects
-					filtered[firstAttributeName] = {
-						fromRecord(record, sync?: boolean) {
-							// this is called when selecting the fields to include in results
-							if (loadEntries && !sync) {
-								return when(loadEntries(record, context), (loaded) => {
-									if (!resolver.toMany || !loaded) return loaded?.value;
-									const values = loaded.map((entry) => entry?.value);
-									const matches = mapSettlingOnThrow(values, (value) => value != null && nextMatch(value));
-									const matchingIds = (matches) =>
-										values.filter((_value, i) => matches[i]).map((value) => value[relatedTable.primaryKey]);
-									return matches.some((matches) => matches?.then)
-										? Promise.all(matches).then(matchingIds)
-										: matchingIds(matches);
-								});
-							}
-							const value = getSubObject(record, undefined).subObject;
-							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
-							return value;
-						},
-					};
-				}
-			};
 			if (loadEntries) {
 				const matchLoaded = (loaded) => {
 					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
@@ -1936,7 +2015,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					return someRelatedMatch(loaded, nextMatch, 0);
 				};
 				(recordFilter as any).maybeAsync = (record, entry) => {
-					if (nextFilter.idFilter) return recordFilter(record, entry);
+					if (usesIdFilter()) return recordFilter(record, entry);
 					const loaded = loadEntries(record, context);
 					return loaded?.then ? loaded.then(matchLoaded) : matchLoaded(loaded);
 				};
@@ -1950,7 +2029,11 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 		case SEARCH_TYPES.EQUALS:
 		case undefined:
-			baseFilter = attributeComparator(attribute, (recordValue) => recordValue === value, true);
+			baseFilter = attributeComparator(
+				attribute,
+				isPrimaryKey ? primaryKeyEquals(value) : (recordValue) => recordValue === value,
+				true
+			);
 			break;
 		case 'contains':
 			baseFilter = attributeComparator(attribute, (recordValue) => recordValue?.toString().includes(value));
@@ -1958,19 +2041,34 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'ends_with':
 			baseFilter = attributeComparator(attribute, (recordValue) => recordValue?.toString().endsWith(value));
 			break;
-		case 'starts_with':
-			baseFilter = attributeComparator(
-				attribute,
-				(recordValue) => typeof recordValue === 'string' && recordValue.startsWith(value),
-				true
-			);
-			break;
-		case 'prefix':
-			if (!Array.isArray(value)) value = [value];
-			else if (value[value.length - 1] == null) value = value.slice(0, -1);
+		case 'starts_with': {
+			const prefix = String(value);
+			const encodedPrefix = isPrimaryKey && prefix ? (writeKeyId(prefix) as string) : undefined;
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
+					if (typeof recordValue === 'string') return recordValue.startsWith(prefix);
+					if (!isPrimaryKey || !Array.isArray(recordValue)) return false;
+					if (encodedPrefix !== undefined) return (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
+					// a one-element tuple decodes as its element, so this is the test that element would get
+					let leading = recordValue[0];
+					while (Array.isArray(leading)) leading = leading[0];
+					return typeof leading === 'string';
+				},
+				true
+			);
+			break;
+		}
+		case 'prefix': {
+			if (!Array.isArray(value)) value = [value];
+			else if (value[value.length - 1] == null) value = value.slice(0, -1);
+			// the primary-store scan reads [...value, null] up to [...value, MAXIMUM_KEY]
+			const encodedPrefix = isPrimaryKey ? (value.length > 0 ? (writeKeyId(value) as string) + '\x00' : '') : undefined;
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => {
+					if (encodedPrefix !== undefined)
+						return recordValue != null && (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
 					if (!Array.isArray(recordValue)) return false;
 					for (let i = 0, l = value.length; i < l; i++) {
 						if (recordValue[i] !== value[i]) return false;
@@ -1980,6 +2078,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				true
 			);
 			break;
+		}
 		case 'between':
 		case 'gele':
 		case 'gtlt':
@@ -2008,9 +2107,13 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'in': {
 			if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
 			// Cache the Set on the condition so multi-row evaluation reuses it.
-			let valueSet: Set<any> = (searchCondition as any).cachedSet;
+			let valueSet: Set<any> | CandidateKeySet = (searchCondition as any).cachedSet;
 			if (!valueSet) {
-				valueSet = new Set(value.map((v) => (v instanceof Date ? v.getTime() : v)));
+				const values = value.map((v) => (v instanceof Date ? v.getTime() : v));
+				if (isPrimaryKey) {
+					valueSet = new CandidateKeySet();
+					for (const key of values) valueSet.add(key);
+				} else valueSet = new Set(values);
 				(searchCondition as any).cachedSet = valueSet;
 			}
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
@@ -2041,14 +2144,19 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				(recordValue) => recordValue != null && compareKeys(recordValue, value) <= 0
 			);
 			break;
-		case 'ne':
-			baseFilter = attributeComparator(
-				attribute,
-				(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
-				false,
-				true
-			);
+		case 'ne': {
+			if (isPrimaryKey) {
+				const equals = primaryKeyEquals(value);
+				baseFilter = attributeComparator(attribute, (primaryKey) => !equals(primaryKey));
+			} else
+				baseFilter = attributeComparator(
+					attribute,
+					(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+					false,
+					true
+				);
 			break;
+		}
 		case 'sort':
 			return () => true;
 		default:
@@ -2069,6 +2177,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		allowObjectMatching?: boolean
 	) {
 		let thresholdRemainingMisses: number;
+		allowObjectMatching ||= isPrimaryKey;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
@@ -2125,6 +2234,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					(recordFilter.idFilter as any).idSet = idSet;
 					// the set holds encoded identities; the singleton relationship lookup needs the key itself
 					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
+					(recordFilter.idFilter as any).mappedTo = Boolean((recordFilter as any).to);
 				}
 			}
 			return matches;
@@ -2193,6 +2303,10 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 		case 'prefix': {
 			let start = Array.isArray(value) ? value : [value, null];
 			if (start[start.length - 1] != null) start = start.concat(null);
+			if (isPrimaryKey && start.length <= 1) {
+				range = { start: true };
+				break;
+			}
 			const end = start.slice(0);
 			end[end.length - 1] = MAXIMUM_KEY;
 			range = { start, end };

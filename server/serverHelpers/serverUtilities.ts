@@ -45,6 +45,7 @@ import * as releaseOperations from '../../components/releaseOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import * as trustPolicyOperations from '../../security/authn/oidc/trustPolicyOperations.ts';
 import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
+import * as previewOperations from '../../components/previewOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {
@@ -819,6 +820,12 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
 		new OperationFunctionObject(tokenExchange.exchangeOidcToken)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.ENABLE_PREVIEWS, new OperationFunctionObject(previewOperations.enablePreviews));
+	opFuncMap.set(terms.OPERATIONS_ENUM.DISABLE_PREVIEWS, new OperationFunctionObject(previewOperations.disablePreviews));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY,
+		new OperationFunctionObject(previewOperations.getPreviewPolicy)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,

@@ -28,6 +28,7 @@ import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import {
 	appendHeader,
+	addVaryHeader,
 	bridgeChainHeadersToNodeResponse,
 	Headers,
 	mergeChainHeadersIntoFallback,
@@ -48,9 +49,10 @@ import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
-import { throttle } from './throttle.ts';
+import { rejectWhenLoopDelayed, throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { isolatedApplicationUnavailable } from './isolatedHostGuard.ts';
+import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 import { WebSocketServer } from 'ws';
 import { loadNativePackage } from '../utility/packageUtils.js';
 
@@ -756,6 +758,61 @@ function claimPortForThreadType(port: number | string, options: ServerOptions | 
 	claimListener(port, threadType);
 }
 
+function isReadMethod(method) {
+	return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+}
+
+function readRejectionHeaders(isOperationsServer: boolean) {
+	const prefix = isOperationsServer ? 'operationsApi_network' : 'http';
+	const cors = env.get(prefix + '_cors');
+	const accessList = env.get(prefix + '_corsAccessList');
+	const allowCredentials = env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
+	const allowHeaders =
+		env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
+	return (origin: string | null | undefined) => {
+		const headers = new Headers({ 'content-type': 'text/plain' });
+		applyUniversalHeaders(headers);
+		if (cors) {
+			addVaryHeader(headers, 'Origin');
+			if (origin && corsAccessListAllows(accessList, origin)) {
+				headers.set('Access-Control-Allow-Origin', origin);
+				if (allowCredentials) headers.set('Access-Control-Allow-Credentials', 'true');
+				headers.set('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
+				headers.set('Access-Control-Allow-Headers', allowHeaders);
+			}
+		}
+		return headers;
+	};
+}
+
+function throttleRequests(
+	port,
+	handler,
+	onLimitExceeded,
+	requestQueueLimit,
+	readRequestQueueLimit,
+	queueWrites = true
+) {
+	const writes = queueWrites
+		? throttle(handler, onLimitExceeded, requestQueueLimit, `HTTP request queue on port ${port}`)
+		: handler;
+	const reads =
+		readRequestQueueLimit === false
+			? handler
+			: rejectWhenLoopDelayed(
+					handler,
+					onLimitExceeded,
+					readRequestQueueLimit ?? 5000,
+					`HTTP read admission on port ${port}`
+				);
+	if (reads === handler && writes === handler) return handler;
+	return (request, response) => {
+		if (isReadMethod(request.method)) return reads(request, response);
+		if (queueWrites && checkAnalyticsEnabled()) request.receivedAt = performance.now();
+		return writes(request, response);
+	};
+}
+
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	claimPortForThreadType(port, options);
 	const threadType = options?.threadType;
@@ -782,7 +839,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				port: uwsPort,
 				host: lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : undefined,
 				secure: false,
-				handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+				handler: makeUwsHandler(
+					port,
+					isOperationsServer,
+					env.get(serverPrefix + '_requestQueueLimit'),
+					env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
+				),
 			};
 			// Marker so the httpServers guard is satisfied and the caller has a truthy handle; the
 			// actual listen happens in threadServer.js from uwsServeConfigs. onWebSocket() detects
@@ -989,31 +1051,25 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				} else harperLogger.error(errorForLog(error));
 			}
 		};
-		// create a throttled version of the request handler, so we can throttle POST requests
-		const throttledRequestHandler = throttle(
+		const rejectionHeaders = readRejectionHeaders(isOperationsServer);
+		const queuedRequestHandler = throttleRequests(
+			port,
 			requestHandler,
 			(nodeRequest: IncomingMessage, nodeResponse: any) => {
 				// if the request queue is taking too long, we want to return an error
+				if (isReadMethod(nodeRequest.method)) {
+					for (const [name, value] of rejectionHeaders(nodeRequest.headers.origin)) nodeResponse.setHeader(name, value);
+				}
 				nodeResponse.statusCode = 503;
 				nodeResponse.end('Service unavailable, exceeded request queue limit');
 				recordAction(true, 'service-unavailable', port);
 			},
 			env.get(serverPrefix + '_requestQueueLimit'),
-			`HTTP request queue on port ${port}`
+			env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
 		);
-		const dispatchRequest = (nodeRequest: IncomingMessage, nodeResponse: any) => {
-			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
-			// want to block or slow down other activity
-			const method = nodeRequest.method;
-			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-			else {
-				if (checkAnalyticsEnabled()) (nodeRequest as any).receivedAt = performance.now();
-				throttledRequestHandler(nodeRequest, nodeResponse);
-			}
-		};
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, dispatchRequest));
+		)(options, queuedRequestHandler));
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
 		// number or it will actually crash the server
@@ -1069,7 +1125,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				uwsServeConfigs[udsPath] = {
 					socketPath: udsPath,
 					secure: true,
-					handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+					handler: makeUwsHandler(
+						port,
+						isOperationsServer,
+						env.get(serverPrefix + '_requestQueueLimit'),
+						env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
+					),
 				};
 				// Let onWebSocket() install its wsHandler on this mirror too
 				server.udsMirrorUwsConfig = uwsServeConfigs[udsPath];
@@ -1084,7 +1145,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						...socketOptionDefaults,
 						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 					},
-					dispatchRequest
+					queuedRequestHandler
 				);
 
 				udsServer.isPerThreadSocket = true;
@@ -1121,7 +1182,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
 				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
 				if (threadType) claimListener(udsPathH2, threadType);
-				const h2Server = createH2CServer({}, dispatchRequest);
+				const h2Server = createH2CServer({}, queuedRequestHandler);
 				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
 				h2Server.on('sessionError', (error: Error) => {
 					harperLogger.debug('h2c UDS session error:', error);
@@ -1162,7 +1223,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
  * and a Fastify fallback is registered for the port, it delegates via inject() (see injectToFastify),
  * mirroring the Bun path — so legacy Fastify routes work behind uWS too.
  */
-export function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
+export function makeUwsHandler(
+	port: number | string,
+	isOperationsServer: boolean,
+	requestQueueLimit?: number,
+	readRequestQueueLimit?: number | false | null
+) {
 	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
 	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
 	// mutates. `headers` is normalized in place the same way the Bun path does.
@@ -1257,27 +1323,23 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		const body = await normalizeUwsBody(response.body, request.signal);
 		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
-	// Shed data-modifying requests when the event queue is backed up (503), mirroring the Node UDS
-	// path — GET/OPTIONS/HEAD are cheap and always run, everything else goes through the throttle.
-	const throttledHandle = throttle(
+	const rejectionHeaders = readRejectionHeaders(isOperationsServer);
+	return throttleRequests(
+		port,
 		handle,
-		(_request: any) => {
+		(request: any) => {
 			recordAction(true, 'service-unavailable', port);
 			return {
 				status: 503,
-				headers: new Headers({ 'content-type': 'text/plain' }),
+				headers: isReadMethod(request.method)
+					? rejectionHeaders(request.headers.get('origin'))
+					: new Headers({ 'content-type': 'text/plain' }),
 				body: 'Service unavailable, exceeded request queue limit',
 			};
 		},
 		requestQueueLimit,
-		`HTTP request queue on port ${port}`
+		readRequestQueueLimit
 	);
-	return (request: any) => {
-		const method = request.method;
-		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
-		if (checkAnalyticsEnabled()) request.receivedAt = performance.now();
-		return throttledHandle(request);
-	};
 }
 
 /**
@@ -1548,8 +1610,22 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		// exclusive port, which lets tooling (e.g. the integration-test loopback pool) detect an
 		// address that's already in use instead of silently co-binding. Mirrors the Node path,
 		// which sets server.noReusePort for isOperationsServer (see above).
+		const rejectionHeaders = readRejectionHeaders(isOperationsServer);
 		const config: any = {
-			fetch: fetchHandler,
+			fetch: throttleRequests(
+				port,
+				fetchHandler,
+				(request) => {
+					recordAction(true, 'service-unavailable', port);
+					return new Response('Service unavailable, exceeded request queue limit', {
+						status: 503,
+						headers: [...rejectionHeaders(request.headers.get('origin'))],
+					});
+				},
+				undefined,
+				env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT),
+				false
+			),
 			reusePort: !isOperationsServer && process.platform !== 'darwin' && process.platform !== 'win32',
 		};
 		if (secure) {

@@ -1089,11 +1089,12 @@ export function recordUpdater(
 			if (previousResidencySlot !== undefined && (previousResidencySlot !== residencySlot || type === 'delete'))
 				extendedType |= HAS_PREVIOUS_RESIDENCY_SLOT;
 			const residencyId = options?.residencyId; //getResidency(record, previousResidencyId);
-			if (residencyId) {
-				residencyIdAtNextEncoding = residencyId;
+			const recordResidencyId = options?.recordResidencyId !== undefined ? options.recordResidencyId : residencyId;
+			if (recordResidencyId) {
+				residencyIdAtNextEncoding = recordResidencyId;
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
-				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
+			if (residencyId) extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			const recordNodeId = options?.recordNodeId ?? options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
 			if (recordNodeId >= 0) {
 				nodeIdAtNextEncoding = recordNodeId;
