@@ -87,8 +87,10 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				preview: 'required',
 				maxPreviews: 3,
 				maxTtlDays: 5,
+				generation: role.permission.component_deploy.constraints.generation,
 			},
 		});
+		assert.match(role.permission.component_deploy.constraints.generation, /^[\w-]{8,64}$/);
 		assert.deepStrictEqual([...role.permission.operations].sort(), [
 			'deploy_component',
 			'drop_component',
@@ -205,6 +207,19 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		);
 	});
 
+	it('gives each enablement its own identity generation, and keeps it while it stays enabled', async () => {
+		const generationOf = async () =>
+			(await getRoleByName('opsgen-ci-preview')).permission.component_deploy.constraints.generation;
+		await enablePreviews(enableRequest('opsgen'));
+		const first = await generationOf();
+		assert.match(first, /^[\w-]{8,}$/);
+		await enablePreviews(enableRequest('opsgen'));
+		assert.strictEqual(await generationOf(), first, 'a rerun matches what is there');
+		await disablePreviews({ operation: 'disable_previews', app: 'opsgen', hdb_user: SU });
+		await enablePreviews(enableRequest('opsgen'));
+		assert.notStrictEqual(await generationOf(), first);
+	});
+
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
 		const workflow = '.github/workflows/shared.yaml';
 		const outcomes = await Promise.allSettled([
@@ -259,7 +274,7 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		});
 
 		/** Stands in for harper-pro: a peer node-b that reports `peerReleases` and answers drops with `answerDrop`. */
-		function withPeer(peerReleases, answerDrop) {
+		function withPeer(peerReleases, answerDrop, { fenced = true } = {}) {
 			const replication = server.replication;
 			const saved = {
 				replicateOperation: replication.replicateOperation,
@@ -268,7 +283,7 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const savedNodes = server.nodes;
 			const sent = [];
 			replication.replicateOperation = async () => ({
-				replicated: [{ node: 'node-b', components: peerReleases }],
+				replicated: [{ node: 'node-b', components: peerReleases, ...(fenced && { fenced: true }) }],
 			});
 			replication.sendOperationToNode = async (node, operation) => {
 				sent.push({ node: node.name, ...operation });
@@ -339,6 +354,95 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const finished = await disablePreviews({ operation: 'disable_previews', app: 'opsshop', hdb_user: SU });
 			assert.deepStrictEqual(finished.removed.sort(), ['role opsshop-ci-preview', 'user opsshop-ci-preview']);
 			assert.strictEqual(getUserWithRole('opsshop-ci-preview'), undefined);
+		});
+
+		it('stops when a peer answers the census without acknowledging the fence', async () => {
+			await enablePreviews(enableRequest('opsack'));
+			const peer = withPeer([], () => ({}), { fenced: false });
+			try {
+				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsack', hdb_user: SU }), {
+					statusCode: 500,
+					message: /revoked but not removed: node-b: it did not acknowledge the fence/,
+				});
+			} finally {
+				peer.restore();
+			}
+			assert.ok(await getRoleByName('opsack-ci-preview'), 'the role is kept until every node acknowledges');
+		});
+
+		it('reports a node that cannot fence as revoked but not removed', async () => {
+			const { getConfigPath } = require('#src/config/configUtils');
+			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+			await enablePreviews(enableRequest('opsbroken'));
+			const directory = path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), '.preview-revoked');
+			await fs.mkdir(directory, { recursive: true });
+			const file = path.join(directory, 'opsbroken.json');
+			await fs.writeFile(file, 'not json');
+			try {
+				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsbroken', hdb_user: SU }), {
+					statusCode: 500,
+					message: /revoked but not removed/,
+				});
+			} finally {
+				await fs.rm(file);
+			}
+			await disablePreviews({ operation: 'disable_previews', app: 'opsbroken', hdb_user: SU });
+		});
+
+		it('fences this node, so a build of the revoked identity cannot go live here afterwards', async () => {
+			await enablePreviews(enableRequest('opsfence'));
+			const generation = (await getRoleByName('opsfence-ci-preview')).permission.component_deploy.constraints
+				.generation;
+			await disablePreviews({ operation: 'disable_previews', app: 'opsfence', hdb_user: SU });
+			await assert.rejects(deploy('opsfence-pr-1', { ...metadata('opsfence', 1), generation }), {
+				statusCode: 403,
+				message: /previews of opsfence .* were disabled/,
+			});
+			assert.ok(!(await componentNames()).includes('opsfence-pr-1'));
+		});
+
+		it('waits out a preview swap under way when it disables, then drops what that swap made live', async () => {
+			const previews = require('#src/components/previews');
+			await enablePreviews(enableRequest('opsrace'));
+			const generation = (await getRoleByName('opsrace-ci-preview')).permission.component_deploy.constraints.generation;
+			const real = previews.admitPreviewActivation;
+			let entered;
+			let release;
+			const inSwap = new Promise((resolve) => (entered = resolve));
+			const gate = new Promise((resolve) => (release = resolve));
+			previews.admitPreviewActivation = (component, dir, activate, ...rest) =>
+				real(
+					component,
+					dir,
+					async () => {
+						entered();
+						await gate;
+						return activate();
+					},
+					...rest
+				);
+			let deploying;
+			let disabling;
+			try {
+				deploying = deploy('opsrace-pr-1', { ...metadata('opsrace', 1), generation });
+				await inSwap;
+				let settled = false;
+				disabling = disablePreviews({ operation: 'disable_previews', app: 'opsrace', hdb_user: SU }).finally(
+					() => (settled = true)
+				);
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				assert.strictEqual(settled, false, 'disable waits for the swap under way');
+			} finally {
+				release();
+				previews.admitPreviewActivation = real;
+			}
+			await deploying;
+			const response = await disabling;
+			assert.deepStrictEqual(
+				response.dropped.map((drop) => [drop.project, drop.componentRemoved]),
+				[['opsrace-pr-1', true]]
+			);
+			assert.ok(!(await componentNames()).includes('opsrace-pr-1'));
 		});
 
 		it('stops when a peer holds a release this node has no record of', async () => {

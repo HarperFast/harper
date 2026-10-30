@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { databases } from '../resources/databases.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM, REPLICATED_FROM } from '../utility/hdbTerms.ts';
 import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import { PROJECT_NAME_PATTERN } from '../utility/componentNames.ts';
@@ -14,6 +14,7 @@ import {
 	GITHUB_ACTIONS_ISSUER,
 	PREVIEW_CLEANUP_ENVIRONMENT,
 	PREVIEW_ENVIRONMENT,
+	PREVIEW_GENERATION_PATTERN,
 	PREVIEW_WORKFLOW,
 	buildWorkflowRef,
 	canonicalWorkflowPath,
@@ -38,7 +39,7 @@ import {
 	dropOidcTrust,
 	listOidcTrust,
 } from '../security/authn/oidc/trustPolicyOperations.ts';
-import { listLocalPreviews } from './previews.ts';
+import { fencePreviewGeneration, listLocalPreviews } from './previews.ts';
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
 import { dropComponent } from './operations.ts';
 import { deploymentRecord } from './deploymentOperations.ts';
@@ -234,8 +235,15 @@ export async function enablePreviews(req: any) {
 	const { names, desired } = desiredPreviewIdentity(req);
 	return withPreviewEnablementLock(req.app, async () => {
 		const policies = await listPolicies(req);
+		const roles = Array.from((await listRoles()) ?? []) as any[];
+		// Kept while the role stays, so a rerun matches it; a role written before generations has none to keep.
+		const constraints = (desired.role.permission.component_deploy as ComponentGrant).constraints!;
+		const existing = roles.find((role) => role?.role === names.role);
+		const kept = existing?.permission?.component_deploy?.constraints?.generation;
+		if (!existing) constraints.generation = randomBytes(12).toString('base64url');
+		else if (kept !== undefined) constraints.generation = kept;
 		const plan = planIdentityReconcile(
-			{ roles: Array.from((await listRoles()) ?? []), users: await listUsersExternal(), policies },
+			{ roles, users: await listUsersExternal(), policies },
 			desired,
 			(id) => `Disable previews of ${req.app} (disable_previews) or drop it (drop_oidc_trust id=${id}) first.`
 		);
@@ -379,16 +387,27 @@ interface PreviewRelease {
  * live release was deployed as a preview of `app`. A node that cannot answer is returned as unreachable, since what it
  * holds is unknown. A component redeployed under that name as something else is not a preview release.
  */
-async function livePreviewReleases(app: string): Promise<{ releases: PreviewRelease[]; unreachable: string[] }> {
+async function livePreviewReleases(
+	app: string,
+	generation?: string
+): Promise<{ releases: PreviewRelease[]; unreachable: string[] }> {
+	const request: any =
+		generation === undefined
+			? { operation: 'list_releases' }
+			: { operation: OPERATIONS_ENUM.FENCE_PREVIEW_RELEASES, app, generation };
+	const barrier =
+		generation === undefined
+			? {}
+			: {
+					fence: () => fencePreviewGeneration(app, generation),
+					strictFor: (project: string) => isPreviewProjectOf(app, project),
+				};
 	let answer: any;
 	try {
-		answer = await handleListReleases(
-			{ operation: 'list_releases', replicated: true },
-			{ timeoutMs: CENSUS_TIMEOUT_MS }
-		);
+		answer = await handleListReleases({ ...request, replicated: true }, { timeoutMs: CENSUS_TIMEOUT_MS, ...barrier });
 	} catch (error) {
 		if ((error as any)?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
-		answer = { nodes: [await handleListReleases({ operation: 'list_releases' })] };
+		answer = { nodes: [await handleListReleases(request, barrier)] };
 	}
 	const local = new Map((await listLocalPreviews()).map((live) => [live.component, live]));
 	// A release's preview metadata, from this node's provenance or its deployment row; null when neither knows it.
@@ -402,6 +421,10 @@ async function livePreviewReleases(app: string): Promise<{ releases: PreviewRele
 	for (const node of answer.nodes ?? []) {
 		if (node.error) {
 			unreachable.push(`${node.node ?? 'a node'}: ${node.error}`);
+			continue;
+		}
+		if (generation !== undefined && node.fenced !== true) {
+			unreachable.push(`${node.node ?? 'a node'}: it did not acknowledge the fence`);
 			continue;
 		}
 		for (const { project, deployment_id: deploymentId } of node.components ?? []) {
@@ -440,6 +463,26 @@ async function dropPreviewRelease({ node, project, deploymentId }: PreviewReleas
 	const peer = (server as any).nodes?.find((candidate: any) => candidate?.name === node);
 	if (!peer) throw new Error(`${node} is not among this node's peers`);
 	return server.replication.sendOperationToNode(peer, operation, { timeoutMs: PEER_DROP_TIMEOUT_MS });
+}
+
+/**
+ * On this node and every peer, refuse from now on any preview of `app` built at `generation`, waiting for one swapping
+ * now, then report what is live: `list_releases` with a fence each node acknowledges. Internal to `disable_previews`.
+ */
+export async function fencePreviewReleases(req: any): Promise<any> {
+	if (req[REPLICATED_FROM] === undefined) requireSuperUser(req);
+	derivePreviewNames(req.app);
+	if (typeof req.generation !== 'string' || !PREVIEW_GENERATION_PATTERN.test(req.generation)) {
+		throw new ClientError(`'generation' must be the preview identity generation to revoke`);
+	}
+	return handleListReleases(
+		{ operation: req.operation, app: req.app, generation: req.generation, replicated: req.replicated } as any,
+		{
+			timeoutMs: CENSUS_TIMEOUT_MS,
+			fence: () => fencePreviewGeneration(req.app, req.generation),
+			strictFor: (project) => isPreviewProjectOf(req.app, project),
+		}
+	);
 }
 
 /** Previews of `app` whose deploy had not finished when this looked; one admitted before a revocation can still go live. */
@@ -504,7 +547,8 @@ export async function disablePreviews(req: any) {
 		const user: any = getUserWithRole(names.user);
 		if (user && user.active !== false) await alterUser({ username: names.user, active: false });
 
-		const { releases, unreachable } = await livePreviewReleases(req.app);
+		const generation = role?.permission?.component_deploy?.constraints?.generation;
+		const { releases, unreachable } = await livePreviewReleases(req.app, generation);
 		const dropped: any[] = [];
 		const failed = [...unreachable];
 		for (const release of releases) {

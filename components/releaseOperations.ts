@@ -25,11 +25,22 @@ interface NodeReleases {
 	node: string;
 	components?: ComponentReleases[];
 	error?: string;
+	/** Set by a node that ran `fence` before it read. */
+	fenced?: true;
 }
 
+/**
+ * `fence`, when given, runs on this node before it reads, and the request carries the same operation to every peer, so
+ * each answer says whether that node ran its own. A node that cannot fence, or cannot read a component `strictFor`
+ * accepts or the list of them, answers with an error rather than a census that looks complete.
+ */
 export async function handleListReleases(
 	req: ListReleasesRequest = {},
-	{ timeoutMs }: { timeoutMs?: number } = {}
+	{
+		timeoutMs,
+		fence,
+		strictFor,
+	}: { timeoutMs?: number; fence?: () => Promise<void>; strictFor?: (project: string) => boolean } = {}
 ): Promise<NodeReleases | { nodes: NodeReleases[] }> {
 	const { project } = req;
 	if (project !== undefined && (typeof project !== 'string' || !/^[^./\\][^/\\]*$/.test(project))) {
@@ -44,7 +55,18 @@ export async function handleListReleases(
 					(error) => ({ error })
 				)
 			: undefined;
-	const local: NodeReleases = { node: getThisNodeName(), components: await releasesOnThisNode(project) };
+	let local: NodeReleases;
+	try {
+		await fence?.();
+		local = {
+			node: getThisNodeName(),
+			components: await releasesOnThisNode(project, strictFor),
+			...(fence && { fenced: true as const }),
+		};
+	} catch (error) {
+		if (!fence) throw error;
+		local = { node: getThisNodeName(), error: (error as Error).message };
+	}
 	if (!whenReplicated) return local;
 	const settled: { response?: any; error?: unknown } = await whenReplicated;
 	if ('error' in settled) throw settled.error;
@@ -60,21 +82,31 @@ export async function handleListReleases(
 		}
 		const answer = peer?.components ? peer : (peer?.value ?? peer?.body ?? peer);
 		if (!Array.isArray(answer?.components)) {
-			nodes.push({ node: peer?.node ?? answer?.node, error: 'it answered without a list of releases' });
+			const error = answer?.error ?? 'it answered without a list of releases';
+			nodes.push({ node: peer?.node ?? answer?.node, error });
 			continue;
 		}
-		nodes.push({ node: peer?.node ?? answer?.node, components: answer.components });
+		nodes.push({
+			node: peer?.node ?? answer?.node,
+			components: answer.components,
+			...(answer.fenced === true && { fenced: true as const }),
+		});
 	}
 	return { nodes };
 }
 
-async function releasesOnThisNode(project: string | undefined): Promise<ComponentReleases[]> {
+async function releasesOnThisNode(
+	project: string | undefined,
+	strictFor?: (project: string) => boolean
+): Promise<ComponentReleases[]> {
 	const componentsRoot = getConfigPath(terms.CONFIG_PARAMS.COMPONENTSROOT) as string;
-	const names = project === undefined ? await componentsWithReleases(componentsRoot) : [project];
+	const names =
+		project === undefined ? await componentsWithReleases(componentsRoot, strictFor !== undefined) : [project];
 	const components: ComponentReleases[] = [];
 	for (const name of names) {
 		const releases = await keptReleasesOf(componentsRoot, name);
-		const deploymentId = await liveDeploymentIdOf(componentsRoot, name).catch(() => undefined);
+		const live = liveDeploymentIdOf(componentsRoot, name);
+		const deploymentId = strictFor?.(name) ? await live : await live.catch(() => undefined);
 		if (project === undefined && !deploymentId && releases.length === 0) continue;
 		components.push({ project: name, ...(deploymentId && { deployment_id: deploymentId }), releases });
 	}

@@ -11,6 +11,8 @@ export const PREVIEW_CLEANUP_ENVIRONMENT = 'preview-cleanup';
 /** The repository variable the preview workflow reads its target from; production deploys read `HARPER_CLI_TARGET`. */
 export const PREVIEW_TARGET_VARIABLE = 'HARPER_PREVIEW_TARGET';
 
+export const PREVIEW_GENERATION_PATTERN = /^[\w-]{8,64}$/;
+
 // What `harper preview deploy|drop|list` issue: `registration_info` is the CLI's version probe before a deploy and
 // `get_deployment` its wait on a rolling restart.
 export const CI_PREVIEW_OPERATIONS = [

@@ -378,6 +378,7 @@ export const OPERATIONS_ENUM = {
 	EXCHANGE_OIDC_TOKEN: 'exchange_oidc_token',
 	ENABLE_PREVIEWS: 'enable_previews',
 	DISABLE_PREVIEWS: 'disable_previews',
+	FENCE_PREVIEW_RELEASES: 'fence_preview_releases',
 	GET_PREVIEW_POLICY: 'get_preview_policy',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',

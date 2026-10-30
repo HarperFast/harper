@@ -199,8 +199,10 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 				preview: 'required',
 				maxPreviews: 1,
 				maxTtlDays: 2,
+				generation: policy.grant.constraints.generation,
 			},
 		});
+		match(policy.grant.constraints.generation, /^[\w-]{8,64}$/);
 		strictEqual(policy.branch, 'main');
 		strictEqual(policy.repository, REPO);
 
