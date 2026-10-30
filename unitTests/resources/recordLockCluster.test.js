@@ -1156,7 +1156,9 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			);
 			const elapsed = Date.now() - startedAt;
 			assert.ok(elapsed < 2_000, `waited ${elapsed}ms past a 400ms lease`);
-			assert.ok(asked >= 1 && asked <= 4, `${asked} requests inside a 400ms lease`);
+			// Backed off from 250ms, so 3 to 4 asks; a timer firing a millisecond early costs one more ask at
+			// the deadline. A 25ms retry loop would make 16.
+			assert.ok(asked >= 1 && asked <= 8, `${asked} requests inside a 400ms lease`);
 		});
 
 		it('releases the transaction’s other locks when one of them lapses at commit', async function () {
