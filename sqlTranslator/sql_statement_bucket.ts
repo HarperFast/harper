@@ -147,6 +147,9 @@ class sqlStatementBucket {
 		for (const node of astNodes(this.ast)) {
 			if (node instanceof (alasql as any).yy.Column && node.columnid === '_') accessors.push('_');
 			else if (node instanceof (alasql as any).yy.JavaScript) accessors.push('JavaScript expression');
+			// A JSON literal's `__proto__` key hides an expression in the prototype, where every walk here
+			// (own properties only) misses it but AlaSQL's JSON compiler still evaluates it.
+			else if (!isKnownPrototype(Object.getPrototypeOf(node))) accessors.push('JSON literal with __proto__');
 		}
 		return accessors;
 	}
@@ -255,6 +258,21 @@ class sqlStatementBucket {
 
 function filterReadRestrictedAttrs(attrPerms: any[]) {
 	return attrPerms.filter((perm) => perm[terms.PERMS_CRUD_ENUM.READ]);
+}
+
+let astPrototypes: Set<object> | undefined;
+function isKnownPrototype(prototype: object | null): boolean {
+	astPrototypes ??= new Set(
+		Object.values((alasql as any).yy)
+			.filter((value) => typeof value === 'function')
+			.map((astClass: any) => astClass.prototype)
+	);
+	return (
+		prototype === null ||
+		prototype === Object.prototype ||
+		prototype === Array.prototype ||
+		astPrototypes.has(prototype)
+	);
 }
 
 /**
@@ -501,9 +519,9 @@ function getRecordAttributesAST(
 	} else if (ast instanceof (alasql as any).yy.Select) {
 		getSelectAttributes(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup, unresolvedColumns);
 	} else if (ast instanceof (alasql as any).yy.Update) {
-		getUpdateAttributes(ast, affectedAttributes, tableLookup);
+		getUpdateAttributes(ast, affectedAttributes, tableLookup, unresolvedColumns);
 	} else if (ast instanceof (alasql as any).yy.Delete) {
-		getDeleteAttributes(ast, affectedAttributes, tableLookup);
+		getDeleteAttributes(ast, affectedAttributes, tableLookup, unresolvedColumns);
 	} else {
 		harperLogger.error(`AST in getRecordAttributesAST() is not a valid SQL type.`);
 	}
@@ -598,14 +616,24 @@ function getSelectAttributes(
 			else unresolvedColumns.add(`${node.tableid}.${node.columnid}`);
 			return;
 		}
-		// Wildcards stay with the FROM table; updateAttributeWildcardsForRolePerms() expands them there.
-		if (clauseScope.length === 1 || terms.SEARCH_WILDCARDS.includes(node.columnid)) {
+		// updateAttributeWildcardsForRolePerms() expands a wildcard on the FROM table, qualified by its alias
+		// in a join, so that alias must name one table.
+		if (terms.SEARCH_WILDCARDS.includes(node.columnid)) {
+			const fromName = scope[0].effectiveAlias;
+			const claimants = scope.filter((entry) => entry.effectiveAlias === fromName || entry.table === fromName);
+			if (claimants.length === 1) record(scope[0], node.columnid);
+			else unresolvedColumns.add(`${fromName}.${node.columnid}`);
+			return;
+		}
+		if (clauseScope.length === 1) {
 			record(scope[0], node.columnid);
 			return;
 		}
-		const owners = clauseScope.every((entry) => entry.attributesKnown)
-			? declaringTables(node.columnid, clauseScope)
-			: clauseScope;
+		const declarers = (tables: AttributionTable[]) =>
+			tables.every((entry) => entry.attributesKnown) ? declaringTables(node.columnid, tables) : tables;
+		// Legacy SQL can bind an ON column to a table joined after that ON.
+		let owners = declarers(clauseScope);
+		if (owners.length === 0 && clauseScope.length < scope.length) owners = declarers(scope);
 		if (owners.length === 0) record(scope[0], node.columnid);
 		for (const owner of owners) record(owner, node.columnid);
 	};
@@ -639,7 +667,7 @@ function getSelectAttributes(
  * @param affectedAttributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
  * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any) {
+function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any, unresolvedColumns?: Set<string>) {
 	if (!ast) {
 		harperLogger.info(`getUpdateAttributes: invalid SQL syntax tree`);
 		return;
@@ -648,8 +676,24 @@ function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any
 
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (const node of columnNodes(ast.columns)) {
-		pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
+	// SET targets need update; what SET expressions and WHERE read needs read (getWriteStatementReads()).
+	for (const assignment of ast.columns ?? []) {
+		if (assignment?.column?.columnid) {
+			pushAttribute(ast.table.tableid, schema, assignment.column.columnid, affectedAttributes, tableLookup);
+		}
+	}
+	reportForeignQualifiers(ast, [ast.columns, ast.where], unresolvedColumns);
+}
+
+/** A write statement has one table, so a column qualified by any other name has no table to check it on. */
+function reportForeignQualifiers(ast: any, trees: any[], unresolvedColumns?: Set<string>) {
+	const { tableid, as } = ast.table;
+	for (const tree of trees) {
+		for (const node of columnNodes(tree)) {
+			if (node.tableid && node.tableid !== tableid && node.tableid !== as) {
+				unresolvedColumns?.add(`${node.tableid}.${node.columnid}`);
+			}
+		}
 	}
 }
 
@@ -659,7 +703,7 @@ function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any
  * @param affectedAttributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
  * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any) {
+function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any, unresolvedColumns?: Set<string>) {
 	if (!ast) {
 		harperLogger.info(`getDeleteAttributes: invalid SQL syntax tree`);
 		return;
@@ -671,6 +715,7 @@ function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any
 	for (const node of columnNodes(ast.where)) {
 		pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 	}
+	reportForeignQualifiers(ast, [ast.where], unresolvedColumns);
 }
 
 /**
