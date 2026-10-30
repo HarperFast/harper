@@ -367,7 +367,6 @@ export interface ReconcilePlan {
 	conflicts: string[];
 }
 
-/** Why the exchange would refuse the runs `wanted` is for, because of a policy already there. */
 function rivalPolicyProblem(policies: any[], wanted: DesiredPolicy): string | undefined {
 	const rival = policies.find(
 		(policy) =>
@@ -379,7 +378,7 @@ function rivalPolicyProblem(policies: any[], wanted: DesiredPolicy): string | un
 	);
 	if (!rival) return undefined;
 	return (
-		`Trust policy "${rival.id}" can match the same runs as user "${rival.user}", and the exchange refuses a run two ` +
+		`Trust policy "${rival.id}", for user "${rival.user}", can match the same runs, and the exchange refuses a run two ` +
 		'policies give different users or operations. Give this component its own workflow (workflow=) or ' +
 		'environment (environment=), or drop that policy if this identity should deploy from those runs instead.'
 	);

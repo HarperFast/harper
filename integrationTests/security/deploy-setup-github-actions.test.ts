@@ -258,7 +258,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		const { code, stderr } = await runSetup(['project=sibling']);
 		assert.strictEqual(code, 1);
 		assert.match(stderr, /Nothing was changed/);
-		assert.match(stderr, new RegExp(`Trust policy "${POLICY}" can match the same runs`));
+		assert.match(stderr, new RegExp(`Trust policy "${POLICY}", for user "${NAME}", can match the same runs`));
 		const policies = (await op({ operation: 'list_oidc_trust' })).policies as any[];
 		assert.ok(!policies.some((policy) => policy.id === 'github-actions-sibling'));
 	});

@@ -500,7 +500,7 @@ jobs:
 			const plan = planReconcile({ roles: [], users: [], policies: [api] }, desired());
 			assert.match(
 				plan.conflicts.join(),
-				/Trust policy "github-actions-api" can match the same runs as user "api-ci-deploy"/
+				/Trust policy "github-actions-api", for user "api-ci-deploy", can match the same runs/
 			);
 			for (const skipped of [{ enabled: false }, { exchangeable: false }]) {
 				const plan = planReconcile({ roles: [], users: [], policies: [{ ...api, ...skipped }] }, desired());
