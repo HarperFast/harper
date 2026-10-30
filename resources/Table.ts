@@ -179,6 +179,8 @@ import {
 	executeConditions,
 	resolveComparator,
 	filterByType,
+	matchesFilters,
+	relationshipRestriction,
 	fullTextComparatorMode,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
@@ -7666,8 +7668,7 @@ export function makeTable(options): TableResourceClass {
 				(attribute.limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0))
 			)
 				throw new ClientError('Nested limit and offset must be non-negative safe integers');
-			const filterMap = filtered?.[attribute.name];
-			const childFiltered = Object.assign(Object.create(null), filterMap);
+			const childFiltered = Object.assign(Object.create(null), relationshipRestriction(filtered, attribute.name));
 			const rejectUnsupported = (conditions) => {
 				for (const condition of conditions) {
 					if (condition.conditions) rejectUnsupported(condition.conditions);
@@ -7698,9 +7699,13 @@ export function makeTable(options): TableResourceClass {
 					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
 					return predicate;
 				});
-				return operator === 'or'
+				const any = operator === 'or';
+				const combined: any = any
 					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
 					: (record, entry) => predicates.every((predicate) => predicate(record, entry));
+				if (predicates.some((predicate) => predicate.maybeAsync))
+					combined.maybeAsync = (record, entry) => matchesFilters(predicates, record, entry, any);
+				return combined;
 			};
 			const predicate = conditions.length ? compile(conditions, attribute.operator) : undefined;
 			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
@@ -7716,6 +7721,8 @@ export function makeTable(options): TableResourceClass {
 			let selectionStopped = false;
 			const relationshipSelection = (record, entry?, isSync = false) => {
 				if (selectionStopped) return undefined;
+				// per call: an OR-scope condition registers its restriction while the first row is filtered
+				const filterMap: any = relationshipRestriction(filtered, attribute.name);
 				const readsKeys =
 					!isSync && (filterMap ? !filterMap.hasMappings && resolver.toMany : Boolean(resolver.resolveKeys));
 				let value;
@@ -7760,6 +7767,9 @@ export function makeTable(options): TableResourceClass {
 							},
 						};
 					};
+					const readOptions = isSync ? { transaction: readTxn } : { transaction: readTxn, async: true };
+					const checkActive = getReadTransactionGuard(readTxn);
+					const matchCandidate = predicate && (isSync ? predicate : (predicate.maybeAsync ?? predicate));
 					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
 							if (stopped) return SKIP;
@@ -7767,10 +7777,17 @@ export function makeTable(options): TableResourceClass {
 							const entry =
 								typeof candidate === 'object' && candidate.key !== undefined
 									? candidate
-									: targetTable.primaryStore.getEntry(candidate, { transaction: readTxn });
-							return when(entry, (entry) =>
-								predicate && (!entry?.value || !predicate(entry.value, entry)) ? SKIP : entry
-							);
+									: when(targetTable.primaryStore.getEntry(candidate, readOptions), freezeRelatedEntry);
+							if (!predicate) return entry;
+							return when(entry, (entry) => {
+								if (stopped || !entry?.value) return SKIP;
+								checkActive?.();
+								return when(matchCandidate(entry.value, entry), (matches) => {
+									if (!matches || stopped) return SKIP;
+									checkActive?.();
+									return entry;
+								});
+							});
 						});
 					let examined = 0;
 					candidates = candidates.map((candidate) => {
@@ -8141,7 +8158,7 @@ export function makeTable(options): TableResourceClass {
 							for (let i = 0; i < clauseCount; i++) {
 								const clause = clauses[i];
 								const keys = orderedKeys[i];
-								const value = getAttributeValue(entry, clause.attribute, context, clause);
+								const value = getAttributeValue(entry, clause.attribute, context, clause, stopped);
 								if (value?.then) {
 									const position = keys.push(undefined) - 1;
 									(pending ??= []).push(
@@ -8225,7 +8242,8 @@ export function makeTable(options): TableResourceClass {
 													entry,
 													dbOrderedAttribute,
 													context,
-													(sort as any).dbOrderedSort
+													(sort as any).dbOrderedSort,
+													stopped
 												);
 												if (groupingValue?.then) {
 													groupingValue = await groupingValue;
@@ -8462,11 +8480,21 @@ export function makeTable(options): TableResourceClass {
 					}
 				}
 				if (record == null) return canSkip ? SKIP : record;
-				// Recheck the explicit predicate here because `record` is now the final, materialized
-				// record — a caching table's source revalidation (above) may have replaced the local copy the
-				// query filters evaluated. The predicate sees a frozen view so application code can't
-				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
-				if (rowFilter && !rowFilter(frozenRecordView(record))) return canSkip ? SKIP : undefined;
+				// Source revalidation (above) may have replaced the record the query filters saw. The view is frozen
+				// because that revalidation's deferred commit still writes and encodes this record.
+				if (rowFilter) {
+					const matches = (!this?.isSync && rowFilter.maybeAsync ? rowFilter.maybeAsync : rowFilter)(
+						frozenRecordView(record)
+					);
+					if (!matches) return canSkip ? SKIP : undefined;
+					if (typeof matches.then === 'function')
+						return matches.then((matches) =>
+							matches && !selectionStopped ? selectRecord.call(this, record, entry) : canSkip ? SKIP : undefined
+						);
+				}
+				return selectRecord.call(this, record, entry);
+			};
+			const selectRecord = function (record, entry) {
 				if (select && !(select[0] === '*' && select.length === 1 && !(select as any).asArray)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -8486,7 +8514,7 @@ export function makeTable(options): TableResourceClass {
 								} else callback(selected, attribute_name);
 								return;
 							}
-							const filterMap = filtered?.[attribute_name];
+							const filterMap: any = relationshipRestriction(filtered, attribute_name);
 							if (filterMap) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
@@ -11853,24 +11881,30 @@ export function makeTable(options): TableResourceClass {
 		if (TableResource.loadAsInstance === false) freezeRecord(entry?.value);
 		return entry;
 	}
-	function getAttributeValue(entry, attribute_name, context, sort?) {
+	function getAttributeValue(entry, attribute_name, context, sort?, stopped?: () => boolean) {
 		if (!entry) {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
-			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort);
+			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort, stopped);
 		}
 		const resolver = propertyResolvers[attribute_name];
 		if (resolver?.loadEntries)
-			return getPathValue(record, (resolver.path ??= [attribute_name]), 0, propertyResolvers, entry, context, sort);
+			return getPathValue(
+				record,
+				(resolver.path ??= [attribute_name]),
+				0,
+				propertyResolvers,
+				entry,
+				context,
+				sort,
+				stopped
+			);
 		return resolver ? resolver(record, context, entry, false, sort, true) : record?.[attribute_name];
 	}
-	function relatedValue(resolver, loaded) {
-		return resolver.toMany ? loaded?.map((entry) => entry?.value) : loaded?.value;
-	}
-	function getPathValue(value, path, start, resolvers, entry, context, sort) {
+	function getPathValue(value, path, start, resolvers, entry, context, sort, stopped?: () => boolean) {
 		for (let i = start, l = path.length; i < l; i++) {
 			const attribute = path[i];
 			const resolver = resolvers?.[attribute];
@@ -11880,10 +11914,13 @@ export function makeTable(options): TableResourceClass {
 				if (loaded?.then) {
 					const nextResolvers = resolvers;
 					return loaded.then((loaded) =>
-						getPathValue(relatedValue(resolver, loaded), path, i + 1, nextResolvers, null, context, sort)
+						stopped?.()
+							? undefined
+							: relatedPathValue(resolver, loaded, path, i + 1, nextResolvers, context, sort, stopped)
 					);
 				}
-				value = relatedValue(resolver, loaded);
+				if (resolver.toMany) return relatedPathValue(resolver, loaded, path, i + 1, resolvers, context, sort, stopped);
+				value = loaded?.value;
 			} else {
 				value =
 					resolver && value
@@ -11893,6 +11930,50 @@ export function makeTable(options): TableResourceClass {
 			entry = null; // can't use this in the nested object
 		}
 		return value;
+	}
+	function relatedPathValue(resolver, loaded, path, start, resolvers, context, sort, stopped) {
+		if (!resolver.toMany) return getPathValue(loaded?.value, path, start, resolvers, null, context, sort, stopped);
+		if (!loaded) return undefined;
+		const values = [];
+		for (let i = 0; i < loaded.length; i++) {
+			const value = getPathValue(loaded[i]?.value, path, start, resolvers, null, context, sort, stopped);
+			values.push(value);
+			if (value?.then)
+				return remainingRelatedPathValues(loaded, i + 1, values, path, start, resolvers, context, sort, stopped);
+		}
+		return values;
+	}
+	// one RELATED_READS_IN_FLIGHT budget per path: serial while a deeper to-many hop (with its own window) remains
+	async function remainingRelatedPathValues(loaded, start, values, path, pathStart, resolvers, context, sort, stopped) {
+		const checkActive = getReadTransactionGuard(txnForContext(context).getReadTxn());
+		const window = reachesToMany(path, pathStart, resolvers) ? 1 : RELATED_READS_IN_FLIGHT;
+		try {
+			for (let i = start; i < loaded.length; i++) {
+				if ((i - start + 1) % window === 0) {
+					await Promise.all(values.slice(i - window));
+					checkActive?.();
+					if (stopped?.()) {
+						Promise.all(values).catch(() => {});
+						return;
+					}
+				}
+				values.push(getPathValue(loaded[i]?.value, path, pathStart, resolvers, null, context, sort, stopped));
+			}
+			const resolved = await Promise.all(values);
+			checkActive?.();
+			return resolved;
+		} catch (error) {
+			Promise.all(values).catch(() => {});
+			throw error;
+		}
+	}
+	function reachesToMany(path, start, resolvers) {
+		for (let i = start; i < path.length; i++) {
+			const resolver = resolvers?.[path[i]];
+			if (resolver?.toMany) return true;
+			resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+		}
+		return false;
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
