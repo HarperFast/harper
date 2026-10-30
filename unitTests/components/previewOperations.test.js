@@ -205,6 +205,27 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		);
 	});
 
+	it('lets another policy that gives a run the same authority stand, since the exchange accepts it', async () => {
+		await enablePreviews(enableRequest('opsagree'));
+		const { id: _id, ...preview } = (await policiesOf('opsagree')).find(
+			(policy) => policy.id === 'github-actions-opsagree-preview'
+		);
+		const { issuer, audience, user, claims, operations, description } = preview;
+		await addOidcTrust({
+			operation: 'add_oidc_trust',
+			hdb_user: SU,
+			id: 'by-hand-opsagree',
+			issuer,
+			audience,
+			user,
+			claims,
+			operations,
+			description,
+		});
+		const again = await enablePreviews(enableRequest('opsagree'));
+		assert.match(again.message, /already enabled; nothing changed/);
+	});
+
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
 		const workflow = '.github/workflows/shared.yaml';
 		const outcomes = await Promise.allSettled([

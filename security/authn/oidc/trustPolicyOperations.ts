@@ -345,7 +345,8 @@ export async function listOidcTrust(req: any) {
 			profile.assertPolicyIsSpecific(policy.claims);
 			policy.exchangeable = true;
 			return true;
-		} catch {
+		} catch (error) {
+			policy.invalid_reason ??= (error as Error).message;
 			return false;
 		}
 	});
