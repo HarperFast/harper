@@ -96,6 +96,26 @@ describe('A condition inside an OR decides which rows match, not which related r
 				}
 			});
 
+			it('matches two AND conditions against one related record, whichever leads', async () => {
+				const nested = () => ({ operator: 'and', conditions: [name(), label()] });
+				for (const order of [
+					[name, label],
+					[label, name],
+					[parents, name, label],
+					[name, parents, label],
+					[nested],
+					[parents, nested],
+				]) {
+					const conditions = order.map((condition) => condition());
+					for (const enforceExecutionOrder of [true, false])
+						assert.deepStrictEqual(
+							selected(await search({ conditions, select, enforceExecutionOrder })),
+							[['p2', ['c3']]],
+							JSON.stringify({ conditions, enforceExecutionOrder })
+						);
+				}
+			});
+
 			it('selects every related record of a row an OR admitted, whichever branch or outer condition leads', async () => {
 				const all = [
 					['p1', ['c1', 'c2']],
@@ -144,7 +164,7 @@ describe('A condition inside an OR decides which rows match, not which related r
 describe('A relationship condition that leads by estimate keeps the lead', function () {
 	this.timeout(60000);
 
-	it('does not hand it to a broader indexed condition, which would change which related record siblings meet', async () => {
+	it('stays ahead of a broader indexed condition, and the rows are the same wherever it sits', async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		const kids = { name: 'kids', elements: { type: 'LeadChild', definition: {} }, relationship: { to: 'parentId' } };
@@ -231,7 +251,147 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 				],
 				true
 			),
-			['p1']
+			[],
+			'no single child meets both conditions, however they are grouped'
 		);
+	});
+});
+
+describe('AND-joined conditions on one relationship meet one related record whichever condition leads', function () {
+	this.timeout(60000);
+	let Parent;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const kids = { name: 'kids', elements: { type: 'SameChild', definition: {} }, relationship: { to: 'parentId' } };
+		Parent = table({
+			table: 'SameParent',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'text', indexed: true },
+				kids,
+			],
+		});
+		const Child = table({
+			table: 'SameChild',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'label', indexed: true },
+				{ name: 'parentId', indexed: true },
+			],
+		});
+		kids.elements.definition.tableClass = Child;
+		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'common', text: 'needle' });
+		// pw's children meet name=a and label=y separately; pm has one child that meets both
+		await Parent.put({ id: 'pw', group: 'rare', text: 'needle' });
+		await Parent.put({ id: 'pm', group: 'rare', text: 'needle' });
+		await Child.put({ id: 'w1', parentId: 'pw', name: 'a', label: 'x' });
+		await Child.put({ id: 'w2', parentId: 'pw', name: 'b', label: 'y' });
+		await Child.put({ id: 'm1', parentId: 'pm', name: 'a', label: 'y' });
+	});
+
+	const name = () => ({ attribute: ['kids', 'name'], value: 'a' });
+	const label = () => ({ attribute: ['kids', 'label'], value: 'y' });
+	const rare = () => ({ attribute: 'group', value: 'rare' });
+	const needle = () => ({ attribute: 'text', comparator: 'contains', value: 'needle' });
+	const localGroup = () => ({ operator: 'and', conditions: [rare(), needle()] });
+	const relationshipGroup = () => ({ operator: 'and', conditions: [name(), label()] });
+	const select = ['id', { name: 'kids', select: ['id'] }];
+	async function search(conditions, extra = {}) {
+		const rows = [];
+		for await (const row of Parent.search({ conditions, select, ...extra }))
+			rows.push([row.id, (row.kids ?? []).map((kid) => kid.id).sort()]);
+		return rows.sort();
+	}
+	const permutations = (items) =>
+		items.length < 2
+			? [items]
+			: items.flatMap((item, i) => permutations(items.filter((_, j) => j !== i)).map((rest) => [item, ...rest]));
+
+	it('selects only the parent whose one child meets both conditions, in every order', async () => {
+		for (const order of permutations([name, label, localGroup])) {
+			for (const enforceExecutionOrder of [true, false]) {
+				const conditions = order.map((condition) => condition());
+				assert.deepStrictEqual(
+					await search(conditions, { enforceExecutionOrder }),
+					[['pm', ['m1']]],
+					JSON.stringify({ conditions, enforceExecutionOrder })
+				);
+			}
+		}
+	});
+
+	it('does not widen a query whose local group estimates finite (the group would otherwise lead)', async () => {
+		const conditions = [name(), label(), localGroup()];
+		const { conditions: planned } = await Parent.search({ conditions, explain: true, allowFullScan: true });
+		assert.ok(planned.length > 0);
+		assert.deepStrictEqual(await search(conditions), [['pm', ['m1']]]);
+		const ids = [];
+		for await (const row of Parent.search({ conditions, select: ['id'], allowFullScan: true })) ids.push(row.id);
+		assert.deepStrictEqual(ids, ['pm']);
+	});
+
+	it('applies the rule to conditions in a nested AND group and in several groups of one AND', async () => {
+		const both = [['pm', ['m1']]];
+		for (const conditions of [
+			[rare(), relationshipGroup()],
+			[relationshipGroup(), rare()],
+			[name(), { operator: 'and', conditions: [label(), rare()] }],
+			[{ operator: 'and', conditions: [label(), rare()] }, name()],
+			[
+				{ operator: 'and', conditions: [name(), rare()] },
+				{ operator: 'and', conditions: [label(), needle()] },
+			],
+		]) {
+			assert.deepStrictEqual(
+				await search(conditions, { enforceExecutionOrder: true }),
+				both,
+				JSON.stringify(conditions)
+			);
+		}
+	});
+
+	it('applies the rule inside an AND that is a branch of an OR, without restricting that branch', async () => {
+		const onlyP1 = () => ({ attribute: 'id', value: 'p1' });
+		for (const branches of [
+			[relationshipGroup, onlyP1],
+			[onlyP1, relationshipGroup],
+		]) {
+			assert.deepStrictEqual(
+				await search([{ operator: 'or', conditions: branches.map((branch) => branch()) }], {
+					enforceExecutionOrder: true,
+				}),
+				[
+					['p1', []],
+					['pm', ['m1']],
+				]
+			);
+		}
+	});
+
+	it('lets a branch of an OR be met by another related record than the AND conditions around it', async () => {
+		const orLabel = () => ({ operator: 'or', conditions: [label(), { attribute: 'id', value: 'none' }] });
+		for (const order of [
+			[name, orLabel],
+			[orLabel, name],
+			[name, localGroup, orLabel],
+		]) {
+			assert.deepStrictEqual(
+				await search(
+					order.map((condition) => condition()),
+					{ enforceExecutionOrder: true }
+				),
+				[
+					['pm', ['m1']],
+					['pw', ['w1']],
+				],
+				order.map((condition) => condition.name).join()
+			);
+		}
 	});
 });

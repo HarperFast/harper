@@ -323,7 +323,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			}
 		});
 
-		it('sibling conditions met by different children match the parent but select only children meeting both', async function () {
+		it('sibling conditions met only by different children do not match the parent', async function () {
 			const rows = await collect(
 				Parent.search({
 					conditions: [
@@ -334,7 +334,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'children', select: ['id'] }],
 				})
 			);
-			assert.deepStrictEqual(rows, [{ id: 'parent-3', children: [] }]);
+			assert.deepStrictEqual(rows, []);
 		});
 
 		it('a condition inside an OR group decides rows and never narrows the selected children', async function () {

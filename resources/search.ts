@@ -76,7 +76,8 @@ export function executeConditions(
 	transformToEntries,
 	filtered,
 	recordAccess?,
-	inUnion?: boolean
+	// where this group's relationship conditions register: sibling conditions share one scope, an OR branch gets its own
+	scope: any = filtered
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -115,7 +116,7 @@ export function executeConditions(
 			// during the graph walk instead of post-filtering an under-filled candidate set (#1241). They
 			// also stay in the post-filter chain as a deterministic, harmless re-check.
 			const siblings = conditions.slice(1);
-			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count, inUnion);
+			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count, scope);
 			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 			// The sibling conditions a secondary-index range scan answers exactly can seed an allow-set
 			// the index admits from, instead of loading and decoding a record at every visited node.
@@ -137,11 +138,12 @@ export function executeConditions(
 		// General path: execute the lead FIRST — a leading join populates `filtered`, which the sibling
 		// filters read as they are built — then apply the sibling filters plus any record guards.
 		const results = executeCondition(firstSearch);
-		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, inUnion);
+		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, scope);
 		const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 		return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
 	}
 	function executeCondition(condition) {
+		const branchScope = operator === 'or' ? Object.create(null) : scope;
 		if (condition.conditions)
 			return executeConditions(
 				condition.conditions,
@@ -153,11 +155,11 @@ export function executeConditions(
 				transformToEntries,
 				filtered,
 				undefined, // recordAccess intentionally omitted: guards run once, at the top level (see above).
-				inUnion || operator === 'or'
+				branchScope
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
-			filtered: inUnion || operator === 'or' ? Object.create(null) : filtered,
+			filtered: branchScope,
 			context,
 			holderTable: table,
 			holderReadTxn: txn,
@@ -168,17 +170,18 @@ export function executeConditions(
 			resultOffset: request.offset || 0,
 		});
 	}
-	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, inUnion: boolean) {
+	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, scope) {
 		return conditions
 			.map((condition, index) => {
 				if (condition.conditions) {
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
+					// an OR's conditions are judged one by one; an AND inside it meets its own related records
 					const filters = mapConditionsToFilters(
 						condition.conditions,
 						!union,
 						estimatedIncomingCount,
-						inUnion || union
+						union ? null : (scope ?? Object.create(null))
 					);
 					const groupFilter: any = union
 						? (record, entry) => filters.some((filter) => filter(record, entry))
@@ -188,7 +191,7 @@ export function executeConditions(
 					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
-				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount, inUnion);
+				const filter = filterByType(condition, table, context, scope, isPrimaryKey, estimatedIncomingCount);
 				if (intersection && index < conditions.length - 1 && estimatedIncomingCount) {
 					estimatedIncomingCount = intersectionEstimate(
 						table.primaryStore,
@@ -1862,15 +1865,7 @@ export function getNestedValue(record: any, path: string | string[]): any {
  * @param {SearchObject} searchCondition
  * @returns {({}) => boolean}
  */
-export function filterByType(
-	searchCondition,
-	Table,
-	context,
-	filtered,
-	isPrimaryKey?,
-	estimatedIncomingCount?,
-	inUnion?: boolean
-) {
+export function filterByType(searchCondition, Table, context, filtered, isPrimaryKey?, estimatedIncomingCount?) {
 	const comparator = searchCondition.comparator;
 	const negated = searchCondition.negated;
 	let attribute = searchCondition[0] ?? searchCondition.attribute;
@@ -1912,7 +1907,7 @@ export function filterByType(
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
 			const filterMap = relationshipRestriction(filtered, firstAttributeName);
-			const join: any = !inUnion && filterMap instanceof Map ? filterMap : undefined;
+			const join: any = filterMap instanceof Map ? filterMap : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
 			const loadEntries = resolver?.loadEntries;
 			const getSubObject = (record, entry) => {
@@ -1965,10 +1960,10 @@ export function filterByType(
 					}
 					return keys;
 				});
-			// AND scope: registered when built, so no row sees a partial set
+			// registered when built, so no row sees a partial set
 			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
 			let selection;
-			if (!join && restrictsSelect && !inUnion) {
+			if (!join && restrictsSelect) {
 				if (filterMap instanceof RelationshipSelection) selection = filterMap;
 				else if (!Object.hasOwn(filtered, firstAttributeName)) selection = relatedSelection([]);
 			}
@@ -1983,8 +1978,7 @@ export function filterByType(
 				context,
 				join ?? selection,
 				attribute[1] === relatedTable.primaryKey,
-				estimatedIncomingCount,
-				inUnion
+				estimatedIncomingCount
 			);
 			if (!nextFilter) return;
 			if (join) {
@@ -1993,13 +1987,23 @@ export function filterByType(
 				return;
 			}
 			if (selection) {
-				filtered[firstAttributeName] = selection;
+				// conditions on one relationship must be met by the same related record, as a leading join does,
+				// so the first registers the whole set and the rest only add to it
+				const registered = filtered[firstAttributeName] === selection;
 				selection.filters.push(nextFilter);
+				if (registered) return;
+				filtered[firstAttributeName] = selection;
 			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
 			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
-			const usesIdFilter = () => nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
+			const usesIdFilter = () =>
+				nextFilter.idFilter &&
+				(!selection || selection.filters.length === 1) &&
+				(!resolver.to || nextFilter.idFilter.mappedTo);
+			const matchesRelated = selection
+				? (value, entry) => selection.filters.every((filter) => filter(value, entry))
+				: nextFilter;
 			const recordFilter = (record, entry) => {
 				if (resolver && usesIdFilter()) {
 					// if we are filtering by id, we can use the idFilter to avoid loading the record
@@ -2034,10 +2038,12 @@ export function filterByType(
 				}
 				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
-				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
-				return subObject.some((value, i) => nextFilter(value, subEntries?.[i]));
+				if (!Array.isArray(subObject)) return matchesRelated(subObject, subEntry);
+				return subObject.some((value, i) => matchesRelated(value, subEntries?.[i]));
 			};
-			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
+			const nextMatch = selection
+				? (value, entry) => matchesFilters(selection.filters, value, entry, false)
+				: (nextFilter.maybeAsync ?? nextFilter);
 			if (loadEntries) {
 				const matchLoaded = (loaded) => {
 					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
