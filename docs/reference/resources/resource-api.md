@@ -1133,7 +1133,7 @@ A to-many relationship resolves to an array of records; depending on access patt
 
 :::note Pending release
 
-Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279) and [Fix wrong rows, unfiltered selects and ignored sorts in relationship queries](https://github.com/HarperFast/harper/pull/3775).
 
 :::
 
@@ -1252,6 +1252,18 @@ Product.search({
 ```
 
 Alternatively, pass `allowFullScan: true` to permit an unconditional ordered scan, or — if order doesn't matter — omit `sort` entirely and `search({})` will iterate without an index requirement.
+
+<VersionBadge type="changed" version="v5.4.0" /> When `attribute` is a path array that traverses a to-many relationship, each parent's sort key is the list of its related records' values in relationship order: the related records' primary-key order in the foreign-key index for a `@relationship(to: ...)` field (not sorted by the target attribute or reduced to a min/max), or the stored foreign-key array order for a `@relationship(from: ...)` array. Top-level `conditions` on a relationship restrict which parents match and which children `select` returns, but do not narrow the related records loaded into each parent's sort key. Lists compare element by element (`['alpha']` < `['alpha', 'delta']` < `['bravo']`), and `descending: true` reverses that order. A parent with no related records has an empty list (`[]`), a related record that omits the sort attribute (or an unresolved ID in a `@relationship(from: ...)` array without `filterMissing`) produces `undefined` at that position, and an explicit `null` attribute produces `null`: both `null` and `undefined` sort before booleans, numbers, and strings (`[]` and `[undefined]` compare as equal because reading past the end of a shorter array yields `undefined`). Across multiple to-many hops, each hop produces a list in relationship order, so two to-many hops compare a nested list of lists per parent (`[]` < `[[], ['a']]` < `[['b']]`). The index-or-condition rule above checks `@indexed` on the target attribute at the end of the path. List-per-parent sorting runs in memory when the target attribute is not `@indexed` (with a condition or `allowFullScan: true`), when a more selective condition on another attribute leads the query, or when `enforceExecutionOrder: true` is set, loading the related records for every matched parent; if the target attribute is `@indexed` and no more selective condition on another attribute leads the query, Harper instead drives the scan from the related table's index join (yielding each parent at its first matching index entry and, when unconditional, omitting parents with no related records). Note that, unlike a nested `select` sort (`select: [{ name: 'products', sort: { attribute: 'price' } }]`), which checks read permissions on the child sort attribute and orders children within each parent, a top-level `sort` orders the parent records and does not currently enforce `attribute_permissions` on the related sort attribute, so restricting read access to a child attribute does not prevent ordering parent records by it:
+
+```javascript
+// On the Brand/Product sample in REST Querying, orders qualifying brands by
+// each brand's full products.name list in primary-key order:
+// Acme (['Cable', 'Keyboard', 'Dock']) before Studio Gear (['Stand', 'Monitor']).
+Brand.search({
+	conditions: [{ attribute: ['products', 'price'], comparator: 'greater_than_equal', value: 30 }],
+	sort: { attribute: ['products', 'name'], next: { attribute: 'id' } },
+});
+```
 
 ### `explain`
 
