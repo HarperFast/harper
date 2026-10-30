@@ -241,7 +241,8 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		url.username = ctx.harper.admin.username;
 		url.password = ctx.harper.admin.password;
 		const { code, stdout, stderr } = await runSetup(
-			['project=userinfo'],
+			// Its own environment: the same claims as the first component's policy would be refused.
+			['project=userinfo', 'environment=userinfo'],
 			cliHome,
 			{ HARPER_CLI_TARGET: url.toString() },
 			[]
@@ -251,6 +252,15 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			stdout,
 			/Created role userinfo-ci-deploy, user userinfo-ci-deploy, trust policy github-actions-userinfo/
 		);
+	});
+
+	test('a second component on the same workflow stops setup, since the exchange would refuse those runs', async () => {
+		const { code, stderr } = await runSetup(['project=sibling']);
+		assert.strictEqual(code, 1);
+		assert.match(stderr, /Nothing was changed/);
+		assert.match(stderr, new RegExp(`Trust policy "${POLICY}" can match the same runs`));
+		const policies = (await op({ operation: 'list_oidc_trust' })).policies as any[];
+		assert.ok(!policies.some((policy) => policy.id === 'github-actions-sibling'));
 	});
 
 	test('a workflow file that cannot match stops setup before it creates anything', async () => {
@@ -272,7 +282,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		const checkout = join(cliHome, 'other-repository-checkout');
 		await mkdir(join(checkout, '.github', 'workflows'), { recursive: true });
 		await writeFile(join(checkout, '.github', 'workflows', 'deploy.yaml'), 'on:\n  push:\n    branches: [release]\n');
-		const { code, stdout } = await runSetup(['project=elsewhere'], checkout, {
+		const { code, stdout } = await runSetup(['project=elsewhere', 'environment=elsewhere'], checkout, {
 			...adminAuth(),
 			GITHUB_REPOSITORY: 'deploy_setup_fixture/other',
 		});
