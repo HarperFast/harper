@@ -919,16 +919,14 @@ envelope format, key model and client flow are user-facing and belong in HarperF
 ## Closing a database closes its whole alias graph and disposes its tables (`databases.ts` `closeDatabase`)
 
 Closing one alias closes every alias sharing its roots (`collectDatabaseGraph`), on both engines. lmdb-js's
-native `DbiWrap.close()` calls `mdb_dbi_close` on the `MDB_env*` captured at open, so an LMDB root closes
-once, only while `open`, and its dbis never close natively (closing one after the env is a use-after-free);
-RocksDB column families close one by one. Only `closed` counts as closed: lmdb (through 3.5.8) resolves `close()`
-early while a read is in flight on an environment that never wrote, so a drop unlinked an open `.mdb`. `openLmdb`
-gives each root one close completion, resolved by lmdb's close callback (dropped on rejection); a close finding `closing` awaits it, and a
-drop removes the file after it even when an earlier close finished. Remove the wrapper once lmdb returns its
-deferred close. Tables are disposed (`cleanup`) only past the last point that can resume maintenance. A restore
-close resolves names by directory, since a thread may hold only a sibling alias, closes any root a rescan
-detached, and fences blobs under every name and root identity it closes. Enforced by
-`unitTests/resources/databaseAliasIdentity.test.js`, `closeLoadedDatabases.test.js` and `lmdbCloseCompletion.test.js`.
+`DbiWrap.close()` calls `mdb_dbi_close` on the `MDB_env*` captured at open, so an LMDB root closes once, only while
+`open`, and its dbis never close natively (a use-after-free once the env is gone); RocksDB column families close one
+by one. Only `closed` counts as closed: lmdb (through 3.5.8) resolves `close()` early while a read is in flight, so
+`openLmdb` gives each root one close completion resolved by lmdb's close callback (dropped on rejection), a close
+finding `closing` awaits it, and a drop removes the file after it. Tables are disposed (`cleanup`) only past the last
+point that can resume maintenance. A restore close resolves names by directory, closes any root a rescan detached,
+and fences blobs under every name and root it closes (`databaseAliasIdentity`, `closeLoadedDatabases`,
+`lmdbCloseCompletion` tests).
 
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 
