@@ -20,6 +20,9 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 
+/** Seconds systemd gives a stopping scope before SIGKILL. */
+const SCOPE_STOP_TIMEOUT_S = 30;
+
 /** CLOCK_TICKS per second; 100 on every Linux this benchmark targets. */
 const USER_HZ = 100;
 
@@ -237,7 +240,7 @@ export async function writePinnedRuntime(dir: string, cpus: number[]): Promise<s
 		'#!/bin/sh\n' +
 			'if [ -n "$YCSB_SCOPE_UNIT" ]; then\n' +
 			'\texec systemd-run --user --scope --quiet --collect --expand-environment=no --unit="$YCSB_SCOPE_UNIT" ' +
-			`-p MemoryMax="\${YCSB_MEMORY_MAX:-infinity}" -p MemorySwapMax=0 -- ${JSON.stringify(inner)} "$@"\n` +
+			`-p MemoryMax="\${YCSB_MEMORY_MAX:-infinity}" -p MemorySwapMax=0 -p TimeoutStopSec=${SCOPE_STOP_TIMEOUT_S} -- ${JSON.stringify(inner)} "$@"\n` +
 			'fi\n' +
 			`exec ${JSON.stringify(inner)} "$@"\n`
 	);
@@ -260,6 +263,8 @@ export function scopedCommand(unit: string, memoryMaxBytes: number): string[] {
 		`MemoryMax=${Number.isFinite(memoryMaxBytes) ? memoryMaxBytes : 'infinity'}`,
 		'-p',
 		'MemorySwapMax=0',
+		'-p',
+		`TimeoutStopSec=${SCOPE_STOP_TIMEOUT_S}`,
 		'--',
 	];
 }
@@ -269,7 +274,10 @@ export function scopedCommand(unit: string, memoryMaxBytes: number): string[] {
  * start while a previous one's workers still hold its cores, memory or ports.
  */
 export async function stopScope(unit: string): Promise<void> {
-	await exec('systemctl', ['--user', 'stop', `${unit}.scope`], { timeout: 60_000 }).catch(() => {});
+	// systemd SIGKILLs the scope at its TimeoutStopSec, well inside this command's own timeout.
+	await exec('systemctl', ['--user', 'stop', `${unit}.scope`], { timeout: (SCOPE_STOP_TIMEOUT_S + 60) * 1000 }).catch(
+		() => {}
+	);
 	const { stdout } = await exec('systemctl', ['--user', 'show', '-P', 'ActiveState', `${unit}.scope`], {
 		timeout: 30_000,
 	});
@@ -278,7 +286,6 @@ export async function stopScope(unit: string): Promise<void> {
 	}
 }
 
-/** The cgroup v2 directory `pid` runs in. */
 export function processCgroup(pid: number): string {
 	const line = readFileSync(`/proc/${pid}/cgroup`, 'utf8')
 		.split('\n')
@@ -299,8 +306,16 @@ export interface MemoryLimit {
 	ancestorMaxBytes: number;
 }
 
-/** Fails unless `scope` is capped at exactly `expectedBytes`, swap is off, and no ancestor caps it tighter. */
-export function verifyMemoryLimit(component: string, scope: string, expectedBytes: number): MemoryLimit {
+/**
+ * Fails unless `scope` is capped at exactly `expectedBytes` with swap off, and no ancestor caps it
+ * below `minimumBytes` (an uncapped scope still needs the budget's worth of room).
+ */
+export function verifyMemoryLimit(
+	component: string,
+	scope: string,
+	expectedBytes: number,
+	minimumBytes = expectedBytes
+): MemoryLimit {
 	const memoryMaxBytes = readLimit(`${scope}/memory.max`);
 	const swapMaxBytes = readLimit(`${scope}/memory.swap.max`);
 	if (memoryMaxBytes !== expectedBytes) {
@@ -315,8 +330,8 @@ export function verifyMemoryLimit(component: string, scope: string, expectedByte
 			// the root cgroup has no memory.max
 		}
 	}
-	if (ancestorMaxBytes < expectedBytes) {
-		throw new Error(`${component}: an ancestor cgroup caps memory at ${ancestorMaxBytes}, below ${expectedBytes}`);
+	if (ancestorMaxBytes < minimumBytes) {
+		throw new Error(`${component}: an ancestor cgroup caps memory at ${ancestorMaxBytes}, below ${minimumBytes}`);
 	}
 	return { memoryMaxBytes, swapMaxBytes, ancestorMaxBytes };
 }
@@ -354,7 +369,6 @@ export async function readCgroupMemory(scope: string): Promise<CgroupMemory> {
 	};
 }
 
-/** Server CPU-seconds consumed so far across every component of a target. */
 export async function totalCpuSeconds(targets: ResourceTargets): Promise<number> {
 	let total = 0;
 	for (const root of Object.values(targets.processes)) total += await processCpuSeconds(root);

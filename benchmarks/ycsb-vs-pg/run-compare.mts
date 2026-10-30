@@ -80,7 +80,7 @@ export const TARGETS = {
 	'pg-only': { kind: 'stack', cache: false, label: 'Fastify + Postgres (no cache)' },
 } satisfies Record<string, HarperTarget | StackTarget>;
 export type TargetName = keyof typeof TARGETS;
-export const ALL_TARGETS = Object.keys(TARGETS) as TargetName[];
+const ALL_TARGETS = Object.keys(TARGETS) as TargetName[];
 
 export function parseTargets(list: string): TargetName[] {
 	const targets = list.split(',').map((t) => t.trim()) as TargetName[];
@@ -94,7 +94,7 @@ export function parseTargets(list: string): TargetName[] {
 /** The memory each target is budgeted, summed across all its processes. */
 export const MEMORY_BUDGET_BYTES = 8 * 1024 ** 3;
 /** Versioned because what "memory" means changed: cgroup charges incl. page cache, hard caps, swap off. */
-export const METHODOLOGY = 'v2: every component in its own memory cgroup (hard cap, swap off); cgroup charges reported';
+const METHODOLOGY = 'v2: every component in its own memory cgroup (hard cap, swap off); cgroup charges reported';
 
 type CacheMode = 'warm' | 'cold';
 type Options = ReturnType<typeof parseOptions>;
@@ -130,7 +130,7 @@ interface Sample {
 	measured: MeasuredWindow;
 }
 
-export async function waitForRoute(url: string, deadlineMs: number): Promise<void> {
+async function waitForRoute(url: string, deadlineMs: number): Promise<void> {
 	const deadline = Date.now() + deadlineMs;
 	while (Date.now() < deadline) {
 		try {
@@ -155,7 +155,6 @@ export interface Running {
 	/** Milliseconds from launch to accepting requests; a restore's copy is part of it. */
 	startupMs: number;
 	afterLoad?: () => Promise<void>;
-	/** Postgres checkpoints completed so far. */
 	checkpoints?: () => Promise<number>;
 	/**
 	 * Stops the server cleanly and keeps its dataset as `snapshot` (a name for pg, a directory for
@@ -178,7 +177,7 @@ function nextUnit(session: Session, component: string): string {
 	return `${session.unitPrefix}-${++session.units.count}-${component}`;
 }
 
-export async function withHarper<T>(
+async function withHarper<T>(
 	session: Session,
 	target: TargetName,
 	body: (running: Running) => Promise<T>,
@@ -233,8 +232,9 @@ export async function withHarper<T>(
 			started = await setupHarperWithFixture(ctx, HARPER_APP_DIR, harperOptions);
 		}
 	} catch (error) {
-		if (launch.restore && ctx.harper?.dataRootDir) await rm(ctx.harper.dataRootDir, { recursive: true, force: true });
+		// Scope first: a copy or a Harper still running in it would race the delete.
 		await stopScope(unit);
+		if (launch.restore && ctx.harper?.dataRootDir) await rm(ctx.harper.dataRootDir, { recursive: true, force: true });
 		throw error;
 	}
 	try {
@@ -247,15 +247,18 @@ export async function withHarper<T>(
 			baseUrl: httpURL,
 			targets: { processes: {}, cgroups: { harper: cgroup } },
 			pinned: { harper: pid },
-			memoryLimits: { harper: verifyMemoryLimit('harper', cgroup, session.harperMemoryBytes) },
+			memoryLimits: {
+				harper: verifyMemoryLimit('harper', cgroup, session.harperMemoryBytes, MEMORY_BUDGET_BYTES),
+			},
 			recordCacheSize,
 			startupMs: Date.now() - launchedAt,
 			async snapshot(dir: string): Promise<string> {
 				// Long grace: RocksDB flushes its memtables on a clean shutdown.
 				await killHarper(started, { graceMs: 300_000 });
-				const proc = started.harper.process;
-				if (proc.signalCode === 'SIGKILL')
-					throw new Error('Harper did not stop within the grace period; snapshot not taken');
+				const { exitCode, signalCode } = started.harper.process;
+				if (exitCode !== 0 && signalCode !== 'SIGTERM') {
+					throw new Error(`Harper stopped with ${exitCode ?? signalCode}, not cleanly; snapshot not taken`);
+				}
 				await mkdir(dirname(dir), { recursive: true });
 				await rename(started.harper.dataRootDir, dir);
 				return started.harper.dataRootDir;
@@ -264,10 +267,12 @@ export async function withHarper<T>(
 	} finally {
 		await teardownHarper(started);
 		await stopScope(unit);
+		// teardownHarper swallows a failed delete; a leftover restore root would fail every later restore.
+		await rm(started.harper.dataRootDir, { recursive: true, force: true });
 	}
 }
 
-export async function withPgStack<T>(
+async function withPgStack<T>(
 	session: Session,
 	target: TargetName,
 	body: (running: Running) => Promise<T>,
@@ -323,7 +328,7 @@ export function withTarget<T>(
 		: withHarper(session, target, body, launch);
 }
 
-export async function cpuSecondsOf(pids: number[]): Promise<number> {
+async function cpuSecondsOf(pids: number[]): Promise<number> {
 	let total = 0;
 	for (const pid of pids) {
 		try {
@@ -341,14 +346,13 @@ export function assertNoErrors(phase: string, result: PhaseResult): void {
 	if (result.errors > 0) throw new Error(`${phase}: ${result.errors} failed requests — sample invalid`);
 }
 
-export function verifyPlacement(session: Session, running: Running, driver: DriverRun): number {
+function verifyPlacement(session: Session, running: Running, driver: DriverRun): number {
 	let threads = 0;
 	for (const [name, pid] of Object.entries(running.pinned)) threads += verifyAffinity(name, pid, session.serverCpus);
 	for (const pid of driver.pids) verifyAffinity('generator', pid, session.driverCpus);
 	return threads;
 }
 
-/** One measured run and everything recorded around it. */
 export interface MeasuredWindow {
 	result: PhaseResult;
 	resources: ResourceDelta & {
@@ -384,9 +388,6 @@ export async function measureWindow(
 	ops?: number
 ): Promise<MeasuredWindow> {
 	const affinityVerifiedThreads = verifyPlacement(session, running, driver);
-	const cgroupsBefore: Record<string, CgroupMemory> = {};
-	for (const [name, scope] of Object.entries(running.targets.cgroups))
-		cgroupsBefore[name] = await readCgroupMemory(scope);
 	const checkpointsBefore = await running.checkpoints?.();
 	const memory = new MemoryPeakSampler(running.targets);
 	const clock = new ClockProbe(session.serverCpus);
@@ -396,21 +397,28 @@ export async function measureWindow(
 	clock.start();
 	let result: PhaseResult;
 	let meanClockGHz: number;
+	let after: Awaited<ReturnType<typeof sampleResources>>;
+	let generatorCpuSeconds: number;
+	let peaks: Awaited<ReturnType<MemoryPeakSampler['stop']>>;
 	try {
-		result = await driver.runWorkload(workload, distribution, ops);
+		try {
+			result = await driver.runWorkload(workload, distribution, ops);
+		} finally {
+			meanClockGHz = clock.stop();
+		}
+		// CPU first: stopping the sampler can wait out its interval, and background work in
+		// that gap would be charged to the run.
+		after = await sampleResources(running.targets);
+		generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
 	} finally {
-		meanClockGHz = clock.stop();
+		peaks = await memory.stop();
 	}
-	// CPU first: stopping the sampler can wait out its interval, and background work in
-	// that gap would be charged to the run.
-	const after = await sampleResources(running.targets);
-	const generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
-	const peaks = await memory.stop();
 	const cgroupMemory: Record<string, CgroupMemory> = {};
 	for (const [name, scope] of Object.entries(running.targets.cgroups)) {
 		cgroupMemory[name] = await readCgroupMemory(scope);
-		const kills = (cgroupMemory[name].events.oom_kill ?? 0) - (cgroupsBefore[name].events.oom_kill ?? 0);
-		if (kills > 0) throw new Error(`${name}: ${kills} OOM kill(s) during workload ${workload} — sample invalid`);
+		// Every component's cgroup is created for this sample, so any kill belongs to it.
+		const kills = cgroupMemory[name].events.oom_kill ?? 0;
+		if (kills > 0) throw new Error(`${name}: ${kills} OOM kill(s) during this sample — sample invalid`);
 	}
 	const checkpointsAfter = await running.checkpoints?.();
 	assertNoErrors(`workload ${workload}`, result);
@@ -641,7 +649,7 @@ function printComparison(summaries: Summary[], session: Session): void {
  * Harper still pays real RocksDB compaction — every write-bearing workload is then measuring
  * the asymmetry, not the engines. Same device, real disk, or the comparison is void.
  */
-export async function prepareDataDirs(): Promise<{ base: string; harperRoot: string }> {
+async function prepareDataDirs(): Promise<{ base: string; harperRoot: string }> {
 	const base = dataDir();
 	const harperRoot = join(base, 'harper');
 	await mkdir(join(base, 'pgdata'), { recursive: true });

@@ -22,7 +22,7 @@ import { WORKLOADS, formatKey } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
-import { sampleResources, waitForQuiet } from './resources.mts';
+import { sampleResources, waitForQuiet, readCgroupMemory } from './resources.mts';
 import {
 	TARGETS,
 	MEMORY_BUDGET_BYTES,
@@ -54,7 +54,6 @@ export function recordsForRatio(ratio: number, budgetBytes: number, recordBytes:
 
 export interface WarmupChunk {
 	throughput: number;
-	/** Redis hit rate over the chunk, for pg-redis. */
 	hitRate?: number;
 }
 
@@ -101,10 +100,11 @@ interface SweepSample {
 	workload: string;
 	position: number;
 	status: 'ok' | 'failed';
-	/** Phase a failed sample died in, and why. */
 	failure?: { phase: string; error: string };
 	startupMs?: number;
 	quiesceMs?: number;
+	/** False when the target was still busy when the quiesce wait ran out. */
+	quiet?: boolean;
 	warmup?: WarmupChunk[];
 	converged?: boolean;
 	measured?: MeasuredWindow;
@@ -143,6 +143,10 @@ async function prepareSnapshot(session: Session, engine: 'harper' | 'pg', keyWid
 		await running.afterLoad?.();
 		const { waitedMs, quiet } = await waitForQuiet(running.targets, { maxMs: 60 * 60_000 });
 		console.log(`  [quiesce] ${(waitedMs / 1000).toFixed(0)} s${quiet ? '' : ' (did not get quiet)'}`);
+		for (const [component, scope] of Object.entries(running.targets.cgroups)) {
+			const kills = (await readCgroupMemory(scope)).events.oom_kill ?? 0;
+			if (kills > 0) throw new Error(`${component}: ${kills} OOM kill(s) while loading; snapshot not taken`);
+		}
 		const restoreRoot = (await running.snapshot(restore)) || undefined;
 		return { restore, restoreRoot, load, quiesceMs: waitedMs, quiet, diskBytes: await diskBytes(`snapshots/${name}`) };
 	});
@@ -212,7 +216,14 @@ async function warmUp(
 async function nothingLeftRunning(session: Session): Promise<boolean> {
 	const { stdout: units } = await exec(
 		'systemctl',
-		['--user', 'list-units', '--plain', '--no-legend', '--state=active', `${session.unitPrefix}-*`],
+		[
+			'--user',
+			'list-units',
+			'--plain',
+			'--no-legend',
+			'--state=active,activating,deactivating,reloading',
+			`${session.unitPrefix}-*`,
+		],
 		{ timeout: 30_000 }
 	);
 	const { stdout: containers } = await exec(
@@ -250,8 +261,9 @@ async function measureSweepSample(
 				try {
 					await verifyRestoredData(running, session, keyWidth);
 					phase = 'quiesce';
-					const { waitedMs } = await waitForQuiet(running.targets, { maxMs: 10 * 60_000 });
+					const { waitedMs, quiet } = await waitForQuiet(running.targets, { maxMs: 10 * 60_000 });
 					sample.quiesceMs = waitedMs;
+					sample.quiet = quiet;
 					phase = 'warmup';
 					const { chunks, converged } = await warmUp(running, driver, workload, chunkOps, maxChunks);
 					sample.warmup = chunks;
@@ -313,13 +325,15 @@ function printSweep(points: PointResult[], samples: SweepSample[]): void {
 					(lat ? lat.p99.toFixed(2) : '-').padStart(8),
 					(m ? m.cpuMicrosPerOp.toFixed(1) : '-').padStart(10),
 					(m?.redisHitRate === undefined ? '-' : (m.redisHitRate * 100).toFixed(2)).padStart(7),
-					(s.warmup ? `${s.warmup.length}${s.converged ? '' : '!'}` : '-').padStart(7),
+					(s.warmup ? `${s.warmup.length}${s.converged && s.quiet ? '' : '!'}` : '-').padStart(7),
 					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}`,
 				].join('')
 			);
 		}
 	}
-	out.push("warmup = 1M-op chunks until 3 agree; '!' = hit the chunk ceiling without converging (not certified)");
+	out.push(
+		"warmup = 1M-op chunks until 3 agree; '!' = no plateau within the chunk ceiling, or never quiet before warmup (not settled)"
+	);
 	out.push('='.repeat(150));
 	process.stdout.write(out.join('\n') + '\n');
 }
@@ -333,8 +347,11 @@ async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
 	const targets = parseTargets(argValue(argv, '--targets') ?? 'harper-uws,harper,pg-redis,pg-only');
 	const ratios = (argValue(argv, '--ratios') ?? '0.5,2,8').split(',').map(Number);
-	// A record cache sized to the dataset is only plausible at the smallest points.
-	const sizedRatios = (argValue(argv, '--sized-ratios')?.split(',') ?? ratios).map(Number);
+	// A record cache sized to the dataset is only plausible at the smallest point, so that is the default.
+	const sizedRatios = argValue(argv, '--sized-ratios')?.split(',').map(Number) ?? [Math.min(...ratios)];
+	for (const ratio of sizedRatios) {
+		if (!ratios.includes(ratio)) throw new Error(`--sized-ratios: ${ratio} is not one of --ratios ${ratios.join(',')}`);
+	}
 	const chunkOps = Number(argValue(argv, '--warmup-chunk') ?? 1_000_000);
 	const maxChunks = Number(argValue(argv, '--warmup-max-chunks') ?? 12);
 	for (const [flag, value] of Object.entries({ chunkOps, maxChunks })) {

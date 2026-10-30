@@ -43,7 +43,7 @@ export interface StackMemory {
 	redisMaxmemoryMiB: number;
 }
 
-/** run-compare's split (the #3736 run's containers, plus a Fastify cap): 1 + 6 + 1 = 8 GiB. */
+/** run-compare's split: 1 + 6 + 1 = 8 GiB. */
 export const WARM_STACK_MEMORY: StackMemory = {
 	fastifyMiB: 1024,
 	postgresMiB: 6144,
@@ -105,7 +105,6 @@ async function asRootInDataDir(script: string, timeoutMs: number): Promise<void>
  */
 const wipePgData = () => asRootInDataDir('rm -rf /host-data/pgdata', 30 * 60_000);
 
-/** Deletes every Postgres dataset snapshot memory-sweep.mts made. */
 export const removePgSnapshots = () => asRootInDataDir('rm -rf /host-data/snapshots/pg-*', 30 * 60_000);
 
 export const PG_URL = 'postgres://ycsb:ycsb@127.0.0.1:5433/ycsb';
@@ -148,7 +147,6 @@ export interface PgStack {
 	snapshot(name: string): Promise<void>;
 	/** Every component's cgroup: the Fastify scope and the containers. */
 	cgroups: Record<string, string>;
-	/** Each component's verified memory limit. */
 	memoryLimits: Record<string, MemoryLimit>;
 	/** Command that prints Redis INFO stats, for cache hit-rate sampling. */
 	redisExec: string[];
