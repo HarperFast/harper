@@ -1275,7 +1275,13 @@ If `true`, forces conditions to execute in the order supplied, disabling Harper'
 
 ### `checkPermission`
 
-Trusted server-side calls skip table authorization by default. When delegating a request to `Table.search()`, set `checkPermission: true` on the query and pass the authenticated `context` as the second argument. Harper then performs a one-shot read authorization using `context.user`, including table, selected-property, and full-text source-field permissions. Passing the context alone does not request this check. Record-level restrictions require a synchronous, server-controlled `rowFilter`.
+Trusted server-side calls skip table authorization by default. When delegating a read to `Table.search()` or `Table.get()`, set `checkPermission: true` on the query and pass the authenticated `context` as the second argument. Harper then authorizes the read using `context.user`, including table, selected-property, and full-text source-field permissions. Passing the context alone does not request this check. Record-level restrictions require a synchronous, server-controlled `rowFilter`.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Harper authorizes a copy of the query object, leaving the application's object as written. You can reuse one query object, such as a module-level constant, across requests and users: each call checks its own `context.user`, including attribute and related-table permissions. If you observe `loadedFromSource` after a `get`, use a per-get target and read the flag on the object you passed in.
+
+Harper refuses to authorize a query object that an earlier authorization already narrowed with an error (HTTP 500). For example, do not run a query through `allowRead` yourself and then dispatch it with `checkPermission: true`; pass the original, unauthorized query object instead.
 
 Set this flag in server-controlled code whenever the endpoint promises authorized access. Never accept its value or copy a permission object from client data.
 
@@ -1292,7 +1298,7 @@ Properties:
 - `id` — Primary key derived from the path
 - `isCollection` — `true` when the request targets a collection
 - `rowFilter` — Synchronous JavaScript predicate applied to candidate records during search. It cannot be set by REST or QUERY request data.
-- `checkPermission` — The same one-shot authorization request available on the [Query Object](#checkpermission). Harper arms it for permission-checked dispatches. Trusted server-side code making a direct Resource call may set it to `true`, causing built-in table gates to derive permissions from `context.user`. Never accept or copy this field or a permission object from client data.
+- `checkPermission` — Trusted server-side code making a direct Resource call may set this to `true` and pass the authenticated `context` to request authorization using `context.user`. See the [Query Object](#checkpermission) for read-query reuse from v5.4.0 and the HTTP 500 refusal of already narrowed objects. Never accept or copy this field or a permission object from client data.
 
 Standard `URLSearchParams` methods are available:
 

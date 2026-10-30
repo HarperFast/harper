@@ -122,7 +122,7 @@ The MCP transport audits the `tools/call`, but invokes the custom instance metho
 
 **Custom tools are exposed to any MCP session — including anonymous, unauthenticated ones.** Unlike the auto-generated verb tools (which are RBAC-filtered per user at `tools/list` time and enforce table permissions on call), the MCP layer performs no authentication or ACL check for a custom tool: it is listed to every session and its method executes even when no user is logged in (`context.user` may be empty). Access control is entirely the method's responsibility — to restrict a tool to authenticated users or specific roles, check `context.user` inside the method and throw when the caller doesn't qualify.
 
-A custom method must pass an armed context or target when delegating to a static Resource operation. The MCP-created instance context carries the authenticated user and a one-shot `authorize` flag, so the first call can use `Orders.get(target, this.getContext())`; that flag is consumed by the first static Resource operation. For every later delegated operation, use a fresh `RequestTarget`, set `target.checkPermission = true` so authorization derives from `context.user`, and pass `this.getContext()`. Never accept `checkPermission` from tool arguments or other client input.
+A custom method must pass an armed context or target when delegating to a static Resource operation. The MCP-created instance context carries the authenticated user and a one-shot `authorize` flag, so the first call can use `Orders.get(target, this.getContext())`; that flag is consumed by the first static Resource operation. For every later delegated operation, set `target.checkPermission = true` on a `RequestTarget` so authorization derives from `context.user`, and pass `this.getContext()`. See [delegated-read query reuse](/reference/v5/resources/resource-api#checkpermission) for when a target can be reused. Never accept `checkPermission` from tool arguments or other client input.
 
 ### Custom `mcpResources` opt-in
 
@@ -265,7 +265,7 @@ Do not fetch guarded rows through the base table class (`tables.Order.get(id)`).
 On 5.1.x the read does not run inside a user-carrying transaction at all: the `context.user` gate above works, but a delegated guarded fetch has no user to authorize against. Serve guarded content from 5.2.0 or later.
 :::
 
-If a Resource still relies on the deprecated `allow*` hooks, a delegated call arms them with `target.checkPermission = true` on a fresh [`RequestTarget`](/reference/v5/resources/resource-api#requesttarget). Set it to `true` only — never copy a permission object into it, and never take it from client input such as a template parameter.
+If a Resource still relies on the deprecated `allow*` hooks, a delegated call arms them with `target.checkPermission = true` on a [`RequestTarget`](/reference/v5/resources/resource-api#requesttarget). See [delegated-read query reuse](/reference/v5/resources/resource-api#checkpermission) for when a target can be reused. Set it to `true` only — never copy a permission object into it, and never take it from client input such as a template parameter.
 
 ### `exportTypes` gating
 
