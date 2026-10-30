@@ -949,6 +949,18 @@ describe('Test configValidator module', () => {
 			expect(result.error.message).to.include("'mcp.operations.mountPath' must be a string");
 		});
 
+		it('accepts a boolean mcp.<profile>.enabled and rejects a non-boolean', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { enabled: true }, application: { enabled: false } };
+			expect(configValidator(config, true).error).to.be.undefined;
+			config.mcp = { operations: { enabled: 'nope' } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.enabled' must be a boolean");
+			config.mcp = { operations: { enabled: 'false' } };
+			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
+		});
+
 		it('rejects mcp.operations.maxTools below 1', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { operations: { maxTools: 0 } };

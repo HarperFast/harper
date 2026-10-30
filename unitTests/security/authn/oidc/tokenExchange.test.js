@@ -611,6 +611,56 @@ describe('exchangeOidcToken', () => {
 		assert.strictEqual(payload.operations, undefined, 'an unscoped token must look exactly as it did before');
 	});
 
+	it("mints a preview cleanup token that drops the application's previews and deploys nothing (harper#3042)", async () => {
+		const { desiredPreviewIdentity } = require('#src/components/previewOperations');
+		const op_auth = require('#src/utility/operation_authorization');
+		const operations = require('#js/components/operations');
+		const { desired } = desiredPreviewIdentity({
+			app: 'web',
+			repository: 'HarperFast/my-app',
+			repository_id: '67890',
+			branch: 'main',
+			audience: AUDIENCE,
+		});
+		await testUtils.seedUsers(
+			new Map([
+				[
+					'web-ci-preview',
+					{
+						username: 'web-ci-preview',
+						active: true,
+						role: { role: 'web-ci-preview', permission: desired.role.permission },
+					},
+				],
+			])
+		);
+		for (const policy of desired.policies) await addOidcTrust(asAdmin(policy));
+		const run = (environment) =>
+			identityToken({
+				workflow_ref: 'HarperFast/my-app/.github/workflows/preview.yaml@refs/heads/main',
+				event_name: 'pull_request_target',
+				environment,
+			});
+		const principal = async (environment) => {
+			const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: run(environment) });
+			return { policy: result.policy, user: await validateOperationToken(result.operation_token) };
+		};
+		const allowed = (user, operation, handler, project) =>
+			op_auth.verifyPerms({ operation, project, hdb_user: user }, handler.name) === null;
+
+		const cleanup = await principal('preview-cleanup');
+		assert.strictEqual(cleanup.policy, 'github-actions-web-preview-cleanup');
+		assert.ok(allowed(cleanup.user, 'drop_component', operations.dropComponent, 'web-pr-3'));
+		assert.ok(!allowed(cleanup.user, 'deploy_component', operations.deployComponent, 'web-pr-3'));
+		assert.ok(!allowed(cleanup.user, 'drop_component', operations.dropComponent, 'web'));
+
+		const deploy = await principal('preview');
+		assert.strictEqual(deploy.policy, 'github-actions-web-preview');
+		assert.ok(allowed(deploy.user, 'deploy_component', operations.deployComponent, 'web-pr-3'));
+		assert.ok(!allowed(deploy.user, 'deploy_component', operations.deployComponent, 'web'));
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: run('production') }));
+	});
+
 	it('rejects malformed input', async () => {
 		await addPolicy();
 		for (const token of ['not-a-jwt', 'a.b.c']) {

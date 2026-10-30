@@ -1046,6 +1046,7 @@ export function recordUpdater(
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
+		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
 		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
 		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
 		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
@@ -1074,11 +1075,12 @@ export function recordUpdater(
 			if (previousResidencySlot !== undefined && (previousResidencySlot !== residencySlot || type === 'delete'))
 				extendedType |= HAS_PREVIOUS_RESIDENCY_SLOT;
 			const residencyId = options?.residencyId; //getResidency(record, previousResidencyId);
-			if (residencyId) {
-				residencyIdAtNextEncoding = residencyId;
+			const recordResidencyId = options?.recordResidencyId !== undefined ? options.recordResidencyId : residencyId;
+			if (recordResidencyId) {
+				residencyIdAtNextEncoding = recordResidencyId;
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
-				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
+			if (residencyId) extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			const recordNodeId = options?.recordNodeId ?? options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
 			if (recordNodeId >= 0) {
 				nodeIdAtNextEncoding = recordNodeId;
@@ -1104,7 +1106,8 @@ export function recordUpdater(
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;
 				if (!previousResidencyId) previousResidencyId = 0;
 			}
-			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
+			if (options?.auditExpiresAt === undefined ? assignMetadata & HAS_EXPIRATION : auditExpiresAt >= 0)
+				extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
 			if (options?.copyFrame) extendedType |= COPIED_RECORD;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
@@ -1191,7 +1194,7 @@ export function recordUpdater(
 								previousResidencyId,
 								residencySlot,
 								previousResidencySlot,
-								expiresAt,
+								expiresAt: auditExpiresAt,
 								structureVersion,
 								previousAdditionalAuditRefs,
 							},
@@ -1217,7 +1220,7 @@ export function recordUpdater(
 						previousResidencyId,
 						residencySlot,
 						previousResidencySlot,
-						expiresAt,
+						expiresAt: auditExpiresAt,
 						structureVersion,
 						originatingOperation: options?.originatingOperation,
 						previousAdditionalAuditRefs,

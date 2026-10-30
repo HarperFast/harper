@@ -25,7 +25,7 @@ import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
 import * as configUtils from '../config/configUtils.ts';
 import { filterArgsAgainstRuntimeConfig } from '../config/harperConfigEnvVars.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
-import { transaction } from '../resources/transaction.ts';
+import { transaction, contextStorage } from '../resources/transaction.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 let logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
@@ -1237,11 +1237,16 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;
+	let lastAttemptRejected = false;
+	let retireRejectedAttempt: (() => void) | undefined;
 	(SNICallback as any).initialize = (server: any) => {
-		if ((SNICallback as any).ready) return (SNICallback as any).ready;
+		if ((SNICallback as any).ready && !lastAttemptRejected) return (SNICallback as any).ready;
+		lastAttemptRejected = false;
+		retireRejectedAttempt?.();
+		retireRejectedAttempt = undefined;
 		if (server) {
 			server.secureContexts = secureContexts;
-			server.secureContextsListeners = [];
+			server.secureContextsListeners ??= [];
 		}
 		let subscribedTable = null;
 		let activeSubscription: Promise<any> | null = null;
@@ -1249,8 +1254,14 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 			// Pass-level failure before `.ready` settles still rejects (boot surfaces it); after,
 			// the only safe response is to keep serving live state and retry.
 			let readySettled = false;
+			let rejectedReady = false;
 			const settle = (value?) => {
 				readySettled = true;
+				if (rejectedReady) {
+					rejectedReady = lastAttemptRejected = false;
+					retireRejectedAttempt = undefined;
+					(SNICallback as any).ready = Promise.resolve(value);
+				}
 				resolve(value);
 			};
 			// Self-retry state for passes with per-record failures: the signature identifies the
@@ -1315,7 +1326,17 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 					failureRetryTimer = undefined;
 				}
 			};
+			let retired = false;
+			const retire = () => {
+				retired = true;
+				clearTimeout(rebuildTimer);
+				clearTimeout(failureRetryTimer);
+				activeSubscription?.then((subscription: any) => subscription?.end?.()).catch(() => {});
+			};
 			function updateTLS() {
+				if (retired) return;
+				// the pass is the selector's own work, never the triggering request's (security/DESIGN.md)
+				if (contextStorage.getStore() !== undefined) return contextStorage.exit(updateTLS);
 				try {
 					if (databases === undefined) {
 						settle();
@@ -1374,11 +1395,12 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 						// resets accumulates one dead Subscription (and its scheduleRebuild closure) per
 						// reset instead of holding just the current one.
 						const previousSubscription = activeSubscription;
-						subscribedTable = databases.system.hdb_certificate;
 						activeSubscription = databases.system.hdb_certificate.subscribe({
 							listener: scheduleRebuild,
 							omitCurrent: true,
 						} as any);
+						// only once subscribe() returned: a synchronous throw must leave the next pass to retry it
+						subscribedTable = databases.system.hdb_certificate;
 						activeSubscription.catch((error) => {
 							// Don't leave subscribedTable pointing at a table we failed to subscribe to —
 							// otherwise this selector never retries the subscription and silently loses live
@@ -1656,13 +1678,20 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true, exclude
 					server?.secureContextsListeners.forEach((listener) => listener());
 					settle(defaultContext);
 				} catch (error) {
-					if (readySettled) {
+					if (readySettled || rejectedReady) {
 						// Live state is untouched (candidates are pass-local): keep serving it and retry.
 						reportFailures([{ cert: { name: `(${type} rebuild pass)` }, error }]);
 						scheduleFailureRetry();
 						return;
 					}
+					rejectedReady = lastAttemptRejected = true;
 					reject(error);
+					// A listener calls initialize() once, so a live attempt keeps retrying until a later initialize()
+					// replaces it; a one-shot attempt has nothing to keep.
+					if (liveReload) {
+						retireRejectedAttempt = retire;
+						scheduleFailureRetry();
+					} else retire();
 				}
 			}
 			let rebuildTimer;

@@ -145,6 +145,7 @@ jobs:
             resources/residencyMaps.ts
             resources/residencyPolicy.ts
             resources/search.ts
+            resources/subscriptionCheckpoint.ts
             server/http.ts
             server/transactionLogCooling.ts
             utility/environment/systemInformation.ts

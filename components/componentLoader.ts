@@ -59,7 +59,7 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { type PluginModule } from './PluginModule.ts';
@@ -111,6 +111,13 @@ export function bootVerdictOf(application: string): { outcome: BootVerdictOutcom
 function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
 	if (error instanceof Error) return { key, name: error.name, message: error.message, stack: error.stack };
 	return { key, name: 'Error', message: String(error) };
+}
+
+// A plugin may report its own warning/unknown/error while loading; only the loader's own `loading` is
+// replaced by the automatic success status.
+function markLoadedUnlessReported(componentStatusName: string, message: string): void {
+	const current = statusForComponent(componentStatusName).get()?.status;
+	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
 }
 
 /**
@@ -1086,10 +1093,8 @@ export async function loadComponent(
 
 				if (!extensionModule) {
 					// This is an application-only component (no extension module)
-					// Mark it as loaded since it exists in the config, unless loading its tree just failed it
-					if (statusForComponent(componentStatusName).get()?.status !== 'error') {
-						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
-					}
+					// Mark it as loaded since it exists in the config, unless loading its tree reported otherwise
+					markLoadedUnlessReported(componentStatusName, `Application component '${componentStatusName}' processed`);
 					continue;
 				}
 				if (isRoot && subApplicationScope.branches?.size) {
@@ -1155,7 +1160,7 @@ export async function loadComponent(
 					await sequentiallyHandleApplication(scope, extensionModule);
 
 					// Mark component as loaded after successful handleApplication call
-					componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+					markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 					noteBootExecuted(entryApplication);
 
 					continue;
@@ -1251,7 +1256,7 @@ export async function loadComponent(
 				}
 
 				// Mark component as healthy after successful loading
-				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+				markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 				noteBootExecuted(entryApplication);
 			} catch (thrown) {
 				const error = loadFailure(

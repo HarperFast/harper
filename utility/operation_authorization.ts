@@ -58,6 +58,7 @@ import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
 import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
+import * as previewOperations from '../components/previewOperations.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -423,6 +424,20 @@ requiredPermissions.set(
 requiredPermissions.set(
 	trustPolicyOperations.dropOidcTrust.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
+);
+// An application's PR-preview identity is a role, a user and trust policies, so enabling or disabling it is SU-only,
+// and the handlers ALSO enforce super_user so a role's `operations` allowlist cannot delegate them.
+requiredPermissions.set(
+	previewOperations.enablePreviews.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.ENABLE_PREVIEWS)
+);
+requiredPermissions.set(
+	previewOperations.disablePreviews.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DISABLE_PREVIEWS)
+);
+requiredPermissions.set(
+	previewOperations.getPreviewPolicy.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY)
 );
 // The exchange is unauthenticated by design — it authenticates its own caller against a trust
 // policy, the way create_authentication_tokens does against a password.
