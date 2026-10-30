@@ -781,9 +781,12 @@ export type TransactionWrite = {
 	// Audit pruning owns blobs referenced by an appended audit entry once its handle commits or
 	// has a durable log; a staged entry in an unsubmitted handle owns none.
 	blobsAuditReferenced?: boolean;
-	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
-	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
+	// The record lock covering this write's key, whichever instance staged it; DatabaseTransaction.save()
+	// applies the lock's stamps, floor and liveness checks through it.
 	lockHandle?: RecordLockHandle;
+	// lockHandle came from recordLocks, not the locked instance: the caller's own write, which a
+	// scoped -> hold upgrade keeps and unlock() turns back into an ordinary write.
+	lockJoined?: boolean;
 	// Per-operation holder version, set once on first save() and reused on retry so each lock write
 	// keeps its own candidate version across retries instead of falling back to stagedTxnTime or an
 	// explicit this.timestamp shared on the transaction.
@@ -1414,7 +1417,7 @@ export class DatabaseTransaction implements Transaction {
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
-		const keyId = (operation.keyId = writeKeyId(operation.key));
+		const keyId = (operation.keyId ??= writeKeyId(operation.key));
 		const priorWrite = writesForStore.get(keyId);
 		if (priorWrite) operation.priorWrite = priorWrite;
 		writesForStore.set(keyId, operation);
@@ -1475,6 +1478,21 @@ export class DatabaseTransaction implements Transaction {
 		let storeMap = this.recordLocks.get(handle.store);
 		if (!storeMap) this.recordLocks.set(handle.store, (storeMap = new Map()));
 		storeMap.set(handle.keyId, handle);
+		for (let write = this.writesByKey?.get(handle.store)?.get(handle.keyId); write; write = write.priorWrite) {
+			if (!this.joinsLockOnRegister(write)) continue;
+			write.lockHandle = handle;
+			write.lockJoined = true;
+			// The scan stops one past the first unlocked write; if that is this one, resume from it.
+			const scan = this.unlockedWriteScan;
+			if (scan?.found && scan.writes[scan.index - 1] === write) {
+				scan.found = false;
+				scan.index--;
+			}
+		}
+	}
+
+	private joinsLockOnRegister(write: TransactionWrite): boolean {
+		return !write.saved && !write.lockHandle && !write.dropped && Boolean(this.ownedWrites?.has(write));
 	}
 
 	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
@@ -1485,13 +1503,21 @@ export class DatabaseTransaction implements Transaction {
 		if (!h.isExpired()) return h;
 		// Prune released/expired handles so they don't accumulate; a handle past its deadline checking
 		// re-entrancy would otherwise be seen as the holder and incorrectly granted access.
-		storeMap.delete(keyId);
+		this.deleteRecordLock(store, storeMap, keyId);
 		return undefined;
 	}
 
 	unregisterRecordLock(handle: RecordLockHandle): void {
 		const storeMap = this.recordLocks?.get(handle.store);
-		if (storeMap?.get(handle.keyId) === handle) storeMap.delete(handle.keyId);
+		if (storeMap?.get(handle.keyId) === handle) this.deleteRecordLock(handle.store, storeMap, handle.keyId);
+	}
+
+	// An emptied registry is removed, so a write staged after the last unlock skips the lock lookup.
+	private deleteRecordLock(store: any, storeMap: Map<unknown, RecordLockHandle>, keyId: unknown): void {
+		storeMap.delete(keyId);
+		if (storeMap.size > 0) return;
+		this.recordLocks!.delete(store);
+		if (this.recordLocks!.size === 0) this.recordLocks = undefined;
 	}
 
 	registerPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
@@ -1856,8 +1882,9 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Whether an unlocked write is staged. Resumes where the last call stopped, so a transaction that
 	 * takes N locks scans its writes once in all; detaching an unlocked write resets the cached scan.
+	 * Given the key a lock() is admitting, its unsaved writes do not count: registerRecordLock binds them.
 	 */
-	hasUnlockedWrite(): boolean {
+	hasUnlockedWrite(lockingStore?: any, lockingKeyId?: unknown): boolean {
 		const writes = this.writes;
 		let scan = this.unlockedWriteScan;
 		if (scan?.writes !== writes) scan = this.unlockedWriteScan = { writes, index: 0, found: false };
@@ -1865,7 +1892,17 @@ export class DatabaseTransaction implements Transaction {
 			const write = writes[scan.index];
 			if (write && !write.lockHandle) scan.found = true;
 		}
-		return scan.found;
+		if (!scan.found || lockingStore === undefined) return scan.found;
+		for (let index = scan.index - 1; index < writes.length; index++) {
+			const write = writes[index];
+			if (
+				write &&
+				!write.lockHandle &&
+				(write.store !== lockingStore || write.keyId !== lockingKeyId || !this.joinsLockOnRegister(write))
+			)
+				return true;
+		}
+		return false;
 	}
 
 	private noteCommittedLockVersions(committedTransaction?: RocksTransaction): void {
@@ -1907,6 +1944,7 @@ export class DatabaseTransaction implements Transaction {
 				if (!write || this.isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight, fromAbort))
 					continue;
 				write.releaseResidencyMapFence?.();
+				if (fromAbort && !write.saved) write.dropped = true;
 				this.detachWrite(write);
 			}
 			this.writes = this.writes.filter((write) => write);
@@ -1922,9 +1960,12 @@ export class DatabaseTransaction implements Transaction {
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
 		// context's current transaction as it did before `stagedIn` existed.
 		for (const write of this.writes) {
-			write?.releaseResidencyMapFence?.();
-			if (write?.stagedIn === this) write.stagedIn = undefined;
-			if (write) this.ownedWrites?.delete(write);
+			if (!write) continue;
+			write.releaseResidencyMapFence?.();
+			// a hold instance still pointing at it restages its changes at its next save()
+			if (fromAbort && !write.saved) write.dropped = true;
+			if (write.stagedIn === this) write.stagedIn = undefined;
+			this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
 		if (this.hasExclusiveWrites) this.hasExclusiveWrites = false;

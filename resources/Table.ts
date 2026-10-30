@@ -90,7 +90,6 @@ import {
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
 	freshLocalKey,
-	isValidFloor,
 	releaseLocalKey,
 	reserveLocalKey,
 	reservedAroundCallerValue,
@@ -120,6 +119,7 @@ import {
 	positionBefore,
 	readOriginStateEpoch,
 	validateCheckpoint,
+	withReplacedGeneration,
 	type MemberBoundary,
 	type ResumePlan,
 	type SubscriptionCheckpoint,
@@ -2544,6 +2544,7 @@ export function makeTable(options): TableResourceClass {
 									if (!nodeState) {
 										nodeState = { id: nodeId, seqId: 0 };
 										nodeStates.push(nodeState);
+										qualifiersChanged = true;
 									}
 									nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
 									if (nodeId === committingNodeId) {
@@ -2552,10 +2553,10 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 							let originCursorsChanged = false;
+							const nodeCount = nodeStates.length;
 							if (originCursors)
 								for (const [nodeId, originLogKey] of originCursors) {
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateIn(nodeStates, nodeId);
 									if (!(nodeState.originLogKey >= originLogKey)) {
 										nodeState.originLogKey = originLogKey;
 										originCursorsChanged = true;
@@ -2564,17 +2565,24 @@ export function makeTable(options): TableResourceClass {
 							if (originFloors)
 								for (const [nodeId, closedFloor, relayable, originGeneration, fullCoverage] of originFloors) {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateIn(nodeStates, nodeId);
+									const previousGeneration = nodeState.originGeneration ?? nodeState.lastGeneration;
 									const generationChanged =
 										typeof originGeneration === 'string' &&
-										typeof nodeState.originGeneration === 'string' &&
-										nodeState.originGeneration !== originGeneration;
+										typeof previousGeneration === 'string' &&
+										previousGeneration !== originGeneration;
 									if (generationChanged) {
+										// the origin itself certified one history and then another: what orders its generations
+										if (nodeId === event.remoteNodeIds[0]) {
+											nodeState.replacedGenerations = withReplacedGeneration(
+												nodeState.replacedGenerations,
+												previousGeneration,
+												originGeneration
+											);
+										}
 										// a new history identity: what was certified under the old one is void, and the route
 										// must prove its prefix again (certifiedFrom) before this generation qualifies
 										nodeState.floorRevoked = undefined;
-										nodeState.revokedFloor = undefined;
 										nodeState.hole = undefined;
 										nodeState.closedFloor = undefined;
 										nodeState.relayable = false;
@@ -2584,13 +2592,23 @@ export function makeTable(options): TableResourceClass {
 									}
 									// a revoked origin keeps no floor within its generation: a later or higher certificate never clears it
 									if (nodeState.floorRevoked === true) continue;
+									if (typeof originGeneration === 'string' && nodeState.lastGeneration !== undefined) {
+										nodeState.lastGeneration = undefined;
+									}
 									// a certificate without a generation from a route that had one: that route no longer certifies
 									// at level 2, so its checkpoint-grade qualifiers no longer hold for what follows
 									if (typeof originGeneration !== 'string' && typeof nodeState.originGeneration === 'string') {
+										nodeState.lastGeneration = nodeState.originGeneration;
 										nodeState.originGeneration = undefined;
 										nodeState.fullCoverage = undefined;
 										nodeState.certifiedFrom = undefined;
 										qualifiersChanged = true;
+									}
+									// a floor or start recorded with no generation belongs to none: level 2 starts from its own
+									if (typeof originGeneration === 'string' && typeof nodeState.originGeneration !== 'string') {
+										nodeState.closedFloor = undefined;
+										nodeState.relayable = false;
+										nodeState.certifiedFrom = undefined;
 									}
 									if (!(nodeState.closedFloor >= closedFloor)) {
 										nodeState.closedFloor = closedFloor;
@@ -2615,10 +2633,15 @@ export function makeTable(options): TableResourceClass {
 								for (const revocation of originFloorRevocations) {
 									const nodeId = Array.isArray(revocation) ? revocation[0] : revocation;
 									const generation = Array.isArray(revocation) ? revocation[1] : undefined;
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-									if (nodeState.floorRevoked === true) continue;
-									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									// a route that never certified the origin has nothing to revoke, and must not make it known here
+									const nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState || nodeState.floorRevoked === true) continue;
+									// a route at level 1 still stands for the generation it last certified
+									if (
+										generation !== undefined &&
+										(nodeState.originGeneration ?? nodeState.lastGeneration) !== generation
+									)
+										continue;
 									if (generation === undefined && typeof nodeState.originGeneration !== 'string') {
 										// a level-1 floor has no generation to stay revoked within: clear it, and a later certificate floors again
 										if (nodeState.closedFloor !== undefined || nodeState.relayable) {
@@ -2629,8 +2652,6 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									nodeState.floorRevoked = true;
-									// the floor it was revoked at still dates this generation against another's rows
-									if (isValidFloor(nodeState.closedFloor)) nodeState.revokedFloor = nodeState.closedFloor;
 									nodeState.closedFloor = undefined;
 									nodeState.relayable = false;
 									qualifiersChanged = true;
@@ -2644,9 +2665,16 @@ export function makeTable(options): TableResourceClass {
 									generation,
 									fullCoverage,
 								] of originRouteStates) {
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									// a mark for a generation the route has not certified is ignored, so it must not add the origin
+									const nodeState =
+										generation === undefined
+											? nodeStateIn(nodeStates, nodeId)
+											: nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (
+										generation !== undefined &&
+										(nodeState?.originGeneration ?? nodeState?.lastGeneration) !== generation
+									)
+										continue;
 									if (
 										typeof certifiedFrom === 'number' &&
 										Number.isFinite(certifiedFrom) &&
@@ -2683,6 +2711,8 @@ export function makeTable(options): TableResourceClass {
 										qualifiersChanged = true;
 									}
 								}
+							// an origin new to the row is a new admission fact, so a replay admitted before it rechecks
+							if (nodeStates.length > nodeCount) qualifiersChanged = true;
 							if (qualifiersChanged) originCursorsChanged = true;
 							const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
 							// compared with the persisted row, not the cache, which moves before this write lands
@@ -2823,8 +2853,6 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									const advancesSequence = !!event.localTime && stream.lastSequenceId !== event.localTime;
-									const previousSequenceId = stream.lastSequenceId;
-									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
 									// outrun the commit/conflict-check window, and guarantees the sequence id never
@@ -2890,12 +2918,13 @@ export function makeTable(options): TableResourceClass {
 										try {
 											await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 										} catch (error) {
-											// the transaction landed but its position and route state did not: a repeat of this position
-											// must write again, and the source that attached them must learn it, or it counts them as recorded
-											stream.lastSequenceId = previousSequenceId;
+											// the transaction landed but its position and route state did not: the source that attached
+											// them must learn it, or it counts them as recorded
 											if (event.onFailure && (await event.onFailure(error, failurePosition, true))) stream.held = true;
 											throw error;
 										}
+									// only once recorded: a repeat of a position whose commit or write failed must write it again
+									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									continue;
 								}
 								if (txnInProgress) {
@@ -4442,6 +4471,31 @@ export function makeTable(options): TableResourceClass {
 				return result;
 			}
 		}
+		/**
+		 * Read without recordLockFor's pruning, so a lapsed lease still refuses the write. Called again after
+		 * _writeUpdate's async model hooks: a handle that lapsed while bound keeps refusing it even if a
+		 * re-lock replaced it, and only one released by unlock() lets it go.
+		 */
+		#bindWriteLock(write: any, id: Id, transaction: any): void {
+			const bound = write.lockHandle;
+			if (bound && (bound.expired || (!bound.released && bound.isLeaseExpired()))) return;
+			const own = this.#lockHandle;
+			const tableLocks = transaction.recordLocks?.get(primaryStore);
+			if (!own && !tableLocks && !write.lockJoined) return;
+			const keyId = (write.keyId ??= writeKeyId(id));
+			if (own?.keyId === keyId) {
+				write.lockHandle = own;
+				return;
+			}
+			const joined = tableLocks?.get(keyId);
+			if (joined) {
+				write.lockHandle = joined;
+				write.lockJoined = true;
+			} else if (write.lockJoined) {
+				write.lockHandle = undefined;
+				write.lockJoined = false;
+			}
+		}
 		#closeWriteChain(operation: any) {
 			const owner = operation.stagedIn;
 			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
@@ -4459,7 +4513,7 @@ export function makeTable(options): TableResourceClass {
 					(this as any).set(property, sum);
 					if (own) delete this[property];
 				} else {
-					if (!this.#savingOperation) (this as any).update();
+					if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
 					addToChanges(this, property, value);
 				}
 			} else {
@@ -4521,7 +4575,7 @@ export function makeTable(options): TableResourceClass {
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				chainsStagedState: true,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
@@ -4644,6 +4698,7 @@ export function makeTable(options): TableResourceClass {
 					// TODO: recordDeletion?
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, partialRecord);
 			transaction.addWrite(write);
 		}
@@ -4663,7 +4718,7 @@ export function makeTable(options): TableResourceClass {
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				reloadCommitBase: true,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
@@ -4746,6 +4801,7 @@ export function makeTable(options): TableResourceClass {
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			transaction.addWrite(write);
 		}
 
@@ -5202,7 +5258,7 @@ export function makeTable(options): TableResourceClass {
 						const transactionCannotAdopt =
 							explicit &&
 							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
-								link.hasUnlockedWrite() ||
+								link.hasUnlockedWrite(primaryStore, keyId) ||
 								(link.timestamp !== undefined && link.timestamp >= floor));
 						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
 					}
@@ -5267,6 +5323,7 @@ export function makeTable(options): TableResourceClass {
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
 					const releaseAfterReloadFailure = (error) => {
+						detachScopedUpgradeWrite(link, keyId, handle, true, true);
 						link.unregisterRecordLock(handle);
 						handle.release();
 						if (
@@ -5377,7 +5434,7 @@ export function makeTable(options): TableResourceClass {
 			// run into the released-handle guard at the sweep.
 			if (this.#savingOperation && !this.#savingOperation.saved && this.#savingOperation.lockHandle === handle)
 				this.#savingOperation = null;
-			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle);
+			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
 		}
@@ -5651,11 +5708,7 @@ export function makeTable(options): TableResourceClass {
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
-				// Include the lock handle (if any) so the expired-handle guard in
-				// DatabaseTransaction.save() can throw 409 when the lease has lapsed.
-				// Only attach the hold handle when it covers exactly this key; off-key writes
-				// are ordinary and must not carry an unrelated hold's handle.
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				captureChanges,
 				releaseChanges,
@@ -6980,6 +7033,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
@@ -7010,6 +7064,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			const proceed = (): any => {
 				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
+				if (modelHooksBefore) this.#bindWriteLock(write, id, transaction);
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
 				if (!tracksInstance)
@@ -7104,7 +7159,7 @@ export function makeTable(options): TableResourceClass {
 				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
@@ -7215,6 +7270,7 @@ export function makeTable(options): TableResourceClass {
 					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			transaction.addWrite(write);
 			if (condition) condition.consumed = true;
 			return true;
@@ -11955,13 +12011,28 @@ export function makeTable(options): TableResourceClass {
 	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
 	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
 	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
-	 * instead of resolving a detached, dead reference.
+	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or one staged
+	 * before lock()) is the caller's own: an upgrade keeps it, and a release within the lease (`releasing`)
+	 * returns it to an ordinary unlocked write, which is what it would be had it been staged after the
+	 * unlock. Past the lease it keeps the handle, so its save is refused like any lapsed lock write. A
+	 * `lockFailed` lock() was never handed to the caller, so its joined writes always revert.
 	 */
-	function detachScopedUpgradeWrite(link: any, keyId: unknown, handle: RecordLockHandle): void {
+	function detachScopedUpgradeWrite(
+		link: any,
+		keyId: unknown,
+		handle: RecordLockHandle,
+		releasing = false,
+		lockFailed = false
+	): void {
 		for (const write of link.writes) {
-			if (write && !write.saved && write.lockHandle === handle && writeKeyId(write.key) === keyId) {
+			if (!write || write.saved || write.lockHandle !== handle || writeKeyId(write.key) !== keyId) continue;
+			if (!write.lockJoined) {
 				write.dropped = true;
 				link.detachWrite(write);
+			} else if (lockFailed || (releasing && !handle.isLeaseExpired())) {
+				write.lockHandle = undefined;
+				write.lockJoined = false;
+				link.unlockedWriteScan = undefined;
 			}
 		}
 	}
@@ -14048,6 +14119,14 @@ function rejectNaN(value: number) {
 	if (isNaN(value)) throw new SyntaxError(); // will set the message in the catch block with more context
 	return value;
 }
+
+/** The seq row's state for `nodeId`, added to `nodeStates` when the row has none. */
+function nodeStateIn(nodeStates: any[], nodeId: number): any {
+	let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+	if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+	return nodeState;
+}
+
 function refuseReplay(subscription: any, tableName: string, refusal: Error): false {
 	logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
 	try {

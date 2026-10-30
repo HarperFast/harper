@@ -553,4 +553,34 @@ describe('analytics aggregation cycle', () => {
 		const delay = flushes[0].find((entry) => entry.metric === 'event-loop-delay');
 		assert.ok(delay?.maxDelay >= 200, `the 300 ms stall is in the flush: ${JSON.stringify(delay)}`);
 	});
+
+	it('drops actions recorded before a disable instead of reporting them after re-enable', async function () {
+		this.timeout(30000);
+		const flushedPaths = [];
+		analytics.addAnalyticsListener((metrics) => {
+			for (const entry of metrics) if (entry.metric === 'db-write') flushedPaths.push(entry.path);
+		});
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'ReenableStale');
+		await delay(400);
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		const enabledAt = performance.now();
+		analytics.recordAction(1, 'db-write', 'ReenableFresh');
+		const report = await waitFor(
+			() => {
+				for (const { value } of databases.system.hdb_raw_analytics.primaryStore.getRange({
+					start: false,
+					end: Infinity,
+				})) {
+					if (value?.metrics?.some((entry) => entry.path === 'ReenableFresh')) return value;
+				}
+			},
+			{ timeout: 10000, message: 'the flush after re-enable was recorded' }
+		);
+		const paths = report.metrics.filter((entry) => entry.metric === 'db-write').map((entry) => entry.path);
+		assert.deepStrictEqual(paths, ['ReenableFresh']);
+		assert.ok(!flushedPaths.includes('ReenableStale'), 'no flush reported the pre-disable action');
+		assert.ok(report.period <= performance.now() - enabledAt, `period ${report.period} covers only the new window`);
+	});
 });

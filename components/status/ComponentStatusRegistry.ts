@@ -10,6 +10,7 @@ import {
 	type ComponentStatusLevel,
 	type ComponentStatusSource,
 	COMPONENT_STATUS_LEVELS,
+	STATUS_PRIORITY,
 	type AggregatedComponentStatus,
 	type ComponentApplicationStatus,
 } from './types.ts';
@@ -230,43 +231,27 @@ export class ComponentStatusRegistry {
 			};
 		}
 
-		// Aggregate all statuses
-		const hasErrors = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.ERROR);
-		const hasLoading = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.LOADING);
-
-		const overallStatus = hasErrors
-			? COMPONENT_STATUS_LEVELS.ERROR
-			: hasLoading
-				? COMPONENT_STATUS_LEVELS.LOADING
-				: COMPONENT_STATUS_LEVELS.HEALTHY;
+		const overallStatus =
+			STATUS_PRIORITY.find((level) => allStatuses.some((s) => s.status === level)) ?? COMPONENT_STATUS_LEVELS.UNKNOWN;
 
 		// Show details if anything is not healthy
 		let overallMessage = 'All components loaded successfully';
 		const details: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }> = {};
 
-		if (hasErrors || hasLoading) {
-			const problemStatuses = allStatuses.filter(
-				(s) => s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
-			);
-			overallMessage = problemStatuses
-				.map((s) => {
-					const errorMessage = serializeStatusError(s.error);
-					const message = formatProblemMessage(s.latestMessage, errorMessage);
-					return `${s.key}: ${message || s.status}`;
-				})
-				.join('; ');
-
-			// Include details for debugging
+		if (overallStatus !== COMPONENT_STATUS_LEVELS.HEALTHY) {
+			const messages: string[] = [];
 			for (const status of allStatuses) {
-				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
-					const errorMessage = serializeStatusError(status.error);
-					details[status.key] = {
-						status: status.status,
-						message: formatProblemMessage(status.latestMessage, errorMessage),
-						...(errorMessage !== undefined && { error: errorMessage }),
-					};
-				}
+				if (status.status === COMPONENT_STATUS_LEVELS.HEALTHY) continue;
+				const errorMessage = serializeStatusError(status.error);
+				const message = formatProblemMessage(status.latestMessage, errorMessage) || status.status;
+				messages.push(`${status.key}: ${message}`);
+				details[status.key] = {
+					status: status.status,
+					message,
+					...(errorMessage !== undefined && { error: errorMessage }),
+				};
 			}
+			overallMessage = messages.join('; ');
 		}
 
 		let loadedAt: number | undefined;
