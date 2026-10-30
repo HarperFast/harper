@@ -840,11 +840,10 @@ function branchDirectoriesFor(appName: string): {
 
 /**
  * In each `<app>` directory of an application's branches, or the default database's while it has none: a drop owes
- * their removal, wherever they land. It is written, durably, before
- * that drop changes anything, so the debt outlives an answer the drop gives before the removal, and the process; only a
- * removal that completes, or a later drop that keeps them, clears it. A file, so `branchDirectoriesFor` never reads it
- * as a branch. Its temp file counts too: only a drop that discards the branches writes one, and a crash can leave it
- * unrenamed after that drop removed the application.
+ * their removal, wherever they land. It is written, durably, before that drop changes anything, so the debt outlives an
+ * answer the drop gives before the removal, and the process; only a removal that completes, or a later drop that keeps
+ * them, clears it. A file, so `branchDirectoriesFor` never reads it as a branch. Its temp file counts too: only a drop
+ * that discards the branches writes one, and a crash can leave it unrenamed after that drop removed the application.
  */
 const REMOVAL_PENDING_MARKER = '`removal-pending`';
 const REMOVAL_PENDING_PARTIAL = `${REMOVAL_PENDING_MARKER}.partial`;

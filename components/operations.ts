@@ -1909,7 +1909,7 @@ async function dropComponent(req?: any) {
  * dropped by doing nothing, and nothing restarts. An isolated application's dedicated worker is stopped whatever
  * `restart` says, a leftover one included, and the shared workers restart only when asked and only when they may hold
  * it. Its branched databases go last, once nothing holds them, and are recorded as owed before anything is removed, so
- * `retryPendingBranchRemovals` finishes a removal this drop could not. One that declares them, or that a worker may
+ * `retryPendingBranchRemovals` finishes a removal this drop could not. One that declares them, or that a thread may
  * hold, is recorded with none on disk too, since a load still running there can create the first after this drop looked.
  * `answerEarly` answers a worker that asked for this before a step that stops it; `null` in an answer means not known
  * yet.
@@ -1959,7 +1959,7 @@ async function dropApplication(request, requester?: any, answerEarly?: any) {
 				const keep = req.keepBranches === true;
 				let branched = applicationHasBranchStorage(project);
 				if (keep) await clearPendingBranchRemoval(project);
-				else if (branched || poolMayHold || hadWorker || declaresBranches(project)) {
+				else if (branched || poolMayHold || hadWorker || mainServes || declaresBranches(project)) {
 					recordPendingBranchRemoval(project);
 				}
 				if (present) await removeApplication(project, componentPath);
@@ -2128,7 +2128,7 @@ async function retryBranchRemoval(project: string): Promise<boolean> {
 					return false;
 				}
 				await removeBranchesForApplication(project);
-				log.info(`Removed the branched database storage a drop of ${project} left in place`);
+				log.info(`Finished the branched database removal a drop of ${project} left owed`);
 				return true;
 			},
 			{
@@ -2160,7 +2160,7 @@ function setBranchRemovalRetryDelayForTests(firstMs: number = BRANCH_REMOVAL_RET
 	branchRemovalRetryTimer = undefined;
 }
 
-/** True when the root config cannot be read, as `hasRootConfigEntry`. */
+/** Whether the root config file gives `project` branched databases, or cannot be read, as `hasRootConfigEntry`. */
 function declaresBranches(project: string): boolean {
 	try {
 		const { branchedDatabases } = (readRootConfigEntry(project) ?? {}) as { branchedDatabases?: true | string[] };
