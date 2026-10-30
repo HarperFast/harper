@@ -213,7 +213,12 @@ suite(
 			if (readAny) {
 				const re =
 					/(dangling|broken.?link).*symlink|symlink.*(dangling|broken.?link)|aaa-broken-link|broken-nested-link/i;
-				logHasWarning = log.split('\n').some((line) => re.test(line));
+				logHasWarning = log
+					.split('\n')
+					.some(
+						(line) =>
+							/aaa-broken-link|broken-nested-link/i.test(line) || (/\[warn(?:ing)?\]/i.test(line) && re.test(line))
+					);
 			}
 
 			ok(readAny, `could not read hdb.log — "no warning found" would be vacuous: ${logCandidates.join(', ')}`);

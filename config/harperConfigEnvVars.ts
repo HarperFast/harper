@@ -23,14 +23,15 @@
  */
 
 import type { Logger } from '../utility/logging/logger.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
 import { getBackupDirPath } from './configHelpers.ts';
 import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 // Staged beside the confirmed state while a config-file write is in flight, then renamed over it.
@@ -46,12 +47,7 @@ const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDI
 // it, short enough that leaked wreckage does not suspend drift detection indefinitely.
 const PENDING_STATE_STALE_MS = 60 * 60 * 1000;
 
-/**
- * Get logger instance with tag - lazy loaded to avoid circular dependencies
- * and ensure logger is initialized before use
- */
 function getLogger(): Logger {
-	const { loggerWithTag } = require('../utility/logging/harper_logger');
 	return loggerWithTag('env-config');
 }
 
@@ -335,7 +331,7 @@ function warnEmptyObjectDropped(path: string): void {
 	);
 }
 
-function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
+export function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
 	const result: Record<string, any> = {};
 
 	for (const key in obj) {
@@ -994,13 +990,33 @@ function cleanupRemovedEnvVar(
  * place (e.g., during clone / pre-install).
  */
 export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
+	return composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG', 'HARPER_SET_CONFIG']);
+}
+
+/**
+ * The config env vars that reassert every key they name, at each start and at each runtime config refresh, over
+ * the file and over edits to it. HARPER_DEFAULT_CONFIG is not one: at runtime it only fills in what is missing.
+ */
+export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
+
+/**
+ * `base` as the reasserting env vars leave it, or only the named ones: what the next start, or the next config
+ * refresh, makes of a document about to be written. Throws on malformed env-var JSON, as composeConfigFromEnv does.
+ */
+export function composeReassertedEnvConfig(
+	base: ConfigObject,
+	envVarNames: readonly (typeof REASSERTING_CONFIG_ENV_VARS)[number][] = REASSERTING_CONFIG_ENV_VARS
+): ConfigObject {
+	return composeEnvLayers([], base, envVarNames);
+}
+
+function composeEnvLayers(below: readonly string[], base: ConfigObject, above: readonly string[]): ConfigObject {
 	const result: ConfigObject = {};
 	const baseLayer = cloneDeep(base);
 	const layers: (ConfigObject | null)[] = [
-		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
+		...below.map((name) => parseConfigEnvVar(process.env[name], name)),
 		baseLayer,
-		parseConfigEnvVar(process.env.HARPER_CONFIG, 'HARPER_CONFIG'),
-		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
+		...above.map((name) => parseConfigEnvVar(process.env[name], name)),
 	];
 
 	for (const layer of layers) {

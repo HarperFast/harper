@@ -1,6 +1,16 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, LockUnavailableError } from '../utility/errors/hdbError.ts';
+import {
+	claimLocalKey,
+	freshLocalKey,
+	isValidFloor,
+	localIssuanceRatchet,
+	timestampAbove,
+} from './originClosedFloor.ts';
+import * as envMngr from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { parseDurationMs } from '../utility/common_utils.ts';
 
 /**
  * Exclusive per-record locks (harper#483).
@@ -12,8 +22,10 @@ import { ClientError } from '../utility/errors/hdbError.ts';
  * Phase 1 layers cluster-wide exclusion on top without changing that: once the native key is held,
  * `Table.lock()` obtains a delegation for the key from its home node (see `recordLockCoordinator.ts`)
  * and calls `joinClusterRound()` on the handle. A live delegation serves repeat locks with no cluster
- * message at all. A node-scoped lock (`{ scope: 'node' }`), or any lock on a database with no
- * transport registered, skips the cluster step entirely and behaves exactly as it did in Phase 0.
+ * message at all. A node-scoped lock (`{ scope: 'node' }`) or a defaulted lock on a table declared
+ * `replicate: false` skips the cluster step entirely and behaves exactly as it did in Phase 0; so does
+ * a defaulted lock on a replicating table while no transport has ever been registered for the
+ * database — once one has been, its absence fails closed (`isClusterLockRequired`).
  */
 
 export const DEFAULT_LOCK_LEASE_MS = 30_000;
@@ -32,8 +44,9 @@ export interface RecordLockOptions {
 	/** A held lock outlives the acquiring transaction; it is released by `unlock()` or by its lease */
 	hold?: boolean;
 	/**
-	 * `'cluster'` (default) is exclusive across every participating node; `'node'` keeps Phase 0
-	 * semantics and is exclusive only across this node's worker threads.
+	 * `'cluster'` is exclusive across every participating node; `'node'` keeps Phase 0 semantics and is
+	 * exclusive only across this node's worker threads. Defaults to `'cluster'` on a replicating table
+	 * and to `'node'` on a table declared `replicate: false`, which has no cluster to lock across.
 	 */
 	scope?: 'cluster' | 'node';
 }
@@ -49,10 +62,11 @@ export interface ResolvedRecordLockOptions {
 
 /**
  * The handle returned by `lock()` and held by each gated write until its transaction completes.
- * `release()` is synchronous: it calls `store.unlock(key)` which is ownerless and fires any
- * waiting callbacks cross-thread. The `expired` flag is set in the holder thread by the lease
- * timer, so a stale holder cannot accidentally call unlock after its lease already fired and
- * released the key to a new holder.
+ * `release()` is synchronous: it calls `store.unlock(key)` (or defers it while a commit hold
+ * acquired via `retainForCommit` is still active), which is ownerless and fires any waiting
+ * callbacks cross-thread. The lease timer sets `expired` in the holder thread when it fires
+ * (while a commit hold is active, only the native unlock is deferred), so a stale holder cannot
+ * accidentally call unlock after its lease already fired and released the key to a new holder.
  */
 export interface RecordLockHandle {
 	store: any;
@@ -62,13 +76,19 @@ export interface RecordLockHandle {
 	hold: boolean;
 	released: boolean;
 	expired: boolean;
+	writeRefused: boolean;
 	/** Monotonic timestamp at which tryLock succeeded; used as the base version for holder writes. */
 	acquiredAt: number;
 	/** Advance, but never lower, the version floor from the transaction that owns the actual write timestamp. */
 	noteHolderVersion(version: number): void;
-	/** Preserve a caller timestamp as a candidate floor without treating it as a committed write. */
-	noteCandidateFloor(version: number): void;
-	/** Compute a holder-write version without advancing the floor until that write commits. */
+	/**
+	 * Raise the floor holder writes start from without treating it as a committed write: a caller
+	 * timestamp, or the stamp above the state the lock was admitted on.
+	 */
+	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
+	/** Compute the next holder-write floor from committed holder versions without claiming a local key unless requested. */
+	holderVersionFloor(floor?: number, claim?: boolean): number;
+	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
 	clusterTsR?: number;
@@ -86,6 +106,8 @@ export interface RecordLockHandle {
 	 * have passed their own bound and the key may already belong to someone else.
 	 */
 	isLeaseExpired(): boolean;
+	/** What remains of the native lease, in ms: Infinity without one, 0 once it has lapsed. */
+	leaseRemainingMs?(): number;
 	/** Revoke authority ahead of the lease, so a staged-but-uncommitted write is fenced at commit. */
 	revokeLease(): void;
 	/**
@@ -104,7 +126,11 @@ export interface RecordLockHandle {
 	 * version has been noted; otherwise advances by the minimum monotonic step from the recorded floor.
 	 */
 	nextHolderVersion(): number;
+	/** True when this call returned the native key; false if already released, or while a commit hold defers the unlock. */
 	release(): boolean;
+	/** Defer `store.unlock(key)` until an in-flight native commit settles or `holdDeadlineMono` expires. */
+	retainForCommit?(holdDeadlineMono?: number): void;
+	releaseCommitHold?(): void;
 	/**
 	 * Flip this handle to hold mode and reset its lease timer. Used during scoped→hold upgrades
 	 * so all instances that reference this handle object remain valid (no retire + replace).
@@ -122,12 +148,15 @@ function requireDuration(name: string, value: unknown, fallback: number, min: nu
 	return value;
 }
 
-export function resolveLockOptions(options?: RecordLockOptions | null): ResolvedRecordLockOptions {
+export function resolveLockOptions(
+	options: RecordLockOptions | null | undefined,
+	tableReplicates: boolean
+): ResolvedRecordLockOptions {
 	if (options != null && typeof options !== 'object')
 		throw new ClientError(`Lock options must be an object, but received ${typeof options}`);
 	const hold = options?.hold ?? false;
 	if (typeof hold !== 'boolean') throw new ClientError(`Lock option hold must be a boolean, but received ${hold}`);
-	const scope = options?.scope ?? 'cluster';
+	const scope = options?.scope ?? (tableReplicates ? 'cluster' : 'node');
 	if (scope !== 'cluster' && scope !== 'node')
 		throw new ClientError(`Lock option scope must be 'cluster' or 'node', but received ${scope}`);
 	return {
@@ -146,6 +175,67 @@ export function resolveLockOptions(options?: RecordLockOptions | null): Resolved
  */
 export function lockNotHeldError(handle: Pick<RecordLockHandle, 'expired'>): ClientError {
 	return new ClientError(handle.expired ? 'Record lock lease expired' : 'Record lock already released', 409);
+}
+
+/**
+ * The floor a newly admitted holder's writes start from: strictly above the version the lock reloaded
+ * (a tombstone's included) and the highest predecessor log position the admission waited for. A bound
+ * no valid timestamp exceeds fails the admission, rather than handing back a lock whose writes lose.
+ */
+export function admissionFloor(version: unknown, dependencyFloor: number | undefined): number | undefined {
+	const aboveVersion = stampAbove(version);
+	const aboveDependencies = stampAbove(dependencyFloor);
+	return aboveVersion === undefined || aboveDependencies > aboveVersion ? aboveDependencies : aboveVersion;
+}
+
+function stampAbove(bound: unknown): number | undefined {
+	if (!(typeof bound === 'number' && bound > 0)) return undefined;
+	const above = timestampAbove(bound);
+	if (!isValidFloor(above))
+		throw new ClientError(
+			`No valid timestamp is above ${bound}, so a write under this lock could not outrank the state it was admitted on`,
+			409
+		);
+	return above;
+}
+
+const DEFAULT_MAX_LOCK_CLOCK_SKEW_MS = 5000;
+let cachedMaxLockClockSkewConfig: unknown = Symbol('uninitialized');
+let maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS;
+
+function maxLockClockSkewMs(): number {
+	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+	if (configured === cachedMaxLockClockSkewConfig) return maxLockClockSkew;
+	cachedMaxLockClockSkewConfig = configured;
+	if (configured == null) return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
+	const skew = parseDurationMs(configured);
+	if (Number.isFinite(skew) && skew >= 0) return (maxLockClockSkew = skew);
+	harperLogger.warn?.(
+		`storage.maxLockClockSkew must be a finite, non-negative duration, but is ${configured}; using ${DEFAULT_MAX_LOCK_CLOCK_SKEW_MS}ms`
+	);
+	return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
+}
+
+/**
+ * The stamp a new holder's writes start from, given its admission floor. Holders admitted on one
+ * predecessor's state share a floor, so each claims a distinct record version to avoid treating
+ * separate writes as re-deliveries. Their log keys are reserved separately at save. A floor ahead
+ * of the clock within the configured skew lifts every later local key on this node above it; a floor
+ * beyond that limit is rejected before it can reserve a local key.
+ */
+export function admissionStamp(
+	rootStore: any,
+	floor: number,
+	acquiredAt: number,
+	claim = true
+): { floor: number; stamp: number; claimed: boolean } {
+	if (floor <= acquiredAt) return { floor, stamp: acquiredAt, claimed: false };
+	const maxSkew = maxLockClockSkewMs();
+	const skew = floor - rootStore.getMonotonicTimestamp();
+	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor, claimed: claim };
+	throw new LockUnavailableError(
+		`A record lock cannot be admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait.`
+	);
 }
 
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
@@ -176,16 +266,23 @@ class KeyLockHandle implements RecordLockHandle {
 	hold: boolean;
 	released = false;
 	expired = false;
+	writeRefused = false;
 	acquiredAt: number;
 	clusterTsR: number | undefined;
+	#committedHolderVersion: number | undefined;
 	#lastHolderVersion: number | undefined;
 	#candidateFloor: number | undefined;
+	#candidateFloorToClaim: number | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	// Monotonic mirror of expiresAt. The wall-clock field stays public (callers and the cluster
 	// protocol both speak in timestamps) but the enforcement compares monotonic readings, so neither
 	// an NTP step nor a manual clock change can extend a lease past what peers assumed.
 	#deadlineMono: number | undefined;
 	#onRelease: (() => void) | undefined;
+	#commitHolds = 0;
+	#deferredUnlock = false;
+	#holdDeadlineMono: number | undefined;
+	#holdTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(store: any, key: any[], keyId: unknown, lease?: number, hold = false, acquiredAt?: number) {
 		this.store = store;
@@ -201,22 +298,58 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	noteHolderVersion(version: number): void {
+		this.#committedHolderVersion = Math.max(this.#committedHolderVersion ?? version, version);
 		this.#lastHolderVersion = Math.max(this.#lastHolderVersion ?? version, version);
+		if (this.#candidateFloorToClaim != null && version >= this.#candidateFloorToClaim)
+			this.#candidateFloorToClaim = undefined;
 	}
 
-	noteCandidateFloor(version: number): void {
+	noteCandidateFloor(version: number, claimOnWrite = false): void {
 		this.#candidateFloor = Math.max(this.#candidateFloor ?? version, version);
+		if (claimOnWrite) this.#candidateFloorToClaim = Math.max(this.#candidateFloorToClaim ?? version, version);
+	}
+
+	holderVersionFloor(floor?: number, claim = false): number {
+		return this.#resolveCandidate(floor, claim, this.#committedHolderVersion);
 	}
 
 	holderVersionCandidate(floor?: number): number {
-		// A small nonzero step prevents exact LWW ties without materially moving past the observed floor.
-		const MIN_STEP = 0.000488;
+		return this.#resolveCandidate(floor, true, this.#lastHolderVersion);
+	}
+
+	#resolveCandidate(floor: number | undefined, claim: boolean, lastVersion: number | undefined): number {
+		const candidateFloor = Math.max(this.#candidateFloor ?? -Infinity, floor ?? -Infinity);
+		if (this.#candidateFloorToClaim != null && this.#candidateFloorToClaim > (lastVersion ?? this.acquiredAt)) {
+			const step = timestampAbove(this.#candidateFloorToClaim);
+			const rootStore = this.store.rootStore;
+			const claimed =
+				claim && typeof rootStore?.getUserSharedBuffer === 'function' ? claimLocalKey(rootStore, step) : step;
+			if (claim) {
+				this.#candidateFloor = Math.max(this.#candidateFloor ?? claimed, claimed);
+				this.#candidateFloorToClaim = undefined;
+			}
+			return Math.max(claimed, this.acquiredAt, candidateFloor);
+		}
 		return Math.max(
-			this.#lastHolderVersion != null ? this.#lastHolderVersion + MIN_STEP : this.acquiredAt,
+			lastVersion != null ? (claim ? this.#stepPast(lastVersion) : timestampAbove(lastVersion)) : this.acquiredAt,
 			this.acquiredAt,
-			this.#candidateFloor ?? -Infinity,
-			floor ?? -Infinity
+			candidateFloor
 		);
+	}
+
+	/**
+	 * The smallest step past the holder's last version, claimed when it could repeat an issued key,
+	 * including after clock catch-up. Ahead of the clock it is claimed like an admission stamp:
+	 * one ulp above the ratchet is otherwise the next key the ratchet issues.
+	 */
+	#stepPast(version: number): number {
+		const step = timestampAbove(version);
+		const rootStore = this.store.rootStore;
+		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
+		if (step <= timestampAbove(localIssuanceRatchet(rootStore))) return claimLocalKey(rootStore, step);
+		const lead = step - rootStore.getMonotonicTimestamp();
+		if (lead <= 0) return step;
+		return lead <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
 	}
 
 	isExpired(): boolean {
@@ -227,13 +360,19 @@ class KeyLockHandle implements RecordLockHandle {
 		return this.expired || this.#leaseLapsed();
 	}
 
+	leaseRemainingMs(): number {
+		if (this.expired) return 0;
+		return this.#deadlineMono === undefined ? Infinity : Math.max(0, this.#deadlineMono - performance.now());
+	}
+
 	// The single place the deadline is evaluated, so the two predicates cannot disagree about it. A
 	// deliberate release does not make a lapsed lease valid again: by then peers have passed their own
 	// bound and the key may belong to someone else.
 	#leaseLapsed(): boolean {
 		if (this.#deadlineMono === undefined || performance.now() < this.#deadlineMono) return false;
-		// Finish the expiry rather than only reporting it: the native key must actually go back so a
-		// stalled holder does not keep a key every participant has already written off.
+		// Finish the expiry rather than only reporting it: once no in-flight commit holds the handle,
+		// the native key must go back so a stalled holder does not keep a key every participant has
+		// already written off.
 		if (!this.released) this.#onLeaseExpire();
 		return true;
 	}
@@ -253,8 +392,8 @@ class KeyLockHandle implements RecordLockHandle {
 		// no-op in the one state it was written for.
 		this.expired = true;
 		if (this.released) {
-			// The native key is already back and `onRelease` already fired; only the fence flag and the
-			// lease timer are left to settle.
+			// `release()` already ran (returning the native key or deferring the unlock onto an active
+			// commit hold); only the fence flag and the lease timer are left to settle.
 			clearTimeout(this.#timer);
 			return;
 		}
@@ -269,6 +408,7 @@ class KeyLockHandle implements RecordLockHandle {
 		if (remaining <= 0) return false;
 		this.clusterTsR = tsR;
 		this.acquiredAt = tsR;
+		this.#committedHolderVersion = undefined;
 		this.#lastHolderVersion = undefined;
 		this.#onRelease = onRelease;
 		this.expiresAt = tsR + leaseMs;
@@ -288,20 +428,82 @@ class KeyLockHandle implements RecordLockHandle {
 		return next;
 	}
 
-	#onLeaseExpire() {
-		if (this.released) return;
-		this.released = true;
-		this.expired = true;
-		clearTimeout(this.#timer);
+	retainForCommit(holdDeadlineMono?: number): void {
+		if (this.released && !this.#deferredUnlock) return;
+		this.#commitHolds++;
+		if (holdDeadlineMono !== undefined && Number.isFinite(holdDeadlineMono)) {
+			this.#holdDeadlineMono = Math.max(this.#holdDeadlineMono ?? holdDeadlineMono, holdDeadlineMono);
+			if (this.#deferredUnlock) this.#armHoldTimer();
+		}
+	}
+
+	releaseCommitHold(): void {
+		if (this.#commitHolds <= 0) return;
+		if (--this.#commitHolds === 0) {
+			clearTimeout(this.#holdTimer);
+			this.#holdTimer = undefined;
+			this.#holdDeadlineMono = undefined;
+			if (this.#deferredUnlock) {
+				this.#deferredUnlock = false;
+				this.#unlockAndEmitRelease('record lock deferred release failed (store may have been dropped)');
+			}
+		}
+	}
+
+	// True when the native key went back now; false when the unlock waits on the commit hold.
+	#deferOrFlushUnlock(warningMessage: string): boolean {
+		if (this.#holdDeadlineMono !== undefined && performance.now() >= this.#holdDeadlineMono) {
+			this.#commitHolds = 0;
+			this.#deferredUnlock = false;
+			this.#holdDeadlineMono = undefined;
+			clearTimeout(this.#holdTimer);
+			this.#holdTimer = undefined;
+			this.#unlockAndEmitRelease(warningMessage);
+			return true;
+		}
+		this.#deferredUnlock = true;
+		this.#armHoldTimer();
+		return false;
+	}
+
+	#armHoldTimer() {
+		clearTimeout(this.#holdTimer);
+		this.#holdTimer = undefined;
+		if (!this.#deferredUnlock || this.#holdDeadlineMono === undefined) return;
+		const remaining = Math.max(0, Math.ceil(this.#holdDeadlineMono - performance.now()));
+		this.#holdTimer = setTimeout(() => {
+			this.#holdTimer = undefined;
+			this.#commitHolds = 0;
+			this.#holdDeadlineMono = undefined;
+			if (this.#deferredUnlock) {
+				this.#deferredUnlock = false;
+				this.#unlockAndEmitRelease('record lock commit hold timer failed (store may have been dropped)');
+			}
+		}, remaining).unref();
+	}
+
+	#unlockAndEmitRelease(warningMessage: string) {
 		try {
 			this.store.unlock(this.key);
 		} catch (err) {
 			if (!warnedLeaseTimerStores.has(this.store)) {
 				warnedLeaseTimerStores.add(this.store);
-				harperLogger.warn?.('record lock lease timer failed (store may have been dropped)', err);
+				harperLogger.warn?.(warningMessage, err);
 			}
 		}
 		this.#emitRelease();
+	}
+
+	#onLeaseExpire() {
+		if (this.released) return;
+		this.released = true;
+		this.expired = true;
+		clearTimeout(this.#timer);
+		if (this.#commitHolds > 0) {
+			this.#deferOrFlushUnlock('record lock lease timer failed (store may have been dropped)');
+			return;
+		}
+		this.#unlockAndEmitRelease('record lock lease timer failed (store may have been dropped)');
 	}
 
 	// The cluster release is a durability optimization, not the safety mechanism — peers expire the
@@ -325,19 +527,17 @@ class KeyLockHandle implements RecordLockHandle {
 		if (this.released) return false;
 		this.released = true;
 		clearTimeout(this.#timer);
-		try {
-			this.store.unlock(this.key);
-		} catch (err) {
-			if (!warnedLeaseTimerStores.has(this.store)) {
-				warnedLeaseTimerStores.add(this.store);
-				harperLogger.warn?.('record lock release failed (store may have been dropped)', err);
-			}
+		if (this.#commitHolds > 0) {
+			return this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');
 		}
-		this.#emitRelease();
+		this.#unlockAndEmitRelease('record lock release failed (store may have been dropped)');
 		return true;
 	}
 
 	upgradeToHold(lease: number): void {
+		// Initialize the next holder version before changing modes, so an allocation failure leaves
+		// the handle scoped.
+		this.nextHolderVersion();
 		this.hold = true;
 		clearTimeout(this.#timer);
 		// A granted cluster round may not be extended locally: peers bound the hold from the request
@@ -351,11 +551,6 @@ class KeyLockHandle implements RecordLockHandle {
 		this.#deadlineMono = deadline;
 		this.expiresAt = Date.now() + remaining;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
-		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
-		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
-		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
-		this.nextHolderVersion();
 	}
 }
 
@@ -403,7 +598,14 @@ export async function acquireRecordKey(
 					wakeResolve?.();
 				};
 		const acquired = store.tryLock(key, onUnlocked);
-		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, store.getMonotonicTimestamp());
+		if (acquired) {
+			try {
+				return makeKeyLockHandle(store, key, keyId, lease, hold, freshLocalKey(store.rootStore ?? store));
+			} catch (error) {
+				store.unlock(key);
+				throw error;
+			}
+		}
 		if (onUnlocked) hasCallback = true; // callback now registered; do not register another until it fires
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);

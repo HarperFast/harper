@@ -1,4 +1,5 @@
-import { onMessageByType } from '../server/threads/manageThreads.js';
+import { onMessageByType } from '../server/threads/manageThreads.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import {
 	readdirSync,
 	readFileSync,
@@ -12,10 +13,9 @@ import {
 import { join, basename, dirname, sep } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 
-import { isDeployValidating } from '../server/serverHelpers/deployValidationState.ts';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
-import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { PACKAGE_ROOT, getRuntimeModuleURL } from '../utility/packageUtils.js';
 import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import * as graphqlHandler from '../resources/graphql.ts';
 import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
@@ -28,7 +28,7 @@ import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import * as scheduler from '../resources/scheduler/scheduler.ts';
-import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
@@ -40,15 +40,18 @@ import {
 	thisThreadOwnsApplication,
 } from '../server/threads/isolatedApplications.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
-import { scopedImport } from '../security/jsLoader.ts';
+import { bindIsolatedApplicationGlobals, scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
 import { scopedTableFactory } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
+import { getConfigFilePath, getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { bootstrapModels, startModelsConfigHotReload } from '../resources/models/bootstrap.ts';
+import { declareDecisionTablesAtBoot } from '../resources/models/decisionStore.ts';
+import { declareCalibrationsTableAtBoot } from '../resources/models/calibrationStore.ts';
+import { watchForPreviews } from './previews.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -56,10 +59,10 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
-import { PluginModule } from './PluginModule.ts';
+import { type PluginModule } from './PluginModule.ts';
 import {
 	getEnvBuiltInComponents,
 	recoverInterruptedActivations,
@@ -70,19 +73,90 @@ import {
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
-const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+const getComponentsRoot = () => getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 let loadedComponents = new Map<any, any>();
 
-// Marks a registry entry as belonging to a deploy validation's throwaway load, so cleanup can tell whether
-// an ordinary load has since ADOPTED that module. Checking "was it already loaded?" before the fact is not
-// enough: ownership changes after that check when a real load reuses the entry while the validation is
-// still running, and deleting it then removes a module a live consumer depends on.
-const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
+
+export type BootLoadFailure = { key: string; name: string; message: string; stack?: string };
+type BootOutcome = { executed: boolean; skipped: boolean; pending: number; failures: BootLoadFailure[] };
+
+// Allocated only on a worker held for certification. Public component status cannot serve: a status update
+// overwrites a load failure, and a skipped load reports itself loaded.
+let bootOutcomes: Map<string, BootOutcome> | undefined;
+
+export function trackBootOutcomes(applications: Iterable<string>): void {
+	bootOutcomes = new Map();
+	for (const application of applications) {
+		bootOutcomes.set(application, { executed: false, skipped: false, pending: 0, failures: [] });
+	}
+}
+
+export type BootVerdictOutcome = 'loaded' | 'failed' | 'skipped' | 'pending' | 'absent';
+
+/** `skipped` ran nothing (`dev-only`, `if-installed`, safe mode); `absent` means this thread did not load it. */
+export function bootVerdictOf(application: string): { outcome: BootVerdictOutcome; failures: BootLoadFailure[] } {
+	const outcome = bootOutcomes?.get(application);
+	if (!outcome) return { outcome: 'absent', failures: [] };
+	if (outcome.failures.length > 0) return { outcome: 'failed', failures: outcome.failures };
+	if (outcome.pending > 0) return { outcome: 'pending', failures: [] };
+	if (outcome.executed) return { outcome: 'loaded', failures: [] };
+	return { outcome: outcome.skipped ? 'skipped' : 'absent', failures: [] };
+}
+
+function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
+	if (error instanceof Error) return { key, name: error.name, message: error.message, stack: error.stack };
+	return { key, name: 'Error', message: String(error) };
+}
+
+// A plugin may report its own warning/unknown/error while loading; only the loader's own `loading` is
+// replaced by the automatic success status.
+function markLoadedUnlessReported(componentStatusName: string, message: string): void {
+	const current = statusForComponent(componentStatusName).get()?.status;
+	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
+}
+
+/**
+ * What a failed load reports, under `describe`'s message: the error thrown, when it can take that message, or one that
+ * carries it, since a component can throw a primitive or a frozen error.
+ */
+function loadFailure(thrown: unknown, describe: (message: string) => string): Error {
+	if (thrown instanceof Error) {
+		try {
+			thrown.message = describe(thrown.message);
+			return thrown;
+		} catch {
+			// frozen: carried as the cause below
+		}
+	}
+	return new Error(describe(thrown instanceof Error ? thrown.message : String(thrown)), { cause: thrown });
+}
+
+function noteBootFailure(application: string | undefined, key: string, error: unknown): void {
+	const outcome = application === undefined ? undefined : bootOutcomes?.get(application);
+	outcome?.failures.push(flattenLoadFailure(key, error));
+}
+
+function noteBootExecuted(application: string | undefined): void {
+	const outcome = application === undefined ? undefined : bootOutcomes?.get(application);
+	if (outcome) outcome.executed = true;
+}
+
+function noteBootSkipped(application: string | undefined): void {
+	const outcome = application === undefined ? undefined : bootOutcomes?.get(application);
+	if (outcome) outcome.skipped = true;
+}
+
+function trackDeferredBootLoad(application: string, load: Promise<unknown>): void {
+	const outcome = bootOutcomes?.get(application);
+	if (!outcome) return;
+	outcome.pending++;
+	void load.finally(() => outcome.pending--);
+}
 
 function serializeComponentLoad<T>(appName: string, load: () => Promise<T>): Promise<T> {
 	const previousLoad = componentLoadTails.get(appName);
@@ -166,6 +240,12 @@ function rootConfigBranchedDatabases(appName: string): string[] | true | undefin
 	return (getConfigObj()?.[appName] as any)?.branchedDatabases;
 }
 
+const applicationsPlaced = new Set<string>();
+/** Every application this thread has loaded or set out to load, which main reads as what it may hold until it exits. */
+export function applicationsPlacedOnThisThread(): string[] {
+	return [...applicationsPlaced];
+}
+
 /**
  * Whether this thread is the one that loads `appName` (harper#642, tier 2). An isolated application
  * is loaded by its dedicated worker and by nothing else; every other thread loads only the
@@ -175,18 +255,25 @@ function rootConfigBranchedDatabases(appName: string): string[] | true | undefin
  */
 function placedOnThisThread(appName: string): boolean {
 	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return true;
+	const placed = placementOf(appName);
+	if (placed) applicationsPlaced.add(appName);
+	return placed;
+}
+
+function placementOf(appName: string): boolean {
 	try {
 		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
 	} catch (error) {
 		componentLifecycle.failed(appName, error, `Component '${appName}' failed to load`);
+		noteBootFailure(appName, appName, error);
 		return false;
 	}
 	if (isIsolatedApplication(appName) && isMainThread && getWorkerIndex() === 0) {
-		componentLifecycle.failed(
-			appName,
-			new Error(`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`),
-			`Component '${appName}' failed to load`
+		const error = new Error(
+			`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`
 		);
+		componentLifecycle.failed(appName, error, `Component '${appName}' failed to load`);
+		noteBootFailure(appName, appName, error);
 		return false;
 	}
 	return shouldLoadApplicationHere(appName);
@@ -205,13 +292,13 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 		return { ok: true, mount: rootConfigMount(appName) };
 	} catch (error) {
 		(error as Error).message = `Not loading '${appName}': invalid routing configured: ${(error as Error).message}`;
-		errorReporter?.(error);
 		(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error as Error));
 		componentLifecycle.failed(
 			appName,
 			error as Error,
 			`Component '${appName}' failed to load due to invalid routing configuration`
 		);
+		noteBootFailure(appName, appName, error);
 		return { ok: false };
 	}
 }
@@ -223,7 +310,8 @@ export async function loadComponentDirectories(
 	// Settled by boot BEFORE installApplications(), because that installs from the root config and would
 	// otherwise reinstall the previous release over an already-live candidate. `undefined` on a worker,
 	// which never runs that pass — distinct from an empty map, which would claim nothing is unreconciled.
-	interruptedActivationFailures?: Map<string, Error>
+	interruptedActivationFailures?: Map<string, Error>,
+	failClosed?: Map<string, Error>
 ) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
@@ -240,7 +328,7 @@ export async function loadComponentDirectories(
 		// startup sequencing does not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
 		// the component preparation lock, which is cross-thread and cross-process, and the pass is idempotent.
 		try {
-			for (const [component, error] of await recoverInterruptedActivations(CF_ROUTES_DIR)) {
+			for (const [component, error] of await recoverInterruptedActivations(getComponentsRoot())) {
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 			}
 		} catch (error) {
@@ -251,7 +339,7 @@ export async function loadComponentDirectories(
 		}
 		// Plus anything a previous pass recorded as unsettleable, which settlement above leaves in place.
 		try {
-			for (const [component, error] of await unsettleableComponentsFromDisk(CF_ROUTES_DIR)) {
+			for (const [component, error] of await unsettleableComponentsFromDisk(getComponentsRoot())) {
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 			}
 		} catch (error) {
@@ -262,7 +350,7 @@ export async function loadComponentDirectories(
 		}
 	}
 	try {
-		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
+		for (const [component, error] of await recoverInterruptedComponentExtractions(getComponentsRoot())) {
 			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 		}
 	} catch (error) {
@@ -285,13 +373,16 @@ export async function loadComponentDirectories(
 		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
 	);
 	const deferComponentLoad = (appName: string) => {
-		const appFolder = join(CF_ROUTES_DIR, appName);
+		// It may load once its preparation settles, after this thread has reported what it loaded, and under whatever
+		// config is live then: so it is recorded now, unchecked, since an extra entry only widens a restart.
+		if (shouldLoadApplicationHere(appName)) applicationsPlaced.add(appName);
+		const appFolder = join(getComponentsRoot(), appName);
 		const appWasVisible = existsSync(appFolder);
 		if (appWasVisible) {
 			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
 		}
-		void serializeComponentLoad(appName, () =>
-			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+		const deferredLoad = serializeComponentLoad(appName, () =>
+			recoverInterruptedComponentExtraction(getComponentsRoot(), appName)
 				.then(async () => {
 					if (!existsSync(appFolder)) {
 						if (appWasVisible) {
@@ -315,6 +406,7 @@ export async function loadComponentDirectories(
 				})
 				.catch((error) => {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
+					noteBootFailure(appName, appName, recoveryError);
 					if (appWasVisible) {
 						componentLifecycle.failed(
 							appName,
@@ -324,15 +416,22 @@ export async function loadComponentDirectories(
 					}
 				})
 		);
+		trackDeferredBootLoad(appName, deferredLoad);
 	};
-	if (existsSync(CF_ROUTES_DIR)) {
-		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
+	if (existsSync(getComponentsRoot())) {
+		const cfFolders = readdirSync(getComponentsRoot(), { withFileTypes: true });
 		for (const appEntry of cfFolders) {
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
 			// Skip hidden entries: component names are never dot-prefixed, and this keeps
 			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
+			const refusal = failClosed?.get(appName);
+			if (refusal) {
+				noteBootFailure(appName, appName, refusal);
+				componentLifecycle.failed(appName, refusal, refusal.message);
+				continue;
+			}
 			const recoveryError = failedRecoveries.get(appName);
 			if (recoveryError) {
 				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
@@ -341,6 +440,7 @@ export async function loadComponentDirectories(
 					continue;
 				}
 				unreportedFailedRecoveries.delete(appName);
+				noteBootFailure(appName, appName, recoveryError);
 				componentLifecycle.failed(
 					appName,
 					recoveryError,
@@ -349,7 +449,7 @@ export async function loadComponentDirectories(
 				continue;
 			}
 			if (!placedOnThisThread(appName)) continue;
-			const appFolder = join(CF_ROUTES_DIR, appName);
+			const appFolder = join(getComponentsRoot(), appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
 			cfsLoaded.push(
@@ -363,12 +463,14 @@ export async function loadComponentDirectories(
 					})
 				).catch((error) => {
 					const loadError = error instanceof Error ? error : new Error(String(error));
+					noteBootFailure(appName, appName, loadError);
 					componentLifecycle.failed(appName, loadError, `Component '${appName}' failed to load`);
 				})
 			);
 		}
 	}
 	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
+		noteBootFailure(appName, appName, recoveryError);
 		componentLifecycle.failed(
 			appName,
 			recoveryError,
@@ -409,20 +511,15 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	graphqlSchema: graphqlHandler,
 	roles,
 	jsResource: jsHandler,
-	get fastifyRoutes() {
-		return require('../server/fastifyRoutes');
-	},
+	fastifyRoutes: getRuntimeModuleURL('server/fastifyRoutes'),
 	login,
-	// String entry: the loader `await import()`s these lazily when the component is actually
-	// processed, so the gateway's module graph is not pulled into componentLoader's own
-	// evaluation. `#src/*` is used rather than a relative path because it resolves under both
-	// conditions (source under --conditions=typestrip, dist otherwise); a relative extensionless
-	// require would only resolve against dist.
+	// String entry: the loader imports the gateway only when configured, without resolving
+	// core-owned files through an embedding product's package imports.
 	//
 	// The component is only *processed* when a `modelsGateway` key exists in the config, since
 	// the root loop skips absent keys (`if (!componentConfig) continue`). `defaultConfig.yaml`
 	// ships no such key, so an instance that never opts in pays nothing for this entry.
-	modelsGateway: '#src/resources/models/v1/index',
+	modelsGateway: getRuntimeModuleURL('resources/models/v1/index'),
 	static: staticFiles,
 	customFunctions: {},
 	http: httpComponent,
@@ -438,28 +535,35 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	login: ...
 	 */
 };
+const operationsApiModuleURL = getRuntimeModuleURL('server/operationsServer');
+const agentModuleURL = getRuntimeModuleURL('agent/agent');
 if (isMainThread) {
-	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
-	// Built-in agent component (#626). Only loads if the root config carries an `agent:` block;
-	// the block's `enabled: false` default keeps it inert even when the key is present.
-	TRUSTED_RESOURCE_PLUGINS.agent = require('../agent/agent');
-} else {
-	// The HTTP operations API itself only binds in the main thread, but worker threads still
-	// dispatch operations — most notably, the replication WebSocket handler in workers receives
-	// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
-	// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
-	// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
-	// `server.registerOperation?.({...})` at their module top level. Requiring serverUtilities
-	// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
-	// workers while still installing the dispatch machinery.
-	require('../server/serverHelpers/serverUtilities');
+	TRUSTED_RESOURCE_PLUGINS.operationsApi = operationsApiModuleURL;
+	TRUSTED_RESOURCE_PLUGINS.agent = agentModuleURL;
 }
+onStartup(async () => {
+	if (isMainThread) {
+		const operationsApi = await import('../server/operationsServer.ts');
+		if (TRUSTED_RESOURCE_PLUGINS.operationsApi === operationsApiModuleURL)
+			TRUSTED_RESOURCE_PLUGINS.operationsApi = operationsApi;
+		const agent = await import('../agent/agent.ts');
+		if (TRUSTED_RESOURCE_PLUGINS.agent === agentModuleURL) TRUSTED_RESOURCE_PLUGINS.agent = agent;
+	} else {
+		// The HTTP operations API itself only binds in the main thread, but worker threads still
+		// dispatch operations — most notably, the replication WebSocket handler in workers receives
+		// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
+		// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
+		// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
+		// `server.registerOperation?.({...})` at their module top level. Loading serverUtilities
+		// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
+		// workers while still installing the dispatch machinery.
+		await import('../server/serverHelpers/serverUtilities.ts');
+	}
+});
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
 }
-
-const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
 
 export const loadedPaths = new Map();
 
@@ -473,55 +577,65 @@ export const loadedPaths = new Map();
 // re-invoking `startOnMainThread` on every reload accumulated watchers/routes and re-ran
 // destructive one-time scans (e.g. the replicator's hdb_nodes subscription scan).
 export const mainThreadInitialized = new Map<string, any>();
+const mainThreadInitializing = new Map<string, Promise<any>>();
 
-let errorReporter;
+function mainThreadKeyFor(componentName: string, resolvedFolder: string, isRoot: boolean): string {
+	return `${isRoot ? '' : basename(resolvedFolder)}/${componentName}@${resolvedFolder}`;
+}
+
 /**
- * Forget that a directory was loaded, so a throwaway load does not retain it forever. `loadedPaths` is
- * keyed by realpath and never pruned, and every deploy validates a candidate under a fresh
- * `.deploy-staging/<uuid>/` path — so without this the map grows by one dead entry per deploy for the life
- * of the process.
+ * Run the component's `startOnMainThread` unless it already ran (see `mainThreadInitialized`), and return the
+ * module to use from then on. Concurrent callers share one start; a failed start is not recorded, so the next
+ * load retries it.
  */
-export function forgetLoadedPath(componentDirectory: string): void {
-	let resolved: string | undefined;
+function startOnMainThreadOnce(mainThreadKey: string, extensionModule: any, options: any): Promise<any> {
+	if (mainThreadInitialized.has(mainThreadKey)) return Promise.resolve(mainThreadInitialized.get(mainThreadKey));
+	let starting = mainThreadInitializing.get(mainThreadKey);
+	if (!starting) {
+		starting = (async () => (await extensionModule.startOnMainThread(options)) || extensionModule)();
+		mainThreadInitializing.set(mainThreadKey, starting);
+		starting.then(
+			(initialized) => {
+				mainThreadInitialized.set(mainThreadKey, initialized);
+				mainThreadInitializing.delete(mainThreadKey);
+			},
+			() => mainThreadInitializing.delete(mainThreadKey)
+		);
+	}
+	return starting;
+}
+
+async function importTrustedPlugin(componentName: string): Promise<any> {
+	const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
+	return typeof plugin === 'string'
+		? await import(plugin.startsWith('@/') ? pathToFileURL(join(PACKAGE_ROOT, plugin.slice(1))).toString() : plugin)
+		: plugin;
+}
+
+const SECRET_CUSTODY_COMPONENT = 'secretCustody';
+
+/**
+ * Start the secret-custody built-in ahead of the root load, so boot-time application installs can decrypt
+ * sealed SSH deploy keys and resolve stored registry credentials. The root load then reuses the started
+ * module. Any failure is logged and left to the root load to retry and report.
+ */
+export async function startSecretCustodyOnMainThread(): Promise<void> {
 	try {
-		resolved = realpathSync(componentDirectory);
-	} catch {
-		// Already renamed live or discarded; fall through and prune by prefix anyway.
+		const componentConfig = getConfigObj()[SECRET_CUSTODY_COMPONENT];
+		if (!componentConfig || !Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, SECRET_CUSTODY_COMPONENT)) return;
+		const rootFolder = realpathSync(dirname(getConfigFilePath()));
+		const mainThreadKey = mainThreadKeyFor(SECRET_CUSTODY_COMPONENT, rootFolder, true);
+		if (mainThreadInitialized.has(mainThreadKey)) return;
+		const extensionModule = await importTrustedPlugin(SECRET_CUSTODY_COMPONENT);
+		if (typeof extensionModule.startOnMainThread !== 'function') return;
+		// Precedes the root load, which builds this generation's `resources`, ports and table factory.
+		await startOnMainThreadOnce(mainThreadKey, extensionModule, { server, ...componentConfig });
+	} catch (error) {
+		harperLogger.error(
+			'Secret custody could not start before installing applications; boot-time installs proceed without it:',
+			errorForLog(error)
+		);
 	}
-	if (resolved) loadedPaths.delete(resolved);
-	// Nested `loadComponent()` calls register plugin and dependency realpaths UNDER the candidate, so
-	// deleting only the root leaves those behind — one dead entry per nested load, per deploy, forever.
-	const prefixes = [componentDirectory, resolved].filter(Boolean) as string[];
-	for (const key of loadedPaths.keys()) {
-		if (typeof key === 'string' && prefixes.some((prefix) => key === prefix || key.startsWith(prefix + sep))) {
-			loadedPaths.delete(key);
-		}
-	}
-}
-
-/**
- * Release exactly the modules a throwaway validation load registered, as collected by that load's
- * `collectLoadedModules` set.
- *
- * Exactly those, not a before/after diff of the global registry: validations are serialized with each other
- * but not with ordinary loads, so a deferred real load for another component can register between the two
- * snapshots — and a diff would then delete that live module.
- */
-export function forgetLoadedModules(modules: Iterable<any>): void {
-	// Only entries STILL owned by that validation. Validations serialize with each other but not with
-	// ordinary loads, so a real load can adopt a module the validation registered while it is still running —
-	// re-registering the same entry as live — and deleting it afterwards would take a live module with it.
-	for (const module of modules) {
-		if (loadedComponents.get(module) === VALIDATION_OWNED) loadedComponents.delete(module);
-	}
-}
-
-/** So a caller that installs a reporter can put the previous one back when it is done with it. */
-export function getErrorReporter() {
-	return errorReporter;
-}
-export function setErrorReporter(reporter) {
-	errorReporter = reporter;
 }
 
 let compName: string;
@@ -630,13 +744,18 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			whenResolved(sequentiallyHandleApplication(scope, plugin));
 		};
 		const store = Status.primaryStore;
-		const lockAcquired = store.tryLock(scope.pluginName, callback);
+		// Keyed per (application, plugin), not the plugin name alone: applications load concurrently,
+		// and a plugin-wide lock lets one application's hung handleApplication starve every other
+		// application's load of that plugin into the timeout below (#3184). NUL separator: appName
+		// can contain dots and slashes, so a printable separator could alias two distinct pairs.
+		const lockId = `${scope.appName}\0${scope.pluginName}`;
+		const lockAcquired = store.tryLock(lockId, callback);
 
 		if (!lockAcquired) {
 			return new Promise((resolve, reject) => {
 				whenResolved = resolve;
 				timer = setTimeout(() => {
-					reject(new Error(`Timeout waiting for lock on ${scope.pluginName}`));
+					reject(new Error(`Timeout waiting for lock on ${scope.pluginName} on behalf of ${scope.appName}`));
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
@@ -651,8 +770,11 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				scope,
 				timeout
 			);
+		} catch (error) {
+			scope.disposeBearerValidators();
+			throw error;
 		} finally {
-			Status.primaryStore.unlock(scope.pluginName);
+			Status.primaryStore.unlock(lockId);
 		}
 	});
 }
@@ -679,7 +801,7 @@ function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout:
 		absoluteTimer = setTimeout(() => rejectTimeout(absoluteTimeout), absoluteTimeout);
 		absoluteTimer.unref?.();
 		const arm = () => {
-			if (deployLifecycle.isDeployInFlight(scope.appName)) return;
+			if (timer || deployLifecycle.loadsAwaitDeploy(scope.appName)) return;
 			if (remaining <= 0) return rejectTimeout();
 			activeSince = Date.now();
 			timer = setTimeout(rejectTimeout, remaining);
@@ -716,18 +838,15 @@ export interface LoadComponentOptions {
 	autoReload?: boolean;
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
-	/** Databases this application forks, from its root-config entry (see `rootConfigBranchedDatabases`). */
+	/** Passed only on an application's own load; nested components inherit its scope's branches. */
 	branchedDatabases?: string[] | true;
-	// When provided, every Scope created during this load is added to this set instead of being
-	// auto-closed on worker shutdown. The caller then owns closing them. Used by transient loads
-	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
-	// across deploys (#1462).
-	collectScopes?: Set<Scope>;
 	collectLoadedModules?: Set<any>;
 	// Routing the operator declared for this application in the root config (`host`/`urlPath` on
 	// the application's entry). Applied to every plugin scope this load creates, and inherited by
 	// components the application itself declares, so the whole subtree moves together.
 	mount?: ScopeMount;
+	/** Root load only: applications whose live release must not load, by name. */
+	failClosed?: Map<string, Error>;
 }
 
 /**
@@ -757,6 +876,7 @@ export async function loadComponent(
 		mount,
 		collectLoadedModules,
 	} = options;
+	const loadingApplication = isRoot ? undefined : (appName ?? basename(componentDirectory));
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
@@ -774,6 +894,7 @@ export async function loadComponent(
 		} else {
 			config = DEFAULT_CONFIG;
 		}
+		if (isRoot) config ??= DEFAULT_CONFIG;
 		applicationScope.config ??= config;
 
 		// Before any of the application's modules are imported: a branch has to exist by the time its
@@ -791,9 +912,7 @@ export async function loadComponent(
 			harperLogger.error?.(misplaced);
 			throw new Error(misplaced);
 		}
-		// Only on the application's own load: nested components share its scope and its branches, and
-		// re-preparing per component would key a second branch off the same application name.
-		if (!isRoot && !options.applicationScope && options.branchedDatabases !== undefined) {
+		if (!isRoot && options.branchedDatabases !== undefined) {
 			// The loader's own application identity, not the directory's basename: a branch path is
 			// keyed by this, and two components can share a basename (a nested one and a top-level one)
 			// while being different applications that must not share a fork each believes is private.
@@ -804,17 +923,11 @@ export async function loadComponent(
 				options.branchedDatabases,
 				applicationScope.mode
 			);
+			bindIsolatedApplicationGlobals(applicationScope);
 		}
 
-		// For non-root components with empty/null config (e.g., comment-only YAML),
-		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing
-		// to load; falling back to DEFAULT_CONFIG would cause OptionsWatcher to wait
-		// forever for plugins that the file doesn't actually declare.
-		if (isRoot) config ??= DEFAULT_CONFIG;
-		if (!config) {
-			// Empty/comment-only config file on a non-root component: nothing to load.
-			return undefined;
-		}
+		// Empty non-root configurations declare no plugins to load.
+		if (!config) return undefined;
 
 		// #629 (Phase 2 of #510): populate the model-backend registry from the root
 		// config's `models:` block before any user `handleApplication(scope)` runs,
@@ -825,6 +938,9 @@ export async function loadComponent(
 		if (isRoot) {
 			await bootstrapModels(config);
 			startModelsConfigHotReload();
+			declareDecisionTablesAtBoot();
+			declareCalibrationsTableAtBoot();
+			watchForPreviews();
 		}
 
 		// The `env:` block declares the component's environment expectations (string literal →
@@ -845,11 +961,14 @@ export async function loadComponent(
 					// current data. Cheap (one small system-table scan per env-declaring component).
 					await materializeGlobalSecrets();
 					processComponentEnv(componentStatusName, config.env);
-				} catch (error) {
-					error.message = `Could not load component '${componentStatusName}' due to: ${error.message}`;
-					errorReporter?.(error);
+				} catch (thrown) {
+					const error = loadFailure(
+						thrown,
+						(message) => `Could not load component '${componentStatusName}' due to: ${message}`
+					);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
 					componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+					noteBootFailure(loadingApplication, componentStatusName, error);
 					return undefined;
 				}
 			}
@@ -885,6 +1004,14 @@ export async function loadComponent(
 			// A root-config application (`package:`) is placed like a directory one: an isolated application
 			// loads only in its dedicated worker, and that worker loads no other application.
 			if (isRoot && componentConfig.package && !placedOnThisThread(componentName)) continue;
+			const entryApplication = isRoot ? (componentConfig.package ? componentName : undefined) : loadingApplication;
+			const refused = isRoot && componentConfig.package ? options.failClosed?.get(componentName) : undefined;
+			if (refused) {
+				harperLogger.error(refused.message);
+				componentLifecycle.failed(componentName, refused, refused.message);
+				noteBootFailure(componentName, componentName, refused);
+				continue;
+			}
 			componentLifecycle.loading(componentStatusName);
 
 			const subApplicationScope = isRoot
@@ -898,6 +1025,7 @@ export async function loadComponent(
 				if (pkg) {
 					if (loadComponentOption === 'dev-only' && !process.env.DEV_MODE) {
 						componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' skipped (dev-only)`);
+						noteBootSkipped(entryApplication);
 						continue;
 					}
 					let componentPath: string | null = null;
@@ -935,7 +1063,7 @@ export async function loadComponent(
 								applicationScope: subApplicationScope,
 								autoReload: false,
 								appName: appName || componentName,
-								collectScopes: options.collectScopes,
+								branchedDatabases: isRoot ? rootConfigBranchedDatabases(componentName) : undefined,
 								collectLoadedModules,
 								// `host`/`urlPath` on this entry route the component being loaded. For an
 								// application (no plugin module of its own) that entry is the only place an
@@ -946,31 +1074,34 @@ export async function loadComponent(
 								mount: nestScopeMount(mount, toScopeMount(componentConfig)),
 							});
 							componentFunctionality[componentName] = true;
+						} else {
+							noteBootSkipped(entryApplication);
 						}
 					} else if (loadComponentOption === 'if-installed') {
 						componentLifecycle.loaded(
 							componentStatusName,
 							`Component '${componentStatusName}' skipped (not installed)`
 						);
+						noteBootSkipped(entryApplication);
 						continue;
 					} else {
 						throw new Error(`Unable to find package ${componentName}:${pkg}`);
 					}
 				} else {
-					const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
-					extensionModule =
-						typeof plugin === 'string'
-							? await import(
-									plugin.startsWith('@/') ? pathToFileURL(join(PACKAGE_ROOT, plugin.slice(1))).toString() : plugin
-								)
-							: plugin;
+					extensionModule = await importTrustedPlugin(componentName);
 				}
 
 				if (!extensionModule) {
 					// This is an application-only component (no extension module)
-					// Mark it as loaded since it exists in the config
-					componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
+					// Mark it as loaded since it exists in the config, unless loading its tree reported otherwise
+					markLoadedUnlessReported(componentStatusName, `Application component '${componentStatusName}' processed`);
 					continue;
+				}
+				if (isRoot && subApplicationScope.branches?.size) {
+					throw new Error(
+						`Package '${componentName}' declares branchedDatabases but exports a plugin module; ` +
+							`root plugin callbacks receive the shared root scope and cannot use an application's private databases`
+					);
 				}
 
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
@@ -1022,34 +1153,22 @@ export async function loadComponent(
 						mount
 					);
 
-					if (options.collectScopes) {
-						// A transient/validation load owns these scopes and closes them itself once the
-						// load is validated (see operations.js deploy pre-flight). Skip the worker-shutdown
-						// auto-close so their deploy-lifecycle listeners — and this SHUTDOWN handler — don't
-						// accumulate across deploys (#1462).
-						// Mark it so plugins with process-global side effects (e.g. the scheduler
-						// registering jobs into its engine) can validate without activating —
-						// validation scopes may reuse a live component's identity, so activating
-						// from one can displace the real component's registrations.
-						scope.isTransientValidation = true;
-						options.collectScopes.add(scope);
-					} else {
-						// Track the close so the worker's shutdown path waits for it (and thus for any async
-						// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
-						onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
-					}
+					// Track the close so the worker's shutdown path waits for it (and thus for any async
+					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
+					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 
 					// Mark component as loaded after successful handleApplication call
-					componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+					markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+					noteBootExecuted(entryApplication);
 
 					continue;
 				}
 
 				// Old Extension API (`start` or `startOnMainThread`)
 				if (
-					!BUILT_INS.includes(componentName) &&
+					!Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, componentName) &&
 					('startOnMainThread' in extensionModule ||
 						'start' in extensionModule ||
 						'handleFile' in extensionModule ||
@@ -1089,32 +1208,15 @@ export async function loadComponent(
 				}
 
 				if (isMainThread) {
-					// `startOnMainThread` is one-time main-thread init: run it at most once per component
-					// for the life of the process (first load / first deploy). On a reload of an
-					// already-initialized component, skip the call and reuse the previously-initialized
-					// module so downstream wiring (handleFile/handleDirectory, loadedComponents) is
-					// preserved without re-running main-thread setup. Only components that actually
-					// export `startOnMainThread` are gated — a component with only setup handlers has no
-					// one-time hook to dedupe and must keep picking up its freshly loaded module on
-					// reload. See #460.
+					// Only components that actually export `startOnMainThread` are gated — a component with
+					// only setup handlers has no one-time hook to dedupe and must keep picking up its freshly
+					// loaded module on reload.
 					if (typeof extensionModule.startOnMainThread === 'function') {
-						// Reuse the already-resolved realpath (line 308) instead of a second realpathSync —
-						// same value, avoids a redundant sync FS call (PR #1464 review).
-						const mainThreadKey = `${isRoot ? '' : basename(resolvedFolder)}/${componentName}@${resolvedFolder}`;
-						if (mainThreadInitialized.has(mainThreadKey)) {
-							extensionModule = mainThreadInitialized.get(mainThreadKey);
-						} else {
-							extensionModule =
-								(await extensionModule.startOnMainThread({
-									server,
-									ensureTable,
-									port,
-									securePort,
-									resources,
-									...componentConfig,
-								})) || extensionModule;
-							mainThreadInitialized.set(mainThreadKey, extensionModule);
-						}
+						extensionModule = await startOnMainThreadOnce(
+							mainThreadKeyFor(componentName, resolvedFolder, isRoot),
+							extensionModule,
+							{ server, ensureTable, port, securePort, resources, ...componentConfig }
+						);
 					}
 					if (isRoot && network) {
 						if (env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY))
@@ -1131,17 +1233,9 @@ export async function loadComponent(
 							resources,
 							...componentConfig,
 						})) || extensionModule;
-				// `collectLoadedModules` serves two different purposes, so the two decisions below are made
-				// separately. A deferred ORDINARY load passes one too, to await readiness — for that it has to
-				// collect what it loaded whether or not the module was already registered. Only a VALIDATION
-				// restricts its set, because there the set doubles as the cleanup list and a shared
-				// `rest`/`graphql` module already live from a real load must not go on it.
-				const validating = isDeployValidating();
-				if (!validating || !loadedComponents.has(extensionModule)) collectLoadedModules?.add(extensionModule);
-				// Ownership follows the validation CONTEXT, not the presence of a collect set. Keying it on the
-				// set labelled a deferred ordinary load's registrations validation-owned, which would let the
-				// next validation that collects that module delete a live one.
-				loadedComponents.set(extensionModule, validating ? VALIDATION_OWNED : true);
+				// A deferred load awaits the readiness of everything it loaded, already-registered modules included.
+				collectLoadedModules?.add(extensionModule);
+				loadedComponents.set(extensionModule, true);
 
 				if (
 					(extensionModule.handleFile ||
@@ -1162,15 +1256,18 @@ export async function loadComponent(
 				}
 
 				// Mark component as healthy after successful loading
-				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
-			} catch (error) {
-				error.message = `Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${
-					error.message
-				}`;
-				errorReporter?.(error);
+				markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+				noteBootExecuted(entryApplication);
+			} catch (thrown) {
+				const error = loadFailure(
+					thrown,
+					(message) =>
+						`Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${message}`
+				);
 				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+				noteBootFailure(entryApplication, componentStatusName, error);
 			}
 		}
 
@@ -1232,9 +1329,9 @@ export async function loadComponent(
 			resources.isWorker
 		) {
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
-			errorReporter?.(new Error(errorMessage));
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
 			componentLifecycle.failed(basename(componentDirectory), errorMessage);
+			noteBootFailure(loadingApplication, basename(componentDirectory), errorMessage);
 		}
 
 		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {
@@ -1243,10 +1340,13 @@ export async function loadComponent(
 					`Component ${componentName} from (${basename(componentDirectory)}) did not load any functionality.`
 				);
 		}
-	} catch (error) {
-		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(error));
-		error.message = `Could not load application due to ${error.message}`;
-		errorReporter?.(error);
+	} catch (thrown) {
+		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(thrown));
+		const error = loadFailure(thrown, (message) => `Could not load application due to ${message}`);
 		resources.set('', new ErrorResource(error));
+		if (!isRoot) {
+			componentLifecycle.failed(basename(componentDirectory), error, `Could not load ${basename(componentDirectory)}`);
+			noteBootFailure(loadingApplication, basename(componentDirectory), error);
+		}
 	}
 }

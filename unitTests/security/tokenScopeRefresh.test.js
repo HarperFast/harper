@@ -14,7 +14,6 @@ const path = require('node:path');
 const jwt = require('jsonwebtoken');
 const { refreshOperationToken, clearJWTRSAKeysCache } = require('#src/security/tokenAuthentication');
 const password = require('#src/utility/password');
-const { setUsersWithRolesCache } = require('#src/security/user');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 
@@ -38,12 +37,13 @@ describe('refresh_operation_token operation scope', () => {
 		passphrase = fs.readFileSync(path.join(keysDir, terms.JWT_ENUM.JWT_PASSPHRASE_NAME), 'utf8');
 	});
 
-	after(() => {
+	after(async () => {
 		removeJwtKeys();
 		clearJWTRSAKeysCache();
+		await testUtils.seedUsers();
 	});
 
-	// Mints a `refresh`-subject token and seeds the users cache so validateRefreshToken accepts it
+	// Mints a `refresh`-subject token and seeds the user so validateRefreshToken accepts it
 	// (it matches the token against the SHA-256 hash stored on the user).
 	async function seedRefreshToken(claims) {
 		const refreshToken = jwt.sign(
@@ -66,7 +66,7 @@ describe('refresh_operation_token operation scope', () => {
 				},
 			],
 		]);
-		await setUsersWithRolesCache(users);
+		await testUtils.seedUsers(users);
 		return refreshToken;
 	}
 

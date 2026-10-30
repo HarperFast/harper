@@ -1,6 +1,7 @@
 'use strict';
 
-import * as schemaMetadataValidator from '../validation/schemaMetadataValidator.ts';
+import * as _schemaMetadataValidator from '../validation/schemaMetadataValidator.ts';
+const schemaMetadataValidator = _schemaMetadataValidator;
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import Joi from 'joi';
@@ -8,13 +9,21 @@ import logger from '../utility/logging/harper_logger.ts';
 import { v4 as uuidV4 } from 'uuid';
 import * as signalling from '../utility/signalling.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import * as util from 'util';
-const harperBridge = require('./harperBridge/harperBridge').default;
+import * as util from 'node:util';
+import harperBridge from './harperBridge/harperBridge.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
-import { SchemaEventMsg } from '../server/threads/itc.js';
-import { getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
+import {
+	databaseDropRecoveryPending,
+	getDatabases as _getDatabases,
+	dropTableMeta,
+	isBranchIdentity,
+	isNodeLocalTable,
+	recordTableDrop,
+} from '../resources/databases.ts';
+const getDatabases = _getDatabases;
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
@@ -23,7 +32,7 @@ const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
 	.pattern(schemaRegex)
-	.invalid(...hdbTerms.RESERVED_DATABASE_NAMES)
+	.invalid(...hdbTerms.RESERVED_DATABASE_NAMES, ...hdbTerms.PROTOTYPE_POLLUTING_NAMES)
 	.messages({
 		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,
 		'any.invalid': "'{#value}' is a reserved name and cannot be used as a database name",
@@ -33,7 +42,11 @@ const TABLE_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
 	.pattern(schemaRegex)
-	.messages({ 'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message })
+	.invalid(...hdbTerms.PROTOTYPE_POLLUTING_NAMES)
+	.messages({
+		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,
+		'any.invalid': "'{#value}' is a reserved name and cannot be used as a table name",
+	})
 	.required();
 
 const PRIMARY_KEY_CONSTRAINTS = Joi.string()
@@ -184,7 +197,7 @@ export async function dropSchema(dropSchemaObject: any) {
 	transformReq(dropSchemaObject);
 
 	let invalidSchemaMsg = await schemaMetadataValidator.checkSchemaExists(dropSchemaObject.schema);
-	if (invalidSchemaMsg) {
+	if (invalidSchemaMsg && !databaseDropRecoveryPending(dropSchemaObject.schema)) {
 		throw handleHDBError(
 			new Error(),
 			invalidSchemaMsg,
@@ -196,11 +209,6 @@ export async function dropSchema(dropSchemaObject: any) {
 	}
 
 	await harperBridge.dropSchema(dropSchemaObject);
-	// Await cross-worker propagation before returning success so no worker keeps serving the
-	// dropped schema (#1497).
-	await signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema)
-	);
 
 	let response = await server.replication.replicateOperation(dropSchemaObject);
 	response.message = `successfully deleted '${dropSchemaObject.schema}'`;
@@ -219,12 +227,24 @@ export async function dropTable(dropTableObject: any) {
 	if (validation) throw new ClientError(validation.message);
 
 	transformReq(dropTableObject);
+	const fromPeer = Boolean(dropTableObject[hdbTerms.REPLICATED_FROM]);
+	if (!fromPeer) delete dropTableObject.droppedTime;
+	else if (
+		dropTableObject.droppedTime !== undefined &&
+		!(Number.isFinite(dropTableObject.droppedTime) && dropTableObject.droppedTime > 0)
+	)
+		throw new ClientError(`Invalid droppedTime in a forwarded drop of '${dropTableObject.table}'`);
 
 	let invalidSchemaTableMsg = await schemaMetadataValidator.checkSchemaTableExists(
 		dropTableObject.schema,
 		dropTableObject.table
 	);
 	if (invalidSchemaTableMsg) {
+		// A peer's forwarded drop of a table already gone here still carries a drop time every node must hold.
+		if (fromPeer && dropTableObject.droppedTime !== undefined) {
+			recordTableDrop(dropTableObject.schema, dropTableObject.table, dropTableObject.droppedTime);
+			return { message: `table '${dropTableObject.schema}.${dropTableObject.table}' was already dropped` };
+		}
 		throw handleHDBError(
 			new Error(),
 			invalidSchemaTableMsg,
@@ -235,9 +255,20 @@ export async function dropTable(dropTableObject: any) {
 		);
 	}
 
-	await harperBridge.dropTable(dropTableObject);
+	// Peers never learn of a node-local table's drop: their table of that name is theirs alone.
+	const dropping = getDatabases()[dropTableObject.schema]?.[dropTableObject.table];
+	if (dropping && isNodeLocalTable(dropping)) dropTableObject.replicated = false;
+	if (!(await harperBridge.dropTable(dropTableObject)))
+		return {
+			message: `table '${dropTableObject.schema}.${dropTableObject.table}' was not dropped: the generation here postdates the drop, does not replicate, or was replaced`,
+		};
 
-	await dropTableMeta({ table: dropTableObject.table, database: dropTableObject.schema });
+	try {
+		dropTableMeta({ table: dropTableObject.table, database: dropTableObject.schema });
+	} catch (error) {
+		// the drop is done; a later create of the name removes the rows this left
+		logger.warn(`Could not clean up the metadata of '${dropTableObject.schema}.${dropTableObject.table}'`, error);
+	}
 
 	let response = await server.replication.replicateOperation(dropTableObject);
 	response.message = `successfully deleted table '${dropTableObject.schema}.${dropTableObject.table}'`;
@@ -278,18 +309,12 @@ export async function dropAttribute(dropAttributeObject: any) {
 		);
 	}
 
+	const targetTable = getDatabases()[dropAttributeObject.schema][dropAttributeObject.table];
 	if (
-		dropAttributeObject.attribute ===
-		global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table].primary_key
+		dropAttributeObject.attribute === targetTable.primaryKey ||
+		dropAttributeObject.attribute === targetTable.attributes.find((attribute) => attribute.isPrimaryKey)?.name
 	) {
-		throw handleHDBError(
-			new Error(),
-			'You cannot drop a hash attribute',
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
+		throw new ClientError('You cannot drop a hash attribute');
 	}
 
 	if (hdbTerms.TIME_STAMP_NAMES.indexOf(dropAttributeObject.attribute) >= 0) {
@@ -344,7 +369,7 @@ function dropAttributeFromGlobal(dropAttributeObject) {
 export async function createAttribute(createAttributeObject: any) {
 	transformReq(createAttributeObject);
 
-	const tableAttr = getDatabases()[createAttributeObject.schema][createAttributeObject.table].attributes;
+	const tableAttr = (getDatabases()[createAttributeObject.schema][createAttributeObject.table] as any).attributes;
 	for (const { name } of tableAttr) {
 		if (name === createAttributeObject.attribute) {
 			throw handleHDBError(

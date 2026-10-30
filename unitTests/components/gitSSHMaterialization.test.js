@@ -22,6 +22,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { syncBuiltinESMExports } = require('node:module');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -33,7 +34,7 @@ const secretDecryptor = require('#src/resources/secretDecryptor');
 const { encryptEnvelope, decryptEnvelope, fingerprintOf } = require('#src/utility/secretEnvelope');
 // CJS interop hands back the module namespace, which is the very object Application.ts's default
 // import resolves to — so stubbing a level here is what the code under test sees.
-const logger = require('#src/utility/logging/harper_logger');
+const logger = require('#js/utility/logging/harper_logger');
 
 const ENC_PREFIX = 'enc:v1:';
 const KEY_MATERIAL = '-----BEGIN OPENSSH PRIVATE KEY-----\nc3NoLWtleS1tYXRlcmlhbA\n-----END OPENSSH PRIVATE KEY-----\n';
@@ -52,9 +53,31 @@ function decryptorFor({ privateKey, kid }) {
 	return (value) => decryptEnvelope(value.slice(ENC_PREFIX.length), privateKey, kid);
 }
 
-const tempSSHDirs = () => fs.readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('harper-ssh-'));
+const tempSSHDirs = (dir) => fs.readdirSync(dir).filter((entry) => entry.startsWith('harper-ssh-'));
+
+// syncBuiltinESMExports() is required for the stub to reach Application.ts's ESM `import {
+// tmpdir }` under --conditions=typestrip (see unitTests/resources/blobCompression.test.js for
+// the same pattern). Callers must mkdtemp anything meant to live under the stub (e.g. rootDir
+// below) only after calling this, so restore()'s single recursive rm covers it.
+function scopeTmpdir() {
+	const previousRoot = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitssh-suite-'));
+	const original = os.tmpdir;
+	os.tmpdir = () => dir;
+	syncBuiltinESMExports();
+	return {
+		dir,
+		restore() {
+			env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, previousRoot);
+			os.tmpdir = original;
+			syncBuiltinESMExports();
+			fs.rmSync(dir, { recursive: true, force: true });
+		},
+	};
+}
 
 describe('materializeGitSSH', () => {
+	let scopedTmpdir;
 	let rootDir;
 	let sshDir;
 	let keypair;
@@ -78,9 +101,12 @@ describe('materializeGitSSH', () => {
 
 	const seal = (plaintext, kp = keypair) => ENC_PREFIX + encryptEnvelope(plaintext, kp.publicKey, kp.kid);
 
+	let originalRootPath;
 	beforeEach(() => {
+		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-test-'));
 		sshDir = path.join(rootDir, 'ssh');
+		originalRootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
 		keypair = makeKeypair();
 
@@ -95,10 +121,9 @@ describe('materializeGitSSH', () => {
 		logger.error = originalError;
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
-		fs.rmSync(rootDir, { recursive: true, force: true });
-		for (const leftover of tempSSHDirs()) {
-			fs.rmSync(path.join(os.tmpdir(), leftover), { recursive: true, force: true });
-		}
+		// the root is deleted with the scoped tmpdir; a later suite must not resolve system keys under it
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
+		scopedTmpdir?.restore();
 	});
 
 	it('returns undefined when the node has no ssh dir', async () => {
@@ -121,6 +146,7 @@ describe('materializeGitSSH', () => {
 		const configPath = materialized.command.match(/ssh -F (\S+)/)[1];
 		const tempDir = path.dirname(configPath);
 		assert.ok(path.basename(tempDir).startsWith('harper-ssh-'));
+		assert.ok(tempDir.startsWith(scopedTmpdir.dir), `expected the scoped tmpdir stub to take effect: ${tempDir}`);
 
 		// the plaintext exists, but only here
 		const transientKey = path.join(tempDir, 'deploy.key');
@@ -336,12 +362,16 @@ describe('rewriteSshConfigPaths (cross-platform IdentityFile rewrite)', () => {
 });
 
 describe('nonInteractiveSpawn transient ssh lifetime', () => {
+	let scopedTmpdir;
 	let rootDir;
 	let sshDir;
 
+	let originalRootPath;
 	beforeEach(() => {
+		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-spawn-test-'));
 		sshDir = path.join(rootDir, 'ssh');
+		originalRootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
 		fs.mkdirSync(sshDir, { recursive: true });
 		fs.writeFileSync(path.join(sshDir, 'deploy.key'), KEY_MATERIAL, { mode: 0o600 });
@@ -353,10 +383,8 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	});
 
 	afterEach(() => {
-		fs.rmSync(rootDir, { recursive: true, force: true });
-		for (const leftover of tempSSHDirs()) {
-			fs.rmSync(path.join(os.tmpdir(), leftover), { recursive: true, force: true });
-		}
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
+		scopedTmpdir?.restore();
 	});
 
 	it('exposes GIT_SSH_COMMAND to the child and removes the key material once it exits', async () => {
@@ -364,19 +392,29 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 
 		assert.strictEqual(code, 0);
 		assert.match(stdout, /^ssh -F \S*harper-ssh-\S+[/\\]config /, `unexpected GIT_SSH_COMMAND: ${stdout}`);
-		assert.deepStrictEqual(tempSSHDirs(), [], 'the transient ssh dir must not outlive the spawn');
+		const tempDir = path.dirname(stdout.match(/ssh -F (\S+)/)[1]);
+		assert.ok(tempDir.startsWith(scopedTmpdir.dir), `expected the scoped tmpdir stub to take effect: ${tempDir}`);
+		assert.deepStrictEqual(tempSSHDirs(scopedTmpdir.dir), [], 'the transient ssh dir must not outlive the spawn');
 	});
 
 	it('removes the key material when the command FAILS (cleanup-on-error)', async () => {
 		const { code } = await nonInteractiveSpawn('app', 'sh', ['-c', '"exit 3"'], rootDir);
 
 		assert.strictEqual(code, 3);
-		assert.deepStrictEqual(tempSSHDirs(), [], 'a failed git operation must still clean up the plaintext key');
+		assert.deepStrictEqual(
+			tempSSHDirs(scopedTmpdir.dir),
+			[],
+			'a failed git operation must still clean up the plaintext key'
+		);
 	});
 
 	it('removes the key material when the command times out', async () => {
 		await assert.rejects(nonInteractiveSpawn('app', 'sleep', ['30'], rootDir, 200), /timed out/);
 
-		assert.deepStrictEqual(tempSSHDirs(), [], 'a timed-out git operation must still clean up the plaintext key');
+		assert.deepStrictEqual(
+			tempSSHDirs(scopedTmpdir.dir),
+			[],
+			'a timed-out git operation must still clean up the plaintext key'
+		);
 	});
 });

@@ -1,7 +1,39 @@
 'use strict';
-import logger from '../logging/harper_logger.ts';
+import logger, { errorToString, inspectForLog, isErrorLike } from '../logging/harper_logger.ts';
 import * as hdbErrors from './commonErrors.ts';
 import * as hdbTerms from '../hdbTerms.ts';
+
+// `message` must be a string even for a structured response message; inspectForLog renders what is
+// not a report without throwing or exposing a nested Error's properties.
+function messageText(message: any): string {
+	if (typeof message === 'string') return message;
+	try {
+		if (typeof message.message === 'string') return message.message;
+		const { error, ...detail } = message;
+		if (typeof error === 'string') {
+			const reasons = Object.values(detail)
+				.flat()
+				.filter(
+					(reason) =>
+						reason != null && (typeof reason !== 'object' || isErrorLike(reason) || Object.keys(reason).length > 0)
+				)
+				.map(reasonText);
+			return reasons.length > 0 ? `${error}: ${reasons.join('; ')}` : error;
+		}
+	} catch {
+		// a getter or proxy that throws
+	}
+	return renderValue(message);
+}
+
+function reasonText(reason: any): string {
+	if (typeof reason === 'string') return reason;
+	return isErrorLike(reason) ? errorToString(reason) : renderValue(reason);
+}
+
+function renderValue(value: any): string {
+	return String(inspectForLog(value, { breakLength: Infinity, depth: 4 }));
+}
 
 /**
  * Custom error class used for better error and log handling.  Caught errors that evaluate to an instanceof HdbError can
@@ -15,7 +47,7 @@ export class HdbError extends Error {
 	logLevel: string;
 	/**
 	 * @param {Error} errOrig -  Error to be translated into HdbError. If manually throwing an error, pass `new Error()` to ensure stack trace is maintained
-	 * @param {String} [httpMsg] - optional -  response message that will be returned via the API
+	 * @param {String|Object} [httpMsg] - optional -  response message that will be returned via the API
 	 * @param {Number} [httpCode] - optional -  response status code that will be returned via the API
 	 * @param {String} [logLevel] - optional -  log level that will be used for logging of this error
 	 * @param {String} [logMsg] - optional - log message that, if provided, will be logged at the `logLevel` above
@@ -32,14 +64,9 @@ export class HdbError extends Error {
 			: hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
 				? hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
 				: hdbErrors.DEFAULT_ERROR_MSGS[hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
-		this.message = errOrig.message ? errOrig.message : this.http_resp_msg;
+		this.message = messageText(errOrig.message ? errOrig.message : this.http_resp_msg);
 		this.type = errOrig.name;
 		if (logLevel) this.logLevel = logLevel;
-
-		//This ensures that the error stack does not include [object Object] if the error message is not a string
-		if (typeof this.message !== 'string') {
-			this.stack = errOrig.stack;
-		}
 
 		if (logMsg) {
 			logger[logLevel](logMsg);
@@ -66,6 +93,75 @@ export class ServerError extends Error {
 	}
 }
 
+export class ReadSnapshotExpiredError extends ServerError {
+	constructor() {
+		super('Read scan snapshot expired; retry the read without replaying previously committed writes', 503);
+		this.name = 'ReadSnapshotExpiredError';
+	}
+}
+
+function readErrorProperty(error: any, property: string) {
+	try {
+		return error?.[property];
+	} catch {}
+}
+
+export class ReplicationConfirmationError extends ServerError {
+	replicationUnconfirmed = true;
+	retryable = false;
+	code: string;
+	http_resp_msg: unknown;
+	detail: unknown;
+
+	constructor(cause: any) {
+		const message = readErrorProperty(cause, 'message');
+		super(
+			typeof message === 'string' ? message : 'Replication confirmation failed after the local write committed',
+			readErrorProperty(cause, 'statusCode') ?? readErrorProperty(cause, 'status')
+		);
+		this.name = 'ReplicationConfirmationError';
+		this.cause = cause;
+		this.code =
+			readErrorProperty(cause, 'code') ??
+			(cause !== null && typeof cause === 'object'
+				? readErrorProperty(readErrorProperty(cause, 'constructor'), 'name')
+				: undefined) ??
+			this.name;
+		this.http_resp_msg = readErrorProperty(cause, 'http_resp_msg');
+		this.detail = readErrorProperty(cause, 'detail');
+	}
+}
+
+export function withoutReplicationUnconfirmed(error: any): ServerError {
+	const message = readErrorProperty(error, 'message');
+	const code = readErrorProperty(error, 'code') ?? readErrorProperty(readErrorProperty(error, 'constructor'), 'name');
+	let responseMessage = readErrorProperty(error, 'http_resp_msg');
+	try {
+		if (Array.isArray(responseMessage)) {
+			responseMessage = { error: responseMessage, code, retryable: false };
+		} else if (responseMessage && typeof responseMessage === 'object') {
+			responseMessage = { ...responseMessage, retryable: false };
+			responseMessage.code ??= code;
+			delete responseMessage.replicationUnconfirmed;
+		}
+	} catch {
+		responseMessage = undefined;
+	}
+	return Object.assign(
+		new ServerError(
+			typeof message === 'string' ? message : 'Replication confirmation failed',
+			readErrorProperty(error, 'statusCode')
+		),
+		{
+			cause: error,
+			code,
+			http_resp_msg: responseMessage,
+			detail: readErrorProperty(error, 'detail'),
+			retryable: false,
+		}
+	);
+}
+
 /** Retryable admission failure when a derived index cannot meet a write or query lag budget. */
 export class DerivedIndexLagError extends ServerError {
 	code: string;
@@ -75,6 +171,74 @@ export class DerivedIndexLagError extends ServerError {
 		this.name = 'DerivedIndexLagError';
 		this.code = 'DERIVED_INDEX_LAGGING';
 		this.retryable = true;
+	}
+}
+
+/** Retryable admission failure while a database is draining writes for close, restore, or drop. */
+export class DatabaseClosingError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(databaseName: string, retryable = true, residencyReason?: string) {
+		super(
+			residencyReason
+				? `${residencyReason}; repair the configuration and restart this node`
+				: `Database '${databaseName}' is closing; retry after it is available`,
+			503
+		);
+		this.name = 'DatabaseClosingError';
+		this.code = residencyReason ? 'DATABASE_SHARDING_BLOCKED' : 'DATABASE_CLOSING';
+		this.retryable = residencyReason ? false : retryable;
+	}
+}
+
+export class DatabaseShardingHeldError extends ServerError {
+	code = 'DATABASE_SHARDING_HELD';
+	retryable = true;
+	constructor(databaseName: string, reason: string) {
+		super(
+			`Sharding held for ${databaseName}: ${reason}; retry after sharding agreement and recovery are restored`,
+			503
+		);
+		this.name = 'DatabaseShardingHeldError';
+	}
+}
+
+export class DatabaseGenerationChangedError extends ClientError {
+	code: string;
+	constructor() {
+		super('The database was replaced by a restored or copied state; resubscribe to resynchronize', 409);
+		this.name = 'DatabaseGenerationChangedError';
+		this.code = 'DATABASE_GENERATION_CHANGED';
+	}
+}
+
+export class TableGenerationDroppedError extends ClientError {
+	code: string;
+	constructor(databaseName: string, tableName: string, createdTime: number | undefined, droppedTime: number) {
+		super(
+			`'${databaseName}.${tableName}' (created ${createdTime ?? 'without a stamp'}) predates its drop at ${droppedTime}`,
+			409
+		);
+		this.name = 'TableGenerationDroppedError';
+		this.code = 'TABLE_GENERATION_DROPPED';
+	}
+}
+
+export class ResumeHistoryUnavailableError extends ClientError {
+	code: string;
+	constructor(message = 'The history after this resume position is no longer retained; resubscribe to resynchronize') {
+		super(message, 410);
+		this.name = 'ResumeHistoryUnavailableError';
+		this.code = 'RESUME_HISTORY_UNAVAILABLE';
+	}
+}
+
+export class DatabaseDrainTimeoutError extends DatabaseClosingError {
+	constructor(databaseName: string, timeoutMilliseconds: number) {
+		super(databaseName);
+		this.message = `Timed out after ${timeoutMilliseconds}ms waiting for database '${databaseName}' writes to drain; retry the operation`;
+		this.name = 'DatabaseDrainTimeoutError';
+		this.code = 'DATABASE_DRAIN_TIMEOUT';
 	}
 }
 

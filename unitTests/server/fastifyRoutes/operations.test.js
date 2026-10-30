@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
@@ -182,6 +183,18 @@ describe('Test custom functions operations', () => {
 			expect(otherComponent.urlPath).to.equal('/other');
 			expect(otherComponent.host).to.equal('other.example.com');
 			expect(otherComponent.loadComponent).to.equal('if-installed');
+		});
+
+		it("Test getComponents leaves out a component's deployment provenance, like Harper's other bookkeeping", async () => {
+			const marker = path.join(CF_DIR_ROOT, 'my-cool-component', '.harper-deployment.json');
+			await fs.outputFile(marker, '{}');
+			try {
+				const result = await operations.getComponents();
+				const coolComponent = result.entries.find((e) => e.name === 'my-cool-component');
+				assert.deepStrictEqual(coolComponent.entries.map((e) => e.name).sort(), ['.hidden', 'resources.js', 'utils']);
+			} finally {
+				await fs.remove(marker);
+			}
 		});
 
 		it('Test getComponents includes status information when component status exists', async () => {
@@ -463,6 +476,124 @@ describe('Test custom functions operations', () => {
 			}
 		});
 
+		it('Test get_status and get_components surface load failure cause and wire-safe per-thread details when a component fails to load', async () => {
+			const statusModule = require('#src/components/status/index');
+			const serverStatus = require('#src/server/status/index');
+			const componentLoader = require('#src/components/componentLoader');
+			const { StatusAggregator, componentStatusRegistry } = statusModule.internal;
+
+			const projectDir = path.join(CF_DIR_ROOT, 'my-other-component');
+			const harperConfigPath = path.join(projectDir, 'harperdb-config.yaml');
+			const pluginName = 'brokenTestPlugin';
+			await fs.writeFile(harperConfigPath, `${pluginName}: true\n`);
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+				start() {
+					throw new Error('plugin init boom');
+				},
+			};
+
+			const crossThreadStatuses = new Map([
+				[
+					'my-cool-component@main',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1700000000000),
+						message: 'Component loaded successfully',
+					},
+				],
+				[
+					'my-cool-component@worker-0',
+					{
+						status: 'healthy',
+						workerIndex: 0,
+						lastChecked: new Date(1700000000100),
+						message: 'Component loaded successfully',
+					},
+				],
+			]);
+
+			let getAggregatedFromAllThreadsStub;
+			try {
+				componentStatusRegistry.reset();
+				componentLoader.loadedPaths.clear();
+
+				await componentLoader.loadComponent(projectDir, { isWorker: false, set: sinon.stub() }, 'test-origin');
+				const mainStatus = componentStatusRegistry.getStatus(`my-other-component.${pluginName}`);
+				expect(mainStatus).to.exist;
+				crossThreadStatuses.set(`my-other-component.${pluginName}@main`, { ...mainStatus });
+
+				componentLoader.loadedPaths.clear();
+				await componentLoader.loadComponent(projectDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+				const workerStatus = componentStatusRegistry.getStatus(`my-other-component.${pluginName}`);
+				expect(workerStatus).to.exist;
+				crossThreadStatuses.set(`my-other-component.${pluginName}@worker-0`, {
+					...workerStatus,
+					workerIndex: 0,
+				});
+
+				const aggregatedStatuses = StatusAggregator.aggregate(crossThreadStatuses);
+				getAggregatedFromAllThreadsStub = sinon
+					.stub(statusModule.internal.ComponentStatusRegistry, 'getAggregatedFromAllThreads')
+					.resolves(aggregatedStatuses);
+
+				const rawStatusResult = await serverStatus.get({});
+				const wireComponentStatus = JSON.parse(JSON.stringify(rawStatusResult.componentStatus));
+
+				const healthyStatusEntry = wireComponentStatus.find((c) => c.name === 'my-cool-component');
+				expect(healthyStatusEntry).to.deep.equal({
+					name: 'my-cool-component',
+					componentName: 'my-cool-component',
+					status: 'healthy',
+					lastChecked: {
+						main: 1700000000000,
+						workers: { 0: 1700000000100 },
+					},
+				});
+
+				const expectedCause = `Could not load component '${pluginName}' for application 'my-other-component' due to: plugin init boom`;
+				const failedStatusEntry = wireComponentStatus.find((c) => c.name === `my-other-component.${pluginName}`);
+				expect(failedStatusEntry).to.exist;
+				expect(failedStatusEntry.status).to.equal('error');
+				expect(failedStatusEntry.error).to.equal(expectedCause);
+				expect(failedStatusEntry.abnormalities).to.be.an('object').that.is.not.empty;
+				expect(failedStatusEntry.abnormalities[`my-other-component.${pluginName}@main`]).to.include({
+					status: 'healthy',
+				});
+
+				const rawComponentsResult = await operations.getComponents();
+				const wireComponentsResult = JSON.parse(JSON.stringify(rawComponentsResult));
+
+				const coolComponent = wireComponentsResult.entries.find((e) => e.name === 'my-cool-component');
+				expect(coolComponent).to.exist;
+				expect(coolComponent.status).to.deep.equal({
+					status: 'healthy',
+					message: 'All components loaded successfully',
+					lastChecked: {
+						main: 1700000000000,
+						workers: { 0: 1700000000100 },
+					},
+				});
+
+				const otherComponent = wireComponentsResult.entries.find((e) => e.name === 'my-other-component');
+				expect(otherComponent).to.exist;
+				expect(otherComponent.status.status).to.equal('error');
+				expect(otherComponent.status.message).to.equal(`my-other-component.${pluginName}: ${expectedCause}`);
+				expect(otherComponent.status.details).to.exist;
+				expect(otherComponent.status.details[`my-other-component.${pluginName}`]).to.deep.equal({
+					status: 'error',
+					message: expectedCause,
+					error: expectedCause,
+				});
+			} finally {
+				getAggregatedFromAllThreadsStub?.restore();
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+				componentLoader.loadedPaths.clear();
+				componentStatusRegistry.reset();
+				await fs.remove(harperConfigPath);
+			}
+		});
+
 		it('Test getComponentFile happy path', async () => {
 			const result = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
 			expect(result.message).to.eql(test_yaml_string);
@@ -497,6 +628,17 @@ describe('Test custom functions operations', () => {
 				await fs.remove(largeFilePath);
 			}
 		});
+
+		it('Test getComponentFile rejects a project containing path traversal segments', async () => {
+			await assert.rejects(
+				() => operations.getComponentFile({ project: '../../../../etc', file: 'passwd' }),
+				(error) => {
+					assert.match(error.message, /project name/i);
+					assert.equal(error.statusCode, 400);
+					return true;
+				}
+			);
+		});
 	});
 
 	describe('Test deployComponent force flag', () => {
@@ -518,9 +660,6 @@ describe('Test custom functions operations', () => {
 				},
 			});
 
-			// Mock addConfig to prevent actual file writes
-			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
-
 			// Mock prepareApplication to prevent actual installation
 			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
 			operations.__set__('prepareApplication', prepareApplicationStub);
@@ -531,10 +670,10 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			// Verify addConfig was called
-			expect(addConfigStub.calledOnce).to.be.true;
-			expect(addConfigStub.firstCall.args[0]).to.equal('existing-component');
-			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/new-package');
+			expect(prepareApplicationStub.firstCall.args[0].name).to.equal('existing-component');
+			expect(prepareApplicationStub.firstCall.args[1].describeArtifact().rootConfig.package).to.equal(
+				'@org/new-package'
+			);
 
 			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;
@@ -543,9 +682,6 @@ describe('Test custom functions operations', () => {
 		it('Test deployComponent allows deploying new component without force flag', async () => {
 			// Mock config to return no existing component
 			sandbox.stub(configUtils, 'getConfigObj').returns({});
-
-			// Mock addConfig to prevent actual file writes
-			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
 			// Mock prepareApplication to prevent actual installation
 			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
@@ -557,8 +693,10 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			expect(addConfigStub.calledOnce).to.be.true;
-			expect(addConfigStub.firstCall.args[0]).to.equal('new-component');
+			expect(prepareApplicationStub.firstCall.args[0].name).to.equal('new-component');
+			expect(prepareApplicationStub.firstCall.args[1].describeArtifact().rootConfig.package).to.equal(
+				'@org/new-package'
+			);
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 
@@ -587,9 +725,6 @@ describe('Test custom functions operations', () => {
 			// Mock config to return no existing component
 			sandbox.stub(configUtils, 'getConfigObj').returns({});
 
-			// Mock addConfig to prevent actual file writes
-			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
-
 			// Mock prepareApplication to prevent actual installation
 			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
 			operations.__set__('prepareApplication', prepareApplicationStub);
@@ -601,9 +736,10 @@ describe('Test custom functions operations', () => {
 				force: true,
 			});
 
-			expect(addConfigStub.calledOnce).to.be.true;
-			expect(addConfigStub.firstCall.args[0]).to.equal('graphql');
-			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/override-package');
+			expect(prepareApplicationStub.firstCall.args[0].name).to.equal('graphql');
+			expect(prepareApplicationStub.firstCall.args[1].describeArtifact().rootConfig.package).to.equal(
+				'@org/override-package'
+			);
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 

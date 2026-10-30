@@ -3,7 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { logger } = require('#src/utility/logging/logger');
 const { waitFor } = require('../waitFor.js');
 

@@ -1,3 +1,4 @@
+import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 /**
  * uWebSockets.js HTTP server adapter (#914, github.com/HarperFast/harper, default-off backend).
  *
@@ -18,13 +19,18 @@
 import { STATUS_CODES } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { UwsRequest, UwsRequestBody } from './Request.ts';
 import { Headers } from './Headers.ts';
 import { when } from '../../utility/when.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
-import { errorToString } from '../../utility/logging/harper_logger.ts';
+import {
+	checkNativeAddon,
+	IncompatibleNativeAddonError,
+	isPointerCompressionRuntime,
+} from '../../utility/nativeAddonAbi.ts';
+import { errorToString, errorForLog, warn } from '../../utility/logging/harper_logger.ts';
 
 // uWS has no npm package; it's installed from a GitHub tag and is platform/ABI-specific.
 // Imported lazily so harper builds/loads on platforms without a uWS binary.
@@ -78,25 +84,20 @@ export interface HarperResponse {
 const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
-	// uWS prebuilds link the raw V8 ABI (not Node-API), so on a pointer-compression Node build they
-	// load cleanly but segfault on first use. Refuse with a clear error — unless the installed addon
-	// was rebuilt against the pointer-compression ABI, which the pointer-compression Docker image
-	// build marks with a `.pointer-compression-build` file next to the swapped-in binaries.
-	if ((process.config?.variables as any)?.v8_enable_pointer_compression === 1) {
-		let pcBuild = false;
-		try {
-			const uwsDir = dirname(createRequire(__filename).resolve('uWebSockets.js'));
-			pcBuild = existsSync(join(uwsDir, '.pointer-compression-build'));
-		} catch {
-			// resolution failure falls through to the guard error below
-		}
-		if (!pcBuild) {
-			throw new Error(
-				'The installed uWebSockets.js prebuilds are not supported on pointer-compression Node builds: ' +
-					'they target the standard V8 ABI and crash under pointer compression. Unset ' +
-					'HARPER_UWS_HTTP/HARPER_UWS_UDS, use a standard Node build, or install a uWS binary compiled ' +
-					'for pointer compression (marked with a .pointer-compression-build file in its package directory).'
-			);
+	// The process.dlopen guard refuses a standard-ABI uWS binary too, but uws.js rethrows any load
+	// error as a misleading "supports only Node.js versions …" Error; checking here keeps the real one.
+	// uWS always links V8's C++ API, so a binary the scanner cannot read (Mach-O, PE) needs evidence too.
+	if (isPointerCompressionRuntime()) {
+		const uwsBinary = join(
+			dirname(createRequire(join(PACKAGE_ROOT, 'package.json')).resolve('uWebSockets.js')),
+			`uws_${process.platform}_${process.arch}_${process.versions.modules}.node`
+		);
+		// a missing binary is an unsupported Node.js version, which uws.js itself reports accurately
+		const verdict = statSync(uwsBinary, { throwIfNoEntry: false })?.isFile() ? checkNativeAddon(uwsBinary) : undefined;
+		if (verdict && (!verdict.loadable || verdict.reason === 'not-elf64')) {
+			const error = new IncompatibleNativeAddonError(uwsBinary, verdict);
+			error.message += ' To serve HTTP without uWebSockets.js, unset HARPER_UWS_HTTP and HARPER_UWS_UDS.';
+			throw error;
 		}
 	}
 	const { default: uWS } = await import('uWebSockets.js' as any);
@@ -138,10 +139,15 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		const ip = port != null ? normalizeAddress(Buffer.from(res.getRemoteAddressAsText()).toString()) : undefined;
 
 		const ac = new AbortController();
-		res.onAborted(() => ac.abort());
-		// Once a response has been committed (handler result, error, or a 413), writing again to the
-		// same uWS response is invalid and aborts the process — so every write site guards on this in
-		// addition to ac.signal.aborted (which only covers a client-side teardown, not our own writes).
+		let bodyDrainTimeout: ReturnType<typeof setTimeout> | undefined;
+		let finishRejectedResponse: (() => void) | undefined;
+		res.onAborted(() => {
+			clearTimeout(bodyDrainTimeout);
+			finishRejectedResponse = undefined;
+			ac.abort();
+		});
+		// A second handler response is invalid in uWS. The deferred 413 end instead uses its
+		// own finisher, which native onAborted invalidates independently of handler cancellation.
 		let responseCompleted = false;
 
 		const dispatch = (body?: UwsRequestBody) => {
@@ -183,19 +189,41 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 				if (ended || body.destroyed) return;
 				ended = true;
 				body.destroy(error && body.listenerCount('error') > 0 ? error : undefined);
+				body.removeAllListeners('data');
+				while (body.readableLength) body.read(Math.min(body.readableLength, body.readableHighWaterMark));
 			};
 			ac.signal.addEventListener('abort', () => tearDown(new Error('request aborted')), { once: true });
 			res.onData((chunk: ArrayBuffer, isLast: boolean) => {
-				if (ended || body.destroyed) return;
+				if (ended || body.destroyed) {
+					if (isLast) finishRejectedResponse?.();
+					return;
+				}
 				total += chunk.byteLength;
 				if (total > maxBodyBytes) {
+					const error = new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413);
 					// Only send 413 if nothing has been written yet: the handler may have already responded
 					// (or streamed) without consuming the body, and writing to that completed response aborts.
 					if (!ac.signal.aborted && !responseCompleted) {
 						responseCompleted = true;
-						res.cork(() => res.writeStatus('413 Payload Too Large').end());
+						const connection = Array.isArray(headers.connection) ? headers.connection[0] : headers.connection;
+						res.cork(() => {
+							res.writeStatus('413 Payload Too Large');
+							if (!isLast && typeof connection === 'string' && connection.toLowerCase() === 'close') {
+								res.writeHeader('Connection', 'close');
+								res.writeHeader('content-type', 'text/plain');
+								res.write(errorToString(error));
+								finishRejectedResponse = () => {
+									if (!finishRejectedResponse) return;
+									finishRejectedResponse = undefined;
+									clearTimeout(bodyDrainTimeout);
+									res.cork(() => res.end());
+								};
+								bodyDrainTimeout = setTimeout(finishRejectedResponse, 1_000);
+								bodyDrainTimeout.unref();
+							} else res.end();
+						});
 					}
-					tearDown(new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413));
+					tearDown(error);
 					ac.abort();
 					return;
 				}
@@ -323,29 +351,57 @@ function writeResponse(
  * Stream a Node Readable to the uWS response with backpressure. uWS only flushes the status/headers
  * on the first body write, so for text/event-stream (SSE) — where the client must see the stream
  * open before any event — we emit a spec-valid comment line to force the flush. Client disconnect
- * (via `signal`) or a source error destroys the source and stops writing (writing to an aborted uWS
- * response is invalid).
+ * (via `signal`) destroys the source and stops writing (writing to an aborted uWS response is
+ * invalid).
+ *
+ * The response is completed only when the source ends cleanly. A source that errors, or closes
+ * without ending, aborts the connection instead: `res.end()` would write the chunked terminator and
+ * hand the client a truncated body as a complete response.
  */
 function streamResponse(
 	res: UwsResponse,
 	status: number,
 	headers: Headers,
-	source: { on: Function; once: Function; pause: Function; resume: Function; destroy?: Function },
+	source: {
+		on: Function;
+		once: Function;
+		pause: Function;
+		resume: Function;
+		destroy?: Function;
+		destroyed?: boolean;
+		errored?: Error | null;
+	},
 	signal?: AbortSignal
 ): void {
 	let finished = false;
-	const finish = (endResponse: boolean) => {
+	const finish = (sourceEnded: boolean) => {
 		if (finished) return;
 		finished = true;
 		signal?.removeEventListener('abort', onAbort);
-		if (endResponse) res.cork(() => res.end());
+		if (sourceEnded) res.cork(() => res.end());
+		else {
+			source.destroy?.();
+			// runs the onAborted callback, so `finished` has to be set by now
+			res.close();
+		}
+	};
+	const fail = (error?: Error | null) => {
+		if (finished) return;
+		if (error) warn(errorForLog(error));
+		finish(false);
 	};
 	function onAbort() {
 		if (finished) return;
 		finished = true;
 		source.destroy?.();
 	}
+	// Attached before anything can return: destroy(error) emits on a later tick, and an 'error' with
+	// no listener is thrown. Not once(), because a source may emit more than one.
+	source.on('error', fail);
 	if (signal?.aborted) return onAbort();
+	// the handler resolves asynchronously, so a source can be destroyed, and its 'close' already
+	// emitted, before this gets to listen for it
+	if (source.destroyed) return fail(source.errored);
 	signal?.addEventListener('abort', onAbort, { once: true });
 
 	const isSse = String(headers.get('content-type') ?? '').includes('text/event-stream');
@@ -371,7 +427,7 @@ function streamResponse(
 		}
 	});
 	source.once('end', () => finish(true));
-	source.once('error', () => finish(true)); // headers already sent; just terminate the response
+	source.once('close', () => fail());
 }
 
 // Normalize uWS's remote-address text (raw IPv6 form, IPv4-mapped for v4 peers) to a readable IP.
@@ -460,6 +516,11 @@ export class UwsWebSocket extends EventEmitter {
 	#raw: any;
 	#open = true;
 	#closeEmitted = false;
+	#drainPending = false;
+	#flushDrain = () => {
+		this.#drainPending = false;
+		if (this.#open && !this._socket.writableNeedDrain) this._socket.emit('drain');
+	};
 	public _socket: UwsSocketShim;
 	public binaryType = 'nodebuffer';
 
@@ -520,7 +581,9 @@ export class UwsWebSocket extends EventEmitter {
 		this.emit('message', Buffer.from(new Uint8Array(message)), isBinary);
 	}
 	_drain(): void {
-		this._socket.emit('drain');
+		if (this.#drainPending) return;
+		this.#drainPending = true;
+		setImmediate(this.#flushDrain);
 	}
 	_closed(code: number, message: ArrayBuffer): void {
 		this.#open = false;

@@ -8,6 +8,9 @@ const {
 	findMissedCronOccurrence,
 	registerComponentJobs,
 	unregisterComponentJobs,
+	registerInternalJobs,
+	unregisterInternalJobs,
+	internalJobOwner,
 	safeErrorMessage,
 	sanitizeStoredError,
 	stopSchedulerEngine,
@@ -199,6 +202,18 @@ describe('scheduler engine', () => {
 			assert.deepStrictEqual(getRegisteredJobNames('test-app'), []);
 			// Unregistering an unknown component is a no-op
 			unregisterComponentJobs('never-registered');
+		});
+
+		it('keeps internal jobs out of reach of the component registry', () => {
+			const owner = internalJobOwner('calibration-test');
+			registerInternalJobs('calibration-test', [{ ...noopJob('fit'), componentName: owner }]);
+			assert.deepStrictEqual(getRegisteredJobNames(owner), ['fit']);
+			unregisterComponentJobs(owner);
+			assert.deepStrictEqual(getRegisteredJobNames(owner), ['fit'], 'a component cannot unregister it');
+			registerComponentJobs(owner, [noopJob('hijack')]);
+			assert.deepStrictEqual(getRegisteredJobNames(owner), ['fit'], 'a component cannot replace it');
+			unregisterInternalJobs('calibration-test');
+			assert.deepStrictEqual(getRegisteredJobNames(owner), []);
 		});
 	});
 });

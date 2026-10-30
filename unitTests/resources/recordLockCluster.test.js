@@ -2,9 +2,10 @@ const assert = require('assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
-const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { table, databases, resetDatabases } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { clearThisNodeName, getThisNodeName } = require('#src/server/nodeName');
@@ -16,9 +17,11 @@ const {
 	homeFor,
 	ringKeyFor,
 } = require('#src/resources/recordLockCoordinator');
-const { LOCAL_ONLY, isLockControlType } = require('#src/resources/auditStore');
+const { LOCAL_ONLY, isLockControlType, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
+const { ClientError } = require('#src/utility/errors/hdbError');
+const { lockAttemptKey } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -29,6 +32,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	let ClusterLockTest;
 	let SinkLockTest;
+	let NodeLocalLockTest;
 	let previousHostname;
 	let nextId = 1;
 	const id = () => `cluster-lock-${nextId++}`;
@@ -48,6 +52,16 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		throw new Error('no id in the first 10000 homes on this node');
 	};
 	const NODE_NAME = 'lock-test-node';
+	const applyFromPeer = async (recordId, timestamp) => {
+		const context = { source: {}, timestamp };
+		await transaction(context, async () => {
+			const resource = await ClusterLockTest.getResource(recordId, context);
+			return resource._writeUpdate(recordId, { id: recordId, n: 10 }, true, {
+				isNotification: true,
+				nodeId: getIdOfRemoteNode('peer-ahead', ClusterLockTest.auditStore),
+			});
+		});
+	};
 
 	before(function () {
 		setupTestDBPath();
@@ -64,6 +78,12 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		SinkLockTest = table({
 			table: 'SinkLockTest',
 			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		NodeLocalLockTest = table({
+			table: 'NodeLocalLockTest',
+			database: 'test',
+			replicate: false,
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
 	});
@@ -89,6 +109,8 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	 */
 	function useSoloTransport(overrides = {}) {
 		registerClusterLockTransport('test', {
+			// These transport swaps retain the same owner, even in the mapless refusal test.
+			coordinationIncarnation: () => overrides.homeIncarnation ?? 1,
 			homeMap: () =>
 				overrides.mapless
 					? undefined
@@ -387,7 +409,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			if (isLMDB) return this.skip();
 			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 			const { encodeLockControlPayload } = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const peerId = getIdOfRemoteNode('peer-barrier', ClusterLockTest.auditStore);
 			useSoloTransport({ homes: [NODE_NAME, 'peer-barrier'] });
 			const events = new IterableEventQueue();
@@ -545,7 +567,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			if (isLMDB) return this.skip();
 			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 			const { encodeLockControlPayload } = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const peerId = getIdOfRemoteNode('peer-sink', ClusterLockTest.auditStore);
 			useSoloTransport({ homes: [NODE_NAME, 'peer-sink'] });
 			// A source is how replication attaches, so this is the path applyLockControlEvent sits on:
@@ -615,7 +637,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				encodeLockControlPayload,
 				deliverLockControlEntry,
 			} = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			useSoloTransport({ homes: [NODE_NAME, 'peer-1'] });
 			// Through `idHomedHere`, which hashes `ringKeyFor(database, table, writeKeyId(id))` exactly as
 			// Table.ts hands it to the coordinator. Hashing the raw id here picked a home under a
@@ -651,7 +673,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				encodeLockControlPayload,
 				deliverLockControlEntry,
 			} = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const homes = [NODE_NAME, 'peer-1'];
 			useSoloTransport({ homes });
 			let recordId;
@@ -785,6 +807,274 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		});
 	});
 
+	describe('a table that does not replicate (harper#2716)', () => {
+		/**
+		 * The transport harper-pro registers for every replicated database while
+		 * `replication.recordLocks` is off: `homeMap()` refuses with the 503 that names the switch.
+		 */
+		function useRefusingTransport() {
+			const calls = { homeMap: 0 };
+			const refuse = () => Promise.reject(new ClientError('cluster record locks are not enabled on this node', 503));
+			registerClusterLockTransport('test', {
+				homeMap() {
+					calls.homeMap++;
+					throw new ClientError('cluster record locks are not enabled on this node', 503);
+				},
+				ownsCoordination: () => true,
+				requestDelegation: refuse,
+				recallDelegation: refuse,
+				establishLockFreshness: refuse,
+			});
+			return calls;
+		}
+		const declare = (replicate) =>
+			table({
+				table: 'NodeLocalLockTest',
+				database: 'test',
+				replicate,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+			});
+		function catalogReplicate() {
+			for (const { key, value } of NodeLocalLockTest.dbisDB.getRange({ start: false })) {
+				if (String(key).startsWith('NodeLocalLockTest/') && value?.isPrimaryKey) return value.replicate;
+			}
+			throw new Error('no primary catalog row for NodeLocalLockTest');
+		}
+
+		it('keeps a defaulted lock node-local under a transport that refuses cluster locks', async function () {
+			if (isLMDB) return this.skip();
+			const calls = useRefusingTransport();
+			const before = controlEntries(NodeLocalLockTest).length;
+			const record = await NodeLocalLockTest.lock(id(), { hold: true, lease: 5000 });
+			assert.strictEqual(calls.homeMap, 0, 'a defaulted lock on a non-replicating table never reaches the transport');
+			assert.strictEqual(controlEntries(NodeLocalLockTest).length, before);
+			assert.strictEqual(await record.unlock(), true);
+			await assert.rejects(
+				() => ClusterLockTest.lock(id(), { hold: true, lease: 5000 }),
+				(error) => error.statusCode === 503
+			);
+			assert.ok(calls.homeMap > 0);
+		});
+
+		it('never re-scopes an explicit cluster request, with or without a transport', async function () {
+			if (isLMDB) return this.skip();
+			await assert.rejects(
+				() => NodeLocalLockTest.lock(id(), { hold: true, lease: 5000, scope: 'cluster' }),
+				(error) => error.statusCode === 503 && error.code === 'LOCK_UNAVAILABLE'
+			);
+			const calls = useRefusingTransport();
+			await assert.rejects(
+				() => NodeLocalLockTest.lock(id(), { hold: true, lease: 5000, scope: 'cluster' }),
+				(error) => error.statusCode === 503
+			);
+			assert.ok(calls.homeMap > 0, 'an explicit cluster request is answered by the transport, never downgraded');
+		});
+
+		it('treats the defaulted lock as node-scoped when an explicit cluster lock follows it', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			await assert.rejects(
+				() =>
+					transaction(async () => {
+						await NodeLocalLockTest.lock(recordId, { lease: 5000 });
+						await NodeLocalLockTest.lock(recordId, { scope: 'cluster', lease: 5000 });
+					}),
+				(error) => error.statusCode === 409
+			);
+		});
+
+		it('is unaffected by the cluster-required latch a departed transport leaves behind', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const warmUp = await ClusterLockTest.lock(id(), { hold: true, lease: 5000 });
+			await warmUp.unlock();
+			unregisterClusterLockTransport('test');
+			await assert.rejects(
+				() => ClusterLockTest.lock(id(), { hold: true, lease: 5000 }),
+				(error) => error.statusCode === 503
+			);
+			const record = await NodeLocalLockTest.lock(id(), { hold: true, lease: 5000 });
+			assert.strictEqual(await record.unlock(), true);
+		});
+
+		it('keeps coalesced and re-entrant defaulted locks node-local', async function () {
+			if (isLMDB) return this.skip();
+			const calls = useRefusingTransport();
+			const recordId = id();
+			await transaction(async () => {
+				const both = await Promise.all([
+					NodeLocalLockTest.lock(recordId, { lease: 5000, timeout: 2000 }),
+					NodeLocalLockTest.lock(recordId, { lease: 5000, timeout: 2000 }),
+				]);
+				assert.ok(both[0] && both[1]);
+				assert.ok(await NodeLocalLockTest.lock(recordId, { lease: 5000 }));
+			});
+			assert.strictEqual(calls.homeMap, 0);
+		});
+
+		it('follows a live change of the replicate declaration', async function () {
+			if (isLMDB) return this.skip();
+			const calls = useRefusingTransport();
+			try {
+				assert.strictEqual(declare(true), NodeLocalLockTest, 'the redeclaration evolves the same class');
+				assert.strictEqual(NodeLocalLockTest.replicate, true);
+				await assert.rejects(
+					() => NodeLocalLockTest.lock(id(), { hold: true, lease: 5000 }),
+					(error) => error.statusCode === 503,
+					'once it replicates, the defaulted lock is cluster-scoped and the transport refuses it'
+				);
+				assert.ok(calls.homeMap > 0);
+			} finally {
+				declare(false);
+			}
+			assert.strictEqual(NodeLocalLockTest.replicate, false);
+			const record = await NodeLocalLockTest.lock(id(), { hold: true, lease: 5000 });
+			assert.strictEqual(await record.unlock(), true);
+		});
+
+		it('re-reads the declaration after the native wait: a table that began replicating takes the cluster path', async function () {
+			if (isLMDB) return this.skip();
+			const calls = useRefusingTransport();
+			const recordId = id();
+			const blocker = await NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, scope: 'node' });
+			const parked = NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, timeout: 5000 }).then(
+				() => undefined,
+				(error) => error
+			);
+			try {
+				declare(true);
+				assert.strictEqual(calls.homeMap, 0, 'sanity: the parked call resolved node scope at entry');
+				await blocker.unlock();
+				const error = await parked;
+				assert.strictEqual(
+					error?.statusCode,
+					503,
+					'acquired after the table began replicating, so the transport answers'
+				);
+				assert.ok(calls.homeMap > 0);
+			} finally {
+				declare(false);
+			}
+		});
+
+		it('re-reads the declaration after the native wait: a table that stopped replicating stays node-local', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			declare(true);
+			try {
+				const delegationsBefore = NodeLocalLockTest.lockCoordinator.stats.delegations;
+				const blocker = await NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, scope: 'node' });
+				const parked = NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, timeout: 5000 });
+				declare(false);
+				await blocker.unlock();
+				const record = await parked;
+				assert.strictEqual(
+					NodeLocalLockTest.lockCoordinator.stats.delegations - delegationsBefore,
+					0,
+					'no delegation was taken: the lock acquired node-scoped'
+				);
+				assert.strictEqual(await record.unlock(), true);
+			} finally {
+				declare(false);
+			}
+		});
+
+		it('fails closed when a parked call becomes cluster-scoped after the transport departed', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			unregisterClusterLockTransport('test');
+			const recordId = id();
+			const blocker = await NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, scope: 'node' });
+			const parked = NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, timeout: 5000 }).then(
+				() => undefined,
+				(error) => error
+			);
+			try {
+				declare(true);
+				await blocker.unlock();
+				const error = await parked;
+				assert.strictEqual(
+					error?.statusCode,
+					503,
+					'a fresh call rejects here, and so must one that acquired after the change'
+				);
+				assert.strictEqual(error.code, 'LOCK_UNAVAILABLE');
+				const recovered = await NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, scope: 'node' });
+				assert.strictEqual(await recovered.unlock(), true, 'the native key was given back');
+			} finally {
+				declare(false);
+			}
+		});
+
+		it('re-resolves a coalesced follower’s defaulted scope across a true-to-false change', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			declare(true);
+			try {
+				const blocker = await NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000, scope: 'node' });
+				const followed = transaction(async () => {
+					const both = await Promise.all([
+						NodeLocalLockTest.lock(recordId, { lease: 5000, timeout: 5000 }),
+						NodeLocalLockTest.lock(recordId, { lease: 5000, timeout: 5000 }),
+					]);
+					assert.ok(both[0] && both[1], 'the follower asked for the same current default as the leader');
+				});
+				declare(false);
+				await blocker.unlock();
+				await followed;
+			} finally {
+				declare(false);
+			}
+		});
+
+		it('leaves a hold granted before a false-to-true change node-scoped for its lease', async function () {
+			if (isLMDB) return this.skip();
+			const calls = useRefusingTransport();
+			const recordId = id();
+			await NodeLocalLockTest.put({ id: recordId, n: 0 });
+			const held = await NodeLocalLockTest.lock(recordId, { hold: true, lease: 5000 });
+			try {
+				declare(true);
+				held.set('n', 1);
+				await held.save();
+				assert.strictEqual((await NodeLocalLockTest.get(recordId)).n, 1, 'the granted hold still authorizes its write');
+				await assert.rejects(
+					() => NodeLocalLockTest.lock(id(), { hold: true, lease: 5000 }),
+					(error) => error.statusCode === 503,
+					'later calls are cluster-scoped, so this window is bounded by the hold lease, not closed by core'
+				);
+				assert.ok(calls.homeMap > 0);
+			} finally {
+				await held.unlock();
+				declare(false);
+			}
+		});
+
+		it('persists a redeclared replicate against the catalog row, not a stale class', async function () {
+			if (isLMDB) return this.skip();
+			declare(true);
+			assert.strictEqual(catalogReplicate(), true);
+			NodeLocalLockTest.replicate = false; // the stale class another worker's persist left behind
+			declare(false);
+			assert.strictEqual(catalogReplicate(), false, 'compared against the catalog row, the redeclaration is a change');
+		});
+
+		it('refreshes a stale class from the catalog when the database reloads', async function () {
+			if (isLMDB) return this.skip();
+			NodeLocalLockTest.replicate = true;
+			resetDatabases();
+			assert.strictEqual(databases.test.NodeLocalLockTest, NodeLocalLockTest, 'the reload keeps the class');
+			assert.strictEqual(NodeLocalLockTest.replicate, false);
+			const calls = useRefusingTransport();
+			const record = await NodeLocalLockTest.lock(id(), { hold: true, lease: 5000 });
+			assert.strictEqual(calls.homeMap, 0);
+			assert.strictEqual(await record.unlock(), true);
+		});
+	});
+
 	describe('coalescing and cleanup', () => {
 		it('coalesces two concurrent cluster locks on one key instead of self-blocking', async function () {
 			if (isLMDB) return this.skip();
@@ -812,9 +1102,13 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('reports the leader’s failure reason rather than inventing contention for the follower', async function () {
 			if (isLMDB) return this.skip();
-			// No agreed map fails the leader's round with a 503 that names why the guarantee could not be
-			// established. Nobody held the key, so the follower must end on that reason and not on a 423.
-			useSoloTransport({ mapless: true });
+			// A home that refuses this node fails the leader's round at once with a 503 that names why the
+			// guarantee could not be established. Nobody held the key, so the follower must end on that
+			// reason and not on a 423. (A withheld map is no longer immediate: it is ridden through.)
+			useSoloTransport({
+				homes: ['elsewhere'],
+				requestDelegation: async () => ({ granted: false, reason: 'unknown-node' }),
+			});
 			const recordId = id();
 			await transaction(async () => {
 				const leader = ClusterLockTest.lock(recordId, { lease: 5000, timeout: 5000 }).then(
@@ -841,6 +1135,30 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 					'the follower answered with a fabricated 423 instead of the leader’s reason'
 				);
 			});
+		});
+
+		it('caps the cluster wait at what the native lease leaves (record-locks.md §4.5)', async function () {
+			if (isLMDB) return this.skip();
+			// A home that is still coming up is waited out — but only for as long as the native lease the
+			// handle already started can still be joined; a round landing after it could only fail.
+			let asked = 0;
+			useSoloTransport({
+				homes: ['elsewhere'],
+				requestDelegation: async () => {
+					asked++;
+					return { granted: false, reason: 'quarantine', recovering: true, retryAfterMs: 250 };
+				},
+			});
+			const startedAt = Date.now();
+			await assert.rejects(
+				() => ClusterLockTest.lock(id(), { lease: 400, timeout: 5000 }),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+			const elapsed = Date.now() - startedAt;
+			assert.ok(elapsed < 2_000, `waited ${elapsed}ms past a 400ms lease`);
+			// Backed off from 250ms, so 3 to 4 asks; a timer firing a millisecond early costs one more ask at
+			// the deadline. A 25ms retry loop would make 16.
+			assert.ok(asked >= 1 && asked <= 8, `${asked} requests inside a 400ms lease`);
 		});
 
 		it('releases the transaction’s other locks when one of them lapses at commit', async function () {
@@ -907,7 +1225,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('picks up a node admitted after this worker cached the mapping', async function () {
 			if (isLMDB) return this.skip();
-			const { pack } = require('msgpackr');
+			const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
 			// Ids are minted by whichever worker first talks to a peer, and invalidation only reaches
 			// that worker. Every other one holds a map that predates the new node, so a miss has to be
@@ -923,7 +1241,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('reads the store once per window for an id it will never resolve', async function () {
 			if (isLMDB) return this.skip();
-			const { pack } = require('msgpackr');
+			const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
 			// `rebuildOnMiss` bypassed the refresh window on EVERY call, so a replayed run of control
 			// entries naming an id this database never minted — a purged node, an origin relayed from
@@ -955,7 +1273,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('resolves a node id to a name per database, not process-wide', function () {
 			if (isLMDB) return this.skip();
-			const { pack } = require('msgpackr');
+			const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
 			// Short ids are minted per database in first-seen order, so id 1 names a different node in
 			// each one. A process-global inversion would attribute an entry to the wrong node.
@@ -1029,6 +1347,136 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				(error) => error.statusCode === 409
 			);
 			assert.strictEqual((await ClusterLockTest.get(recordId)).n, 1, 'the expired write never landed');
+		});
+	});
+
+	describe('stamping above the admitted state (harper#2540)', () => {
+		// Inside storage.maxLockClockSkew, so the stamp is a claim on the process-wide ratchet; the suite
+		// waits for the clock to pass what it claimed.
+		after(async () => {
+			if (isLMDB) return;
+			const rootStore = ClusterLockTest.primaryStore.rootStore;
+			await waitFor(
+				() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(ClusterLockTest.auditStore),
+				30_000
+			);
+		});
+
+		it('stamps a holder write above a future-stamped stored version', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			const predecessorTimestamp = Date.now() + 1_000;
+			await applyFromPeer(recordId, predecessorTimestamp);
+			await transaction(async () => {
+				const record = await ClusterLockTest.lock(recordId);
+				assert.strictEqual(record.n, 10);
+				record.n = 11;
+				await record.save();
+			});
+			const after = ClusterLockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(after.value.n, 11);
+			assert.ok(after.version > predecessorTimestamp);
+		});
+
+		it('rejects an over-cap dependency floor and releases the cluster admission', async function () {
+			if (isLMDB) return this.skip();
+			const homes = [NODE_NAME, 'peer-ahead'];
+			useSoloTransport({ homes });
+			const recordId = idHomedHere(homes);
+			await ClusterLockTest.put({ id: recordId, n: 10 });
+			const coordinator = ClusterLockTest.lockCoordinator;
+			const granted = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-ahead',
+				generation: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(granted.granted, true);
+			const releasePosition = Date.now() + 60_000;
+			coordinator.applyEntry(
+				{ type: 'lockRelease', key: recordId, requester: 'peer-ahead', token: granted.token, dependencies: [] },
+				'peer-ahead',
+				releasePosition
+			);
+			const admissionsBefore = coordinator.stats.admitted;
+			await assert.rejects(
+				ClusterLockTest.lock(recordId, { lease: 5000 }),
+				(error) => error.name === 'LockUnavailableError' && error.statusCode === 503
+			);
+			await waitFor(() => coordinator.stats.admitted === admissionsBefore, {
+				timeout: 1000,
+				message: 'cluster admission released',
+			});
+			const key = lockAttemptKey(ClusterLockTest.tableId, recordId);
+			assert.strictEqual(
+				ClusterLockTest.primaryStore.tryLock(key, () => {}),
+				true,
+				'failed admission returned native key'
+			);
+			ClusterLockTest.primaryStore.unlock(key);
+		});
+
+		it('stamps a holder write above a predecessor release position ahead of its clock', async function () {
+			if (isLMDB) return this.skip();
+			const homes = [NODE_NAME, 'peer-ahead'];
+			useSoloTransport({ homes });
+			const recordId = idHomedHere(homes);
+			await ClusterLockTest.put({ id: recordId, n: 10 });
+			const coordinator = ClusterLockTest.lockCoordinator;
+			const granted = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-ahead',
+				generation: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(granted.granted, true);
+			const releasePosition = ClusterLockTest.primaryStore.getMonotonicTimestamp() + 2_000;
+			coordinator.applyEntry(
+				{ type: 'lockRelease', key: recordId, requester: 'peer-ahead', token: granted.token, dependencies: [] },
+				'peer-ahead',
+				releasePosition
+			);
+			const context = {};
+			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 500 }, context);
+			const handle = [...context.transaction.recordLocks.values()][0].values().next().value;
+			assert.ok(handle.expiresAt < releasePosition, 'the floor does not stretch the lease');
+			record.n = 12;
+			await record.save();
+			await record.unlock();
+			const after = ClusterLockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(after.value.n, 12);
+			assert.ok(after.version > releasePosition, 'stamped above the release position');
+		});
+
+		it('stamps a holder write above a recovery barrier position ahead of its clock', async function () {
+			if (isLMDB) return this.skip();
+			// A coordinator retired without a successor leaves a replacement that trusts no key's history, so
+			// its first grant names the recovery barrier.
+			useSoloTransport();
+			const warmUp = await ClusterLockTest.lock(id(), { hold: true, lease: 5000 });
+			await warmUp.unlock();
+			unregisterClusterLockTransport('test', true);
+			assert.strictEqual(ClusterLockTest.lockCoordinator, undefined);
+			const recordId = id();
+			await ClusterLockTest.put({ id: recordId, n: 10 });
+			const barrierPosition = Date.now() + 1_000;
+			let requirement;
+			useSoloTransport({
+				establishLockFreshness: async (_database, _table, _key, dependencies) => {
+					requirement = dependencies;
+					return [[getThisNodeName(), barrierPosition]];
+				},
+			});
+			await transaction(async () => {
+				const record = await ClusterLockTest.lock(recordId);
+				record.n = 13;
+				await record.save();
+			});
+			assert.strictEqual(requirement, null, 'the admission waited on the recovery barrier');
+			const after = ClusterLockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(after.value.n, 13);
+			assert.ok(after.version > barrierPosition, 'stamped above the barrier position');
 		});
 	});
 });

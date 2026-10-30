@@ -8,12 +8,17 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
+import { getDatabases as _getDatabases } from '../resources/databases.ts';
+const getDatabases = _getDatabases;
+import fs from 'fs-extra';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-envMngr.initSync();
-import { getDatabases } from '../resources/databases.ts';
-import * as fs from 'fs-extra';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 /**
  * This method is exposed to the API and internally for system operations.  If the op is being made internally, the `opObj`
  * argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.
@@ -31,8 +36,8 @@ export async function describeAll(opObj: any = {}) {
 			isSu = rolePerms?.super_user;
 		}
 		let databases = getDatabases();
-		let schemaList = {};
-		let schemaPerms = {};
+		let schemaList = Object.create(null);
+		let schemaPerms = Object.create(null);
 		let tResults = [];
 		const exact_count = opObj?.exact_count;
 		const skip_record_count = opObj?.skip_record_count;
@@ -59,11 +64,11 @@ export async function describeAll(opObj: any = {}) {
 			}
 		}
 
-		let hdbDescription = {};
+		let hdbDescription = Object.create(null);
 		for (let t in tResults) {
 			if (sysCall || isSu || bypassAuth) {
 				if (hdbDescription[tResults[t].schema] == null) {
-					hdbDescription[tResults[t].schema] = {};
+					hdbDescription[tResults[t].schema] = Object.create(null);
 				}
 
 				hdbDescription[tResults[t].schema][tResults[t].name] = tResults[t];
@@ -72,7 +77,7 @@ export async function describeAll(opObj: any = {}) {
 				}
 			} else if (schemaPerms[tResults[t].schema]) {
 				if (hdbDescription[tResults[t].schema] == null) {
-					hdbDescription[tResults[t].schema] = {};
+					hdbDescription[tResults[t].schema] = Object.create(null);
 				}
 
 				hdbDescription[tResults[t].schema][tResults[t].name] = tResults[t];
@@ -84,9 +89,9 @@ export async function describeAll(opObj: any = {}) {
 
 		for (let schema in schemaList) {
 			if (sysCall || isSu || bypassAuth) {
-				hdbDescription[schema] = {};
+				hdbDescription[schema] = Object.create(null);
 			} else if (schemaPerms[schema]) {
-				hdbDescription[schema] = {};
+				hdbDescription[schema] = Object.create(null);
 			}
 		}
 		return hdbDescription;
@@ -141,7 +146,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}
-	let tableObj = tables[table];
+	let tableObj: any = tables[table];
 	if (!tableObj)
 		throw handleHDBError(
 			new Error(),
@@ -162,6 +167,16 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 				nullable: att.nullable,
 				computed: att.computed ? true : undefined, // only include if computed
 				embed: att.embed ? { source: att.embed.source, model: att.embed.model } : undefined,
+				decide: att.decide
+					? {
+							source: att.decide.source,
+							model: att.decide.model,
+							confidence: att.decide.confidence,
+							decision: att.decide.decision,
+							instructions: att.decide.instructions,
+							schema: att.decide.schema,
+						}
+					: undefined,
 				properties: att.properties
 					? att.properties.map((prop) => {
 							return { type: prop.type, name: prop.name };
@@ -171,11 +186,15 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 	}
 
 	let attributes = [];
-	if (tableAttrPerms) {
-		let permittedAttr = {};
+	let readableAttributes: Set<string> | undefined;
+	if (tableAttrPerms?.length) {
+		let permittedAttr = Object.create(null);
+		let readableAttr = Object.create(null);
 		tableAttrPerms.forEach((a) => {
 			if (a.describe) permittedAttr[a.attribute_name] = true;
+			if (a.read) readableAttr[a.attribute_name] = true;
 		});
+		readableAttributes = new Set(Object.keys(readableAttr));
 
 		tableObj.attributes.forEach((a) => {
 			if (permittedAttr[a.name]) pushAtt(a);
@@ -210,6 +229,46 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		tableResult.sources = (tableObj as any).sources
 			.map((source: any) => source.name)
 			.filter((source: any) => source && source !== 'Replicator');
+	if (tableObj.fullTextIndexes?.length > 0) {
+		const { fullTextDerivedIndexReadiness } = await import('../resources/derivedIndexes.ts');
+		tableResult.full_text_indexes = tableObj.fullTextIndexes
+			.map((definition: any) => {
+				const fields = definition.fields.filter(
+					(field: any) => !readableAttributes || readableAttributes.has(field.name)
+				);
+				if (fields.length === 0) return;
+				const readiness = fullTextDerivedIndexReadiness(tableObj, definition.name);
+				return {
+					name: definition.name,
+					fields: fields.map(({ name, weight, mediaType, highlight }: any) => ({
+						name,
+						weight,
+						...(mediaType ? { media_type: mediaType } : null),
+						...(highlight ? { highlight: true } : null),
+					})),
+					analyzer: definition.analyzer,
+					stop_words: definition.stopWords,
+					positions: definition.positions,
+					surface_terms: definition.surfaceTerms,
+					synonyms: definition.synonyms,
+					highlighting: definition.highlighting ?? false,
+					query_modes: [
+						'any',
+						'all',
+						'fuzzy',
+						...(definition.positions ? ['phrase'] : []),
+						...(definition.surfaceTerms ? ['prefix', 'fuzzy-prefix'] : []),
+					],
+					readiness: {
+						state: readiness.state,
+						...(readiness.reason ? { reason: readiness.reason } : null),
+						owner_epoch: readiness.ownerEpoch.toString(),
+						rebuild_attempts: readiness.rebuildAttempts,
+					},
+				};
+			})
+			.filter(Boolean);
+	}
 
 	try {
 		// `getRecordCount` scans the table's primary store, which dominates describe latency on large
@@ -283,7 +342,7 @@ export async function describeSchema(describeSchemaObject: any) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}
-	let results = {};
+	let results = Object.create(null);
 	for (let tableName in schema) {
 		let table_perms;
 		if (schemaPerms && schemaPerms.tables[tableName]) {

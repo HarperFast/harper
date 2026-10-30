@@ -101,6 +101,25 @@ const BACKUP_MARKER_REASONS: CaptureMarkerReasons = {
 	pending: 'blob was not yet complete when this backup was taken',
 };
 
+export async function* walkBlobFiles(root: string): AsyncGenerator<string> {
+	const stack: string[] = [root];
+	while (stack.length > 0) {
+		const dir = stack.pop() as string;
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch (error: any) {
+			if (error.code === 'ENOENT') continue;
+			throw error;
+		}
+		for (const entry of entries) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) stack.push(path);
+			else if (entry.isFile()) yield path;
+		}
+	}
+}
+
 /** Put one blob file into the destination, returning how the entry was captured. */
 async function captureBlobFile(
 	srcPath: string,
@@ -151,34 +170,16 @@ export async function copyTree(
 	onProgress?: () => void
 ): Promise<{ substituted: number; captured: number; copied: number }> {
 	const counts = { substituted: 0, captured: 0, copied: 0 };
-	if (!existsSync(srcRoot)) return counts;
-	const stack: string[] = [srcRoot];
-	while (stack.length > 0) {
-		const dir = stack.pop() as string;
-		let entries;
-		try {
-			entries = await readdir(dir, { withFileTypes: true });
-		} catch (error: any) {
-			if (error.code === 'ENOENT') continue; // directory removed mid-walk
-			throw error;
+	for await (const srcPath of walkBlobFiles(srcRoot)) {
+		const destPath = join(destRoot, relative(srcRoot, srcPath));
+		if (classify) {
+			const disposition = await captureBlobFile(srcPath, destPath, reasons, counts);
+			if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
+			else if (disposition === 'capture') counts.captured++;
+		} else {
+			await linkOrCopy(srcPath, destPath, counts);
 		}
-		for (const entry of entries) {
-			const srcPath = join(dir, entry.name);
-			if (entry.isDirectory()) {
-				stack.push(srcPath);
-			} else if (entry.isFile()) {
-				const destPath = join(destRoot, relative(srcRoot, srcPath));
-				if (classify) {
-					const disposition = await captureBlobFile(srcPath, destPath, reasons, counts);
-					if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
-					else if (disposition === 'capture') counts.captured++;
-				} else {
-					await linkOrCopy(srcPath, destPath, counts);
-				}
-				onProgress?.();
-			}
-			// symlinks/other node types in a blob root are not expected and are intentionally skipped
-		}
+		onProgress?.();
 	}
 	return counts;
 }
@@ -336,15 +337,55 @@ export async function assertBlobSnapshotRestorable(
 }
 
 /**
+ * Refuse an engine-only restore unless the operator has accepted the mixed result.
+ *
+ * Restoring engine files without the matching blobs produces a mixed generation: records rolled back
+ * to the backup point, addressing whichever blobs the roots happen to hold. There are two ways that
+ * goes wrong, and the destination being empty rules out only the first:
+ *
+ * 1. Blobs are present now, so a restored record can resolve onto a blob that no longer belongs to it,
+ *    or onto nothing at all if the blob it referenced was deleted since the backup point.
+ * 2. The roots are empty, so nothing collides today -- but blob ids are a per-database counter that
+ *    `getNextFileId` (`resources/blob.ts`) re-seeds by scanning the roots. Empty roots re-seed at 1,
+ *    which is exactly the id space the restored records already reference, so the *next* blob written
+ *    is placed at a path a restored record points at. A brand-new target database is not exempt: its
+ *    roots are empty for the same reason.
+ *
+ * Purging the roots instead is not the answer -- that strips blobs the restored records still
+ * reference -- so the operator has to choose, and the choice is recorded. Case 2 would stop being a
+ * hazard if the blob-id high-water mark were persisted with the engine and restored alongside it, so
+ * the counter could not fall behind the references it has already handed out.
+ */
+export function assertEngineOnlyRestoreAllowed(
+	databaseName: string,
+	{ backupHasBlobs, allowEngineOnly }: { backupHasBlobs: boolean; allowEngineOnly: boolean }
+): void {
+	// Strictly true, not merely truthy: a manifest is on-disk data, and a corrupt `blobs` value must not
+	// be read as "this backup has blobs" and waved past the guard.
+	if (backupHasBlobs === true || allowEngineOnly === true) return;
+	// Decided from the manifest alone. Walking the destination to tailor the message would turn a
+	// deterministic 400 into a traversal that can be slow or fail outright (EACCES on an unreadable
+	// root), for wording -- and both hazards are worth stating anyway, since the operator who passes
+	// the opt-in is accepting whichever one applies.
+	throw new ClientError(
+		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, so the restored records would address whichever blobs are on disk now. ` +
+			`If the database still has blob files, a record can resolve to a blob that no longer belongs to it; if it has none, blob ids restart at 1 and the next blob written lands on a path a restored record already references — so a new target database is not an escape. ` +
+			`Restore a backup that includes blobs, or pass 'allow_engine_only' to accept the mixed result.`
+	);
+}
+
+/**
  * Restore a backup's blob snapshot back into the database's blob roots. Each root is purged and
  * rewritten from `blobs/<backupId>/<rootIndex>/` so the restored blob set matches the backup exactly
  * (a newer blob written after the backup is removed, mirroring the engine's `purgeAllFiles` restore).
  *
  * A backup created with blobs excluded (or an older backup that predates blob snapshots) has no
  * snapshot directory: in that case the live blob roots are left untouched and a warning is logged,
- * since purging them would strip blobs the restored records may still reference. Roots are restored
- * by index into the *same* configured root; an incompatible root count is rejected up front (see
- * `assertBlobSnapshotRestorable`) rather than collapsed, so blobs are never mis-addressed.
+ * since purging them would strip blobs the restored records may still reference. A restore only
+ * reaches that state when the operator accepted it with `allow_engine_only`
+ * (`assertEngineOnlyRestoreAllowed` refuses otherwise, whatever the destination roots hold). Roots are restored by index into the *same* configured root;
+ * an incompatible root count is rejected up front (see `assertBlobSnapshotRestorable`) rather than
+ * collapsed, so blobs are never mis-addressed.
  */
 export async function restoreBlobSnapshot(
 	backupDir: string,

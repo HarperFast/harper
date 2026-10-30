@@ -1,0 +1,566 @@
+'use strict';
+
+// `harper deploy setup=true provider=github-actions` writes a trust policy that must match, claim for
+// claim, the token a GitHub Actions run presents; a mismatch only ever shows up as a bare 401 in CI.
+// These cases cover the derivations and the create-missing-only reconcile. The end-to-end run against
+// a real Harper is integrationTests/security/deploy-setup-github-actions.test.ts.
+const assert = require('node:assert');
+const {
+	buildWorkflowRef,
+	canonicalWorkflowPath,
+	checkPreviewWorkflowFile,
+	checkWorkflowFile,
+	deriveCiNames,
+	planReconcile,
+	policyDifferences,
+	rawStringArg,
+	roleDifference,
+	userDifference,
+	CI_DEPLOY_OPERATIONS,
+	variableAction,
+	withoutCredentials,
+	GITHUB_ACTIONS_ISSUER,
+} = require('#src/bin/deploySetupGithubActions');
+const { buildRequest } = require('#src/bin/cliOperations');
+const { starterPreviewWorkflow } = require('#src/bin/previewSetup');
+
+const desired = () => ({
+	role: { role: 'web-ci-deploy', permission: { super_user: false, operations: [...CI_DEPLOY_OPERATIONS] } },
+	user: { username: 'web-ci-deploy', role: 'web-ci-deploy' },
+	policy: {
+		id: 'github-actions-web',
+		issuer: GITHUB_ACTIONS_ISSUER,
+		audience: 'https://cluster.example.com:9925/',
+		user: 'web-ci-deploy',
+		claims: {
+			repository_id: '67890',
+			workflow_ref: 'acme/web/.github/workflows/deploy.yaml@refs/heads/main',
+			environment: 'production',
+		},
+		operations: [...CI_DEPLOY_OPERATIONS],
+		description: 'GitHub Actions deploys of web',
+	},
+});
+
+const matchingRole = () => ({ id: 'web-ci-deploy', role: 'web-ci-deploy', permission: desired().role.permission });
+const matchingUser = () => ({ username: 'web-ci-deploy', active: true, role: { role: 'web-ci-deploy' } });
+const matchingPolicy = () => ({ ...desired().policy, enabled: true });
+
+describe('deploySetupGithubActions', () => {
+	describe('deriveCiNames', () => {
+		it('names the role, user and policy after the component, so projects can share a cluster', () => {
+			assert.deepStrictEqual(deriveCiNames('web'), {
+				role: 'web-ci-deploy',
+				user: 'web-ci-deploy',
+				policy: 'github-actions-web',
+			});
+		});
+
+		it('refuses a policy id add_oidc_trust would reject, before anything is written', () => {
+			assert.throws(() => deriveCiNames('x'.repeat(120)), /not a valid trust policy id/);
+		});
+	});
+
+	describe('buildWorkflowRef', () => {
+		it("matches GitHub's workflow_ref claim: owner/repo/path@refs/heads/branch", () => {
+			assert.strictEqual(
+				buildWorkflowRef('acme/web', '.github/workflows/deploy.yaml', 'main'),
+				'acme/web/.github/workflows/deploy.yaml@refs/heads/main'
+			);
+		});
+	});
+
+	describe('canonicalWorkflowPath', () => {
+		// The file check and the claim must name the same path, spelled as GitHub spells it.
+		it('normalizes the spellings that name the same file', () => {
+			for (const spelling of [
+				'.github/workflows/deploy.yaml',
+				'./.github/workflows/deploy.yaml',
+				'.github/workflows/./deploy.yaml',
+				'.github/workflows/../workflows/deploy.yaml',
+			]) {
+				assert.strictEqual(canonicalWorkflowPath(spelling), '.github/workflows/deploy.yaml');
+			}
+		});
+
+		it('refuses a path GitHub would never run a workflow from', () => {
+			for (const path of [
+				'/Users/me/app/.github/workflows/deploy.yaml',
+				'deploy.yaml',
+				'.github/workflows/ci/deploy.yaml',
+				'.github/workflows/deploy.yaml.bak',
+			]) {
+				assert.throws(() => canonicalWorkflowPath(path), /must name a \.yml or \.yaml file in \.github\/workflows\//);
+			}
+		});
+	});
+
+	describe('rawStringArg', () => {
+		let savedArgv;
+		beforeEach(() => {
+			savedArgv = process.argv;
+		});
+		afterEach(() => {
+			process.argv = savedArgv;
+		});
+
+		// buildRequest JSON-parses every value, so a branch named "1.0" would otherwise pin "1".
+		it('keeps a numeric-looking branch as typed', () => {
+			process.argv = ['node', 'harper', 'deploy', 'setup=true', 'branch=1.0', 'repository_id=00123'];
+			const req = buildRequest();
+			assert.strictEqual(req.branch, 1);
+			assert.strictEqual(rawStringArg(req, 'branch'), '1.0');
+			assert.strictEqual(rawStringArg(req, 'repository_id'), '00123');
+		});
+
+		it('keeps the raw values out of the request body and any serialization', () => {
+			process.argv = ['node', 'harper', 'deploy', 'auth_password=s3cret', 'branch=main'];
+			const req = buildRequest();
+			assert.ok(!Object.keys(req).includes('_rawArgs'));
+			// Only the parsed fields, so the raw copy adds no second place a credential can leak from.
+			assert.deepStrictEqual(JSON.parse(JSON.stringify(req)), {
+				operation: 'deploy_component',
+				auth_password: 's3cret',
+				branch: 'main',
+			});
+		});
+
+		it('falls back to the parsed value for a hand-built request', () => {
+			assert.strictEqual(rawStringArg({ branch: 'main' }, 'branch'), 'main');
+			assert.strictEqual(rawStringArg({}, 'branch'), undefined);
+		});
+	});
+
+	describe('checkWorkflowFile', () => {
+		const workflow = (branches, environment) => `
+on:
+  push:
+    branches: ${JSON.stringify(branches)}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${JSON.stringify(environment)}
+    permissions:
+      id-token: write
+`;
+		const ID_TOKEN = '    permissions:\n      id-token: write\n';
+
+		it('accepts a workflow that deploys from the branch, in the environment', () => {
+			assert.deepStrictEqual(checkWorkflowFile(workflow(['main'], 'production'), 'main', 'production'), {
+				problems: [],
+				unverified: [],
+			});
+		});
+
+		it('refuses a branch the workflow never deploys from', () => {
+			const { problems } = checkWorkflowFile(workflow(['release'], 'production'), 'main', 'production');
+			assert.match(problems[0], /pushes to release, not "main"/);
+		});
+
+		// GitHub matches on.push.branches as globs; setup must not refuse a pattern it can't evaluate.
+		it('reports a branch pattern as unverified rather than a mismatch', () => {
+			const { problems, unverified } = checkWorkflowFile(workflow(['**'], 'production'), 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /that \*\* matches "main"/);
+		});
+
+		it("treats GitHub's + quantifier as a pattern", () => {
+			const { problems, unverified } = checkWorkflowFile(workflow(['mai+n'], 'production'), 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.strictEqual(unverified.length, 1);
+		});
+
+		// A manual run can still deploy from the branch the push filter leaves out.
+		it('reports a branch only workflow_dispatch can reach as unverified', () => {
+			const content =
+				'on:\n  push:\n    branches: [release]\n  workflow_dispatch:\njobs:\n  deploy:\n    environment: production\n' +
+				ID_TOKEN;
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /only workflow_dispatch can run it there/);
+		});
+
+		it('reports a branch a scheduled or dispatched run can reach as unverified', () => {
+			const content =
+				'on:\n  push:\n    branches: [release]\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  deploy:\n    environment: production\n' +
+				ID_TOKEN;
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /only schedule can run it there/);
+		});
+
+		// GitHub leaves the environment claim out of a token for a job with none.
+		it('refuses a workflow in which no job sets an environment', () => {
+			const content = 'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n';
+			assert.match(checkWorkflowFile(content, 'main', 'production').problems[0], /no job sets an environment/);
+		});
+
+		it('cannot tell the environment of a job that calls a reusable workflow', () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    uses: ./.github/workflows/release.yaml\n';
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /"production" environment/);
+		});
+
+		// YAML reads an unquoted 1.0 as a number; GitHub matches it as the branch name it spells.
+		it('compares branch entries as text', () => {
+			const content = 'on:\n  push:\n    branches: [1.0]\njobs:\n  deploy:\n    environment: production\n' + ID_TOKEN;
+			assert.deepStrictEqual(checkWorkflowFile(content, '1.0', 'production').problems, []);
+		});
+
+		it('refuses an environment no job runs in', () => {
+			const { problems } = checkWorkflowFile(workflow(['main'], 'staging'), 'main', 'production');
+			assert.match(problems[0], /environment staging, not "production"/);
+		});
+
+		it('reads an environment given as { name }', () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment:\n      name: production\n' + ID_TOKEN;
+			assert.deepStrictEqual(checkWorkflowFile(content, 'main', 'production').problems, []);
+		});
+
+		// An expression is resolved at run time, so it can't be checked here; it must not read as a match.
+		it('reports expressions and missing filters as unverified, not as a match', () => {
+			const content = 'on: [push]\njobs:\n  deploy:\n    environment: ${{ inputs.env }}\n';
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.strictEqual(unverified.length, 2);
+		});
+
+		// Without `id-token: write` the CLI can't request a token, so the policy is never used.
+		it('refuses when no job in the environment may request an identity token', () => {
+			const content = 'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment: production\n';
+			assert.match(checkWorkflowFile(content, 'main', 'production').problems[0], /permissions: id-token: write/);
+		});
+
+		it("takes the workflow's permissions for a job with none of its own", () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\npermissions:\n  id-token: write\njobs:\n  deploy:\n    environment: production\n';
+			assert.deepStrictEqual(checkWorkflowFile(content, 'main', 'production').problems, []);
+		});
+
+		it("lets a job's own permissions replace the workflow's", () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\npermissions:\n  id-token: write\njobs:\n  deploy:\n    environment: production\n    permissions:\n      contents: read\n';
+			assert.match(checkWorkflowFile(content, 'main', 'production').problems[0], /id-token: write/);
+		});
+
+		// The deploy may be a reusable workflow that sets the environment and the permission itself.
+		it('reports the token permission as unverified when a job calls a reusable workflow', () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\njobs:\n  gate:\n    environment: production\n  deploy:\n    needs: gate\n    uses: ./.github/workflows/release.yaml\n';
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /id-token: write/);
+		});
+
+		it('accepts write-all', () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment: production\n    permissions: write-all\n';
+			assert.deepStrictEqual(checkWorkflowFile(content, 'main', 'production').problems, []);
+		});
+
+		it('reports a file it cannot parse', () => {
+			assert.match(checkWorkflowFile('on: [', 'main', 'production').problems[0], /not valid YAML/);
+		});
+	});
+
+	describe('checkPreviewWorkflowFile', () => {
+		const starter = starterPreviewWorkflow({ app: 'shop', branch: 'main' });
+		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
+		const sameRepository = ' && github.event.pull_request.head.repo.full_name == github.repository';
+		const deployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
+		const withDeployStep = (step) =>
+			starter.replace(
+				'      - run: npm install --global harper@^5.4\n',
+				`${step}      - run: npm install --global harper@^5.4\n`
+			);
+		const problemsOf = (content, branch) => check(content, branch).problems.join('\n');
+
+		it('accepts the starter workflow setup writes', () => {
+			assert.deepStrictEqual(check(starter), { problems: [], unverified: [], unsafe: [] });
+		});
+
+		it('refuses a workflow with no pull_request_target trigger', () => {
+			assert.match(
+				problemsOf(starter.replace('pull_request_target:', 'pull_request:')),
+				/no pull_request_target trigger/
+			);
+			assert.match(problemsOf('on: push\njobs: {}\n'), /no pull_request_target trigger/);
+		});
+
+		it('refuses a branch filter that leaves out the default branch, and cannot read a pattern', () => {
+			assert.match(problemsOf(starter, 'trunk'), /pull requests into main, not "trunk"/);
+			assert.deepStrictEqual(check(starter.replace('branches: ["main"]', "branches: ['release/**']")).unverified, [
+				'that release/** matches "main"',
+			]);
+		});
+
+		it('refuses a job in the environment that would run for fork pull requests', () => {
+			assert.match(
+				problemsOf(starter.replace(deployIf, "    if: github.event.action != 'closed'\n")),
+				/job "deploy" runs for pull requests from forks/
+			);
+			assert.match(problemsOf(starter.replace(deployIf, '')), /job "deploy" runs for pull requests from forks/);
+		});
+
+		it('takes neither head.repo.fork nor a test inside an || as excluding forks', () => {
+			const forkFalse = starter.replace(deployIf, '    if: ${{ !github.event.pull_request.head.repo.fork }}\n');
+			assert.deepStrictEqual(check(forkFalse).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const either = starter.replace(
+				deployIf,
+				`    if: github.event.action == 'opened' ||${sameRepository.slice(3)}\n`
+			);
+			assert.deepStrictEqual(check(either).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const needs = starter.replace(deployIf, '    needs: [gate]\n');
+			assert.deepStrictEqual(check(needs).unsafe, ['that job "deploy" excludes fork pull requests']);
+		});
+
+		it('follows needs into a job that excludes forks, unless the job runs past it being skipped', () => {
+			const gate = `  gate:\n${deployIf}    runs-on: ubuntu-latest\n`;
+			const gated = starter.replace(deployIf, '    needs: [gate]\n').replace('jobs:\n', `jobs:\n${gate}`);
+			assert.deepStrictEqual(check(gated), { problems: [], unverified: [], unsafe: [] });
+			const always = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: always()\n');
+			assert.deepStrictEqual(check(always).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const labeled = gated.replace(
+				'    needs: [gate]\n',
+				"    needs: [gate]\n    if: success() || github.event.action == 'labeled'\n"
+			);
+			assert.deepStrictEqual(check(labeled).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const capitalized = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: Always()\n');
+			assert.deepStrictEqual(check(capitalized).unsafe, ['that job "deploy" excludes fork pull requests']);
+		});
+
+		it('cannot read a condition that names the head repository without plainly admitting only it', () => {
+			for (const condition of [
+				'${{ !(github.event.pull_request.head.repo.full_name == github.repository) }}',
+				'(github.event.pull_request.head.repo.full_name == github.repository) == false',
+				'${{ !!github.event.pull_request.head.repo.fork }}',
+			]) {
+				const negated = starter.replace(deployIf, `    if: ${condition}\n`);
+				assert.deepStrictEqual(check(negated), {
+					problems: [],
+					unverified: [],
+					unsafe: ['that job "deploy" excludes fork pull requests'],
+				});
+			}
+		});
+
+		it('checks every job that holds the identity token, whatever its environment', () => {
+			const expression = starter.replace('    environment: preview-cleanup\n', '    environment: ${{ inputs.env }}\n');
+			const unguarded = expression.replace(
+				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				''
+			);
+			assert.match(problemsOf(unguarded), /job "cleanup" runs for pull requests from forks/);
+		});
+
+		it('refuses a workflow in which no job in the environment may request an identity token', () => {
+			const noToken = starter.replace(
+				'      id-token: write\n      pull-requests: read\n',
+				'      pull-requests: read\n'
+			);
+			assert.match(problemsOf(noToken), /no job in the "preview" environment has `permissions: id-token: write`/);
+			const cleanupNoToken = starter.replace(
+				'      id-token: write\n      pull-requests: read\n    env:',
+				'      pull-requests: read\n    env:'
+			);
+			assert.match(problemsOf(cleanupNoToken), /job "cleanup" runs in "preview-cleanup" without/);
+		});
+
+		it("refuses a job holding the identity token that checks out the pull request's head", () => {
+			for (const ref of ['${{ github.event.pull_request.head.sha }}', '${{ github.head_ref }}', 'refs/pull/7/merge']) {
+				const checkout = withDeployStep(`      - uses: actions/checkout@v5\n        with:\n          ref: ${ref}\n`);
+				assert.match(
+					problemsOf(checkout),
+					/job "deploy" holds an identity token and checks out the pull request's head/,
+					ref
+				);
+			}
+			const fork = withDeployStep(
+				'      - uses: actions/checkout@v5\n        with:\n          repository: ${{ github.event.pull_request.head.repo.full_name }}\n'
+			);
+			assert.match(problemsOf(fork), /checks out the pull request's head \(repository/);
+			for (const run of ['gh pr checkout "$PR"', 'git fetch origin pull/$PR/head && git checkout FETCH_HEAD']) {
+				assert.match(
+					problemsOf(withDeployStep(`      - run: ${run}\n`)),
+					/a step checks out the pull request's head/,
+					run
+				);
+			}
+		});
+
+		it("accepts a checkout of the workflow's own branch, and cannot read a ref given as an expression", () => {
+			assert.deepStrictEqual(check(withDeployStep('      - uses: actions/checkout@v5\n')).problems, []);
+			const expression = withDeployStep(
+				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ inputs.ref }}\n'
+			);
+			assert.deepStrictEqual(check(expression).unsafe, [
+				'that job "deploy"\'s checkout ref (${{ inputs.ref }}) is not the pull request\'s head',
+			]);
+		});
+
+		it('writes the options it is given into the deploy, and still passes', () => {
+			const shaped = starterPreviewWorkflow({
+				app: 'shop',
+				branch: 'trunk',
+				domain: 'previews.example.com',
+				credential: true,
+				shared: true,
+			});
+			assert.match(
+				shaped,
+				/harper preview deploy app=shop pr="\$PR" branch="\$BRANCH" by_ref=true ref="\$SHA" domain=previews\.example\.com credential=true branchedDatabases=false/
+			);
+			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });
+			assert.match(shaped, /if \[ "\$\{after%% \*\}" = closed \]; then harper preview drop app=shop/);
+		});
+	});
+
+	describe('roleDifference / userDifference / policyDifferences', () => {
+		it('accepts records exactly as setup would create them', () => {
+			assert.strictEqual(roleDifference(matchingRole(), desired().role), undefined);
+			assert.strictEqual(userDifference(matchingUser(), desired().user), undefined);
+			assert.deepStrictEqual(policyDifferences(matchingPolicy(), desired().policy), []);
+		});
+
+		it('treats operation lists as sets', () => {
+			const role = matchingRole();
+			role.permission = { ...role.permission, operations: [...CI_DEPLOY_OPERATIONS].reverse() };
+			assert.strictEqual(roleDifference(role, desired().role), undefined);
+		});
+
+		it('flags a role missing one of the operations', () => {
+			const role = matchingRole();
+			role.permission = { ...role.permission, operations: ['deploy_component', 'get_job'] };
+			assert.match(roleDifference(role, desired().role), /its operations are/);
+		});
+
+		it('flags a role with more authority than deploying', () => {
+			const role = matchingRole();
+			assert.match(roleDifference({ ...role, permission: { super_user: true } }, desired().role), /super_user/);
+			assert.match(
+				roleDifference({ ...role, permission: { ...role.permission, data: { tables: {} } } }, desired().role),
+				/database permissions \(data\)/
+			);
+			assert.match(
+				roleDifference(
+					{ ...role, permission: { ...role.permission, operations: [...CI_DEPLOY_OPERATIONS, 'add_user'] } },
+					desired().role
+				),
+				/its operations are/
+			);
+		});
+
+		it('flags a role that sets structure_user or cluster_user', () => {
+			const role = matchingRole();
+			for (const flag of ['structure_user', 'cluster_user']) {
+				assert.strictEqual(
+					roleDifference({ ...role, permission: { ...role.permission, [flag]: true } }, desired().role),
+					`it sets ${flag}`
+				);
+			}
+		});
+
+		it('flags a user in another role, or one someone deactivated', () => {
+			assert.match(userDifference({ ...matchingUser(), role: { role: 'other' } }, desired().user), /in role "other"/);
+			assert.match(userDifference({ ...matchingUser(), active: false }, desired().user), /inactive/);
+		});
+
+		it('names every claim that differs, including one only the stored policy has', () => {
+			const stored = matchingPolicy();
+			stored.claims = { ...stored.claims, environment: 'staging', ref: 'refs/heads/main' };
+			const differences = policyDifferences(stored, desired().policy);
+			assert.ok(differences.some((line) => /claim environment is "staging"/.test(line)));
+			assert.ok(differences.some((line) => /claim ref is "refs\/heads\/main"/.test(line)));
+		});
+
+		it('flags a disabled policy, so setup cannot quietly undo a revocation', () => {
+			assert.deepStrictEqual(policyDifferences({ ...matchingPolicy(), enabled: false }, desired().policy), [
+				'it is disabled',
+			]);
+		});
+	});
+
+	describe('planReconcile', () => {
+		it('creates everything on an empty cluster', () => {
+			assert.deepStrictEqual(planReconcile({ roles: [], users: [], policies: [] }, desired()), {
+				role: 'create',
+				user: 'create',
+				policy: 'create',
+				conflicts: [],
+			});
+		});
+
+		it('leaves records that already match, so a rerun changes nothing', () => {
+			const plan = planReconcile(
+				{ roles: [matchingRole()], users: [matchingUser()], policies: [matchingPolicy()] },
+				desired()
+			);
+			assert.deepStrictEqual(plan, { role: 'keep', user: 'keep', policy: 'keep', conflicts: [] });
+		});
+
+		it('finishes a partial setup: creates only what is missing', () => {
+			const plan = planReconcile({ roles: [matchingRole()], users: [], policies: [] }, desired());
+			assert.deepStrictEqual(plan, { role: 'keep', user: 'create', policy: 'create', conflicts: [] });
+		});
+
+		it('refuses every conflict at once, and says how to replace a policy', () => {
+			const plan = planReconcile(
+				{
+					roles: [{ ...matchingRole(), permission: { super_user: true } }],
+					users: [{ ...matchingUser(), active: false }],
+					policies: [{ ...matchingPolicy(), audience: 'https://other.example.com:9925/' }],
+				},
+				desired()
+			);
+			assert.strictEqual(plan.conflicts.length, 3);
+			assert.match(plan.conflicts[2], /harper drop_oidc_trust id=github-actions-web/);
+		});
+	});
+
+	describe('variableAction', () => {
+		const audience = 'https://cluster.example.com:9925/';
+
+		it('sets a variable the repository does not have', () => {
+			assert.strictEqual(variableAction({ state: 'absent' }, audience), 'set');
+		});
+
+		it('keeps one that already names this cluster, however it is spelled', () => {
+			assert.strictEqual(variableAction({ state: 'set', value: audience }, audience), 'keep');
+			assert.strictEqual(variableAction({ state: 'set', value: 'https://cluster.example.com:9925' }, audience), 'keep');
+		});
+
+		// The repository deploys there today; replacing it would move every workflow that reads it.
+		it('leaves one that names another cluster', () => {
+			assert.strictEqual(
+				variableAction({ state: 'set', value: 'https://other.example.com:9925/' }, audience),
+				'conflict'
+			);
+			assert.strictEqual(variableAction({ state: 'set', value: 'not a url' }, audience), 'conflict');
+		});
+
+		it('does not write a variable it could not read', () => {
+			assert.strictEqual(variableAction({ state: 'unknown', reason: 'HTTP 403' }, audience), 'unknown');
+		});
+	});
+
+	describe('withoutCredentials', () => {
+		it('drops a user and password from a URL it prints', () => {
+			assert.strictEqual(
+				withoutCredentials('https://admin:secret@other.example.com:9925/'),
+				'https://other.example.com:9925/'
+			);
+			assert.strictEqual(withoutCredentials('admin:secret@other.example.com:9925'), 'other.example.com:9925');
+		});
+
+		it('leaves anything else as it is', () => {
+			assert.strictEqual(withoutCredentials('https://other.example.com:9925/'), 'https://other.example.com:9925/');
+			assert.strictEqual(withoutCredentials('not a url'), 'not a url');
+			assert.strictEqual(withoutCredentials('https://other.example.com/a@b'), 'https://other.example.com/a@b');
+		});
+	});
+});

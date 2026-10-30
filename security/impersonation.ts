@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
 import type { User, UserRole } from './user.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
-import { getUsersWithRolesCache } from './user.ts';
+import { getUserWithRole } from './user.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
 import { addRoleValidation } from '../validation/role_validation.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { getRoleByName } from './role.ts';
 import { attachScopeToUser } from './operationScope.ts';
-import { attachWorkloadIdentityToUser } from './credentialProvenance.ts';
+import { attachDeploySourceToUser, attachWorkloadIdentityToUser } from './credentialProvenance.ts';
 
 /**
  * Content-derived identity for synthetic (inline) roles. getRolePermissions memoizes translated
@@ -82,6 +82,8 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	// NEW principal, so dropping the marker here would let a workload token impersonate — even down to
 	// a lesser role — and then mint a 30-day credential that createTokens would no longer refuse.
 	attachWorkloadIdentityToUser(impersonatedUser, (authenticatedUser as any).fromWorkloadIdentity);
+	attachDeploySourceToUser(impersonatedUser, (authenticatedUser as any).deploySource);
+	if ((authenticatedUser as any)._bearerValidator) (impersonatedUser as any)._bearerValidator = true;
 
 	// Re-key the synthetic role by its effective (post-downgrade) content so it can never alias
 	// another impersonation's permissions or poison a persisted role's memoized translation —
@@ -130,7 +132,7 @@ export async function buildScopedTokenUser(
 	// The attribution name must never collide with a real principal: paths that rehydrate a user
 	// by name (e.g. MQTT last-will replay) would resolve the token's bearer to that user's full
 	// permissions. This also keeps scoped-token activity distinguishable in audit logs.
-	if ((await getUsersWithRolesCache())?.has(username)) {
+	if (getUserWithRole(username)) {
 		throw new ClientError(`'username' must not name an existing user; scoped-token attribution is a label`);
 	}
 	// Downgrade first so validation and the content hash see the effective permission set.
@@ -211,29 +213,18 @@ function buildInlineUser(authenticatedUser: User, payload: ImpersonatePayload): 
 }
 
 async function lookupUser(username: string): Promise<User> {
-	const cache = await getUsersWithRolesCache();
-	const cachedUser = cache.get(username);
+	const user = getUserWithRole(username);
 
-	if (!cachedUser) {
+	if (!user) {
 		throw new ClientError(`Impersonation target user '${username}' not found`, 404);
 	}
 
-	if (cachedUser.active === false) {
+	if (user.active === false) {
 		throw new ClientError(`Impersonation target user '${username}' is inactive`, 403);
 	}
 
-	// Shallow-clone to avoid mutating cache (same pattern as auth.ts)
-	const cloned: User = {
-		...cachedUser,
-		role: cachedUser.role
-			? {
-					...cachedUser.role,
-					permission: { ...cachedUser.role.permission },
-					id: `_impersonated_${username}`,
-				}
-			: cachedUser.role,
-	};
-	return cloned;
+	if (user.role) user.role.id = `_impersonated_${username}`;
+	return user;
 }
 
 async function lookupRole(authenticatedUser: User, payload: ImpersonatePayload): Promise<User> {

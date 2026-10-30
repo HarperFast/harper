@@ -5,8 +5,8 @@ const DEFAULT_MAX_QUEUE_TIME = 20_000; // 20 seconds
 let lastWarning = 0;
 const WARNING_INTERVAL = 30000;
 const EVENT_QUEUE_MONITORING_INTERVAL = 3000;
+const LIMIT_EXCEEDED_LOG_INTERVAL = 5000;
 let lastEventQueueCheck = performance.now() + EVENT_QUEUE_MONITORING_INTERVAL;
-let averageEventCycleTime = 0;
 /**
  * Throttle function to limit the number of calls to a function so that the event queue doesn't get overwhelmed.
  * @param fn
@@ -16,13 +16,24 @@ let averageEventCycleTime = 0;
 export function throttle(
 	fn: (...args: any) => any,
 	onLimitExceeded?: (...args: any) => any,
-	maxQueueTimeLimit = DEFAULT_MAX_QUEUE_TIME
+	maxQueueTimeLimit = DEFAULT_MAX_QUEUE_TIME,
+	name?: string
 ) {
 	let queuedCalls: any[];
+	// only cycles since this queue was last empty (server/DESIGN.md)
+	let averageEventCycleTime = 0;
+	let lastLimitExceededLog = -Infinity;
 	return function (...args: any[]) {
 		if (queuedCalls) {
 			// this is an estimate of the time an event will take to process, based on the average event cycle time and the queue depth
 			if (queuedCalls.length * averageEventCycleTime > maxQueueTimeLimit) {
+				const now = performance.now();
+				if (now - lastLimitExceededLog > LIMIT_EXCEEDED_LOG_INTERVAL) {
+					lastLimitExceededLog = now;
+					logger.warn?.(
+						`Rejecting queued calls${name ? ` (${name})` : ''}: ${queuedCalls.length} already queued at ~${Math.round(averageEventCycleTime)}ms per event cycle, an estimated wait past the ${maxQueueTimeLimit}ms limit`
+					);
+				}
 				return onLimitExceeded(...args);
 			}
 			return new Promise((resolve, reject) => {
@@ -55,10 +66,49 @@ export function throttle(
 				waitForNextCycle(now);
 			} else {
 				queuedCalls = null;
+				averageEventCycleTime = 0;
 			}
 		});
 	}
 }
+let loopProbePending = false;
+let loopIterationStart = 0;
+let callsSinceProbe = false;
+function probeLoopIteration() {
+	if (callsSinceProbe) {
+		callsSinceProbe = false;
+		loopIterationStart = performance.now();
+		setImmediate(probeLoopIteration);
+	} else loopProbePending = false;
+}
+
+export function rejectWhenLoopDelayed<A, B, R>(
+	fn: (a: A, b: B) => R,
+	onLimitExceeded: (a: A, b: B) => R,
+	maxLoopDelay: number,
+	name: string
+) {
+	let lastLimitExceededLog = -Infinity;
+	return function (a: A, b: B): R {
+		const now = performance.now();
+		callsSinceProbe = true;
+		if (!loopProbePending) {
+			loopProbePending = true;
+			loopIterationStart = now;
+			setImmediate(probeLoopIteration);
+		} else if (now - loopIterationStart > maxLoopDelay) {
+			if (now - lastLimitExceededLog > LIMIT_EXCEEDED_LOG_INTERVAL) {
+				lastLimitExceededLog = now;
+				logger.warn?.(
+					`Rejecting calls (${name}): the event loop has been busy for ~${Math.round(now - loopIterationStart)}ms, past the ${maxLoopDelay}ms limit`
+				);
+			}
+			return onLimitExceeded(a, b);
+		}
+		return fn(a, b);
+	};
+}
+
 setInterval(() => {
 	const now = performance.now();
 	if (
@@ -84,7 +134,7 @@ setTimeout(() => {
 		session.on('inspectorNotification', ({ method }) => {
 			if (method === 'Debugger.resumed') {
 				// reset if we are resuming
-				lastEventQueueCheck = performance.now();
+				lastEventQueueCheck = loopIterationStart = performance.now();
 			}
 		});
 	}

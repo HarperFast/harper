@@ -1,27 +1,52 @@
-import { dirname, basename } from 'path';
-import { existsSync } from 'fs';
+import { dirname, basename } from 'node:path';
+import { existsSync } from 'node:fs';
 import { deriveRoutePrefix } from './fastifyRoutes/helpers/deriveRoutePrefix.ts';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
-import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.ts';
 import autoload from '@fastify/autoload';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
-import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
-import * as userSchema from '../security/user.ts';
-import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
-import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
-import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
-import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.js';
+import * as hdbCore from './fastifyRoutes/plugins/hdbCore.ts';
+// installs server.getUser/authenticateUser
+import '../security/user.ts';
+import getServerOptions from './fastifyRoutes/helpers/getServerOptions.ts';
+import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.ts';
+import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.ts';
+import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.ts';
+import { authenticationChallengeForError } from '../security/deferredAuthentication.ts';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
 import { registerFastifyInstance } from './http.ts';
+import { thisThreadOwnsApplication, thisThreadsIsolatedApplication } from './threads/isolatedApplications.ts';
 
 let fastifyServer;
 const routeFolders = new Set();
+
+/**
+ * Fastify is registered as a global fallback (`server.http(built.server)` on the bare server, not the scoped one),
+ * so it never joins a routed middleware chain. A `urlPath` mount still works — it becomes the fastify route prefix,
+ * which is matched against the full external path — but a `host` mount cannot constrain it: in a shared worker these
+ * routes would stay reachable under every Host header, silently dropping the isolation the operator declared. So
+ * loading is refused there, contained to this component by the loader's per-component try/catch. An isolated
+ * application's own worker loads nothing else and is reached only through its host's route, so there is no other
+ * host for the routes to answer on.
+ */
+export function hostMountRefusal(
+	appName: string,
+	mountedHost: string | undefined,
+	owner: string | undefined = thisThreadsIsolatedApplication()
+): string | undefined {
+	if (!mountedHost || thisThreadOwnsApplication(appName, owner)) return undefined;
+	return (
+		`Application '${appName}' is mounted on host '${mountedHost}', but its fastifyRoutes cannot be constrained by ` +
+		`host: legacy fastify routes are registered as a global fallback and would remain reachable on every host. ` +
+		`Isolate the application, port them to server.http() to get host routing, or drop the host mount.`
+	);
+}
 
 /**
  * This is the entry point for the fastify route autoloader plugin. This plugin loads JS modules from provided path
@@ -39,19 +64,11 @@ const routeFolders = new Set();
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
 	const isHttps = (scope.options.getAll() as { securePort?: number }).securePort > 0;
-	// Fastify is registered as a global fallback below (`server.http(built.server)` on the bare
-	// server, not the scoped one), so it never joins a routed middleware chain. A `urlPath` mount
-	// still works — it becomes the fastify route prefix, which is matched against the full external
-	// path — but a `host` mount cannot constrain it: these routes would stay reachable under every
-	// Host header, silently dropping the isolation the operator declared. Refuse to load rather than
-	// imply isolation the fallback doesn't provide (review finding) — contained to this component by
-	// the loader's per-component try/catch, so it does not take down the rest of the application.
-	const mountedHost = scope.mount?.host ?? (scope.options.getAll() as { host?: string })?.host;
-	if (mountedHost) {
-		throw new Error(
-			`Application '${basename(scope.appName)}' is mounted on host '${mountedHost}', but its fastifyRoutes cannot be constrained by host: legacy fastify routes are registered as a global fallback and would remain reachable on every host. Port them to server.http() to get host routing, or drop the host mount.`
-		);
-	}
+	const refusal = hostMountRefusal(
+		basename(scope.appName),
+		scope.mount?.host ?? (scope.options.getAll() as { host?: string })?.host
+	);
+	if (refusal) throw new Error(refusal);
 	scope.handleEntry(async (entry) => {
 		if (entry.eventType !== 'add') {
 			scope.requestRestart();
@@ -111,8 +128,6 @@ export async function customFunctionsServer() {
 		harperLogger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 		harperLogger.debug(`Custom Functions server process ${process.pid} starting up.`);
 
-		await setUp();
-
 		const isHttps = env.get(CONFIG_PARAMS.HTTP_SECUREPORT) > 0;
 		let server;
 		try {
@@ -141,20 +156,6 @@ export async function customFunctionsServer() {
 	}
 }
 
-/**
- * Makes sure global values are set before server starts.
- * @returns {Promise<void>}
- */
-async function setUp() {
-	try {
-		harperLogger.info('Custom Functions starting configuration.');
-		await userSchema.setUsersWithRolesCache();
-		harperLogger.info('Custom Functions completed configuration.');
-	} catch (e) {
-		harperLogger.error(e);
-	}
-}
-
 //
 function buildRouteFolder(routesFolder, projectName) {
 	return async function (cfServer) {
@@ -178,9 +179,9 @@ function buildRouteFolder(routesFolder, projectName) {
 					}))
 					.after((err, instance, next) => {
 						if (err?.message) {
-							harperLogger.error(err.message);
+							harperLogger.status({ problem: 'custom-functions.routes' }).error(err.message);
 						} else if (err) {
-							harperLogger.error(err);
+							harperLogger.status({ problem: 'custom-functions.routes' }).error(err);
 						}
 						next();
 					});
@@ -207,7 +208,13 @@ async function buildServer(isHttps) {
 
 	//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
 	// can be handled in a coordinated way
-	app.setErrorHandler(serverErrorHandler);
+	app.setErrorHandler((error: any, request, reply) => {
+		if (error?.statusCode === 401 && !reply.hasHeader('WWW-Authenticate')) {
+			const presentedScheme = request.headers.authorization?.split(' ', 1)[0];
+			reply.header('WWW-Authenticate', authenticationChallengeForError(error, presentedScheme));
+		}
+		return serverErrorHandler(error, request, reply);
+	});
 
 	const corsOptions = getCORSOptions();
 	if (corsOptions) {

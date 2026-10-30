@@ -3,11 +3,11 @@
 import { loadCredentials, saveCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
-envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
+import dotenv from 'dotenv';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
@@ -16,20 +16,28 @@ import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { awaitRollout, summarizeRollout, type RolloutOutcome } from './deployRollout.ts';
+import { declaredDeploySource } from './deploySource.ts';
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 // The `deploy setup` seal and this by-reference flag both name the same hdb_secret row, and the
 // server re-derives it from its own request — so the derivation lives in one dependency-free module
 // rather than being restated per caller (it also keeps `components/` off the CLI's import graph).
 import { deriveGitSecretName, directoryProjectName, normalizeGitHost } from '../utility/componentNames.ts';
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
 // Shown for any local-instance connection failure (missing pid, missing/stale domain
 // socket, or a refused/ENOENT connect against it) — they're all the same user-facing
 // scenario: Harper isn't running. Remote-target failures keep the detailed error instead,
 // since there's no single "just start it" fix for those.
-const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
+const LOCAL_NOT_RUNNING_MESSAGE = `${PRODUCT_NAME} is not running. Use \`harperdb run\` (or \`harperdb start\`) to start it.`;
 
 // Operations whose responses should be consumed as text/event-stream so live phase events
 // (prepare, load, replicate, restart) render as they happen instead of after the whole
@@ -306,6 +314,7 @@ export {
 	refreshExpiredOperationToken,
 	transportContext,
 	resolveGitTarget,
+	resolveGitRepo,
 	resolveCredentialHost,
 	deriveGitSecretName,
 };
@@ -447,7 +456,7 @@ function resolveExplicitRef(ref: string, repo: string): string {
 // head — a real commit on a real branch — so deploy that instead, from the head repo, which for a fork
 // isn't GITHUB_REPOSITORY. See the pull_request section of GitHub's events-that-trigger-workflows docs.
 function resolveActionsPullRequestHead(): { repo: string; committish: string } | undefined {
-	if (!/^refs\/pull\//.test(process.env.GITHUB_REF ?? '')) return undefined;
+	if (!(process.env.GITHUB_REF ?? '').startsWith('refs/pull/')) return undefined;
 	const eventPath = process.env.GITHUB_EVENT_PATH;
 	let head: any;
 	try {
@@ -572,6 +581,15 @@ export function prepareDeployByRef(req: any): void {
 
 const PREPARE_OPERATION: any = {
 	deploy_component: async (req) => {
+		// Consumed here: they say how long this command follows a rolling deploy, which is no business of the server's.
+		req._wait = req.wait;
+		req._waitTimeout = req.wait_timeout;
+		delete req.wait;
+		delete req.wait_timeout;
+		// Checked before anything is sent: a deploy that went live and then refused its own wait would read as failed.
+		if (req._waitTimeout !== undefined && !(typeof req._waitTimeout === 'number' && req._waitTimeout >= 0)) {
+			throw new Error(`wait_timeout must be a number of milliseconds, got ${JSON.stringify(req._waitTimeout)}`);
+		}
 		if (req.deployment_id) {
 			// `by_ref`/`ref` are consumed here and never transmitted, so the server's validator cannot see
 			// this conflict.
@@ -585,6 +603,7 @@ const PREPARE_OPERATION: any = {
 			return;
 		}
 		if (req.package) {
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
@@ -592,10 +611,12 @@ const PREPARE_OPERATION: any = {
 		// Templates scaffold `by_ref=true`; without the flag the payload path below is unchanged.
 		if (req.by_ref || req.ref) {
 			prepareDeployByRef(req);
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
 		const projectPath = process.cwd();
+		req.source ??= declaredDeploySource({ directory: projectPath });
 		if (!req.project) req.project = directoryProjectName(projectPath);
 		const packageOptions = {
 			skip_node_modules: req.skip_node_modules !== false,
@@ -608,11 +629,11 @@ const PREPARE_OPERATION: any = {
 		// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
 		// total) and the dangling-symlink list — a dangling symlink would otherwise silently
 		// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
-		// them; the list is reused below (no second walk) and warns the user which links were
+		// them; the scan is reused below (no second walk) and warns the user which links were
 		// skipped so the omission is visible.
 		const scan = await scanPackageDirectory(projectPath, packageOptions);
 		req._uploadSizeEstimate = scan.totalSize;
-		req._danglingSymlinks = scan.danglingSymlinks;
+		req._packageScan = scan;
 		if (scan.danglingSymlinks.length) {
 			process.stderr.write(
 				`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
@@ -628,12 +649,18 @@ const PREPARE_OPERATION: any = {
  */
 function buildRequest(): any {
 	const req: any = {};
+	// Each value as typed, before JSON parsing, for a client-side flow whose arguments are opaque text
+	// (`harper deploy setup=true branch=1.0`). Non-enumerable so it never reaches a request body or a
+	// log: the raw strings include `auth_password=` and every other credential argument.
+	const rawArgs: Record<string, string> = {};
+	Object.defineProperty(req, '_rawArgs', { value: rawArgs, enumerable: false, writable: true });
 	for (const arg of process.argv.slice(2)) {
 		if (OP_ALIASES.hasOwnProperty(arg)) {
 			req.operation = OP_ALIASES[arg];
 		} else if (arg.includes('=')) {
 			let [first, ...rest] = arg.split('=');
 			let restStr: any = rest.join('=');
+			rawArgs[first] = restStr;
 
 			if (!RAW_STRING_FIELDS.has(first)) {
 				try {
@@ -770,7 +797,7 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
-		console.error('Connecting to local Harper instance');
+		console.error(`Connecting to local ${PRODUCT_NAME} instance`);
 		initConfig();
 		if (!getHdbPid()) {
 			console.error(LOCAL_NOT_RUNNING_MESSAGE);
@@ -880,8 +907,45 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	return { options, target };
 }
 
+/**
+ * Wait for a rolling deploy's other nodes on the same connection and credential the deploy used: a fresh `harper`
+ * command per poll would trade a new identity token each time under OIDC.
+ */
+async function followRollout(options: any, response: any, waitTimeout: unknown): Promise<RolloutOutcome | undefined> {
+	if (response?.status !== 'rolling_out' || typeof response.deployment_id !== 'string') return undefined;
+	const timeoutMs = waitTimeout as number | undefined;
+	const pollOptions = {
+		...options,
+		timeout: CLI_OPERATION_TIMEOUT_MS,
+		headers: { ...options.headers, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+	};
+	delete pollOptions.streamResponse;
+	delete pollOptions.headers['Transfer-Encoding'];
+	return awaitRollout(
+		response.deployment_id,
+		async (deploymentId, remainingMs) => {
+			const reply = await httpRequest(
+				// The idle timeout restarts on every byte, so a reply that trickles in would outlive the wait without the signal.
+				{
+					...pollOptions,
+					timeout: Math.min(CLI_OPERATION_TIMEOUT_MS, remainingMs),
+					signal: AbortSignal.timeout(remainingMs),
+				},
+				{ operation: 'get_deployment', deployment_id: deploymentId }
+			);
+			if (reply.statusCode !== 200) {
+				const error: any = new Error(`get_deployment answered ${reply.statusCode}: ${reply.body}`);
+				error.statusCode = reply.statusCode;
+				throw error;
+			}
+			return JSON.parse(reply.body);
+		},
+		{ timeoutMs }
+	);
+}
+
 async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
+	dotenv.config();
 
 	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
 	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the
@@ -935,7 +999,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				req._projectPath,
 				req._packageOptions,
 				renderer ? (n) => renderer.countUploadBytes(n) : undefined,
-				req._danglingSymlinks
+				req._packageScan
 			);
 			const fields = operationFields(req);
 			const multipart = buildMultipartBody(fields, {
@@ -978,33 +1042,50 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		// when response headers arrive (streamResponse: true), which happens before the full
 		// upload completes — calling endUpload() here would snap the bar prematurely.
 
+		const { statusCode } = response;
+		const failedStatus = statusCode < 200 || (statusCode >= 300 && statusCode !== 304);
+		const eventStream = useSse && response.headers['content-type']?.startsWith('text/event-stream');
 		let responseData;
-		if (useSse && response.headers['content-type']?.startsWith('text/event-stream')) {
+		if (eventStream && !failedStatus) {
 			// Consume SSE: render phase events live, capture the final result from the `done`
 			// event (or the error message from the `error` event). The HTTP status stays 200
 			// until end-of-stream; failures are signaled in-band.
 			let finalResult;
 			let sseError;
+			let terminated = false;
+			// Older servers write a result as unnamed frames, with no `done` event.
+			let lastUnnamedData: string | undefined;
 			for await (const message of parseSSE(response)) {
 				renderer?.renderEvent(message);
 				if (message.event === 'done') {
+					terminated = true;
 					try {
 						finalResult = JSON.parse(message.data)?.result;
 					} catch {
 						finalResult = message.data;
 					}
 				} else if (message.event === 'error') {
+					terminated = true;
 					try {
 						sseError = JSON.parse(message.data);
 					} catch {
 						sseError = { message: message.data };
 					}
+				} else if (message.event === 'message') {
+					lastUnnamedData = message.data;
 				}
 			}
 			if (sseError) {
 				const errMsg = sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
 				console.error(`error: ${errMsg}`);
 				process.exit(1);
+			}
+			if (finalResult === undefined && !terminated && lastUnnamedData !== undefined) {
+				try {
+					finalResult = JSON.parse(lastUnnamedData);
+				} catch {
+					finalResult = { message: lastUnnamedData };
+				}
 			}
 			responseData = finalResult ?? { message: 'Deploy completed (no result payload).' };
 		} else {
@@ -1018,6 +1099,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			} else {
 				bodyText = response.body;
 			}
+			// A request refused before its stream started can still arrive labeled as an event stream,
+			// with the error written as an unnamed frame (older servers). Unwrap it; a body with no
+			// frames at all (a proxy's error page) stays as it came.
+			if (eventStream) {
+				for await (const message of parseSSE(Readable.from([bodyText]))) bodyText = message.data;
+			}
 			try {
 				responseData = JSON.parse(bodyText);
 			} catch {
@@ -1028,6 +1115,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			}
 		}
 
+		const rollout =
+			!failedStatus && req.operation === 'deploy_component' && req._wait !== false
+				? await followRollout(options, responseData, req._waitTimeout)
+				: undefined;
+		if (rollout) responseData.rollout = summarizeRollout(rollout);
+
 		let responseLog;
 		if (req.json) {
 			responseLog = JSON.stringify(responseData, null, 2);
@@ -1035,8 +1128,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			responseLog = YAML.stringify(responseData).trim();
 		}
 
-		const { statusCode } = response;
-		if (statusCode < 200 || (statusCode >= 300 && statusCode !== 304)) {
+		if (failedStatus) {
 			const errorPrefix = responseLog.startsWith('error:') ? '' : 'error: ';
 			console.error(`${errorPrefix}${responseLog}`);
 			process.exit(1);
@@ -1044,6 +1136,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		if (!skipResponseLog) {
 			console.log(responseLog);
+		}
+		if (rollout?.failure) {
+			console.error(`error: ${rollout.failure}`);
+			process.exit(1);
 		}
 
 		if (target) {

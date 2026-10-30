@@ -1,0 +1,5 @@
+{
+	"name": "lockdown-bench-app",
+	"type": "module",
+	"private": true
+}

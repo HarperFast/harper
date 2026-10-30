@@ -5,6 +5,20 @@ import { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Entry, RecordObject } from './RecordEncoder.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
+import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
+
+/**
+ * A part has exactly name/value fields; consume each streamed Blob before requesting the next part.
+ * Stream-backed Blob read APIs require persistence; delegate to the inherited method to materialize files.
+ */
+export type ResourceBodyPart<Value = unknown> = { name: string; value: Value };
+/**
+ * Inherited writes collect named parts before authorization and instance dispatch.
+ * Static consumers own destination authorization and must commit staged Blob saves before advancing.
+ * Delegate to the inherited static method before reading or returning the iterator, with no concurrent consumer.
+ * Direct consumers must finish consuming or return the iterator before responding.
+ */
+export type ResourceBody<T> = T | AsyncIterable<ResourceBodyPart> | Promise<T | AsyncIterable<ResourceBodyPart>>;
 
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
@@ -18,7 +32,7 @@ export interface ResourceInterface<Record extends object = any>
 		| Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 	search?(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
 
-	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowCreate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	create?(
 		target: RequestTargetOrId,
 		newRecord: Partial<Record & RecordObject>
@@ -28,7 +42,7 @@ export interface ResourceInterface<Record extends object = any>
 		newRecord: Partial<Record & RecordObject>
 	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
 
-	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowUpdate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	put?(
 		record: Record & RecordObject,
 		target?: RequestTargetOrId
@@ -74,13 +88,14 @@ export interface Context {
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
 	session?: Session;
 	/**
-	 * The database transaction object. `undefined` means none was ever attached. On the RocksDB path, a
-	 * completed transaction releases its back-reference (DatabaseTransaction.ts's releaseContext()) and
-	 * the slot holds RELEASED_TRANSACTION, a shared completed transaction: always safe to call
-	 * `commit()`/`abort()` on (both no-ops) and to read through (latest committed state, no snapshot),
-	 * so code that commits mid-handler can keep using its context. LMDBTransaction does not release,
-	 * so there the completed transaction itself stays in the slot — also safe to call, but retained.
-	 * `null` was the previous released marker and is still accepted defensively.
+	 * The database transaction object. `undefined` means none was ever attached. Once the scope that
+	 * attached it completes (`transaction()`, or the static API servicing a call), it releases its
+	 * back-reference (DatabaseTransaction.ts's releaseContext()) and the slot holds RELEASED_TRANSACTION, a
+	 * shared completed transaction: truthy, never OPEN, always safe to call `commit()`/`abort()` on (both
+	 * no-ops) and to read through (latest committed state, no snapshot), so code that commits mid-handler
+	 * can keep using its context. This holds on LMDB storage too, because the slot holds the scope's root
+	 * DatabaseTransaction rather than an LMDBTransaction; on RocksDB the release waits for any iterator the
+	 * scope returned to drain. `null` was the previous released marker and is still accepted defensively.
 	 *
 	 * A read that resolves a transaction without going through the static-API wrappers (an instance load,
 	 * for one) replaces a released or never-set slot with an ImmediateTransaction, which commits every
@@ -142,7 +157,9 @@ export interface Context {
 	/**
 	 * Abort signal carried through ALS so generator bodies can forward cancellation to
 	 * external work (e.g. `scope.models.generateStream({ signal })`). Populated on the
-	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513.
+	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513. Also the request's
+	 * lifetime for its writes (harper#2001): once it aborts, no write for the request is admitted
+	 * and a write-bearing transaction is aborted at once (`DatabaseTransaction.admitRequestWrite`).
 	 */
 	signal?: AbortSignal;
 }
@@ -185,6 +202,7 @@ export const COMPARATORS = [
 	'in',
 	'less_than',
 	'less_than_equal',
+	...FULL_TEXT_COMPARATORS,
 	'ne',
 	'not_equal',
 	'starts_with',
@@ -201,7 +219,11 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_type?: Comparator;
 	value?: Record[Property] | Record[Property][];
 	search_value?: Record[Property] | Record[Property][];
-	/** Native HNSW coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
+	/** Optional source-field restriction for a named full-text index. */
+	fields?: string[];
+	/** Return configured full-text match spans and snippets; disabled by default. */
+	includeHighlights?: boolean;
+	/** Native derived-index coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
 	maxIndexLagMilliseconds?: number;
 	/** Wait for coverage of prior committed writes, up to 30,000 ms; 0 (default) does not wait. */
 	waitForIndexMilliseconds?: number;
@@ -215,7 +237,7 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	 * companion conditions and caller `vectorFilter`/`rowFilter` predicates, pushed into a filterable
 	 * custom index (HNSW) so filtering happens during traversal. Not part of the public query surface.
 	 */
-	recordFilter?: (primaryKey: Id) => boolean;
+	recordFilter?: (primaryKey: Id, entry?: unknown) => boolean;
 }
 
 interface ConditionGroup<Record extends object = any> {
@@ -235,14 +257,51 @@ export interface Sort<Record extends object = any> {
 	next?: Sort<Record>;
 }
 export interface SubSelect {
+	conditions?: Conditions;
+	operator?: string;
+	limit?: number;
+	offset?: number;
+	sort?: Sort;
 	name: string;
-	select: (string | SubSelect)[];
+	select?: (string | SubSelect)[];
 }
 export type Select = (string | SubSelect)[];
+
+import type { SubscriptionCheckpoint } from './subscriptionCheckpoint.ts';
+export type { SubscriptionCheckpoint };
 
 export interface SubscriptionRequest extends RequestTarget {
 	/** The starting time of events to return (defaults to now) */
 	startTime?: number;
+	/**
+	 * Resume from `startTime` as a position in this database generation: the subscription is refused with
+	 * a 409 if the database was replaced (always on LMDB), or a 410 if the history after the position is
+	 * no longer retained or is too long to replay for one record, and exposes `resumeVerified`. Requires a
+	 * finite `startTime`, where `0` is a position, and no `previousCount`.
+	 */
+	databaseGeneration?: string;
+	/**
+	 * Certify delivery progress (RocksDB): the subscription carries `progress()` and `sentCount`, a reload
+	 * marker or a failure to build a live event ends it, and its snapshot keeps every event buffered during the scan.
+	 */
+	reportProgress?: boolean;
+	/**
+	 * Resume from a per-origin checkpoint issued by `checkpoint()` on this or another node of the cluster
+	 * (RocksDB): refused with a 400 if malformed, a 409 if issued for another scope or on LMDB, and a 410 if
+	 * this node cannot serve every origin it certifies completely from its boundary; exposes `resumeVerified`.
+	 * Implies `reportProgress`; exclusive with `startTime`, `databaseGeneration` and `previousCount`.
+	 */
+	resume?: SubscriptionCheckpoint;
+	/**
+	 * With `reportProgress`: deliver `{ type: 'checkpoint', checkpoint }` events through the subscription's own
+	 * queue, at most every this many milliseconds (at least 1000) and only when a boundary advanced.
+	 */
+	checkpointInterval?: number;
+	/**
+	 * Names the caller's filter contract for `rowFilter`/`eventFilter`: a checkpoint binds to it, and a
+	 * resume under another key starts fresh. Required to issue or resume a checkpoint with a filter.
+	 */
+	filterKey?: string;
 	/** The count of previously recorded events to return */
 	previousCount?: number;
 	/** If the current record state should be omitted as the first event */
@@ -251,6 +310,8 @@ export interface SubscriptionRequest extends RequestTarget {
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	rawEvents?: boolean;
+	/** Include superseded record versions in replay and live delivery. Defaults to rawEvents, otherwise false. */
+	includeSuperseded?: boolean;
 	listener?: Listener;
 	/**
 	 * Application-supplied predicate for subscription events, including tombstones and messages that
@@ -295,6 +356,36 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	listener: Listener<Event>;
 	subscriptions: Listener<Event>[];
 	startTime?: number;
+	/** The generation of the database this subscription reads; undefined on LMDB. */
+	databaseGeneration?: string;
+	/**
+	 * Present only when subscribed with `databaseGeneration`. Resolves `true` once the replay after the
+	 * position is complete and checked, or `false` if it was refused, cut short or closed first; never rejects.
+	 * Events delivered before it resolves `true` are not safe to checkpoint. It does not detect a transaction
+	 * that commits after the position was recorded with a key below it.
+	 */
+	resumeVerified?: Promise<boolean>;
+	/**
+	 * Present only when subscribed with `reportProgress`: the newest log key at or below which every history
+	 * event this subscription will deliver has already been sent to it, or undefined if none is certified.
+	 */
+	progress?: () => number | undefined;
+	/** Present only when subscribed with `reportProgress`: how many events have been sent to this subscription. */
+	sentCount?: number;
+	/**
+	 * Present only when subscribed with `reportProgress`: the lowest log key among the events sent after the first
+	 * `consumed`, counting only events sent below a key sent before them (a later event never is), or undefined.
+	 * Requires a sequential consumer with at most one event taken from the queue but not yet counted in `consumed`.
+	 */
+	lowestLateUnconsumed?: (consumed: number) => number | undefined;
+	/**
+	 * Present only when subscribed with `reportProgress` (RocksDB): the compact per-origin checkpoint every event
+	 * below which has been taken from this subscription, or undefined while none can be certified. `holds` lowers
+	 * an origin's boundary to a delivery the consumer has not yet consumed, by origin node id.
+	 */
+	checkpoint?: (holds?: Map<number, number>) => SubscriptionCheckpoint | undefined;
+	/** With `checkpoint`: its lowest boundary, below which no event can be delivered anew; cheaper than encoding one. */
+	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 
 	end(): void;
 	toJSON(): { name: 'subscription' };

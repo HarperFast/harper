@@ -1,55 +1,28 @@
 # build-tools/ — Design notes
 
-Packaging and the published artifacts (npm tarball, shrinkwrap, Docker image).
+Packaging and the published artifacts (npm dependency bundle, Docker image), plus Harper's local lint rules.
 
-**Read this when:** touching the shrinkwrap scripts, `build.sh` or the `Dockerfile`.
+**Read this when:** touching dependency bundling, `build.sh`, the `Dockerfile` or `oxlint-plugin-harper.mjs`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
-## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
+## Release dependencies are bundled without host binaries (`bundleDependencies.ts`)
 
-npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
-flag in the **registry packument**, metadata the registry sets at publish time — not by looking
-inside the tarball. So `npm install harper` from the registry installs exactly the tree the
-shrinkwrap describes, including honoring _omissions_ (it will not re-resolve an optional dependency
-that has been pruned out). But `npm install ./harper-*.tgz` has no packument, so npm never learns the
-shrinkwrap exists and re-resolves the whole tree from `package.json`. Verified on one published
-5.1.23 artifact: via the registry it honored the pin (fastify 5.8.5), from the tarball it resolved
-fresh (fastify 5.10.0, then-latest).
+`build.sh` installs the repository lock with `npm ci`, builds Harper and Studio, and stages npm's own source-file selection. Only the staged manifest declares `bundleDependencies`; a root `npm pack` remains a source package and cannot capture the development dependency tree. `prepareBundle` copies the locked, production-reachable JavaScript closure at its original nested/hoisted paths, leaving development-only entries behind. Existing destinations must carry this preparer's ownership marker before they can be cleared. npm 10/11's array and npm 12's name-keyed pack output are both accepted. `checkBundle` validates both the stage and the extracted final archive against the checkout's lock, including copied dependency declarations and peer optionality. The tarball moves from staging to its release filename only after validation; rebuilding removes an older release archive first. `bundleDependencies.test.mjs` covers a real pack → consumer install → offline `npm ci`, nested copies, native rejection and deliberate version/declaration corruption.
 
-Three consequences worth knowing before touching packaging:
+Native-containing roots remain ordinary dependencies with exact versions from the lock in the release manifest. Rewriting a non-registry source spec is rejected rather than changing the package's provenance. This includes JavaScript wrappers (`msgpackr`, `cbor-x`, `structon`) and the Bare-runtime optional trees of `tar-fs` and `tar-stream`. `ws` also stays external with its optional native `bufferutil` accelerator so consumers can override the transport independently; optional-only peers are not followed by the bundle planner. Shared direct packages (`@harperfast/extended-iterable`, `ordered-binary`, `weak-lru-cache`) also stay unbundled. The locked storage engines must still declare every module in the alignment contract; declaration changes fail packaging and require updating that contract. Installation checks compare the resolution paths of the storage engines' shared iterables/encoder modules with Harper's, including a consumer layout where npm hoists native roots out of Harper's directory. Negative fixtures reject nested and linked private encoder copies. `SKIP` itself is already a global Symbol; duplicate module copies do not create distinct sentinels.
 
-- `overrides` in harper's `package.json` are **root-only** and do nothing for anyone installing
-  harper. The shrinkwrap is the only lever that reaches consumers, which is why the react-native
-  prune lives in `build-tools/prune-shrinkwrap-react-native.mjs` rather than in `overrides` (#1937).
-- The published shrinkwrap is deliberately _not_ what `npm shrinkwrap` produced — `build.sh`
-  post-processes it (dev prune #1783, react-native prune #1937) to enforce that it describes only the
-  production tree a consumer installs. Anything added there must keep it internally consistent; a
-  pruned entry that something still requires would ship a broken tree to every consumer.
-- The Dockerfile extracts the local tarball into a project directory and runs `npm install` there
-  (rather than `npm install --global <tarball>`), so it reads `npm-shrinkwrap.json` off disk like any
-  checked-out project and gets version pinning (#1960). It does **not** get the omission half: `npm
-install` (unlike a registry install of harper as _someone else's_ dependency) reconciles the local
-  project's own `package.json` against the lockfile, and the packed `package.json` prunes nothing —
-  only the shrinkwrap does. `alasql`'s packed manifest still declares the react-native-fs optional
-  edge, so plain `npm install` silently re-adds that whole pruned subtree to satisfy it. Closing that
-  gap needs `npm ci` against a package.json where `alasql`'s own packed manifest has also had the edge
-  removed — a bigger change to the published tarball than this dance, and not yet done. The Dockerfile
-  does strip `devDependencies` from its _own extracted copy_ of `package.json` before installing (not
-  the published tarball — registry consumers never see this) — not for `npm ci`'s sake, but because
-  without it `npm install` still resolves dev edges to compute the ideal tree even under `--omit=dev`,
-  which could silently lift a _production_ package that a devDependency also happens to want above its
-  shrinkwrap pin. Confirmed empirically before landing: a hoisted production package's installed
-  version tracked a devDependency's looser range instead of the shrinkwrap pin without this strip.
-- Pinning inverts the old incident-remediation path, worth knowing before reaching for it: before
-  #1960, rebuilding the image picked up any newer in-range dependency automatically, which is how a
-  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the _pinned_ part
-  of the tree is frozen to the shrinkwrap, so a remediation of that shape now needs a lock bump and a
-  re-release — a rebuild alone reproduces the same tree, bug included. This does **not** apply to the
-  react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
-  bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
+The same helper supports harper-pro’s `re2` and `@datadog/pprof` native roots as ordinary exact-pinned dependencies. Neither is present in core’s lock, so these exclusions do not change core’s bundle. New pro-only native roots require an explicit policy update here rather than a separate copier or CLI policy parameter.
+
+The bundle must be closed over declared dependencies and optional dependencies, including foreign-platform lock records. Optional-only peers remain externally supplied, even when the development lock contains them, as with `node-fetch`'s optional `encoding` peer. Required type-package dependencies still belong to the closure. Native selectors, install-phase lifecycle hooks, Bare addons, `binding.gyp`, native file extensions and ELF/Mach-O/PE signatures fail preparation or archive inspection. PE detection follows the executable header, so text beginning with `MZ` is permitted. A new native transitive therefore fails packaging instead of silently shipping a host binary. Add its containing root to the unbundled policy deliberately.
+
+Copied manifests omit only unused optional `react-native-fs` edges and optional-peer-only `utf-8-validate` references. Explicit producers are preserved and can fail the native guard. Shared children survive because reachability is computed after cutting those declarations. This replaces shrinkwrap pruning: the omitted edges are absent from the bundled manifests themselves, so npm does not reintroduce the React Native tree. Retire the React Native rule when AlaSQL stops declaring that optional dependency.
+
+The Docker image uses a normal global tarball install. Bundled JavaScript versions stay fixed on npm 10, 11 and 12, but **the unbundled native subtrees and externally supplied peers can still resolve ranged transitives**; exact root pins do not make the entire image reproducible. A consumer's conflicting dependencies/overrides can also split shared unbundled modules, which the installation checker reports. Bundled CVE fixes require a Harper lock update and release; rebuilding an unchanged tarball keeps the same JavaScript bytes. Bundles are not deduplicated with the consumer's packages.
+
+The PR-gated consumer matrix installs the Linux-produced archive on Linux/npm 10, 11 and 12 and Windows/npm 11, runs consumer `npm ci`, verifies the bundle and module resolution, opens both engines and checks filtering, then tests a global install. Docker smoke repeats the installed-version/resolution checks against the source lock on the image's platform; nightly downstream application tests use the same artifact.
 
 ## The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)
 
@@ -72,3 +45,32 @@ user-visible in four ways worth knowing before changing the entrypoint:
 Volumes written by older PID-1 images stay compatible: `utility/processManagement` treats a pid
 file naming PID 1 as stale when PID 1 is an init process, so a container restarted onto such a
 volume does not refuse to start on a "still running" pid that is now `tini`.
+
+## `build.sh` packages only a clean, error-free build (`build.sh`)
+
+`build.sh` deletes `dist/` and stops when `npm run build` fails, so `npm run package` stops at a type error, and with it the release workflow, `npm-package-app-e2e` and the Docker image. It used to run `npm run build || true`. `tsc` emits even while reporting errors, so a failed build was still packaged, and a stale `dist/` could hide a declaration file the compiler had stopped emitting. TypeScript 6.0+ did exactly that for `dist/resources/Table.d.ts` until #2904 gave `makeTable()` an explicit public type. A local `npm run package` over a tree with type errors now fails instead of packaging; fix the error rather than restoring the tolerance.
+
+## Emitted `dist/` JS is comment-free and Latin-1 (`build-tools/build-dist.mjs`)
+
+V8 keeps the full source text of every loaded module on the heap of every thread (Node hands CJS
+source to V8 as a heap string, and V8 needs it for lazy compilation and `Function.prototype.toString`),
+and it stores the whole file as UTF-16 when a single char is above `0xFF`. Before this build, 224
+loaded files held a `—` or `→` (almost always in a comment), which doubled their storage: module
+source was 20.6 MB of a 58 MB idle worker heap, 14.3 MB of it in those files.
+
+So `npm run build` emits JS with `removeComments` and a TypeScript `after` transformer that
+re-creates any string or untagged template literal containing non-Latin-1 text as a synthesized
+node, which the printer escapes (`—`) instead of copying the original text. Doing this in the
+emitter rather than as a text rewrite keeps evaluated values exact (identity escapes, surrogate
+pairs, interpolations) and lets source maps describe the final text. Declarations come from a
+second, declaration-only pass so `.d.ts` keep their JSDoc. The build then fails if any non-Latin-1
+char is left in `dist/**/*.js` — a tagged template is deliberately left untouched because its tag can
+read `.raw`, so that is the case that would trip it.
+
+`npm run build:watch` is plain `tsc --watch`: comments and non-Latin-1 text stay, which only costs
+memory on a development box. harper-pro compiles core into its own `dist/core`, so it runs this
+script with `--project tsconfig.json` rather than core's build.
+
+## Integration tests never assert the literal `true` (`build-tools/oxlint-plugin-harper.mjs`)
+
+`harper/no-literal-true-assertion` (an oxlint JS plugin, enabled for `integrationTests/**` in `.oxlintrc.json`) rejects `ok(true, …)` and every other `node:assert` truthiness call whose argument is the literal `true`, resolving import aliases, destructuring and `t.assert` through scope. A probe asserts what it observed, or it is not a test: a print-only step goes in `after()`. oxlint ships JS plugins as alpha, so `unitTests/build-tools/oxlintPluginHarper.test.mjs` runs the pinned oxlint with the real config against fixtures: a bump that breaks loading fails `lint:required`, and one that loads but stops reporting fails that test.

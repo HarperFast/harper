@@ -12,13 +12,26 @@
 
 import { appendFileSync, readFileSync, statSync } from 'node:fs';
 import { validateNormalizedPrFiles } from './collectPrFiles.mjs';
-import { evaluateCiCoverage } from './evaluateCiCoverage.mjs';
+import { evaluateCiCoverage, PENDING_FIX } from './evaluateCiCoverage.mjs';
 import { evaluateFramingVerdict, parseFramingPaths } from './evaluateFramingVerdict.mjs';
 import { evaluatePrFormat } from './evaluatePrFormat.mjs';
 import { EASY_MAX_FILES, EASY_MAX_LINES } from './prExemption.mjs';
 import { COVERAGE_REQUIRED } from './reviewGate.mjs';
 
 const MAX_PR_FILES_BYTES = 4 * 1024 * 1024;
+
+// The full documented enum, so an override can only ever land on a value classification
+// already understands (see review-coverage.yml for where this input comes from).
+const AUTHOR_ASSOCIATIONS = new Set([
+	'OWNER',
+	'MEMBER',
+	'COLLABORATOR',
+	'CONTRIBUTOR',
+	'FIRST_TIME_CONTRIBUTOR',
+	'FIRST_TIMER',
+	'MANNEQUIN',
+	'NONE',
+]);
 
 function arg(name, fallback = '') {
 	const i = process.argv.indexOf(`--${name}`);
@@ -49,6 +62,21 @@ function main(mode, formatMode, framingMode) {
 	const event = JSON.parse(readFileSync(eventPath, 'utf8'));
 	const pr = event.pull_request;
 	if (!pr) throw new Error('event payload has no pull_request');
+	const liveAssociation = arg('pr-author-association', process.env.INPUT_PR_AUTHOR_ASSOCIATION || '').toUpperCase();
+	if (liveAssociation && liveAssociation !== pr.author_association) {
+		if (!AUTHOR_ASSOCIATIONS.has(liveAssociation)) {
+			console.error(`::warning::review-coverage: ignoring unrecognized live author_association '${liveAssociation}'`);
+		} else if (liveAssociation === 'MEMBER' || liveAssociation === 'OWNER') {
+			console.log(
+				`review-coverage: author_association resolved live as ${liveAssociation} (webhook payload had ${pr.author_association ?? 'unset'})`
+			);
+			pr.author_association = liveAssociation;
+		} else {
+			console.error(
+				`::warning::review-coverage: ignoring non-promoting live author_association '${liveAssociation}' — this override can only promote to MEMBER/OWNER`
+			);
+		}
+	}
 	const rawRequired = arg('required', process.env.INPUT_REQUIRED || process.env.REVIEW_COVERAGE_REQUIRED || '');
 	const required = rawRequired === '' ? COVERAGE_REQUIRED : Number(rawRequired);
 	if (!Number.isInteger(required) || required < 0) throw new Error(`invalid required '${rawRequired}'`);
@@ -106,7 +134,11 @@ function main(mode, formatMode, framingMode) {
 			? `_${r.exempt}_`
 			: r.compliant
 				? ''
-				: `Per team policy, a substantive AI-authored PR reports ${required} outside-model review families in its \`Review-Coverage:\` footer. Materialize it with the cross-model-review skill's \`pr-body-review-need.mjs --write\` (harper-engineering-guidelines, pr-conventions): it unions every review round the branch had, so the head commit does not need a receipt of its own — do not re-review just to produce the footer.`,
+				: r.pendingLegs.length
+					? `A late review leg (${r.pendingLegs.map((leg) => `\`${leg}\``).join(', ')}) is still pending, so its findings were never adjudicated: ${PENDING_FIX}.`
+					: r.adjudicatorBlocked
+						? `Per team policy, outside-model findings reach a human only after the Harper adjudicator (\`domain\`) has ruled on them. Every review round on this branch lost that leg (${r.adjudicatorBlocked}). Rerun the pre-push review until \`domain\` completes, then re-materialize the footer with \`pr-body-review-need.mjs --write\`.`
+						: `Per team policy, a substantive AI-authored PR reports ${required} outside-model review families in its \`Review-Coverage:\` footer. Materialize it with the cross-model-review skill's \`pr-body-review-need.mjs --write\` (harper-engineering-guidelines, pr-conventions): it unions every review round the branch had, so the head commit does not need a receipt of its own — do not re-review just to produce the footer.`,
 	].filter(Boolean);
 	if (formatMode !== 'off') {
 		lines.push(
@@ -129,7 +161,7 @@ function main(mode, formatMode, framingMode) {
 			'',
 			framing.exempt ? `_${framing.exempt}_` : framing.detail,
 			'',
-			'Configured core-shared paths require `Framing-Verdict: chosen-approach-sound`, or a non-clearing verdict recorded under `## For the human reviewer`.'
+			'Configured core-shared paths require `Framing-Verdict: chosen-approach-sound`, or a non-clearing verdict explained under `## ⚖️ Alternatives`, in a `> ❓ **Your call:**` line, or under the legacy `## For the human reviewer`.'
 		);
 	}
 	if (process.env.GITHUB_STEP_SUMMARY) {
@@ -152,7 +184,7 @@ function main(mode, formatMode, framingMode) {
 		);
 	if (!r.pass) {
 		console.error(
-			`::error::${r.detail} — report the reviews in the PR description to pass; the dispatch gate will block at review time if the fleet's review also finds issues`
+			`::error::${r.detail} — ${r.adjudicatorBlocked || r.pendingLegs.length ? '' : 'report the reviews in the PR description to pass; '}the dispatch gate will block at review time if the fleet's review also finds issues`
 		);
 		process.exitCode = 1;
 	}

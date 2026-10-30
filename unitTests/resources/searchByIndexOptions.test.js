@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { searchByIndex } = require('#src/resources/search');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // searchByIndex takes its optional tail as a named options object (#2165). These assert the options
 // are actually read off that object: a caller that reverts to positional arguments would hand

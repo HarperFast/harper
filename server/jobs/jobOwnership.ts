@@ -1,21 +1,17 @@
 'use strict';
 
-import { randomUUID } from 'node:crypto';
-import { isMainThread } from 'node:worker_threads';
 import { getDatabases } from '../../resources/databases.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import log from '../../utility/logging/harper_logger.ts';
+import { processIncarnation } from '../threads/processIncarnation.ts';
 import { updateJob } from './jobs.ts';
 
 /**
- * Ownership is a per-process id rather than a pid, because pids are reused and a reused pid would
- * make a dead job look alive. It is minted on the main thread and inherited by workers through
- * `process.env`, so every thread of one Harper process agrees on it while any restart produces a
- * new one. The pid rides along for diagnostics only.
+ * The thread fabric's process incarnation, not a pid: pids are reused, and a reused pid would make a
+ * dead job look alive. Every thread of one Harper process carries the same value, and any restart
+ * produces a new one. `undefined` on a thread started without one.
  */
-const JOB_OWNER_INSTANCE_ENV = 'HARPER_JOB_OWNER_INSTANCE';
-if (isMainThread) process.env[JOB_OWNER_INSTANCE_ENV] = randomUUID();
-export const JOB_OWNER_INSTANCE_ID = process.env[JOB_OWNER_INSTANCE_ENV] ?? randomUUID();
+export const JOB_OWNER_INSTANCE_ID: string | undefined = processIncarnation;
 
 /** Stripped from `get_job` responses. */
 export const JOB_OWNER_ATTRIBUTES = ['owner_instance', 'owner_pid'] as const;
@@ -32,20 +28,44 @@ function jobTable(): any {
 	return (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
 }
 
+// Deliberately not "rerun it": the job may have applied some of its effects before it died, and nothing
+// here can tell how far it got.
 function settle(id: any, interruption: string) {
 	return updateJob({
 		id,
 		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
-		message: `Job was interrupted: ${interruption}. Rerun the operation.`,
+		message: `Job was interrupted: ${interruption}. Its outcome is unknown — check for partial effects before running the operation again.`,
 	});
 }
 
+let reconciliation: Promise<number> | undefined;
+
 /**
- * Settle every job row left unfinished by a process that is no longer running, and report how many
- * were settled. Idempotent: a row this process owns is skipped, and every other unfinished row
- * becomes terminal.
+ * Reconcile at most once per process. `loadRootComponents` re-runs on every root component reload, and
+ * no process can add a row that this one owns, so every pass after a *complete* one could only find
+ * nothing. A pass that left any row unsettled clears the memo instead, so the next reload retries the
+ * stragglers — the recovery this exists for must not be lost to one transient write failure.
+ */
+export function reconcileInterruptedJobsOnce(): Promise<number> {
+	return (reconciliation ??= reconcileInterruptedJobs().catch((error) => {
+		reconciliation = undefined;
+		throw error;
+	}));
+}
+
+/**
+ * Settle every job row left unfinished by a process that is no longer running, and report how many were
+ * settled. Callers need not await it: the rows are chosen before the first write, so a job created while
+ * it runs is this process's and out of scope by construction.
+ *
+ * Settled rows are reported as ERROR rather than a new status, because every consumer of `get_job`
+ * already handles ERROR.
  */
 export async function reconcileInterruptedJobs(): Promise<number> {
+	// A thread with no incarnation cannot tell a dead owner from a live one, so it settles nothing rather
+	// than declaring a running job dead. The main thread always has one.
+	if (JOB_OWNER_INSTANCE_ID == null) return 0;
+
 	const table = jobTable();
 	if (!table) return 0;
 
@@ -58,20 +78,25 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	}
 
 	let settled = 0;
+	let unsettled = 0;
 	for (const { id, owner_pid } of interrupted) {
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
 			await settle(id, `${owner} exited before it finished`);
 			settled++;
 		} catch (error) {
+			// Keep going: one unwritable row must not strand the rest.
+			unsettled++;
 			log.error(`Could not settle interrupted job ${id}`, error);
 		}
 	}
 	if (settled > 0) log.warn(`Settled ${settled} job(s) left unfinished by a Harper process that is no longer running`);
+	// Reported as a failure so the pass is not memoized as complete while rows are still stuck.
+	if (unsettled > 0) throw new Error(`Could not settle ${unsettled} of ${interrupted.length} interrupted job(s)`);
 	return settled;
 }
 
-/** Settle a job abandoned by a worker thread that died inside a live process. See server/DESIGN.md. */
+/** Settle a job abandoned by a worker thread that died inside a live process. See server/jobs/DESIGN.md. */
 export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	const job = await jobTable()?.get(jobId);
 	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;

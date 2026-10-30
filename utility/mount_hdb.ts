@@ -1,13 +1,16 @@
 'use strict';
 
-const { mkdirpSync, copySync } = require('fs-extra');
-import * as path from 'path';
+import fsExtra from 'fs-extra';
+const { mkdirpSync, copySync } = fsExtra;
+import * as path from 'node:path';
 import * as terms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import bridge from '../dataLayer/harperBridge/harperBridge.ts';
-import systemSchema from '../json/systemSchema.json';
-import * as initPaths from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import CreateTableObject from '../dataLayer/CreateTableObject.ts';
+import * as initPaths from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { systemSchema as builtinSystemSchema } from './systemSchema.js';
+const systemSchema: Record<string, any> = builtinSystemSchema;
 
 export default async function mountHdb(hdbPath: string) {
 	hdbLogger.trace('Mounting Harper');
@@ -28,9 +31,6 @@ export default async function mountHdb(hdbPath: string) {
  * @returns {Promise<void>}
  */
 async function createTables() {
-	const CreateTableObject =
-		require('../dataLayer/CreateTableObject').default || require('../dataLayer/CreateTableObject');
-
 	let tables = Object.keys(systemSchema);
 
 	for (const tableName of tables) {
@@ -38,7 +38,8 @@ async function createTables() {
 		try {
 			initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, tableName);
 			let createTable = new (CreateTableObject as any)(terms.SYSTEM_SCHEMA_NAME, tableName, hash_attribute);
-			createTable.attributes = (systemSchema as any)[tableName].attributes;
+			// A copy: `table()` keeps the array it is given as the table's live attribute list.
+			createTable.attributes = structuredClone((systemSchema as any)[tableName].attributes);
 			let primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === hash_attribute);
 			primaryKeyAttribute.isPrimaryKey = true;
 

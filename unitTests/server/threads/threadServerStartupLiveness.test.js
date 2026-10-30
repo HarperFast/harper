@@ -6,7 +6,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { Worker } = require('node:worker_threads');
 
-const FIXTURE = join(__dirname, 'threadServerStartupLiveness-fixture.js');
+const FIXTURE = join(__dirname, 'threadServerStartupLiveness-fixture.cjs');
 
 describe('threadServer startup liveness', () => {
 	it('keeps a pre-ready worker alive while component loading has no ref-holding completion source', async () => {

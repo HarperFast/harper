@@ -33,7 +33,7 @@
  *   npm run test:integration -- "integrationTests/database/eviction-index-orphan-removal-paths.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual } from 'node:assert';
+import { strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -282,6 +282,12 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				);
 
 				strictEqual(bucketConsistency.baseCount, HEARTBEAT_IDS.length, 'only heartbeat rows survive the sweep');
+				const postSweepBase = await primaryDump('Expiring');
+				deepStrictEqual(
+					postSweepBase.rows.map((r: any) => r.id).sort(),
+					[...HEARTBEAT_IDS].sort(),
+					`surviving primary ids must be exactly HEARTBEAT_IDS, got ${JSON.stringify(postSweepBase.rows.map((r: any) => r.id).sort())}`
+				);
 				strictEqual(
 					bucketConsistency.dangling.length,
 					0,
@@ -352,6 +358,22 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 			const delRes = await postJSON('/DeleteIds/', { table: 'Perm', ids: toDelete });
 			strictEqual(delRes.status, 200, 'DeleteIds should succeed');
+
+			// checkConsistency alone can't tell "deleted and cleaned up" from "never touched": a
+			// no-op DeleteIds leaves both rows and index untouched, which reads as consistent.
+			const postDeleteDump = await primaryDump('Perm');
+			strictEqual(
+				postDeleteDump.rows.length,
+				total - toDelete.length,
+				`DeleteIds must remove rows from the raw primary store, expected ${total - toDelete.length} remaining, got ${postDeleteDump.rows.length}`
+			);
+			const stillPresentIds = new Set(postDeleteDump.rows.map((r: any) => r.id));
+			const notActuallyDeleted = toDelete.filter((id: string) => stillPresentIds.has(id));
+			strictEqual(
+				notActuallyDeleted.length,
+				0,
+				`deleted ids must be gone from the raw primary store: ${JSON.stringify(notActuallyDeleted.slice(0, 10))}`
+			);
 
 			// delete() (with audit on, the default) writes an audit tombstone (value=null) and only
 			// physically removes the base row later via the async scheduleCleanup() sweep — but

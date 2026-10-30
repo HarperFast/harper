@@ -6,6 +6,7 @@
 // guard installed on a timer is a guard the first megabytes of a burst are written without.
 
 import {
+	type BigIntStats,
 	createReadStream,
 	createWriteStream,
 	existsSync,
@@ -19,7 +20,7 @@ import { pipeline } from 'node:stream/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isMainThread, threadId } from 'node:worker_threads';
-import { nextGenerationId, requestGenerationClose } from './logGenerationCoordinator.ts';
+import { type FileIdentity, nextGenerationId, requestGenerationClose } from './logGenerationCoordinator.ts';
 
 // Bounds each writer's blind window at one quantum plus the flush that crosses it, so the file is
 // bounded by maxBytes + T * (quantum + batch) rather than by elapsed time. Fixed, not a remaining
@@ -80,8 +81,13 @@ export function archivePathFor(logPath: string, rotatedLogDir: string) {
  * a rotation that yields to the event loop lets the logging loop that triggered it keep appending,
  * which is the rate-dependent overshoot this whole change exists to remove.
  */
-export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeLogFile: () => void, activeStats?: any) {
-	const active = activeStats ?? statSync(logPath);
+export function rotateLogFileSync(
+	logPath: string,
+	rotatedLogDir: string,
+	closeLogFile: () => void,
+	activeStats?: BigIntStats
+) {
+	const active = activeStats ?? statSync(logPath, { bigint: true });
 	const archivePath = archivePathFor(logPath, rotatedLogDir);
 	renameSync(logPath, archivePath);
 	closeLogFile();
@@ -91,7 +97,7 @@ export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeL
 	// peer would answer "released" while still appending to the one about to be destroyed.
 	let { ino, dev } = active;
 	try {
-		({ ino, dev } = statSync(archivePath));
+		({ ino, dev } = statSync(archivePath, { bigint: true }));
 	} catch {
 		// Already claimed by retention or another pass; the pre-rename identity is the best available.
 	}
@@ -103,7 +109,7 @@ export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeL
  * it if requested. The plain archive is only unlinked once that release is proven.
  */
 export async function publishArchivedGeneration(
-	generation: any,
+	generation: ReturnType<typeof rotateLogFileSync>,
 	compress?: boolean,
 	reportCompressionError?: (error: any) => void
 ) {
@@ -243,7 +249,16 @@ async function compressOneArchive(archivePath: string) {
  * The write-path size guard. One subtraction and one branch per flush; one pathname stat once per
  * quantum of this writer's own output.
  */
-export function createRotationGuard(options: any) {
+export function createRotationGuard(options: {
+	logPath: string;
+	maxBytes: number;
+	rotatedLogDir: string;
+	compress?: boolean;
+	getLogIdentity: () => FileIdentity | null;
+	closeLogFile: () => void;
+	report: (message: string) => void;
+	onRotated?: (archivePath: string) => void;
+}) {
 	const { logPath, maxBytes, rotatedLogDir, compress, getLogIdentity, closeLogFile, report, onRotated } = options;
 	const checkQuantum = Math.max(1, Math.floor(maxBytes / CHECK_QUANTUM_DIVISOR));
 	const logDir = dirname(logPath);
@@ -333,9 +348,9 @@ export function createRotationGuard(options: any) {
 	}
 
 	function checkAndRotate() {
-		let active;
+		let active: BigIntStats;
 		try {
-			active = statSync(logPath);
+			active = statSync(logPath, { bigint: true });
 		} catch (error) {
 			if (error.code !== 'ENOENT') throw error;
 			// The generation this descriptor belongs to has already been rotated away by someone else.
@@ -356,12 +371,12 @@ export function createRotationGuard(options: any) {
 		).catch((error) => report(`Harper could not publish a rotated log file: ${error}`));
 	}
 
-	function holdsGeneration(active: any) {
+	function holdsGeneration(active: FileIdentity) {
 		const identity = getLogIdentity();
 		if (!identity) return true;
 		// Some Windows filesystems report an unstable or zero ino, where identity cannot distinguish
 		// generations; there this defers to the size check rather than closing a descriptor at random.
-		if (identity.ino === 0 || active.ino === 0) return true;
+		if (!identity.ino || !active.ino) return true;
 		return identity.ino === active.ino && identity.dev === active.dev;
 	}
 }

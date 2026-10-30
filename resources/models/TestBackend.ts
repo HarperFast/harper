@@ -1,5 +1,14 @@
+import { allowedValues, isObjectSchema } from './decision.ts';
+import { ServerError } from '../../utility/errors/hdbError.ts';
 import type {
 	BackendOpts,
+	ChoiceScores,
+	DecideInput,
+	DecideOpts,
+	DecisionLeaf,
+	DecisionOutcome,
+	DecisionOutput,
+	DecisionSchema,
 	EmbedOpts,
 	GenerateChunk,
 	GenerateInput,
@@ -8,6 +17,7 @@ import type {
 	ModelBackend,
 	ModelCallResult,
 	ModelCapabilities,
+	ScoreChoicesOpts,
 } from './types.ts';
 
 /**
@@ -16,16 +26,42 @@ import type {
  * Same input always produces the same output — no external services, no model
  * files, no network. Lets the facade, registry, accounting, and analytics
  * paths be exercised end-to-end without an Ollama / OpenAI / fabric backend.
+ * `contextWindow` is in characters.
  */
 export class TestBackend implements ModelBackend {
 	readonly name = 'test';
+	readonly #contextWindow?: number;
 
-	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: false, adapters: false };
+	constructor(options: { contextWindow?: number } = {}) {
+		this.#contextWindow = options.contextWindow;
 	}
 
-	async embed(input: string | string[], _opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
-		const texts = Array.isArray(input) ? input : [input];
+	capabilities(): ModelCapabilities {
+		return {
+			embed: true,
+			generate: true,
+			stream: true,
+			tools: false,
+			adapters: false,
+			decide: true,
+			calibrated: false,
+			scoreChoices: true,
+			truncate: true,
+		};
+	}
+
+	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
+		const window = this.#contextWindow;
+		const texts = (Array.isArray(input) ? input : [input]).map((text) => {
+			if (window === undefined || text.length <= window) return text;
+			if (opts.truncate === true) return text.slice(0, window);
+			throw Object.assign(
+				new ServerError(
+					`TestBackend input of ${text.length} characters exceeds its ${window}-character context window`
+				),
+				{ contextWindowExceeded: true }
+			);
+		});
 		const vectors = texts.map((t) => deterministicVector(t, 16));
 		const embeddingTokens = texts.reduce((sum, t) => sum + t.length, 0);
 		return { status: 'completed', output: vectors, usage: { embeddingTokens, latencyMs: 0 } };
@@ -49,12 +85,49 @@ export class TestBackend implements ModelBackend {
 		}
 		yield { finishReason: 'stop' };
 	}
+
+	async decide(
+		state: DecideInput,
+		schema: DecisionSchema,
+		_opts: BackendOpts<DecideOpts>
+	): Promise<ModelCallResult<DecisionOutput<unknown>>> {
+		const text = typeof state === 'string' ? state : JSON.stringify(state);
+		const output: DecisionOutput<unknown> = isObjectSchema(schema)
+			? {
+					fields: Object.fromEntries(
+						Object.entries(schema.properties).map(([name, leaf]) => [
+							name,
+							{ distribution: deterministicDistribution(`${text}\n${name}`, leaf) },
+						])
+					),
+				}
+			: { distribution: deterministicDistribution(text, schema) };
+		return { status: 'completed', output, usage: { promptTokens: text.length, latencyMs: 0 } };
+	}
+
+	async scoreChoices(
+		input: GenerateInput,
+		choices: readonly string[],
+		_opts: BackendOpts<ScoreChoicesOpts>
+	): Promise<ModelCallResult<ChoiceScores>> {
+		const text = stringFromInput(input);
+		const logLikelihoods = choices.map((choice) => deterministicVector(`${text}\n${choice}`, 1)[0] * 4);
+		return { status: 'completed', output: { logLikelihoods }, usage: { promptTokens: text.length, latencyMs: 0 } };
+	}
 }
 
 function stringFromInput(input: GenerateInput): string {
 	if (typeof input === 'string') return input;
 	const messages = Array.isArray(input) ? input : input.messages;
 	return messages.map((m) => m.content).join(' ');
+}
+
+/** A complete distribution over the leaf's values, seeded by the text so the same input always decides the same way. */
+function deterministicDistribution(text: string, leaf: DecisionLeaf): DecisionOutcome[] {
+	const values = allowedValues(leaf);
+	const weights = Array.from(deterministicVector(text, values.length), (w) => (w + 1) / 2 + 0.01);
+	const total = weights.reduce((sum, w) => sum + w, 0);
+	return values.map((value, i) => ({ value, probability: weights[i] / total }));
 }
 
 /**

@@ -13,6 +13,91 @@
 			"type": "string",
 			"description": "Path to the folder containing local component files. Default: <ROOTPATH>/components"
 		},
+		"status": {
+			"type": "object",
+			"description": "Runtime status monitoring. Health-check changes take effect on restart.",
+			"properties": {
+				"healthChecks": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"enabled": {
+							"type": "boolean",
+							"default": true
+						},
+						"intervalSeconds": {
+							"type": "number",
+							"minimum": 1,
+							"maximum": 2147483,
+							"default": 60
+						},
+						"thresholds": {
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"disk": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 80
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								},
+								"memory": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 80
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								},
+								"cpu": {
+									"type": "object",
+									"additionalProperties": false,
+									"description": "Warning must not exceed error; omitted values use defaults.",
+									"properties": {
+										"warning": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 85
+										},
+										"error": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 100,
+											"default": 95
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"http": {
 			"type": "object",
 			"description": "HTTP server configuration for the main component server.",
@@ -25,7 +110,7 @@
 				"compressionThreshold": {
 					"type": "integer",
 					"minimum": 0,
-					"description": "Responses larger than this threshold (bytes) will be compressed for clients that accept compression. Default: 1200"
+					"description": "Responses larger than this threshold (bytes) will be compressed for clients that accept brotli. Default: 0 (compression disabled)"
 				},
 				"cors": { "type": "boolean", "description": "Enable Cross Origin Resource Sharing. Default: true" },
 				"corsAccessList": {
@@ -34,8 +119,9 @@
 					"items": { "type": "string" }
 				},
 				"corsAccessControlAllowHeaders": {
-					"type": "string",
-					"description": "Comma-separated list of header keys for Access-Control-Allow-Headers on OPTIONS requests. Default: 'Accept, Content-Type, Authorization'"
+					"type": ["string", "array", "null"],
+					"items": { "type": "string" },
+					"description": "Comma-separated list or array of header keys for Access-Control-Allow-Headers on OPTIONS requests. Each serialized value must be a valid HTTP header value; invalid control characters are rejected at configuration validation. Default: 'Accept, Content-Type, Authorization'"
 				},
 				"headersTimeout": {
 					"type": "integer",
@@ -47,7 +133,11 @@
 				},
 				"requestQueueLimit": {
 					"type": "integer",
-					"description": "Max estimated request queue time (ms) before rejecting with 503. Default: 20000"
+					"description": "Max estimated request queue time (ms) for methods other than GET, HEAD and OPTIONS before rejecting with 503 on node:http (including Bun compatibility) and uWS listeners. Default: 20000"
+				},
+				"readRequestQueueLimit": {
+					"oneOf": [{ "type": ["integer", "null"], "minimum": 0 }, { "const": false }],
+					"description": "Max event-loop delay (ms) before GET, HEAD and OPTIONS are rejected with 503 on every HTTP listener, including the operations API: a read arriving after the current loop iteration has run longer than this is answered immediately without running its handler. Reads are never queued; admitted reads dispatch immediately. Not an in-flight concurrency limit, and blind to a stall that ended before the first read after an idle period. Default (also when null): 5000. 0 rejects every read while reads keep arriving (only the first read after an idle iteration is admitted); false disables read admission. Use actual numbers/booleans, not quoted strings. A rejected OPTIONS preflight surfaces as a CORS failure in browsers because preflight requires a 2xx response. Takes effect on restart."
 				},
 				"keepAliveTimeout": { "type": "integer", "description": "Keep-alive inactivity timeout in ms. Default: 30000" },
 				"port": { "type": "integer", "description": "HTTP port. Default: 9926" },
@@ -184,6 +274,14 @@
 				"preloadRequire": {
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
 					"description": "Module(s) to preload via --require (CJS) before any Harper or app module on each worker thread, for agents that document the require path (e.g. 'dd-trace/init', Dynatrace OneAgent). Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				},
+				"v8Flags": {
+					"oneOf": [
+						{ "type": "null" },
+						{ "type": "string", "pattern": "^\\s*(--|$)" },
+						{ "type": "array", "items": { "type": "string", "pattern": "^\\s*(--|$)" } }
+					],
+					"description": "V8 flag(s), each starting with '--' (e.g. '--optimize-for-size'), applied with v8.setFlagsFromString on the main thread before the first worker thread starts, so every worker thread runs with them (the main thread's isolate already exists, so flags V8 reads at isolate creation do not change it). For flags Node refuses in NODE_OPTIONS. Unlike the node CLI, this does not apply flags' implications (list implied flags such as --max-semi-space-size=1 for --optimize-for-size), V8 only reports unrecognized flags on stderr, and a contradictory set can abort the process at startup. Not applied under Bun. Takes effect on process start."
 				}
 			}
 		},
@@ -229,6 +327,11 @@
 								"additionalProperties": false,
 								"properties": {
 									"hostname": { "type": "string" },
+									"url": {
+										"type": "string",
+										"format": "uri",
+										"description": "Connection URL; its host may be an alias of the canonical hostname."
+									},
 									"port": { "type": "integer" },
 									"startTime": {
 										"type": "string",
@@ -236,7 +339,8 @@
 										"description": "ISO 8601 UTC start time to begin replication."
 									}
 								},
-								"required": ["hostname", "port"]
+								"required": ["hostname"],
+								"anyOf": [{ "required": ["port"] }, { "required": ["url"] }]
 							}
 						]
 					}
@@ -249,6 +353,11 @@
 				},
 				"port": { "type": "integer", "description": "Replication insecure port." },
 				"securePort": { "type": "integer", "description": "Replication secure port. Default: 9933" },
+				"threads": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Dedicated replication worker threads. When above 0, replication (the replication port's listener and outbound subscriptions) runs on these workers, which load no application code, instead of the HTTP workers. Requires replication.port or replication.securePort distinct from the HTTP and operations API ports. Changing it requires a full restart. Default: 0"
+				},
 				"enableRootCAs": {
 					"type": "boolean",
 					"description": "Verify certificates against Node.js bundled CA store. Default: true"
@@ -294,6 +403,18 @@
 							]
 						}
 					}
+				},
+				"confirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for explicit replicatedConfirmation. Default: 900000, or blobTimeout if greater. An explicit value overrides that default."
+				},
+				"shardingConfirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for automatic new-owner confirmation after an attribute-slot change. Default: 30000. Timeout reports an uncertain committed outcome."
 				},
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
 				"blobGapReconnectMs": {
@@ -345,7 +466,15 @@
 					"type": "boolean",
 					"description": "Attempt fail-over to different node when unreachable. Default: true"
 				},
-				"shard": { "type": "integer", "description": "Shard id for this instance." },
+				"shard": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "Shard id for this instance." },
+				"shards": {
+					"type": "array",
+					"minItems": 1,
+					"maxItems": 65536,
+					"uniqueItems": true,
+					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a sharding map automatically; installed maps remain authoritative. Different lists block declarative writes."
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		},
@@ -482,9 +611,78 @@
 			"description": "Storage engine configuration.",
 			"additionalProperties": true,
 			"properties": {
+				"fullText": {
+					"type": "object",
+					"description": "Full-text request work limits and native process budgets. Native process budgets require a Harper process restart to change; they do not cap total process memory or disk usage.",
+					"additionalProperties": false,
+					"properties": {
+						"requestBudgetMilliseconds": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 5000
+						},
+						"maxRawHitsPerRequest": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 10000,
+							"description": "Maximum fetched native hits per full-text request, including bounded prefix replay."
+						},
+						"maxResultsPerRequest": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 10000,
+							"description": "Maximum offset plus limit retained by a full-text request, independent of fetched-hit work."
+						},
+						"runtime": {
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"maxResidentIndexes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 128
+								},
+								"maxIndexingThreads": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 128
+								},
+								"maxSearchThreads": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 256
+								},
+								"maxWriterMemoryBytes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 9007199254740991,
+									"default": 4294967296
+								},
+								"maxQueuedBytes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 9007199254740991,
+									"default": 8589934592
+								},
+								"maxExpensiveSearches": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 8
+								}
+							}
+						}
+					}
+				},
 				"writeAsync": {
 					"type": "boolean",
-					"description": "Disable fsync for faster writes (risk of data loss on crash). Default: false"
+					"description": "When true, sets LMDB noSync to disable LMDB's commit disk sync for faster writes (risk of losing recent commits on OS crash or power loss); when false, LMDB keeps commit disk sync enabled (overlapped on Linux and macOS by default). Applies only to the LMDB storage engine; this setting has no effect on RocksDB, where Harper does not fsync individual commits to disk (transaction logs are synced on memtable flush rather than per commit). Default: false"
 				},
 				"caching": { "type": "boolean", "description": "Enable in-memory caching of records. Default: true" },
 				"compression": {
@@ -522,6 +720,10 @@
 				"maxTransactionQueueTime": {
 					"type": "string",
 					"description": "Max write queue time before rejecting (e.g. '45s')."
+				},
+				"maxLockClockSkew": {
+					"type": ["string", "number"],
+					"description": "Maximum clock lead in which a record lock may admit stored state and advance the local transaction-log clock above it. Above the limit, lock() fails with LockUnavailableError until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait. A string accepts ms, s, m, h, or d (e.g. '500ms' or '5s'); a number is seconds. Default: '5s'."
 				},
 				"longTransactionReportThreshold": {
 					"type": ["string", "number"],
@@ -710,10 +912,26 @@
 					"minimum": 1,
 					"description": "Maximum tool-call iterations per agent run. Default: 50"
 				},
+				"maxTokens": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Output-token cap sent with every model request the agent makes. Must not exceed the model's own output limit, or the provider rejects the request. A reply cut off at this cap ends the run with status error. Tunable at runtime via set_agent_config; a change applies from the next run. Default: 16384"
+				},
+				"maxToolResultBytes": {
+					"type": "integer",
+					"minimum": 1024,
+					"maximum": 1048576,
+					"description": "Largest tool result, in bytes of JSON, the agent adds to its conversation. A larger result is cut to this size with a note telling the model how to ask for less, and the filesystem read tools return pages of at most half this size. Tunable at runtime via set_agent_config. Default: 65536"
+				},
+				"maxSessionTokens": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Per-session cap on prompt plus completion tokens, checked after each model call; a session at the cap makes no further calls. A model that reports no token usage stops the session instead of running uncapped. A call that fails is not counted. Default: none"
+				},
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
-					"description": "Per-session cost budget. NOT YET ENFORCED — surfacing operator intent until #612 ships per-call cost telemetry. Default: 5.00"
+					"description": "Per-session cost cap in USD, checked after each model call and priced from the `pricing` on the models.generative entry that served it. A call with no pricing stops the session instead of running uncapped. A call that fails is not counted. Default: none"
 				},
 				"autoApprove": {
 					"type": "boolean",
@@ -730,6 +948,31 @@
 				"componentsScope": {
 					"type": "string",
 					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
+				},
+				"configScope": {
+					"type": "string",
+					"description": "The agent's read-only 'config' filesystem scope: a file or a directory, absolute or relative to rootPath. In every scope the fs tools refuse to read *.pem, *.key and .jwtPass files, the keys and ssh directories, and text holding a PEM private key, and refuse to write into the keys and ssh directories. Read at startup only; set_agent_config cannot change it. Default: the Harper config file only"
+				},
+				"httpFetch": {
+					"description": "The agent's http_fetch tool. true: enabled, with cloud-metadata and link-local addresses blocked. false: the tool is removed from the agent's toolset. { allow: [...] }: requests, including every redirect hop, are refused unless the host matches an entry. Read at startup only; set_agent_config cannot change it. Default: true",
+					"oneOf": [
+						{ "type": "boolean" },
+						{
+							"type": "object",
+							"additionalProperties": false,
+							"required": ["allow"],
+							"properties": {
+								"allow": {
+									"type": "array",
+									"description": "Hosts http_fetch may reach: host, host:port, *.domain (any subdomain, not the domain itself), or [ipv6]. An entry without a port matches any port. An empty list removes the tool.",
+									"items": {
+										"type": "string",
+										"pattern": "^(?:\\[[0-9A-Fa-f:.]+\\]|(?:\\*\\.)?[^\\s/?#@\\\\:*\\[\\]]+)(?::[0-9]{1,5})?$"
+									}
+								}
+							}
+						}
+					]
 				},
 				"systemPromptAppend": {
 					"type": "string",

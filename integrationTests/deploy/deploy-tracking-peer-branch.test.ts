@@ -6,7 +6,9 @@
  * attribute instead. This test exercises that **peer-side branch** in isolation on a
  * single node by:
  *
- *   1. Doing a normal deploy to populate an `hdb_deployment` row with a `payload_blob`.
+ *   1. Doing a normal deploy to populate an `hdb_deployment` row with a `payload_blob`, then dropping
+ *      that component, so that on this node — as on a real peer — nothing answers to its deployment id
+ *      but the row.
  *   2. Submitting a second `deploy_component` operation with `_deploymentId` set to that
  *      row's id and **no** `payload` field — the same shape origin produces for peers.
  *   3. Asserting the deploy completes successfully — meaning the peer-side branch in
@@ -19,7 +21,7 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
 	existsSync,
 	mkdtempSync,
@@ -37,12 +39,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { request } from 'node:http';
 import { Readable } from 'node:stream';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 import { streamPackagedDirectory } from '../../dist/components/packageComponent.js';
 import { buildMultipartBody } from '../../dist/bin/multipartBuilder.js';
 
 const PEER_PROJECT = 'peer-branch-replay-application';
+const STALL_FIXTURE_PATH = resolve(import.meta.dirname, 'peer-payload-stall-fixture');
+const BLOB_READ_TIMEOUT_MS = 2000;
 
 function filesUnder(directory: string): string[] {
 	if (!existsSync(directory)) return [];
@@ -110,10 +114,12 @@ async function callOperation(
 suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 	let fixtureDir: string;
 	let seedDeploymentId: string;
-	let seedPayloadBlobPath: string;
 
 	before(async () => {
-		await startHarper(ctx, { config: { storage: { blobReadTimeout: 2000 } }, env: {} });
+		await setupHarperWithFixture(ctx, STALL_FIXTURE_PATH, {
+			config: { storage: { blobReadTimeout: BLOB_READ_TIMEOUT_MS } },
+			env: {},
+		});
 		fixtureDir = mkdtempSync(join(tmpdir(), 'peer-branch-fixture-'));
 		writeFileSync(join(fixtureDir, 'config.yaml'), 'graphqlSchema:\n  files: schema.graphql\nrest: true\n');
 		writeFileSync(join(fixtureDir, 'schema.graphql'), 'type Query { hello: String }\n');
@@ -131,8 +137,12 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		await teardownHarper(ctx);
 	});
 
-	test('seed: an initial deploy populates an hdb_deployment row with a payload_blob', async () => {
-		const project = 'peer-branch-seed-application';
+	/**
+	 * Deploy `project` from the fixture, so its row carries a file-backed payload blob, then drop it. A deployment
+	 * id names one release on a node for as long as the node holds it, and a peer never received the origin's; the
+	 * drop is what makes this single node agree, leaving the row and its blob as the only trace of the id.
+	 */
+	async function seedDeployment(project: string): Promise<{ deploymentId: string; payloadBlobPath: string }> {
 		const existingBlobFiles = new Set(filesUnder(join(ctx.harper.dataRootDir, 'blobs', 'system')));
 		const multipart = buildMultipartBody(
 			{ operation: 'deploy_component', project, restart: false },
@@ -146,13 +156,12 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		const url = new URL(ctx.harper.operationsAPIURL);
 		const response = await postMultipart(url, multipart.contentType, multipart.stream, ctx.harper.admin);
 		strictEqual(response.status, 200, `seed deploy failed: ${response.body}`);
-		const result = JSON.parse(response.body);
-		seedDeploymentId = result.deployment_id;
-		ok(seedDeploymentId, 'seed deploy should return a deployment_id');
+		const deploymentId = JSON.parse(response.body).deployment_id;
+		ok(deploymentId, 'seed deploy should return a deployment_id');
 
 		await sleep(200); // let coalesced writes settle
 
-		const got = await callOperation(ctx, { operation: 'get_deployment', deployment_id: seedDeploymentId });
+		const got = await callOperation(ctx, { operation: 'get_deployment', deployment_id: deploymentId });
 		strictEqual(got.status, 200);
 		ok(got.body.payload_blob_present, 'seed row should have a payload_blob attached');
 		ok(got.body.payload_hash, 'seed row should have a sha256 payload_hash');
@@ -162,7 +171,15 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 			.sort((left, right) => right.size - left.size);
 		const [payloadBlobFile] = blobFiles;
 		ok(payloadBlobFile?.size > 1024 * 1024, 'expected the retained deployment payload to be file-backed');
-		seedPayloadBlobPath = payloadBlobFile.path;
+
+		const dropped = await callOperation(ctx, { operation: 'drop_component', project });
+		strictEqual(dropped.status, 200, `seed drop failed: ${dropped.rawText}`);
+		ok(!existsSync(join(ctx.harper.dataRootDir, 'components', '.deploy-staging', deploymentId)));
+		return { deploymentId, payloadBlobPath: payloadBlobFile.path };
+	}
+
+	test('seed: an initial deploy populates an hdb_deployment row with a payload_blob', async () => {
+		({ deploymentId: seedDeploymentId } = await seedDeployment('peer-branch-seed-application'));
 	});
 
 	// On Bun the deploy hangs after extraction when reading a Web ReadableStream from a
@@ -202,15 +219,89 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		}
 	);
 
-	// This test intentionally corrupts the seed deployment blob and must remain the suite's final deployment test.
+	function readHarperLog(): string {
+		const paths = [join(ctx.harper.dataRootDir, 'log', 'hdb.log')];
+		if (ctx.harper.logDir) paths.push(join(ctx.harper.logDir, 'hdb.log'));
+		return paths
+			.filter((path) => existsSync(path))
+			.map((path) => readFileSync(path, 'utf8'))
+			.join('\n');
+	}
+
+	test(
+		'peer-side branch: payload content that arrives after the first no-progress window still installs',
+		{ skip: skipOnBun, timeout: 60_000 },
+		async () => {
+			const project = 'peer-branch-stalled-payload-application';
+			const stalled = await seedDeployment('peer-branch-stalled-seed-application');
+			const releasePath = join(fixtureDir, 'release-withheld-payload');
+			const withheld = await fetch(`${ctx.harper.httpURL}/WithholdPayloadBlob`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization':
+						'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64'),
+				},
+				body: JSON.stringify({ path: stalled.payloadBlobPath, releasePath }),
+			});
+			strictEqual(withheld.status, 200, `withholding the payload content failed: ${await withheld.text()}`);
+			strictEqual(statSync(stalled.payloadBlobPath).size, 8, 'only the blob header should be on disk');
+
+			// The default deployment_timeout (120s) leaves room for many no-progress windows.
+			const deploy = callOperation(ctx, {
+				operation: 'deploy_component',
+				project,
+				restart: false,
+				_deploymentId: stalled.deploymentId,
+			});
+			let settledEarly: Awaited<typeof deploy> | undefined;
+			deploy.then((response) => (settledEarly = response)).catch(() => {});
+			const loggedStallRetry = () =>
+				readHarperLog()
+					.split('\n')
+					.some(
+						(line) =>
+							/payload read is unavailable before any content arrived; retrying in \d+ms/.test(line) &&
+							line.includes(`Blob read stalled for ${stalled.payloadBlobPath}`)
+					);
+			const deadline = Date.now() + 20 * BLOB_READ_TIMEOUT_MS;
+			try {
+				while (!loggedStallRetry()) {
+					ok(
+						!settledEarly,
+						`the deploy settled before retrying the stalled read: ${settledEarly?.status} ${settledEarly?.rawText}`
+					);
+					ok(Date.now() < deadline, `expected the payload read's stall retry in the Harper log`);
+					await sleep(100);
+				}
+			} finally {
+				writeFileSync(releasePath, '');
+				await deploy.catch(() => {});
+			}
+
+			const response = await deploy;
+			strictEqual(
+				response.status,
+				200,
+				`peer-side deploy should wait out the stall; got ${response.status}: ${response.rawText}`
+			);
+			strictEqual(
+				readFileSync(join(ctx.harper.dataRootDir, 'components', project, 'web', 'index.html'), 'utf8'),
+				'<h1>Hello, Peer Branch!</h1>'
+			);
+		}
+	);
+
+	// This test intentionally corrupts a deployment blob and must remain the suite's final deployment test.
 	test('peer-side branch: a payload blob failure leaves the previous tree untouched', { skip: skipOnBun }, async () => {
-		ok(seedPayloadBlobPath, 'seed payload blob path should be recorded before the failure test');
+		// A deployment of its own: the replayed one above is now the live release here, and its id names it.
+		const failing = await seedDeployment('peer-branch-failing-seed-application');
 		const componentPath = join(ctx.harper.dataRootDir, 'components', PEER_PROJECT);
 		const asidePath = join(ctx.harper.dataRootDir, 'components', '.deploy-aside', PEER_PROJECT);
-		const stagingPath = join(ctx.harper.dataRootDir, 'components', '.deploy-staging');
+		const failingStagingPath = join(ctx.harper.dataRootDir, 'components', '.deploy-staging', failing.deploymentId);
 		const oldOnlyPath = join(componentPath, 'old-only.txt');
 		writeFileSync(oldOnlyPath, 'previous bytes\n');
-		truncateSync(seedPayloadBlobPath, 128 * 1024);
+		truncateSync(failing.payloadBlobPath, 128 * 1024);
 
 		// A blob failure never touches the live tree: the peer extracts into a candidate, so no aside exists
 		// to observe and there is nothing to roll back.
@@ -218,7 +309,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 			operation: 'deploy_component',
 			project: PEER_PROJECT,
 			restart: false,
-			_deploymentId: seedDeploymentId,
+			_deploymentId: failing.deploymentId,
 			deployment_timeout: 5000,
 		});
 
@@ -230,7 +321,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		strictEqual(readFileSync(oldOnlyPath, 'utf8'), 'previous bytes\n');
 		strictEqual(readFileSync(join(componentPath, 'web', 'index.html'), 'utf8'), '<h1>Hello, Peer Branch!</h1>');
 		strictEqual(existsSync(asidePath), false, 'the live tree was never moved aside, so no record exists');
-		ok(!existsSync(stagingPath) || readdirSync(stagingPath).length === 0, 'and the abandoned candidate is cleaned up');
+		strictEqual(existsSync(failingStagingPath), false, 'and the abandoned candidate is cleaned up');
 	});
 
 	// Note: the bogus-_deploymentId-id timeout case isn't covered here because the

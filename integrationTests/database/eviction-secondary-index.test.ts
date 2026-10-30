@@ -19,12 +19,21 @@
  * leaving either a PHANTOM (index hit whose base row is gone) or a MISSING (surviving base row
  * absent from the index).
  *
- * Oracle (per indexed `bucket`, from QA-176):
- *   (1) Phantom: every search_by_value(bucket) hit -> GET by PK must still exist with that bucket.
- *   (2) Missing: every surviving base row of bucket B -> must appear in search_by_value(B).
+ * Oracle: raw secondary-index reads, never search_by_value — search_by_value joins every hit
+ * back through the primary record (resources/Table.ts, `if (record == null) return canSkip ?
+ * SKIP : record`) and drops any hit whose record is gone, so it cannot see the dangling/phantom
+ * entry a split eviction would leave. `/RawSnapshot/` (resources.js) reads the whole index
+ * (including null keys, not scoped to one bucket value) and the whole primary store under ONE
+ * shared transaction (`Table._readTxnForContext`), so the two reads reflect the same instant and
+ * can't straddle a concurrent evict() commit.
+ *   Phantom: a raw index entry (any value, incl. null) whose (id, value) has no matching base row.
+ *   Missing: a surviving base row whose (id, value) has no matching raw index entry.
+ * `Q(-1)` plants both shapes directly into the raw index before Q1/Q2 run, proving the oracle
+ * actually sees them.
+ *
  * We mix rows that EXPIRE (table Expiring, expiration:4s) with CONTROL rows that DON'T
  * (table Permanent, no TTL). The index should retain exactly the survivors: after the sweep,
- * Expiring -> empty (0 base, 0 index); Permanent -> all rows present AND fully indexed.
+ * Expiring -> empty (0 base, 0 index, any value); Permanent -> all rows present AND fully indexed.
  *
  * Runs both engines: default (RocksDB) and HARPER_STORAGE_ENGINE=lmdb. NB (QA-176): LMDB's
  * monitor hardcodes a 30s threshold and ignores maxTransactionOpenTime (LMDBTransaction.ts),
@@ -159,17 +168,6 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		return new Set(rows.map((row) => String(row.id)));
 	}
 
-	/** Direct PK GET -> base record (or null). Index-independent. */
-	async function getById(table: string, id: string): Promise<{ id: string; bucket: string } | null> {
-		const r = await client
-			.req()
-			.send({ operation: 'search_by_id', schema: SCHEMA, table, ids: [id], get_attributes: ['id', 'bucket'] })
-			.timeout(30_000)
-			.expect(200);
-		const rows: any[] = Array.isArray(r.body) ? r.body : [];
-		return rows.length ? { id: String(rows[0].id), bucket: String(rows[0].bucket) } : null;
-	}
-
 	/** Full base-table scan via the custom Dump resource (index-independent). */
 	async function dumpBase(dumpPath: string): Promise<Array<{ id: string; bucket: string; seq: number }>> {
 		const r = await fetch(`${httpURL}${dumpPath}`, { headers: { Authorization: client.headers.Authorization } });
@@ -177,26 +175,98 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		return (await r.json()) as Array<{ id: string; bucket: string; seq: number }>;
 	}
 
-	/**
-	 * Consistency oracle for one (table, bucket). Returns the two defect classes plus counts.
-	 *  phantom: index hit whose base row is absent (or has a different bucket).
-	 *  missing: surviving base row of this bucket NOT returned by the index search.
-	 */
-	async function checkConsistency(table: string, dumpPath: string, bucket: string) {
-		const indexHits = await searchByBucket(table, bucket);
-		const base = await dumpBase(dumpPath);
-		const baseOfBucket = new Set(base.filter((row) => row.bucket === bucket).map((row) => row.id));
-
-		const phantom: string[] = [];
-		for (const id of indexHits) {
-			const rec = await getById(table, id);
-			if (!rec || rec.bucket !== bucket) phantom.push(id);
-		}
-		const missing: string[] = [];
-		for (const id of baseOfBucket) if (!indexHits.has(id)) missing.push(id);
-
-		return { indexCount: indexHits.size, baseCount: baseOfBucket.size, phantom, missing };
+	interface RawRow {
+		id: string;
+		bucket: string;
+		seq: number;
 	}
+	interface RawIndexEntry {
+		indexedValue: unknown;
+		primaryKey: string;
+	}
+	interface TableSnapshot {
+		rows: RawRow[];
+		indexEntries: RawIndexEntry[];
+	}
+
+	/** See file header — resources.js's RawSnapshot, one table, under one shared transaction. */
+	async function rawSnapshot(table: string): Promise<TableSnapshot> {
+		const r = await fetch(`${httpURL}/RawSnapshot/?table=${table}&attr=bucket`, { headers: client.headers });
+		strictEqual(r.status, 200, `/RawSnapshot/?table=${table} should return 200`);
+		return (await r.json()) as TableSnapshot;
+	}
+
+	/**
+	 *  phantom: a raw index entry whose (indexedValue, primaryKey) has no matching live base row.
+	 *  missing: a surviving base row whose (bucket, id) has no matching raw index entry.
+	 */
+	function analyzeSnapshot(snap: TableSnapshot) {
+		const phantom = snap.indexEntries.filter(
+			(e) => !snap.rows.some((r) => r.id === e.primaryKey && r.bucket === e.indexedValue)
+		);
+		const missing = snap.rows.filter(
+			(r) => !snap.indexEntries.some((e) => e.primaryKey === r.id && e.indexedValue === r.bucket)
+		);
+		return { phantom, missing, baseCount: snap.rows.length, indexCount: snap.indexEntries.length };
+	}
+
+	/** Per-bucket slice of one snapshot, for diagnostic logging only — analyzeSnapshot() above,
+	 * over the whole table, is what the assertions use. */
+	function bucketBreakdown(snap: TableSnapshot, bucket: string) {
+		const rows = snap.rows.filter((r) => r.bucket === bucket);
+		const entries = snap.indexEntries.filter((e) => e.indexedValue === bucket);
+		return {
+			baseCount: rows.length,
+			indexCount: entries.length,
+			phantom: entries.filter((e) => !rows.some((r) => r.id === e.primaryKey)).length,
+			missing: rows.filter((r) => !entries.some((e) => e.primaryKey === r.id)).length,
+		};
+	}
+
+	// ---- Q(-1): prove the raw oracle is NOT blind before trusting any "0 phantom/missing" result -
+	test(
+		'Q(-1) oracle self-proof: a planted real-valued AND null-keyed dangling entry are both visible',
+		{ timeout: 15_000 },
+		async () => {
+			// Tables are empty at this point. Cleanup runs in `finally` so a failed assertion below
+			// can't leave a stray entry for Q0/Q1/Q2 to misattribute as an eviction-path defect.
+			try {
+				const plantReal = await postJSON('/PlantDangling/', {
+					table: 'Expiring',
+					attr: 'bucket',
+					value: 'GHOST',
+					key: 'ghost-real',
+				});
+				strictEqual(plantReal.status, 200, `PlantDangling(real) should return 200, got ${plantReal.status}`);
+				const plantNull = await postJSON('/PlantDangling/', {
+					table: 'Expiring',
+					attr: 'bucket',
+					value: null,
+					key: 'ghost-null',
+				});
+				strictEqual(plantNull.status, 200, `PlantDangling(null) should return 200, got ${plantNull.status}`);
+
+				const snap = await rawSnapshot('Expiring');
+				const { phantom } = analyzeSnapshot(snap);
+				ok(
+					phantom.some((p) => p.primaryKey === 'ghost-real' && p.indexedValue === 'GHOST'),
+					`oracle must see the planted real-valued dangling entry; phantom=${JSON.stringify(phantom)}`
+				);
+				ok(
+					phantom.some((p) => p.primaryKey === 'ghost-null' && p.indexedValue === null),
+					`oracle must see the planted null-keyed dangling entry; phantom=${JSON.stringify(phantom)}`
+				);
+			} finally {
+				await postJSON('/RemoveIndexEntry/', { table: 'Expiring', attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
+				await postJSON('/RemoveIndexEntry/', { table: 'Expiring', attr: 'bucket', value: null, key: 'ghost-null' });
+			}
+			const after = await rawSnapshot('Expiring');
+			ok(
+				!after.indexEntries.some((e) => e.primaryKey === 'ghost-real' || e.primaryKey === 'ghost-null'),
+				'cleanup must remove both planted entries'
+			);
+		}
+	);
 
 	// ---- Q0: load expiring + control rows --------------------------------------------------
 	test('Q0 load 120 expiring rows + 20 permanent control rows', async () => {
@@ -236,31 +306,31 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		// fires every ~2s. Sample partway through the sweep (some evicted, some not) so a split
 		// force-committed eviction would surface as a phantom/missing right here.
 		await sleep(5_000);
-		let totalPhantom = 0;
-		let totalMissing = 0;
-		let snapBase = 0;
+		const snap = await rawSnapshot('Expiring');
+		const { phantom, missing, baseCount, indexCount } = analyzeSnapshot(snap);
 		for (const bucket of EXPIRING_BUCKETS) {
-			const r = await checkConsistency('Expiring', '/DumpE/', bucket);
-			snapBase += r.baseCount;
-			totalPhantom += r.phantom.length;
-			totalMissing += r.missing.length;
+			const r = bucketBreakdown(snap, bucket);
 			console.log(
 				`[QA-179 Q1 ${ENGINE}] Expiring/${bucket} base=${r.baseCount} index=${r.indexCount} ` +
-					`phantom=${r.phantom.length} missing=${r.missing.length}`
+					`phantom=${r.phantom} missing=${r.missing}`
 			);
 		}
 		const fired = sawOverTime();
 		console.log(
-			`\n[QA-179 Q1 ${ENGINE}] mid-eviction survivingExpiringBase=${snapBase} overTimeFired=${fired} ` +
-				`count=${countOverTime()} totalPhantom=${totalPhantom} totalMissing=${totalMissing}\n` +
+			`\n[QA-179 Q1 ${ENGINE}] mid-eviction survivingExpiringBase=${baseCount} indexEntries=${indexCount} ` +
+				`overTimeFired=${fired} count=${countOverTime()} totalPhantom=${phantom.length} totalMissing=${missing.length}\n` +
 				`  >>> ${
-					totalPhantom === 0 && totalMissing === 0
+					phantom.length === 0 && missing.length === 0
 						? 'CONSISTENT mid-eviction (green anchor)'
-						: `ORPHANED INDEX ENTRIES (DEFECT): ${totalPhantom} phantom + ${totalMissing} missing`
+						: `ORPHANED INDEX ENTRIES (DEFECT): ${phantom.length} phantom + ${missing.length} missing`
 				}`
 		);
-		strictEqual(totalPhantom, 0, `mid-eviction phantom index entries: ${totalPhantom}`);
-		strictEqual(totalMissing, 0, `mid-eviction missing index entries: ${totalMissing}`);
+		strictEqual(
+			phantom.length,
+			0,
+			`mid-eviction phantom index entries (any value, incl. null): ${JSON.stringify(phantom)}`
+		);
+		strictEqual(missing.length, 0, `mid-eviction missing index entries: ${JSON.stringify(missing)}`);
 	});
 
 	// ---- Q2: after settle — all expiring rows gone from BOTH base and index; control intact --
@@ -268,33 +338,34 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		'Q2 post-settle: expiring fully evicted (base+index), permanent fully retained',
 		{ timeout: 90_000 },
 		async () => {
-			// Poll until the expiring base table drains to 0 (the eviction sweep has finished).
+			// Poll on physical presence, not dumpBase's logical/expiration-filtered view, so a row
+			// that's expired but not yet evicted can't read as "drained" early.
 			const deadline = Date.now() + 60_000;
-			let eBaseLen = -1;
+			let settled: TableSnapshot | undefined;
 			while (Date.now() < deadline) {
-				const eBase = await dumpBase('/DumpE/');
-				eBaseLen = eBase.length;
-				if (eBaseLen === 0) break;
+				settled = await rawSnapshot('Expiring');
+				if (settled.rows.length === 0) break;
 				await sleep(1_000);
 			}
 
 			// Base oracle: nothing left in the expiring table.
-			strictEqual(eBaseLen, 0, `expiring base table should drain to 0 after eviction, got ${eBaseLen}`);
+			strictEqual(
+				settled!.rows.length,
+				0,
+				`expiring base table should drain to 0 after eviction, got ${settled!.rows.length}`
+			);
 
-			// Index oracle: no surviving index entries pointing at evicted rows (phantom check).
-			let totalPhantom = 0;
-			let totalIndex = 0;
+			// Index oracle: no residual entry of ANY value (incl. null-keyed) for a fully-evicted table.
+			const { phantom: totalPhantom, indexCount: totalIndex } = analyzeSnapshot(settled!);
 			for (const bucket of EXPIRING_BUCKETS) {
-				const r = await checkConsistency('Expiring', '/DumpE/', bucket);
-				totalIndex += r.indexCount;
-				totalPhantom += r.phantom.length;
+				const r = bucketBreakdown(settled!, bucket);
 				console.log(
-					`[QA-179 Q2 ${ENGINE}] Expiring/${bucket} base=${r.baseCount} index=${r.indexCount} phantom=${r.phantom.length}`
+					`[QA-179 Q2 ${ENGINE}] Expiring/${bucket} base=${r.baseCount} index=${r.indexCount} phantom=${r.phantom}`
 				);
 			}
 
 			// Control oracle: the non-expiring table is untouched AND fully indexed (missing check).
-			const rP = await checkConsistency('Permanent', '/DumpP/', PERMANENT_BUCKET);
+			const rP = analyzeSnapshot(await rawSnapshot('Permanent'));
 
 			const fired = sawOverTime();
 			const otCount = countOverTime();
@@ -303,27 +374,38 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 			// eviction phantom window for LMDB under force-commit remains an open known behavior (F-041).
 			console.log(
 				`\n[QA-179 Q2 ${ENGINE}] overTimeFired=${fired} overTimeCount=${otCount}\n` +
-					`  expiring: residualBase=${eBaseLen} residualIndex=${totalIndex} phantom=${totalPhantom}\n` +
+					`  expiring: residualBase=${settled!.rows.length} residualIndex=${totalIndex} phantom=${totalPhantom.length}\n` +
 					`  permanent: base=${rP.baseCount} index=${rP.indexCount} phantom=${rP.phantom.length} missing=${rP.missing.length}\n` +
 					`  >>> ${
 						!fired
 							? `INCONCLUSIVE (over-time never fired on ${ENGINE}) — reporting plain-eviction consistency`
-							: totalIndex === 0 && totalPhantom === 0 && rP.missing.length === 0 && rP.phantom.length === 0
+							: totalIndex === 0 && totalPhantom.length === 0 && rP.missing.length === 0 && rP.phantom.length === 0
 								? 'CONSISTENT under forced over-time eviction (green regression anchor)'
-								: `DEFECT: residualIndex=${totalIndex} expiringPhantom=${totalPhantom} ` +
+								: `DEFECT: residualIndex=${totalIndex} expiringPhantom=${totalPhantom.length} ` +
 									`permMissing=${rP.missing.length} permPhantom=${rP.phantom.length}`
 					}`
 			);
 
-			// Headline assertions — phantom: no index entry survives a fully-evicted expiring row.
-			strictEqual(totalIndex, 0, `residual index entries for fully-evicted expiring table: ${totalIndex}`);
-			strictEqual(totalPhantom, 0, `phantom index entries in expiring table: ${totalPhantom}`);
+			// Headline assertions — phantom: no index entry (any value, incl. null) survives a
+			// fully-evicted expiring row.
+			strictEqual(
+				totalIndex,
+				0,
+				`residual index entries (any value, incl. null) for fully-evicted expiring table: ${totalIndex}`
+			);
+			strictEqual(totalPhantom.length, 0, `phantom index entries in expiring table: ${JSON.stringify(totalPhantom)}`);
 			// Control table must be perfectly consistent — proves the oracle and that the sweep is scoped.
 			strictEqual(rP.baseCount, ROWS_PERMANENT, `permanent base rows should all survive: ${rP.baseCount}`);
-			strictEqual(rP.missing.length, 0, `permanent missing index entries (base->no index): ${rP.missing.length}`);
-			strictEqual(rP.phantom.length, 0, `permanent phantom index entries (index->no base): ${rP.phantom.length}`);
-			// Soft signal: did the force-commit actually fire on this engine?
-			ok(true, `over-time fired=${fired} count=${otCount}`);
+			strictEqual(
+				rP.missing.length,
+				0,
+				`permanent missing index entries (base->no index): ${JSON.stringify(rP.missing)}`
+			);
+			strictEqual(
+				rP.phantom.length,
+				0,
+				`permanent phantom index entries (index->no base): ${JSON.stringify(rP.phantom)}`
+			);
 		}
 	);
 });

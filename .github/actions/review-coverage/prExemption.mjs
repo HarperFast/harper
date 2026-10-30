@@ -18,7 +18,7 @@ const withoutFences = (body) => stripFencedBlocks(String(body ?? ''));
 // `Complexity:` must carry a real grade — a hand-written PR whose description says
 // "Complexity: O(n log n)" is not an agent PR.
 const AI_FIELD =
-	/^[ \t]*(?:<sub>[ \t]*)?(?:Complexity[ \t]*:[ \t]*(?:easy|medium|complicated)\b|(?:Review-Coverage|Human-Review-Need)[ \t]*:)/im;
+	/^[ \t]*(?:<sub>[ \t]*)?(?:Complexity[ \t]*:[ \t]*(?:easy|medium|complicated)\b|(?:Review-Coverage|Review-Attention|Human-Review-Need)[ \t]*:)/im;
 const AI_TOOL = '(?:claude|codex|(?:chat)?gpt|openai|anthropic|gemini|grok|cursor|composer|copilot|devin|aider)';
 // Every agent harness signs the body it generates. Measured over two weeks of harper and
 // harper-pro PRs, 14 of the 15 member PRs carrying no HEG field carried this signature — so

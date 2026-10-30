@@ -8,10 +8,18 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Model configuration writes (`config/configUtils.ts`)
+
+`set_configuration` accepts `models` as a complete replacement (including `{}` to clear it), validated by the existing model schema; named entry keys remain inside the object, and `flattenConfig` uses prototype-safe ownership checks so a name such as `hasOwnProperty` can boot. `lookupConfigWriteParam` keeps this out of the bare env/CLI registry, so an unrelated `MODELS` variable does not become a boot override. Explicit configuration operations validate their candidate and compare the final normalized document with the current file, bypassing the startup-snapshot comparison that could silently skip a rollback. An identical normalized document creates neither a backup nor a write; boot retains its startup comparison. They reject with 409 when `HARPER_CONFIG` or `HARPER_SET_CONFIG` names model settings; the shared environment flattener excludes empty maps, which impose no overrides. `HARPER_DEFAULT_CONFIG` remains writable and yields to edits of values it supplied, requiring restart when it names model settings and disables the watcher. A default introduced for an entry already in the file can recreate that entry after a later API removal; removing it persistently requires changing that default as well. Operation logs redact the entire block; `${ENV_VAR}` credentials remain literal on disk, while literal credentials retain the existing bootstrap warning. Enforced by `unitTests/config/setConfigurationModels.test.js` and the configuration integration suite.
+
+## Root config is adopted only when it parses (`config/configUtils.ts`)
+
+`initConfig()` rejects `Document.errors` before upgrade backfill, environment-state writes, validation, or active-config replacement on boot and forced reload. Forced reloads use `initSync()`, whose current failure policy exits the process, so a malformed edit can terminate a running node; this deliberately follows the existing fail-closed validation path. YAML duplicate keys are fatal where they appear in `Document.errors`, including existing files encountered during upgrade. The CLI error is a `ServerError` with status 500 and uses the source-free code and location formatter shared with `ConfigParseError` while retaining the `Error parsing … YAMLParseError` prefix, because parser source frames can expose credentials. It does not retain the parser error as a cause. `unitTests/config/configUtils-parseErrors.test.js` pins the error type and malformed and duplicate-key files with all legacy backfill keys present.
+
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
-`req.replicated \!== false` — absence of the flag means "replicate". That default-on contract is what
+`req.replicated !== false` — absence of the flag means "replicate". That default-on contract is what
 DDL ops rely on (`dropSchema`/`dropTable` call it unconditionally), so a handler that mirrors the
 drop_schema pattern without a guard silently becomes replicate-by-default. `setConfiguration` must
 stay **opt-in** (`if (replicated)` truthy guard) because config bodies routinely carry node-local
@@ -23,6 +31,22 @@ replicability metadata is deferred to the cluster-level-config work (CORE-3018),
 schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
 in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
 operators must inspect the array for per-node outcomes.
+
+Its local write takes the **root-config publication lock** that deploys and drops publish component
+entries under (`components/rootConfigPublication.ts`; the design is in
+[components/DESIGN.md](../components/DESIGN.md#root-config-is-an-effect-of-the-activation)), because all
+three parse and rewrite the whole document and the last rename otherwise drops the others' change. The
+lock is held around `updateConfigValue` only — never across replication, which is other nodes' writes.
+`updateConfigValue` reads and writes one file, `getRootConfigFilePath()`, which is also what the lock is keyed
+by. Deriving it from the document's `rootPath` put the write where boot does not look whenever the config file
+is named by the boot props, and after any change to `rootPath` itself. The boot path is used whenever a boot
+source exists — `ROOTPATH`, or a boot props file — even if that file is missing, in which case the write fails
+rather than landing in a copy boot will not read. Only with no boot source at all, as during an install before
+the boot props are written, is the path derived from the configured `rootPath`.
+Stranded earlier writes are not merged: choosing between divergent documents is the operator's call.
+A write another durable record depends on passes `atomicWriteFile({ durable: true })`, which fsyncs the
+content through its write handle before the rename and the directory after it; the default stays
+unsynced, since every other config write is re-derivable.
 
 ## Root config watchers must read synchronously (`config/readConfigFileSync.ts`)
 
@@ -195,13 +219,13 @@ What a scope does about a config that arrives late is the other half of settling
 config of its own to having one, which is both the recreated-config-file path and a scope that
 booted while the file was unreadable. Nothing downstream re-runs on it — `componentLoader` is long
 past its `await scope.ready` — so `Scope` answers a repeat `ready` the same way it answers `remove`,
-by requesting a restart. Without that, one worker keeps serving the defaults while every worker
+by requesting a restart, unless the plugin listens for `ready` itself. Without that, one worker keeps serving the defaults while every worker
 that read the file cleanly serves the operator's config.
 
 Arming is a terminal outcome of its own: chokidar reports a scan that found no file by emitting
 `ready` and nothing else, so `RootConfigWatcher` always re-reads when the gate opens rather than
-publishing what an earlier read staged — a missing config file takes the ladder and settles on the
-defaults instead of holding the barrier open. That fallback must also discard the staged value:
+publishing what an earlier read staged — a missing config file settles on the defaults at once (it
+never takes the ladder) instead of holding the barrier open. That fallback must also discard the staged value:
 the arming re-read is authoritative precisely because a write in the unarmed window may have
 superseded it, including by replacing the file with an unusable or missing one. A watcher scan error
 also settles the barrier, but preserves a successfully staged value because no read superseded it.
@@ -213,6 +237,14 @@ cannot tell apart from one the file really held, and `updateLogger` reads an abs
 rotation off and an absent `console` as console off. `updateLogSettings()` therefore keeps what
 `initLogSettings()` established until a real config arrives, rather than silently turning logging
 off on the very boot that could not read its configuration.
+
+## `RootConfigWatcher` schedules a trailing verify-read (`config/RootConfigWatcher.ts`)
+
+Chokidar throttles `EV.CHANGE` events per path for 50ms (`node_modules/chokidar/index.js`) with no trailing emission, so the second of two `atomicWriteFile()` renames landing within 50ms produces no watcher event. After a successful `handleChange` read, `RootConfigWatcher` arms one 100ms (`TRAILING_VERIFY_READ_DELAY_MS`, double the 50ms throttle window) trailing verify-read (`#read(true)`), re-armed on each event and cleared on `close()`, terminal read failure, or when `ConfigReadRetry` takes over. Post-`ready` reads short-circuit when raw file text matches `#lastData` and otherwise compare the parsed object against an unmutated clone (`#lastParsedConfig`) with `isDeepStrictEqual`, so neither the trailing read nor an identical rewrite emits a duplicate `change` even when consumers (`harper_logger`) mutate `this.#config` in place (`unitTests/config/rootConfigWatcher.test.js`). Root-config `OptionsWatcher`s do not schedule a trailing read and remain exposed to the 50ms throttle window.
+
+## `RootConfigWatcher` polls under Bun (`config/RootConfigWatcher.ts`)
+
+Bun's `fs.watch` (1.4.3, 1.4.4) tears down a fresh watch when a stale watch on the same path closes. chokidar closes and re-opens its watch whenever the watched file's inode changes, so once two watchers share a path, the first atomic tmp+rename write leaves every one of them deaf. Each thread has its own shared `RootConfigWatcher` (`getSharedRootConfigWatcher`) on the root config, all in one process, and `configUtils` writes the file by rename. So under native watching, Bun stopped hot-reloading models and logging after the first `set_configuration`. The constructor therefore starts on the existing `POLLING_FALLBACK_OPTIONS` (1 s `fs.watchFile`) when `process.versions.bun` is set. Two writes inside one poll interval coalesce; consumers converge on the latest file. The poller reports only a size change or a newer mtime, so a same-size replacement carrying an older mtime (an mtime-preserving copy, a backward clock step) goes unseen until the next write; `atomicWriteFile` always stamps a fresh mtime. Root-config `OptionsWatcher`s still watch natively and remain exposed. Drop the Bun branch once a Bun release delivers every rename to two watchers of one file. Enforced by the `under Bun` case in `unitTests/config/rootConfigWatcher.test.js` and, on the Bun integration leg, `integrationTests/apiTests/configuration.test.mjs`.
 
 ## Config is composed and memoized before any component runs (`config/configUtils.ts`)
 
@@ -242,7 +274,7 @@ cleanup that frees space needs a started process (#847). Two rules follow.
 **Derived boot writes are best-effort; user-requested ones are not.** `persistConfigDuringBoot()`
 swallows exactly ENOSPC/EDQUOT (matching on `errno` as well as `code`, because Linux has no libuv
 mapping for EDQUOT and reports `Unknown system error -122`) and lets the boot proceed on the
-in-memory config. `updateConfig`/`set_configuration`, `addConfig`, `deleteConfigFromFile` and the
+in-memory config. `set_configuration` (`updateConfigValue`), deploy/drop's `applyRootConfigEffect` and the
 install path keep persist-or-throw: a caller who asked to persist must not get a silent success, and
 an install has no last-known-good config to fall back on.
 
@@ -286,8 +318,9 @@ the write in flight as an operator edit. A worker that concluded "user edit" wou
 env-supplied value for itself alone and serve different config than its siblings.
 
 Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
-CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo
-serializes config writes across processes. Pre-existing — both artifacts were unordered before this
+CLI invocation) can still interleave their config-file writes and promotions, and nothing serializes
+these boot-time writers across processes — the root-config publication lock covers only the runtime
+writers (deploy, drop, `set_configuration`). Pre-existing — both artifacts were unordered before this
 protocol — and out of scope here, but the "commits as a unit" guarantee stops at the process
 boundary.
 
@@ -304,3 +337,13 @@ An `{}` in the config system is context-dependent, and conflating the contexts i
 Removal therefore prunes: `deleteNestedValue` removes ancestors the deletion emptied, only when it actually deleted an existing leaf, and reports what it pruned. The overlap case — a file-declared empty scope an env layer temporarily populated — is tracked in the state file's `emptyScopeOriginals` (separate from `originalValues` so a marker can never mask or be consumed as a real leaf original at the same path; older state files lacking the field are defaulted). Restore consumes a marker only for a path the prune actually removed, so a scalar overwrite or an absent-leaf no-op can never resurrect a scope over live env-layer content. Note there are two coexisting mechanisms for "file `{}` is user content": `restoreBaseEmptyObjects` on the stateless compose path and the marker pair on the stateful removal path — if you touch one, check the other.
 
 Two durable limitations of the marker mechanism, both with user config-file content as the blast radius: markers can only be recorded at populate time, so a scope an env layer populated _before_ `emptyScopeOriginals` existed (any pre-upgrade boot) has no marker and prunes away on its first post-upgrade vacate; and a corrupt config-state file resets to fresh state — dropping `originalValues` and `emptyScopeOriginals` for every tracked path — after which the next removal prunes those scopes for good; `saveConfigState` writes via temp+rename precisely so a torn write cannot be the trigger, leaving genuine corruption (disk faults, hand edits) as the remaining path.
+
+## Built-in environment entries are validated before runtime use (`config/configUtils.ts`)
+
+[harper#2028](https://github.com/HarperFast/harper/issues/2028) found that a bare built-in name reached runtime consumers without a package identifier. Every reader goes through `getEnvBuiltInComponents()`, which warns and skips incomplete entries before runtime loading or config backfill can use them. It trims the fields around the first `=` and keeps the rest of the package identifier intact.
+
+## Live sharding configuration and recovery
+
+The root file supplies the live shard list. `shardingConfiguration.ts` reuses each isolate's shared root watcher, projects its initial ready snapshot before a sharded declaration can install a default map, and settles later changes for 150 ms. Equal canonical lists preserve the placement cache and do not notify replication; other changes make Pro reconnect through its existing handshake. Main also observes live changes so operations writes use the same admission rule as workers. Its startup shard-list snapshot remains separate and immutable for recovery validation, including a root first opened later. Live repair cannot turn a permanently quarantined startup into permission to replay.
+
+`set_configuration` returns after file publication, before every isolate has necessarily observed it. Operators wait for cluster agreement before retrying held writes. Environment provisioning still re-applies on full process restart, so a persistent repair updates that provisioning too. A pending node shard-identity change does not replace the live list on an already-running isolate; identity changes require process restart. Malformed or absent whole replication sections preserve the last observation; omission of the optional list within a valid section clears it.

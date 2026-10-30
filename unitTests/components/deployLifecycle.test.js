@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { deployLifecycle, _resetForTests } = require('#src/components/deployLifecycle');
+const { deployLifecycle, _resetForTests } = require('#js/components/deployLifecycle');
 
 describe('deployLifecycle', () => {
 	afterEach(() => {
@@ -26,6 +26,89 @@ describe('deployLifecycle', () => {
 			deployLifecycle._handle({ name: 'foo', phase: 'end' });
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
 			assert.equal(deployLifecycle.isDeployInFlight('bar'), true, 'ending foo must not end bar');
+		});
+	});
+
+	describe('loadsAwaitDeploy', () => {
+		it('releases only the deploys in flight when releaseLoads is called', () => {
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true);
+			deployLifecycle.releaseLoads('foo', 'left-behind');
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), false);
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true, 'watchers still see the deploy');
+
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'next' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true, 'a later deploy is awaited again');
+			deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'next' });
+			deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'left-behind' });
+
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true, 'the release ended with its deploy');
+		});
+	});
+
+	describe('events around a released deploy', () => {
+		it('end at the release, start again for an overlapping deploy, and ignore the released one ending', () => {
+			const events = [];
+			const onStart = (name) => events.push(`start:${name}`);
+			const onEnd = (name) => events.push(`end:${name}`);
+			deployLifecycle.on('deploy:start', onStart);
+			deployLifecycle.on('deploy:end', onEnd);
+			try {
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+				deployLifecycle.releaseLoads('foo', 'left-behind');
+				deployLifecycle.releaseLoads('foo', 'left-behind');
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'overlapping' });
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'left-behind' });
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'overlapping' });
+			} finally {
+				deployLifecycle.off('deploy:start', onStart);
+				deployLifecycle.off('deploy:end', onEnd);
+			}
+			assert.deepStrictEqual(events, ['start:foo', 'end:foo', 'start:foo', 'end:foo']);
+		});
+	});
+
+	describe('a deploy that holds watchers only', () => {
+		it('is ignored by a thread still loading its components, and held by one that has loaded them', () => {
+			const events = [];
+			const onStart = (name) => events.push(`start:${name}`);
+			const onEnd = (name) => events.push(`end:${name}`);
+			deployLifecycle.on('deploy:start', onStart);
+			deployLifecycle.on('deploy:end', onEnd);
+			try {
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'while-loading', watchersOnly: true });
+				assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), false, 'a load does not wait on it');
+				assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+				deployLifecycle._componentsLoaded();
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'while-loading' });
+				assert.deepStrictEqual(events, [], 'the one it ignored neither paused nor resumed anything');
+
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'once-loaded', watchersOnly: true });
+				assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'once-loaded' });
+			} finally {
+				deployLifecycle.off('deploy:start', onStart);
+				deployLifecycle.off('deploy:end', onEnd);
+			}
+			assert.deepStrictEqual(events, ['start:foo', 'end:foo']);
+		});
+
+		it('outlasts a deploy that closes inside it, so the watchers resume only when it ends', () => {
+			const events = [];
+			const onEnd = (name) => events.push(`end:${name}`);
+			deployLifecycle.on('deploy:end', onEnd);
+			try {
+				deployLifecycle._componentsLoaded();
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'requester' });
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'rollout', watchersOnly: true });
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'requester' });
+				assert.deepStrictEqual(events, [], 'the hold keeps the watchers paused past the deploy it overlapped');
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'rollout' });
+			} finally {
+				deployLifecycle.off('deploy:end', onEnd);
+			}
+			assert.deepStrictEqual(events, ['end:foo']);
 		});
 	});
 

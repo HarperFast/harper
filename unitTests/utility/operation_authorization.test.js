@@ -9,8 +9,8 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const _ = require('lodash');
 const rewire = require('rewire');
-const op_auth = require('#src/utility/operation_authorization');
-const op_auth_rewire = rewire('#src/utility/operation_authorization');
+const op_auth = require('#js/utility/operation_authorization');
+const op_auth_rewire = rewire('#js/utility/operation_authorization');
 const Permission_rw = op_auth_rewire.__get__('permission');
 const write = require('#src/dataLayer/insert');
 const user = require('#src/security/user');
@@ -39,11 +39,17 @@ const { server } = require('#src/server/Server');
 require('#src/server/serverHelpers/serverUtilities'); // ensure the real (cached) bindings are set first
 const realRegisterOperation = server.registerOperation;
 const realOperation = server.operation;
-const serverUtilities_rw = rewire('#src/server/serverHelpers/serverUtilities');
+const serverUtilities_rw = rewire('#js/server/serverHelpers/serverUtilities');
 const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
 const OPERATION_MAP = initializeOperationFunctionMap_rw();
 server.registerOperation = realRegisterOperation;
 server.operation = realOperation;
+
+const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
+function dispatchedHandlerName(operation) {
+	const { operation_function, job_operation_function } = OPERATION_FUNCTION_MAP.get(operation);
+	return (job_operation_function ?? operation_function).name;
+}
 
 const test_terms = testUtils.COMMON_TEST_TERMS;
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;
@@ -441,6 +447,73 @@ describe('Test operation_authorization', function () {
 		});
 
 		assert.deepEqual(missing_ops, []);
+	});
+
+	describe('every dispatched operation is grantable by the API name a role lists', function () {
+		const { canRoleInvokeOperation } = require('#src/components/mcp/operationVisibility');
+		const ALL_OPERATIONS = Object.values(terms.OPERATIONS_ENUM);
+		// Registered with a null api_name on purpose; the reasons are at their registrations.
+		const UNGRANTABLE = [
+			terms.OPERATIONS_ENUM.GET_BACKUP,
+			terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
+			terms.OPERATIONS_ENUM.CATCHUP,
+		];
+		// Built-ins only, since other suites register throwaway operations on this map; `sql` reaches gate 1
+		// by its API name, not through a handler.
+		const dispatched = [...OPERATION_FUNCTION_MAP.keys()].filter(
+			(operation) => ALL_OPERATIONS.includes(operation) && operation !== terms.OPERATIONS_ENUM.SQL
+		);
+		const sharingHandler = (operation) =>
+			dispatched.filter((other) => dispatchedHandlerName(other) === dispatchedHandlerName(operation));
+		const allowlisted = (operations) => ({ hdb_user: { role: { permission: { super_user: false, operations } } } });
+
+		it('is granted by listing an API name that reaches its handler, and by no other', function () {
+			const offenders = [];
+			for (const operation of dispatched) {
+				if (UNGRANTABLE.includes(operation)) continue;
+				const names = sharingHandler(operation);
+				const others = ALL_OPERATIONS.filter((other) => !names.includes(other));
+				if (op_auth.verifyOperationsAllowlist(allowlisted(names), dispatchedHandlerName(operation)) !== null) {
+					offenders.push(`${operation} is not granted by listing ${names.join(' or ')}`);
+				}
+				if (op_auth.verifyOperationsAllowlist(allowlisted(others), dispatchedHandlerName(operation)) === null) {
+					offenders.push(`${operation} is granted without being listed`);
+				}
+			}
+			assert.deepEqual(offenders, []);
+		});
+
+		it('keeps get_backup, read_transaction_log and catchup ungrantable, even by a matching handler name', function () {
+			for (const operation of UNGRANTABLE) {
+				assert.ok(dispatched.includes(operation), `${operation} is dispatched`);
+				const listed = [...ALL_OPERATIONS, dispatchedHandlerName(operation)];
+				const denial = op_auth.verifyOperationsAllowlist(
+					{ ...allowlisted(listed), operation },
+					dispatchedHandlerName(operation)
+				);
+				assert.deepEqual(denial?.unauthorized_access, [TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(operation)]);
+			}
+		});
+
+		// Discovery does not model the ungrantable operations: it still advertises them to a role that
+		// lists them.
+		it('is advertised by MCP discovery exactly when gate 1 grants it', function () {
+			const disagreements = [];
+			for (const operation of dispatched) {
+				if (UNGRANTABLE.includes(operation)) continue;
+				for (const listed of sharingHandler(operation)) {
+					const granted =
+						op_auth.verifyOperationsAllowlist(allowlisted([listed]), dispatchedHandlerName(operation)) === null;
+					// super_user, so the allowlist alone decides: it binds super_user as well.
+					const user = { role: { permission: { super_user: true, operations: [listed] } } };
+					const advertised = canRoleInvokeOperation(user, operation);
+					if (advertised !== granted) {
+						disagreements.push(`${operation} with ${listed} listed: dispatch ${granted}, discovery ${advertised}`);
+					}
+				}
+			}
+			assert.deepEqual(disagreements, []);
+		});
 	});
 
 	describe(`Test verifyPermsAST`, function () {
@@ -1222,6 +1295,44 @@ describe('Test operation_authorization', function () {
 			});
 		});
 
+		it('does not treat a full-text index name as a stored attribute', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.conditions = [
+				{
+					conditions: [
+						{ search_attribute: 'catalogSearch', search_type: 'matches_phrase', search_value: 'trail shoe' },
+						{ attribute: 'age', comparator: 'gt', value: 2 },
+					],
+				},
+			];
+			let result = getRecordAttributes(req_json);
+			assert.deepStrictEqual(
+				[...result],
+				['age', ...req_json.get_attributes.filter((attribute) => attribute !== 'age')]
+			);
+		});
+
+		it('does not treat full-text result metadata as stored attributes', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.get_attributes = ['id', '$score', '$highlights'];
+			let result = getRecordAttributes(req_json);
+			assert(result.has('id'));
+			assert.strictEqual(result.has('$score'), false);
+			assert.strictEqual(result.has('$highlights'), false);
+		});
+
+		it('does not treat an unknown comparator containing matches as full text', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.conditions = [
+				{ search_attribute: 'catalogSearch', search_type: 'xmatchesx', search_value: 'trail shoe' },
+			];
+			let result = getRecordAttributes(req_json);
+			assert(result.has('catalogSearch'));
+		});
+
 		it('Nominal case, valid JSON for search_by_conditions w/ deprecated property names', function () {
 			let expected_attrs = ['id', 'age', 'name', 'adorable', 'location', 'owner_name'];
 			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
@@ -1569,6 +1680,16 @@ describe('Test operations permissions', function () {
 			assert.equal(result, null);
 		});
 
+		it('preserves full-text metadata selections while expanding a wildcard', function () {
+			const req_json = makeOpUserRequest(['read_only'], { read: true });
+			req_json.operation = terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS;
+			req_json.get_attributes = ['*', '$score', '$highlights'];
+			const result = op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			assert.equal(result, null);
+			assert(req_json.get_attributes.includes('$score'));
+			assert(req_json.get_attributes.includes('$highlights'));
+		});
+
 		it('op NOT in operations list — insert blocked even with table perms', function () {
 			const req_json = makeOpUserRequest(['read_only'], { insert: true });
 			const result = op_auth.verifyPerms(req_json, write.insert.name);
@@ -1667,5 +1788,136 @@ describe('Test operations permissions', function () {
 				JSON.stringify(result).includes(TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(terms.OPERATIONS_ENUM.INSERT))
 			);
 		});
+	});
+
+	describe('verifyPerms() — operations allowlist grants by API name', function () {
+		const GRANTED_BY_NAME = [
+			terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+			terms.OPERATIONS_ENUM.PACKAGE_COMPONENT,
+			terms.OPERATIONS_ENUM.ADD_COMPONENT,
+			terms.OPERATIONS_ENUM.DROP_COMPONENT,
+			terms.OPERATIONS_ENUM.SET_COMPONENT_FILE,
+			terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION,
+			terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION,
+			terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT,
+			terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES,
+			terms.OPERATIONS_ENUM.RESTART_SERVICE,
+			terms.OPERATIONS_ENUM.SET_CONFIGURATION,
+			terms.OPERATIONS_ENUM.GET_STATUS,
+			terms.OPERATIONS_ENUM.SET_STATUS,
+			terms.OPERATIONS_ENUM.CLEAR_STATUS,
+			terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE,
+			terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,
+			terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE,
+			terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS,
+			terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE,
+			terms.OPERATIONS_ENUM.REGISTRATION_INFO,
+		];
+
+		for (const operation of GRANTED_BY_NAME) {
+			it(`${operation} is allowed when listed`, function () {
+				const req_json = makeOpUserSystemRequest([operation]);
+				req_json.operation = operation;
+				assert.equal(op_auth.verifyPerms(req_json, dispatchedHandlerName(operation)), null);
+			});
+
+			it(`${operation} is refused when not listed`, function () {
+				const req_json = makeOpUserSystemRequest([terms.OPERATIONS_ENUM.GET_CONFIGURATION]);
+				req_json.operation = operation;
+				const result = op_auth.verifyPerms(req_json, dispatchedHandlerName(operation));
+				assert.deepEqual(result?.unauthorized_access, [TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(operation)]);
+			});
+		}
+
+		for (const [alias, canonical] of [
+			[terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.DEPLOY_COMPONENT],
+			[terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.PACKAGE_COMPONENT],
+			[terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.ADD_COMPONENT],
+			[terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE, terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE],
+		]) {
+			it(`${alias} is allowed when ${canonical} is listed`, function () {
+				const req_json = makeOpUserSystemRequest([canonical]);
+				req_json.operation = alias;
+				assert.equal(op_auth.verifyPerms(req_json, dispatchedHandlerName(alias)), null);
+			});
+		}
+	});
+});
+
+describe('verifyPerms() — replication directives are super-user only (harper#2898)', function () {
+	before(() => {
+		global.hdb_schema = global.hdb_schema || {};
+		testUtils.setGlobalSchema('id', TEST_SCHEMA, TEST_TABLE, TEST_ATTRIBUTES);
+	});
+
+	after(() => {
+		global.hdb_schema = undefined;
+	});
+
+	const DIRECTIVE_DENIAL = ['Can not specify replicateTo or replicatedConfirmation without super user permissions'];
+	const WRITE_OPERATIONS = [
+		terms.OPERATIONS_ENUM.INSERT,
+		terms.OPERATIONS_ENUM.UPDATE,
+		terms.OPERATIONS_ENUM.UPSERT,
+		terms.OPERATIONS_ENUM.PUT,
+		terms.OPERATIONS_ENUM.DELETE,
+	];
+
+	function writerRequest(operation, directives, permission = {}) {
+		const req_json = getRequestJson(TEST_JSON);
+		req_json.operation = operation;
+		Object.assign(req_json.hdb_user.role.permission, permission);
+		return Object.assign(req_json, directives);
+	}
+
+	for (const operation of WRITE_OPERATIONS) {
+		for (const directives of [
+			{ replicateTo: 0 },
+			{ replicateTo: [] },
+			{ replicateTo: ['node-1'] },
+			{ replicatedConfirmation: 1 },
+		]) {
+			it(`denies ${operation} with ${JSON.stringify(directives)} to a role that may write the table`, function () {
+				const handler = dispatchedHandlerName(operation);
+				assert.equal(op_auth.verifyPerms(writerRequest(operation, {}), handler), null);
+				const result = op_auth.verifyPerms(writerRequest(operation, directives), handler);
+				assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+			});
+		}
+	}
+
+	it('denies a structure user', function () {
+		const result = op_auth.verifyPerms(
+			writerRequest(terms.OPERATIONS_ENUM.INSERT, { replicateTo: 0 }, { structure_user: true }),
+			write.insert.name
+		);
+		assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+	});
+
+	it('denies a role whose operations allowlist names the write', function () {
+		const result = op_auth.verifyPerms(
+			writerRequest(
+				terms.OPERATIONS_ENUM.INSERT,
+				{ replicatedConfirmation: 1 },
+				{ operations: [terms.OPERATIONS_ENUM.INSERT] }
+			),
+			write.insert.name
+		);
+		assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+	});
+
+	it('allows a super user, including on a system table', function () {
+		const request = (directives) => {
+			const req_json = getRequestJson(TEST_JSON_SUPER_USER);
+			return Object.assign(req_json, directives);
+		};
+		const directives = { replicateTo: 0, replicatedConfirmation: 1 };
+		assert.equal(op_auth.verifyPerms(request(directives), write.insert.name), null);
+		const systemWrite = (extra) =>
+			op_auth.verifyPerms(
+				request({ schema: terms.SYSTEM_SCHEMA_NAME, table: terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, ...extra }),
+				write.insert.name
+			);
+		assert.deepEqual(systemWrite(directives), systemWrite({}));
 	});
 });

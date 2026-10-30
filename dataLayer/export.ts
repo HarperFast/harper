@@ -1,14 +1,17 @@
-'use strict';
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 
 import * as search from './search.ts';
-import * as AWSConnector from '../utility/AWS/AWSConnector.js';
+import * as AWSConnector from '../utility/AWS/AWSConnector.ts';
 import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.ts';
-import * as stream from 'stream';
+import * as stream from 'node:stream';
 import * as hdbUtils from '../utility/common_utils.ts';
-import * as fs from 'fs-extra';
-import * as path from 'path';
+import fs from 'fs-extra';
+import * as path from 'node:path';
 import hdbLogger from '../utility/logging/harper_logger.ts';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
+import { pipeline } from 'node:stream/promises';
+import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import * as hdbCommon from '../utility/common_utils.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -35,7 +38,6 @@ function loadUpload() {
 // Promisified function
 const pSearchByHash = search.searchByHash;
 const pSearchByValue = search.searchByValue;
-const streamFinished = promisify(stream.finished);
 
 /**
  * Allows for exporting and saving to a file system the receiving system has access to
@@ -125,7 +127,7 @@ async function confirmPath(directoryPath: string) {
  * @param sourceDataFormat
  * @param data
  */
-async function saveToLocal(filePath: string, sourceDataFormat: string, data: any) {
+export async function saveToLocal(filePath: string, sourceDataFormat: string, data: any) {
 	hdbLogger.trace('in saveToLocal');
 	if (hdbCommon.isEmptyOrZeroLength(filePath)) {
 		throw handleHDBError(
@@ -159,11 +161,21 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 	}
 
 	if (sourceDataFormat === JSON_TEXT) {
-		// Create a write stream to the local export file.
-		let writeStream = fs.createWriteStream(filePath);
-		streamAsJSON(data).pipe(writeStream);
-		// Wait until done. Throws if there are errors.
-		await streamFinished(writeStream);
+		// so a failure never leaves a partial file at the path; an existing file keeps its mode, and a symlink
+		// keeps pointing at the replaced file
+		const target = await exportTarget(filePath);
+		const existing = await fs.promises.stat(target).catch(() => undefined);
+		const tempPath = `${target}.${randomUUID()}.tmp`;
+		const writeStream = fs.createWriteStream(tempPath, { flags: 'wx', mode: existing ? existing.mode & 0o777 : 0o666 });
+		try {
+			await pipeline(streamAsJSON(data), writeStream);
+			if (existing?.isFile()) await fs.promises.chmod(tempPath, existing.mode & 0o7777);
+			await fs.promises.rename(tempPath, target);
+		} catch (error) {
+			if (!writeStream.closed) await once(writeStream, 'close');
+			await fs.promises.unlink(tempPath).catch(() => {});
+			throw error;
+		}
 
 		return {
 			message: LOCAL_JSON_EXPORT_MSG,
@@ -173,10 +185,7 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 		// Create a write stream to the local export file.
 		let writeStream = fs.createWriteStream(filePath);
 		const columns = data.getColumns?.();
-		// Use the toCsvStream helper to convert data to CSV
-		toCsvStream(data, columns).pipe(writeStream);
-		// Wait until done. Throws if there are errors.
-		await streamFinished(writeStream);
+		await pipeline(toCsvStream(data, columns), writeStream);
 
 		return {
 			message: LOCAL_CSV_EXPORT_MSG,
@@ -185,6 +194,19 @@ async function saveToLocal(filePath: string, sourceDataFormat: string, data: any
 	}
 
 	throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
+}
+
+// the file a write to filePath lands on: through a chain of symlinks, even one whose last target does not exist yet,
+// resolving each link against its real directory as the kernel does
+async function exportTarget(filePath: string): Promise<string> {
+	let target = filePath;
+	// the kernel's own ELOOP limit
+	for (let hops = 0; hops < 40; hops++) {
+		const link = await fs.promises.lstat(target).catch(() => undefined);
+		if (!link?.isSymbolicLink()) return target;
+		target = path.resolve(await fs.promises.realpath(path.dirname(target)), await fs.promises.readlink(target));
+	}
+	throw Object.assign(new Error(`Too many levels of symbolic links: ${filePath}`), { code: 'ELOOP' });
 }
 
 /**
@@ -249,13 +271,7 @@ export async function export_to_s3(exportObject: any) {
 
 	if (exportObject.format === CSV) {
 		s3Name = exportObject.s3.key + '.csv';
-		// Create a read stream with the data using a CSV transform stream.
-		const csvStream = toCsvStream(data, data.getColumns?.());
-		csvStream.on('error', (err) => {
-			throw err;
-		});
-		// Pipe the data read stream through json2csv which converts it and then pipes it to a pass through which sends it to S3 upload method.
-		csvStream.pipe(passThrough);
+		stream.pipeline(toCsvStream(data, data.getColumns?.()), passThrough, () => {});
 	} else if (exportObject.format === JSON_TEXT) {
 		s3Name = exportObject.s3.key + '.json';
 		// Initialize an empty read stream.
@@ -356,7 +372,7 @@ async function getRecords(exportObject: any) {
 			break;
 		case 'sql': {
 			if (!pSql) {
-				const sql = require('../sqlTranslator/index');
+				const sql = loadRuntimeModule('sqlTranslator/index');
 				pSql = promisify(sql.evaluateSQL);
 			}
 			operation = pSql;

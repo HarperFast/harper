@@ -25,6 +25,7 @@ import { setGenerative } from '../../resources/models/backendRegistry.ts';
 import {
 	assignFiniteTokenCount,
 	composeSignal,
+	isContextWindowRejection,
 	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
 	parseJsonResponse,
@@ -89,6 +90,15 @@ export interface AnthropicBackendConfig {
  * `tools: true` — Anthropic has first-class tool-use support via
  * `tool_use` / `tool_result` content blocks.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: false,
+	generate: true,
+	stream: true,
+	tools: true,
+	adapters: false,
+	structuredOutput: false,
+});
+
 export class AnthropicBackend implements ModelBackend {
 	readonly name = 'anthropic';
 	readonly #baseUrl: string;
@@ -106,7 +116,7 @@ export class AnthropicBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: false, generate: true, stream: true, tools: true, adapters: false };
+		return CAPABILITIES;
 	}
 
 	async generate(input: GenerateInput, opts: BackendOpts<GenerateOpts>): Promise<ModelCallResult<GenerateResult>> {
@@ -257,10 +267,10 @@ export class AnthropicBackend implements ModelBackend {
 			signal,
 		});
 		if (!res.ok) {
-			throw new AnthropicBackendError(
-				`Anthropic ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`,
-				res.status
-			);
+			const suffix = await readErrorSuffix(res);
+			const failure = new AnthropicBackendError(`Anthropic ${path} returned HTTP ${res.status}${suffix}`, res.status);
+			if (isContextWindowRejection(res.status, suffix)) failure.contextWindowExceeded = true;
+			throw failure;
 		}
 		return res;
 	}
@@ -289,6 +299,7 @@ export class AnthropicBackendError extends ServerError {
 	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
 	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
 	declare upstreamStatus?: number;
+	declare contextWindowExceeded?: boolean;
 	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'AnthropicBackendError';
@@ -449,7 +460,10 @@ function toAnthropicTool(t: ToolDef): AnthropicTool {
 function mapStopReason(reason?: string | null): GenerateResult['finishReason'] {
 	switch (reason) {
 		case 'max_tokens':
+		case 'model_context_window_exceeded':
 			return 'length';
+		case 'refusal':
+			return 'content_filter';
 		case 'tool_use':
 			return 'tool_calls';
 		case 'end_turn':

@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { EventEmitter, once } = require('node:events');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -18,6 +18,7 @@ const { getHttpOptions, handleApplication, logRequest } = require('#src/server/h
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { waitFor } = require('../../waitFor.js');
 const { pinLogConfig } = require('../../logConfigFixture.js');
+const { clearRootPath } = require('../../bootPropsFixture.js');
 
 const HARPER_LOGGER_MODULE = '#js/utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -172,15 +173,7 @@ describe('Test harper_logger module', () => {
 		// ROOTPATH export shadows (see its header comment) — clear it for this describe only:
 		// the stdio-capture tests below must keep it, or their fresh module copies bind the
 		// log file to the installed root
-		let savedRootPathEnv;
-		before(() => {
-			savedRootPathEnv = process.env.ROOTPATH;
-			delete process.env.ROOTPATH;
-		});
-
-		after(() => {
-			if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
-		});
+		clearRootPath();
 
 		afterEach(() => {
 			while (afterThisTest.length) afterThisTest.pop()();
@@ -246,6 +239,158 @@ describe('Test harper_logger module', () => {
 			assert.equal(code, 0, `fixture exited ${code}: ${stderr}`);
 			assert.match(stderr, /no-config stream check/);
 			assert.match(stdout, /stdout-guard=true stderr-guard=true/);
+		});
+
+		it('rebinds component and tagged loggers captured before initLogSettings(true) to the configured log file', async () => {
+			const rebindRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-rebind-logger-'));
+			const logRoot = path.join(rebindRoot, 'log');
+			const logPath = path.join(logRoot, 'hdb.log');
+			const originalRootPath = process.env.ROOTPATH;
+			const originalLoggingLevel = process.env.LOGGING_LEVEL;
+			process.env.ROOTPATH = rebindRoot;
+			delete process.env.LOGGING_LEVEL;
+			afterThisTest.push(() => {
+				if (originalRootPath === undefined) delete process.env.ROOTPATH;
+				else process.env.ROOTPATH = originalRootPath;
+				if (originalLoggingLevel === undefined) delete process.env.LOGGING_LEVEL;
+				else process.env.LOGGING_LEVEL = originalLoggingLevel;
+				try {
+					fs.removeSync(rebindRoot);
+				} catch {}
+			});
+
+			const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			harper_logger.__set__('PropertiesReader', sandbox.stub().throws(enoent));
+			const stdio = captureStdio();
+			try {
+				harper_logger.initLogSettings(true);
+			} finally {
+				restoreStdio(stdio);
+			}
+
+			const storageLogger = harper_logger.forComponent('storage');
+			const customCompLogger = harper_logger.forComponent('customComp');
+			const tlsConditional = harper_logger.forComponent('tls').conditional;
+			const mainConditional = harper_logger.conditional;
+			const authEventLogger = harper_logger.forComponent('authentication').withTag('auth-event');
+			const mainTaggedLogger = harper_logger.loggerWithTag('watcher', true);
+			const unconditionalTaggedLogger = harper_logger.loggerWithTag('plain-tag');
+
+			expect(tlsConditional.info).to.be.undefined;
+			expect(mainConditional.info).to.be.undefined;
+			expect(authEventLogger.info).to.be.null;
+			expect(mainTaggedLogger.info).to.be.null;
+
+			fs.mkdirpSync(logRoot);
+			const configFile = path.join(rebindRoot, 'harperdb-config.yaml');
+			fs.writeFileSync(
+				configFile,
+				[
+					`rootPath: ${JSON.stringify(rebindRoot)}`,
+					'logging:',
+					'  file: true',
+					'  stdStreams: false',
+					'  level: info',
+					`  root: ${JSON.stringify(logRoot)}`,
+					'customComp:',
+					'  logging:',
+					'    level: debug',
+					'    tag: custom-tag',
+					'storage:',
+					'  logging: debug',
+					'',
+				].join('\n')
+			);
+
+			const stdioAfter = captureStdio();
+			try {
+				harper_logger.initLogSettings(true);
+			} finally {
+				restoreStdio(stdioAfter);
+			}
+
+			expect(harper_logger.forComponent('storage')).to.equal(storageLogger);
+			expect(storageLogger.path).to.equal(logPath);
+			expect(storageLogger.logToStdstreams).to.be.false;
+			expect(storageLogger.conditional.debug).to.be.a('function');
+			expect(customCompLogger.path).to.equal(logPath);
+			expect(customCompLogger.tag).to.equal('custom-tag');
+			expect(customCompLogger.conditional.debug).to.be.a('function');
+			expect(mainConditional.info).to.be.a('function');
+
+			storageLogger.info('storage component log after rebind');
+			customCompLogger.debug('custom component debug log after rebind');
+			tlsConditional.info?.('tls conditional log after rebind');
+			mainConditional.info?.('main conditional log after rebind');
+			authEventLogger.info?.('auth-event tagged log after rebind');
+			mainTaggedLogger.info?.('watcher tagged log after rebind');
+			unconditionalTaggedLogger.info('plain-tag log after rebind');
+
+			await waitFor(
+				() => fs.pathExistsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('plain-tag log after rebind')
+			);
+			const content = fs.readFileSync(logPath, 'utf8');
+			expect(content).to.include('[info] [storage]: storage component log after rebind');
+			expect(content).to.include('[debug] [custom-tag]: custom component debug log after rebind');
+			expect(content).to.include('[info] [tls]: tls conditional log after rebind');
+			expect(content).to.include('[info]: main conditional log after rebind');
+			expect(content).to.include('[info] [auth-event] [authentication]: auth-event tagged log after rebind');
+			expect(content).to.include('[info] [watcher]: watcher tagged log after rebind');
+			expect(content).to.include('[info] [plain-tag]: plain-tag log after rebind');
+
+			harper_logger._applyLogSettingsForTests({
+				rootPath: rebindRoot,
+				logging: { file: true, stdStreams: true, level: 'error', root: logRoot },
+				authentication: { logging: { level: 'error' } },
+				customComp: { logging: { level: 'debug' } },
+			});
+			expect(customCompLogger.logToStdstreams).to.be.true;
+			expect(authEventLogger.info).to.be.null;
+			expect(mainTaggedLogger.info).to.be.null;
+
+			fs.removeSync(configFile);
+			const stdioFallback = captureStdio();
+			try {
+				harper_logger.initLogSettings(true);
+			} finally {
+				restoreStdio(stdioFallback);
+			}
+			expect(storageLogger.path).to.be.undefined;
+			expect(storageLogger.logToStdstreams).to.be.true;
+			expect(tlsConditional.info).to.be.undefined;
+			expect(mainConditional.info).to.be.undefined;
+			expect(authEventLogger.info).to.be.null;
+			expect(mainTaggedLogger.info).to.be.null;
+		});
+
+		it('logs keys.ts tls messages to the configured file in a first-boot install+run process', function () {
+			this.timeout(30000);
+			const firstBootRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-first-boot-tls-'));
+			afterThisTest.push(() => {
+				try {
+					fs.removeSync(firstBootRoot);
+				} catch {}
+			});
+
+			const result = spawnSync(process.execPath, [require.resolve('./fixtures/firstBootComponentLogging.cjs')], {
+				env: { ...process.env, ROOTPATH: firstBootRoot, LOGGING_LEVEL: 'warn' },
+				timeout: 20000,
+				encoding: 'utf8',
+			});
+
+			assert.ifError(result.error);
+			assert.equal(result.status, 0, `fixture exited ${result.status}: ${result.stderr}`);
+			assert.doesNotMatch(result.stdout + result.stderr, /\[tls\]/, result.stderr);
+
+			const logPath = path.join(firstBootRoot, 'log', 'hdb.log');
+			assert.ok(fs.pathExistsSync(logPath), 'expected configured hdb.log to exist');
+			const logContent = fs.readFileSync(logPath, 'utf8');
+			assert.match(
+				logContent,
+				/\[info\] \[tls\]: node url is missing from harperdb-config\.yaml, using default host127\.0\.0\.1/
+			);
+			assert.match(logContent, /\[warn\] \[tls\]: Composed TLS cipher configuration for the 'https' listener/);
 		});
 
 		it('Test that if error code is not ENOENT error is handled correctly', () => {
@@ -1246,6 +1391,157 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test caller-impact shapes for the logger rotation-inheritance fix (#1877/#1880)', () => {
+		const CALLER_SHAPES_DIR = path.join(__dirname, 'callerImpactShapesTest');
+		let shapeCaseDir;
+		let shapeCase = 0;
+		let shapeLoggersToCleanup = [];
+
+		beforeEach(() => {
+			shapeCaseDir = path.join(CALLER_SHAPES_DIR, `case${shapeCase++}`);
+			fs.mkdirpSync(shapeCaseDir);
+			shapeLoggersToCleanup = [];
+		});
+
+		afterEach(async () => {
+			for (const logger of shapeLoggersToCleanup) {
+				const currentPath = logger.path;
+				updateLogger(logger, { path: currentPath }, undefined, logger);
+				logger.closeLogFile?.();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			if (shapeCaseDir) fs.removeSync(shapeCaseDir);
+		});
+
+		it("shape: plain logger.info/warn/error sharing main's default log path are unaffected — only the shared per-path sink (getFileLogger's cache), never a separate updateLogger call, binds this logger to main's rotation", async () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+
+			// Created before main's own rotation is installed, so forComponent's own copy-at-creation
+			// of `protoLogger.rotation` cannot be what delivers rotation below — only the shared file
+			// sink at mainLogPath can.
+			const externalLikeLogger = testMainLogger.forComponent('external');
+			shapeLoggersToCleanup.push(externalLikeLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			for (let i = 0; i < 30; i++) externalLikeLogger.info('x'.repeat(80));
+			const rotatedDir = path.join(shapeCaseDir, 'rotated');
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: "expected writes through the shared default path to be bound by main's rotation",
+			});
+		});
+
+		it("shape: logger.withTag()/tagged loggers write through their underlying logger's sink and never resolve rotation themselves", async () => {
+			const logPath = path.join(shapeCaseDir, 'component.log');
+			const underlying = createLogger({ path: logPath, level: 'info' });
+			shapeLoggersToCleanup.push(underlying);
+			updateLogger(underlying, { path: logPath, rotation: { enabled: true, maxSize: '1K' } }, undefined, underlying);
+			const rotationBefore = underlying.rotation;
+
+			const tagged = harperLoggerModule.loggerWithTag('shapeTwo', false, underlying);
+			tagged.info('tagged line');
+
+			await waitFor(() => fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('tagged line'));
+			const log = fs.readFileSync(logPath, 'utf8');
+			assert.ok(log.includes('[shapeTwo]'), 'the tag is prefixed onto the line written through the underlying sink');
+			assert.strictEqual(
+				underlying.rotation,
+				rotationBefore,
+				'withTag must never touch the rotation policy of the logger it wraps'
+			);
+		});
+
+		it('shape: tooling tailing a component log file by an already-open descriptor stops seeing new writes once inherited rotation renames the file out from under it', async () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			const componentLogPath = path.join(shapeCaseDir, 'tailed-component.log');
+			const componentLogger = testMainLogger.forComponent('tailed');
+			shapeLoggersToCleanup.push(componentLogger);
+			updateLogger(componentLogger, { path: componentLogPath }, 'tailed', testMainLogger);
+			assert.deepStrictEqual(componentLogger.rotation, mainRotation);
+
+			componentLogger.info('before rotation, line one');
+			await waitFor(
+				() => fs.existsSync(componentLogPath) && fs.readFileSync(componentLogPath, 'utf8').includes('line one')
+			);
+
+			const tailerFd = fs.openSync(componentLogPath, 'r');
+			try {
+				for (let i = 0; i < 30; i++) componentLogger.info(`padding ${i} ${'x'.repeat(80)}`);
+				const rotatedDir = path.join(shapeCaseDir, 'rotated');
+				await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+					timeout: 5000,
+					message: 'expected the inherited main maxSize to rotate the component log',
+				});
+				// The 30-line burst against a 1K cap rotates several times in a fast cascade; writing
+				// line two the instant the first archive appears can still land it in an
+				// intermediate generation that itself rotates again moments later.
+				let lastRotatedCount = -1;
+				await waitFor(
+					() => {
+						const count = fs.readdirSync(rotatedDir).length;
+						const settled = count === lastRotatedCount;
+						lastRotatedCount = count;
+						return settled;
+					},
+					{ timeout: 5000, interval: 200, message: 'expected the rotation cascade to settle' }
+				);
+
+				componentLogger.info('after rotation, line two');
+				await waitFor(
+					() =>
+						fs.existsSync(componentLogPath) &&
+						fs.readFileSync(componentLogPath, 'utf8').includes('after rotation, line two'),
+					{ timeout: 5000, message: 'expected a fresh file at the same path to receive post-rotation writes' }
+				);
+
+				const staleRead = fs.readFileSync(tailerFd, 'utf8');
+				assert.ok(staleRead.includes('line one'), 'the stale descriptor still reads the pre-rotation generation');
+				assert.ok(
+					!staleRead.includes('after rotation, line two'),
+					'a descriptor opened before rotation never sees a post-rotation write'
+				);
+			} finally {
+				fs.closeSync(tailerFd);
+			}
+
+			const freshRead = fs.readFileSync(componentLogPath, 'utf8');
+			assert.ok(freshRead.includes('after rotation, line two'));
+			assert.ok(
+				!freshRead.includes('line one'),
+				'pre-rotation content moved to the archive, not the fresh file created at the same path'
+			);
+		});
+
+		it('shape: a logger with no level of its own resolves it via mainLoggerRef, the same fallback this fix left in place — only the mainLogger -> mainLoggerRef parameter name changed on that line', () => {
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, level: 'info' }, undefined, testMainLogger);
+
+			// Created while main is still at 'info', so forComponent's own copy-at-creation of
+			// `protoLogger.level` cannot be what delivers 'trace' below — only updateLogger's
+			// mainLoggerRef fallback, with no level of its own, can.
+			const probe = testMainLogger.forComponent('levelProbe');
+			shapeLoggersToCleanup.push(probe);
+			const levelBeforeFallback = probe.level;
+
+			updateLogger(testMainLogger, { path: mainLogPath, level: 'trace' }, undefined, testMainLogger);
+			updateLogger(probe, { path: path.join(shapeCaseDir, 'probe.log') }, 'levelProbe', testMainLogger);
+
+			assert.strictEqual(probe.level, testMainLogger.level);
+			// Main's level comes from the same assignment, so equality alone can't detect its removal.
+			assert.notStrictEqual(probe.level, levelBeforeFallback);
+		});
+	});
+
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});
@@ -1997,6 +2293,691 @@ describe('Test harper_logger module', () => {
 			assert.ok(!result.includes('super-secret-token'));
 			assert.ok(!result.includes('Authorization'));
 		});
+
+		// Mirrors MAX_LOG_RENDER_LENGTH in harper_logger.ts.
+		const MAX_LOG_RENDER_LENGTH = 256 * 1024;
+
+		it('bounds the total rendered length across the whole structure, not only per container', () => {
+			// Every per-container limit allows this: 199 objects x 249 fields x one shared 20KB string.
+			const long_string = 'x'.repeat(20_000);
+			const payload = {};
+			for (let i = 0; i < 199; i++) {
+				const child = {};
+				for (let j = 0; j < 249; j++) child[`f${j}`] = long_string;
+				payload[`child_${i}`] = child;
+			}
+			const result = render(payload, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more properties omitted (sanitize budget)'));
+			// The sanitize walk stopped on its own estimate, so the output is still a whole structure.
+			assert.ok(result.endsWith('}'), result.slice(-200));
+		});
+
+		it('caps the rendered length exactly even when escaping makes the output larger than estimated', () => {
+			// util.inspect renders each control character as a 4-character escape.
+			const escaped_string = '\x01'.repeat(5_000);
+			const payload = Array.from({ length: 100 }, () => escaped_string);
+			const result = render(payload, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.match(result, /more characters omitted \(sanitize budget\)\]$/);
+		});
+
+		it('shares the render budget with custom inspect hooks instead of giving each hook a fresh one', () => {
+			// Each hook alone fits the budget; together they would not.
+			const hook_output = () => ({ lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`) });
+			const payload = Array.from({ length: 200 }, () => ({ [util.inspect.custom]: hook_output }));
+			const result = render(payload, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it("shares the render budget with hooks nested in a hook's output", () => {
+			const inner_output = 'y'.repeat(100_000);
+			const outer_hook = () => ({ inner: { [util.inspect.custom]: () => inner_output } });
+			const payload = Array.from({ length: 50 }, () => ({ [util.inspect.custom]: outer_hook }));
+			const result = render(payload, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('resolves custom inspect hooks in walk order, so an early diagnostic is not starved by later fields', () => {
+			const payload = [{ [util.inspect.custom]: () => 'phase=install' }, ...Array(300).fill('x'.repeat(1_000))];
+			const result = render(payload, { depth: 8, maxArrayLength: 1000 });
+			assert.ok(result.includes('phase=install'), result.slice(0, 200));
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it("passes a custom inspect hook null depth, not Infinity, when the caller's depth is unlimited", () => {
+			let seenDepth = 'unset';
+			const value = { [util.inspect.custom]: (depth) => ((seenDepth = depth), 'hooked') };
+			render(value, { depth: null });
+			assert.strictEqual(seenDepth, null);
+		});
+
+		it('sanitizes, masks and charges what an inherited custom inspect hook returns, and calls it once', () => {
+			let calls = 0;
+			class Report {
+				[util.inspect.custom]() {
+					calls++;
+					return {
+						password: 'prototype-hook-secret',
+						region: 'us-east-1',
+						lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`),
+					};
+				}
+			}
+			const reports = Array.from({ length: 50 }, () => new Report());
+			const result = render(reports, { depth: 8, maxArrayLength: 250 });
+			assert.ok(!result.includes('prototype-hook-secret'));
+			assert.ok(result.includes('us-east-1'));
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.endsWith(']'), result.slice(-200));
+			assert.ok(calls < reports.length, `called ${calls} hooks after the budget was spent`);
+		});
+
+		it('does not spend the budget on, or render, what lies below the requested inspect depth', () => {
+			let stack_reads = 0;
+			const deep_error = new Error('deep');
+			Object.defineProperty(deep_error, 'stack', {
+				get() {
+					stack_reads++;
+					return 'Error: deep';
+				},
+			});
+			let deep = { lines: Array(300).fill('x'.repeat(1_000)), deep_error };
+			for (let i = 0; i < 9; i++) deep = { deep };
+			const result = render({ detail: deep, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 1000 });
+			assert.strictEqual(stack_reads, 0);
+			assert.ok(result.includes('[Object]'));
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(!result.includes('sanitize budget'), result);
+		});
+
+		it('walks and masks what a hook carried by a built-in or function leaf returns', () => {
+			const date = new Date(0);
+			Object.defineProperty(date, util.inspect.custom, { value: () => ({ password: 'date-hook-secret' }) });
+			class Client {
+				static [util.inspect.custom]() {
+					return { apiKey: 'static-hook-secret' };
+				}
+			}
+			const result = render({ date, Client, buffer: Buffer.from('hi') }, { depth: 8 });
+			assert.ok(!result.includes('date-hook-secret'), result);
+			assert.ok(!result.includes('static-hook-secret'), result);
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('<Buffer 68 69>'));
+		});
+
+		it('keeps what a hook on a built-in leaf hides hidden', () => {
+			class SecretKey extends Uint8Array {
+				[util.inspect.custom]() {
+					return 'SecretKey(***)';
+				}
+			}
+			const result = render({ key: new SecretKey([11, 22, 33]) }, { depth: 8 });
+			assert.ok(result.includes('SecretKey(***)'), result);
+			assert.ok(!result.includes('22'), result);
+		});
+
+		it('bounds the properties walked for inherited hooks whose output replaces them, across all siblings', () => {
+			let stack_reads = 0;
+			class Report {
+				constructor() {
+					this.detail = new Error('short message');
+					Object.defineProperty(this.detail, 'stack', {
+						get() {
+							stack_reads++;
+							return 'Error: short message\n' + '    at frame\n'.repeat(20_000);
+						},
+					});
+				}
+				[util.inspect.custom]() {
+					return 'Report';
+				}
+			}
+			const result = render(
+				Array.from({ length: 250 }, () => new Report()),
+				{ depth: 8, maxArrayLength: 250 }
+			);
+			// Four budgets of replaced properties, each Error's stack read twice; 500 reads unbounded.
+			assert.ok(stack_reads <= 10, `formatted ${stack_reads} stacks`);
+			assert.ok(result.includes('[omitted (sanitize budget)]'));
+		});
+
+		it("prints an inherited hook's short summary, and the fields after it, even when the properties it replaces are large", () => {
+			class Report {
+				constructor() {
+					this.lines = Array(300).fill('x'.repeat(1_000));
+				}
+				[util.inspect.custom]() {
+					return 'phase=install';
+				}
+			}
+			const result = render(
+				{ report: new Report(), deployment_id: 'deployment-123' },
+				{ depth: 8, maxArrayLength: 1000 }
+			);
+			assert.ok(result.includes('phase=install'), result);
+			assert.ok(result.includes('deployment-123'), result);
+		});
+
+		it('keeps rendering plain fields after the work cap for inherited-hook properties is reached', () => {
+			class Report {
+				constructor() {
+					this.lines = Array(4).fill('x'.repeat(1_000));
+				}
+				[util.inspect.custom]() {
+					return 'Report';
+				}
+			}
+			const reports = Array.from({ length: 250 }, () => new Report());
+			const result = render({ reports, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.includes('deployment-123'), result.slice(-300));
+		});
+
+		it('walks the output of a replaced Buffer inspect hook', () => {
+			const native_hook = Buffer.prototype[util.inspect.custom];
+			Buffer.prototype[util.inspect.custom] = () => ({ password: 'patched-buffer-secret' });
+			try {
+				const result = render({ buffer: Buffer.from('hi') }, { depth: 8 });
+				assert.ok(!result.includes('patched-buffer-secret'), result);
+			} finally {
+				Buffer.prototype[util.inspect.custom] = native_hook;
+			}
+		});
+
+		it('does not walk the entries of a container util.inspect collapses at its depth', () => {
+			let deep = Array.from({ length: 200 }, () =>
+				Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`f${i}`, i]))
+			);
+			// The array lands at depth 8, so each of its 200 objects is collapsed at depth 9.
+			for (let i = 0; i < 7; i++) deep = { deep };
+			const result = render({ detail: deep, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 250 });
+			assert.strictEqual(result.split('[Object]').length - 1, 200);
+			assert.ok(result.includes('deployment-123'), result.slice(-300));
+			assert.ok(!result.includes('sanitize budget'));
+		});
+
+		it('walks only as many array entries as util.inspect prints when the caller sets no maxArrayLength', () => {
+			const value = { rows: Array(1000).fill('x'.repeat(300)), deployment_id: 'deployment-123' };
+			const result = render(value, { breakLength: Infinity, depth: 4 });
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(result.includes('901 more array entries omitted (sanitize budget)'));
+		});
+
+		it('never materializes the stack of an Error whose message alone exceeds the remaining budget', () => {
+			let stack_reads = 0;
+			const errors = Array.from({ length: 250 }, () => {
+				const error = new Error('m'.repeat(1_000_000));
+				Object.defineProperty(error, 'stack', {
+					get() {
+						stack_reads++;
+						return `Error: ${this.message}`;
+					},
+				});
+				return error;
+			});
+			const result = render(errors, { depth: 8, maxArrayLength: 250 });
+			assert.strictEqual(stack_reads, 0);
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('249 more array entries omitted (sanitize budget)'));
+		});
+
+		it('renders a shared sub-object in full where it is shallower than where it was first reached', () => {
+			const shared = { inner: { note: 'shared-content' } };
+			const result = render({ a: { b: { c: shared } }, d: shared }, { depth: 2 });
+			assert.ok(result.includes('shared-content'), result);
+		});
+
+		it('stops before a property name longer than the remaining budget, since inspect prints keys whole', () => {
+			const long_key = 'k'.repeat(10_000_000);
+			const result = render({ [long_key]: 'ok', after: 1 }, { depth: 8 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(!result.includes('k'.repeat(1_000)));
+			assert.ok(result.includes('2 more properties omitted (sanitize budget)'));
+		});
+
+		it('charges a sub-object again at each repeat reference, since inspect prints it at every occurrence', () => {
+			const shared = { lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`) };
+			const result = render(Array(250).fill(shared), { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('charges Errors and opaque built-ins at their rendered length', () => {
+			const secret_error = new Error('x'.repeat(1_000_000));
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const floats = new Float64Array(250).fill(Math.PI);
+			for (const payload of [Array(250).fill(secret_error), Array(250).fill(floats)]) {
+				const result = render(payload, { depth: 8, maxArrayLength: 250 });
+				assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+				assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+				assert.ok(result.endsWith(']'), result.slice(-200));
+				assert.ok(!result.includes('super-secret-token'));
+			}
+		});
+
+		it('charges Map keys against the render budget', () => {
+			const long_key = 'k'.repeat(4_000_000);
+			const huge_keys = new Map(Array.from({ length: 250 }, (_, i) => [`${i}:${long_key}`, i]));
+			const result = render([huge_keys], { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more Map entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('caps the failure text of a custom inspect hook that throws a huge error', () => {
+			const hostile = {
+				[util.inspect.custom]() {
+					throw new Error('z'.repeat(1_000_000));
+				},
+			};
+			const result = render(hostile);
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.startsWith('[Unrenderable value: Error: zzz'));
+			assert.match(result, /more characters omitted \(sanitize budget\)\]$/);
+		});
+
+		it('masks credential-shaped keys in the structure a custom inspect hook returns', () => {
+			const value = {
+				[util.inspect.custom]() {
+					return { password: 'hook-returned-secret', region: 'us-east-1' };
+				},
+			};
+			const result = render({ value }, { depth: 8 });
+			assert.ok(!result.includes('hook-returned-secret'), result);
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('us-east-1'));
+		});
+
+		it('masks values under credential-shaped keys at any depth, in plain objects, class instances, and Maps', () => {
+			class ClientConfig {
+				constructor() {
+					this.client_secret = 'class-instance-secret';
+					this.region = 'us-east-1';
+				}
+			}
+			const value = {
+				phase: 'prepare',
+				deployment_id: 'deployment-123',
+				level_1: {
+					level_2: {
+						level_3: {
+							level_4: {
+								level_5: {
+									password: 'hunter2',
+									Authorization: 'Bearer nested-bearer-token',
+									aws_secret_access_key: 'aws-secret-value',
+									refresh_token: 'refresh-token-value',
+									apiKey: 'api-key-value',
+									credentials: { username: 'admin', pass: 'nested-credential-object' },
+									otp_token: 424242,
+									client: new ClientConfig(),
+									headers: new Map([
+										['authorization', 'Bearer map-bearer-token'],
+										['accept', 'application/json'],
+									]),
+									[Symbol('session_token')]: 'symbol-keyed-secret',
+									cookie: 'hdb-session=cookie-secret',
+									private_key: '-----BEGIN PRIVATE KEY-----key-material',
+									token: undefined,
+									authorized: false,
+								},
+							},
+						},
+					},
+				},
+			};
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			for (const secret of [
+				'hunter2',
+				'nested-bearer-token',
+				'aws-secret-value',
+				'refresh-token-value',
+				'api-key-value',
+				'nested-credential-object',
+				'424242',
+				'class-instance-secret',
+				'map-bearer-token',
+				'symbol-keyed-secret',
+				'cookie-secret',
+				'key-material',
+			]) {
+				assert.ok(!result.includes(secret), `leaked ${secret}: ${result}`);
+			}
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('ClientConfig'));
+			assert.ok(result.includes('us-east-1'));
+			assert.ok(result.includes('application/json'));
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(result.includes('prepare'));
+			assert.ok(result.includes('token: undefined'));
+			assert.ok(result.includes('authorized: false'));
+		});
+	});
+
+	describe('Property-style hostile-input fuzzing for inspectForLog/errorForLog (harper#1994 follow-up)', () => {
+		const util = require('node:util');
+		const vm = require('node:vm');
+		const { inspectForLog, errorForLog } = harperLoggerModule;
+		const inspectRender = (value, options) => util.inspect(inspectForLog(value, options));
+		const errorRender = (error) => util.inspect(errorForLog(error));
+
+		// A post-hoc elapsed-time check can't catch a genuine hang; vm's `timeout` can, since it
+		// preempts even a tight synchronous loop via a V8 execution interrupt. `fn` still runs in
+		// this file's own realm - only the call is routed through a vm context for that preemption.
+		// One context/script is reused across every call (cheap `fn` swap instead of a fresh V8
+		// context per iteration) - verified a reused context still enforces the timeout correctly.
+		const DEADLINE_CONTEXT = vm.createContext({ fn: undefined });
+		const DEADLINE_SCRIPT = new vm.Script('fn()');
+		function withDeadline(fn, timeoutMs) {
+			DEADLINE_CONTEXT.fn = fn;
+			return DEADLINE_SCRIPT.runInContext(DEADLINE_CONTEXT, { timeout: timeoutMs });
+		}
+
+		// Deterministic PRNG; SEED makes a failing iteration reproducible.
+		function mulberry32(seed) {
+			let a = seed >>> 0;
+			return function () {
+				a |= 0;
+				a = (a + 0x6d2b79f5) | 0;
+				let t = Math.imul(a ^ (a >>> 15), 1 | a);
+				t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+				return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+			};
+		}
+		const SEED = 0xc0ffee;
+
+		function pick(rng, options) {
+			return options[Math.floor(rng() * options.length)];
+		}
+
+		function randomString(rng, length) {
+			const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFG0123456789 \t\n"\'\\<>{}[]';
+			const out = new Array(length);
+			for (let i = 0; i < length; i++) out[i] = chars[Math.floor(rng() * chars.length)];
+			return out.join('');
+		}
+
+		// One hostile shape per call; `ancestors` lets a `cycle` shape target a real ancestor, not
+		// just its immediate parent.
+		function hostileValue(rng, depth, ancestors) {
+			if (depth <= 0) {
+				return pick(rng, [randomString(rng, 8), rng() * 1e9, null, undefined, true, Symbol('leaf')]);
+			}
+			const kind = pick(rng, [
+				'throwing-getter',
+				'throwing-proxy',
+				'null-proto',
+				'foreign-proto',
+				'cycle',
+				'symbol-keys',
+				'deep-chain',
+				'wide-object',
+				'wide-array',
+				'huge-string',
+				'plain',
+			]);
+			switch (kind) {
+				case 'throwing-getter': {
+					// Never actually invoked - the sanitizer always substitutes an accessor placeholder
+					// instead of calling a getter; this exercises that substitution.
+					const obj = {};
+					Object.defineProperty(obj, 'poison', {
+						enumerable: true,
+						get() {
+							throw new Error('getter boom');
+						},
+					});
+					obj.fine = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'throwing-proxy': {
+					// inspectForLog's sanitizer gates on types.isProxy before touching the target, so this
+					// trap never actually runs - this exercises that gate on an arbitrary trap-bearing Proxy.
+					const target = { real: hostileValue(rng, depth - 1, ancestors) };
+					const trap = pick(rng, ['get', 'ownKeys', 'getOwnPropertyDescriptor', 'has']);
+					return new Proxy(target, {
+						[trap]() {
+							throw new Error('proxy trap boom');
+						},
+					});
+				}
+				case 'null-proto': {
+					const obj = Object.create(null);
+					obj.a = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					obj[Symbol('null-proto-tag')] = 'marker';
+					return obj;
+				}
+				case 'foreign-proto': {
+					const weird_proto = Object.create(null);
+					Object.defineProperty(weird_proto, 'weird', {
+						get() {
+							throw new Error('proto getter boom');
+						},
+					});
+					const obj = Object.create(weird_proto);
+					obj.inner = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'cycle': {
+					const obj = {};
+					obj.self = ancestors.length > 0 ? pick(rng, ancestors) : obj;
+					obj.data = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'symbol-keys': {
+					const obj = {};
+					for (let i = 0; i < 3; i++) {
+						obj[Symbol(`sym-${i}-${randomString(rng, 4)}`)] = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					}
+					obj.normal = 'fine';
+					return obj;
+				}
+				case 'deep-chain': {
+					let head = { bottom: 'reached' };
+					for (let i = 0; i < 30; i++) head = { nested: head };
+					return head;
+				}
+				case 'wide-object': {
+					const obj = {};
+					const width = 500 + Math.floor(rng() * 1000);
+					for (let i = 0; i < width; i++) obj[`k${i}`] = i;
+					return obj;
+				}
+				case 'wide-array': {
+					const width = 500 + Math.floor(rng() * 1000);
+					return Array.from({ length: width }, (_, i) => i);
+				}
+				case 'huge-string':
+					return randomString(rng, 20_000 + Math.floor(rng() * 20_000));
+				case 'plain':
+				default: {
+					const obj = {};
+					const n = 1 + Math.floor(rng() * 2);
+					for (let i = 0; i < n; i++) obj[`field${i}`] = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+			}
+		}
+
+		// Exercises errorToLogString's walk independent of deepSanitizeErrors, which errorForLog
+		// never calls.
+		// Kinds whose render can legitimately include renderErrorLine's own `[Unrenderable Error:
+		// ...]` fallback (accessing `.stack` throws by construction); every other kind should never
+		// produce that marker, so the caller can assert its absence when none of these were used.
+		const CAN_DEGRADE_KINDS = new Set(['throwing-stack', 'revoked-proxy', 'throwing-proxy']);
+
+		function hostileErrorChain(rng, length) {
+			const reachable = [];
+			const kinds = [];
+			let root;
+			let tip; // current end of the live chain; null once a cycle/refusal has closed it
+			for (let i = 0; i < length; i++) {
+				const kind = pick(rng, [
+					'plain',
+					'throwing-stack',
+					'throwing-message',
+					'throwing-constructor',
+					'revoked-proxy',
+					'throwing-proxy',
+				]);
+				let link;
+				switch (kind) {
+					case 'throwing-stack':
+						link = new Error(`link ${i}`);
+						Object.defineProperty(link, 'stack', {
+							get() {
+								throw new Error('stack boom');
+							},
+						});
+						break;
+					case 'throwing-message':
+						// No usable stack, so errorToLogString falls through to errorToString, which reads
+						// `.message` directly - this is what actually exercises the throwing getter.
+						link = Object.create(Error.prototype);
+						Object.defineProperty(link, 'message', {
+							get() {
+								throw new Error('message boom');
+							},
+						});
+						break;
+					case 'throwing-constructor':
+						// Also no stack, with a real string `message` - errorToString's `${error.constructor
+						// .name}` branch is the only place in this file that reads `.constructor`.
+						link = { message: `link ${i}` };
+						Object.defineProperty(link, 'constructor', {
+							get() {
+								throw new Error('constructor boom');
+							},
+						});
+						break;
+					case 'revoked-proxy': {
+						const { proxy, revoke } = Proxy.revocable({}, {});
+						revoke();
+						link = proxy;
+						break;
+					}
+					case 'throwing-proxy':
+						// errorForLog only ever reads properties (stack/cause/message/constructor/
+						// allowlist) - a 'get' trap is the only one it can ever reach.
+						link = new Proxy(
+							{},
+							{
+								get() {
+									throw new Error('cause proxy boom');
+								},
+							}
+						);
+						break;
+					case 'plain':
+					default:
+						link = new Error(`link ${i}`);
+						link.code = pick(rng, ['ECONNRESET', 'ENOENT', undefined]);
+				}
+
+				if (i === 0) {
+					root = link;
+					tip = link;
+					reachable.push(link);
+					kinds.push(kind);
+					continue;
+				}
+				if (tip === null) break; // chain already closed (cycle or refused assignment)
+
+				try {
+					if (rng() < 0.15 && reachable.length > 1) {
+						tip.cause = pick(rng, reachable); // close a cycle instead of extending
+						tip = null;
+					} else {
+						tip.cause = link;
+						tip = link;
+						reachable.push(link);
+						kinds.push(kind);
+					}
+				} catch {
+					tip = null; // a hostile tip (e.g. a revoked proxy) refused the assignment
+				}
+			}
+			return { error: root, kinds };
+		}
+
+		const ITERATIONS = 60;
+		const MAX_VALUE_DEPTH = 6;
+		const HANG_BUDGET_MS = 2000;
+
+		// inspectForLog's outer catch turns any escaping exception into this same wrapper, so
+		// without this, doesNotThrow alone could never catch a sanitizer regression.
+		const KNOWN_SANITIZE_LIMIT = /\[Unrenderable value: sanitize (?:budget|depth) exceeded\]/g;
+		function assertNoUnexpectedUnrenderable(result, message) {
+			assert.ok(!result.replace(KNOWN_SANITIZE_LIMIT, '').includes('[Unrenderable value:'), message);
+		}
+
+		it(`inspectForLog never throws or hangs past ${HANG_BUDGET_MS}ms across ${ITERATIONS} randomized hostile shapes (seed 0x${SEED.toString(16)})`, () => {
+			const rng = mulberry32(SEED);
+			for (let i = 0; i < ITERATIONS; i++) {
+				const value = hostileValue(rng, MAX_VALUE_DEPTH, []);
+				let result;
+				assert.doesNotThrow(
+					() => {
+						result = withDeadline(
+							() => inspectRender(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 }),
+							HANG_BUDGET_MS
+						);
+					},
+					undefined,
+					`iteration ${i} (seed 0x${SEED.toString(16)})`
+				);
+				assert.strictEqual(typeof result, 'string');
+				assertNoUnexpectedUnrenderable(result, `iteration ${i} (seed 0x${SEED.toString(16)}) degraded to: ${result}`);
+			}
+		});
+
+		it(`errorForLog never throws or hangs past ${HANG_BUDGET_MS}ms across ${ITERATIONS} randomized hostile error chains (seed 0x${(SEED + 1).toString(16)})`, () => {
+			const rng = mulberry32(SEED + 1);
+			for (let i = 0; i < ITERATIONS; i++) {
+				const chain_length = 1 + Math.floor(rng() * 5);
+				const { error, kinds } = hostileErrorChain(rng, chain_length);
+				let result;
+				assert.doesNotThrow(
+					() => {
+						result = withDeadline(() => errorRender(error), HANG_BUDGET_MS);
+					},
+					undefined,
+					`iteration ${i} (seed 0x${(SEED + 1).toString(16)})`
+				);
+				assert.strictEqual(typeof result, 'string');
+				// renderErrorLine has its own `[Unrenderable Error: ...]` fallback; outside the kinds
+				// that legitimately trigger it, its presence would mean something else broke silently.
+				if (!kinds.some((k) => CAN_DEGRADE_KINDS.has(k))) {
+					assert.ok(!result.includes('[Unrenderable Error:'), `iteration ${i} unexpectedly degraded: ${result}`);
+				}
+			}
+		});
+
+		it('inspectForLog stays bounded on a 5000-key object, matching the sanitizer’s own breadth cap', () => {
+			const huge = {};
+			for (let i = 0; i < 5000; i++) huge[`k${i}`] = i;
+			const result = withDeadline(() => inspectRender({ huge }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS);
+			assert.ok(result.includes('sanitize budget'));
+			assertNoUnexpectedUnrenderable(result, `degraded to: ${result}`);
+		});
+
+		it('inspectForLog never throws or hangs on a cyclic, null-prototype, Symbol-keyed object that also holds a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const cyclic = Object.create(null);
+			cyclic.self = cyclic;
+			cyclic.revoked = proxy;
+			cyclic[Symbol('tag')] = 'mixed-hostile';
+			let result;
+			assert.doesNotThrow(() => {
+				result = withDeadline(() => inspectRender({ cyclic }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS);
+			});
+			assertNoUnexpectedUnrenderable(result, `degraded to: ${result}`);
+		});
 	});
 
 	describe('Test isErrorLike function (harper#1982)', () => {
@@ -2377,11 +3358,19 @@ describe('Test harper_logger module', () => {
 	describe('Test applyLogSettings function (harper#2191)', () => {
 		const { _applyLogSettingsForTests, getLogFilePath } = harperLoggerModule;
 
-		it('does not throw on a component key declared with no body', () => {
+		it('does not throw on a component key declared with no body or scalar logging', () => {
 			// `myComponent:` with nothing under it parses to null, and this runs from the root
 			// config's async `change` listener, where the TypeError escapes as an unhandled
 			// rejection rather than as a listener fault the watcher contains.
-			assert.doesNotThrow(() => _applyLogSettingsForTests({ noBody: null }));
+			assert.doesNotThrow(() =>
+				_applyLogSettingsForTests({
+					logging: 'info',
+					noBody: null,
+					scalarLogging: { logging: 'debug' },
+					boolLogging: { logging: true },
+				})
+			);
+			expect(harperLoggerModule.forComponent('scalarLogging').conditional.debug).to.be.a('function');
 		});
 
 		it('leaves the established settings alone when the barrier settles carrying no config', () => {
@@ -2391,6 +3380,75 @@ describe('Test harper_logger module', () => {
 			const established = getLogFilePath();
 			_applyLogSettingsForTests(undefined);
 			assert.equal(getLogFilePath(), established, 'a config-less settle must not reconfigure logging');
+		});
+
+		describe('component loggers the config does not name', () => {
+			const { forComponent, logsAtLevel } = harperLoggerModule;
+
+			afterEach(() => {
+				_applyLogSettingsForTests({ logging: { level: 'info' } });
+			});
+
+			it('rebinds unnamed component and external loggers to logging.level', () => {
+				_applyLogSettingsForTests({ logging: { level: 'debug' } });
+				const custom = forComponent('applyLogSettingsCustom');
+				const external = forComponent('applyLogSettingsExternal', true);
+				assert.equal(custom.level, 2);
+				assert.equal(external.level, 2);
+
+				_applyLogSettingsForTests({ logging: { level: 'warn' } });
+
+				assert.equal(custom.level, 4);
+				assert.equal(external.level, 4);
+				assert.equal(custom.conditional.info, undefined);
+				assert.equal(external.conditional.info, undefined);
+				assert.equal(forComponent('external').level, 4);
+			});
+
+			it('reverts external loggers to the main level once logging.external is removed', () => {
+				const external = forComponent('applyLogSettingsExternal', true);
+				_applyLogSettingsForTests({ logging: { level: 'error', external: { level: 'warn' } } });
+				assert.equal(external.level, 4);
+				assert.equal(forComponent('external').level, 4);
+
+				_applyLogSettingsForTests({ logging: { level: 'error' } });
+
+				assert.equal(external.level, 5);
+				assert.equal(forComponent('external').level, 5);
+			});
+
+			it('applies trace to a component that is not a config key', () => {
+				const custom = forComponent('applyLogSettingsCustom');
+				_applyLogSettingsForTests({ logging: { level: 'trace' } });
+				assert.equal(custom.level, 1);
+				assert.equal(typeof custom.conditional.trace, 'function');
+			});
+
+			it('keeps a component with its own logging block on that level', () => {
+				const named = forComponent('applyLogSettingsNamed');
+				_applyLogSettingsForTests({
+					logging: { level: 'warn' },
+					applyLogSettingsNamed: { logging: { level: 'trace' } },
+				});
+				assert.equal(named.level, 1);
+			});
+
+			it('registers and levels a config-named component that has no logger yet', () => {
+				_applyLogSettingsForTests({
+					logging: { level: 'warn' },
+					applyLogSettingsFresh: { logging: { level: 'trace' } },
+				});
+				assert.equal(forComponent('applyLogSettingsFresh').level, 1);
+			});
+
+			it('keeps the exported logLevel in sync', () => {
+				_applyLogSettingsForTests({ logging: { level: 'error' } });
+				assert.equal(logsAtLevel('error'), true);
+				assert.equal(logsAtLevel('warn'), false);
+				assert.equal(harperLoggerModule.logLevel, 'error');
+				_applyLogSettingsForTests({ logging: { level: 'verbose' } });
+				assert.equal(harperLoggerModule.logLevel, 'error');
+			});
 		});
 	});
 });

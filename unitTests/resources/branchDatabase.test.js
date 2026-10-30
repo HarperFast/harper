@@ -3,12 +3,13 @@ const assert = require('assert');
 const { existsSync } = require('node:fs');
 const { mkdir, rename, rm, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
-const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
+const { getOrCreateBranch, removeBranches, closeBranchAt } = require('#src/resources/branchDatabase');
+const { getAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { replayLogs } = require('#src/resources/replayLogs');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const { writeFileSync: _writeFileSync, mkdirSync: _mkdirSync } = require('node:fs');
 const { join: _join } = require('node:path');
@@ -56,6 +57,20 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		const expected = resolveBranchPath('lifebase', 'appA');
 		assert.ok(existsSync(expected), `expected the branch at ${expected}`);
 		assert.ok(expected.includes(BRANCH_ROOT_DIR), 'branches belong under the reserved root');
+	});
+
+	it('gives a new branch a generation of its own, and keeps it when the branch is adopted again', async function () {
+		const branch = await getOrCreateBranch('lifebase', 'appGeneration');
+		const forked = getDatabaseGeneration(branch.tables.LifecycleSource.auditStore);
+		assert.notStrictEqual(forked.id, getDatabaseGeneration(Source.auditStore).id);
+		assert.ok(forked.epoch > 0, 'a branch is a copy, not genesis');
+		assert.ok(
+			getAuditFloor(branch.tables.LifecycleSource.auditStore) >= forked.epoch,
+			'the checkpoint carried no log below the fork'
+		);
+		await closeBranchAt(resolveBranchPath('lifebase', 'appGeneration'));
+		const adopted = await getOrCreateBranch('lifebase', 'appGeneration');
+		assert.deepStrictEqual(getDatabaseGeneration(adopted.tables.LifecycleSource.auditStore), forked);
 	});
 
 	it('gives concurrent callers the same branch rather than racing two checkpoints', async function () {
@@ -770,9 +785,9 @@ describeUnlessLmdb('declaring a table from a branched application (harper#2264)'
 
 	it('reloads the branch on a schema-change signal that names it, where the branch is open', async function () {
 		const { branch, declare } = await branchedFactory();
-		const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
-		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
-		const { SchemaEventMsg } = require('#js/server/threads/itc');
+		const { schemaHandler } = require('#src/server/itc/serverHandlers');
+		const ITCEventObject = require('#src/server/itc/utility/ITCEventObject.js');
+		const { SchemaEventMsg } = require('#src/server/threads/itc');
 		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 		// the handler has no way to remove a listener; this one only records into a local array
 		const signalled = [];
@@ -922,6 +937,46 @@ describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)',
 		assert.strictEqual(scopedBindings(applicationScope).databases[BASE].GqlDeclared, Declared);
 		await Declared.put({ id: 'g', note: 'through the branch' });
 		assert.strictEqual((await Declared.get('g'))?.note, 'through the branch');
+	});
+
+	it('refuses branch residency before installing a map in the live database', async function () {
+		this.timeout(30000);
+		const applicationScope = await branchedApplicationScope();
+		const env = require('#src/utility/environment/environmentManager');
+		const { readResidencyMap } = require('#src/resources/residencyMaps');
+		const oldList = env.get('replication_shards'),
+			oldShard = env.get('replication_shard');
+		env.setProperty('replication_shards', [0]);
+		env.setProperty('replication_shard', 0);
+		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.branched-residency-'));
+		writeFileSync(
+			join(directory, 'schema.graphql'),
+			`type BranchSlots @table(database: "${BASE}") @sharded(slots: 2) { id: ID @primaryKey }`
+		);
+		const configFilePath = join(directory, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'schema.graphql' } }));
+		openScope = new Scope(basename(directory), 'graphqlSchema', directory, configFilePath, applicationScope);
+		await openScope.ready;
+		try {
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			await assert.rejects(handleApplication(openScope), /sharding.*branches/);
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			assert.strictEqual(applicationScope.branches.get(BASE).tables.BranchSlots, undefined);
+			const { scopedTableFactory } = require('#src/resources/databases');
+			assert.throws(
+				() =>
+					scopedTableFactory(applicationScope.branches)({
+						database: BASE,
+						table: 'BranchSlots',
+						residency: { slots: 2 },
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				/sharding.*branches/
+			);
+		} finally {
+			env.setProperty('replication_shards', oldList);
+			env.setProperty('replication_shard', oldShard);
+		}
 	});
 
 	it('lands scope.ensureTable in the branch', async function () {
@@ -1877,7 +1932,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
 		await branch.tables.Cycle.put({ id: 'held', kept: true });
-		branch.close();
+		await branch.close();
 		// A holder this thread's cache knows nothing about, standing in for another thread's handle.
 		const foreign = openBranchDatabase(branchPath, 'cyclebase', STORE);
 		try {
@@ -1888,7 +1943,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 				'and so are its blob roots'
 			);
 		} finally {
-			foreign.close();
+			await foreign.close();
 		}
 		const reopened = await getOrCreateBranch('cyclebase', 'cycleApp');
 		assert.ok(await reopened.tables.Cycle.get('held'), 'the refused branch is still fully usable');
@@ -1931,7 +1986,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		// Standing in for a crash part-way through: an entry the final delete cannot unlink. Removal must
 		// already have moved the directory to its tombstone by then -- deleting in place would leave a
 		// half-gone branch that reads as damaged, with no record of what was being removed.
@@ -2016,7 +2071,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
 		assert.strictEqual(applicationHasBranchStorage('cycleApp'), true);
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, `${branchPath}\`removing\``);
 		assert.strictEqual(applicationHasBranchStorage('cycleApp'), true, 'a tombstone still owes storage');
 		await removeBranchesForApplication('cycleApp');
@@ -2030,7 +2085,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, removing);
 		// The final delete removed the marker and then died, leaving a marker-less tombstone. A same-named
 		// directory on a configured volume, from a restore say, is not this branch's to delete.
@@ -2052,7 +2107,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		// A crash after the tombstone rename and before the blob roots went.
 		renameSync(branchPath, removing);
 		assert.ok(
@@ -2076,7 +2131,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, removing);
 		// The blob roots the tombstone points at are still this branch's, so a database under the same
 		// name would mint its own file ids onto them.
@@ -2096,7 +2151,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, removing);
 		// A database directory under the identity's name (created outside this process's guard, say by a
 		// restore) owns the blob root the tombstone still points at.
@@ -2148,7 +2203,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const { dirname } = require('node:path');
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		const appDirectory = dirname(branchPath);
 		chmodSync(appDirectory, 0o000);
 		try {
@@ -2158,6 +2213,61 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		}
 		assert.ok(exists(branchPath), 'nothing was removed');
 		await removeBranchesForApplication('cycleApp');
+	});
+
+	it('records an owed removal beside the branches, and only a removal that completes clears it (harper#3463)', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const { chmodSync, writeFileSync } = require('node:fs');
+		const { dirname, join } = require('node:path');
+		const {
+			recordPendingBranchRemoval,
+			applicationsWithPendingBranchRemoval,
+		} = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const marker = join(dirname(branchPath), '`removal-pending`');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.close();
+
+		recordPendingBranchRemoval('cycleApp');
+		assert.ok(exists(marker), 'the debt is on disk beside the branch');
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+		const hold = join(branchPath, 'hold');
+		mkdirSync(hold);
+		writeFileSync(join(hold, 'keep'), '');
+		chmodSync(hold, 0o555);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /Could not remove branch storage/);
+		} finally {
+			chmodSync(join(`${branchPath}\`removing\``, 'hold'), 0o755);
+		}
+		assert.ok(exists(marker), 'a removal that failed keeps it');
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(
+			exists(dirname(branchPath)),
+			false,
+			'a removal that completed takes it, and the empty directory'
+		);
+		assert.ok(!applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+	});
+
+	it('forgets an owed removal without touching the branches it names (harper#3463)', async function () {
+		this.timeout(30000);
+		const { dirname, join } = require('node:path');
+		const { recordPendingBranchRemoval, clearPendingBranchRemoval } = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.tables.Cycle.put({ id: 'kept' });
+		await closeBranchAt(branchPath);
+		recordPendingBranchRemoval('cycleApp');
+
+		await clearPendingBranchRemoval('cycleApp');
+
+		assert.strictEqual(exists(join(dirname(branchPath), '`removal-pending`')), false);
+		const reopened = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.ok(await reopened.tables.Cycle.get('kept'), 'the branch is untouched');
 	});
 });
 

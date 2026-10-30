@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const hdbTerms = require('#src/utility/hdbTerms');
 const hdbLogger = require('#src/utility/logging/harper_logger');
-const { parseMaxSize } = require('#src/utility/logging/logRotation');
+const { parseMaxSize, rotateLogFileSync } = require('#src/utility/logging/logRotation');
 const { requestGenerationClose } = require('#src/utility/logging/logGenerationCoordinator');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
@@ -70,12 +70,14 @@ describe('Test log rotation on the write path (#1877)', () => {
 	}
 
 	function waitForContent(logPath, rotatedDir, ...expected) {
+		let missing = expected;
 		return waitFor(
 			() => {
 				const all = readGenerations(logPath, rotatedDir);
-				return expected.every((marker) => all.includes(marker)) ? all : false;
+				missing = expected.filter((marker) => !all.includes(marker));
+				return missing.length === 0 ? all : false;
 			},
-			{ timeout: 10000, message: `the log never contained ${expected.join(', ')}` }
+			{ timeout: 10000, message: () => `the log never contained ${missing.join(', ')}` }
 		);
 	}
 
@@ -302,12 +304,14 @@ describe('Test log rotation on the write path (#1877)', () => {
 			rotation: { enabled: true, interval: '1D', auditInterval: NEVER_TICKS },
 		});
 		logger.error('opens the descriptor');
-		const held = fs.statSync(logPath);
 
-		// Another thread rotates: the file moves out from under this descriptor.
-		const archivePath = path.join(dir, 'moved.log');
-		fs.renameSync(logPath, archivePath);
-		await requestGenerationClose({ logPath, generation: 'g', ino: held.ino, dev: held.dev });
+		// Another thread rotates: the file moves out from under this descriptor. The announcement carries
+		// the identity that rotation read, so it has to match the one this sink read when it opened.
+		const rotatedDir = path.join(dir, 'rotated');
+		fs.mkdirpSync(rotatedDir);
+		const generation = rotateLogFileSync(logPath, rotatedDir, () => {});
+		const { archivePath } = generation;
+		await requestGenerationClose(generation);
 
 		const marker = 'after the announced rotation';
 		logger.error(marker);
@@ -328,11 +332,14 @@ describe('Test log rotation on the write path (#1877)', () => {
 		logger.error('one line so the rotated directory exists');
 		fs.removeSync(rotatedDir);
 		for (let i = 0; i < 400; i++) logger.error(`removed target line ${i} ${'z'.repeat(60)}`);
+		await waitForContent(logPath, rotatedDir, 'removed target line 0 ', 'removed target line 399 ');
+		// The in-file notice rides the next append after the failed rotation. When the sink buffered the
+		// burst, that rotation ran in the flush that wrote line 399, so only a later append can carry it.
+		logger.error('first append after the failed rotation');
 		const contents = await waitForContent(
 			logPath,
 			rotatedDir,
-			'removed target line 0 ',
-			'removed target line 399 ',
+			'first append after the failed rotation',
 			'Harper log rotation problem'
 		);
 		assert.match(contents, /removed target line 0 /);

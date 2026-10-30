@@ -1,7 +1,8 @@
 import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '@harperfast/rocksdb-js';
+import { isReservedForLocalAppend } from './originClosedFloor.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
-import { getIdOfRemoteNode } from './nodeIdMapping.ts';
-import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
+import { exportIdMapping, getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
+import { Decoder, readAuditEntry, ENTRY_DATAVIEW, type AuditRecord, createAuditEntry } from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
 import {
 	createCorruptFrameReporter,
@@ -11,7 +12,7 @@ import {
 } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
-import { asBinary } from 'lmdb';
+import { asBinary } from './asBinary.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
@@ -85,7 +86,17 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// do not record transaction entries on retry
 			return;
 		}
-		const log = this.logById(options.nodeId) ?? this.logById(options.viaNodeId) ?? this.log;
+		const log =
+			options.nodeId === undefined
+				? this.log
+				: options.nodeId === 0
+					? (this.logById(0) ?? this.log)
+					: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
+		// An unreserved writer could append below an advertised floor, which nothing can repair.
+		if (log === this.log && !isReservedForLocalAppend(options.transaction))
+			throw new Error(
+				`Transaction ${options.transaction.id} appends to the local transaction log without an origin-floor reservation`
+			);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -162,8 +173,31 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 		}
 		log.addEntry(entryBinary, options.transaction.id);
+		options.transaction.hasStagedLog = true;
 	}
 
+	isLocalOrigin(nodeId: number | undefined, relayed = false): boolean {
+		if (nodeId === undefined || nodeId === 0) return true;
+		if (this.logById(nodeId)) return false;
+		if (getNodeNameForId(this, nodeId, true) !== undefined) return false;
+		return !relayed;
+	}
+
+	/** A log holds one origin, which keeps `txnLogKey` unique within it; see resources/DESIGN.md. */
+	logForOrigin(nodeId: number, relayed: boolean) {
+		const log = this.logById(nodeId);
+		if (log) return log;
+		let nodeName = getNodeNameForId(this, nodeId, true);
+		// the cached name map can miss an id another worker minted moments ago
+		if (nodeName === undefined && relayed)
+			nodeName = Object.entries(exportIdMapping(this) ?? {}).find(([, id]) => id === nodeId)?.[0];
+		if (nodeName === undefined) {
+			if (relayed) throw new Error(`No node name is mapped to origin id ${nodeId}`);
+			return this.log;
+		}
+		this.ensureLogExists(nodeName);
+		return this.logById(nodeId);
+	}
 	logById(nodeId: number) {
 		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}
@@ -185,11 +219,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 				throw new Error('recordId must be provided');
 			}
 			// this a request for a transaction log entry by a timestamp
+			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
 			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.recordId === recordId && entry.tableId === tableId) {
+				if (entry.txnLogKey !== key) return; // no longer in this transaction
+				if (entry.recordId === recordId && entry.tableId === tableId && (!sharedLog || entry.nodeId === nodeId)) {
 					return entry;
 				}
-				if (entry.txnLogKey !== key) return; // no longer in this transaction
 			}
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead
@@ -337,19 +372,17 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterator.lastEndTxn = undefined;
 			return iterator;
 		};
-		if (options.log !== undefined) {
-			let log = typeof options.log === 'number' ? this.nodeLogs?.[options.log] : this.logByName.get(options.log);
+		let log: TransactionLog | undefined;
+		if (typeof options.log === 'number') {
+			log = this.logById(options.log) ?? (this.isLocalOrigin(options.log) ? this.log : undefined);
+		} else if (options.log !== undefined) {
+			log = this.logByName.get(options.log);
 			if (!log) {
 				this.loadLogs();
-				if (typeof options.log === 'number') {
-					log = this.nodeLogs?.[options.log];
-				} else {
-					log = this.logByName.get(options.log);
-				}
-				if (!log) {
-					log = this.rootStore.useLog(options.log);
-				}
+				log = this.logByName.get(options.log) ?? this.rootStore.useLog(options.log);
 			}
+		}
+		if (log) {
 			const resumeAfterExactStart =
 				options.resumeAfterExactStart === true && options.exactStart === true && options.start !== undefined;
 			const queryOptions = resumeAfterExactStart ? { ...options, exclusiveStart: false } : options;
@@ -378,17 +411,24 @@ export class RocksTransactionLogStore extends EventEmitter {
 							},
 						})
 					: () => queryIterator;
+		} else if (typeof options.log === 'number') {
+			// A node id is a key into the id→log map, never a log name (useLog would create one): a named
+			// node with no log yet has no entries here.
+			iterable.iterate = () => [][Symbol.iterator]();
 		} else {
 			const onlyKeys = options.onlyKeys;
 			let logs: TransactionLog[] = [];
 			// holds the queue of next entries from each iterator
 			let nextEntries: any[];
 			let latestUpdates: number;
+			let excludeLogsChanged = false;
+			let midTransaction = false;
 			const iterators: TrackedIterator[] = [];
 			const expectedExactStarts: Array<number | undefined> = [];
 			const observedExactStarts = new Set<string>();
-			const updateIterators = () => {
-				if (latestUpdates !== this.updates) {
+			const syncLogs = () => {
+				if (latestUpdates !== this.updates || excludeLogsChanged) {
+					excludeLogsChanged = false;
 					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
 						(log) => !options.excludeLogs?.includes(log.name)
 					);
@@ -425,21 +465,28 @@ export class RocksTransactionLogStore extends EventEmitter {
 							if (!latestLogs.includes(log)) {
 								logs.splice(i, 1);
 								iterators.splice(i, 1);
+								nextEntries?.splice(i, 1);
+								observedExactStarts.delete(log.name);
 								expectedExactStarts.splice(i--, 1);
 							}
 						}
 					}
 				}
-				nextEntries = iterators.map((iterator, i) => {
-					const result = safeNext(iterator, logs[i]);
-					const expected = expectedExactStarts[i];
-					if (expected !== undefined && !observedExactStarts.has(logs[i].name)) {
-						observedExactStarts.add(logs[i].name);
-						if (options.resumeAfterExactStart) return resumePastExactStart(result, iterator, logs[i], expected);
-						if (result.done || result.value.timestamp !== expected) exactStartFailures.set(logs[i].name, 'missing');
-					}
-					return result;
-				});
+			};
+			const pull = (i: number) => {
+				const iterator = iterators[i];
+				const result = safeNext(iterator, logs[i]);
+				const expected = expectedExactStarts[i];
+				if (expected !== undefined && !observedExactStarts.has(logs[i].name)) {
+					observedExactStarts.add(logs[i].name);
+					if (options.resumeAfterExactStart) return resumePastExactStart(result, iterator, logs[i], expected);
+					if (result.done || result.value.timestamp !== expected) exactStartFailures.set(logs[i].name, 'missing');
+				}
+				return result;
+			};
+			const updateIterators = () => {
+				syncLogs();
+				nextEntries = iterators.map((_iterator, i) => pull(i));
 			};
 			updateIterators();
 
@@ -465,6 +512,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 							// we re-retrieve all the next entries (in case we are resuming after
 							// being done)
 							updateIterators();
+						} else if (excludeLogsChanged && !midTransaction) {
+							// a re-admitted log joins at the next transaction boundary, without re-pulling the entries
+							// already queued, so a log that never drains cannot starve it
+							syncLogs();
+							for (let i = nextEntries.length; i < logs.length; i++) nextEntries.push(pull(i));
 						}
 						let earliest: TransactionEntry;
 						let earliestIndex = -1;
@@ -489,6 +541,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								iterators[earliestIndex].lastEndTxn = earliest.endTxn;
 							}
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
+							midTransaction = !earliest.endTxn;
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
 								done: false,
@@ -501,9 +554,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 				},
 				addLog(logName: string) {
 					let index = options.excludeLogs?.indexOf(logName);
-					if (index >= 0) {
-						options.excludeLogs.splice(index, 1);
-					}
+					if (index >= 0) options.excludeLogs.splice(index, 1);
+					// even when the caller already removed it from excludeLogs: the store's log list did not change
+					excludeLogsChanged = true;
 				},
 				removeLog: (logName: string) => {
 					const log = this.logByName.get(logName);
@@ -515,6 +568,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						iterators.splice(index, 1);
 						expectedExactStarts.splice(index, 1);
 						nextEntries.splice(index, 1);
+						observedExactStarts.delete(logName);
 						options.excludeLogs.push(logName);
 					}
 				},

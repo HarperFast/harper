@@ -30,7 +30,7 @@ import {
 	isThreadRunning,
 	onMessageByType,
 	onThreadExit,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 
 const DEPLOY_LIFECYCLE_MSG = 'harper:deploy:lifecycle';
@@ -41,6 +41,11 @@ export type DeployLifecycleEvent = {
 	phase: DeployPhase;
 	deploymentId?: string;
 	ownerThreadId?: number;
+	/**
+	 * Opened over a tree already complete: a thread still loading its components ignores it, so no load waits on it,
+	 * and a thread that has loaded them holds its watchers through it as through any deploy.
+	 */
+	watchersOnly?: boolean;
 };
 
 type DeployLifecycleEventsMap = {
@@ -54,9 +59,43 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 	#deadOwners = new Set<number>();
 	#legacyDeployments = new Map<string, string[]>();
 	#legacySequence = 0;
+	#releasedFromLoads = new Set<string>();
+	#componentsLoaded = false;
 
 	isDeployInFlight(componentName: string): boolean {
 		return (this.#byComponent.get(componentName)?.size ?? 0) > 0;
+	}
+
+	/**
+	 * Whether a Scope must wait for, and pause its watchers through, a deploy in flight. `deploy:start` and
+	 * `deploy:end` bracket exactly the periods in which this is true, so a Scope's state stays consistent.
+	 */
+	loadsAwaitDeploy(componentName: string): boolean {
+		return this.#unreleasedCount(componentName) > 0;
+	}
+
+	/**
+	 * Let Scopes load the installed tree while this deploy is still in flight, as a worker that never saw its
+	 * broadcast already does. Startup does this for a preparation it stopped waiting for; the live tree only
+	 * changes at that deploy's final swap.
+	 */
+	releaseLoads(componentName: string, deploymentId: string): void {
+		if (!this.#byComponent.get(componentName)?.has(deploymentId) || this.#releasedFromLoads.has(deploymentId)) return;
+		this.#releasedFromLoads.add(deploymentId);
+		if (this.#unreleasedCount(componentName) === 0) this.#emitSafely('deploy:end', componentName);
+	}
+
+	/** This thread has loaded its components, so a deploy opened with `watchersOnly` holds its watchers from now on. */
+	_componentsLoaded(): void {
+		this.#componentsLoaded = true;
+	}
+
+	#unreleasedCount(componentName: string): number {
+		let count = 0;
+		for (const deploymentId of this.#byComponent.get(componentName) ?? []) {
+			if (!this.#releasedFromLoads.has(deploymentId)) count++;
+		}
+		return count;
 	}
 
 	// Process a deploy lifecycle event in-process. Called both from the
@@ -67,6 +106,8 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		let deploymentId = event.deploymentId;
 		if (event.phase === 'start') {
 			if (this.#deadOwners.has(ownerThreadId)) return;
+			// What it holds is not this thread's yet, and the rollout it belongs to may be waiting on this load.
+			if (event.watchersOnly && !this.#componentsLoaded) return;
 			if (!deploymentId) {
 				deploymentId = `legacy:${threadId}:${++this.#legacySequence}`;
 				const legacy = this.#legacyDeployments.get(event.name) ?? [];
@@ -78,7 +119,7 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 			this.#deployments.set(deploymentId, { name: event.name, ownerThreadId });
 			this.#byComponent.set(event.name, active);
 			active.add(deploymentId);
-			if (active.size === 1) this.#emitSafely('deploy:start', event.name);
+			if (this.#unreleasedCount(event.name) === 1) this.#emitSafely('deploy:start', event.name);
 			return;
 		}
 		if (!deploymentId) deploymentId = this.#legacyDeployments.get(event.name)?.pop();
@@ -106,13 +147,12 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		const deployment = this.#deployments.get(deploymentId);
 		if (!deployment) return;
 		this.#deployments.delete(deploymentId);
+		const wasReleased = this.#releasedFromLoads.delete(deploymentId);
 		const active = this.#byComponent.get(deployment.name);
 		if (!active) return;
 		active.delete(deploymentId);
-		if (active.size === 0) {
-			this.#byComponent.delete(deployment.name);
-			this.#emitSafely('deploy:end', deployment.name);
-		}
+		if (active.size === 0) this.#byComponent.delete(deployment.name);
+		if (!wasReleased && this.#unreleasedCount(deployment.name) === 0) this.#emitSafely('deploy:end', deployment.name);
 	}
 
 	#emitSafely(event: 'deploy:start' | 'deploy:end', componentName: string): void {
@@ -132,6 +172,8 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		this.#deadOwners.clear();
 		this.#legacyDeployments.clear();
 		this.#legacySequence = 0;
+		this.#releasedFromLoads.clear();
+		this.#componentsLoaded = false;
 	}
 }
 
@@ -180,12 +222,17 @@ onThreadExit((deadThreadId: number) => {
  *
  * Ref-counted via DeployLifecycle so overlapping deploys of the same
  * component compose correctly (each call must be paired with exactly one
- * broadcastDeployEnd).
+ * broadcastDeployEnd). `watchersOnly` is for a tree already complete (see
+ * DeployLifecycleEvent).
  */
-export async function broadcastDeployStart(componentName: string): Promise<string> {
+export async function broadcastDeployStart(
+	componentName: string,
+	{ watchersOnly = false }: { watchersOnly?: boolean } = {}
+): Promise<string> {
 	ensureReceiver();
 	const deploymentId = randomUUID();
 	const event: DeployLifecycleEvent = { name: componentName, phase: 'start', deploymentId, ownerThreadId: threadId };
+	if (watchersOnly) event.watchersOnly = true;
 	deployLifecycle._handle(event); // local thread first
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {

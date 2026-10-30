@@ -16,7 +16,6 @@ const { addOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations
 const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
-const { setUsersWithRolesCache } = require('#src/security/user');
 const terms = require('#src/utility/hdbTerms');
 
 const TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
@@ -34,13 +33,16 @@ let signingJwk;
 
 function installMockTable(name, primaryKey) {
 	const rows = new Map();
+	const expiries = new Map();
 	const mock = {
 		rows,
+		expiries,
 		async get(id) {
 			return rows.get(id);
 		},
-		async put(row) {
+		async put(row, context) {
 			rows.set(row[primaryKey], row);
+			if (context?.expiresAt !== undefined) expiries.set(row[primaryKey], context.expiresAt);
 		},
 		async delete(id) {
 			return rows.delete(id);
@@ -58,13 +60,11 @@ function installMockTable(name, primaryKey) {
 }
 
 /**
- * The replay table is reached through an unconditional `table()` call, not a lookup — it has to be,
- * because the systemSchema bootstrap declares only the primary key and `table()` is what layers the
- * expiresAt TTL on top. So intercept the factory rather than seeding `databases.system`, which that
- * call would otherwise sail straight past.
+ * The replay table is reached through its `table()` declaration (tokenUseTable.ts), not a lookup, so
+ * intercept the factory rather than seeding `databases.system`, which that call would sail straight past.
  */
 function installMockTableFactory(name, mock) {
-	const databasesModule = require('#src/resources/databases');
+	const databasesModule = require('#js/resources/databases');
 	const realTable = databasesModule.table;
 	databasesModule.table = (definition) => (definition?.table === name ? mock : realTable(definition));
 	return () => (databasesModule.table = realTable);
@@ -79,7 +79,7 @@ function seedUsers() {
 	});
 	users.set('admin', { username: 'admin', active: true, role: { role: 'su', permission: { super_user: true } } });
 	users.set('retired', { username: 'retired', active: false, role: { role: 'deployer', permission: {} } });
-	return setUsersWithRolesCache(users);
+	return testUtils.seedUsers(users);
 }
 
 const asAdmin = (body) => ({
@@ -147,9 +147,10 @@ describe('exchangeOidcToken', () => {
 		restoreTableFactory();
 	});
 
-	after(() => {
+	after(async () => {
 		removeJwtKeys();
 		clearJWTRSAKeysCache();
+		await testUtils.seedUsers();
 	});
 
 	function identityToken(overrides = {}) {
@@ -211,6 +212,29 @@ describe('exchangeOidcToken', () => {
 
 		const user = await validateOperationToken(result.operation_token);
 		assert.strictEqual(user.username, 'ci-deploy');
+	});
+
+	it("signs the policy and the run's verified claims into the token, for a deploy to record as attested (harper#3061)", async () => {
+		await addPolicy();
+		const result = await exchangeOidcToken({
+			operation: 'exchange_oidc_token',
+			token: identityToken({ sha: 'a'.repeat(40), run_attempt: '2' }),
+		});
+		const expected = {
+			via: 'oidc',
+			policy: 'my-app-prod',
+			repository: 'HarperFast/my-app',
+			sha: 'a'.repeat(40),
+			ref: 'refs/heads/main',
+			workflow_ref: WORKFLOW_REF,
+			run_id: '99',
+			run_attempt: '2',
+			actor: 'octocat',
+			environment: 'production',
+		};
+		assert.deepStrictEqual(decodeJWT(result.operation_token).deploy_source, expected);
+		const user = await validateOperationToken(result.operation_token);
+		assert.deepStrictEqual(user.deploySource, expected);
 	});
 
 	// A stored row that add_oidc_trust would reject (repository pinned, but no workflow/ref gate) — as
@@ -347,10 +371,11 @@ describe('exchangeOidcToken', () => {
 		const token = identityToken();
 		await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
 
-		const [record] = [...useTable.mock.rows.values()];
+		const [[fingerprint, record]] = [...useTable.mock.rows.entries()];
 		assert.strictEqual(record.policy_id, 'my-app-prod');
-		const tokenExpiryMs = decodeJWT(token).exp * 1000;
-		assert.ok(record.expiresAt > tokenExpiryMs, 'record must outlive the token it guards');
+		assert.ok(!('expiresAt' in record), 'the expiry is record metadata, not a field');
+		// the token's expiry plus the padding that outlasts the verifier's clock tolerance
+		assert.strictEqual(useTable.mock.expiries.get(fingerprint), decodeJWT(token).exp * 1000 + 120_000);
 	});
 
 	it('rejects a token minted for a different audience', async () => {
@@ -405,7 +430,7 @@ describe('exchangeOidcToken', () => {
 
 	it('rejects a policy naming a user that no longer exists, without spending the token', async () => {
 		await addPolicy();
-		await setUsersWithRolesCache(new Map());
+		await testUtils.seedUsers();
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
 		assert.strictEqual(useTable.mock.rows.size, 0, 'a token the runner cannot re-mint must not be burned');
@@ -417,7 +442,7 @@ describe('exchangeOidcToken', () => {
 		await addPolicy();
 		const users = new Map();
 		users.set('ci-deploy', { username: 'ci-deploy', active: false, role: { role: 'deployer', permission: {} } });
-		await setUsersWithRolesCache(users);
+		await testUtils.seedUsers(users);
 
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
@@ -584,6 +609,56 @@ describe('exchangeOidcToken', () => {
 
 		const payload = JSON.parse(Buffer.from(result.operation_token.split('.')[1], 'base64url').toString('utf8'));
 		assert.strictEqual(payload.operations, undefined, 'an unscoped token must look exactly as it did before');
+	});
+
+	it("mints a preview cleanup token that drops the application's previews and deploys nothing (harper#3042)", async () => {
+		const { desiredPreviewIdentity } = require('#src/components/previewOperations');
+		const op_auth = require('#src/utility/operation_authorization');
+		const operations = require('#js/components/operations');
+		const { desired } = desiredPreviewIdentity({
+			app: 'web',
+			repository: 'HarperFast/my-app',
+			repository_id: '67890',
+			branch: 'main',
+			audience: AUDIENCE,
+		});
+		await testUtils.seedUsers(
+			new Map([
+				[
+					'web-ci-preview',
+					{
+						username: 'web-ci-preview',
+						active: true,
+						role: { role: 'web-ci-preview', permission: desired.role.permission },
+					},
+				],
+			])
+		);
+		for (const policy of desired.policies) await addOidcTrust(asAdmin(policy));
+		const run = (environment) =>
+			identityToken({
+				workflow_ref: 'HarperFast/my-app/.github/workflows/preview.yaml@refs/heads/main',
+				event_name: 'pull_request_target',
+				environment,
+			});
+		const principal = async (environment) => {
+			const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: run(environment) });
+			return { policy: result.policy, user: await validateOperationToken(result.operation_token) };
+		};
+		const allowed = (user, operation, handler, project) =>
+			op_auth.verifyPerms({ operation, project, hdb_user: user }, handler.name) === null;
+
+		const cleanup = await principal('preview-cleanup');
+		assert.strictEqual(cleanup.policy, 'github-actions-web-preview-cleanup');
+		assert.ok(allowed(cleanup.user, 'drop_component', operations.dropComponent, 'web-pr-3'));
+		assert.ok(!allowed(cleanup.user, 'deploy_component', operations.deployComponent, 'web-pr-3'));
+		assert.ok(!allowed(cleanup.user, 'drop_component', operations.dropComponent, 'web'));
+
+		const deploy = await principal('preview');
+		assert.strictEqual(deploy.policy, 'github-actions-web-preview');
+		assert.ok(allowed(deploy.user, 'deploy_component', operations.deployComponent, 'web-pr-3'));
+		assert.ok(!allowed(deploy.user, 'deploy_component', operations.deployComponent, 'web'));
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: run('production') }));
 	});
 
 	it('rejects malformed input', async () => {

@@ -1,11 +1,11 @@
-import { Socket } from 'net';
+import type { Socket } from 'node:net';
 import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
 import type { Resources } from '../resources/Resources.ts';
 import type { McpQuotaHandler } from '../components/mcp/quota.ts';
-import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
-import { Duplex } from 'stream';
-import { Request } from './serverHelpers/Request.ts';
+import type { OperationDefinition } from './serverHelpers/serverUtilities.ts';
+import type { Duplex } from 'node:stream';
+import type { Request } from './serverHelpers/Request.ts';
 
 export type HttpListener = (request: Request, nextLayer: (request: Request) => Response) => void;
 // based on `upgrade` event in Node.js http server: https://nodejs.org/docs/latest/api/http.html#event-upgrade-1
@@ -15,6 +15,37 @@ export type UpgradeListener = (
 	head: Buffer,
 	nextLayer: (request: Request, socket: Duplex, head: Buffer) => Promise<void>
 ) => Promise<void>;
+export interface BearerValidatorIdentity {
+	/** The Harper user the token authenticates as, resolved through `server.getUser`. */
+	username: string;
+	/** Epoch seconds the token stops authenticating; required for a token whose expiry the validator verified. */
+	authExpiresAt?: number;
+	/** `false` re-runs the validator on every request instead of caching the principal by Authorization header. */
+	authCacheable?: boolean;
+}
+export interface BearerValidatorOptions {
+	/**
+	 * How long, in milliseconds, to wait for `validator(token, request, signal)` to settle. Defaults to
+	 * `5_000`, max `60_000`. The whole chain, including the `server.getUser` lookup of a claimed
+	 * username, shares one budget of the largest `timeoutMs` among active validators. Exceeding it
+	 * aborts `signal` (pass it to `fetch` and timers) and fails closed in place with 401; it cannot
+	 * interrupt synchronous work.
+	 */
+	timeoutMs?: number;
+}
+export type BearerValidatorResult = BearerValidatorIdentity | null | undefined;
+export type BearerValidator = (
+	token: string,
+	request: Request,
+	signal?: AbortSignal
+) => Promise<BearerValidatorResult> | BearerValidatorResult;
+
+export interface BearerValidatorEntry {
+	readonly validator: BearerValidator;
+	readonly timeoutMs: number;
+	active: boolean;
+}
+
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
  * incoming connections and requests.
@@ -31,6 +62,25 @@ export interface Server {
 	contentTypes: Map<string, ContentTypeHandler>;
 	getUser(username: string, password: string | null, request: Request): any;
 	authenticateUser(username: string, password: string, request: Request): any;
+	/**
+	 * Register a validator for Bearer tokens Harper did not issue. Harper's own operation and refresh
+	 * tokens are checked first; a token they reject is offered to each validator in registration
+	 * order (load order across applications is unspecified), on every port except a dedicated
+	 * operations API port. A validator:
+	 * - returns `null`/`undefined` for a token it does not recognize;
+	 * - returns `{ username, authExpiresAt?, authCacheable? }` to authenticate as that Harper user,
+	 *   resolved through `server.getUser` (any other field, `role` included, is refused);
+	 * - throws `credentialRejectionError(message, 401)` (or a `markCredentialRejection`-tagged error)
+	 *   for a token it recognizes but refuses. Any other throw, or exceeding `timeoutMs`, fails closed.
+	 *
+	 * The principal expires at `authExpiresAt` (epoch seconds, at most a year out; 300 s when omitted),
+	 * capped by the token's own JWT `exp`, so a JWT whose `exp` has passed is refused even when the
+	 * validator accepts it. Live subscriptions and MQTT wills it opens end then too. The principal is cached by the Authorization header alone, so a validator whose answer
+	 * depends on the request (audience per route or host) must return `authCacheable: false`. Returns a
+	 * disposer. Registrations survive `scope.close()` so in-flight requests drain; those made through
+	 * the `scope.server` passed to `handleApplication` are rolled back if that load fails.
+	 */
+	registerBearerValidator(validator: BearerValidator, options?: BearerValidatorOptions): () => void;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
 	registerOperation(operationDefinition: OperationDefinition): void;
 	/** Register the durable MCP quota policy (opt-in). The latest registration wins; pass `undefined` to clear. */
@@ -48,7 +98,8 @@ export interface Server {
 				replicated: boolean;
 				[key: string]: any;
 			},
-			options?: { onPeerResult?: (result: any) => void }
+			// `timeoutMs`: how long to wait for each peer's answer, in milliseconds; omitted waits for as long as the peer takes.
+			options?: { onPeerResult?: (result: any) => void; timeoutMs?: number }
 		): Promise<{ message: string; replicated?: unknown[] }>;
 		monitorNodeCAs(listener: () => void): void;
 		sendOperationToNode(node: string, operation: any, options: any): Promise<any>;
@@ -64,6 +115,8 @@ export interface ServerOptions {
 	securePort?: number;
 	mtls?: boolean;
 	usageType?: string;
+	/** Worker type that exclusively binds these ports when its dedicated pool runs (e.g. 'replication') */
+	threadType?: string;
 	/** @deprecated Use `before` or `after` for explicit ordering instead */
 	runFirst?: boolean;
 	/** Name for this middleware entry, used by `before`/`after` in other entries. Defaults to the registering component's name. */
@@ -98,24 +151,67 @@ export interface HttpOptions extends ServerOptions {
 	securityHeaders?: Record<string, string | number | boolean>;
 }
 export interface ContentTypeHandler {
+	/**
+	 * Every serializer registered here is reachable from event/message delivery (MQTT,
+	 * subscriptions), not only HTTP responses, and that path caches and reuses `serialize(data)`'s
+	 * result across every subscriber negotiating this content type — called with only `data`. A
+	 * `serialize` whose output varies by anything that call can't see would leak across
+	 * subscribers there.
+	 */
 	serialize(data: any): Buffer | string;
 	serializeStream(data: any): Buffer | string;
-	deserialize(data: any): Buffer | string;
+	deserialize(data: any): any;
 	q: number;
 }
 
+const DEFAULT_BEARER_VALIDATOR_TIMEOUT_MS = 5_000;
+const MAX_BEARER_VALIDATOR_TIMEOUT_MS = 60_000;
+const bearerValidatorEntries: BearerValidatorEntry[] = [];
+let bearerValidatorsSnapshot: readonly BearerValidatorEntry[] = Object.freeze([]);
+
+export function getBearerValidators(): readonly BearerValidatorEntry[] {
+	return bearerValidatorsSnapshot;
+}
+
+/** What Harper core's replication stand-ins throw, so a caller can tell no replication from a failure of it. */
+export const REPLICATION_NOT_IMPLEMENTED = 'REPLICATION_NOT_IMPLEMENTED';
+const replicationNotImplemented = () =>
+	Object.assign(new Error('Replication not implemented.'), { code: REPLICATION_NOT_IMPLEMENTED });
+
 export const server: Server = {
+	registerBearerValidator(validator: BearerValidator, options?: BearerValidatorOptions): () => void {
+		if (typeof validator !== 'function') {
+			throw new TypeError('Bearer validator must be a function');
+		}
+		const timeoutMs = options?.timeoutMs ?? DEFAULT_BEARER_VALIDATOR_TIMEOUT_MS;
+		if (
+			typeof timeoutMs !== 'number' ||
+			!Number.isFinite(timeoutMs) ||
+			timeoutMs <= 0 ||
+			timeoutMs > MAX_BEARER_VALIDATOR_TIMEOUT_MS
+		) {
+			throw new TypeError('Bearer validator timeoutMs must be a positive finite number <= 60000');
+		}
+		const entry: BearerValidatorEntry = { validator, timeoutMs, active: true };
+		bearerValidatorEntries.push(entry);
+		bearerValidatorsSnapshot = Object.freeze(bearerValidatorEntries.slice());
+		return () => {
+			if (!entry.active) return;
+			// security/auth.ts evicts cached principals this entry resolved once it is inactive
+			entry.active = false;
+			bearerValidatorEntries.splice(bearerValidatorEntries.indexOf(entry), 1);
+			bearerValidatorsSnapshot = Object.freeze(bearerValidatorEntries.slice());
+		};
+	},
 	replication: {
 		replicateOperation(operation, _options) {
-			return operation.replicated
-				? Promise.reject(new Error('Replication not implemented.'))
-				: Promise.resolve({ message: '' });
+			return operation.replicated ? Promise.reject(replicationNotImplemented()) : Promise.resolve({ message: '' });
 		},
 		monitorNodeCAs(_listener) {
-			throw new Error('Replication not implemented.');
+			throw replicationNotImplemented();
 		},
 		sendOperationToNode() {
-			return Promise.reject(new Error('Replication not implemented.'));
+			return Promise.reject(replicationNotImplemented());
 		},
 	},
 } as any;

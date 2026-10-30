@@ -1,4 +1,5 @@
-'use strict';
+import { loadNativePackage } from '../../utility/packageUtils.js';
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 
 /**
  * The jobs class is used to enable operations on the jobs system table.  The jobHandler function is the only
@@ -18,8 +19,7 @@ import UpdateObject from '../../dataLayer/UpdateObject.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import Insert_Object from '../../dataLayer/InsertObject.ts';
 import * as hdbUtil from '../../utility/common_utils.ts';
-import { promisify } from 'util';
-import moment from 'moment';
+import { promisify } from 'node:util';
 import * as fileLoadValidator from '../../validation/fileLoadValidator.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import bulkDeleteValidator from '../../validation/bulkDeleteValidator.ts';
@@ -59,6 +59,7 @@ export async function handleGetJobsByStartDate(jsonBody: any) {
 		let result = await getJobsInDateRange(jsonBody);
 		log.trace(`Searching for jobs from ${jsonBody.from_date} to ${jsonBody.to_date}`);
 		if (result && result.length > 0) {
+			const moment = loadNativePackage('moment') as typeof import('moment');
 			for (let currRes of result) {
 				if (currRes.start_datetime) {
 					currRes.start_datetime_converted = moment(currRes.start_datetime);
@@ -172,14 +173,7 @@ export async function addJob(jsonBody: any) {
 		['id']
 	);
 
-	let foundJob;
-	try {
-		foundJob = Array.from(await pSearchByValue(searchObj));
-	} catch (e) {
-		let message = `There was an error inserting a new job: ${e}`;
-		log.error(message);
-		return result;
-	}
+	let foundJob: any = Array.from(await pSearchByValue(searchObj));
 	//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
 	let foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
 
@@ -188,13 +182,7 @@ export async function addJob(jsonBody: any) {
 	// that we will just throw an error assuming there is bad input causing the issue.
 	if (foundValues && foundValues.length > 0) {
 		newJob.id = uuidV4();
-		try {
-			foundJob = await pSearchByValue(searchObj);
-		} catch (e) {
-			let message = `There was an error inserting a new job: ${e}`;
-			log.error(message);
-			return result;
-		}
+		foundJob = await pSearchByValue(searchObj);
 		//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
 		foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
 		if (foundValues && foundValues.length > 0) {
@@ -216,14 +204,7 @@ export async function addJob(jsonBody: any) {
 		'id',
 		[newJob]
 	);
-	let insertResult;
-	try {
-		insertResult = await pInsert(insertObject);
-	} catch (e) {
-		log.error(`There was an error inserting a job for job type: ${jsonBody.operation} -- ${e}`);
-		result.success = false;
-		return result;
-	}
+	const insertResult = await pInsert(insertObject);
 
 	if (insertResult.inserted_hashes.length === 0) {
 		result.message = `Had a problem creating a job with type ${newJob.operation} and id ${newJob.id}`;
@@ -243,6 +224,7 @@ export async function addJob(jsonBody: any) {
  * @returns {Promise<*>}
  */
 export async function getJobsInDateRange(jsonBody: any) {
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let parsedFromDate = moment(jsonBody.from_date, moment.ISO_8601);
 	let parsedToDate = moment(jsonBody.to_date, moment.ISO_8601);
 
@@ -258,7 +240,7 @@ export async function getJobsInDateRange(jsonBody: any) {
 
 	try {
 		if (!pSqlEvaluate) {
-			const hdbSql = require('../../sqlTranslator/index');
+			const hdbSql = loadRuntimeModule('sqlTranslator/index');
 			pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 		}
 		// Harper's own statement, not the caller's. A carrier is not equivalent here — see DESIGN.md.
@@ -312,7 +294,7 @@ export async function updateJob(jobObject: any) {
 	}
 
 	if (jobObject.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE || jobObject.status === hdbTerms.JOB_STATUS_ENUM.ERROR) {
-		jobObject.end_datetime = moment().valueOf();
+		jobObject.end_datetime = Date.now();
 	}
 
 	let updateObject = new (UpdateObject as any)(

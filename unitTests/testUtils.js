@@ -13,6 +13,8 @@ const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
 const { materializePerPidRoot } = require('./perPidRoot.js');
+const lifecycle = require('#src/utility/lifecycle');
+const { types } = require('node:util');
 
 let envMgrInitSyncStub;
 
@@ -63,9 +65,11 @@ function preTestPrep(testConfigObj) {
 	if (envMgrInitSyncStub) {
 		envMgrInitSyncStub.restore();
 	}
-	envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
-		env.initTestEnvironment(testConfigObj);
-	});
+	if (!types.isModuleNamespaceObject(env)) {
+		envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
+			env.initTestEnvironment(testConfigObj);
+		});
+	}
 	process.on('unhandledRejection', (reason) => {
 		// Ignore @datadog/pprof errors - the module has no native build for Electron test environment
 		if (reason?.message?.includes('No native build was found for runtime=electron')) {
@@ -89,6 +93,12 @@ function preTestPrep(testConfigObj) {
 	// Try to change to bin
 	changeProcessToBinDir();
 	env.initTestEnvironment(testConfigObj);
+
+	// Drain startup hooks so modules that defer side effects via `onStartup(...)`
+	// (server-singleton wiring, listener registration, config-derived constants)
+	// see a wired-up state. Production calls this from `bin/harper.ts`; tests
+	// that go through this helper get the same effect. Idempotent.
+	void lifecycle.runStartup();
 }
 
 /**
@@ -196,12 +206,12 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  *
  * It deliberately does NOT remove the per-PID root. Removing the root removes the files of every
  * database the process has open, not just the tables passed in — `system`, `dev`, and whatever
- * else the suite touched, each still held dozens of handles deep (`registryStatus()` reports
+ * else the suite touched, each still held dozens of handles deep (`getRegistryStatus()` reports
  * refCounts in the tens after this runs). Those stores go on writing into unlinked files and then
  * fail their flush whenever they finally close, which rocksdb-js reports as "Failed to flush
  * database during close": an uncaught throw out of the exit listener, attributed to no test.
  * Dropping the tables is what the callers actually want; the root itself is removed at process
- * exit, after the databases have closed (see the afterAll hook in mocha.init.js).
+ * exit, after the databases have closed (see completion handling in mocha.init.js).
  *
  * @param envs
  * @returns {Promise<void>}
@@ -379,6 +389,8 @@ function setupTestDBPath() {
 	let dbPath = materializePerPidRoot();
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(dbPath, 'database'));
+	// data/dev/test/test2 deliberately alias one physical dbPath, exercising the path-keyed
+	// alias dedup in resources/databases.ts's interruptedDropAttempts
 	const databasePaths = {
 		data: { path: dbPath },
 		dev: { path: dbPath },
@@ -413,10 +425,10 @@ async function seededAdminIsUsable() {
 
 /**
  * Seeds the per-PID system database the way an install would: the standard system tables
- * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which
- * authorizeLocal/getSuperUser() need to authorize local requests), and self-signed
+ * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which a
+ * credential-free token mint from the local principal needs), and self-signed
  * certificates (which the TLS servers, e.g. MQTT's secure port, need). Suites that
- * exercise code requiring the system tables (e.g. setUsersWithRolesCache) call this
+ * exercise code requiring the system tables (e.g. findAndValidateUser) call this
  * after setupTestDBPath() instead of borrowing an installed Harper root's system
  * database.
  */
@@ -650,7 +662,97 @@ function installTestJwtKeys() {
 	};
 }
 
+// what each seedUsers() write replaced, so the next call can put it back
+const seededRecords = { hdb_user: new Map(), hdb_role: new Map() };
+let userChangesDelivered = 0;
+let countingUserChanges = false;
+
+/**
+ * Writes `users` (a Map or array; a user's `role` is a role object or an existing role id) as real
+ * hdb_user/hdb_role records, after restoring whatever an earlier call replaced. A role object without
+ * an `id` gets one per user, so two users whose roles share a name keep their own permissions.
+ * `seedUsers()` with no users only restores.
+ */
+async function seedUsers(users = []) {
+	await ensureSystemTables();
+	if (!countingUserChanges) {
+		countingUserChanges = true;
+		require('#src/security/user').onUserChange(() => userChangesDelivered++);
+	}
+	const { system } = getDatabases();
+	// the last write per record, so a record restored and seeded again is written once
+	const writes = new Map();
+	for (const [tableName, replaced] of Object.entries(seededRecords)) {
+		for (const [id, prior] of replaced) writes.set(`${tableName}/${id}`, { tableName, id, record: prior });
+		replaced.clear();
+	}
+	const seed = async (tableName, id, record) => {
+		const replaced = seededRecords[tableName];
+		const key = `${tableName}/${id}`;
+		if (!replaced.has(id)) {
+			const prior = writes.has(key) ? writes.get(key).record : await system[tableName].get(id);
+			replaced.set(id, prior && { ...prior });
+		}
+		writes.set(key, { tableName, id, record });
+	};
+	for (const user of users instanceof Map ? users.values() : users) {
+		let role = user.role;
+		if (role && typeof role === 'object') {
+			const id = role.id ?? `seeded_role_${user.username}`;
+			await seed('hdb_role', id, { ...role, id });
+			role = id;
+		}
+		await seed('hdb_user', user.username, { ...user, role });
+	}
+	if (writes.size === 0) return;
+	const deliveredBefore = userChangesDelivered;
+	// one commit, so one user-change notification covers every write
+	await require('#src/resources/transaction').transaction(async (context) => {
+		for (const { tableName, id, record } of writes.values()) {
+			if (record) await system[tableName].put(record, context);
+			else await system[tableName].delete(id, context);
+		}
+	});
+	// Listeners it notifies (live-subscription rechecks, MCP sessions) resolve users themselves: let them
+	// run now rather than inside the caller's next assertions
+	await require('./waitFor').waitFor(() => userChangesDelivered > deliveredBefore, {
+		message: 'seedUsers: the user-change notification for its writes never arrived',
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * A catalog (`__dbis__`) wrapper is opened once per root and reused, and its own `put` is a snapshot of
+ * `putSync` taken at open, so a test patching the prototype's `putSync` must route `put` through it.
+ */
+function routePutThroughPutSync(instance) {
+	if (!Object.hasOwn(instance, 'put')) return () => {};
+	const ownPut = instance.put;
+	instance.put = function (...args) {
+		return this.putSync(...args);
+	};
+	return () => {
+		instance.put = ownPut;
+	};
+}
+
+/**
+ * Install `replacement` as `instance[name]`; the returned restore puts the instance back exactly as it was. A reused
+ * wrapper must not keep an own copy of a prototype method, which would shadow later prototype patches.
+ */
+function stubMethod(instance, name, replacement) {
+	const hadOwn = Object.prototype.hasOwnProperty.call(instance, name);
+	const saved = instance[name];
+	instance[name] = replacement;
+	return function restore() {
+		if (hadOwn) instance[name] = saved;
+		else delete instance[name];
+	};
+}
+
 module.exports = {
+	stubMethod,
+	routePutThroughPutSync,
 	changeProcessToBinDir,
 	deepClone,
 	mochaAsyncWrapper,
@@ -664,6 +766,7 @@ module.exports = {
 	getMockTestPath,
 	setupTestDBPath,
 	ensureSystemTables,
+	seedUsers,
 	sortAsc,
 	sortDesc,
 	sortAttrKeyMap,

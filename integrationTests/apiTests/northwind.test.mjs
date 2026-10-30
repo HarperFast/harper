@@ -16,6 +16,8 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { setTimeout } from 'node:timers/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
@@ -2031,11 +2033,13 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	let client;
 	let adminPwd, adminUsername;
 	let jobId; // shared job_id state used by 7_jobsAndJobRoleTesting tests
+	let exportDir;
 	// Per-user headers — built in before() from the Harper admin password.
 	let headersTestUser, headersBulkLoadUser, headersNoPermsUser, headersOnePermUser, headersImportantUser;
 	let dateYesterday, dateTomorrow;
 
 	before(async () => {
+		exportDir = mkdtempSync(join(tmpdir(), 'northwind-export-'));
 		await startHarper(ctx, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
 		adminPwd = ctx.harper.admin.password;
@@ -2119,7 +2123,11 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (exportDir) rmSync(exportDir, { recursive: true, force: true });
+		}
 	});
 
 	// ── Legacy utility shims — defined at suite scope so they close over client ──
@@ -2256,11 +2264,6 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	// server itself uses Bun. process.versions.bun is therefore undefined; use the
 	// env var to detect the Bun runtime.
 	const isBunRuntime = process.env.HARPER_RUNTIME === 'bun';
-
-	// Some HarperDB wildcard-string-search operations fail on Bun with
-	// "finishUtf8 is not defined" — a V8-internal API Bun does not expose.
-	// Skip those tests on Bun rather than failing CI.
-	const bunSkip = isBunRuntime ? 'finishUtf8 is not available in Bun' : false;
 
 	// A csv_data_load upsert that *introduces a new attribute* under a restricted
 	// (non-super-user) role stalls indefinitely on Bun: the job is created and
@@ -5418,11 +5421,10 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		});
 
 		// pt2 is a prefix LIKE ('literal...%' -> starts_with), which the new SQL engine
-		// serves via an index range scan. On Bun that routes blob string-key decoding
-		// through ordered-binary's new Function reader, which hits the finishUtf8 scope
-		// bug (kriszyp/ordered-binary#8). Passes on all Node versions. The %...% patterns
-		// (pt1/3/4/5) fall back to the legacy engine and are unaffected.
-		test('select * dev.remarks_blob like w/ special chars pt2', { skip: bunSkip }, async () => {
+		// serves via an index range scan, routing blob string-key decoding through
+		// ordered-binary. Fixed by the 1.6.2 bump (harper#2750, kriszyp/ordered-binary#8).
+		// The %...% patterns (pt1/3/4/5) fall back to the legacy engine and are unaffected.
+		test('select * dev.remarks_blob like w/ special chars pt2', async () => {
 			await client
 				.req()
 				.send({
@@ -6900,7 +6902,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					get_attributes: ['*'],
 				})
 				.expect((r) => assert.equal(r.body.error, "'hash_values' must be an array", r.text))
-				.expect(500);
+				.expect(400);
 		});
 
 		test('NoSQL search by hash get_attributes bad data type', async () => {
@@ -6914,7 +6916,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					get_attributes: '*',
 				})
 				.expect((r) => assert.equal(r.body.error, "'get_attributes' must be an array", r.text))
-				.expect(500);
+				.expect(400);
 		});
 
 		test('update NoSQL employee with falsey attributes', async () => {
@@ -6954,6 +6956,57 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					assert.equal(r.body[0].notes, false, r.text);
 				})
 				.expect(200);
+		});
+
+		test('NoSQL search by value with search_value null matches search_by_conditions equals null', async () => {
+			let conditionsBody;
+			await client
+				.req()
+				.send({
+					operation: 'search_by_conditions',
+					schema: `northnwd`,
+					table: `employees`,
+					get_attributes: ['employeeid', 'hireDate'],
+					conditions: [{ search_attribute: 'hireDate', search_type: 'equals', search_value: null }],
+				})
+				.expect((r) => {
+					conditionsBody = r.body;
+					assert.ok(
+						r.body.some((row) => row.employeeid === 2 && row.hireDate === null),
+						r.text
+					);
+				})
+				.expect(200);
+
+			await client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					schema: `northnwd`,
+					table: `employees`,
+					search_attribute: 'hireDate',
+					search_value: null,
+					get_attributes: ['employeeid', 'hireDate'],
+				})
+				.expect((r) => {
+					assert.deepEqual(r.body, conditionsBody, r.text);
+				})
+				.expect(200);
+		});
+
+		test('NoSQL search by value with search_value ["*"] returns 400', async () => {
+			await client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					schema: `northnwd`,
+					table: `employees`,
+					search_attribute: 'hireDate',
+					search_value: ['*'],
+					get_attributes: ['employeeid', 'hireDate'],
+				})
+				.expect((r) => assert.equal(r.body.error, "'value' must not be an array containing '*'", r.text))
+				.expect(400);
 		});
 
 		test('update NoSQL one employee record with no hash attribute', async () => {
@@ -7052,7 +7105,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - * at end', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - * at end', async () => {
 			await client
 				.req()
 				.send({
@@ -7084,7 +7137,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - * at start', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - * at start', async () => {
 			await client
 				.req()
 				.send({
@@ -7117,7 +7170,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - * at start and end', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - * at start and end', async () => {
 			await client
 				.req()
 				.send({
@@ -7168,7 +7221,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - *** at start', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - *** at start', async () => {
 			await client
 				.req()
 				.send({
@@ -11875,7 +11928,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					.req()
 					.send({
 						operation: 'export_local',
-						path: './',
+						path: exportDir,
 						format: 'json',
 						filename: 'integration-test',
 						search_operation: {
@@ -12431,7 +12484,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.req()
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12448,7 +12501,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.req()
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12468,7 +12521,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12499,7 +12552,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12530,7 +12583,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12561,7 +12614,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export',
 					format: 'json',
 					search_operation: {

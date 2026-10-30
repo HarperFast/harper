@@ -392,5 +392,126 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(canRoleInvokeOperation({ role: { permission: {} } }, 'describe_all'), false);
 			assert.equal(canRoleInvokeOperation({}, 'describe_all'), false);
 		});
+
+		it('does not let a structure_user grant escape an operations allowlist', () => {
+			const user = { role: { permission: { structure_user: ['orders_db'], operations: ['sql'] } } };
+			for (const op of ['create_schema', 'create_database', 'drop_schema', 'drop_database']) {
+				assert.equal(canRoleInvokeOperation(user, op), false, op);
+			}
+			for (const op of ['create_table', 'drop_table', 'create_attribute', 'drop_attribute']) {
+				assert.equal(canRoleInvokeOperation(user, op), false, op);
+			}
+			// The op it IS allowlisted for stays visible.
+			assert.equal(canRoleInvokeOperation(user, 'sql'), true);
+		});
+
+		it('still honors structure_user when the role declares no allowlist', () => {
+			const user = { role: { permission: { structure_user: ['orders_db'] } } };
+			assert.equal(canRoleInvokeOperation(user, 'create_table'), true);
+		});
+
+		it('lets a structure_user short-circuit when the op is also allowlisted', () => {
+			const user = { role: { permission: { structure_user: ['orders_db'], operations: ['create_table'] } } };
+			assert.equal(canRoleInvokeOperation(user, 'create_table'), true);
+			assert.equal(canRoleInvokeOperation(user, 'drop_table'), false);
+		});
+
+		it('does not let super_user escape an operations allowlist', () => {
+			// Gate 1 at dispatch names super_user explicitly: a restrictive allowlist binds it too.
+			const user = { role: { permission: { super_user: true, operations: ['read_only'] } } };
+			assert.equal(canRoleInvokeOperation(user, 'create_table'), false);
+			assert.equal(canRoleInvokeOperation(user, 'sql'), true);
+			// Unconstrained super_user is unchanged.
+			assert.equal(canRoleInvokeOperation({ role: { permission: { super_user: true } } }, 'create_table'), true);
+		});
+
+		it('expands operation groups the way the dispatch gate does', () => {
+			// `operations: ['read_only']` really does grant `sql`/`search_by_value` at dispatch,
+			// so a raw `includes` check would hide tools the role can actually invoke.
+			const user = { role: { permission: { operations: ['read_only'] } } };
+			assert.equal(canRoleInvokeOperation(user, 'sql'), true);
+			assert.equal(canRoleInvokeOperation(user, 'search_by_value'), true);
+			assert.equal(canRoleInvokeOperation(user, 'describe_all'), true);
+			assert.equal(canRoleInvokeOperation(user, 'insert'), false);
+			assert.equal(canRoleInvokeOperation(user, 'create_table'), false);
+		});
+
+		it('prefers the pre-expanded _expandedOperations set when present', () => {
+			const user = {
+				role: { permission: { operations: ['read_only'], _expandedOperations: new Set(['sql']) } },
+			};
+			assert.equal(canRoleInvokeOperation(user, 'sql'), true);
+			// Present in the raw group but not in the pre-built set — the set wins, as at dispatch.
+			assert.equal(canRoleInvokeOperation(user, 'describe_all'), false);
+		});
+
+		// Dispatch tests the handler's `api_name`; asserted in
+		// unitTests/utility/operation_authorization.test.js ('create_schema allowed when listed').
+		it('resolves aliased operation names to the api_name dispatch tests', () => {
+			const listed = (ops, op) =>
+				canRoleInvokeOperation({ role: { permission: { super_user: true, operations: ops } } }, op);
+			// The canonical name governs both tools in the pair.
+			assert.equal(listed(['create_database'], 'create_schema'), true);
+			assert.equal(listed(['create_database'], 'create_database'), true);
+			assert.equal(listed(['drop_database'], 'drop_schema'), true);
+			assert.equal(listed(['describe_schema'], 'describe_database'), true);
+			assert.equal(listed(['search_by_hash'], 'search_by_id'), true);
+			assert.equal(listed(['add_component'], 'add_custom_function_project'), true);
+			assert.equal(listed(['package_component'], 'package_custom_function_project'), true);
+			assert.equal(listed(['deploy_component'], 'deploy_custom_function_project'), true);
+			assert.equal(listed(['delete_files_before'], 'delete_records_before'), true);
+			// The alias name is not what dispatch tests, so it grants neither.
+			assert.equal(listed(['create_schema'], 'create_schema'), false);
+			assert.equal(listed(['drop_schema'], 'drop_schema'), false);
+			assert.equal(listed(['deploy_custom_function_project'], 'deploy_component'), false);
+		});
+
+		it('an array structure_user does not reach the database-level structure ops', () => {
+			const scoped = { role: { permission: { structure_user: ['data'] } } };
+			for (const op of ['create_table', 'drop_table', 'create_attribute', 'drop_attribute']) {
+				assert.equal(canRoleInvokeOperation(scoped, op), true, op);
+			}
+			for (const op of ['create_schema', 'create_database', 'drop_schema', 'drop_database']) {
+				assert.equal(canRoleInvokeOperation(scoped, op), false, op);
+			}
+		});
+
+		it('an unrestricted structure_user reaches all eight structure ops', () => {
+			const all = { role: { permission: { structure_user: true } } };
+			for (const op of [
+				'create_table',
+				'drop_table',
+				'create_attribute',
+				'drop_attribute',
+				'create_schema',
+				'create_database',
+				'drop_schema',
+				'drop_database',
+			]) {
+				assert.equal(canRoleInvokeOperation(all, op), true, op);
+			}
+		});
+
+		it('an empty structure_user array grants nothing', () => {
+			assert.equal(canRoleInvokeOperation({ role: { permission: { structure_user: [] } } }, 'create_table'), false);
+		});
+
+		it('does not serve a stale expansion after the operations array is replaced', () => {
+			const perm = { operations: ['describe_all'] };
+			const user = { role: { permission: perm } };
+			assert.equal(canRoleInvokeOperation(user, 'describe_all'), true);
+			assert.equal(canRoleInvokeOperation(user, 'sql'), false);
+			perm.operations = ['sql'];
+			assert.equal(canRoleInvokeOperation(user, 'sql'), true);
+			assert.equal(canRoleInvokeOperation(user, 'describe_all'), false);
+		});
+
+		it('fails closed on a malformed operations allowlist', () => {
+			assert.equal(canRoleInvokeOperation({ role: { permission: { operations: 'sql' } } }, 'sql'), false);
+			assert.equal(
+				canRoleInvokeOperation({ role: { permission: { super_user: true, operations: {} } } }, 'sql'),
+				false
+			);
+		});
 	});
 });

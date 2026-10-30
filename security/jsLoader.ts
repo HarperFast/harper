@@ -8,35 +8,46 @@ import { defineResource, t, schemaOf, projectTableFragment } from '../resources/
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
+import * as _vm from 'node:vm';
+import { createContext, runInContext, runInThisContext } from 'node:vm';
+// SourceTextModule and SyntheticModule require `--experimental-vm-modules`. Pull
+// them off the vm namespace at runtime so the named ESM import doesn't fail when
+// the flag isn't passed (e.g. CLI paths that never touch the JS loader).
+const { SourceTextModule, SyntheticModule } = _vm as any;
+type SourceTextModule = any;
+type SyntheticModule = any;
 import { ApplicationScope } from '../components/ApplicationScope.ts';
 import { getSecretsForComponent, runWithComponentBinding } from '../components/componentSecrets.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
-import * as env from '../utility/environment/environmentManager';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+const nativeRequire = createRequire(join(PACKAGE_ROOT, 'package.json'));
+import * as env from '../utility/environment/environmentManager.ts';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
 import type {} from 'ses';
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-	unlinkSync,
-	openSync,
-	closeSync,
-	statSync,
-	realpathSync,
-} from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, realpathSync, statSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
-import { whenComponentsLoaded } from '../server/threads/threadServer.js';
-import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
+import {
+	NamedProcessError,
+	parsePidFile,
+	readProcessIdentity,
+	readProcessIdentityAsync,
+	withSpawnPidLock,
+	tryWithSpawnPidLock,
+	isPreviousBoot,
+	withFileRetry,
+	writePidRecord,
+} from './spawnPidFile.ts';
+import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
+import { thisThreadOwnsApplication, thisThreadsIsolatedApplication } from '../server/threads/isolatedApplications.ts';
+import { onStartup } from '../utility/lifecycle.ts';
+import { lockDownIntrinsics, type Lockdown } from './intrinsicsLockdown.ts';
 
-type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
-const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+let APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
 const HARPER_MODULE_IDS = new Set([
 	'harper',
 	'harperdb',
@@ -64,7 +75,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	if (!lockedDown && APPLICATIONS_LOCKDOWN && APPLICATIONS_LOCKDOWN !== 'none') {
 		lockedDown = true;
 		if (APPLICATIONS_LOCKDOWN === 'ses') {
-			require('ses'); // load the lockdown function
+			loadSES();
 			lockdown({
 				domainTaming: 'unsafe',
 				consoleTaming: 'unsafe',
@@ -73,12 +84,9 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 				stackFiltering: 'verbose',
 			});
 		} else {
-			preventFunctionConstructor();
-			if (APPLICATIONS_LOCKDOWN === 'freeze-after-load') {
-				whenComponentsLoaded.then(freezeIntrinsics);
-			} else {
-				freezeIntrinsics();
-			}
+			lockDownIntrinsics(APPLICATIONS_LOCKDOWN, whenComponentsLoaded)?.catch((error) =>
+				logger.error(`applications.lockdown ${APPLICATIONS_LOCKDOWN} failed; intrinsics may be partly locked`, error)
+			);
 		}
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
@@ -134,7 +142,7 @@ let amaro: typeof import('amaro') | undefined;
 function stripTypeScriptTypes(source: string): string {
 	// Use amaro - the library that Node.js uses internally for type stripping
 	if (!amaro) {
-		amaro = require('amaro');
+		amaro = nativeRequire('amaro');
 	}
 	return amaro.transformSync(source, { mode: 'strip-only' }).code;
 }
@@ -151,40 +159,178 @@ function parseJsonModule(source: string, url: string): any {
 	}
 }
 
-/**
- * Walk an exports-map entry (string, array, or conditions object) with the given
- * condition priority list and return the first matching path string, or null.
- */
-function walkExportsConditions(entry: unknown, conditions: readonly string[]): string | null {
-	if (typeof entry === 'string') return entry;
-	if (Array.isArray(entry)) {
-		for (const e of entry) {
-			const r = walkExportsConditions(e, conditions);
-			if (r !== null) return r;
-		}
-		return null;
+class PackageResolutionError extends Error {
+	code: string;
+	statusCode = 500;
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = 'PackageResolutionError';
+		this.code = code;
 	}
-	if (entry !== null && typeof entry === 'object') {
-		for (const cond of conditions) {
-			const val = (entry as Record<string, unknown>)[cond];
-			if (val !== undefined) {
-				const r = walkExportsConditions(val, conditions);
-				if (r !== null) return r;
-			}
+}
+
+// Node's own import conditions also include module-sync, node-addons and any --conditions; these are not modeled
+const NODE_IMPORT_CONDITIONS: ReadonlySet<string> = new Set(['node', 'import']);
+const BUN_IMPORT_CONDITIONS: ReadonlySet<string> = new Set(['bun', 'node', 'import']);
+// A `.`, `..` or `node_modules` path segment, percent-encoded or not. Node only deprecates empty segments, so they pass.
+const INVALID_SEGMENT =
+	/(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/i;
+
+function invalidPackageTarget(packageJsonUrl: URL, target: unknown): PackageResolutionError {
+	const mustStartWithDotSlash = typeof target === 'string' && !target.startsWith('./');
+	return new PackageResolutionError(
+		'ERR_INVALID_PACKAGE_TARGET',
+		`Invalid "exports" target ${JSON.stringify(target)} in the package config ${fileURLToPath(packageJsonUrl)}` +
+			(mustStartWithDotSlash ? '; targets must start with "./"' : '')
+	);
+}
+
+function isArrayIndex(key: string): boolean {
+	const index = Number(key);
+	return `${index}` === key && index >= 0 && index < 0xffff_ffff;
+}
+
+function isConditionalExportsMainSugar(packageJsonUrl: URL, exports: unknown): boolean {
+	if (typeof exports === 'string' || Array.isArray(exports)) return true;
+	if (typeof exports !== 'object' || exports === null) return false;
+	let isConditionalSugar: boolean | undefined;
+	for (const key of Object.keys(exports)) {
+		const isCondition = key === '' || key[0] !== '.';
+		if (isConditionalSugar === undefined) isConditionalSugar = isCondition;
+		else if (isCondition !== isConditionalSugar) {
+			throw new PackageResolutionError(
+				'ERR_INVALID_PACKAGE_CONFIG',
+				`Invalid package config ${fileURLToPath(packageJsonUrl)}: "exports" cannot contain some keys starting with '.' and some not`
+			);
 		}
 	}
-	return null;
+	return isConditionalSugar === true;
+}
+
+function resolvePackageTargetString(packageJsonUrl: URL, target: string, patternMatch: string | null): URL {
+	if (!target.startsWith('./') || INVALID_SEGMENT.test(target.slice(2))) {
+		throw invalidPackageTarget(packageJsonUrl, target);
+	}
+	const resolved = new URL(target, packageJsonUrl);
+	if (!resolved.pathname.startsWith(new URL('.', packageJsonUrl).pathname)) {
+		throw invalidPackageTarget(packageJsonUrl, target);
+	}
+	if (patternMatch === null) return resolved;
+	if (INVALID_SEGMENT.test(patternMatch)) {
+		throw new PackageResolutionError(
+			'ERR_INVALID_MODULE_SPECIFIER',
+			`Invalid module "${patternMatch}" is not a valid match for an "exports" pattern in ${fileURLToPath(packageJsonUrl)}`
+		);
+	}
+	return new URL(resolved.href.replaceAll('*', () => patternMatch));
 }
 
 /**
- * Resolve a bare package specifier to a file:// URL using the package's exports map
- * with ESM import conditions. Used as a fallback when the runtime's CommonJS resolver
- * cannot match a pure-ESM package (exports map with only "import" conditions).
+ * Node's PACKAGE_TARGET_RESOLVE: a URL, `null` when the target blocks the subpath, or `undefined`
+ * when no condition matched (so an enclosing conditions object moves on to its next key).
  */
+function resolvePackageTarget(
+	packageJsonUrl: URL,
+	target: unknown,
+	patternMatch: string | null,
+	conditions: ReadonlySet<string>
+): URL | null | undefined {
+	if (typeof target === 'string') return resolvePackageTargetString(packageJsonUrl, target, patternMatch);
+	if (Array.isArray(target)) {
+		if (target.length === 0) return null;
+		let lastFailure: PackageResolutionError | null | undefined;
+		for (const item of target) {
+			let resolved: URL | null | undefined;
+			try {
+				resolved = resolvePackageTarget(packageJsonUrl, item, patternMatch, conditions);
+			} catch (error) {
+				if ((error as PackageResolutionError).code !== 'ERR_INVALID_PACKAGE_TARGET') throw error;
+				lastFailure = error as PackageResolutionError;
+				continue;
+			}
+			if (resolved) return resolved;
+			if (resolved === null) lastFailure = null;
+		}
+		if (lastFailure) throw lastFailure;
+		return lastFailure === null ? null : undefined;
+	}
+	if (target === null) return null;
+	if (typeof target === 'object') {
+		const keys = Object.keys(target);
+		if (keys.some(isArrayIndex)) {
+			throw new PackageResolutionError(
+				'ERR_INVALID_PACKAGE_CONFIG',
+				`Invalid package config ${fileURLToPath(packageJsonUrl)}: "exports" cannot contain numeric property keys`
+			);
+		}
+		for (const key of keys) {
+			if (key !== 'default' && !conditions.has(key)) continue;
+			const resolved = resolvePackageTarget(packageJsonUrl, target[key], patternMatch, conditions);
+			if (resolved !== undefined) return resolved;
+		}
+		return undefined;
+	}
+	throw invalidPackageTarget(packageJsonUrl, target);
+}
+
+/**
+ * Node's PACKAGE_EXPORTS_RESOLVE; `null` or `undefined` means the subpath is not exported.
+ */
+function resolvePackageExports(
+	packageJsonUrl: URL,
+	subpath: string,
+	exports: unknown,
+	conditions: ReadonlySet<string>
+): URL | null | undefined {
+	const exportsMap = (isConditionalExportsMainSugar(packageJsonUrl, exports) ? { '.': exports } : exports) as Record<
+		string,
+		unknown
+	>;
+	if (Object.hasOwn(exportsMap, subpath) && !subpath.includes('*') && !subpath.endsWith('/')) {
+		return resolvePackageTarget(packageJsonUrl, exportsMap[subpath], null, conditions);
+	}
+	let bestMatch = '';
+	let bestPatternIndex = -1;
+	for (const key of Object.keys(exportsMap)) {
+		const patternIndex = key.indexOf('*');
+		if (patternIndex === -1 || patternIndex !== key.lastIndexOf('*') || subpath.length < key.length) continue;
+		if (!subpath.startsWith(key.slice(0, patternIndex)) || !subpath.endsWith(key.slice(patternIndex + 1))) continue;
+		if (patternIndex > bestPatternIndex || (patternIndex === bestPatternIndex && key.length > bestMatch.length)) {
+			bestMatch = key;
+			bestPatternIndex = patternIndex;
+		}
+	}
+	if (!bestMatch) return undefined;
+	const patternMatch = subpath.slice(bestPatternIndex, subpath.length - (bestMatch.length - bestPatternIndex - 1));
+	return resolvePackageTarget(packageJsonUrl, exportsMap[bestMatch], patternMatch, conditions);
+}
+
+function finalizePackageResolution(resolved: URL, referrer: string): string {
+	if (/%2f|%5c/i.test(resolved.pathname)) {
+		throw new PackageResolutionError(
+			'ERR_INVALID_MODULE_SPECIFIER',
+			`Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${referrer}`
+		);
+	}
+	const path = fileURLToPath(resolved);
+	const stats = statSync(path, { throwIfNoEntry: false });
+	if (!stats) {
+		throw new PackageResolutionError('ERR_MODULE_NOT_FOUND', `Cannot find module '${path}' imported from ${referrer}`);
+	}
+	if (stats.isDirectory()) {
+		throw new PackageResolutionError(
+			'ERR_UNSUPPORTED_DIR_IMPORT',
+			`Directory import '${path}' is not supported resolving ES modules imported from ${referrer}`
+		);
+	}
+	// Unlike Node, this drops the target's query and fragment: the loaders pick a module's format from the end of its URL
+	return pathToFileURL(realpathSync(path)).href;
+}
+
 function resolveESMPackageExports(
 	specifier: string,
-	fromDir: string,
-	preferRequireConditions = false
+	referrer: string,
+	conditions: ReadonlySet<string>
 ): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
@@ -192,7 +338,7 @@ function resolveESMPackageExports(
 	const subpathParts = parts.slice(isScoped ? 2 : 1);
 	const subpath = subpathParts.length > 0 ? './' + subpathParts.join('/') : '.';
 
-	let dir = fromDir;
+	let dir = referrer.startsWith('file:') ? dirname(fileURLToPath(referrer)) : dirname(referrer);
 	while (true) {
 		const pkgRoot = join(dir, 'node_modules', packageName);
 		let pkgJson: any;
@@ -208,45 +354,71 @@ function resolveESMPackageExports(
 			continue;
 		}
 
-		if (!pkgJson.exports) return null;
-
-		const exportsMap = pkgJson.exports;
-		let entry: unknown;
-		if (typeof exportsMap === 'string') {
-			entry = subpath === '.' ? exportsMap : undefined;
-		} else if (exportsMap !== null && typeof exportsMap === 'object') {
-			const firstKey = Object.keys(exportsMap)[0];
-			if (firstKey?.startsWith('.')) {
-				// subpath map: { ".": ..., "./foo": ... }
-				entry = (exportsMap as Record<string, unknown>)[subpath];
-			} else {
-				// conditions map at root: { "import": ..., "require": ... }
-				entry = subpath === '.' ? exportsMap : undefined;
-			}
-		}
-
-		if (!entry) return null;
-
-		const relative = preferRequireConditions
-			? (walkExportsConditions(entry, ['bun', 'require', 'node', 'default']) ??
-				walkExportsConditions(entry, ['bun', 'import', 'node', 'default']))
-			: walkExportsConditions(entry, ['import', 'node', 'default']);
-		if (!relative) return null;
-
-		let resolvedPath = join(pkgRoot, relative);
-		if (preferRequireConditions && !existsSync(resolvedPath)) {
-			// The runtime's preferred condition (Bun's `require`) named a target that isn't
-			// actually on disk -- fall back to the plain ESM `import` condition instead of
-			// failing resolution outright.
-			const importRelative = walkExportsConditions(entry, ['import', 'node', 'default']);
-			if (importRelative) resolvedPath = join(pkgRoot, importRelative);
-		}
+		if (pkgJson.exports == null) return null;
+		const resolved = resolvePackageExports(pathToFileURL(packageJsonPath), subpath, pkgJson.exports, conditions);
+		if (!resolved) return null;
 
 		return {
-			resolvedUrl: pathToFileURL(realpathSync(resolvedPath)).toString(),
+			resolvedUrl: finalizePackageResolution(resolved, referrer),
 			packageJsonUrl: pathToFileURL(realpathSync(packageJsonPath)).toString(),
 			packageJsonSource,
 		};
+	}
+}
+
+function resolveModule(
+	specifier: string,
+	referrer: string,
+	scope: ApplicationScope,
+	kind: 'import' | 'require' = 'import'
+): string {
+	if (HARPER_MODULE_IDS.has(specifier)) {
+		return 'harper'; // resolve any harper package as an alias to a single synthetic module
+	}
+	const parts = specifier.split('/');
+	if (parts[0] === 'harper') {
+		// block harper/* for now (reserving for potential future use)
+		throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
+	}
+	if (parts[0] === 'file:') {
+		return specifier;
+	}
+	let resolveReferrer = referrer;
+	if (referrer.startsWith('file:')) {
+		try {
+			resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
+		} catch {}
+	}
+	try {
+		const resolved = createRequire(resolveReferrer).resolve(specifier);
+		if (isAbsolute(resolved)) {
+			const resolvedUrl = pathToFileURL(resolved).toString();
+			scope.recordModuleResolution?.(specifier, resolveReferrer, resolvedUrl);
+			return resolvedUrl;
+		}
+		return resolved;
+	} catch (err) {
+		const errorCode = (err as { code?: string })?.code;
+		const isBarePackage = !specifier.startsWith('.') && !isAbsolute(specifier) && !specifier.includes(':');
+		if (
+			kind === 'import' &&
+			isBarePackage &&
+			(errorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (process.versions.bun && errorCode === 'MODULE_NOT_FOUND'))
+		) {
+			// The CommonJS resolver applied require conditions. A require keeps its verdict, which is the
+			// runtime's own require resolution; an import re-resolves the exports with import conditions.
+			const esmResolved = resolveESMPackageExports(
+				specifier,
+				resolveReferrer,
+				process.versions.bun ? BUN_IMPORT_CONDITIONS : NODE_IMPORT_CONDITIONS
+			);
+			if (esmResolved) {
+				scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
+				scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
+				return esmResolved.resolvedUrl;
+			}
+		}
+		throw err;
 	}
 }
 
@@ -300,59 +472,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	const { moduleCache, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
 
 	/**
-	 * Resolve module specifier to absolute URL
-	 */
-	function resolveModule(specifier: string, referrer: string): string {
-		if (HARPER_MODULE_IDS.has(specifier)) {
-			return 'harper'; // resolve any harper package as an alias to a single synthetic module
-		}
-		const parts = specifier.split('/');
-		if (parts[0] === 'harper') {
-			// block harper/* for now (reserving for potential future use)
-			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
-		}
-		if (parts[0] === 'file:') {
-			return specifier;
-		}
-		let resolveReferrer = referrer;
-		if (referrer.startsWith('file:')) {
-			try {
-				resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
-			} catch {}
-		}
-		try {
-			const resolved = createRequire(resolveReferrer).resolve(specifier);
-			if (isAbsolute(resolved)) {
-				const resolvedUrl = pathToFileURL(resolved).toString();
-				scope.recordModuleResolution?.(specifier, resolveReferrer, resolvedUrl);
-				return resolvedUrl;
-			}
-			return resolved;
-		} catch (err) {
-			const errorCode = (err as { code?: string })?.code;
-			const isBarePackage = !specifier.startsWith('.') && !isAbsolute(specifier) && !specifier.includes(':');
-			if (
-				isBarePackage &&
-				(errorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (process.versions.bun && errorCode === 'MODULE_NOT_FOUND'))
-			) {
-				// Pure-ESM package: CJS resolver cannot match an exports map that only has
-				// "import" conditions (no "require"). Resolve the entry file by walking
-				// the filesystem and evaluating the exports map with ESM import conditions.
-				const referrerDir = resolveReferrer.startsWith('file:')
-					? dirname(fileURLToPath(resolveReferrer))
-					: dirname(resolveReferrer);
-				const esmResolved = resolveESMPackageExports(specifier, referrerDir, (err as any)?.code === 'MODULE_NOT_FOUND');
-				if (esmResolved) {
-					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
-					scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
-					return esmResolved.resolvedUrl;
-				}
-			}
-			throw err;
-		}
-	}
-
-	/**
 	 * Load a CommonJS module in our context (private or current)
 	 */
 	function loadCJS(url: string, source: string): { exports: any } {
@@ -365,7 +484,15 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		// This allows circular dependencies to get a reference to the incomplete module
 		const cjsModule = { exports: {} };
 		cjsCache.set(url, cjsModule);
-
+		try {
+			return evaluateCJS(cjsModule, url, source);
+		} catch (error) {
+			// As in Node's CommonJS loader, a module that failed to load is not served from the cache later
+			cjsCache.delete(url);
+			throw error;
+		}
+	}
+	function evaluateCJS(cjsModule: { exports: any }, url: string, source: string): { exports: any } {
 		if (url.endsWith('.json')) {
 			cjsModule.exports = parseJsonModule(source, url);
 			return cjsModule;
@@ -379,7 +506,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		const require = createRequire(requireUrl);
 
 		const cjsRequire = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url);
+			const resolvedUrl = resolveModule(spec, url, scope, 'require');
 			if (resolvedUrl === 'harper') {
 				return getHarperExports(scope);
 			}
@@ -397,7 +524,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return require(resolvedUrl);
 		};
 		cjsRequire.resolve = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url);
+			const resolvedUrl = resolveModule(spec, url, scope, 'require');
 			if (resolvedUrl.startsWith('file://')) return fileURLToPath(resolvedUrl);
 			return resolvedUrl;
 		};
@@ -411,7 +538,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		const runOptions = {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
-				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url);
+				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url, scope);
 				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
 				return dynamicModule;
@@ -434,7 +561,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		return cjsModule;
 	}
 	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
-		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
+		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: nativeRequire(url) };
 		let exports = cjsModule.exports;
 		if (exports.default === undefined) {
 			// provide the default export for compatibility
@@ -545,7 +672,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	 * to return modules synchronously.
 	 */
 	function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
-		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
+		const resolvedUrl = resolveModule(specifier, referencingModule.identifier, scope);
 		const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 		return getOrCreateModule(resolvedUrl, useApplicationLoader);
 	}
@@ -647,7 +774,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				errorMessage.includes('Cannot use import statement') ||
 				errorMessage.includes('Unexpected token');
 
-			if (!isEsmSyntaxError) {
+			// A coded error, such as a rejected require() whose message names "exports", is never ESM syntax
+			if (!isEsmSyntaxError || typeof cjsErr?.code === 'string') {
 				// This was a real error (not ESM syntax), rethrow it
 				throw cjsErr;
 			}
@@ -662,10 +790,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 						meta.filename = fileURLToPath(url);
 						meta.dirname = dirname(meta.filename);
 					}
-					meta.resolve = (specifier: string) => resolveModule(specifier, url);
+					meta.resolve = (specifier: string) => resolveModule(specifier, url, scope);
 				},
 				importModuleDynamically(specifier: string) {
-					const resolvedUrl = resolveModule(specifier, url);
+					const resolvedUrl = resolveModule(specifier, url, scope);
 					const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 					return loadModuleWithCache(resolvedUrl, useApplicationLoader);
 				},
@@ -712,9 +840,18 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	return entryModule.namespace;
 }
 
+// The ESM shims ses/index.js composes, in its order: ses's CommonJS bundle fails its own strict-mode check on Bun,
+// which drops function-level 'use strict' in CommonJS
+function loadSES(): void {
+	nativeRequire('ses/lockdown-shim.js');
+	nativeRequire('ses/compartment-shim.js');
+	nativeRequire('ses/assert-shim.js');
+	nativeRequire('ses/console-shim.js');
+}
+
 async function getCompartment(scope: ApplicationScope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
-	require('ses');
+	loadSES();
 	const compartment: any = new (Compartment as any)(
 		globals,
 		{
@@ -722,24 +859,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 		},
 		{
 			name: 'harper-app',
-			resolveHook(moduleSpecifier, moduleReferrer) {
-				if (HARPER_MODULE_IDS.has(moduleSpecifier)) {
-					return 'harper'; // resolve any harper package as an alias to a single synthetic module
-				}
-				const parts = moduleSpecifier.split('/');
-				if (parts[0] === 'harper') {
-					// block harper/* for now (reserving for potential future use)
-					throw new Error(`Module ${moduleSpecifier} is not allowed, may only access the 'harper' module`);
-				}
-
-				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
-				if (isAbsolute(resolved)) {
-					const resolvedURL = pathToFileURL(resolved).toString();
-					scope.recordModuleResolution?.(moduleSpecifier, moduleReferrer, resolvedURL);
-					return resolvedURL;
-				}
-				return moduleSpecifier;
-			},
+			resolveHook: (moduleSpecifier, moduleReferrer) => resolveModule(moduleSpecifier, moduleReferrer, scope),
 			importHook: async (moduleSpecifier) => {
 				if (moduleSpecifier === 'harper') {
 					const harperExports = getHarperExports(scope);
@@ -850,6 +970,7 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 	}
 	// now assign Harper scope-specific variables
 	Object.assign(appGlobal, {
+		...scopedDatabaseBindings(scope),
 		server: scope.server ?? server,
 		logger: scope.logger ?? logger,
 		resources: scope.resources,
@@ -906,6 +1027,25 @@ function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 	return function (name: string, shape: any, options?: any) {
 		return defineTableUsing(declareTable, name, shape, options);
 	} as typeof defineTable;
+}
+
+/**
+ * An isolated application's own worker loads nothing else, so its global object belongs to that application, and the
+ * bare `databases` and `tables` globals can take its branch view — the only way to reach them under
+ * `vm-current-context`, whose modules share the thread's global. Harper's own modules import `databases` rather than
+ * read the global, and a name the application did not branch, `system` included, still resolves to the base.
+ * Replication places nothing on a dedicated worker (harper-pro#974), so no peer's writes land in the branch. Returns
+ * whether it bound them.
+ */
+export function bindIsolatedApplicationGlobals(
+	scope: ApplicationScope,
+	owner: string | undefined = thisThreadsIsolatedApplication()
+): boolean {
+	if (!scope.branches?.size || !thisThreadOwnsApplication(scope.name, owner)) return false;
+	const bindings = scopedDatabaseBindings(scope);
+	(globalThis as any).databases = bindings.databases;
+	(globalThis as any).tables = bindings.tables;
+	return true;
 }
 
 /** Everything an application sees differently because of what it declared. Built once, at load. */
@@ -970,14 +1110,21 @@ function getHarperExports(scope: ApplicationScope) {
 		User: undefined,
 	};
 }
-const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES)
-	? new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES))
-	: {
-			// if we don't have a list of allowed modules, allow everything
-			has() {
-				return true;
-			},
-		};
+function getAllowedNodeBuiltinModules() {
+	return env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES)
+		? new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES))
+		: {
+				// if we don't have a list of allowed modules, allow everything
+				has() {
+					return true;
+				},
+			};
+}
+let ALLOWED_NODE_BUILTIN_MODULES = getAllowedNodeBuiltinModules();
+onStartup(() => {
+	APPLICATIONS_LOCKDOWN = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+	ALLOWED_NODE_BUILTIN_MODULES = getAllowedNodeBuiltinModules();
+});
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
@@ -987,37 +1134,46 @@ const child_processConstrained: any = {
 		throw new Error('execSync is not allowed');
 	},
 };
+const spawnWait = new Int32Array(new SharedArrayBuffer(4));
 child_processConstrained.default = child_processConstrained;
 const REPLACED_BUILTIN_MODULES = {
 	child_process: child_processConstrained,
 };
-/**
- * Creates a ChildProcess-like object for an existing process
- */
 class ExistingProcessWrapper extends EventEmitter {
 	pid: number;
+	private identity: string;
 	private checkInterval: NodeJS.Timeout;
+	private checking = false;
 
-	constructor(pid: number) {
+	constructor(pid: number, identity: string) {
 		super();
 		this.pid = pid;
-
-		// Monitor process and emit exit event when it terminates
-		this.checkInterval = setInterval(() => {
-			try {
-				// Signal 0 checks if process exists without actually killing it
-				process.kill(pid, 0);
-			} catch {
-				// Process no longer exists
-				clearInterval(this.checkInterval);
-				this.emit('exit', null, null);
-			}
-		}, 1000);
+		this.identity = identity;
+		this.checkInterval = setInterval(
+			async () => {
+				if (this.checking) return;
+				this.checking = true;
+				let current;
+				try {
+					current = await readProcessIdentityAsync(this.pid);
+				} catch {
+					// An unreadable identity does not establish exit.
+					return;
+				} finally {
+					this.checking = false;
+				}
+				if (current?.identity !== this.identity) {
+					clearInterval(this.checkInterval);
+					this.emit('exit', null, null);
+				}
+			},
+			process.platform === 'win32' ? 5000 : 1000
+		);
 	}
 
-	// Kill the process
 	kill(signal?: NodeJS.Signals | number) {
 		try {
+			if (readProcessIdentity(this.pid)?.identity !== this.identity) return false;
 			process.kill(this.pid, signal);
 			return true;
 		} catch {
@@ -1025,111 +1181,19 @@ class ExistingProcessWrapper extends EventEmitter {
 		}
 	}
 
-	// Clean up interval when wrapper is no longer needed
 	unref() {
 		clearInterval(this.checkInterval);
 		return this;
 	}
 }
 
-/**
- * Checks if a process with the given PID is running
- */
-function isProcessRunning(pid: number): boolean {
+function removePidRecord(pidFilePath: string, expected: string) {
 	try {
-		// Signal 0 checks existence without killing
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
+		if (withFileRetry(() => readFileSync(pidFilePath, 'utf8')) === expected)
+			withFileRetry(() => unlinkSync(pidFilePath));
+	} catch (error) {
+		if (error.code !== 'ENOENT') throw error;
 	}
-}
-
-/**
- * Acquires an exclusive lock using the PID file itself (synchronously with busy-wait)
- * Returns 0 if lock was acquired (need to spawn new process), or the existing PID if process is running
- */
-function parsePidFile(content: string): { pid: number; version: number } {
-	const lines = content.trim().split('\n');
-	const pid = Number.parseInt(lines[0], 10);
-	const version = lines.length > 1 ? parseInt(lines[1], 10) : 0;
-	return { pid, version };
-}
-
-function acquirePidFileLock(
-	pidFilePath: string,
-	requestedVersion?: number,
-	maxRetries = 100,
-	retryDelay = 5
-): { pid: number; version: number } {
-	for (let attempt = 0; attempt < maxRetries; attempt++) {
-		try {
-			// Try to open exclusively - 'wx' fails if file exists
-			const fd = openSync(pidFilePath, 'wx');
-			closeSync(fd);
-			return { pid: 0, version: 0 }; // Successfully acquired lock (file created), caller should spawn process
-		} catch (err) {
-			if (err.code === 'EEXIST') {
-				// File exists - check if it contains a valid running process
-				try {
-					const pidContent = readFileSync(pidFilePath, 'utf-8');
-					const { pid: existingPid, version: existingVersion } = parsePidFile(pidContent);
-
-					if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
-						// If the version isn't the one we want, kill the existing process and re-acquire
-						if (requestedVersion != null && requestedVersion !== existingVersion) {
-							try {
-								process.kill(existingPid);
-							} catch {
-								// Process may have already exited
-							}
-							try {
-								unlinkSync(pidFilePath);
-							} catch {
-								// Another thread may have removed it
-							}
-							// Retry to acquire the lock for the new version
-							const start = Date.now();
-							while (Date.now() - start < retryDelay) {
-								// Busy wait for process cleanup
-							}
-							continue;
-						}
-						// Valid process is running at same or higher version, return its PID
-						return { pid: existingPid, version: existingVersion };
-					}
-
-					// Invalid/empty PID - check file age to determine if it's stale or being written
-					const stats = statSync(pidFilePath);
-					const fileAge = Date.now() - stats.mtimeMs;
-
-					// If file is very new (less than 100ms) and empty/invalid, another thread is likely still writing to it
-					if (fileAge < 100) {
-						// Just wait and retry, don't try to remove
-					} else {
-						// Stale PID file (old and invalid), try to remove it
-						try {
-							unlinkSync(pidFilePath);
-						} catch {
-							// Another thread may have removed it, retry
-						}
-					}
-				} catch {
-					// Couldn't read/stat file, another thread might be modifying it, retry
-				}
-
-				// Wait a bit before retrying
-				const start = Date.now();
-				while (Date.now() - start < retryDelay) {
-					// Busy wait
-				}
-			} else {
-				throw err;
-			}
-		}
-	}
-
-	throw new Error(`Failed to acquire PID file lock after ${maxRetries} attempts`);
 }
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
@@ -1155,42 +1219,77 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		mkdirSync(pidDir, { recursive: true });
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
+		let spawnError;
+		const reportReleaseError = (error: unknown) =>
+			logger.warn(`Could not release PID lock for named process ${processName}`, error);
 
-		// Try to acquire lock - returns pid: 0 if acquired, or existing PID/version
-		const existing = acquirePidFileLock(pidFilePath, requestedVersion);
-
-		if (existing.pid !== 0) {
-			// Existing process is running, return wrapper
-			return new ExistingProcessWrapper(existing.pid);
-		}
-
-		// We acquired the lock (file was created), spawn new process
-		const childProcess = spawnFunction(command, args, options, callback);
-
-		// Write PID (and version if provided) to the file we just created
-		const pidFileContent =
-			requestedVersion != null ? `${childProcess.pid}\n${requestedVersion}` : childProcess.pid.toString();
 		try {
-			writeFileSync(pidFilePath, pidFileContent, 'utf-8');
-		} catch (err) {
-			// Failed to write PID, clean up
-			try {
-				childProcess.kill();
-				unlinkSync(pidFilePath);
-			} catch {}
-			throw err;
+			return withSpawnPidLock(
+				pidFilePath,
+				() => {
+					let content: string;
+					try {
+						content = withFileRetry(() => readFileSync(pidFilePath, 'utf8'));
+					} catch (error) {
+						if (error.code !== 'ENOENT') throw error;
+					}
+					if (content !== undefined) {
+						const existing = parsePidFile(content);
+						const current =
+							existing.pid && existing.identity && !isPreviousBoot(existing.identity)
+								? readProcessIdentity(existing.pid)
+								: null;
+						if (current && current.identity === existing.identity) {
+							if (requestedVersion == null || requestedVersion === existing.version) {
+								return new ExistingProcessWrapper(existing.pid, existing.identity);
+							}
+							try {
+								process.kill(existing.pid);
+							} catch (error) {
+								if (error.code !== 'ESRCH') throw error;
+							}
+							Atomics.wait(spawnWait, 0, 0, 5);
+						} else if (existing.pid && !existing.identity) {
+							logger.warn(
+								`Named process ${processName} has a legacy PID record for ${existing.pid}; replacing it without signaling the unverified process`
+							);
+						}
+						removePidRecord(pidFilePath, content);
+					}
+
+					let childProcess;
+					try {
+						childProcess = spawnFunction(command, args, options, callback);
+					} catch (error) {
+						spawnError = error;
+						throw error;
+					}
+					if (!childProcess.pid) return childProcess;
+					try {
+						const current = readProcessIdentity(childProcess.pid);
+						if (!current) return childProcess;
+						const record = `${childProcess.pid}\n${requestedVersion ?? 0}\n${current.identity}`;
+						writePidRecord(pidFilePath, record);
+						childProcess.once('exit', () => {
+							try {
+								tryWithSpawnPidLock(pidFilePath, () => removePidRecord(pidFilePath, record), reportReleaseError);
+							} catch (error) {
+								logger.warn(`Could not remove PID record for named process ${processName}`, error);
+							}
+						});
+						return childProcess;
+					} catch (error) {
+						childProcess.kill('SIGKILL');
+						throw error;
+					}
+				},
+				undefined,
+				reportReleaseError
+			);
+		} catch (error) {
+			if (error === spawnError) throw error;
+			throw new NamedProcessError(`Could not spawn named process ${processName}`, { cause: error });
 		}
-
-		// Clean up PID file when process exits
-		childProcess.on('exit', () => {
-			try {
-				unlinkSync(pidFilePath);
-			} catch {
-				// File may already be removed
-			}
-		});
-
-		return childProcess;
 	};
 }
 
@@ -1229,70 +1328,4 @@ export function getUser() {
 }
 export function getResponse() {
 	return (contextStorage.getStore() as any)?.response;
-}
-
-export function preventFunctionConstructor() {
-	Function.prototype.constructor = function () {}; // prevent this from being used to eval data in a parent context
-}
-
-function freezeIntrinsics() {
-	overridableProperty(Object.prototype, 'toString');
-	overridableProperty(Object.prototype, 'valueOf');
-	overridableProperty(Object.prototype, 'hasOwnProperty');
-	overridableProperty(Object.prototype, 'constructor');
-	overridableProperty(Promise.prototype, 'then');
-	overridableProperty(Date, 'now');
-	for (let name of ['get', 'set', 'has', 'delete', 'clear', 'forEach', 'entries', 'keys', 'values']) {
-		overridableProperty(Map.prototype, name);
-	}
-	for (let Intrinsic of [
-		Object,
-		Array,
-		Promise,
-		BigInt,
-		String,
-		Number,
-		Boolean,
-		Symbol,
-		RegExp,
-		Date,
-		Map,
-		Set,
-		WeakMap,
-		WeakSet,
-		Math,
-		JSON,
-		Reflect,
-		Atomics,
-		SharedArrayBuffer,
-		WeakRef,
-		FinalizationRegistry,
-	]) {
-		Object.freeze(Intrinsic);
-		Object.freeze((Intrinsic as any).prototype);
-	}
-	Object.freeze(Function);
-}
-
-/**
- * This can redefine a property into a getter/setter that will allow derivatives of a prototype to assign
- * a value to the property without incurring an error from the property being frozen and readonly.
- * @param target
- * @param name
- * @param value
- */
-function overridableProperty(target, name, value = target[name]) {
-	Object.defineProperty(target, name, {
-		get() {
-			return value;
-		},
-		set(value) {
-			Object.defineProperty(this, name, {
-				value,
-				configurable: true,
-				enumerable: true,
-				writable: true,
-			});
-		},
-	});
 }

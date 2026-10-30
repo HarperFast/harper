@@ -52,7 +52,14 @@ const GROUPS = [
 	'unitTests/utility/**/*test.*js',
 	'unitTests/validation/**/*test.*js',
 	// Individually verified files from directories not yet covered wholesale.
+	'unitTests/dataLayer/restoreMarker.test.js',
 	'unitTests/resources/blob.test.js',
+	'unitTests/resources/closeLoadedDatabases.test.js',
+	'unitTests/resources/databaseAliasIdentity.test.js',
+	'unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js',
+	'unitTests/resources/nativeFullTextIndexSchemaUpgrade.test.js',
+	'unitTests/resources/nativeFullTextIndexUpgradeWorkers.test.js',
+	'unitTests/resources/nativeFullTextIndexUpgradeCrash.test.js',
 ];
 
 const EXCLUDED = [

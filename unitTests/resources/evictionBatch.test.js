@@ -5,7 +5,9 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
+const { INVALIDATED } = require('#src/resources/Table');
 
 // Exercises the RocksDB batched-eviction path in Table.ts's cleanup scan: when more than
 // EVICTION_BATCH_SIZE (100) records are evictable in a single scan, removals are coalesced into
@@ -116,7 +118,7 @@ describe('Batched eviction (RocksDB)', () => {
 	});
 
 	it('recovers from an optimistic commit conflict (ERR_BUSY) and still evicts', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		let injected = false;
 		let armed = false;
@@ -144,6 +146,89 @@ describe('Batched eviction (RocksDB)', () => {
 			assert.equal(resident, 0, 'eviction should still complete after retrying the conflicting batch');
 		} finally {
 			Transaction.prototype.commit = originalCommit;
+		}
+	});
+
+	it('evicts the rest of a batch that holds a stub on a computed-index table', async function () {
+		const Computed = table({
+			table: 'EvictBatchComputed',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+		});
+		// `name` is not indexed, so the stub does not carry the resolver's input
+		Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+		Computed.setTTLExpiration(HOLD);
+		const ids = ['row-1', 'row-2', 'row-3', 'stub'];
+		for (const id of ids.slice(0, 3)) await Computed.put(id, { id, name: id });
+		// a non-resident receive stores a stub that carries the record expiry, so the scan evicts it
+		Computed.setResidency(() => ['batch-peer']);
+		try {
+			const context = { source: {}, sourceApply: true, timestamp: Date.now() };
+			await transaction(context, async () => {
+				const resource = await Computed.getResource('stub', context);
+				resource._writeUpdate('stub', { id: 'stub', name: 'stub' }, true, {
+					isNotification: true,
+					nodeId: 1,
+					version: context.timestamp,
+				});
+			});
+		} finally {
+			Computed.setResidency(undefined);
+		}
+		const stub = Computed.primaryStore.getEntry('stub');
+		assert.ok(stub.metadataFlags & INVALIDATED && stub.expiresAt > 0, 'premise: an expiring stub');
+		await evictAndWait(Computed, ids);
+		const resident = ids.filter((id) => Computed.primaryStore.getSync(id) !== undefined);
+		assert.deepEqual(resident, [], 'a stub must not keep its batch from being evicted');
+	});
+
+	it('does not re-arm cleanup after maintenance closes', async function () {
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+		const originalCommit = Transaction.prototype.commit;
+		const originalGetRange = RetryTable.primaryStore.getRange;
+		const id = 2000;
+		let scanCount = 0;
+		let releaseCommit;
+		let commitStarted;
+		let blocked = false;
+		const started = new Promise((resolve) => (commitStarted = resolve));
+		const release = new Promise((resolve) => (releaseCommit = resolve));
+
+		try {
+			RetryTable.setTTLExpiration(HOLD);
+			await RetryTable.get(id);
+			assert.equal(await waitForResident(RetryTable, [id]), 1, 'record should be resident before cleanup');
+			RetryTable.primaryStore.getRange = function (...args) {
+				scanCount++;
+				return originalGetRange.apply(this, args);
+			};
+			Transaction.prototype.commit = async function (...args) {
+				if (!blocked && scanCount > 0) {
+					blocked = true;
+					commitStarted();
+					await release;
+				}
+				return originalCommit.apply(this, args);
+			};
+
+			RetryTable.setTTLExpiration(EVICT_NOW);
+			await started;
+			// Let the scan's short-interval successor fire and queue behind the blocked commit.
+			await delay(20);
+			const closing = RetryTable.closeMaintenance();
+			releaseCommit();
+			await closing;
+			const settledScanCount = scanCount;
+			await delay(30);
+			assert.equal(scanCount, settledScanCount, 'no cleanup scan may start after maintenance has closed');
+		} finally {
+			releaseCommit?.();
+			Transaction.prototype.commit = originalCommit;
+			RetryTable.primaryStore.getRange = originalGetRange;
 		}
 	});
 });

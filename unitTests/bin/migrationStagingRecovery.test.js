@@ -8,12 +8,12 @@ const fs = require('fs-extra');
 const assert = require('node:assert');
 const path = require('path');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, MIGRATING_DIR_SUFFIX } = require('#src/utility/hdbTerms');
 const { setupTestDBPath } = require('../testUtils');
 const copyDB = require('#src/bin/copyDb');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { RecordEncoder, RecordObject } = require('#src/resources/RecordEncoder');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
@@ -92,6 +92,9 @@ describe('migration: staging directory recovery (#2012)', function () {
 				assert(entry.value instanceof RecordObject, `record ${id} lost its record prototype`);
 				assert(entry.version > 0, `record ${id} lost its version`);
 			}
+			const generation = root.getBinarySync(Symbol.for('database-generation'));
+			assert.strictEqual(generation?.byteLength, 24, 'the migrated store must carry a generation');
+			assert(Buffer.from(generation).readDoubleLE(16) > 0, 'a migrated generation is a copy, not genesis');
 		} finally {
 			cf.close();
 			root.close();

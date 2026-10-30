@@ -7,19 +7,22 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as hdbUtils from '../../utility/common_utils.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import * as globalSchema from '../../utility/globalSchema.ts';
-import * as user from '../../security/user.ts';
+// installs server.getUser/authenticateUser
+import '../../security/user.ts';
 import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
-import moment from 'moment';
 import * as jobs from './jobs.ts';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
 
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';
+import { notifyJobCleanupComplete } from '../threads/manageThreads.ts';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import * as env from '../../utility/environment/environmentManager.ts';
+import { runStartup } from '../../utility/lifecycle.ts';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;
 const JOB_ID = JOB_NAME.substring(4);
 
@@ -33,9 +36,10 @@ const JOB_ID = JOB_NAME.substring(4);
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
 	try {
+		env.initSync();
 		harperLogger.notify('Starting job:', JOB_ID);
 		globalSchema.setSchemaDataToGlobal();
-		await user.setUsersWithRolesCache();
+		await runStartup();
 
 		for (const { packageIdentifier } of getEnvBuiltInComponents()) {
 			if (packageIdentifier.startsWith('@/')) {
@@ -74,14 +78,17 @@ const JOB_ID = JOB_NAME.substring(4);
 			jobObj.result = results;
 			jobObj.message = 'Successfully completed job: ' + JOB_ID;
 		}
-		jobObj.end_datetime = moment().valueOf();
+		jobObj.end_datetime = Date.now();
 		harperLogger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
 		exitCode = 1;
 		harperLogger.error(err);
 		jobObj.status = hdbTerms.JOB_STATUS_ENUM.ERROR;
-		jobObj.message = err.message ? err.message : err;
-		jobObj.end_datetime = moment().valueOf();
+		// get_job answers a refused bulk load with its structured permission report as the message.
+		const report = err?.http_resp_msg;
+		jobObj.message = report !== null && typeof report === 'object' ? report : err?.message ? err.message : err;
+		if (err?.result !== undefined) jobObj.result = err.result;
+		jobObj.end_datetime = Date.now();
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would
 		// leak this worker's process-global RocksDB handles and leave the worker hanging).
@@ -95,12 +102,15 @@ const JOB_ID = JOB_NAME.substring(4);
 		// that exits without closing leaks its handles process-wide, which (among other costs)
 		// blocks an online restore_backup from confirming the target database is closed. Best
 		// effort — never let cleanup mask the job result.
+		let databaseHandlesReleased = false;
 		try {
 			const { closeLoadedDatabases } = await import('../../resources/databases.ts');
-			closeLoadedDatabases();
+			await closeLoadedDatabases({ requireClosed: true });
+			databaseHandlesReleased = true;
 		} catch (closeErr) {
 			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
 		}
+		if (databaseHandlesReleased) notifyJobCleanupComplete();
 		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
 		// while sibling workers are running causes a NAPI fatal error crash. Unref
 		// parentPort (which broadcastWithAcknowledgement may have ref'd during schema

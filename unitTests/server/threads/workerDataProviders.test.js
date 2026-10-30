@@ -2,9 +2,10 @@
 
 const assert = require('assert');
 const path = require('node:path');
-const { startWorker, registerWorkerDataProvider } = require('#js/server/threads/manageThreads');
+const { startWorker, registerWorkerDataProvider } = require('#src/server/threads/manageThreads');
+const { getNextMonotonicTime } = require('#src/utility/lmdb/commonUtility');
 
-const FIXTURE = path.join(__dirname, 'workerData-fixture.js');
+const FIXTURE = path.join(__dirname, 'workerData-fixture.cjs');
 // Providers registered here filter on this worker name so they can never leak values into
 // workers spawned by other tests sharing the process.
 const WORKER_NAME = 'workerData-provider-test';
@@ -75,6 +76,10 @@ describe('registerWorkerDataProvider', () => {
 			// built-ins are untouched
 			assert.equal(report.name, WORKER_NAME);
 			assert.equal(report.hasTicketKeys, true);
+			const workerClock = new BigInt64Array(report.monotonicClock);
+			const before = Atomics.load(workerClock, 0);
+			getNextMonotonicTime();
+			assert.ok(Atomics.load(workerClock, 0) > before, 'a time minted here must advance the worker clock');
 		} finally {
 			for (const unregister of unregisters) unregister();
 			if (worker) {

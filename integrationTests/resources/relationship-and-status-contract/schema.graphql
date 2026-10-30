@@ -20,6 +20,9 @@ type OrderItem @table @export {
 	orderId: ID @indexed
 	name: String
 	price: Float
+	metadata: Any
+	notes: [Any]
+	createdAt: Date
 	order: Order @relationship(from: orderId)
 }
 

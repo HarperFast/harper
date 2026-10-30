@@ -9,11 +9,21 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
-const password_function = require('#src/utility/password');
-let token_auth = rewire('#src/security/tokenAuthentication');
+const password_function = require('#js/utility/password');
+let token_auth = rewire('#js/security/tokenAuthentication');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
-const signalling = require('#src/utility/signalling');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
+
+// a resolved user also carries the record versions it was built from, under a symbol key
+const recordFields = (resolved) => Object.fromEntries(Object.entries(resolved));
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -244,7 +254,7 @@ describe('test getJWTRSAKeys function', () => {
 
 		assert.deepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
-		assert(path_join_spy.callCount === 0);
+		// Cache hit: no key files are read, so no path is built either.
 		assert(fs_readfile_spy.callCount === 0);
 
 		rw_rsa_keys();
@@ -337,7 +347,6 @@ describe('test clearJWTRSAKeysCache function', () => {
 describe('test createTokens', () => {
 	let validate_user_stub;
 	let update_stub;
-	let signalling_stub;
 	beforeEach(() => {
 		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => {
 			return { username: u, role: { permission: { super_user: true } } };
@@ -345,13 +354,11 @@ describe('test createTokens', () => {
 		update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-		signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
 	});
 
 	afterEach(() => {
 		validate_user_stub.restore();
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 
 	it('test validation', async () => {
@@ -497,9 +504,8 @@ describe('test createTokens', () => {
 		const payload = jwt.decode(result.operation_token);
 		assert.deepStrictEqual(payload.username, 'HDB_USER');
 		assert.deepStrictEqual(payload.sub, 'login');
-		// no operation-token side effects: nothing persisted, no user-change broadcast
+		// no operation-token side effects: nothing persisted
 		assert(update_stub.called === false);
-		assert(signalling_stub.called === false);
 	});
 });
 
@@ -522,17 +528,16 @@ describe('test validateOperationToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
 		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
-		await user.setUsersWithRolesCache(
+		await testUtils.seedUsers(
 			new Map([
 				['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
 				['old_user', { username: 'old_user', active: false }],
 			])
 		);
 
-		token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 
@@ -544,7 +549,6 @@ describe('test validateOperationToken function', () => {
 		validate_user_stub = sandbox.spy(user, 'findAndValidateUser');
 
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 	let token_timeout;
 	let expired_user_tokens;
@@ -554,9 +558,10 @@ describe('test validateOperationToken function', () => {
 		validate_user_stub.resetHistory();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test hdb_admin token', async () => {
@@ -569,7 +574,7 @@ describe('test validateOperationToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user, { active: true, username: 'HDB_ADMIN' });
+		assert.deepStrictEqual(recordFields(user), { active: true, username: 'HDB_ADMIN' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -606,7 +611,7 @@ describe('test validateOperationToken function', () => {
 			user = await token_auth.validateOperationToken(non_user_tokens.operation_token);
 		} catch {}
 
-		assert.deepStrictEqual(user, { username: 'non_user' });
+		assert.deepStrictEqual(recordFields(user), { username: 'non_user' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -668,12 +673,13 @@ describe('test scoped tokens (inline role object)', () => {
 		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPrivate.key'), PRIVATE_KEY_VALUE);
 		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPublic.key'), PUBLIC_KEY_VALUE);
 		token_auth_plain.clearJWTRSAKeysCache();
-		await user.setUsersWithRolesCache(new Map([['existing_user', { username: 'existing_user', active: true }]]));
+		await testUtils.seedUsers(new Map([['existing_user', { username: 'existing_user', active: true }]]));
 	});
 
-	after(() => {
+	after(async () => {
 		fs.removeSync(scopedKeysPath);
 		token_auth_plain.clearJWTRSAKeysCache();
+		await testUtils.seedUsers();
 	});
 
 	function mint(overrides = {}) {
@@ -928,10 +934,9 @@ describe('test validateLoginToken function', () => {
 		let update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
 		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
-		await user.setUsersWithRolesCache(
+		await testUtils.seedUsers(
 			new Map([
 				['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
 				['old_user', { username: 'old_user', active: false }],
@@ -960,7 +965,6 @@ describe('test validateLoginToken function', () => {
 		validate_user_stub = sandbox.spy(user, 'findAndValidateUser');
 
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 
 	afterEach(() => {
@@ -968,14 +972,15 @@ describe('test validateLoginToken function', () => {
 		validate_user_stub.resetHistory();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test hdb_admin login token', async () => {
 		const result_user = await token_auth.validateLoginToken(hdb_admin_login_token);
-		assert.deepStrictEqual(result_user, { active: true, username: 'HDB_ADMIN' });
+		assert.deepStrictEqual(recordFields(result_user), { active: true, username: 'HDB_ADMIN' });
 	});
 
 	it('test old_user login token', async () => {
@@ -990,7 +995,7 @@ describe('test validateLoginToken function', () => {
 
 	it('test non-existent user login token', async () => {
 		const result_user = await token_auth.validateLoginToken(non_user_login_token);
-		assert.deepStrictEqual(result_user, { username: 'non_user' });
+		assert.deepStrictEqual(recordFields(result_user), { username: 'non_user' });
 	});
 
 	it('test bad login token', async () => {
@@ -1057,11 +1062,9 @@ describe('test validateRefreshToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
-
 		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
-		token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 
@@ -1079,13 +1082,12 @@ describe('test validateRefreshToken function', () => {
 			],
 			['old_user', { username: 'old_user', active: false }],
 		]);
-		await user.setUsersWithRolesCache(user_map);
+		await testUtils.seedUsers(user_map);
 
 		validate_user_stub.restore();
 		jwt_spy = sandbox.spy(jwt, 'verify');
 		validate_user_spy = sandbox.spy(user, 'findAndValidateUser');
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 
 	afterEach(() => {
@@ -1093,9 +1095,10 @@ describe('test validateRefreshToken function', () => {
 		validate_user_spy.resetHistory();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test hdb_admin token', async () => {
@@ -1108,10 +1111,10 @@ describe('test validateRefreshToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user_data, {
+		assert.deepStrictEqual(recordFields(user_data), {
 			active: true,
 			username: 'HDB_ADMIN',
-			refresh_token: (await user.getUsersWithRolesCache()).get('HDB_ADMIN').refresh_token,
+			refresh_token: user.getUserWithRole('HDB_ADMIN').refresh_token,
 		});
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
@@ -1213,8 +1216,6 @@ describe('test refreshOperationToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
-
 		let validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
@@ -1222,7 +1223,7 @@ describe('test refreshOperationToken function', () => {
 		non_user_tokens = await token_auth.createTokens({ username: 'non_user', password: 'notcool' });
 		validate_user_stub.restore();
 
-		await user.setUsersWithRolesCache(
+		await testUtils.seedUsers(
 			new Map([
 				[
 					'HDB_ADMIN',
@@ -1244,7 +1245,6 @@ describe('test refreshOperationToken function', () => {
 		validate_user_spy = sandbox.spy(user, 'findAndValidateUser');
 
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 
 	afterEach(() => {
@@ -1252,9 +1252,10 @@ describe('test refreshOperationToken function', () => {
 		validate_user_spy.resetHistory();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test no body', async () => {

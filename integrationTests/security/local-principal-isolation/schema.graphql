@@ -1,0 +1,4 @@
+type LocalPrincipalItem @table @export {
+	id: ID @primaryKey
+	value: String
+}

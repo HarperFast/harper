@@ -5,7 +5,7 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
-const config_val = rewire('#src/validation/configValidator');
+const config_val = rewire('#js/validation/configValidator');
 const { configValidator, routesValidator } = config_val;
 const path = require('path');
 const testUtils = require('../testUtils.js');
@@ -194,6 +194,19 @@ describe('Test configValidator module', () => {
 			expect(configValidator(bad_blobs_key_obj).error).to.not.eql(undefined);
 		});
 
+		it('storage.maxLockClockSkew accepts finite duration strings and rejects malformed values', () => {
+			for (const value of [5, '5', '500ms', '5s', '5m', '2h', '1d']) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.strictEqual(configValidator(config).error, undefined, `${value} is accepted`);
+			}
+			for (const value of ['5 ms', '-1s', '1e400', 'Infinity', '1M', '1y', `${'9'.repeat(400)}s`, Number.MAX_VALUE]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.ok(configValidator(config).error, `${value} is rejected`);
+			}
+		});
+
 		it('Test logging in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';
@@ -247,6 +260,18 @@ describe('Test configValidator module', () => {
 
 			config.replication.blobGapReconnectMs = 1000;
 			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts threads.v8Flags as V8 flags in a string or list, or null, and refuses anything else', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const v8Flags of ['--optimize-for-size', ['--optimize-for-size', ' --max-semi-space-size=1'], '', null]) {
+				config.threads = { count: 1, v8Flags };
+				assert.strictEqual(configValidator(config).error, undefined, JSON.stringify(v8Flags));
+			}
+			for (const v8Flags of [[1], 'optimize-for-size', ['--optimize-for-size', 'max-semi-space-size=1']]) {
+				config.threads = { count: 1, v8Flags };
+				assert.match(configValidator(config).error?.message, /threads\.v8Flags/, JSON.stringify(v8Flags));
+			}
 		});
 
 		it('accepts the blob-gap escalation bounds as non-negative integers, 0 meaning disabled', () => {
@@ -924,6 +949,18 @@ describe('Test configValidator module', () => {
 			expect(result.error.message).to.include("'mcp.operations.mountPath' must be a string");
 		});
 
+		it('accepts a boolean mcp.<profile>.enabled and rejects a non-boolean', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { enabled: true }, application: { enabled: false } };
+			expect(configValidator(config, true).error).to.be.undefined;
+			config.mcp = { operations: { enabled: 'nope' } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.enabled' must be a boolean");
+			config.mcp = { operations: { enabled: 'false' } };
+			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
+		});
+
 		it('rejects mcp.operations.maxTools below 1', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { operations: { maxTools: 0 } };
@@ -999,6 +1036,52 @@ describe('Test configValidator module', () => {
 			expect(result.error).to.be.undefined;
 		});
 
+		describe('pricing', () => {
+			const PRICING = { inputPerMtok: 3, outputPerMtok: 15 };
+			const validate = (models) => {
+				const config = baseConfig();
+				config.models = models;
+				return configValidator(config, true).error;
+			};
+
+			it('accepts pricing on generative entries, built-in or module-backed, including zero rates', () => {
+				for (const backend of ['ollama', 'openai', 'anthropic', 'bedrock', '@acme/harper-llm']) {
+					const entry = { backend, model: 'm', pricing: PRICING };
+					if (backend === 'openai' || backend === 'anthropic') entry.apiKey = 'k';
+					expect(validate({ generative: { default: entry } }), backend).to.be.undefined;
+				}
+				expect(
+					validate({
+						generative: { default: { backend: 'ollama', pricing: { inputPerMtok: 0, outputPerMtok: 0 } } },
+					})
+				).to.be.undefined;
+			});
+
+			it('rejects a partial, negative, non-numeric or extended price', () => {
+				for (const pricing of [
+					{ inputPerMtok: 3 },
+					{ outputPerMtok: 15 },
+					{ inputPerMtok: -1, outputPerMtok: 15 },
+					{ inputPerMtok: 'three', outputPerMtok: 15 },
+					{ ...PRICING, cachedInputPerMtok: 0.3 },
+				]) {
+					expect(validate({ generative: { default: { backend: 'ollama', pricing } } }), JSON.stringify(pricing)).to.not
+						.be.undefined;
+				}
+			});
+
+			it('refuses pricing on embedding and decision entries, which nothing prices', () => {
+				for (const models of [
+					{ embedding: { default: { backend: 'ollama', pricing: PRICING } } },
+					{ embedding: { default: { backend: '@acme/harper-embed', pricing: PRICING } } },
+					{ decision: { default: { backend: 'generative', pricing: PRICING } } },
+					{ decision: { default: { backend: '@acme/harper-decision', pricing: PRICING } } },
+				]) {
+					expect(validate(models), JSON.stringify(models)).to.not.be.undefined;
+				}
+			});
+		});
+
 		it('accepts a generative entry with requestTimeoutMs', () => {
 			const config = baseConfig();
 			config.models = {
@@ -1053,6 +1136,124 @@ describe('Test configValidator module', () => {
 			const result = configValidator(config, true);
 			expect(result.error).to.not.be.undefined;
 			expect(result.error.message).to.include('bakend');
+		});
+
+		// #2779: `models.decision` entries and the built-in generative vote adapter.
+		describe('decision entries', () => {
+			it('accepts a generative adapter entry with its tuning fields', () => {
+				const config = baseConfig();
+				config.models = {
+					decision: {
+						default: {
+							backend: 'generative',
+							generative: 'default',
+							samples: 7,
+							concurrency: 3,
+							temperature: 0.5,
+							requestTimeoutMs: 5000,
+							scoring: 'auto',
+							fallback: ['alt'],
+						},
+					},
+				};
+				expect(configValidator(config, true).error).to.be.undefined;
+			});
+
+			it('accepts each scoring mode (#2838)', () => {
+				for (const scoring of ['auto', 'vote', 'score']) {
+					const config = baseConfig();
+					config.models = { decision: { default: { backend: 'generative', scoring } } };
+					expect(configValidator(config, true).error, scoring).to.be.undefined;
+				}
+			});
+
+			it('rejects samples or concurrency outside 1..25, non-integers, unknown fields, and an unknown scoring mode', () => {
+				for (const entry of [
+					{ backend: 'generative', samples: 0 },
+					{ backend: 'generative', samples: 26 },
+					{ backend: 'generative', samples: 2.5 },
+					{ backend: 'generative', concurrency: 0 },
+					{ backend: 'generative', model: 'gpt-4o' },
+					{ backend: 'generative', scoring: 'always' },
+					{ backend: 'generative', scoring: true },
+				]) {
+					const config = baseConfig();
+					config.models = { decision: { default: entry } };
+					expect(configValidator(config, true).error, JSON.stringify(entry)).to.not.be.undefined;
+				}
+			});
+
+			it('accepts a non-secret revision on every entry kind (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'openai', apiKey: 'k', model: 'm', revision: 'sha-1' } },
+					embedding: { default: { backend: 'ollama', model: 'e', revision: '2' } },
+					decision: { default: { backend: 'generative', revision: 'r' } },
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				config.models.generative.default.revision = 3;
+				assert.notStrictEqual(configValidator(config, true).error, undefined, 'revision is a string');
+			});
+
+			it('accepts the calibration block and rejects an interval under an hour or an unknown setting (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					calibration: {
+						interval: 3_600_000,
+						maxDecisions: 2000,
+						maxPopulations: 10,
+						maxExamplesPerKey: 500,
+						maxBytes: 8_000_000,
+						maxLoads: 4,
+						maxRunMs: 5000,
+						minReport: 10,
+						minTrain: 50,
+						minHeldOut: 50,
+						heldOutShare: 0.25,
+						eceMargin: 0.02,
+						maxAgeMs: 86_400_000,
+					},
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				for (const bad of [
+					{ interval: 60_000 },
+					{ maxReads: 10 },
+					{ heldOutShare: 1 },
+					{ minReport: 0 },
+					{ maxDecisions: 1000 },
+					{ maxDecisions: 1000, maxExamplesPerKey: 500 },
+				]) {
+					const broken = baseConfig();
+					broken.models = { calibration: bad };
+					assert.notStrictEqual(configValidator(broken, true).error, undefined, JSON.stringify(bad));
+				}
+			});
+
+			it('rejects a provider backend under decision, naming the kind', () => {
+				const config = baseConfig();
+				config.models = { decision: { default: { backend: 'openai', apiKey: 'k', model: 'gpt-4o' } } };
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('cannot serve models.decision');
+			});
+
+			it('rejects the generative adapter under embedding or generative', () => {
+				for (const kind of ['embedding', 'generative']) {
+					const config = baseConfig();
+					config.models = { [kind]: { default: { backend: 'generative' } } };
+					const result = configValidator(config, true);
+					expect(result.error, kind).to.not.be.undefined;
+					expect(result.error.message).to.include(`cannot serve models.${kind}`);
+				}
+			});
+
+			it('accepts a module backend under decision with arbitrary fields', () => {
+				const config = baseConfig();
+				config.models = {
+					decision: { default: { backend: '@acme/harper-decision', apiKey: '${JEV_API_KEY}', fallback: ['llm'] } },
+				};
+				expect(configValidator(config, true).error).to.be.undefined;
+			});
 		});
 
 		it('accepts multiple logical names per kind', () => {

@@ -2,6 +2,8 @@ import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DERIVED_INDEX_FAILED,
+	MAX_LOG_SEQUENCE,
+	sameDerivedIndexCursorVector,
 	sameDerivedIndexPositions,
 } from '../derivedIndexRuntime.ts';
 import type {
@@ -18,6 +20,7 @@ import { toBufferKey } from 'ordered-binary';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('fulltext-derived-index');
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 export const HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
@@ -27,7 +30,9 @@ const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
 const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
+const DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const APPLY_SLICE_MILLISECONDS = 5;
+const MAX_FULL_TEXT_VALUE_BYTES = 1 << 20;
 const TERMINAL_OPEN_ERROR_CODES = new Set([
 	'E_IDENTITY_MISMATCH',
 	'E_INCOMPLETE_CREATE',
@@ -61,11 +66,11 @@ export type FullTextDerivedIndexInspection =
 export interface FullTextDerivedIndexLifecycle {
 	inspect(): FullTextDerivedIndexInspection;
 	open(): Promise<FullTextDerivedIndexEngine>;
-	reset(): Promise<void>;
+	reset(ownerEpoch: bigint): Promise<void>;
 }
 
 export type FullTextMutationBatch = {
-	upserts: Array<{ id: string; fields: Record<string, string | string[]> }>;
+	upserts: Array<{ id: string; version?: string; fields: Record<string, string | string[]> }>;
 	deletes: string[];
 };
 
@@ -81,6 +86,12 @@ export type FullTextDerivedIndexBackendOptions = {
 	maxOpenRetryMilliseconds?: number;
 	closeTimeoutMilliseconds?: number;
 	shutdownTimeoutMilliseconds?: number;
+	blobReadTimeoutMilliseconds?: number;
+	hasBlobSources?: boolean;
+};
+
+export type FullTextPublication = {
+	cursor?: DerivedIndexCursor;
 };
 
 type ApplyCommand = {
@@ -97,6 +108,7 @@ type BarrierCommand = {
 	epoch: bigint;
 	horizon: number;
 	cursor?: DerivedIndexCursor;
+	coverageOnly?: true;
 };
 
 type Command = ApplyCommand | BarrierCommand;
@@ -123,6 +135,7 @@ class FullTextDerivedIndexConfigurationError extends FullTextDerivedIndexError {
 
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
+	readonly publishesQueryRevisions = true;
 	#lifecycle: FullTextDerivedIndexLifecycle;
 	#maxQueuedBatches: number;
 	#maxQueuedBytes: number;
@@ -133,6 +146,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#maxOpenRetryMilliseconds: number;
 	#closeTimeoutMilliseconds: number;
 	#shutdownTimeoutMilliseconds: number;
+	#blobReadTimeoutMilliseconds: number;
+	#maxBlobApplySliceMilliseconds: number;
+	#hasBlobSources: boolean;
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
@@ -225,6 +241,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		);
 		if (this.#shutdownTimeoutMilliseconds < this.#closeTimeoutMilliseconds * 2)
 			throw new RangeError('shutdownTimeoutMilliseconds must be at least twice closeTimeoutMilliseconds');
+		this.#blobReadTimeoutMilliseconds = positiveInteger(
+			options.blobReadTimeoutMilliseconds ?? DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS,
+			'blobReadTimeoutMilliseconds'
+		);
+		this.#maxBlobApplySliceMilliseconds = Math.max(
+			APPLY_SLICE_MILLISECONDS,
+			Math.floor((this.#shutdownTimeoutMilliseconds - this.#closeTimeoutMilliseconds) / 2)
+		);
+		this.#hasBlobSources = options.hasBlobSources !== false;
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
 		this.#writerRetryDelayMilliseconds = Math.min(
 			this.#maxOpenRetryMilliseconds,
@@ -241,13 +266,14 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		this.#assertAttached();
 		if (!this.#cursorInspectedForAcquisition) {
-			this.#durableCursor = this.#inspectDurableCursor();
+			const publication = this.#inspectPublication();
+			this.#durableCursor = publication.cursor;
 			this.#cursorInspectedForAcquisition = true;
 		}
 		return this.#durableCursor;
 	}
 
-	#inspectDurableCursor(): DerivedIndexCursor | undefined {
+	#inspectPublication(): FullTextPublication {
 		let inspection: FullTextDerivedIndexInspection;
 		try {
 			inspection = this.#lifecycle.inspect();
@@ -258,12 +284,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (inspection.state !== 'checkpointed') {
 			if (inspection.state === 'incompatible')
 				logWarning(`Full-text derived index '${this.id}' is incompatible (${inspection.code}); rebuilding`);
-			return;
+			return {};
 		}
 		try {
-			return decodeFullTextCursorPayload(inspection.committedPayload);
+			return decodeFullTextPublication(inspection.committedPayload);
 		} catch {
 			logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`);
+			return {};
 		}
 	}
 
@@ -323,6 +350,34 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#queueBarrier(this.#activeEpoch);
 	}
 
+	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): void {
+		this.#assertSharedEpoch(ownerEpoch);
+		if (!this.#durableCursor) throw new FullTextDerivedIndexError('Cannot publish coverage without a durable cursor');
+		if (sameDerivedIndexPositions(this.#durableCursor.coverage, positions)) return;
+		let pending: BarrierCommand | undefined;
+		for (let index = this.#commands.length - 1; index >= 0; index--) {
+			if (this.#commands[index].type === 'barrier') {
+				pending = this.#commands[index] as BarrierCommand;
+				break;
+			}
+		}
+		const horizon = this.#lastAcceptedSequence;
+		const cursor = {
+			...cloneCursor(this.#lastAcceptedCursor ?? this.#durableCursor)!,
+			coverage: clonePositions(positions),
+		};
+		if (pending?.epoch === ownerEpoch && pending.horizon === horizon) pending.cursor = cursor;
+		else
+			this.#commands.push({
+				type: 'barrier',
+				epoch: ownerEpoch,
+				horizon,
+				cursor,
+				coverageOnly: true,
+			});
+		this.#scheduleDrain();
+	}
+
 	shutdown(ownerEpoch: bigint): Promise<void> {
 		if (this.#shutdown?.epoch === ownerEpoch) {
 			this.#cursorInspectedForAcquisition = false;
@@ -368,9 +423,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertAttached();
 		if (this.#resetOperation) {
 			this.#assertSharedEpoch(ownerEpoch);
-			if (this.#resetEpoch !== ownerEpoch)
-				throw new FullTextDerivedIndexError('Full-text reset belongs to another owner epoch');
-			return this.#boundedReset(this.#resetOperation);
+			if (this.#resetEpoch === ownerEpoch) return this.#boundedReset(this.#resetOperation);
+			const priorReset = this.#resetOperation;
+			try {
+				await this.#boundedReset(priorReset);
+			} catch (error) {
+				if (this.#resetOperation === priorReset) throw error;
+			}
+			this.#assertSharedEpoch(ownerEpoch);
+			return this.reset(ownerEpoch);
 		}
 		if (
 			this.#engine ||
@@ -406,7 +467,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	async #performReset(ownerEpoch: bigint): Promise<void> {
 		try {
-			await this.#lifecycle.reset();
+			await this.#lifecycle.reset(ownerEpoch);
 		} catch (error) {
 			logNativeError('Full-text native reset failed', error);
 			throw new FullTextDerivedIndexError('Full-text native reset failed');
@@ -509,18 +570,18 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (epoch === undefined) throw new FullTextDerivedIndexError('Full-text owner epoch is unavailable');
 		const engine = await this.#open(epoch);
 		if (!engine) return false;
-		let actual: DerivedIndexCursor | undefined;
+		let actual: FullTextPublication;
 		try {
 			this.#assertCommandEpoch(epoch);
-			actual = decodeFullTextCursorPayload(engine.committedPayload);
+			actual = decodeFullTextPublication(engine.committedPayload);
 		} catch (error) {
 			await this.#closeUninstalledEngine(engine);
 			throw error;
 		}
-		if (!sameCursor(actual, this.#durableCursor)) {
+		if (!sameCursor(actual.cursor, this.#durableCursor)) {
 			this.#lossPendingEpoch = epoch;
 			await this.#closeUninstalledEngine(engine);
-			this.#durableCursor = actual;
+			this.#durableCursor = actual.cursor;
 			this.#cursorInspectedForAcquisition = true;
 			this.#resetWriterRetryBackoff();
 			this.#discardCommands();
@@ -551,13 +612,34 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#lastAppliedSequence = command.sequence;
 			return true;
 		}
-		const slice = toFullTextMutationSlice(
-			command.batch.records,
-			command.position,
-			this.#maxApplySliceRecords,
-			performance.now() + APPLY_SLICE_MILLISECONDS
-		);
-		const { batch: logical, end } = slice;
+		let slice: Awaited<ReturnType<typeof toFullTextMutationSlice>>;
+		try {
+			const startedAt = performance.now();
+			const deadline = startedAt + APPLY_SLICE_MILLISECONDS;
+			slice = this.#hasBlobSources
+				? await toFullTextMutationSlice(
+						command.batch.records,
+						command.position,
+						this.#maxApplySliceRecords,
+						deadline,
+						startedAt + this.#maxBlobApplySliceMilliseconds,
+						this.#blobReadTimeoutMilliseconds
+					)
+				: {
+						...toFullTextMutationSliceSync(
+							command.batch.records,
+							command.position,
+							this.#maxApplySliceRecords,
+							deadline
+						),
+						rejected: 0,
+					};
+		} catch (error) {
+			await this.#loseAcceptedWork(command.epoch, error, { retry: true });
+			return false;
+		}
+		const { batch: logical, end, rejected: projectionRejected } = slice;
+		this.#stagedUnindexableRecords += projectionRejected;
 		const mutationCount = logical.upserts.length + logical.deletes.length;
 		if (mutationCount > 0) {
 			this.#hasStagedMutations = true;
@@ -602,11 +684,14 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	async #publish(command: BarrierCommand): Promise<boolean> {
-		if (command.horizon <= this.#lastPublishedSequence) return true;
+		if (!command.coverageOnly && command.horizon <= this.#lastPublishedSequence) return true;
 		this.#assertCommandEpoch(command.epoch);
 		if (this.#lastAppliedSequence < command.horizon)
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
-		const cursor = withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
+		const published = command.cursor ?? this.#durableCursor;
+		const cursor = this.#hasStagedMutations
+			? withoutCoverage(published)
+			: withDurableCoverage(published, this.#durableCursor);
 		try {
 			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 			await this.#engine!.publish(payload);
@@ -620,14 +705,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return false;
 		}
 		this.#assertCommandEpoch(command.epoch);
-		this.#lastPublishedSequence = command.horizon;
+		if (command.coverageOnly) this.#host!.publicationChanged();
+		this.#lastPublishedSequence = Math.max(this.#lastPublishedSequence, command.horizon);
 		this.#hasStagedMutations = false;
 		const rejected = this.#stagedUnindexableRecords;
 		this.#unindexableRecords += rejected;
 		this.#stagedUnindexableRecords = 0;
 		if (rejected > 0)
 			logWarning(
-				`Full-text derived index '${this.id}' removed ${rejected} records rejected by native record or frame limits`
+				`Full-text derived index '${this.id}' removed ${rejected} records with invalid projections or native record limits`
 			);
 		this.#durableCursor = cloneCursor(cursor);
 		this.#cursorInspectedForAcquisition = true;
@@ -895,10 +981,53 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 }
 
 export function toFullTextMutationBatch(batch: DerivedIndexBatch): FullTextMutationBatch {
-	return toFullTextMutationSlice(batch.records, 0, batch.records.length, Number.POSITIVE_INFINITY).batch;
+	return toFullTextMutationSliceSync(batch.records, 0, batch.records.length, Number.POSITIVE_INFINITY).batch;
 }
 
-function toFullTextMutationSlice(
+async function toFullTextMutationSlice(
+	records: DerivedIndexBatch['records'],
+	start: number,
+	maxRecords: number,
+	deadline: number,
+	wallDeadline: number,
+	readTimeoutMilliseconds: number
+): Promise<{ batch: FullTextMutationBatch; end: number; rejected: number }> {
+	const upserts: FullTextMutationBatch['upserts'] = [];
+	const deletes: string[] = [];
+	let rejected = 0;
+	const limit = Math.min(start + maxRecords, records.length);
+	let index = start;
+	let previousTableId: number | undefined;
+	let tablePrefix = '';
+	let yieldDeadline = deadline;
+	for (; index < limit; index++) {
+		const record = records[index];
+		if (record.recordId == null || typeof record.recordId === 'symbol') continue;
+		if (record.tableId !== previousTableId) {
+			previousTableId = record.tableId;
+			tablePrefix = `${record.tableId}.`;
+		}
+		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
+		const recordState = record.state.kind === 'record' ? record.state : undefined;
+		const resolved = recordState
+			? await resolvedFullTextFields(recordState.projection, readTimeoutMilliseconds)
+			: undefined;
+		yieldDeadline += resolved?.waitMilliseconds ?? 0;
+		if (resolved?.error) throw resolved.error;
+		if (resolved?.rejected) rejected++;
+		if (resolved?.fields && !resolved.rejected)
+			upserts.push({ id, version: String(recordState!.version), fields: resolved.fields });
+		else deletes.push(id);
+		const now = performance.now();
+		if (now >= yieldDeadline || now >= wallDeadline) {
+			index++;
+			break;
+		}
+	}
+	return { batch: { upserts, deletes }, end: index, rejected };
+}
+
+function toFullTextMutationSliceSync(
 	records: DerivedIndexBatch['records'],
 	start: number,
 	maxRecords: number,
@@ -918,8 +1047,9 @@ function toFullTextMutationSlice(
 			tablePrefix = `${record.tableId}.`;
 		}
 		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
-		const fields = record.state.kind === 'record' ? fullTextFields(record.state.projection) : undefined;
-		if (fields) upserts.push({ id, fields });
+		const recordState = record.state.kind === 'record' ? record.state : undefined;
+		const fields = recordState ? fullTextFields(recordState.projection) : undefined;
+		if (fields) upserts.push({ id, version: String(recordState!.version), fields });
 		else deletes.push(id);
 		if ((index - start + 1) % 16 === 0 && performance.now() >= deadline) {
 			index++;
@@ -983,9 +1113,8 @@ export function encodeFullTextCursorPayload(
 		cursor: normalized
 			? {
 					format: 1,
-					logs: Object.fromEntries(
-						Object.entries(normalized.logs).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-					),
+					logs: sortedEntries(normalized.logs),
+					...(normalized.floors ? { floors: sortedEntries(normalized.floors) } : null),
 					...(normalized.coverage ? { coverage: sortedPositions(normalized.coverage) } : null),
 				}
 			: null,
@@ -1001,7 +1130,14 @@ export function decodeFullTextCursorPayload(
 	payload: string | null | undefined,
 	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
 ): DerivedIndexCursor | undefined {
-	if (payload == null) return;
+	return decodeFullTextPublication(payload, maxBytes).cursor;
+}
+
+export function decodeFullTextPublication(
+	payload: string | null | undefined,
+	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
+): FullTextPublication {
+	if (payload == null) return {};
 	if (typeof payload !== 'string' || Buffer.byteLength(payload) > maxBytes)
 		throw new FullTextDerivedIndexError('Full-text cursor payload is invalid or too large');
 	let decoded: unknown;
@@ -1014,18 +1150,20 @@ export function decodeFullTextCursorPayload(
 		!plainObject(decoded) ||
 		decoded.format !== 1 ||
 		!Object.hasOwn(decoded, 'cursor') ||
-		Object.keys(decoded).some((name) => name !== 'format' && name !== 'cursor')
+		Object.keys(decoded).some((name) => name !== 'format' && name !== 'cursor' && name !== 'dataRevision')
 	)
 		throw new FullTextDerivedIndexError('Full-text cursor payload has an unsupported format');
-	if (decoded.cursor === null) return;
+	if (decoded.cursor === null) return {};
 	if (
 		!plainObject(decoded.cursor) ||
 		decoded.cursor.format !== 1 ||
 		!plainObject(decoded.cursor.logs) ||
-		Object.keys(decoded.cursor).some((name) => name !== 'format' && name !== 'logs' && name !== 'coverage')
+		Object.keys(decoded.cursor).some(
+			(name) => name !== 'format' && name !== 'logs' && name !== 'floors' && name !== 'coverage'
+		)
 	)
 		throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
-	return normalizedCursor(decoded.cursor as DerivedIndexCursor);
+	return { cursor: normalizedCursor(decoded.cursor as DerivedIndexCursor) };
 }
 
 function fullTextFields(projection: unknown): Record<string, string | string[]> | undefined {
@@ -1040,6 +1178,58 @@ function fullTextFields(projection: unknown): Record<string, string | string[]> 
 	return fields;
 }
 
+async function resolvedFullTextFields(
+	projection: unknown,
+	readTimeoutMilliseconds: number
+): Promise<{
+	fields?: Record<string, string | string[]>;
+	rejected: boolean;
+	error?: unknown;
+	waitMilliseconds: number;
+}> {
+	let waitMilliseconds = 0;
+	let fields = fullTextFields(projection);
+	if (!projection || typeof projection !== 'object' || Array.isArray(projection))
+		return { fields, rejected: false, waitMilliseconds };
+	const deadline = performance.now() + readTimeoutMilliseconds;
+	for (const name in projection) {
+		if (!Object.hasOwn(projection, name)) continue;
+		const value = (projection as Record<string, unknown>)[name];
+		if (!(value instanceof Blob)) continue;
+		if (value.size > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true, waitMilliseconds };
+		let bytes: ArrayBuffer;
+		try {
+			const remaining = deadline - performance.now();
+			if (remaining <= 0) throw new FullTextBlobReadTimeout();
+			const reading = withTimeout(value.arrayBuffer(), remaining, () => new FullTextBlobReadTimeout());
+			const waitStartedAt = performance.now();
+			try {
+				bytes = await reading;
+			} finally {
+				waitMilliseconds += performance.now() - waitStartedAt;
+			}
+		} catch (error) {
+			return { rejected: false, error, waitMilliseconds };
+		}
+		let text: string;
+		try {
+			text = UTF8_DECODER.decode(bytes);
+		} catch (error) {
+			if (error instanceof TypeError) return { rejected: true, waitMilliseconds };
+			throw error;
+		}
+		if (Buffer.byteLength(text) > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true, waitMilliseconds };
+		(fields ??= Object.create(null))[name] = text;
+	}
+	return { fields, rejected: false, waitMilliseconds };
+}
+
+class FullTextBlobReadTimeout extends Error {
+	constructor() {
+		super('Full-text Blob read timed out');
+	}
+}
+
 function isTerminalOpenError(error: unknown): boolean {
 	const code = nativeErrorCode(error);
 	return code !== undefined && TERMINAL_OPEN_ERROR_CODES.has(code);
@@ -1048,17 +1238,26 @@ function isTerminalOpenError(error: unknown): boolean {
 function cloneCursor(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor | undefined {
 	if (!cursor) return;
 	const logs = Object.freeze({ ...cursor.logs });
+	const floors = cursor.floors && Object.freeze({ ...cursor.floors });
 	const coverage = cursor.coverage && clonePositions(cursor.coverage);
-	return Object.freeze({ format: 1, logs, ...(coverage ? { coverage } : null) });
+	return Object.freeze({ format: 1, logs, ...(floors ? { floors } : null), ...(coverage ? { coverage } : null) });
+}
+
+function withoutCoverage(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor | undefined {
+	if (!cursor?.coverage) return cursor;
+	const { coverage: _coverage, ...vector } = cursor;
+	return vector;
 }
 
 function withDurableCoverage(
 	cursor: DerivedIndexCursor | undefined,
 	durable: DerivedIndexCursor | undefined
 ): DerivedIndexCursor | undefined {
-	if (!cursor || cursor.coverage || !durable?.coverage) return cursor;
+	if (!cursor || cursor.coverage || !durable?.coverage || !sameDerivedIndexCursorVector(cursor, durable)) return cursor;
 	return { ...cursor, coverage: durable.coverage };
 }
+
+const NO_FLOORS: Record<string, number> = Object.freeze({});
 
 function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCursor | undefined): boolean {
 	if (!left || !right) return left === right;
@@ -1067,6 +1266,15 @@ function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCur
 	if (leftLogs.length !== rightLogs.length) return false;
 	if (!leftLogs.every(([name, timestamp]) => Object.hasOwn(right.logs, name) && right.logs[name] === timestamp))
 		return false;
+	if (left.floors !== right.floors) {
+		const leftFloors = left.floors ?? NO_FLOORS;
+		const rightFloors = right.floors ?? NO_FLOORS;
+		const names = Object.keys(leftFloors);
+		if (names.length !== Object.keys(rightFloors).length) return false;
+		for (const name of names) {
+			if (!Object.hasOwn(rightFloors, name) || rightFloors[name] !== leftFloors[name]) return false;
+		}
+	}
 	if (!left.coverage || !right.coverage) return left.coverage === right.coverage;
 	return sameDerivedIndexPositions(left.coverage, right.coverage);
 }
@@ -1082,10 +1290,24 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 			throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid log position');
 		logs[name] = timestamp;
 	}
+	let floors: Record<string, number> | undefined;
+	if (cursor.floors !== undefined) {
+		if (!plainObject(cursor.floors))
+			throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
+		const normalizedFloors: Record<string, number> = Object.create(null);
+		for (const name in cursor.floors) {
+			if (!Object.hasOwn(cursor.floors, name)) continue;
+			const floor = cursor.floors[name];
+			if (!name || !Number.isInteger(floor) || floor < 1 || floor > MAX_LOG_SEQUENCE)
+				throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid log floor');
+			normalizedFloors[name] = floor;
+		}
+		floors = Object.freeze(normalizedFloors);
+	}
 	let coverage: DerivedIndexPositions | undefined;
 	if (cursor.coverage !== undefined) coverage = normalizedPositions(cursor.coverage);
 	Object.freeze(logs);
-	return Object.freeze({ format: 1, logs, ...(coverage ? { coverage } : null) });
+	return Object.freeze({ format: 1, logs, ...(floors ? { floors } : null), ...(coverage ? { coverage } : null) });
 }
 
 function normalizedPositions(value: unknown): DerivedIndexPositions {
@@ -1120,6 +1342,12 @@ function clonePositions(positions: DerivedIndexPositions): DerivedIndexPositions
 		clone[name] = position && { sequence: position.sequence, offset: position.offset };
 	}
 	return Object.freeze(clone);
+}
+
+function sortedEntries(entries: Record<string, number>): Record<string, number> {
+	return Object.fromEntries(
+		Object.entries(entries).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+	);
 }
 
 function sortedPositions(positions: DerivedIndexPositions): DerivedIndexPositions {

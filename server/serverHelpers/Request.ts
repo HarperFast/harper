@@ -1,11 +1,13 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
+import { setMaxListeners } from 'node:events';
 import { Readable } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
 import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { ResourceBody } from '../../resources/ResourceInterface.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -27,7 +29,7 @@ interface IncomingMessage extends NodeIncomingMessage {
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
  * and for better conformance to WHATWG standards.
  */
-export class Request {
+export class Request<Body = any> {
 	#body: RequestBody | undefined;
 	#peerCertificate: any;
 	#abortController = new AbortController();
@@ -59,7 +61,7 @@ export class Request {
 	public replicatedConfirmation?: number;
 	public replicateTo?: any;
 	public replicateFrom?: any;
-	public data?: any;
+	public data?: ResourceBody<Body>;
 	public authorize?: boolean;
 	public lastModified?: number;
 	public lastRefreshed?: number;
@@ -72,6 +74,7 @@ export class Request {
 		this.url = url;
 		this.headers = new RequestHeaders(nodeRequest.headers);
 		this.__harperRequestUpgraded = false;
+		setMaxListeners(0, this.#abortController.signal);
 		// Abort the request's signal on premature client disconnect. nodeResponse 'close'
 		// also fires on clean completion; the writableFinished guard restricts to disconnect.
 		if (typeof nodeResponse?.on === 'function') {
@@ -150,7 +153,7 @@ export class Request {
 		return this._nodeRequest.socket.connectionInfo;
 	}
 	get body() {
-		return this.#body || (this.#body = new RequestBody(this._nodeRequest));
+		return this.#body || (this.#body = new RequestBody(this._nodeRequest, this._nodeResponse));
 	}
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
@@ -399,6 +402,7 @@ export class UwsRequest {
 		this.#ip = source.ip;
 		this.#body = source.body;
 		this.#signal = source.signal;
+		if (this.#signal) setMaxListeners(0, this.#signal);
 		this.__harperRequestUpgraded = false;
 	}
 	get absoluteURL() {
@@ -466,10 +470,15 @@ export class UwsRequest {
 		return this.#signal?.aborted ?? false;
 	}
 	get signal(): AbortSignal {
-		return this.#signal ?? new AbortController().signal;
+		if (!this.#signal) {
+			this.#signal = new AbortController().signal;
+			setMaxListeners(0, this.#signal);
+		}
+		return this.#signal;
 	}
 	_abort(): void {
-		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+		// Abort is driven externally, wired into the provided signal (uWS res.onAborted for plain HTTP,
+		// the ws adapter's 'close' event for WebSocket upgrades — see server/http.ts's wsHandler).
 	}
 	get nodeRequest() {
 		return null;
@@ -491,8 +500,10 @@ export class UwsRequestBody extends Readable {
 
 class RequestBody {
 	#nodeRequest: IncomingMessage;
-	constructor(nodeRequest: IncomingMessage) {
+	#nodeResponse?: NodeServerResponse;
+	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
 		this.#nodeRequest = nodeRequest;
+		this.#nodeResponse = nodeResponse;
 	}
 	on(event: string, listener: (...args: any[]) => void) {
 		this.#nodeRequest.on(event, listener);
@@ -500,6 +511,27 @@ class RequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#nodeRequest.pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#nodeRequest.destroy(error);
+	}
+	afterResponse(callback: () => void): () => void {
+		const response = this.#nodeResponse;
+		if (!response || response.writableFinished || response.destroyed) {
+			callback();
+			return () => {};
+		}
+		const detach = () => {
+			response.off('finish', done);
+			response.off('close', done);
+		};
+		const done = () => {
+			detach();
+			callback();
+		};
+		response.once('finish', done);
+		response.once('close', done);
+		return detach;
 	}
 	// Delegate async iteration to the underlying request, which is natively
 	// async-iterable. Without this, `for await (const chunk of request.body)`
@@ -537,6 +569,9 @@ class BunRequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#getReadable().pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#getReadable().destroy(error);
 	}
 	// Mirror RequestBody: delegate async iteration to the underlying Readable
 	// (natively async-iterable) so `for await` consumers work on Bun too (#1317).

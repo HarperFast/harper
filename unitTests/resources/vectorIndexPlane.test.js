@@ -7,9 +7,10 @@ const { waitFor } = require('../waitFor');
 const { table, resetDatabases } = require('#src/resources/databases');
 const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
+const { CandidateKeySet } = require('#src/resources/search');
 const { DERIVED_INDEX_CURSOR_KEY, derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { pack } = require('msgpackr');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 
 /** Shared readiness the owning worker publishes for a table's vector index, readable on any worker. */
 function indexReady(Table) {
@@ -128,6 +129,25 @@ describe('HNSW native plane file-primary delivery', function () {
 			},
 			{ timeout: 15_000, message: 'the durable cursor did not reach the committed tail of every log' }
 		);
+	}
+
+	function nativeMutations(apply) {
+		const plane = customIndex().getPlane();
+		const calls = [];
+		for (const method of ['insert', 'remove']) {
+			const native = plane[method];
+			plane[method] = function (...args) {
+				calls.push(method === 'remove' ? `remove ${args[0]}` : method);
+				return native.apply(this, args);
+			};
+		}
+		try {
+			apply();
+		} finally {
+			delete plane.insert;
+			delete plane.remove;
+		}
+		return calls;
 	}
 
 	before(async () => {
@@ -265,6 +285,61 @@ describe('HNSW native plane file-primary delivery', function () {
 		assert.ok((await nativeSearch(vector)).some((entry) => entry.key === id));
 		index.applyDerivedValue(id, undefined, 3);
 		assert.ok(!(await nativeSearch(vector)).some((entry) => entry.key === id), 'a removal is visible at once');
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+	});
+
+	it('keeps the node of a replayed value still pending in this process', async () => {
+		const id = 50_004;
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		const vector = makeVector(id + 1);
+		index.applyDerivedValue(id, vector, 2);
+		const staged = mapping().id;
+		const mutations = nativeMutations(() => {
+			index.applyDerivedValue(id, vector, 2);
+			index.applyDerivedValue(id, vector, 3);
+			index.applyDerivedValue(id, vector, 1);
+		});
+		assert.deepStrictEqual(mutations, [], 'an unchanged value must not replace its node');
+		assert.equal(mapping().id, staged);
+		assert.equal(mapping().previousId, published, 'replay still needs the published node to remove');
+		assert.equal(mapping().version, 3, 'the newer replay advances the version, the older one is ignored');
+		assert.equal(mapping().pending, true, 'the mapping waits for the native flush');
+		await index.flushDerived();
+		assert.equal(mapping().pending, undefined);
+		assert.equal(mapping().id, staged);
+		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
+		index.applyDerivedValue(id, undefined, 4);
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+	});
+
+	it('re-inserts an unchanged value whose pending mapping only storage holds', async () => {
+		const id = 50_005;
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		const vector = makeVector(id + 1);
+		index.applyDerivedValue(id, vector, 2);
+		const staged = mapping().id;
+		index.pendingDerivedMappings.clear();
+		assert.equal(mapping().pending, true);
+		const mutations = nativeMutations(() => index.applyDerivedValue(id, vector, 2));
+		assert.deepStrictEqual(
+			mutations,
+			[...new Set([published, staged])].map((nodeId) => `remove ${nodeId}`).concat('insert'),
+			'a stored pending mapping does not prove its node survived: both nodes go, then a fresh insert'
+		);
+		assert.equal(mapping().previousId, published);
+		await index.flushDerived();
+		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
+		index.applyDerivedValue(id, undefined, 3);
 		await index.flushDerived();
 		assert.equal(mapping(), undefined);
 	});
@@ -892,5 +967,252 @@ describe('HNSW native plane file-primary delivery', function () {
 		const planePath = customIndex().planeFilePath();
 		await PlaneTest.dropTable();
 		assert.ok(!fs.existsSync(planePath));
+	});
+});
+
+describe('HNSW native plane allow-set filtering (#2688)', function () {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	if (!getPlaneBinding() || !('keyCap' in getPlaneBinding().prototype)) {
+		it.skip('skipped: the installed @harperfast/hnsw cannot store host keys', () => {});
+		return;
+	}
+	this.timeout(60_000);
+	const COUNT = 300;
+	const nativeDefaultSwitch = process.env.HNSW_NO_NATIVE_DEFAULT;
+	let AllowPlane;
+	const allowVectors = new Map();
+
+	function customIndex() {
+		return AllowPlane.indices.vector.customIndex;
+	}
+	/** ids 0…COUNT-1 laid along one axis, so the nearest neighbours of vector(i) are its id neighbours. */
+	function allowVector(i) {
+		const vector = new Array(DIMS).fill(0.01);
+		vector[0] = 1;
+		vector[1] = i / COUNT;
+		return vector;
+	}
+	function tenantOf(i) {
+		return i % 3 === 0 ? 'a' : 'b';
+	}
+	/** A CandidateKeyPlan over a known id set, so the plane's admission path is exercised on its own. */
+	function planFor(ids, complete = true) {
+		const keys = new CandidateKeySet();
+		for (const id of ids) keys.add(id);
+		return { estimatedCount: ids.length, collect: () => ({ keys, complete }) };
+	}
+
+	before(async () => {
+		delete process.env.HNSW_NO_NATIVE_DEFAULT;
+		setupTestDBPath();
+		setMainIsWorker(true);
+		AllowPlane = table({
+			table: 'PlaneAllow',
+			database: 'vector-plane-allow',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'note' },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		assert.equal(
+			AllowPlane.attributes.find((attribute) => attribute.name === 'vector').indexed.nativePlane,
+			true,
+			'this suite must exercise the native plane'
+		);
+		await AllowPlane.indexingOperation;
+		for (let i = 0; i < COUNT; i++) {
+			const vector = allowVector(i);
+			allowVectors.set(i, vector);
+			await AllowPlane.put(i, { tenant: tenantOf(i), note: i % 2 === 0 ? 'keep' : 'drop', vector });
+		}
+		await waitFor(
+			() => {
+				if (!indexReady(AllowPlane)) return false;
+				let mappings = 0;
+				for (const { value } of AllowPlane.indices.vector.getRange()) if (typeof value?.id === 'number') mappings++;
+				return mappings >= COUNT;
+			},
+			{ timeout: 30_000, message: 'post-commit native delivery did not drain' }
+		);
+	});
+
+	after(async () => {
+		await AllowPlane?.dropTable();
+		if (nativeDefaultSwitch === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
+		else process.env.HNSW_NO_NATIVE_DEFAULT = nativeDefaultSwitch;
+	});
+
+	it('serves a complete plan without loading a record to admit', async () => {
+		const allowed = [];
+		for (let i = 0; i < COUNT; i += 3) allowed.push(i);
+		let predicateCalls = 0;
+		const entries = await customIndex().search(
+			{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+			{ transaction: undefined },
+			{
+				filter: () => {
+					predicateCalls++;
+					return true;
+				},
+				candidateKeys: planFor(allowed),
+			}
+		);
+		assert.strictEqual(predicateCalls, 0, "a fully covered filter never reaches the caller's predicate");
+		assert.strictEqual(entries.filterEvaluations, 0, 'no record is loaded to admit');
+		assert.strictEqual(entries.candidateKeys, allowed.length);
+		assert.ok(entries.length > 0);
+		const admitted = new Set(allowed);
+		assert.ok(
+			entries.every((entry) => admitted.has(entry.key)),
+			'the allow-set alone decided admission'
+		);
+		assert.deepStrictEqual(
+			entries.slice(0, 4).map((entry) => entry.key),
+			[0, 3, 6, 9]
+		);
+	});
+
+	it('gates the residual predicate behind the allow-set on an incomplete plan', async () => {
+		const allowed = [];
+		for (let i = 0; i < COUNT; i += 3) allowed.push(i);
+		const seen = [];
+		const entries = await customIndex().search(
+			{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+			{ transaction: undefined },
+			{
+				filter: (primaryKey) => {
+					seen.push(primaryKey);
+					return Number(primaryKey) % 2 === 0;
+				},
+				candidateKeys: planFor(allowed, false),
+			}
+		);
+		const admitted = new Set(allowed);
+		assert.ok(seen.length > 0, 'the residual predicate ran');
+		assert.ok(
+			seen.every((primaryKey) => admitted.has(primaryKey)),
+			'no key the allow-set excludes reaches a record load'
+		);
+		assert.ok(
+			entries.every((entry) => admitted.has(entry.key) && entry.key % 2 === 0),
+			'both terms hold on every result'
+		);
+	});
+
+	it('an empty allow-set returns nothing', async () => {
+		const entries = await customIndex().search(
+			{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+			{ transaction: undefined },
+			{ filter: () => true, candidateKeys: planFor([]) }
+		);
+		assert.strictEqual(entries.length, 0);
+		assert.strictEqual(entries.filterEvaluations, 0);
+	});
+
+	it('runs the whole Table.search route over the allow-set', async () => {
+		const sort = { attribute: 'vector', target: allowVectors.get(0), distance: 'cosine' };
+		const customIndexInstance = customIndex();
+		const original = customIndexInstance.search;
+		let captured;
+		customIndexInstance.search = function (condition, context, options) {
+			const searched = original.call(this, condition, context, options);
+			captured = { options, searched };
+			return searched;
+		};
+		try {
+			const results = await fromAsync(
+				AllowPlane.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id', 'tenant'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			const entries = await captured.searched;
+			assert.strictEqual(entries.filterEvaluations, 0, 'the traversal loaded no record to admit');
+			assert.strictEqual(entries.candidateKeys, 100);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				[0, 3, 6, 9, 12]
+			);
+			assert.ok(results.every((record) => record.tenant === 'a'));
+		} finally {
+			customIndexInstance.search = original;
+		}
+	});
+
+	it('a record guard keeps the predicate and still returns only authorized rows', async () => {
+		const sort = { attribute: 'vector', target: allowVectors.get(0), distance: 'cosine' };
+		const results = await fromAsync(
+			AllowPlane.search(
+				{
+					conditions: [
+						{ attribute: 'vector', comparator: 'sort', ...sort },
+						{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					],
+					sort,
+					enforceExecutionOrder: true,
+					rowFilter: (record) => record.note === 'keep',
+					select: ['id', 'tenant', 'note'],
+					limit: 4,
+				},
+				{}
+			)
+		);
+		// tenant 'a' is a multiple of 3, note 'keep' is even — the multiples of 6.
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 6, 12, 18]
+		);
+	});
+
+	it('keeps every node reachable when a replay re-delivers a value still pending', async () => {
+		const Replayed = table({
+			table: 'PlaneAllowReplay',
+			database: 'vector-plane-allow',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		try {
+			await Replayed.indexingOperation;
+			// activates the derived index, so its first rebuild cannot reset the plane under the applies below
+			const anchor = new Array(DIMS).fill(0.01);
+			anchor[0] = -1;
+			await Replayed.put(COUNT, { vector: anchor });
+			await waitFor(() => indexReady(Replayed), { timeout: 30_000, message: 'the derived index did not activate' });
+			const index = Replayed.indices.vector.customIndex;
+			for (let i = 0; i < COUNT; i++) {
+				index.applyDerivedValue(i, allowVector(i), 1);
+				if (i === 16) index.applyDerivedValue(i, allowVector(i), 1);
+			}
+			await index.flushDerived();
+			const allowed = [];
+			for (let i = 0; i < COUNT; i += 3) allowed.push(i);
+			const entries = await index.search(
+				{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+				{ transaction: undefined },
+				{ filter: () => true, candidateKeys: planFor(allowed) }
+			);
+			assert.deepStrictEqual(
+				entries.map((entry) => entry.key),
+				allowed,
+				'every allowed node is reached, nearest first'
+			);
+		} finally {
+			await Replayed.dropTable();
+		}
 	});
 });

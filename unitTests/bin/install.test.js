@@ -3,9 +3,9 @@
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const hdb_logger = require('#src/utility/logging/harper_logger');
+const hdb_logger = require('#js/utility/logging/harper_logger');
 const rewire = require('rewire');
-const install = rewire('#src/bin/install');
+const install = rewire('#js/bin/install');
 
 describe('Test install module', () => {
 	const sandbox = sinon.createSandbox();

@@ -2,7 +2,7 @@
 
 Authentication tokens, OIDC exchange and TLS material.
 
-**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/` or `keys.ts`.
+**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts` or `certificateVerification/`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [])` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
 
 **The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
@@ -29,11 +29,15 @@ Four constraints that look like choices but are not:
 3. **`createOperationToken`, not `createTokens`.** `createTokens` overwrites `hdb_user.refresh_token` as a side effect, so minting for CI would silently revoke whatever credential that user already held (#2018) — the exact problem this feature removes.
 4. **The role is the boundary; the per-policy `operations` allowlist only narrows it.** Least privilege is primarily the role of the user the policy names. A policy may _optionally_ carry an `operations` scope, which can only subtract from that role — never add to it. It is deliberately not merged into `permission.operations`: gate 2 in `operation_authorization.ts` treats an explicit listing of an SU-only operation as a deliberate grant, so reusing that field would _widen_ where this must only narrow. The scope is carried as a separate `tokenOperations` claim and intersected ahead of every early return, including the super_user bypass.
 
-   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is a follow-up on the same surface as CORE-3061. Because a second authorization mechanism beside roles is one more place for the two to disagree, whether to keep this at all is an open design question on #2173 rather than a settled constraint.
+   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is tracked in #2201. The scope shipped with #2173 and is documented in the operations API reference; whether to keep a second authorization mechanism beside roles at all — one more place for the two to disagree — was left open there.
 
    Naming `sql` in a scope grants the SQL interface, not unrestricted DML through it: a write statement additionally requires its matching data operation (`insert`/`update`/`delete`) in scope. That is what keeps `read_only` — which expands to include `sql` — from admitting a DELETE, given that `verifyPermsAST` returns early for a super_user before any table check runs.
 
-`hdb_oidc_token_use` (created lazily via `table()`, not the system schema) records spent tokens keyed on a SHA-256 of the token itself, with `expiresAt` past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
+`hdb_oidc_token_use` (declared on every node at every start by `tokenUseTable.ts`, so a node that never exchanges still removes the rows replicated to it — see dataLayer/DESIGN.md, "System table bootstrap") records spent tokens keyed on a SHA-256 of the token itself, each expiring (record metadata, replicated with the row) past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
+
+**The minted token carries where the run came from.** Beside `workload_identity`, the exchange signs a `deploy_source` claim: `{ via: 'oidc', policy, … }` with the run's verified `repository`, `sha`, `ref`, `workflow_ref`, `run_id`, `run_attempt`, `actor` and `environment`, whichever the identity token holds (`attestedSource`, `components/deploymentSource.ts`). `validateToken` lifts it onto the principal as `deploySource` and impersonation carries it, like the provenance marker, and `deploy_component` records it on the deployment row as attested, where it wins over anything the request declares (#3061). Signed, so a caller cannot edit it; claims, not the token, so the record holds no credential.
+
+`harper deploy setup=true provider=github-actions` (`bin/deploySetupGithubActions.ts`) is the client-side composition of these operations for one repository's workflow: role and user `<component>-ci-deploy` (`deploy_component`, `get_deployment`, `get_job`, `registration_info`) and policy `github-actions-<component>`, names Studio's setup must match. It only creates: a record that already matches is left alone, and one that differs or was deactivated stops it before it writes, so it does not repurpose a role or undo a revocation. `add_oidc_trust` replaces, so setup lists the policy again just before writing it; a policy another super user creates (enabled or not) in that last round trip would still be overwritten. A server-side create-only write would narrow that further but not close it, since `hdb_oidc_trust` replicates and the check would be per node. It reads the policy back and compares it claim for claim, because a mismatch otherwise surfaces only as the exchange's opaque 401.
 
 ## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
 
@@ -56,7 +60,8 @@ a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`
 `registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
 `list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
 principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
-`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A
+`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`** (and
+`isLocalPrincipal`, below). A
 user _created after minting_ with a colliding name is therefore inert at every current site; the
 residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
 
@@ -66,6 +71,20 @@ which never reaches `verifyPerms` and calls `verifyOperationsAllowlist` directly
 on translated table CRUD permissions only. A scoped token intended to be read-only on app
 endpoints must carry restrictive table permissions; `operations: ['read_only']` alone does not
 constrain REST writes if table perms allow them.
+
+Which name the allowlist is checked against: `verifyPerms` is handed the handler, not the invoked
+operation, so gate 1 checks the registered entry's `api_name`, and never the handler's own name —
+only a name with no registration at all (`sql`) is checked as given. The `permission` constructor
+requires that argument: an API name, or `null` when no allowlist may grant the operation. Leaving it
+out is a compile error, which closes the old failure where an omitted name made gate 1 fall back to
+the handler name — refusing every role that listed the operation, unless the handler name happened
+to equal the API name, when it silently granted it instead.
+Aliases share a handler, so listing the canonical name grants both spellings and the alias spelling
+grants neither. `get_backup`, `read_transaction_log` and `catchup` are registered with `null`: gate 2
+would grant `get_backup` ahead of its READ check on a whole-database copy, `read_transaction_log`
+lacks `read_audit_log`'s `system.hdb_secret` guard, and the legacy `catchup` applies writes to any
+table with no table permission check. A test in `unitTests/utility/operation_authorization.test.js`
+holds every dispatched operation to this.
 
 The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
 `permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
@@ -85,32 +104,13 @@ early-returns (super_user, structure_user, system-table allowances): persisted r
 `super_user` with other permission keys, but inline roles can combine `structure_user` with an
 allowlist, and the gate ordering is what keeps unlisted schema ops unreachable.
 
-## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
+## TLS hot-reload publishes matching configured pairs (`security/keys.ts`)
 
-A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
-by completely separate routes, and the two must reconverge or HTTPS breaks on that worker.
-Certificates propagate through data: only the main thread watches the cert file (`isMainThread`
-guard in `loadCertificates`) and writes the new PEM into the `system.hdb_certificate` table; every
-worker is subscribed to that table and rebuilds its secure contexts (`updateTLS` inside
-`createTLSSelector`) on the notification. Private keys never touch the table — each worker watches
-its own key file (the private-key `loadAndWatch` has no `isMainThread` guard) and loads the PEM
-straight into its in-thread `privateKeys` map. `getPrivateKeyByName` reads that map first, so an
-already-built secure context has the key bytes baked in (`setCert`/`setKey` at build time); a later
-map update does not touch contexts already built.
+`loadCertificates` publishes a configured leaf only after `X509Certificate.checkPrivateKey` validates the exact PEM being stored. Only the main thread watches the certificate and key directories; its filename-filtered, shallow watches and five-minute safety poll share a cert/key fingerprint. An incomplete pair returns `false` so it is retried, with a pending-pair warning and an error after 30 seconds (immediate when the new certificate name has no non-self-signed record, then hourly). Restoring the last applied files after an aborted renewal re-enters the loader to clear the pending alarm. Every raw watcher event also arms one trailing check, at most once a second and never postponed, that loads a fingerprint not yet attempted (only the optional poll retries an unchanged unapplied pair): chokidar stops emitting add/change for a name removed twice within its 100 ms removal throttle (it keeps tracking the deleted inode), so its derived events cannot be the only trigger; events the OS never delivers are still left to the optional poll. CA-only records remain independent of the leaf key. Workers use the `hdb_certificate` subscription as their reload trigger and read configured key files when building contexts; no worker key watcher or poll races that notification. Configured keys remain in `getPrivateKeys()` for key retrieval, but entries populated from files are refreshed for retrieval and rebuilds, retaining their cached value while the file is temporarily unreadable; explicit values that differ from the last file-derived key still take precedence. A directory that cannot be watched because it is not readable falls back to Node file polling, which remains armed while configured files are absent, independently of the optional five-minute safety poll. Enforced by the rename-order, per-worker, poll-disabled cases in `integrationTests/security/cert-key-reload.test.ts` and loader tests in `unitTests/security/keys.test.js` and `unitTests/security/tlsFileWatch.test.js`.
 
-The hazard when a rotation changes **both**: the cert can win the race to a worker (table write +
-subscription) and trigger `updateTLS` before that worker has reloaded the matching key, producing a
-context that pairs the new cert with the old key — every handshake on it then fails, and nothing
-rebuilds it until the _next_ cert-table change. The fix: a private-key reload (`handlePrivateKeyReload`,
-the single sink for both the chokidar watcher and PR #1394's periodic poll) triggers a debounced
-rebuild of every live selector via the module-level `liveTLSRebuilders` set, so the worker reconverges
-on its own. Subtleties to preserve: the rotation guard (`previous !== undefined && previous !== key`)
-must skip both the initial load and identical-content reloads or watchers thrash; transient one-shot
-selectors (`getReplicationCert`) pass `liveReload=false` so they don't accumulate in the never-pruned
-set; and the cert subscription shares the same debounced `scheduleRebuild` (same 1500ms cadence), so
-its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
-`integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
-(it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
+The older-file guard does not freeze a record's `ciphers`/`uses`: listeners read them from the record, so the loader marks every record it writes `from_config: true` and, at load, patches a config edit to either field onto a marked record whose PEM equals the file's (a removed `ciphers` is stored as `null`). `file_timestamp` cannot be the ownership signal: `setCertTable` patches, so an API write keeps it. `setCertTable` nulls the marker when a write sets `ciphers` or `uses`, so those set through the API (for example a lowered `@SECLEVEL` for legacy client chains) survive restarts. A record from before the marker is adopted only when it already matches config, because an operator edit is indistinguishable from stale state. When config entries share a certificate file, the first entry to reach a record owns its reconciliation at load, but a full write (first load, or a renewal whose watcher fires first) is made by whichever entry runs last or first, so the record's `uses` and `ciphers` can differ from the load-time owner's until the next restart, and a listener that reads that record uses them. A record the loader declines to change, because it differs but was not written from config, is logged. Changes apply at process start or file change, not on `restart_service`. `hostnames` and `private_key_name` stay frozen by the guard. Enforced by the `ciphers and uses follow config` cases in `unitTests/security/keys.test.js`.
+
+An unrelated table notification during a key-first installation gap, or a second rotation between publication and a worker's key read, can still produce a transient mismatch; the trust-aware last-good retention below protects serving while the next complete pair propagates. The older-file guard still prevents disk from replacing a newer replicated certificate.
 
 **Publication is transactional (#2382).** `updateTLS` builds the entire replacement state —
 hostname→context map, CA map, and default candidate — into pass-local candidates and reconciles the
@@ -130,11 +130,37 @@ the old state (availability outranks the drop in that corner) while the failure 
 row is a pass failure like any other (reported through the signature throttle, armed for retry) and
 its trust drops until it heals. A failed pass arms a
 self-retry on the shared debounce with a per-signature backoff (1.5s doubling to 5min) and
-signature-throttled logging; external triggers (table subscription, key reload) stay at the plain
-debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll dedupe, but rolls
-the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
+signature-throttled logging; external triggers (table subscription) stay at the plain
+debounce. `loadAndWatch` latches its cert/key fingerprint before the callback for chokidar/poll dedupe, but rolls
+the latch back on a false result, synchronous throw, or rejected callback promise (equality-guarded so a stale
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
+**A pass reads the certificate table as the system (harper-pro#1189).** `initialize()` can first run inside a request (harper-pro opens a replication connection from a non-owner read), so `updateTLS` re-enters itself under `contextStorage.exit()`. Inside the request, its static `hdb_certificate` calls would run that request's authorization (an anonymous one is denied) and consume its one-shot `authorize`, and the selector's timers and subscription would keep the request's context. A pass that fails before `.ready` settles still rejects it, but the attempt is not abandoned: a live selector's attempt keeps its subscription and retries on the failure backoff, because a listener calls `initialize()` once and depends on the selector recovering by itself; on recovery `.ready` is replaced with the resolved state. A later `initialize()` replaces a still-failing attempt (timers cleared, subscription ended) with a fresh one, and a one-shot selector's attempt is retired at once. `.ready` keeps the rejected promise until one of those: the Bun listener path reads it directly and would take `undefined` for "no TLS". Enforced by the `createTLSSelector initialized by a request` cases in `unitTests/security/keys.test.js`.
+
+## Self-signed renewal replaces the pair in one transaction (`security/keys.ts`)
+
+`prepareSelfSignedCerts` builds the self-signed CA and replication-certificate records in memory; `publishSelfSignedCerts` writes them in one `transaction()`, and for `renewSelfSigned` also deletes the old self-signed rows there. Writing new rows first is not enough on its own: `setCertTable` patches by name, and the CA name repeats when `node.hostname` is set, so a non-atomic renewal can replace the CA and then fail before the leaf. Renewal looks for a reusable CA and replication certificate with self-signed rows excluded (`getCertAuthority(true)`, `getReplicationCert(true)`), since a self-signed `replication` leaf would otherwise outscore an external generic one. Publication re-reads each row in the transaction and does not replace or delete one that is not self-signed: renewal fails instead, and boot review warns and skips it (and the leaf, when it is the CA). When an external row already holds the node name, the self-signed leaf is stored as `<node>-self-signed`; selection is by hostname, not row name. A same-key write landing inside the commit window itself is not covered. A configured key path names the CA key only when that key parsed; a generated key is created exclusively (`wx`, `0o600`) in `keys/` after the records are built, never overwrites a configured or existing file, and is removed if publication fails. Enforced by the self-signed review and renewal cases in `unitTests/security/keys.test.js` and `integrationTests/security/renew-certs-missing-privatekey.test.ts`.
+
+## Client-certificate revocation checking keeps three tables (`security/certificateVerification/`)
+
+`verificationTables.ts` declares them, and every writable start and the verification path apply the same
+declarations (dataLayer/DESIGN.md, "System table bootstrap"). A row's expiry is record metadata; a table's
+`expiration` is only the fallback for a row written without one.
+
+- A verdict (`hdb_certificate_cache`) expires `cacheTtl` after its check because `CertificateVerificationSource`
+  sets `context.expiresAt`: a caching table decides staleness by the stored expiry, and a source fill stores
+  `sourceContext.expiresAt`, never a field the source returns. `createCacheKey` hashes a key version, so a
+  verdict cached before verdicts carried an expiry, which has none and would read as fresh forever, is never
+  read again.
+- A revocation (`hdb_revoked_certificates`) lives until `crl_next_update + gracePeriod`, the window
+  `performCRLCheck` honors while it decides by `crl_next_update`. Expiring it at `nextUpdate` made that branch
+  unreachable and reported a revoked certificate on an overdue CRL as good.
+- A CRL's revocations replace the previous set all or nothing, in a transaction of their own rather than the
+  verdict fill's `performCRLCheck` runs in, so other checks see a complete set once it commits. The check that
+  downloaded the CRL decides from the CRL itself: by the time it could read the table, another worker may have
+  replaced the set with a different generation of that CRL. A check answered by a cached CRL reads the table
+  outside the verdict fill's transaction, whose LMDB snapshot misses rows committed after it.
 
 ## A component-facing export needs BOTH `index.ts` and `getHarperExports` (`security/jsLoader.ts`, `index.ts`)
 
@@ -149,6 +175,27 @@ unit tests `require('#src/…')` directly; only a fixture that imports from `'ha
 Export the value from the module that _defines_ it rather than re-exporting it through an intermediate,
 so a component-created value shares that module's private symbols. `markCredentialRejection` depends on
 this: its tag is a module-private `Symbol` that `isCredentialRejection` checks by identity.
+
+## Both application loaders resolve through one `resolveModule` (`security/jsLoader.ts`)
+
+The VM loader and the compartment `resolveHook` call the same module-scope `resolveModule`, so a
+dependency that resolves in one `applications.moduleLoader` mode resolves in the other. It resolves
+CommonJS-first (a dual package keeps its `require` target) and falls back to the package's `exports`
+map only for an import of a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`,
+or `MODULE_NOT_FOUND` on Bun. A `require()` never falls back — the CommonJS resolver's verdict is the
+runtime's own `require` resolution. The fallback is a port of Node's `PACKAGE_EXPORTS_RESOLVE` with only
+the `node` and `import` conditions (plus `bun` on Bun) — Node's `module-sync`, `node-addons` and
+`--conditions` are not modeled — and the `resolves package exports as native Node import does` cases check
+each rule against native Node. A
+fallback resolution records the `package.json` and entry-file digests, not a resolution edge, because
+`RuntimeModuleTracker` re-resolves edges with `createRequire` and would read the import-only package as
+changed on every deploy.
+
+SES loads from the ESM shims `ses/index.js` composes, through `loadSES`, never `require('ses')`: that
+bundle is CommonJS, Bun drops function-level `'use strict'` in CommonJS, and SES's sloppy-mode self-check
+then throws `SES_NO_SLOPPY`. Lockdown and the compartment share that one SES instance. Enforced by the
+`pure-ESM package resolution` blocks in `unitTests/security/jsLoader/jsLoader.test.js` (both modes) and
+`integrationTests/components/compartment-pure-esm-dependency.test.ts` (Node and Bun shards).
 
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
@@ -173,3 +220,90 @@ Two consequences that are easy to miss:
   `settleDeferredCredentialRejection` _before_ they read `request.user`, so once a credential is deferred,
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
+
+## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
+
+There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:
+
+- **One committed state.** RocksDB point reads share no snapshot, so `readUserEntries` re-checks the user's version after reading its role and retries if it moved; otherwise one transaction that moves a user to role B and grants role A super_user could be read as the user on A with A's new grant.
+- **Derived data is keyed by entry version, not object identity.** With `storage.caching: false` every read returns a new object. The per-role memo of `appendSystemTablesToRole` + expanded operations, and `isCurrentUser`, compare versions; a `VERSION_REUSED` entry is compared by value instead, since its version no longer identifies one value. `auth.ts` runs `isCurrentUser` on every `authorizationCache` hit, so a cached principal is re-verified once its user or role record changes; a component's `server.getUser` principal is checked against the versions read for its name before it was resolved (`trackUserRecords`).
+- **Notifications are only for holders of a user.** `onUserChange` feeds live-subscription revocation and MCP list-changed from per-thread `hdb_user`/`hdb_role` subscriptions, passing the primary keys of the records changed since the last notification. No argument means which records changed is unknown — a whole-table reload, an oversized batch, a subscription re-established after a gap — and every holder rechecks. `userChangeNotificationEpoch()` is non-zero only while both subscriptions are open and the broadcaster certifies it read every record since (progress tracking, RocksDB only): a consumer that sees one non-zero epoch across a period was notified of every change in it. It never subscribes to an unaudited table, because `subscribe()` would enable and persist auditing on it; on such a node the epoch stays 0 and those consumers fall back to their own backstops.
+- **A request's user is a view.** `auth.ts` hands each request `cloneUserView(user)`, whose `role` and `permission` it may replace (verifyPerms does) without touching the cached principal. The view carries the original's record provenance, so `isCurrentUser` on a request's user answers for the records that admitted it; live-subscription registration relies on that to catch a principal that changed before it registered. Provenance is an own symbol-keyed property of a user this module built, so the spread copies it with no `WeakMap` write on the request path; only a user resolved outside the module (`trackUserRecords`) is tracked in a `WeakMap`. A `deepStrictEqual` against a user literal sees that symbol, so tests compare string-keyed fields.
+
+LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.
+
+### A component grant answers to its names ahead of every operations listing (`security/componentGrant.ts`)
+
+A role's `component_deploy` grant (harper#3046) reaches `deploy_component`, `drop_component`, `get_deployment`, `list_deployments` and `get_components`, for the components its `names` patterns cover (`componentNameMatches` in `utility/componentNames.ts`, which deploy credentials share, harper#3090).
+
+1. **The names are checked ahead of gate 2.** `verifyPerms` admits an SU-only operation the role's `operations` allowlist lists, for every component. A grant-holding role that also listed `deploy_component` would deploy anything, so the grant's check runs first and its answer is final for those five operations. Gate 1 still applies: a role with an allowlist has to list them too.
+2. **The deploy and drop name is resolved as the handler resolves it** — `canonicalProjectName`, else `projectNameFromPackage` — or the check would be on a different name from the deploy. The reads name no component up front, so their handlers filter (`get_components`, `list_deployments`) or refuse (`get_deployment`, 403) by the grant themselves.
+3. **The constraints hold for the entry the deploy would publish, so `deployComponent` enforces them, on the origin only.** `isolated`, `hostSuffix` and `branchedDatabases: required` are read from what the release would leave in force: a package's declared entry, a payload's owned routing, or the entry as it stands for a payload that owns none. It checks before anything is written, again under the preparation lock, and for an activation against the staged descriptor. A peer applies what the origin allowed, as it does isolation admission.
+4. **A deploy credential's grant uses the same patterns, and only there.** `grant_secret component=my-app-pr-*` lets every preview's deploy resolve one dedicated credential (harper#3090, `resolveCredentials`). A component's runtime view of its secrets (`components/componentSecrets.ts`) stays exact, so preview code never reads a pattern-granted row; `harper deploy setup=true` accepts a pattern only for the github and npm providers.
+5. **The key is `component_deploy`, not `components`.** Role permission keys share a namespace with database names (`RESERVED_DATABASE_NAMES`), and `components` is a plausible database name.
+6. **`preview`, `maxPreviews` and `maxTtlDays` bound a preview identity**, below.
+
+## PR previews are enabled by the cluster (`components/previewOperations.ts`)
+
+`enable_previews`, `disable_previews` and `get_preview_policy` (harper#3042) manage the records CI authenticates as for one application's previews. The role and user are `<app>-ci-preview`, with `CI_PREVIEW_OPERATIONS`, a `component_deploy` grant for `<app>-pr-*` with `preview: required`, and no table permissions. The trust policies are `github-actions-<app>-preview` (environment `preview`) and `github-actions-<app>-preview-cleanup` (environment `preview-cleanup`, scoped to `drop_component`). The names and claims come from `utility/previewIdentity.ts`, which the CLI and Studio's preview panel derive them from too.
+
+- **Operations, not a client composition**, unlike `harper deploy setup=true provider=github-actions` above. With two clients (the CLI and Studio), each would otherwise carry the names, the reconcile rules and the teardown order, and the per-app policy is the cluster's to enforce at deploy time anyway. The records are system-table rows, which harper-pro replicates, so none of the three calls `replicateOperation`.
+- **The policy is the grant.** `maxPreviews` (in place of `deployment.previews.maxPerApplication`) and `maxTtlDays` sit in `component_deploy.constraints` beside `isolated`, `hostSuffix` and `branchedDatabases`. Every bound CI is held to is then one replicated record, enforced on the origin with the rest. A separate `hdb_preview_policy` table would also bound a super user's hand deploy, which no grant does, but it is a second record to keep in step and a new system table every node must declare. A super user's preview is held to the configured cap only.
+- **`preview: required` binds the metadata to the grant.** A deploy under it must carry `preview` naming an app `A` whose `A-pr-*` the grant lists, deployed as `A-pr-<n>`. Without that, a deploy escapes expiry and the cap, and `shop-pr-pr-3` (covered by `shop-pr-*`) would count against the cap of `shop-pr`. The same rule narrows what the grant covers for drops and reads, so `shop`'s identity cannot drop `shop-pr-tools`. `maxTtlDays` (7 unless enable is told otherwise) clamps `expiresAt` before the deployment row and the replicated request carry it. An activation is refused instead, since a build's recorded metadata is its own; it is checked against the build's deployment row before anything else, because activating a release that is already live returns before the swap.
+- **The cap is per origin**, as `maxPerApplication` is. It counts the origin's own live previews under its lock, so deploys through two origins can each take the last slot.
+- **Create-only, one at a time per node.** Enable keeps what matches and stops with a 409, writing nothing, on a record that differs or on another enabled policy that would match the same runs (`policiesOverlap`; the exchange takes the first match by id). One enable or disable runs at a time on a node, for every application, since two applications sharing a workflow file would otherwise both pass the overlap check. `add_oidc_trust` replaces, so each policy and its overlap are checked again just before it is written; a writer on another node in that window is not excluded, as for #3127.
+- **Disable revokes, then removes.** It drops the trust policies and deactivates the user. A deploy admitted earlier is refused at its activation, which checks, before and again inside the admission lock, that the deployer's records have not changed (`isCurrentUser`); a swap already under way, or a peer applying a replicated deploy, can still go live, is listed as in progress, and is bound by its expiry. It then asks every node for its live releases (`list_releases`), and drops each release of a `<app>-pr-<n>` component that was deployed as a preview of the app, on the node that holds it and only while it is that node's live release (`ifDeploymentId`). It drops on each node directly, because a drop whose release is not the origin's own stops on the origin before it replicates. Only then does it remove the user and role. A failed drop, a node that cannot say what it holds, or a release this node has no deployment row for yet stops it there with the identity revoked, and a rerun resumes.
+- **A second policy for cleanup, not a second user.** Required reviewers on `preview` gate every job in it, the close-event cleanup included. So cleanup runs in `preview-cleanup`, and its policy narrows the token to `drop_component`; the grant still limits that to `<app>-pr-*`, and `workflow_ref` to the default branch's workflow. A policy with no environment pin would also match the deploy job's token.
+
+## The password hash function and token lifetimes are read when used, never at module load (`security/user.ts`, `security/tokenAuthentication.ts`, `utility/password.ts`)
+
+`harper run` on an empty root evaluates these modules (and `installer.ts`) before `install()` writes the config, and `install()` creates the admin before the startup phase (`runStartup()`) runs, so no startup hook can fix the admin's hash: `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`. Validation uses the stored value. `password.hash` defaults to the configured function; `password.validate` defaults to SHA-256 whatever is configured, because the algorithm of a stored hash is not policy and the refresh-token check validates its SHA-256 hash with that default (a config-driven default returns a Promise there, and `!Promise` accepts a superseded token). Token lifetimes are read per mint, so they need no startup hook. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
+
+## Local trust is a principal, not a stored user (`security/user.ts`, `security/auth.ts`)
+
+A request trusted by its transport — `authentication.authorizeLocal` from 127.x/::1, the operations domain socket (`bypassLocalAuth`), a loopback MQTT connection, test mode's `bypassAuth()` — runs as `localPrincipal()`: a fixed super user named `local` that no stored record backs, so admitting it reads no record and works with no users at all.
+
+- **Recognized by its marker, never its name.** `isLocalPrincipal` checks `_localPrincipal: true`, which only trusted code sets: `userView` copies no such field from a record, and the token, bearer-validator, OIDC and impersonation paths build users from explicit fields. A string, not a symbol, because the Bun/uWS fallback forwards `request.user` as JSON and the MQTT will row stores it. `add_user` refuses the name; a stored `local` that predates that is an ordinary user.
+- **Never resolvable by name, so never portable.** Local trust belongs to the connection. A session row never names the principal (`session.update` drops it), and no token is minted for it: a credential-free `create_authentication_tokens` from it mints for the first active stored user whose role has the `super_user` flag (`getSuperUser`), or fails with 409. A by-name rehydration site checks `isLocalPrincipal` first: the MQTT will replay rebuilds the principal from the marker; live-subscription re-authorization and MCP list_changed skip it, since no record change can revoke it.
+- **Each call is a separate view**, as with `userView`: fresh user, `role` and `permission` objects; the shared system-table tree is frozen. The role is a default install's `super_user` role, id included, because applications authorize on `role.id` (the published redirector and early-hints templates do).
+
+Enforced by `unitTests/security/localPrincipal.test.js` and `integrationTests/security/local-principal-token-mint.test.ts`.
+
+## Named component children are identified by lifetime (`security/jsLoader.ts`, `security/spawnPidFile.ts`)
+
+To prevent adopting or signaling recycled PIDs or reusing zombies ([#2968](https://github.com/HarperFast/harper/issues/2968)), a `pids/<name>.pid` record contains the positive PID, version (zero when omitted), and OS birth identity. Linux uses boot ID/PID/start ticks and excludes zombies and thread IDs; macOS uses PID/`ps lstart` in UTC/C locale (one-second resolution); Windows uses PID/`Win32_Process.CreationDate` ticks. Adoption, version replacement, wrapper kill and exit observation compare the recorded identity. A Linux record from a different boot is retired before probing its potentially inaccessible recycled PID. PID records publish through write-then-rename so readers only see a complete record; a crash before publication can still leave an unrecorded surviving child. Probe failure is unknown, never permission to retire a record or emit exit. Same-boot hidden PIDs under hidepid/ProtectProc and permission-denied probes can require operator verification/record repair or process departure; permission denial does not prove identity change. macOS/Windows wrapper probes are asynchronous and never overlap. Synchronous spawn/adoption probes run under the lock, adding serialized startup time per worker to keep the identity check fresh after lock waits. Polling is once per second on Linux/macOS and once per five seconds on Windows to bound recurring PowerShell cost; exit notification can lag by that interval plus probe time. A signal-zero fast path with infrequent birth checks was rejected because a reused live PID would keep an exited wrapper open until that longer check interval. Legacy records are retired without signaling their unverified PID, with a warning: a surviving legacy child may coexist with the replacement once during upgrade. Older builds ignore the third line, so mixed-version access does not gain this safety guarantee.
+
+Synchronous spawning uses a filesystem bakery lock: contenders atomically publish choosing/ticket states at their own UUID filenames; stale removal targets only that UUID. Ticket ordering is shared with `componentPreparationLock.ts`. Only successfully matching foreign owner identities are cached, for one second; a stale positive can delay reclamation but cannot authorize reclaiming a live claim. PID record and claim operations retry transient Windows sharing errors. An owner whose claim cannot be unlinked publishes a unique release marker; scans honor the marker before reading the retired claim and clean up both when possible. Acquisition, publication and conditional exit cleanup use the same claim protocol, preventing a stale checker or an older child's exit from removing a newer record. Waits sleep for 50 ms with `Atomics.wait` and fail after 60 seconds without queue progress, renewing only as the original predecessor cohort assigns tickets or retires; later arrivals cannot renew a stalled wait; they never steal from a live process. External identity probes have a 30-second deadline. Exit cleanup makes one non-waiting attempt using the cached own identity and conservatively live foreign claims, without launching identity probes; a busy record is left for the next verified spawn to retire. Metadata file operations retain their bounded retries. Release failures are reported separately so they do not replace the spawn result or native error; if both claim removal and marker publication fail, operator repair/restart is still required. A claim abandoned by a terminated worker while Harper still lives can block until Harper restarts; OS identity cannot establish worker-thread liveness synchronously. A main-thread exit sweep is feasible for managed workers, but adding thread identities and another lifecycle cleanup path is deferred: constrained spawning also runs in standalone workers and main-thread scopes without that manager. This protocol keeps conservative process-lifetime reclamation as the common fallback. Unreadable owners also fail rather than permit concurrent spawning. Native PID handles would be required to eliminate the remaining identity-check-to-signal race and OS timestamp-resolution limits. The spawning thread cannot reap its fresh child while synchronous identity capture is running, so no wall-clock spawn bound is needed. Enforced by `unitTests/components/spawnPidIdentity.test.js`, `unitTests/components/spawnPidFile.test.js` (both unit suites are Windows-gated), and `integrationTests/components/named-process.test.ts`.
+
+Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
+
+Named-process probe and lock failures use `NamedProcessError`, a `ServerError` subtype with the original cause; native child-process argument errors retain their original class and code.
+
+## Application lockdown seals the intrinsics by default (`security/intrinsicsLockdown.ts`)
+
+`applications.lockdown` makes prototype-pollution exploits against apps harder; it is not a sandbox. The default
+`seal-after-load` (and eager `seal`) seals 21 intrinsic globals (constructors plus `Math`, `JSON`, `Reflect` and
+`Atomics`) and their prototypes, plus `Function` and `Function.prototype`, once components have loaded. After that point no property can be added to or deleted
+from them, which is what a polluting key (`__proto__.isAdmin`, `constructor.prototype.isAdmin`) needs.
+Overwriting an existing property is still allowed: it is mostly a denial of service, not an escalation.
+
+Never make prototype properties read-only in a seal mode, whether by `Object.freeze`, `writable: false` or
+getter/setter accessors. A read-only elements kind on `Object.prototype` or `Array.prototype` moves every store
+into an array hole off V8's fast path, process-wide (about 45× for `new Array(n)` fills, about 3× for msgpackr
+decode). Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
+shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
+accessors.
+
+The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible. When a component
+replaces one of these globals while it loads, sealing locks both the replacement and the realm's original, which
+literals and async functions keep using. Freezing locks only the current global, because freezing the original
+would skip its overridable accessors.
+
+`lockDownIntrinsics` matches mode names exactly: any other truthy value, including a typo or a non-string, freezes
+eagerly (fails closed). A falsy value skips lockdown, like `none` (`security/jsLoader.ts`). Only fresh installs get
+the default: the installer writes the whole default config into each instance's `harper-config.yaml`, so an
+upgraded instance keeps the `freeze-after-load` it was installed with.
+
+Enforced by `unitTests/security/intrinsicsLockdown.test.js`, which runs each mode in a fresh `Worker` because
+lockdown cannot be undone in a realm, and by `integrationTests/components/intrinsics-lockdown.test.ts`. The cost of
+each mode is measured by `benchmarks/lockdown/run.mts`.

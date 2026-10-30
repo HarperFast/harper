@@ -1,23 +1,41 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { previousFullTextProcess } = require('./fixtures/fullTextUpgradeHelpers.cjs');
+const { toBufferKey } = require('ordered-binary');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const {
 	createNativeFullTextDerivedIndexBackend,
 	NativeFullTextDerivedIndexLifecycle,
+	retireNativeFullTextDerivedIndexStorage,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
-const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
+const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
+const {
+	DERIVED_INDEX_ACCEPTED,
+	DERIVED_INDEX_DEFERRED,
+	DerivedIndexRuntime,
+} = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
+const { table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const {
+	encodeFullTextCursorPayload,
+	decodeFullTextCursorPayload,
+} = require('#src/resources/indexes/fullTextDerivedIndex');
+const fullTextPackageVersion = require('../../package.json').optionalDependencies['@harperfast/fulltext'];
+const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
 const limits = {
-	indexingThreads: 1,
+	indexingThreads: 2,
 	searchThreads: 1,
-	writerMemoryBytes: 32 * 1024 * 1024,
+	writerMemoryBytes: 64 * 1024 * 1024,
 	maxQueuedCommands: 16,
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,
 };
+const readerLimits = { ...limits, searchThreads: 2 };
 
 function options(storePath, binding, overrides = {}) {
 	return {
@@ -26,7 +44,7 @@ function options(storePath, binding, overrides = {}) {
 		indexId: 'products-title',
 		sourceGeneration: 'table-generation-1',
 		fields: [{ name: 'title', weight: 2 }],
-		analyzer: 'english@1',
+		analyzer: 'english@2',
 		positions: true,
 		surfaceTerms: false,
 		limits,
@@ -41,6 +59,7 @@ class FakeNativeModule {
 			applyMutationBatch() {}
 			publish() {}
 			close() {}
+			searchPage() {}
 		};
 		this.runtimeInfoCalls = 0;
 		this.inspection = { state: 'missing' };
@@ -57,11 +76,26 @@ class FakeNativeModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 4,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: this.maxCommitPayloadBytes },
+			limits: {
+				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
+				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
+				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
+				maxSearchBudgetMilliseconds: 30_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		};
 	}
 
@@ -96,6 +130,10 @@ class FakeNativeModule {
 		};
 	}
 
+	async openNativeFullTextReader() {
+		throw Object.assign(new Error('test reader is not configured'), { code: 'E_INDEX_NOT_READY' });
+	}
+
 	async resetNativeFullTextIndex(resetOptions) {
 		this.resets.push(resetOptions);
 		return this.resetResult ?? { state: 'missing' };
@@ -114,6 +152,115 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	beforeEach(() => {
 		storePath = path.join(setupTestDBPath(), `fulltext-lifecycle-${Date.now()}-${Math.random()}`);
 		fs.mkdirSync(storePath, { recursive: true });
+	});
+
+	it('loads the published registry package without unused candidate limits and persists a searchable checkpoint', async function () {
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+
+		const binding = await loadFullTextNativeBinding();
+		const runtime = await binding.runtimeInfo();
+		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
+		assert.strictEqual(runtime.tantivyVersion, '0.27.0');
+		assert.strictEqual(runtime.nativeAbiVersion, 9);
+		assert.strictEqual(runtime.lifecycleApiVersion, 1);
+		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
+		assert.strictEqual(runtime.queryApiVersion, 4);
+		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
+		const compatibleBinding = {
+			...binding,
+			async runtimeInfo() {
+				const runtimeLimits = { ...runtime.limits };
+				delete runtimeLimits.maxCandidateIds;
+				delete runtimeLimits.maxCandidateBytes;
+				return { ...runtime, limits: runtimeLimits };
+			},
+		};
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+			options(storePath, compatibleBinding, { surfaceTerms: true })
+		);
+		await lifecycle.initialize();
+		const index = await lifecycle.open();
+		await index.applyMutationBatch(
+			{
+				upserts: [{ id: 'product-1', version: '7', fields: { title: 'Café running shoes' } }],
+				deletes: [],
+			},
+			{ assumeDistinctIds: true, rejectedUpsert: 'delete' }
+		);
+		await index.publish('registry-checkpoint');
+		const result = await index.search({ text: 'running', limit: 10 });
+		assert.deepStrictEqual(
+			result.hits.map(({ id }) => id),
+			['product-1']
+		);
+		await index.close({ mode: 'require-clean' });
+		const reader = await binding.openNativeFullTextReader({
+			fields: [{ name: 'title', weight: 2 }],
+			analyzer: 'english@2',
+			positions: true,
+			surfaceTerms: true,
+			limits: readerLimits,
+			path: lifecycle.path,
+			indexId: 'products-title',
+			generation: createHash('sha256').update('table-generation-1').digest('hex'),
+		});
+		assert.strictEqual(reader.committedPayload, 'registry-checkpoint');
+		const readerResult = await reader.search({ text: 'running', limit: 10 });
+		assert.deepStrictEqual(
+			readerResult.hits.map(({ id, version }) => ({ id, version })),
+			[{ id: 'product-1', version: '7' }]
+		);
+		const traced = await reader.traceMatches(
+			{ text: 'cafe', mode: 'any' },
+			[{ id: 'product-1', fields: { title: 'Café running shoes' } }],
+			{ snippets: true, fragmentLength: 40, maxFragmentsPerValue: 1 }
+		);
+		assert.strictEqual(traced.complete, true);
+		assert.deepStrictEqual(traced.records[0].values[0].spans, [{ start: 0, end: 4 }]);
+		assert.strictEqual('Café running shoes'.slice(0, 4), 'Café');
+		const [searchDuringReload] = await Promise.all([reader.search({ text: 'running', limit: 10 }), reader.reload()]);
+		assert.deepStrictEqual(
+			searchDuringReload.hits.map(({ id }) => id),
+			['product-1']
+		);
+		const updater = await lifecycle.open();
+		await updater.publish('registry-checkpoint-2');
+		await updater.close({ mode: 'require-clean' });
+		await reader.reload();
+		assert.strictEqual(reader.committedPayload, 'registry-checkpoint-2');
+		await reader.close();
+		const reweightedReader = await binding.openNativeFullTextReader({
+			fields: [{ name: 'title', weight: 7 }],
+			analyzer: 'english@2',
+			positions: true,
+			surfaceTerms: true,
+			limits: readerLimits,
+			path: lifecycle.path,
+			indexId: 'products-title',
+			generation: createHash('sha256').update('table-generation-1').digest('hex'),
+		});
+		assert.deepStrictEqual(
+			(await reweightedReader.search({ text: 'running', limit: 10 })).hits.map(({ id }) => id),
+			['product-1']
+		);
+		await reweightedReader.close();
+
+		assert.deepStrictEqual(lifecycle.inspect(), {
+			state: 'checkpointed',
+			committedPayload: 'registry-checkpoint-2',
+		});
+
+		const nextGeneration = new NativeFullTextDerivedIndexLifecycle(
+			options(storePath, binding, { sourceGeneration: 'table-generation-2', surfaceTerms: true })
+		);
+		await nextGeneration.initialize();
+		assert.deepStrictEqual(nextGeneration.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		await nextGeneration.reset();
+		const rebuilt = await nextGeneration.open();
+		const rebuiltResult = await rebuilt.search({ text: 'running', limit: 10 });
+		assert.deepStrictEqual(rebuiltResult.hits, []);
+		await rebuilt.close({ mode: 'require-clean' });
+		await nextGeneration.reset();
 	});
 
 	it('uses one deterministic native directory and stable source generation', async () => {
@@ -162,7 +309,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await lifecycle.open();
 		assert.strictEqual(binding.runtimeInfoCalls, 1);
 		assert.deepStrictEqual(binding.opens[0].fields, [{ name: 'title', weight: 2 }]);
-		assert.strictEqual(binding.opens[0].analyzer, 'english@1');
+		assert.strictEqual(binding.opens[0].analyzer, 'english@2');
 		assert.strictEqual(binding.opens[0].positions, true);
 		assert.strictEqual(binding.opens[0].surfaceTerms, false);
 		assert.deepStrictEqual(binding.opens[0].limits, limits);
@@ -182,6 +329,49 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		]);
 	});
 
+	it('quiesces query readers before reset and resumes them after success', async () => {
+		const binding = new FakeNativeModule();
+		const events = [];
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+			options(storePath, binding, {
+				beforeReset: async () => events.push('paused'),
+				afterReset: () => events.push('resumed'),
+			})
+		);
+		binding.resetNativeFullTextIndex = async (resetOptions) => {
+			events.push('reset');
+			binding.resets.push(resetOptions);
+			return { state: 'missing' };
+		};
+		await lifecycle.initialize();
+		await lifecycle.reset();
+		assert.deepStrictEqual(events, ['paused', 'reset', 'resumed']);
+	});
+
+	it('resumes query readers when reset preparation or native reset fails', async () => {
+		for (const failure of ['prepare', 'reset']) {
+			const binding = new FakeNativeModule();
+			const events = [];
+			const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+				options(storePath, binding, {
+					beforeReset: async () => {
+						events.push('paused');
+						if (failure === 'prepare') throw new Error('pause failed');
+					},
+					afterReset: async () => events.push('resumed'),
+				})
+			);
+			if (failure === 'reset')
+				binding.resetNativeFullTextIndex = async () => {
+					events.push('reset');
+					throw new Error('reset failed');
+				};
+			await lifecycle.initialize();
+			await assert.rejects(lifecycle.reset(), /failed/);
+			assert.deepStrictEqual(events, failure === 'prepare' ? ['paused', 'resumed'] : ['paused', 'reset', 'resumed']);
+		}
+	});
+
 	it('does not block reset on best-effort retired storage reclamation', async () => {
 		let finishReclaim;
 		const binding = new FakeNativeModule();
@@ -195,6 +385,20 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await waitFor(() => binding.reclaims.length === 2);
 		assert.deepStrictEqual(binding.reclaims.at(-1), { path: lifecycle.path, retiredPath: 'wrapper-owned' });
 		finishReclaim();
+	});
+
+	it('retires a missing native directory without loading the optional binding', async () => {
+		fs.mkdirSync(path.join(storePath, '.fulltext-retired'));
+		await assert.doesNotReject(
+			retireNativeFullTextDerivedIndexStorage({
+				storePath,
+				storeName: 'catalog.Product.missing',
+				indexId: 'missing-index',
+				binding: async () => {
+					throw new Error('native module unavailable');
+				},
+			})
+		);
 	});
 
 	it('serializes best-effort retired storage reclamation', async () => {
@@ -256,6 +460,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(binding.opens.length, 0);
 	});
 
+	it('clamps the default cursor payload limit to a smaller native commit capacity', async () => {
+		const binding = new FakeNativeModule();
+		binding.maxCommitPayloadBytes = 32 * 1024;
+		const backendOptions = {
+			...options(storePath, binding),
+			id: 'products-title',
+		};
+		assert.strictEqual(backendOptions.maxCursorPayloadBytes, undefined);
+		const backend = await createNativeFullTextDerivedIndexBackend(backendOptions);
+
+		assert.strictEqual(backend.id, 'products-title');
+		assert.strictEqual(binding.runtimeInfoCalls, 1);
+		assert.strictEqual(binding.reclaims.length, 1);
+		assert.strictEqual(binding.opens.length, 0);
+	});
+
 	it('validates backend options before starting retired storage reclamation', async () => {
 		const binding = new FakeNativeModule();
 		await assert.rejects(
@@ -282,11 +502,26 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 4,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
+				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
+				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
+				maxSearchBudgetMilliseconds: 30_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -297,10 +532,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
+				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
+				maxSearchBudgetMilliseconds: 30_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -309,7 +556,43 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	it('rejects an unknown mutation-batch API version', async () => {
 		const binding = new FakeNativeModule();
 		const runtimeInfo = binding.runtimeInfo.bind(binding);
-		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 4 });
+		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 6 });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native trace source-byte limit', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxTraceSourceBytes;
+			return info;
+		};
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native search execution budget', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxSearchBudgetMilliseconds;
+			return info;
+		};
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native autocomplete result limit', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxAutocompleteResults;
+			return info;
+		};
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
@@ -339,6 +622,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		backend.attach({
 			isOwnerEpoch: (epoch) => epoch === 1n,
 			getReadiness: () => ({ state: 'ready', ownerEpoch: 1n, rebuildAttempts: 0 }),
+			publicationChanged() {},
 		});
 		const batch = { ownerEpoch: 1n, transactions: [], records: [], bytes: 800 };
 		assert.strictEqual(backend.deliver(batch), DERIVED_INDEX_ACCEPTED);
@@ -346,4 +630,232 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await backend.shutdown(1n);
 		assert.strictEqual(binding.opens[0].limits.maxQueuedBytes, 2048);
 	});
+});
+
+function upgradeNativeOptions(configuration, lifecycle) {
+	return {
+		path: lifecycle.path,
+		indexId: configuration.indexId,
+		generation: createHash('sha256').update(configuration.sourceGeneration).digest('hex'),
+		fields: configuration.fields,
+		analyzer: configuration.analyzer,
+		stopWords: configuration.stopWords,
+		positions: configuration.positions,
+		surfaceTerms: configuration.surfaceTerms,
+		synonyms: configuration.synonyms,
+		limits: configuration.limits,
+	};
+}
+
+describe('published full-text 0.5.0 to 0.7.0 migration', function () {
+	this.timeout(60_000);
+	let binding;
+	let rootPath;
+
+	before(async function () {
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		rootPath = setupTestDBPath();
+		binding = await loadFullTextNativeBinding();
+		assert.strictEqual((await binding.runtimeInfo()).packageVersion, fullTextPackageVersion);
+	});
+
+	it('rejects old checkpoints, retires them and refuses unsafe downgrade opens', async () => {
+		const configuration = options(path.join(rootPath, 'native-upgrade-lifecycle'), binding, { surfaceTerms: true });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+		await lifecycle.initialize({ reclaimRetired: false });
+		const native = upgradeNativeOptions(configuration, lifecycle);
+		const payload = encodeFullTextCursorPayload({ format: 1, logs: { local: 42 } });
+		const seeded = previousFullTextProcess(
+			'seed',
+			native,
+			[{ id: 'old', version: '1', fields: { title: 'added' } }],
+			payload
+		);
+		assert.deepStrictEqual(seeded.inspection, { state: 'checkpointed', committedPayload: payload });
+		assert.deepStrictEqual(lifecycle.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		await assert.rejects(lifecycle.open(), { code: 'E_IDENTITY_MISMATCH' });
+		await lifecycle.reset(1n);
+		assert.strictEqual(lifecycle.inspect().state, 'missing');
+		const retired = path.join(path.dirname(lifecycle.path), '.fulltext-retired');
+		await waitFor(() => !fs.existsSync(retired) || fs.readdirSync(retired).length === 0, 5000);
+		const index = await lifecycle.open();
+		try {
+			assert.strictEqual((await index.search({ text: 'added', exactTotal: true })).total, 0);
+			await index.publish(payload);
+		} finally {
+			await index.close({ mode: 'rollback' });
+		}
+		assert.strictEqual(lifecycle.inspect().state, 'checkpointed');
+		const reverse = previousFullTextProcess('inspect', native);
+		assert.deepStrictEqual(reverse.inspection, { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		assert.strictEqual(reverse.openError, 'E_IDENTITY_MISMATCH');
+		const refusedReset = previousFullTextProcess('reset', native);
+		assert.strictEqual(refusedReset.resetError, 'E_INDEX_CORRUPT');
+		assert.strictEqual(lifecycle.inspect().state, 'checkpointed');
+		await lifecycle.reset(2n);
+		const downgraded = previousFullTextProcess('seed', native, [], payload);
+		assert.deepStrictEqual(downgraded.inspection, { state: 'checkpointed', committedPayload: payload });
+	});
+
+	it('retires a dropped old-engine index without first rebuilding it', async () => {
+		const configuration = options(path.join(rootPath, 'native-upgrade-drop'), binding);
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+		await lifecycle.initialize({ reclaimRetired: false });
+		previousFullTextProcess('seed', upgradeNativeOptions(configuration, lifecycle), [], 'old-checkpoint');
+		await retireNativeFullTextDerivedIndexStorage(configuration);
+		assert.strictEqual(fs.existsSync(lifecycle.path), false);
+	});
+
+	for (const empty of [false, true]) {
+		it(`rebuilds a valid ${empty ? 'empty' : 'populated'} checkpoint through Harper and replays concurrent writes`, async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			setMainIsWorker(true);
+			const Product = table({
+				database: `fulltext-upgrade-${empty ? 'empty' : 'populated'}`,
+				table: 'Product',
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+			});
+			await Product.put('anchor', { title: 'anchor' });
+			await Product.delete('anchor');
+			if (!empty) {
+				await Product.put('updated', { title: 'added boots' });
+				await Product.put('deleted', { title: 'waterproof removable' });
+				await Product.put('ad', { title: 'ad' });
+			}
+			const configuration = options(path.join(rootPath, `native-upgrade-${empty}`), binding, { surfaceTerms: true });
+			const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+			await lifecycle.initialize({ reclaimRetired: false });
+			const native = upgradeNativeOptions(configuration, lifecycle);
+			const nativeId = (id) => `${Product.tableId}.${toBufferKey(id).toString('base64url')}`;
+			const records = () =>
+				[...Product.primaryStore.getRange({ versions: true })]
+					.filter(({ key, value }) => value != null && typeof key !== 'symbol')
+					.map(({ key, version, value }) => ({ recordId: key, version, value }));
+			const audit = () =>
+				[...Product.auditStore.getRange({ start: 1 })].map(({ txnLogKey, recordId, tableId, type, version }) => ({
+					txnLogKey,
+					recordId,
+					tableId,
+					type,
+					version,
+				}));
+			const sourceBefore = audit();
+			const cursor = { format: 1, logs: { local: sourceBefore.at(-1).txnLogKey } };
+			const seeded = previousFullTextProcess(
+				'seed',
+				native,
+				[
+					...records().map(({ recordId, version, value }) => ({
+						id: nativeId(recordId),
+						version: String(version),
+						fields: { title: value.title },
+					})),
+					{ id: 'native-only-ghost', version: '1', fields: { title: 'migrationghost' } },
+				],
+				encodeFullTextCursorPayload(cursor)
+			);
+			assert.strictEqual(seeded.inspection.state, 'checkpointed');
+			assert.deepStrictEqual(seeded.ghostIds, ['native-only-ghost']);
+			assert.deepStrictEqual({ ...decodeFullTextCursorPayload(seeded.inspection.committedPayload).logs }, cursor.logs);
+			assert.deepStrictEqual(lifecycle.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+			let runtime;
+			let unregister;
+			let reader;
+			let scanned = 0;
+			let resets = 0;
+			let auditAfterWrites;
+			let writeError;
+			let resetError;
+			try {
+				const backend = await createNativeFullTextDerivedIndexBackend({
+					...configuration,
+					id: configuration.indexId,
+					beforeReset: async () => {
+						resets++;
+						try {
+							assert.strictEqual(runtime.getReadiness(configuration.indexId).state, 'rebuilding');
+						} catch (error) {
+							resetError = error;
+							throw error;
+						}
+					},
+				});
+				runtime = new DerivedIndexRuntime(
+					Product.auditStore,
+					(_tableId, recordId) => {
+						const entry = Product.primaryStore.getEntry(recordId);
+						return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+					},
+					{
+						idleGraceMilliseconds: 5,
+						scanRecords: () => {
+							scanned++;
+							const snapshot = records();
+							setImmediate(async () => {
+								try {
+									await Product.put('updated', { title: 'added waterproof jacket' });
+									await Product.delete('deleted');
+									await Product.put('created', { title: 'added waterproof boots' });
+									auditAfterWrites = audit();
+								} catch (error) {
+									writeError = error;
+								}
+							});
+							return snapshot;
+						},
+					}
+				);
+				unregister = runtime.register({
+					backend,
+					projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+					options: {
+						flushAfterMutations: 1,
+						maxChunkRecords: 1,
+						maxFlushAgeMilliseconds: 10,
+						rebuildBackoffMilliseconds: 10,
+						maxRebuildAttempts: 2,
+					},
+				});
+				await waitFor(() => {
+					if (resetError) throw resetError;
+					if (writeError) throw writeError;
+					return auditAfterWrites;
+				}, 30_000);
+				const tail = auditAfterWrites.at(-1).txnLogKey;
+				await waitFor(
+					() =>
+						scanned === 1 &&
+						runtime.getReadiness(configuration.indexId).state === 'ready' &&
+						backend.getDurableCursor()?.logs.local >= tail,
+					30_000
+				);
+				assert.strictEqual(resets, 1);
+				assert.deepStrictEqual(audit(), auditAfterWrites);
+				assert.deepStrictEqual(auditAfterWrites.slice(0, sourceBefore.length), sourceBefore);
+				reader = await binding.openNativeFullTextReader(native);
+				const result = await reader.search({ text: 'added waterproof', mode: 'all', exactTotal: true, limit: 10 });
+				const expected = ['created', 'updated'].map((id) => ({
+					id: nativeId(id),
+					version: String(Product.primaryStore.getEntry(id).version),
+				}));
+				assert.deepStrictEqual(
+					result.hits.map(({ id, version }) => ({ id, version })).sort((a, b) => a.id.localeCompare(b.id)),
+					expected.sort((a, b) => a.id.localeCompare(b.id))
+				);
+				assert.strictEqual(result.total, 2);
+				assert.strictEqual(result.totalRelation, 'exact');
+				assert.strictEqual((await reader.search({ text: 'migrationghost', exactTotal: true })).total, 0);
+				assert.strictEqual((await reader.search({ text: 'removable', exactTotal: true })).total, 0);
+				assert.deepStrictEqual(
+					(await reader.search({ text: 'ad', exactTotal: true })).hits.map(({ id }) => id),
+					empty ? [] : [nativeId('ad')]
+				);
+			} finally {
+				await reader?.close();
+				await unregister?.();
+				await runtime?.stop();
+			}
+		});
+	}
 });

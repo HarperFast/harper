@@ -1,3 +1,4 @@
+import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/serverUtilities.ts';
 /**
  * Operations-profile tool generation. Exposes one MCP tool per Harper
  * operation that survives the `mcp.operations.allow` / `deny` filter, computed
@@ -45,6 +46,7 @@ import {
 	type ToolDef,
 	type ToolResult,
 } from '../toolRegistry.ts';
+import { wrapToolResult } from './results.ts';
 import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
 import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 
@@ -63,8 +65,7 @@ interface OperationsConfig {
 	deny?: readonly string[];
 }
 
-// Test seams. Avoids importing Harper's heavy server-helpers graph from unit
-// tests that only want to exercise the registration logic.
+// Test seams replace production dispatch when exercising registry behavior.
 let _opMapOverride: OperationFunctionMap | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
@@ -87,11 +88,7 @@ function loadServerUtilities():
 	  }
 	| undefined {
 	try {
-		// Lazy require: Harper's server-helpers graph initializes eagerly
-		// (RocksDB lock acquisition, schema preload). Loading it from a unit
-		// test that hasn't booted Harper throws; treat that as "we're not in
-		// a Harper process" and let callers gracefully no-op.
-		return require('../../../server/serverHelpers/serverUtilities');
+		return serverUtilitiesRuntimeModule as any;
 	} catch (err) {
 		harperLogger.trace(`MCP operations tools: serverUtilities unavailable (${(err as Error).message})`);
 		return undefined;
@@ -148,7 +145,8 @@ export const DEFAULT_ALLOW: readonly string[] = [
  * OIDC trust policies (#2171) are excluded on the same grounds and then some: a
  * policy grants an external CI workflow the right to authenticate as a Harper
  * user, so reading the set tells an attacker exactly which repository and
- * workflow to compromise, and writing one is a way to grant itself access.
+ * workflow to compromise, and writing one is a way to grant itself access. The
+ * preview operations read and write such policies, with the role and user they name.
  */
 export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'set_secret',
@@ -161,6 +159,9 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'list_oidc_trust',
 	'drop_oidc_trust',
 	'exchange_oidc_token',
+	'enable_previews',
+	'disable_previews',
+	'get_preview_policy',
 ]);
 
 /**
@@ -181,6 +182,7 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'delete_transaction_logs_before',
 	'drop_user',
 	'drop_role',
+	'disable_previews',
 	'restart',
 	'restart_service',
 	'set_configuration',
@@ -297,6 +299,66 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
 }
 
 /**
+ * Maximum number of items or serialized bytes collected from a non-array iterable
+ * or async iterable operation result (`read_audit_log`, `get_analytics`, full-text
+ * `search_by_conditions`, etc.). Exceeding either cap fails with an explicit error
+ * rather than silently clipping results or buffering an unbounded cursor in memory.
+ */
+export const MAX_OPERATION_ITERABLE_ITEMS = 10_000;
+export const MAX_OPERATION_ITERABLE_BYTES = 10 * 1024 * 1024;
+
+function isCollectibleIterable(data: unknown): data is AsyncIterable<unknown> | Iterable<unknown> {
+	if (data === null || typeof data !== 'object') return false;
+	if (Array.isArray(data) || data instanceof Readable || ArrayBuffer.isView(data)) return false;
+	const candidate = data as { [Symbol.asyncIterator]?: unknown; [Symbol.iterator]?: unknown };
+	return typeof candidate[Symbol.asyncIterator] === 'function' || typeof candidate[Symbol.iterator] === 'function';
+}
+
+async function collectIterableResult(
+	operationName: string,
+	iterable: AsyncIterable<unknown> | Iterable<unknown>,
+	signal?: AbortSignal
+): Promise<unknown[]> {
+	const maybeMapError = (
+		iterable as { mapError?: (fn: (error: any) => unknown) => AsyncIterable<unknown> | Iterable<unknown> }
+	).mapError;
+	if (typeof maybeMapError === 'function') {
+		iterable = maybeMapError.call(iterable, (error: any) => ({
+			error: error?.name ?? 'Error',
+			message: error?.message ?? String(error),
+			...error?.partialObject,
+		}));
+	}
+	const items: unknown[] = [];
+	let totalBytes = 0;
+	for await (const item of iterable) {
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		const resolved = await item;
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		if (items.length >= MAX_OPERATION_ITERABLE_ITEMS) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		totalBytes += Buffer.byteLength(typeof resolved === 'string' ? resolved : (JSON.stringify(resolved) ?? ''));
+		if (totalBytes > MAX_OPERATION_ITERABLE_BYTES) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result byte limit of ${MAX_OPERATION_ITERABLE_BYTES} bytes; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		items.push(resolved);
+	}
+	if (signal?.aborted) {
+		throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+	}
+	return items;
+}
+
+/**
  * Build the dispatch handler for one operation. Returns a function suitable
  * for `ToolDef.handler` that delegates to Harper's normal operation pipeline.
  *
@@ -306,7 +368,10 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
  * adapt to the failure.
  */
 export function makeOperationToolHandler(operationName: string) {
-	return async function operationToolHandler(args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+	return async function operationToolHandler(
+		args: unknown,
+		context: { user: AuthedUser; signal?: AbortSignal }
+	): Promise<ToolResult> {
 		const body: Record<string, unknown> = {
 			...(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}),
 			operation: operationName,
@@ -338,7 +403,10 @@ export function makeOperationToolHandler(operationName: string) {
 				throw new Error('Harper operations runtime unavailable');
 			}
 			const operationFn = chooseOperation(body);
-			const data = await processLocalTransaction({ body }, operationFn);
+			let data = await processLocalTransaction({ body }, operationFn);
+			if (isCollectibleIterable(data)) {
+				data = await collectIterableResult(operationName, data, context?.signal);
+			}
 			if (data instanceof Readable) {
 				// Backstop for an operation outside STREAMING_OPERATIONS unexpectedly returning a
 				// stream (e.g. a future op added without updating that set). JSON.stringify would
@@ -355,18 +423,13 @@ export function makeOperationToolHandler(operationName: string) {
 					],
 				};
 			}
-			const text = typeof data === 'string' ? data : JSON.stringify(data ?? null);
-			const result: ToolResult = {
-				content: [{ type: 'text', text }],
-			};
-			if (data !== null && typeof data === 'object') {
-				result.structuredContent = data as object;
-			}
-			return result;
+			return wrapToolResult(data);
 		} catch (err) {
 			const e = err as { message?: string; http_resp_msg?: string; statusCode?: number };
 			const message = e?.http_resp_msg ?? e?.message ?? `operation '${operationName}' failed`;
-			harperLogger.trace(`MCP operations/${operationName} threw: ${(err as Error).stack ?? message}`);
+			harperLogger.trace(
+				`MCP operations/${operationName} threw: ${(err as Error)?.stack ?? (err as Error)?.message ?? message}`
+			);
 			return {
 				isError: true,
 				content: [

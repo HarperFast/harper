@@ -1,3 +1,5 @@
+import * as serverHandlersRuntimeModule from '../../server/itc/serverHandlers.ts';
+import * as userRuntimeModule from '../../security/user.ts';
 /**
  * MCP server-push notification dispatcher (#619). Subscribes to Harper's
  * existing role-cache-invalidation + schema-reload event channels and
@@ -57,7 +59,9 @@ export function _resetListChangedForTest(): void {
 function loadItcHandlers(): ItcHandlers | undefined {
 	if (_itcHandlersOverride) return _itcHandlersOverride;
 	try {
-		return require('../../server/itc/serverHandlers');
+		const { schemaHandler, resourceHandler } = serverHandlersRuntimeModule;
+		const { onUserChange } = userRuntimeModule;
+		return { schemaHandler, resourceHandler, userHandler: { addListener: onUserChange } };
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged: ITC handlers unavailable (${(err as Error).message})`);
 		return undefined;
@@ -76,7 +80,7 @@ async function resolveUser(username: string | undefined): Promise<AuthedUser | u
 	if (!username) return undefined;
 	if (_userResolverOverride) return _userResolverOverride(username);
 	try {
-		const { findAndValidateUser } = require('../../security/user');
+		const { findAndValidateUser } = userRuntimeModule;
 		const fresh = await findAndValidateUser(username, null, false);
 		return fresh as AuthedUser;
 	} catch (err) {
@@ -218,7 +222,7 @@ async function refreshSessionUser(record: RegisteredSession): Promise<void> {
 	// A scoped token's username is attribution only — re-resolving it against hdb_user could
 	// substitute a real principal (created later with that name) and advertise a surface the token
 	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh.
-	if (record.user?._scopedToken) return;
+	if (record.user?._scopedToken || userRuntimeModule.isLocalPrincipal(record.user)) return;
 	const fresh = await resolveUser(record.user?.username);
 	if (fresh) record.user = fresh;
 }
@@ -313,9 +317,9 @@ export function initListChanged(): boolean {
 	if (!handlers) return false;
 	let installed = 0;
 	if (handlers.userHandler?.addListener) {
-		// Harper's ITC handler treats listeners as `() => void`. Our handler is
-		// async (re-resolves users); fire-and-forget with a swallow so a rejection
-		// can never escape the event emitter as an UnhandledPromiseRejection.
+		// Listeners are `() => void`. Our handler is async (re-resolves users);
+		// fire-and-forget with a swallow so a rejection can never escape as an
+		// UnhandledPromiseRejection.
 		onUserChangeBound = () => {
 			onUserChange().catch((err) => harperLogger.trace(`MCP listChanged onUserChange: ${(err as Error).message}`));
 		};

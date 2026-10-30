@@ -103,5 +103,12 @@ describe('DeployRenderer', () => {
 			renderer.renderEvent(sseMessage('phase', { phase: 'install', status: 'error', message: 'exit code 1' }));
 			assert.match(lines[0], /install ERROR: exit code 1/);
 		});
+
+		it('renders a warning with its message', () => {
+			const { stream, lines } = makeOutput();
+			const renderer = new DeployRenderer({ output: stream });
+			renderer.renderEvent(sseMessage('warning', { message: 'Install fingerprints differ' }));
+			assert.deepStrictEqual(lines, ['warning: Install fingerprints differ\n']);
+		});
 	});
 });

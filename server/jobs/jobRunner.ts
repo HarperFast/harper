@@ -1,10 +1,7 @@
 'use strict';
 
-import { join } from 'node:path';
-
 import * as hdbUtil from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
-import moment from 'moment';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import * as jobs from './jobs.ts';
@@ -12,11 +9,13 @@ import { settleAbandonedJob } from './jobOwnership.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
-import * as threadsStart from '../threads/manageThreads.js';
+import * as threadsStart from '../threads/manageThreads.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as restart from '../../bin/restart.ts';
-import { parentPort, isMainThread } from 'worker_threads';
-import { onMessageByType } from '../threads/manageThreads.js';
+import { parentPort, isMainThread } from 'node:worker_threads';
+import { onMessageByType } from '../threads/manageThreads.ts';
+import { join } from 'node:path';
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 
 class RunnerMessage {
 	job: any;
@@ -107,7 +106,7 @@ async function parseMessage(runnerMessage: any) {
 async function runJob(runnerMessage: any, operation: any) {
 	try {
 		runnerMessage.job.status = hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS;
-		runnerMessage.job.start_datetime = moment().valueOf();
+		runnerMessage.job.start_datetime = Date.now();
 		// Update with "IN PROGRESS"
 		await jobs.updateJob(runnerMessage.job);
 		// Run the operation.
@@ -156,7 +155,7 @@ async function launchJobThread(job_id: any) {
 function startJobWorker(jobId: any) {
 	const settleOnUnownedExit = () =>
 		settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error));
-	return threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+	return threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
 		autoRestart: false,
 		name: hdbTerms.THREAD_TYPES.JOB,
 		env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${jobId}` },
@@ -176,7 +175,7 @@ if (isMainThread) {
 					id: message.jobId,
 					status: hdbTerms.JOB_STATUS_ENUM.ERROR,
 					message: e.message ?? String(e),
-					end_datetime: moment().valueOf(),
+					end_datetime: Date.now(),
 				});
 			} catch (updateErr) {
 				log.error(`Unable to mark job ${message.jobId} as failed:`, updateErr);

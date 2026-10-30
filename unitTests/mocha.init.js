@@ -19,8 +19,14 @@
  * ROOTPATH stays exported for the whole run — worker threads a test spawns
  * and mid-run config/logger re-initializations must resolve the per-PID
  * root too. The few test files that specifically exercise boot-props-based
- * resolution (which a ROOTPATH env var shadows) clear the variable and the
- * noBootFile() memo for their own scope.
+ * resolution (which a ROOTPATH env var shadows) clear it for their own scope
+ * with bootPropsFixture.js's clearRootPath(), which also hides the boot
+ * properties of any Harper installed on the machine. A test that clears or
+ * replaces ROOTPATH any other way must put it back.
+ *
+ * The config-overlay env vars (HARPER_DEFAULT_CONFIG, HARPER_CONFIG, HARPER_SET_CONFIG) are
+ * removed before the first config read for the same reason as ROOTPATH: initSync() would merge a
+ * shell's overlay into the per-PID config.
  *
  * storage.path is pinned to <pid dir>/database (the same layout the config
  * template yields, asserted absolutely so an inherited config can never
@@ -36,6 +42,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const { isMainThread } = require('worker_threads');
 const { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
+const { installPerFileDatabaseTeardown, assertNativeCoreTree } = require('./perFileDatabaseTeardown.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -46,28 +53,72 @@ const { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = 
  * and the process exits 0 having printed no epilogue and no failure. Every runner reads that as
  * success. harper_logger.test.js did exactly this to any `dot`/`tap` run before it was fixed.
  *
- * Root hooks bracket the run, so "started but never finished" is the signal. Report it on fd 2
- * with writeSync, since an unwritable stdout is one of the ways to get here.
+ * Plugin loading and Mocha's final callback bracket the run. Report "started but never finished"
+ * on fd 2 with writeSync, since an unwritable stdout is one of the ways to get here.
  */
 let runStarted = false;
 let runFinished = false;
 
-module.exports.mochaHooks = {
-	beforeAll() {
-		runStarted = true;
-	},
-	afterAll() {
-		runFinished = true;
-		// Register the root removal here, not in the preload below: 'exit' listeners fire in
-		// registration order, and the one that flushes and closes every open database
-		// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
-		// after the preload, before this hook. Removing the root any earlier deletes the
-		// database files out from under that flush, which rocksdb-js reports as
-		// "Failed to flush database during close: IO error ... 000NNN.log" — a throw out of an
-		// exit listener, so the run exits 7 with every test passing.
-		if (isMainThread) process.on('exit', removePerPidRoot);
-	},
+let observedTotal = 0;
+const resultsPath = process.env.HARPER_UNIT_RESULTS;
+let pendingResults;
+let activeRuns = 0;
+let resultFiles;
+delete process.env.HARPER_UNIT_RESULTS;
+
+function registerRootRemoval() {
+	if (isMainThread) {
+		process.off('exit', removePerPidRoot);
+		process.on('exit', removePerPidRoot);
+	}
+}
+
+module.exports.mochaHooks = () => {
+	runStarted = true;
+	runFinished = false;
+	return {
+		beforeAll() {
+			const root = this.test.parent;
+			observedTotal = root.total();
+			installPerFileDatabaseTeardown(root);
+		},
+	};
 };
+
+module.exports.mochaGlobalTeardown = function () {
+	// Register after storage shutdown listeners, including for runs with no matching tests.
+	registerRootRemoval();
+	if (resultsPath) {
+		pendingResults = { total: this.stats?.tests ?? observedTotal };
+	}
+};
+
+{
+	const mocha = require('node:module').createRequire(__filename)('mocha');
+	const Mocha = mocha.default ?? mocha;
+	const run = Mocha.prototype.run;
+	Mocha.prototype.run = function (callback) {
+		activeRuns++;
+		runFinished = false;
+		if (resultsPath && !resultFiles) resultFiles = [...this.files];
+		return run.call(this, (failures) => {
+			runFinished = --activeRuns === 0;
+			if (runFinished) {
+				registerRootRemoval();
+				try {
+					assertNativeCoreTree();
+				} catch (error) {
+					fs.writeSync(2, `${error.stack ?? error}\n`);
+					if (failures && typeof failures === 'object') failures.failureCount++;
+					else failures = (failures || 0) + 1;
+				}
+			}
+			if (runFinished && pendingResults)
+				fs.writeFileSync(resultsPath, JSON.stringify({ ...pendingResults, files: resultFiles }));
+			callback?.(failures);
+		});
+	};
+}
 
 process.on('exit', (code) => {
 	if (!runStarted || runFinished || code !== 0) return;
@@ -116,9 +167,6 @@ if (isMainThread) {
 			}
 		}
 	}
-	// The removal itself is registered from the afterAll root hook above, which every suite
-	// gets, so that it runs after the database shutdown listener rather than before it. A run
-	// that dies before afterAll leaves its root behind for the sweep above to reclaim.
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;
@@ -127,6 +175,17 @@ process.env.ROOTPATH = PID_DIR_PATH;
 // installed root despite everything above
 delete process.env.STORAGE_PATH;
 delete process.env.SCHEMAS_DATA_PATH;
+// a literal: importing config/componentEnvPrepass.ts's CONFIG_SHAPING_ENV_VARS would load Harper
+// modules before the scrub; isolation.test.js checks the two lists agree
+const scrubbedConfigEnvVars = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'].filter(
+	(name) => name in process.env
+);
+for (const name of scrubbedConfigEnvVars) delete process.env[name];
+if (isMainThread && scrubbedConfigEnvVars.length) {
+	process.stderr.write(
+		`mocha.init.js: ignoring ${scrubbedConfigEnvVars.join(', ')} from the environment; unit runs use the per-PID config\n`
+	);
+}
 
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');

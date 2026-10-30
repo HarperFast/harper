@@ -1,8 +1,8 @@
 import { streamAsJSON, stringify, parse } from './JSONStream.ts';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
-import { createBrotliCompress, brotliCompress, constants } from 'zlib';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
+import { ClientError, ReadSnapshotExpiredError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -17,10 +17,12 @@ import {
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
-import { parseMultipartRequest } from './multipartParser.ts';
-const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
-const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
-const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
+import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
+import { deserializeMultipartForm, deserializeMultipartStream } from './multipartForm.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
+let JSONStringify: typeof JSON.stringify = stringify;
+let JSONParse: typeof JSON.parse = parse;
+let COMPRESSION_THRESHOLD: number | undefined;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
 
@@ -44,10 +46,20 @@ function streamErrorRecord(error: any) {
 		if (typeof error?.message === 'string') message = error.message;
 	} catch {}
 	message ??= harperErrorToString(error);
-	const record: { error: string; message: string; status?: number } = { error: name, message };
+	const record: { error: string; message: string; status?: number; replicationUnconfirmed?: true; retryable?: false } =
+		{
+			error: name,
+			message,
+		};
 	try {
 		const status = error?.statusCode ?? error?.status;
 		if (typeof status === 'number') record.status = status;
+	} catch {}
+	try {
+		if (error?.replicationUnconfirmed === true) {
+			record.replicationUnconfirmed = true;
+			record.retryable = false;
+		} else if (error?.retryable === false) record.retryable = false;
 	} catch {}
 	return record;
 }
@@ -57,7 +69,7 @@ const PUBLIC_ENCODE_OPTIONS = {
 	useToJSON: true,
 };
 
-type Deserialize = (data: Buffer) => { contentType?: string; data: unknown } | unknown;
+type Deserialize = (data: Buffer) => unknown;
 
 const mediaTypes = new Map<
 	string,
@@ -169,6 +181,17 @@ function serializeSSEData(data: any) {
 	return 'data: ' + String(data).replace(/\r\n|\r|\n/g, '\ndata: ') + '\n';
 }
 
+const SSE_LINE_BREAK = /[\r\n]/;
+const SSE_LINE_BREAKS = /[\r\n]/g;
+const SSE_RETRY = /^\d+$/;
+
+// SSE has no escape for a field value: a CR or LF in one would start a new field or event
+function serializeSSEFieldValue(value: any) {
+	if (typeof value === 'number') return value;
+	const text = '' + value;
+	return SSE_LINE_BREAK.test(text) ? text.replace(SSE_LINE_BREAKS, '') : text;
+}
+
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable, _response?: Response, request?: any) {
@@ -195,12 +218,16 @@ mediaTypes.set('text/event-stream', {
 		// database record) to safely treat as an SSE-envelope signal.
 		if (message.data != null || message.event) {
 			let serialized = '';
-			if (message.event) serialized += 'event: ' + message.event + '\n';
+			if (message.event) serialized += 'event: ' + serializeSSEFieldValue(message.event) + '\n';
 			if (message.data != null) {
 				serialized += serializeSSEData(message.data);
 			}
-			if (message.id != null) serialized += 'id: ' + message.id + '\n';
-			if (message.retry != null) serialized += 'retry: ' + message.retry + '\n';
+			if (message.id != null) serialized += 'id: ' + serializeSSEFieldValue(message.id) + '\n';
+			if (message.retry != null) {
+				const retry = '' + message.retry;
+				// clients ignore a retry that is not all ASCII digits, so omitting it also keeps out line breaks
+				if (SSE_RETRY.test(retry)) serialized += 'retry: ' + retry + '\n';
+			}
 			return serialized + '\n';
 		} else {
 			return serializeSSEData(message) + '\n';
@@ -209,18 +236,16 @@ mediaTypes.set('text/event-stream', {
 	compressible: false,
 	q: 0.8,
 });
-// TODO: Support this as well:
-//'multipart/form-data'
 mediaTypes.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
 		const object: Record<string, string | string[]> = {};
 		for (const [key, value] of new URLSearchParams(stringData)) {
-			if (object.hasOwnProperty(key)) {
+			if (Object.hasOwn(object, key)) {
 				// in case there are multiple query params with the same name, convert them to an array
 				const last = object[key];
 				if (Array.isArray(last)) last.push(value);
-				else object.key = [last, value];
+				else object[key] = [last, value];
 			} else object[key] = value;
 		}
 		return object;
@@ -228,7 +253,9 @@ mediaTypes.set('application/x-www-form-urlencoded', {
 	serialize(data) {
 		const usp = new URLSearchParams();
 		for (const key in data) {
-			usp.set(key, data);
+			const value = data[key];
+			if (Array.isArray(value)) for (const item of value) usp.append(key, item);
+			else usp.set(key, value);
 		}
 		return usp.toString();
 	},
@@ -242,6 +269,22 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
+function initializeSerialization() {
+	const previousStringify = JSONStringify;
+	const useBigInt = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+	JSONStringify = useBigInt ? stringify : JSON.stringify;
+	JSONParse = useBigInt ? parse : JSON.parse;
+	for (const codec of mediaTypes.values()) {
+		if (codec.serialize === previousStringify) codec.serialize = JSONStringify;
+	}
+	COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+}
+try {
+	initializeSerialization();
+} catch (error) {
+	if (!(error instanceof ReferenceError)) throw error;
+}
+onStartup(initializeSerialization);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {
@@ -307,6 +350,22 @@ export function registerContentHandlers(app) {
 	app.addContentTypeParser(/^multipart\/form-data/, (req, payload, done) => {
 		parseMultipartRequest(req, payload, done);
 	});
+	app.addHook('onResponse', releaseUnreadUpload);
+}
+
+function recoversRowErrors(contentType: string): boolean {
+	return (
+		contentType !== 'application/x-ndjson' &&
+		contentType !== 'application/ndjson' &&
+		contentType !== 'text/event-stream'
+	);
+}
+
+/** A row's own failure becomes a row value; a lost read snapshot ends the whole read, so it must fail the stream. */
+function recoverRowError(error: any) {
+	if (error instanceof ReadSnapshotExpiredError) throw error;
+	error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+	return error;
 }
 
 const registerFastifySerializers = fp(
@@ -314,7 +373,19 @@ const registerFastifySerializers = fp(
 		fastify.addHook('preSerialization', async (request, reply) => {
 			const contentType = reply.raw.getHeader('content-type');
 			if (contentType) return;
-			const { serializer, type } = findBestSerializer(request.raw);
+			let { serializer, type } = findBestSerializer(request.raw);
+			// An error that no route chose to stream is an ordinary response: written as an unnamed event,
+			// an SSE client reads it as a stream that ended without a result.
+			if (
+				type === 'text/event-stream' &&
+				reply.statusCode >= 400 &&
+				!String(reply.getHeader('content-type') ?? '')
+					.toLowerCase()
+					.startsWith('text/event-stream')
+			) {
+				serializer = mediaTypes.get('application/json');
+				type = 'application/json';
+			}
 			reply.type(type);
 			reply.serializer(function (data: any) {
 				let serialize: (data: any, context: any) => any;
@@ -324,14 +395,10 @@ const registerFastifySerializers = fp(
 					(data[Symbol.iterator] || data[Symbol.asyncIterator]) &&
 					serializer.serializeStream
 				) {
-					if (data.mapError) {
+					if (data.mapError && recoversRowErrors(type)) {
 						// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 						const getColumns = data.getColumns;
-						data = data.mapError((error) => {
-							// make errors serializable in a descriptive way
-							error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
-							return error;
-						});
+						data = data.mapError(recoverRowError);
 						data.getColumns = getColumns;
 					}
 					serialize = serializer.serializeStream;
@@ -375,7 +442,7 @@ export function findBestSerializer(incomingMessage) {
 		}
 		clientQuality = +parameters.q;
 		const serializer = mediaTypes.get(type);
-		if (serializer) {
+		if (serializer?.serialize || serializer?.serializeStream) {
 			const quality = (serializer.q || 1) * clientQuality;
 			if (quality > bestQuality) {
 				bestSerializer = serializer;
@@ -389,7 +456,10 @@ export function findBestSerializer(incomingMessage) {
 		if (acceptType) {
 			throw new ClientError(
 				'No supported content types found in Accept header, supported types include: ' +
-					Array.from(mediaTypes.keys()).join(', '),
+					Array.from(mediaTypes)
+						.filter(([, handler]) => handler?.serialize || handler?.serializeStream)
+						.map(([type]) => type)
+						.join(', '),
 				406
 			);
 		} else {
@@ -402,8 +472,46 @@ export function findBestSerializer(incomingMessage) {
 	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
-// about an average TCP packet size (if headers included)
-const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+const brotliParams = (mode: number) => ({
+	params: { [constants.BROTLI_PARAM_MODE]: mode, [constants.BROTLI_PARAM_QUALITY]: 2 },
+});
+const BROTLI_TEXT_OPTIONS = brotliParams(constants.BROTLI_MODE_TEXT);
+const BROTLI_GENERIC_OPTIONS = brotliParams(constants.BROTLI_MODE_GENERIC);
+export function brotliOptions(contentType: string) {
+	return contentType.includes('json') || contentType.includes('text') ? BROTLI_TEXT_OPTIONS : BROTLI_GENERIC_OPTIONS;
+}
+
+function isTextOrBytes(data: unknown): data is string | ArrayBufferView {
+	return typeof data === 'string' || ArrayBuffer.isView(data);
+}
+
+/**
+ * Whether a message is a `{ contentType, data }` envelope delivered as its `data`, verbatim. Stored
+ * non-JSON payloads have this shape, but so can a table's own records, so `data` must be something a
+ * protocol encoder accepts; any other shape is an ordinary record for the negotiated serializer.
+ */
+export function isPassThroughEnvelope(value: any): value is { contentType: string; data: string | ArrayBufferView } {
+	return typeof value?.contentType === 'string' && isTextOrBytes(value.data);
+}
+
+/**
+ * {@link isPassThroughEnvelope} for an HTTP response, whose body writer also sends a Blob, a stream or other
+ * async iterable, and a generator. A table record can hold none of the last three, and an array- or
+ * object-valued `data` attribute must stay a record.
+ */
+export function isHttpPassThroughEnvelope(value: any): boolean {
+	if (typeof value?.contentType !== 'string') return false;
+	const data = value.data;
+	if (typeof data === 'string') return true;
+	if (data === null || typeof data !== 'object') return false;
+	return (
+		ArrayBuffer.isView(data) ||
+		data instanceof Blob ||
+		typeof data[Symbol.asyncIterator] === 'function' ||
+		typeof data.next === 'function'
+	);
+}
+
 /**
  * Serialize a response
  * @param responseData
@@ -416,73 +524,65 @@ export function serialize(responseData, request, responseObject) {
 	//  client itself actually (just) supports gzip/deflate
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
-	if (responseData?.contentType != null && responseData.data != null) {
+	let contentType: string;
+	if (isHttpPassThroughEnvelope(responseData)) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
-		responseObject.headers.set('Content-Type', responseData.contentType);
+		contentType = responseData.contentType;
+		responseObject.headers.set('Content-Type', contentType);
 		responseObject.headers.set('Vary', 'Accept-Encoding');
 		responseBody = responseData.data;
 	} else if (responseData instanceof Uint8Array || responseData instanceof Blob) {
 		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
 		// type for it.
-		responseObject.headers.set('Content-Type', 'application/octet-stream');
+		contentType = 'application/octet-stream';
+		responseObject.headers.set('Content-Type', contentType);
 		responseObject.headers.set('Vary', 'Accept-Encoding');
 		responseBody = responseData;
 	} else {
 		const serializer = findBestSerializer(request);
 		if (serializer.serializer.compressible === false) canCompress = false;
+		contentType = serializer.type;
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
 		responseObject.headers.set('Vary', 'Accept, Accept-Encoding');
-		responseObject.headers.set('Content-Type', serializer.type);
+		responseObject.headers.set('Content-Type', contentType);
 		if (
 			typeof responseData === 'object' &&
 			responseData &&
 			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (
-				responseData.mapError &&
-				serializer.type !== 'application/x-ndjson' &&
-				serializer.type !== 'application/ndjson' &&
-				serializer.type !== 'text/event-stream'
-			) {
+			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
 				responseData = responseData.mapError((error) => {
-					// make errors serializable in a descriptive way
-					error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
-					return error;
+					return row;
 				});
 				responseData.getColumns = getColumns;
 			}
-			let stream = serializer.serializer.serializeStream(responseData, responseObject, request);
-			if (canCompress) {
+			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request);
+			if (!canCompress) return serialized;
+			// a handler may return a complete body (msgpack does for arrays)
+			if (typeof serialized === 'string' || serialized instanceof Uint8Array) responseBody = serialized;
+			else {
 				responseObject.headers.set('Content-Encoding', 'br');
-				const uncompressedStream = stream;
-				stream = stream.pipe(
-					createBrotliCompress({
-						params: {
-							[constants.BROTLI_PARAM_MODE]:
-								serializer.type.includes('json') || serializer.type.includes('text')
-									? constants.BROTLI_MODE_TEXT
-									: constants.BROTLI_MODE_GENERIC,
-							[constants.BROTLI_PARAM_QUALITY]: 2, // go fast
-						},
-					})
-				);
-				if (uncompressedStream[streamStartup]) stream[streamStartup] = uncompressedStream[streamStartup];
+				const source = typeof serialized.pipe === 'function' ? serialized : Readable.from(serialized);
+				// pipeline, not pipe: a source error must destroy the compressor (which the HTTP layer reports) rather
+				// than be emitted with no listener
+				const compressed = stream.pipeline(source, createBrotliCompress(brotliOptions(contentType)), () => {});
+				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
+				return compressed;
 			}
-			return stream;
-		}
-		responseBody = serializer.serializer.serialize(responseData, responseObject);
+		} else responseBody = serializer.serializer.serialize(responseData, responseObject);
 	}
 	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		responseObject.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call
 		return new Promise((resolve, reject) =>
-			brotliCompress(responseBody, (err, data) => {
+			brotliCompress(responseBody, brotliOptions(contentType), (err, data) => {
 				if (err) reject(err);
 				else resolve(data);
 			})
@@ -517,7 +617,14 @@ export function serializeMessage(
 	request?: Request,
 	inAsyncContinuation?: boolean
 ): Buffer | string | Promise<Buffer | string> {
-	if (message?.contentType != null && message.data != null) return message.data;
+	if (isPassThroughEnvelope(message)) {
+		const data = message.data;
+		// a record read on another thread decodes binary as a plain Uint8Array view, which protocol
+		// encoders (mqtt-packet) reject; wrap the same bytes rather than copy them
+		return ArrayBuffer.isView(data) && !Buffer.isBuffer(data)
+			? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+			: data;
+	}
 	asyncSerializations = inAsyncContinuation ? undefined : [];
 	try {
 		const serialized: Buffer | string = getMessageSerializer(request)(message);
@@ -545,8 +652,16 @@ export function hasAsyncSerialization() {
 	return !!asyncSerializations;
 }
 
-function streamToBuffer(stream: Readable): Promise<Buffer> {
-	const MAX_REQUEST_BODY_SIZE = envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+export function getMaxRequestBodySize(): number {
+	return envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+}
+
+type RequestBodyStream = AsyncIterable<Uint8Array> & {
+	on(event: string, listener: (...args: any[]) => void): unknown;
+};
+
+function streamToBuffer(stream: RequestBodyStream): Promise<Buffer> {
+	const MAX_REQUEST_BODY_SIZE = getMaxRequestBodySize();
 	return new Promise((resolve, reject) => {
 		const buffers = [];
 		let size = 0;
@@ -575,6 +690,7 @@ function streamToBuffer(stream: Readable): Promise<Buffer> {
  */
 type ContentType = {
 	type: string;
+	rawType: string;
 	parameters?: { charset?: string; boundary?: string; [k: string]: string };
 };
 
@@ -618,27 +734,49 @@ function parseContentType(contentType: string): ContentType {
 		contentType = contentType.slice(0, parametersStart);
 	}
 
-	return { type: contentType, parameters };
+	return { type: contentType.trim().toLowerCase(), rawType: contentType, parameters };
 }
 
 /**
  * Given a content-type header string, get a deserializer function that can be used to parse the body.
  */
-export function getDeserializer(contentTypeString: string, streaming: false): Deserialize;
+export function getDeserializer(contentTypeString?: string, streaming?: false): Deserialize;
 export function getDeserializer(
-	contentTypeString: string,
-	streaming: true
-): (stream: Readable) => Promise<ReturnType<Deserialize>>;
+	contentTypeString: string | undefined,
+	streaming: true,
+	streamValues?: false
+): (stream: Readable) => Promise<unknown>;
+export function getDeserializer(
+	contentTypeString: string | undefined,
+	streaming: true,
+	streamValues: boolean
+): (stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
+export function getDeserializer(
+	contentTypeString: string | undefined,
+	streaming?: boolean,
+	streamValues?: boolean
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>);
 export function getDeserializer(
 	contentTypeString: string = '',
-	streaming: boolean = false
-): Deserialize | ((stream: Readable) => Promise<ReturnType<Deserialize>>) {
+	streaming: boolean = false,
+	streamValues: boolean = false
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
-
-	const deserialize =
-		(contentType.type && mediaTypes.get(contentType.type)?.deserialize) || deserializerUnknownType(contentType);
-
-	return streaming ? (stream: Readable) => streamToBuffer(stream).then(deserialize) : deserialize;
+	const handler = contentType.type
+		? mediaTypes.get(contentType.rawType) || mediaTypes.get(contentType.type)
+		: undefined;
+	const multipart = !handler?.deserialize && contentType.type === 'multipart/form-data';
+	const deserialize = handler?.deserialize || deserializerUnknownType(contentType);
+	if (streaming && streamValues && multipart)
+		return (stream, signal) => deserializeMultipartStream(stream, contentTypeString, signal);
+	if (!streaming) return deserialize;
+	return (stream: RequestBodyStream) => {
+		const body = streamToBuffer(stream).then(
+			multipart ? (data) => deserializeMultipartForm(data, contentTypeString) : deserialize
+		);
+		if (multipart) body.catch(() => {});
+		return body;
+	};
 }
 
 function deserializerUnknownType(contentType: ContentType): Deserialize {
@@ -683,9 +821,21 @@ function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	return readable;
 }
 
+// transformIterable's return() opens and closes a source it never started, so destroying the stream closes it
+export function closesSourceOnDiscard(stream): boolean {
+	return Boolean(stream?.[streamStartup]);
+}
+
 export function discardSerializedStream(stream) {
+	if (typeof stream?.then === 'function') {
+		Promise.resolve(stream).then(discardSerializedStream, () => {});
+		return;
+	}
 	stream?.[streamStartup]?.cancel?.();
+	// Nothing else will ever listen to a discarded stream, so its teardown error must not go uncaught.
+	if (typeof stream?.on === 'function') stream.on('error', () => {});
 	stream?.destroy?.();
+	if (typeof stream?.cancel === 'function') Promise.resolve(stream.cancel()).catch(() => {});
 }
 
 export function waitForStreamStartup(stream) {
@@ -871,8 +1021,8 @@ export function toCsvStream(data, columns?) {
 		},
 	});
 
-	// Pipe the data read stream through our CSV transform
-	return readStream.pipe(csvTransform);
+	// a source error must fail the returned stream, which is what the HTTP layer reports
+	return stream.pipeline(readStream, csvTransform, () => {});
 }
 
 /**

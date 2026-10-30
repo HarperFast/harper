@@ -17,7 +17,7 @@ const {
 	validateOperationToken,
 	validateRefreshToken,
 } = require('#src/security/tokenAuthentication');
-const { setUsersWithRolesCache } = require('#src/security/user');
+const { databases } = require('#src/resources/databases');
 
 const KNOWN_USER = new Map([['known_user', { username: 'known_user', active: true, role: { permission: {} } }]]);
 
@@ -57,13 +57,13 @@ describe('token rejection versus internal authentication fault', () => {
 			privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
 		});
 
-		await setUsersWithRolesCache(new Map(KNOWN_USER));
+		await testUtils.seedUsers(KNOWN_USER);
 	});
 
 	after(async () => {
 		removeJwtKeys();
 		clearJWTRSAKeysCache();
-		await setUsersWithRolesCache(new Map());
+		await testUtils.seedUsers();
 	});
 
 	// The internal-fault cases replace the installed public key in place; restore it so each case
@@ -129,7 +129,7 @@ describe('token rejection versus internal authentication fault', () => {
 		});
 
 		it('classifies a deactivated user as a credential-state rejection', async () => {
-			await setUsersWithRolesCache(new Map([['retired_user', { username: 'retired_user', active: false }]]));
+			await testUtils.seedUsers([{ username: 'retired_user', active: false }]);
 			try {
 				const token = sign({ username: 'retired_user' }, { subject: 'operation' });
 
@@ -137,7 +137,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 				assert.strictEqual(isCredentialRejection(error), true);
 			} finally {
-				await setUsersWithRolesCache(new Map(KNOWN_USER));
+				await testUtils.seedUsers(KNOWN_USER);
 			}
 		});
 
@@ -182,14 +182,8 @@ describe('token rejection versus internal authentication fault', () => {
 		});
 
 		it('propagates a user-store fault raised while resolving a validly signed token', async () => {
-			const failingCache = {
-				get() {
-					const error = new Error('Table system.hdb_user not found');
-					error.statusCode = 400;
-					throw error;
-				},
-			};
-			await setUsersWithRolesCache(failingCache);
+			const userTable = databases.system.hdb_user;
+			delete databases.system.hdb_user;
 			try {
 				const valid = sign({ username: 'known_user' }, { subject: 'operation' });
 
@@ -198,7 +192,7 @@ describe('token rejection versus internal authentication fault', () => {
 				assert.strictEqual(isCredentialRejection(error), false);
 				assert.strictEqual(error.message, 'Table system.hdb_user not found');
 			} finally {
-				await setUsersWithRolesCache(new Map(KNOWN_USER));
+				databases.system.hdb_user = userTable;
 			}
 		});
 	});
