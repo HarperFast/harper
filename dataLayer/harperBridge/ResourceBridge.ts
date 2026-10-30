@@ -7,6 +7,7 @@ import {
 	DatabaseClosingError,
 	DatabaseShardingHeldError,
 	hdbErrors,
+	AccessViolation,
 } from '../../utility/errors/hdbError.ts';
 import {
 	table,
@@ -736,7 +737,7 @@ function throwSearchValidationError(validationError: any): never {
 	throw typeof validationError.statusCode === 'number' ? validationError : new ClientError(validationError.message);
 }
 
-function getSelect({ get_attributes }: any, table: any) {
+function getSelect({ get_attributes, hdb_user }: any, table: any) {
 	if (get_attributes) {
 		if (get_attributes[0] === '*') {
 			const metadata = get_attributes.slice(1).filter((name) => name === '$score' || name === '$highlights');
@@ -747,6 +748,24 @@ function getSelect({ get_attributes }: any, table: any) {
 					.map((attribute) => attribute.name),
 				...metadata,
 			];
+		}
+		const permission = hdb_user?.role?.permission;
+		if (
+			table.hasRelationships &&
+			permission &&
+			!permission.super_user &&
+			get_attributes.some((property) =>
+				typeof property === 'object' ? property !== null : table.propertyResolvers?.[property]?.definition?.tableClass
+			)
+		) {
+			const context = { user: hdb_user };
+			get_attributes = table._inReadAdmission(() =>
+				get_attributes.map((property) => {
+					const authorized = table._authorizeRelatedSelection(property, hdb_user, permission, context);
+					if (authorized === false) throw new AccessViolation(hdb_user);
+					return authorized;
+				})
+			);
 		}
 		get_attributes.forceNulls = true;
 		return get_attributes;
