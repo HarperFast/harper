@@ -16,6 +16,7 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import {
 	ERROR_CODES,
 	buildError,
@@ -935,7 +936,16 @@ async function dispatchResourcesSubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
 		);
 	}
-	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+	let ok: boolean;
+	try {
+		ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+	} catch (err) {
+		// Same permission-error mapping as resources/read.
+		if (err instanceof AccessViolation) {
+			return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `permission denied: ${uri}`));
+		}
+		throw err;
+	}
 	if (!ok) {
 		// Only row-backed application resources are subscribable; synthetic harper://*
 		// URIs (and unknown URIs) have no change source.
