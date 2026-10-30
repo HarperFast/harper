@@ -10118,6 +10118,11 @@ export function makeTable(options): TableResourceClass {
 		}
 		static async removeAttributes(names: string[]) {
 			TableResource.assertSchemaMutable('remove attributes');
+			// A table() call without schemaDefined can flag a different attribute than the storage key, and
+			// table() re-adds that flagged descriptor, so both names are the primary key here.
+			const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name;
+			if (names.includes(primaryKey) || (declaredPrimaryKey !== undefined && names.includes(declaredPrimaryKey)))
+				throw new ClientError('You cannot drop a hash attribute');
 			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
