@@ -1607,3 +1607,376 @@ describe('conditional write lock scope', () => {
 		assert.strictEqual((await Row.get('unavailable')).n, 2);
 	});
 });
+
+describe('conditional writes through a tracked record instance', () => {
+	let Tracked, resources, request;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Tracked = table({
+			database: 'test',
+			table: 'TrackedConditions',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n' },
+				{ name: 'm' },
+				{ name: 'name' },
+				{ name: 'legacy' },
+			],
+		});
+		resources = new Resources();
+		request = rest(resources);
+	});
+
+	const etagOf = (id) => versionToEtag(Tracked.primaryStore.getEntry(id).version);
+	const stored = (id) => ({ ...Tracked.primaryStore.getEntry(id).value });
+
+	it('applies tracked mutations followed by return this.save(), and rejects a stale condition without an unhandled rejection', async () => {
+		class SyncPatch extends Tracked {
+			patch(data) {
+				this.addTo('n', data.add);
+				this.subtractFrom('m', data.add);
+				this.name = data.name;
+				return this.save();
+			}
+		}
+		let lockSettled;
+		class DelayedSave extends Tracked {
+			async lock(...args) {
+				try {
+					return await super.lock(...args);
+				} finally {
+					lockSettled.resolve();
+				}
+			}
+			async patch(data) {
+				lockSettled = Promise.withResolvers();
+				this.addTo('n', data.add);
+				this.name = data.name;
+				if (!isLMDB) await lockSettled.promise;
+				await nextTurn();
+				return this.save();
+			}
+		}
+		class SyncReplace extends Tracked {
+			put(data) {
+				this.update({ name: data.name }, true);
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		resources.set('SyncPatch', SyncPatch, { rest: true });
+		resources.set('DelayedSave', DelayedSave, { rest: true });
+		resources.set('SyncReplace', SyncReplace, { rest: true });
+		const unhandled = [];
+		const onUnhandled = (reason) => {
+			if (reason?.statusCode === 412) unhandled.push(reason);
+		};
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			for (const [path, method, expected] of [
+				['SyncPatch', 'PATCH', { n: 15, m: 5, name: 'after', legacy: 'kept' }],
+				['DelayedSave', 'PATCH', { n: 15, m: 10, name: 'after', legacy: 'kept' }],
+				['SyncReplace', 'PUT', { n: 5, name: 'after' }],
+			]) {
+				const id = `sync-${path}`;
+				await Tracked.put(id, { n: 10, m: 10, name: 'before', legacy: 'kept' });
+				const original = stored(id);
+				const stale = await request(method, `/${path}/${id}`, { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
+				assert.strictEqual(stale.status, 412, await bodyOf(stale));
+				assert.deepStrictEqual(stored(id), original);
+				const matched = await request(method, `/${path}/${id}`, { add: 5, name: 'after' }, { 'if-match': etagOf(id) });
+				assert.strictEqual(matched.status, 204, await bodyOf(matched));
+				assert.deepStrictEqual(stored(id), { id, ...expected });
+			}
+			await delay(10);
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('keeps tracked mutations made while the precondition lock is pending and after it settles', async function () {
+		this.timeout(10_000);
+		const entered = Promise.withResolvers();
+		const lockSettled = Promise.withResolvers();
+		class AcrossLock extends Tracked {
+			async lock(...args) {
+				try {
+					return await super.lock(...args);
+				} finally {
+					lockSettled.resolve();
+				}
+			}
+			async patch(data) {
+				this.addTo('n', data.add);
+				this.name = data.name;
+				entered.resolve();
+				if (!isLMDB) await lockSettled.promise;
+				await nextTurn();
+				this.subtractFrom('m', data.add);
+				this.legacy = 'changed';
+				return this.save();
+			}
+		}
+		resources.set('AcrossLock', AcrossLock, { rest: true });
+		await Tracked.put('across', { n: 10, m: 10, name: 'before', legacy: 'kept' });
+		const etag = etagOf('across');
+		const held = isLMDB ? undefined : await Tracked.lock('across', { hold: true });
+		let pending;
+		try {
+			pending = request('PATCH', '/AcrossLock/across', { add: 5, name: 'after' }, { 'if-match': etag });
+			await entered.promise;
+			await nextTurn();
+		} finally {
+			await held?.unlock();
+		}
+		const response = await pending;
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(stored('across'), { id: 'across', n: 15, m: 5, name: 'after', legacy: 'changed' });
+	});
+
+	it('keeps a pending tracked write when the handler locks another record first', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(10_000);
+		const otherLocked = Promise.withResolvers();
+		class LocksOther extends Tracked {
+			async patch(data) {
+				this.addTo('n', data.add);
+				const other = await this.lock('lock-other-target');
+				other.addTo('n', 1);
+				otherLocked.resolve();
+				return this.save();
+			}
+		}
+		resources.set('LocksOther', LocksOther, { rest: true });
+		await Tracked.put('lock-other', { n: 10 });
+		await Tracked.put('lock-other-target', { n: 0 });
+		const etag = etagOf('lock-other');
+		const held = await Tracked.lock('lock-other', { hold: true });
+		let pending;
+		try {
+			pending = request('PATCH', '/LocksOther/lock-other', { add: 5 }, { 'if-match': etag });
+			await otherLocked.promise;
+		} finally {
+			await held.unlock();
+		}
+		const response = await pending;
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(stored('lock-other').n, 15);
+		assert.strictEqual(stored('lock-other-target').n, 1);
+	});
+
+	it('keeps a full replacement cleared when another update() follows it before the lock settles', async () => {
+		let observed;
+		class ReplaceThenUpdate extends Tracked {
+			async put(data) {
+				this.update({ name: data.name }, true);
+				await this.update({ m: 2 });
+				observed = this.legacy;
+				return this.save();
+			}
+		}
+		resources.set('ReplaceThenUpdate', ReplaceThenUpdate, { rest: true });
+		await Tracked.put('replace-update', { n: 1, name: 'before', legacy: 'old' });
+		const response = await request(
+			'PUT',
+			'/ReplaceThenUpdate/replace-update',
+			{ name: 'after' },
+			{ 'if-match': etagOf('replace-update') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(observed, undefined);
+		assert.deepStrictEqual(stored('replace-update'), { id: 'replace-update', name: 'after', m: 2 });
+	});
+
+	it('reads the stored record under the precondition lock through a record it never loaded', async () => {
+		let seen;
+		class Unloaded extends Tracked {
+			static loadAsInstance = false;
+			async patch(target, data) {
+				await this.update();
+				seen = this.name;
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		resources.set('Unloaded', Unloaded, { rest: true });
+		await Tracked.put('unloaded', { n: 10, name: 'before' });
+		const response = await request('PATCH', '/Unloaded/unloaded', { add: 5 }, { 'if-match': etagOf('unloaded') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(seen, 'before');
+		assert.deepStrictEqual(stored('unloaded'), { id: 'unloaded', n: 15, name: 'before' });
+	});
+
+	it('stages deferred writes in program order, before a write made after one of them settles', async () => {
+		class Sequenced extends Tracked {
+			async patch() {
+				const first = this.update(this.getId(), { n: 1 });
+				this.update(this.getId(), { name: 'second' });
+				this.update(this.getId(), { m: 3 });
+				await first;
+				this.update(this.getId(), { m: 4 });
+				return this.save();
+			}
+		}
+		resources.set('Sequenced', Sequenced, { rest: true });
+		await Tracked.put('sequenced', { n: 0, m: 0 });
+		const response = await request('PATCH', '/Sequenced/sequenced', {}, { 'if-match': etagOf('sequenced') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(stored('sequenced'), { id: 'sequenced', n: 1, name: 'second', m: 4 });
+	});
+
+	it('applies a conditional DELETE through a tracked handler', async () => {
+		let deleted;
+		class TrackedDelete extends Tracked {
+			async delete(target) {
+				deleted = await super.delete(target);
+			}
+		}
+		resources.set('TrackedDelete', TrackedDelete, { rest: true });
+		await Tracked.put('tracked-delete', { n: 1 });
+		const stale = await request('DELETE', '/TrackedDelete/tracked-delete', undefined, { 'if-match': '"stale"' });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		assert.strictEqual(stored('tracked-delete').n, 1);
+		const matched = await request('DELETE', '/TrackedDelete/tracked-delete', undefined, {
+			'if-match': etagOf('tracked-delete'),
+		});
+		assert.ok(matched.status >= 200 && matched.status < 300, await bodyOf(matched));
+		assert.strictEqual(deleted, true);
+		assert.strictEqual(await Tracked.get('tracked-delete'), null);
+	});
+
+	it('answers 501 without an unhandled rejection when the handler does not return save()', async () => {
+		class UnreturnedSave extends Tracked {
+			patch(data) {
+				this.update();
+				this.addTo('n', data.add);
+				this.save();
+			}
+		}
+		resources.set('UnreturnedSave', UnreturnedSave, { rest: true });
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			await Tracked.put('unreturned-save', { n: 10 });
+			const stale = await request('PATCH', '/UnreturnedSave/unreturned-save', { add: 5 }, { 'if-match': '"stale"' });
+			const matched = await request(
+				'PATCH',
+				'/UnreturnedSave/unreturned-save',
+				{ add: 5 },
+				{ 'if-match': etagOf('unreturned-save') }
+			);
+			// LMDB stages synchronously; the RocksDB lock defers the write past the response, which refuses it (#3229)
+			assert.deepStrictEqual([stale.status, matched.status], isLMDB ? [412, 204] : [501, 501]);
+			assert.strictEqual(stored('unreturned-save').n, isLMDB ? 15 : 10);
+			await delay(10);
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('keeps a full replacement on the instance and closes it on save()', async () => {
+		let observed, lateWrite;
+		class AwaitedReplace extends Tracked {
+			async put(data) {
+				await this.update({ name: data.name }, true);
+				observed = { legacy: this.legacy, n: this.n };
+				this.addTo('n', data.add);
+				await this.save();
+				try {
+					this.legacy = 'late';
+				} catch (error) {
+					lateWrite = error;
+				}
+			}
+		}
+		resources.set('AwaitedReplace', AwaitedReplace, { rest: true });
+		await Tracked.put('replace', { n: 100, m: 1, name: 'before', legacy: 'old' });
+		const stale = await request('PUT', '/AwaitedReplace/replace', { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		const response = await request(
+			'PUT',
+			'/AwaitedReplace/replace',
+			{ add: 5, name: 'after' },
+			{ 'if-match': etagOf('replace') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(observed, { legacy: undefined, n: undefined });
+		assert.strictEqual(lateWrite?.statusCode, 409, 'the instance must be closed after save()');
+		assert.deepStrictEqual(stored('replace'), { id: 'replace', n: 5, name: 'after' });
+	});
+	it('keeps the policy of a record the handler locked itself while applying a conditional full replacement', async function () {
+		if (isLMDB) this.skip();
+		let observed;
+		class LockedReplace extends Tracked {
+			async put(data) {
+				await this.lock({ hold: true });
+				this.update({ name: data.name }, true);
+				observed = this.legacy;
+				this.addTo('n', data.add);
+				await this.save();
+				this.legacy = 'late';
+				await this.save();
+			}
+		}
+		resources.set('LockedReplace', LockedReplace, { rest: true });
+		await Tracked.put('locked', { n: 100, m: 1, name: 'before', legacy: 'old' });
+		const response = await request(
+			'PUT',
+			'/LockedReplace/locked',
+			{ add: 5, name: 'after' },
+			{ 'if-match': etagOf('locked') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(observed, undefined);
+		assert.deepStrictEqual(stored('locked'), { id: 'locked', n: 5, name: 'after', legacy: 'late' });
+		const held = await Tracked.lock('locked', { hold: true, timeout: 100 });
+		await held.unlock();
+	});
+
+	it('applies a tracked addTo once beside a plain write that lands before its commit, and through replayLogs', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(30000);
+		const Counter = table({
+			database: 'conditionalTrackedReplay',
+			table: 'Counter',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'm' }],
+		});
+		class TrackedCounter extends Counter {
+			patch(data) {
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		const counters = new Resources();
+		counters.set('TrackedCounter', TrackedCounter, { rest: true });
+		await Counter.put('target', { n: 10, m: 0 });
+		const etag = versionToEtag(Counter.primaryStore.getEntry('target').version);
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const commit = Transaction.prototype.commit;
+		const targetDb = Counter.primaryStore.store.db;
+		let interposed = false;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db === targetDb && !interposed) {
+				interposed = true;
+				await Counter.patch('target', { m: 1 });
+			}
+			return commit.apply(this, args);
+		};
+		let response;
+		try {
+			response = await rest(counters)('PATCH', '/TrackedCounter/target', { add: 5 }, { 'if-match': etag });
+		} finally {
+			Transaction.prototype.commit = commit;
+		}
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.ok(interposed);
+		assert.deepStrictEqual({ ...Counter.primaryStore.getEntry('target').value }, { id: 'target', n: 15, m: 1 });
+		const { replayLogs } = require('#src/resources/replayLogs');
+		await replayLogs(Counter.primaryStore.rootStore, { Counter }, true);
+		assert.deepStrictEqual({ ...Counter.primaryStore.getEntry('target').value }, { id: 'target', n: 15, m: 1 });
+	});
+});

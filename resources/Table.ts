@@ -786,6 +786,13 @@ const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
+class ConditionLockWait {
+	fullUpdate: boolean;
+	staged: Promise<unknown>;
+	constructor(fullUpdate: boolean) {
+		this.fullUpdate = fullUpdate;
+	}
+}
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
@@ -2009,9 +2016,18 @@ export function makeTable(options): TableResourceClass {
 		if (matches && condition.finished) throw new ClientError('Conditional request already completed', 409);
 		return matches ? condition : undefined;
 	}
+	function awaitsConditionLock(condition): boolean {
+		return Boolean(condition?.lock) && isRocksDB && !condition.locked;
+	}
 	function lockConditionalWrite(resource, id: Id, condition) {
-		if (!condition?.lock || !isRocksDB || condition.locked) return;
-		return (condition.locking ??= resource.lock(id, { hold: true }).then((locked) => {
+		if (!awaitsConditionLock(condition)) return;
+		if (condition.locking) return condition.locking;
+		// read (once) by the #reloadLocked this lock() runs, to tell it apart from an application lock
+		condition.acquiring = resource;
+		const acquisition = resource.lock(id, { hold: true });
+		const settled = () => (condition.acquiring = undefined);
+		acquisition.then(settled, settled);
+		return (condition.locking = acquisition.then((locked) => {
 			if (condition.finished)
 				return locked.unlock().then(() => {
 					throw new ClientError('Conditional request already completed', 409);
@@ -4273,7 +4289,7 @@ export function makeTable(options): TableResourceClass {
 							this.#changes = updates;
 							// `when` awaits the embed hook (when `@embed` is active) before resolving,
 							// so the caller's `save()` doesn't run before the write is staged.
-							return when(this._writeUpdate(id, this.#changes, false), () => this);
+							return this.#whenStaged(this._writeUpdate(id, this.#changes, false));
 						});
 					});
 				}
@@ -4282,7 +4298,13 @@ export function makeTable(options): TableResourceClass {
 			// post/publish updates do not necessarily mutate or save the instance.
 			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
 			const recordRoot = updates === undefined ? this.#changes : updates;
-			return when(this._writeUpdate(id, recordRoot, fullUpdate), () => this);
+			return this.#whenStaged(this._writeUpdate(id, recordRoot, fullUpdate));
+		}
+		#whenStaged(staging: any) {
+			const updated = when(staging, () => this);
+			const saving = this.#savingOperation;
+			if (saving instanceof ConditionLockWait && staging === saving.staged) (updated as Promise<this>).catch(noop);
+			return updated;
 		}
 
 		/**
@@ -4290,6 +4312,11 @@ export function makeTable(options): TableResourceClass {
 		 */
 		save() {
 			const operation = this.#savingOperation;
+			if (operation instanceof ConditionLockWait) {
+				const saved = operation.staged.then(() => this.save());
+				saved.catch(noop);
+				return saved;
+			}
 			const lockHandle = operation ? operation.lockHandle : this.#lockHandle;
 			if (this.#lockWritable && lockHandle?.writeRefused) {
 				this.#rejectRefusedLockWrite(lockHandle);
@@ -5264,7 +5291,11 @@ export function makeTable(options): TableResourceClass {
 			// current value the same way a chained write picks up its basis (priorStagedWrite): the
 			// record comes from the prior staged write, the rest of the entry (version, audit chain,
 			// blob metadata) stays the pre-transaction one.
-			const link = txnForContext(this.getContext());
+			const context = this.getContext();
+			const condition = context?.[WRITE_CONDITION];
+			const forCondition = condition?.acquiring === this && writeKeyId(id) === writeKeyId(condition.id);
+			if (forCondition) condition.acquiring = undefined;
+			const link = txnForContext(context);
 			let entryForReload: any = admitted ? admitted.entry : primaryStore.getEntry(id);
 			if (link.open === TRANSACTION_STATE.OPEN) {
 				const keyId = writeKeyId(id);
@@ -5303,7 +5334,14 @@ export function makeTable(options): TableResourceClass {
 			if (holdHandle != null) this.#lockHandle = holdHandle;
 			this.#baseReadTxn = undefined;
 			this.#baseReadEntry = undefined;
+			const callerRecord = this.#record;
 			TableResource._updateResource(this, entryForReload);
+			if (forCondition) {
+				// the precondition's own lock: refresh only what its predicate reads
+				if (callerRecord !== undefined && this.#savingOperation instanceof ConditionLockWait)
+					this.#record = callerRecord;
+				return this;
+			}
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload.
 			if (!preserveChanges) this.#changes = undefined;
@@ -5469,14 +5507,24 @@ export function makeTable(options): TableResourceClass {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
-			const locking = lockConditionalWrite(this, id, condition);
-			if (locking) {
-				const changes = this.#changes;
-				const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
-				return locking.then(() => {
-					this.#changes = changes;
-					return this._writeUpdate(id, updates, fullUpdate, options);
+			if (awaitsConditionLock(condition)) {
+				// Installed before lock(), whose re-entrant reload runs synchronously. Every deferral reacts to the
+				// one lock promise, so they stage in program order and the slot keeps the newest write, as on the
+				// unlocked path.
+				const prior = this.#savingOperation;
+				const wait = new ConditionLockWait(fullUpdate);
+				this.#savingOperation = wait;
+				const staging = lockConditionalWrite(this, id, condition).then(() => {
+					const pending = this.#savingOperation;
+					const staged = this._writeUpdate(id, recordUpdate, fullUpdate, options);
+					if (pending !== wait) this.#savingOperation = pending;
+					else if (this.#savingOperation === wait) this.#savingOperation = null;
+					return staged;
 				});
+				wait.staged = prior instanceof ConditionLockWait ? Promise.all([prior.staged, staging]) : staging;
+				// callers may discard update(); save(), or REST's 501 when nothing saves, reports the failure
+				wait.staged.catch(noop);
+				return wait.staged;
 			}
 			const transaction = txnForContext(context);
 			this.#evaluateWriteCondition(id, condition, transaction);
