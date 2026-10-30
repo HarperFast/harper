@@ -7538,7 +7538,6 @@ export function makeTable(options): TableResourceClass {
 				// order for their query.
 				if (conditions.length > 1 && operator !== 'or') {
 					const ordered = sortBy(conditions, estimateCondition(TableResource));
-					// a leading sort-aligned condition keeps its place, when it may full-scan: it streams a sorted page
 					const streamsSort =
 						ordered[0] === syntheticOrderCondition ||
 						(ordered[0] === orderAlignedCondition && target.allowFullScan !== false);

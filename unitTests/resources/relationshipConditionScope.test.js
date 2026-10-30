@@ -156,6 +156,7 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'group', indexed: true },
 				{ name: 'b', indexed: true },
+				{ name: 'text' },
 				kids,
 			],
 		});
@@ -170,7 +171,7 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 			],
 		});
 		kids.elements.definition.tableClass = Child;
-		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'g1', b: i === 1 ? 3 : 0 });
+		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'g1', b: i === 1 ? 3 : 0, text: 'needle' });
 		await Child.put({ id: 'c1', parentId: 'p1', name: 'a', label: 'x' });
 		await Child.put({ id: 'c2', parentId: 'p1', name: 'b', label: 'y' });
 		const conditions = [
@@ -202,5 +203,37 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		const unionRows = [];
 		for await (const row of Parent.search({ conditions: union, allowFullScan: false })) unionRows.push(row.id);
 		assert.deepStrictEqual(unionRows, ['p1']);
+		const run = async (conditions, allowFullScan) => {
+			const found = [];
+			for await (const row of Parent.search({ conditions, allowFullScan })) found.push(row.id);
+			return found;
+		};
+		const needle = { attribute: 'text', comparator: 'contains', value: 'needle' };
+		// a relationship whose own scan cannot run does not keep the lead
+		assert.deepStrictEqual(
+			await run(
+				[
+					{ attribute: 'group', value: 'g1' },
+					{
+						operator: 'and',
+						conditions: [{ attribute: ['kids', 'label'], comparator: 'starts_with', value: 'y' }, needle],
+					},
+				],
+				false
+			),
+			['p1']
+		);
+		// a nested group led by a relationship join is not promoted ahead of the local index
+		assert.deepStrictEqual(
+			await run(
+				[
+					{ attribute: 'b', comparator: 'in', value: [3] },
+					{ operator: 'and', conditions: [conditions[1], { attribute: 'group', value: 'g1' }] },
+					conditions[2],
+				],
+				true
+			),
+			['p1']
+		);
 	});
 });
