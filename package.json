@@ -182,15 +182,9 @@
 		"@fastify/autoload": "^6.3.1",
 		"@fastify/compress": "^8.3.1",
 		"@fastify/cors": "^11.2.0",
-<<<<<<< HEAD
 		"@fastify/static": "^9.1.3",
-		"@harperfast/extended-iterable": "1.0.3",
-		"@harperfast/rocksdb-js": "2.11.0",
-=======
-		"@fastify/static": "^10.0.0",
 		"@harperfast/extended-iterable": "1.0.5",
 		"@harperfast/rocksdb-js": "2.13.0",
->>>>>>> c068f483b (chore(deps): Update rocksdb-js to 2.13.0)
 		"@harperfast/skills": "^1.10.8",
 		"@inquirer/confirm": "^6.3.2",
 		"@inquirer/input": "^5.1.6",
