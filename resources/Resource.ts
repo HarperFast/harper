@@ -121,7 +121,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
-					if (typeof result?.map === 'function') {
+					if (Array.isArray(result)) {
+						return settleAll(result.map(transform));
+					} else if (typeof result?.map === 'function') {
 						return result.map(transform);
 					} else {
 						return transform(result);
@@ -343,7 +345,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return result.map(transform);
+						return Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
 					}
 					return result;
 				})
@@ -1091,101 +1093,131 @@ export function allowedMethods(resource: any) {
 	return allow;
 }
 
+// an inherited `__proto__` is the object's prototype (a table record's carries accessors), not data
+export function readSelectedProperty(object: any, property: string) {
+	return property === '__proto__' && !Object.hasOwn(object, property) ? undefined : object[property];
+}
 /**
  * This is responsible for handling a select query parameter/call that selects specific
  * properties from the returned record(s).
  * @param object
  * @returns
  */
-function selectFromObject(object, propertyResolvers, context) {
+function selectFromObject(object, propertyResolvers, context, selectsPrototype: boolean) {
 	// TODO: eventually we will do aggregate functions here
 	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
-	if (record) {
-		const ownData = object.getChanges?.();
-		return (property) => {
-			let value, resolver;
-			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
-				return value;
-			}
-			if (ownData && property in ownData) {
-				return ownData[property];
-			} else if (
-				propertyResolvers &&
-				Object.hasOwn(propertyResolvers, property) &&
-				(resolver = propertyResolvers[property])
-			) {
-				return resolver(object, context);
-			} else return record[property];
-		};
-	} else if (propertyResolvers) {
-		return (property) => {
-			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
-			if (resolver) return resolver(object, context);
-			const value = object[property];
-			return typeof value === 'function' ? undefined : value;
-		};
-	} else
-		return (property) => {
-			const value = object[property];
-			return typeof value === 'function' ? undefined : value;
-		};
+	const ownData = record ? object.getChanges?.() : undefined;
+	return (property) => readProperty(object, record, ownData, property, propertyResolvers, context, selectsPrototype);
+}
+export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
+function settleAll(results: any[]) {
+	for (let i = 0, l = results.length; i < l; i++) {
+		if (typeof results[i]?.then === 'function') return Promise.all(results);
+	}
+	return results;
 }
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
-	let subTransforms;
+	let subTransforms: Map<any, (object: any) => any>;
+	if (
+		select === '*' ||
+		(!resource && Array.isArray(select) && select.length === 1 && select[0] === '*' && !(select as any).asArray)
+	)
+		return function transform(object) {
+			return typeof object?.then === 'function' ? object.then(transform) : object;
+		};
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
-			if (Array.isArray(object)) return object.map(transform);
-			return selectFromObject(object, propertyResolvers, context)(select);
+			if (Array.isArray(object)) return settleAll(object.map(transform));
+			return readPropertyFromObject(object, select, propertyResolvers, context, select === '__proto__');
 		};
-	else if (typeof select === 'object') {
+	else if (Array.isArray(select)) {
 		// if it is an array, return an array
-		if (select.asArray)
+		const selectsPrototype = select.some((property) => (property?.name ?? property) === '__proto__');
+		if ((select as any).asArray)
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
-				if (Array.isArray(object)) return object.map(transform);
+				if (Array.isArray(object)) return settleAll(object.map(transform));
 				const results = [];
-				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
+				let pending = false;
 				for (const property of select) {
-					results.push(getProperty(property));
+					const value = property === '*' ? object : getProperty(property);
+					if (typeof value?.then === 'function') pending = true;
+					results.push(value);
 				}
-				return results;
+				return pending ? Promise.all(results) : results;
 			};
-		const forceNulls = select.forceNulls;
-		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
+		const forceNulls = (select as any).forceNulls;
+		const selectsWildcard = select.includes('*');
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
-				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
+				return settleAll(object.map((value) => (value && typeof value === 'object' ? transform(value) : value)));
+			// a tracked instance's toJSON() is its current view: record, folded pending changes and own fields
+			const wildcardSource =
+				selectsWildcard &&
+				!(ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob) &&
+				(typeof object.getRecord !== 'function'
+					? object
+					: typeof object.toJSON === 'function'
+						? object.toJSON()
+						: object.getRecord());
 			// finally the case of returning objects
 			const selectedData = {};
-			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
-			if (selectsPrototype)
-				Object.defineProperty(selectedData, '__proto__', {
-					value: undefined,
-					writable: true,
-					enumerable: true,
-					configurable: true,
-				});
+			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context, selectsPrototype));
+			if (selectsPrototype) Object.defineProperty(selectedData, '__proto__', ownDataProperty);
 			let promises;
 			for (const property of select) {
+				if (property === '*') {
+					if (wildcardSource)
+						for (const key in wildcardSource) {
+							const value = wildcardSource[key];
+							if (typeof value === 'function') continue;
+							if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
+							else selectedData[key] = value;
+						}
+					continue;
+				}
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {
 					if (!promises) promises = [];
-					promises.push(value.then((value) => (selectedData[property.name || property] = value)));
+					promises.push(
+						value.then(
+							(value) => (selectedData[property.name || property] = value === undefined && forceNulls ? null : value)
+						)
+					);
 				} else selectedData[property.name || property] = value;
 			}
 			if (promises) return Promise.all(promises).then(() => selectedData);
 			return selectedData;
 		};
-	} else throw new Error('Invalid select argument type ' + typeof select);
+	} else throw new ClientError('Invalid select, expected an attribute name or a list of attributes');
+	function projectNested(property, value) {
+		if (!value || typeof value !== 'object' || value instanceof Date) return value;
+		if (typeof value.then === 'function') return value.then((value) => projectNested(property, value));
+		if (!subTransforms) subTransforms = new Map();
+		let transform = subTransforms.get(property);
+		if (!transform) {
+			transform = nestedTransform(property);
+			subTransforms.set(property, transform);
+		}
+		return transform(value);
+	}
+	function nestedTransform(property) {
+		const targetResource =
+			propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+				? propertyResolvers[property.name]?.definition?.tableClass
+				: undefined;
+		return nestedSelectTransform(property, targetResource);
+	}
 	function handleProperty(getProperty) {
 		return (property) => {
 			if (typeof property === 'string') {
@@ -1193,21 +1225,42 @@ export function transformForSelect(select, resource) {
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
-					const value = getProperty(property.name);
-					if (!value || typeof value !== 'object' || value instanceof Date) return value;
-					if (!subTransforms) subTransforms = Object.create(null);
-					// TODO: Get the resource, cache this transform, and apply above
-					let transform = subTransforms[property.name];
-					if (!transform) {
-						const resource =
-							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
-								? propertyResolvers[property.name]?.definition?.tableClass
-								: undefined;
-						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
-					}
-					return transform(value);
+					return projectNested(property, getProperty(property.name));
 				} else return getProperty(property);
 			} else return property;
 		};
 	}
+}
+
+/** The transform for a `{ name, select? }` selector's value; `targetResource` supplies resolvers. */
+export function nestedSelectTransform(property: any, targetResource?: any): (value: any) => any {
+	const subSelect = property.select ?? (Array.isArray(property) ? property : null);
+	return subSelect && !(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray)
+		? transformForSelect(subSelect, targetResource)
+		: (value) => value;
+}
+
+function readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype: boolean) {
+	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
+	const ownData = record ? object.getChanges?.() : undefined;
+	return readProperty(object, record, ownData, property, propertyResolvers, context, selectsPrototype);
+}
+
+function readProperty(object, record, ownData, property, propertyResolvers, context, selectsPrototype: boolean) {
+	let value, resolver;
+	if (record) {
+		if (Object.hasOwn(object, property) && typeof (value = object[property]) !== 'function') {
+			return value;
+		}
+		if (ownData && Object.hasOwn(ownData, property)) {
+			value = selectsPrototype ? readSelectedProperty(ownData, property) : ownData[property];
+			return typeof value === 'function' ? undefined : value;
+		}
+	}
+	if (propertyResolvers && Object.hasOwn(propertyResolvers, property) && (resolver = propertyResolvers[property])) {
+		return resolver(object, context);
+	}
+	const source = record ?? object;
+	value = selectsPrototype ? readSelectedProperty(source, property) : source[property];
+	return typeof value === 'function' ? undefined : value;
 }

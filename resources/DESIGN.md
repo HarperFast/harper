@@ -246,15 +246,28 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 ## Conventions
 
 - Single-record nested selections use `Resource.transformForSelect`; searches use
-  `Table.transformEntryForSelect`. Plain JSON needs no target table; classless primitive array items
-  and whole selected Dates keep their values (Date-array subselects keep the search projection policy).
-  Missing targets preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object
-  projection. Only callable values count as a Promise or `getRecord`, so method-like JSON keys are data;
-  generic fallbacks treat function values as absent but keep inherited data and getters, and registered
-  resolver results pass through unchanged. Resolver dictionaries are read by own entries, the private
-  transform cache has no prototype, and a selected own `__proto__` is a data property on a normal response object. Pinned by
+  `Table.transformEntryForSelect`. Only table records and `@relationship` targets project through a
+  table's resolvers: a plain JSON sub-object, or what a `directReturn` (`@computed`) resolver returns,
+  goes through the resolver-free `nestedSelectTransform(selector, undefined)`, because an outer resolver
+  must never run against nested data that shares its name (search/single-record parity is pinned by
+  `../unitTests/resources/searchSelectProjection.test.js`). Table `propertyResolvers` has a null
+  prototype, so no lookup finds an `Object.prototype` member. Both transform caches are keyed by the
+  selector, so one name selected twice with different sub-selects gets two transforms. A lone `*`
+  returns the value unchanged, except a resource-backed `['*']`, which copies; mixed with names `*`
+  copies data keys (a tracked instance's from `toJSON()`, none from a Buffer, Blob or Date).
+  Classless primitive array items and whole selected Dates keep their values. Missing targets
+  preserve `undefined`/`null`; positional and array projections settle as one promise, and
+  `forceNulls` applies after a value settles. Promise and `getRecord` detection requires callable
+  values; ordinary method-like JSON keys are data. Function values project as absent while inherited
+  data and getters are retained; registered resolver results stay unchanged. A selected `__proto__`
+  is read only as an own property and is a data property on a normal response object.
+- The native missing-value contract is pinned by
   `../unitTests/resources/nestedSelectMissingValues.test.js` and
-  `../integrationTests/resources/relationship-and-status-contract.test.ts`. Still open, outside these helpers: [singleton-selector parsing and invalid-subselect policy](https://github.com/HarperFast/harper/issues/1415); separately, [asynchronous arrays and `forceNulls`](https://github.com/HarperFast/harper/issues/3168) and [a `__proto__` key poisoning a table, and proto-named attributes rejected at insert](https://github.com/HarperFast/harper/issues/1295).
+  `../integrationTests/resources/relationship-and-status-contract.test.ts`.
+  [REST select projection crashes on missing targets and non-relationship fields](https://github.com/HarperFast/harper/issues/1415)
+  remains open for singleton-selector parsing and invalid-subselect policy outside this helper.
+  [Prototype-chain key/attribute names: one **proto** PK poisons SQL/index reads table-wide; proto-named attributes falsely rejected at insert](https://github.com/HarperFast/harper/issues/1295)
+  tracks the separate table-wide key boundary.
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
