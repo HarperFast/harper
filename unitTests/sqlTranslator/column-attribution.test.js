@@ -225,6 +225,8 @@ describe('SQL column attribution for attribute permissions', () => {
 			const update = bucketFor(`UPDATE data.L SET label = ssn WHERE id = 'x'`);
 			assert.deepStrictEqual(attributesOf(update, 'data', 'L'), ['label']);
 			assert.deepStrictEqual(update.getWriteStatementReads().attributes, ['ssn']);
+			const literal = bucketFor(`UPDATE data.L SET label = {columnid:'ssn'} WHERE id = 'x'`);
+			assert.deepStrictEqual(literal.getWriteStatementReads().attributes, []);
 		});
 
 		it('lists nothing for a SELECT or INSERT', () => {
