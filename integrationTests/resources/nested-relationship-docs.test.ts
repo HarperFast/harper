@@ -90,7 +90,6 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 		for (const offset of [0, 10]) {
 			const split = 901 + offset;
 			const whole = 902 + offset;
-			// only `whole` has one product that is named Split with an id from s<whole> up
 			const conditions = [`products.name=Split`, `products.id=ge=s${whole}`];
 			for (const query of [conditions.join('&'), conditions.reverse().join('&')]) {
 				await insert('Brand', [

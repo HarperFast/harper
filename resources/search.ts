@@ -1013,7 +1013,7 @@ export function searchByIndex(
 					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
-					// a to-many relationship beyond this hop is joined inside `joined`, which the lead's siblings share
+					// siblings of this lead share the to-many relationship joined inside `joined`
 					if (attribute_name.length > 2 && filtered) siblingFilters(filtered, attribute_name[0], joined);
 					results = (results as any).flatMap(searchEntry);
 				}
@@ -1587,7 +1587,7 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 interface SiblingFilters {
 	filters: any[];
 	selection?: RelationshipSelection;
-	scope: any; // where the next level of a multi-hop condition registers
+	scope: any;
 	registered?: boolean;
 }
 const SIBLING_FILTERS = Symbol('siblingFilters');

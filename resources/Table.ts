@@ -7956,7 +7956,6 @@ export function makeTable(options): TableResourceClass {
 			let selectionStopped = false;
 			const relationshipSelection = (record, entry?, isSync = false) => {
 				if (selectionStopped) return undefined;
-				// per call: an OR-scope condition registers its restriction while the first row is filtered
 				const filterMap: any = relationshipRestriction(filtered, attribute.name);
 				const readsKeys =
 					!isSync && (filterMap ? !filterMap.hasMappings && resolver.toMany : Boolean(resolver.resolveKeys));

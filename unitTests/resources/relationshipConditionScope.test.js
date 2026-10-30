@@ -330,13 +330,11 @@ describe('AND-joined conditions on one relationship meet one related record whic
 		kids.elements.definition.tableClass = Child;
 		filters.elements.definition.tableClass = Child;
 		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'common', text: 'needle', n: 0 });
-		// pw's children meet name=a and label=y separately; pm has one child that meets both
 		await Parent.put({ id: 'pw', group: 'rare', text: 'needle', n: 7 });
 		await Parent.put({ id: 'pm', group: 'rare', text: 'needle', n: 7 });
 		await Child.put({ id: 'w1', parentId: 'pw', name: 'a', label: 'x' });
 		await Child.put({ id: 'w2', parentId: 'pw', name: 'b', label: 'y' });
 		await Child.put({ id: 'm1', parentId: 'pm', name: 'a', label: 'y' });
-		// pw's two leaves meet code and tag separately; pm's one leaf meets both
 		await Leaf.put({ id: 'lw1', childId: 'w1', code: 'on', tag: 'x' });
 		await Leaf.put({ id: 'lw2', childId: 'w1', code: 'off', tag: 'wanted' });
 		await Leaf.put({ id: 'lm1', childId: 'm1', code: 'on', tag: 'wanted' });
