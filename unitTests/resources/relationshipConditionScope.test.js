@@ -180,6 +180,9 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		];
 		const { conditions: planned } = await Parent.search({ conditions, explain: true, allowFullScan: true });
 		assert.deepStrictEqual(planned[0].attribute, ['kids', 'name']);
+		const parents = [];
+		for await (const row of Parent.search({ conditions, allowFullScan: true })) parents.push(row.id);
+		assert.deepStrictEqual(parents, [], 'no single child meets both conditions');
 		const grouped = [
 			{ attribute: 'group', value: 'g1' },
 			{ operator: 'and', conditions: [{ attribute: 'b', comparator: 'in', value: [3] }, conditions[1]] },
