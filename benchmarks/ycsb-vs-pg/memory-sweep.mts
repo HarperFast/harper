@@ -111,6 +111,10 @@ interface SweepSample {
 	failure?: { phase: string; error: string };
 	/** The wait for the rest of the host to go quiet before this sample started. */
 	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
+	/** Measured runs discarded because the rest of the host was busy during them; `measured` is the last run. */
+	noisyWindows?: { throughput: number; cpuMicrosPerOp: number; host: HostLoad }[];
+	/** The rest of the host stayed under the quiet threshold through the kept measured run. */
+	hostQuiet?: boolean;
 	startupMs?: number;
 	quiesceMs?: number;
 	/** False when the target was still busy when the quiesce wait ran out. */
@@ -287,7 +291,13 @@ async function measureSweepSample(
 	snapshot: Snapshot,
 	keyWidth: number,
 	sample: SweepSample,
-	{ chunkOps, maxChunks, measureOps }: { chunkOps: number; maxChunks: number; measureOps: number }
+	{
+		chunkOps,
+		maxChunks,
+		measureOps,
+		quietCores,
+		noisyRetries,
+	}: { chunkOps: number; maxChunks: number; measureOps: number; quietCores: number; noisyRetries: number }
 ): Promise<void> {
 	let phase = 'start';
 	const startedAt = Date.now();
@@ -317,15 +327,23 @@ async function measureSweepSample(
 					sample.warmup = chunks;
 					sample.converged = converged;
 					phase = 'measure';
-					sample.measured = await measureWindow(
-						session,
-						running,
-						driver,
-						workload,
-						'zipfian',
-						measureOps,
-						`${target}-${workload}-${sample.ratio}x-rep${sample.rep + 1}`
-					);
+					// Other agents' load comes in bursts the pre-sample gate cannot foresee; the target is warm, so
+					// a run spoiled by one is measured again rather than kept.
+					for (let attempt = 0; ; attempt++) {
+						const label = `${target}-${workload}-${sample.ratio}x-rep${sample.rep + 1}${attempt ? `-retry${attempt}` : ''}`;
+						const measured = await measureWindow(session, running, driver, workload, 'zipfian', measureOps, label);
+						sample.measured = measured;
+						sample.hostQuiet = measured.host.otherCores < quietCores;
+						if (sample.hostQuiet || attempt >= noisyRetries) break;
+						(sample.noisyWindows ??= []).push({
+							throughput: measured.result.throughput,
+							cpuMicrosPerOp: measured.cpuMicrosPerOp,
+							host: measured.host,
+						});
+						console.log(
+							`  [host] ${measured.host.otherCores.toFixed(1)} cores busy elsewhere during the run; measuring again`
+						);
+					}
 					sample.status = quiet ? 'ok' : 'quiesce-timeout';
 					sample.settled = converged && quiet && snapshot.quiet;
 					if (running.dataRoot) {
@@ -403,7 +421,11 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 					(s.warmup ? `${s.warmup.length}${s.settled ? '' : '!'}` : '-').padStart(7),
 					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}` +
 						(s.status === 'quiesce-timeout' ? '  (quiesce timed out)' : '') +
-						(s.hostGate && !s.hostGate.quiet ? '  (host busy)' : ''),
+						(s.hostQuiet === false
+							? '  (host busy during the run)'
+							: s.hostGate && !s.hostGate.quiet
+								? '  (host busy before)'
+								: ''),
 				].join('')
 			);
 		}
@@ -467,10 +489,11 @@ async function main(): Promise<void> {
 	// The rest of the host, in cores busy over 30 s, and how long to wait for it.
 	const hostQuietCores = Number(argValue(argv, '--host-quiet-cores') ?? 1);
 	const hostQuietMaxMin = Number(argValue(argv, '--host-quiet-max-min') ?? 20);
+	const noisyRetries = Number(argValue(argv, '--noisy-retries') ?? 2);
 	for (const [flag, value] of Object.entries({ chunkOps, maxChunks })) {
 		if (!Number.isInteger(value) || value < 1) throw new Error(`${flag} must be a positive integer, got ${value}`);
 	}
-	for (const [flag, value] of Object.entries({ hostQuietCores, hostQuietMaxMin })) {
+	for (const [flag, value] of Object.entries({ hostQuietCores, hostQuietMaxMin, noisyRetries })) {
 		if (!(value >= 0)) throw new Error(`${flag} must be a non-negative number, got ${value}`);
 	}
 	const { session, meta } = await createSession(argv, {
@@ -485,6 +508,7 @@ async function main(): Promise<void> {
 			'cells',
 			'host-quiet-cores',
 			'host-quiet-max-min',
+			'noisy-retries',
 		],
 	});
 	const { config } = session.options;
@@ -517,6 +541,7 @@ async function main(): Promise<void> {
 			cells,
 			allowUncapped,
 			hostGate: { maxOtherCores: hostQuietCores, windowMs: 30_000, maxMs: hostQuietMaxMin * 60_000 },
+			noisyRetries,
 			warmup: { chunkOps, maxChunks, window: 3, throughputTolerance: 0.05, hitRateTolerance: 0.005 },
 			recordBytes,
 			targetOrderRule: 'forward on even (point + rep), reversed on odd',
@@ -583,6 +608,8 @@ async function main(): Promise<void> {
 								chunkOps,
 								maxChunks,
 								measureOps,
+								quietCores: hostQuietCores,
+								noisyRetries,
 							}
 						);
 						samples.push(sample);

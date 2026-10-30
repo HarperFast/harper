@@ -411,6 +411,8 @@ export interface ProfiledWindow {
 	cpuMicrosPerOp: number;
 	byComponentCpuSeconds: Record<string, number>;
 	samples: Record<string, number>;
+	/** CPU busy on the host outside this run during the recorded window. */
+	host: HostLoad;
 	/**
 	 * Counters over the `ops` just before the recorded ones, without sampling: steady state, unlike a
 	 * measured window that can still carry JIT warmup when the profiler flags are on.
@@ -463,12 +465,14 @@ async function profileWindow(
 	);
 	const before = await sampleResources(running.targets);
 	const recorder = await startRecord(session.serverCpus, `${prefix}.perf.data`);
+	const hostLoad = startHostLoad(running.targets);
 	let result: PhaseResult;
 	try {
 		result = await driver.runWorkload(workload, distribution, ops);
 	} finally {
 		await recorder.stop();
 	}
+	const host = await hostLoad.stop();
 	const delta = diffResources(before, await sampleResources(running.targets));
 	assertNoErrors(`profiled ${workload}`, result);
 	// Folded while the target still runs: symbols come from its live JIT maps and container roots.
@@ -487,6 +491,7 @@ async function profileWindow(
 		cpuMicrosPerOp,
 		byComponentCpuSeconds: delta.byComponent,
 		samples,
+		host,
 		steady,
 	};
 }
