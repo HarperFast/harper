@@ -407,6 +407,8 @@ jobs:
 				'      - run: git fetch origin ${{ github.event.pull_request.merge_commit_sha }}\n',
 				"      - run: git fetch origin ${{ format('refs/pull/{0}/head', github.event.number) }} && git checkout FETCH_HEAD\n",
 				'      - run: git fetch origin "a;b" refs/pull/7/head\n',
+				'      - run: git fetch origin "a\\";b" refs/pull/7/head\n',
+				'      - run: git fetch origin a\\;b refs/pull/7/head\n',
 				'      - run: |\n          REF=${{ github.event.pull_request.head.sha }}\n          git checkout "$REF"\n',
 				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ env.SHA }}\n',
 			]) {
