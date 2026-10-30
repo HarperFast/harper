@@ -238,7 +238,7 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Need for usage: Powers the PrimaryRocksDatabase record cache. Stores record values under a WeakRef-based LRU so cached records are GC-reclaimable once they cycle out of the LRU stages — a strong-reference cache would be an unbounded leak, since every accessed record would be retained indefinitely. lmdb-js uses the same library for its CachingStore. Values are stored via `setValue`/`getValue` (WeakRef semantics) rather than `set`/`get` (strong semantics).
 - Size/memory cost: ~6 KB. The cache itself is bounded by the LRU capacity; each slot holds only a WeakRef to the record, so GC can reclaim entries not recently accessed.
 - Security: No reported vulnerabilities. Authored and maintained by David Beaumont / lmdb-js author (same authorship chain as lmdb-js, already a trusted dependency).
-- Environment interaction: None.
+- Environment interaction: `HARPER_RECORD_CACHE_SIZE` (benchmark-only, undocumented) sets `cacheSize` for the record cache; the library's expirer is per thread, so the first cache constructed in a thread fixes the size for every store in it.
 - Overlap: lmdb-js already vendors this for its CachingStore; adding it as a direct dep aligns with the existing usage pattern and avoids importing a private lmdb-js internal.
 - Can be deferred: No — the WeakLRUCache is constructed at store-open time for tables with caching enabled.
 - Binary compilation: No.
