@@ -32,7 +32,7 @@ import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import { completeMultipartBody, cancelMultipartBody } from './serverHelpers/multipartForm.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
-import { RequestTarget } from '../resources/RequestTarget.ts';
+import { RequestTarget, markDispatchTarget } from '../resources/RequestTarget.ts';
 import { entryMap } from '../resources/RecordEncoder.ts';
 import {
 	evaluatePreconditions,
@@ -370,7 +370,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				return nextHandler(request); // no resource handler found
 			}
 			request.handlerPath = entry.path;
-			target = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+			target = markDispatchTarget(new RequestTarget(entry.relativeURL)); // TODO: We don't want to have to remove the forward slash and then re-add it
 			if (entry.params) Object.assign(target, entry.params); // bind parameterised path segments (e.g. :id, *rest)
 
 			(target as any).async = true;
@@ -920,7 +920,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						'ws'
 					);
 					request.authorize = true;
-					const resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+					const resourceRequest = markDispatchTarget(new RequestTarget(entry.relativeURL)); // TODO: We don't want to have to remove the forward slash and then re-add it
 					if (entry.params) Object.assign(resourceRequest, entry.params); // bind parameterised path segments
 					resourceRequest.checkPermission = request.user?.role?.permission ?? {};
 					const resource = entry.Resource;

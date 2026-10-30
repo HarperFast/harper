@@ -415,8 +415,8 @@ export async function subscribeToResource(
 		// record named after the resource and receives nothing).
 		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
 		const { transaction } = transactionRuntimeModule;
-		const { RequestTarget } = RequestTargetRuntimeModule;
-		const request = new RequestTarget(path);
+		const { RequestTarget, markDispatchTarget } = RequestTargetRuntimeModule;
+		const request = markDispatchTarget(new RequestTarget(path));
 		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
 		// the MCP notification just says "this resource changed; re-read it".
 		Object.assign(request, {

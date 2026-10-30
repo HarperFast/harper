@@ -37,7 +37,7 @@ function definition(name, fields) {
 }
 
 describe('published native full-text Table.search integration', () => {
-	let Product;
+	let Product, Related;
 
 	before(async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();
@@ -56,10 +56,19 @@ describe('published native full-text Table.search integration', () => {
 
 	afterEach(async () => {
 		const runtime = Product?.derivedIndexRuntime;
+		const relatedRuntime = Related?.derivedIndexRuntime;
 		if (Product) Product.derivedIndexRuntime = undefined;
-		if (runtime) await runtime.close();
+		if (Related) Related.derivedIndexRuntime = undefined;
 		Product = undefined;
-		setFullTextNativeBindingForTests(undefined);
+		Related = undefined;
+		try {
+			const results = await Promise.allSettled([runtime, relatedRuntime].map(async (runtime) => runtime?.close()));
+			const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+			if (errors.length === 1) throw errors[0];
+			if (errors.length > 1) throw new AggregateError(errors, 'Could not close full-text test runtimes');
+		} finally {
+			setFullTextNativeBindingForTests(undefined);
+		}
 	});
 
 	it('keeps custom iterable searches and re-evaluates later offset requests', async () => {
@@ -567,4 +576,124 @@ describe('published native full-text Table.search integration', () => {
 			setFullTextTestConfiguration(previousPolicy);
 		}
 	});
+
+	for (const shape of ['object', 'braced']) {
+		for (const restrictedFirst of [false, true]) {
+			it(`isolates reused nested full-text selectors (${shape}), restricted first: ${restrictedFirst}`, async () => {
+				const database = `fulltext-selector-reuse-${shape}-${restrictedFirst}-${Date.now()}`;
+				Related = table({
+					database,
+					table: 'Related',
+					audit: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'title', type: 'String' },
+						{ name: 'secret', type: 'String' },
+					],
+					fullTextIndexes: [definition('relatedSearch', [{ name: 'title', weight: 1 }])],
+				});
+				Product = table({
+					database,
+					table: 'Product',
+					audit: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'title', type: 'String' },
+						{ name: 'description', type: 'String' },
+						{ name: 'relatedId', type: 'ID' },
+						{
+							name: 'related',
+							relationship: { from: 'relatedId' },
+							type: 'Related',
+							definition: { tableClass: Related },
+						},
+					],
+					fullTextIndexes: [
+						definition('catalogSearch', [
+							{ name: 'title', weight: 1 },
+							{ name: 'description', weight: 1 },
+						]),
+					],
+				});
+				await Related.put('detail', { title: 'Detail', secret: 'hidden detail' });
+				await Product.put('one', { title: 'Trail shoe', description: 'classified', relatedId: 'detail' });
+				await waitFor(
+					() =>
+						fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready' &&
+						fullTextDerivedIndexReadiness(Related, 'relatedSearch').state === 'ready',
+					30_000
+				);
+				const broad = {
+					role: { permission: { [database]: { tables: { Product: { read: true }, Related: { read: true } } } } },
+				};
+				const restricted = {
+					role: {
+						permission: {
+							[database]: {
+								tables: {
+									Product: {
+										read: true,
+										attribute_permissions: ['id', 'title', 'related'].map((attribute_name) => ({
+											attribute_name,
+											read: true,
+										})),
+									},
+									Related: {
+										read: true,
+										attribute_permissions: ['id', 'title'].map((attribute_name) => ({ attribute_name, read: true })),
+									},
+								},
+							},
+						},
+					},
+				};
+				const users = restrictedFirst ? [restricted, broad] : [broad, restricted];
+				const selector =
+					shape === 'object'
+						? { name: 'related', select: ['id', 'title', 'secret'] }
+						: Object.assign(['id', 'title', 'secret'], { name: 'related' });
+				const original = structuredClone(selector);
+				const read = (user, field = 'title', value = 'shoe') =>
+					collect(
+						Product.search(
+							{
+								select: ['id', 'title', 'description', selector],
+								checkPermission: user.role.permission,
+								conditions: [
+									{
+										attribute: 'catalogSearch',
+										comparator: 'matches',
+										value,
+										fields: [field],
+										maxIndexLagMilliseconds: 0,
+										waitForIndexMilliseconds: 5000,
+									},
+								],
+							},
+							{ user }
+						)
+					);
+				for (const user of users) {
+					assert.deepStrictEqual(await read(user), [
+						{
+							id: 'one',
+							title: 'Trail shoe',
+							...(user === broad ? { description: 'classified' } : {}),
+							related: { id: 'detail', title: 'Detail', ...(user === broad ? { secret: 'hidden detail' } : {}) },
+						},
+					]);
+				}
+				assert.deepStrictEqual(selector, original);
+				assert.deepStrictEqual(Object.getOwnPropertySymbols(selector), []);
+				await assert.rejects(
+					async () => read(restricted, 'description', 'classified'),
+					(error) => error.name === 'AccessViolation' || error.statusCode === 403
+				);
+				assert.strictEqual((await read(broad, 'description', 'classified')).length, 1);
+				assert.deepStrictEqual(await read(broad, 'title', 'nonexistent'), []);
+				assert.deepStrictEqual(selector, original);
+				assert.deepStrictEqual(Object.getOwnPropertySymbols(selector), []);
+			});
+		}
+	}
 });

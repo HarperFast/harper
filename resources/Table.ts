@@ -301,7 +301,7 @@ import {
 	getStorageSpaceStats,
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
-import { RequestTarget } from './RequestTarget.ts';
+import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
@@ -786,7 +786,6 @@ const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
-const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
@@ -4008,10 +4007,12 @@ export function makeTable(options): TableResourceClass {
 				const id = requestTargetToId(target);
 				checkValidId(id);
 				let allowed = true;
+				// loadedFromSource is reported on the caller's target, which authorization must not write
+				let authorizedTarget = target;
 				if ((target as any)?.checkPermission) {
-					// requesting authorization verification
+					authorizedTarget = dispatchTarget(target);
 					try {
-						allowed = this.allowRead(context.user, target, context);
+						allowed = this.allowRead(context.user, authorizedTarget, context);
 					} catch {
 						// allow* threw — fail closed rather than letting the request proceed
 						throw new AccessViolation(context.user);
@@ -4050,13 +4051,13 @@ export function makeTable(options): TableResourceClass {
 							});
 						}),
 						(record) => {
-							const select = target?.select;
+							const select = authorizedTarget?.select;
 							if (select && record != null) {
 								const transform = transformForSelect(select, this.constructor);
 								return transform(record);
 							}
-							if (target?.property) {
-								return record?.[target.property];
+							if (authorizedTarget?.property) {
+								return record?.[authorizedTarget.property];
 							}
 							return record;
 						}
@@ -4125,6 +4126,7 @@ export function makeTable(options): TableResourceClass {
 								if (relatedTable) {
 									// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
 									if (!property.name) property = { name: property };
+									else property = Array.isArray(property) ? Object.assign([], property) : { ...property };
 									if (Array.isArray(property) && !(property as any).select)
 										(property as any).select = Array.from(property);
 									if (!property.checkPermission && (target as any).checkPermission)
@@ -7181,6 +7183,7 @@ export function makeTable(options): TableResourceClass {
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
+				target = dispatchTarget(target);
 				let allowed;
 				try {
 					allowed = this.allowRead((context as any).user, target, context);
@@ -8697,6 +8700,7 @@ export function makeTable(options): TableResourceClass {
 			if (!request) request = {} as any;
 			const loadAsInstance = (this.constructor as any).loadAsInstance;
 			if (loadAsInstance === false && (request as any).checkPermission) {
+				request = dispatchTarget(request);
 				const context = this.getContext() as any;
 				let allowed;
 				try {

@@ -1,9 +1,47 @@
 import type { UserRoleDatabasePermissions } from '../security/user.ts';
 import type { Conditions, Context, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
 import { parseQuery } from './search.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
+
+export const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+
+export let markDispatchTarget: (target: RequestTarget) => RequestTarget;
+let isDispatchTarget: (target: any) => boolean;
+let copyRequestTarget: (source: RequestTarget) => RequestTarget;
+
+// own data properties, so the gate's writes never reach an accessor the caller's class defines
+function ownAuthorizationFields(source: any, descriptors: PropertyDescriptorMap): PropertyDescriptorMap {
+	for (const name of ['checkPermission', 'select']) {
+		if (name in source)
+			descriptors[name] = { value: source[name], writable: true, enumerable: true, configurable: true };
+	}
+	return descriptors;
+}
 
 export class RequestTarget extends URLSearchParams {
 	#target?: string;
+	#dispatchOwned?: boolean;
+	static {
+		markDispatchTarget = (target) => {
+			target.#dispatchOwned = true;
+			return target;
+		};
+		isDispatchTarget = (target) => #dispatchOwned in target && target.#dispatchOwned === true;
+		copyRequestTarget = (source) => {
+			const copy = new RequestTarget();
+			for (const [name, value] of source) URLSearchParams.prototype.append.call(copy, name, value);
+			copy.#target = source.#target;
+			copy.#dispatchOwned = true;
+			Object.assign(copy, source);
+			const prototype = Object.getPrototypeOf(source);
+			if (prototype !== RequestTarget.prototype) {
+				Object.defineProperties(copy, ownAuthorizationFields(source, {}));
+				// a subclass's other accessors, such as computed conditions, still answer on the copy
+				Object.setPrototypeOf(copy, prototype);
+			}
+			return copy;
+		};
+	}
 	pathname: string;
 	search?: string;
 	/** Target a specific record, but can be combined with select */
@@ -173,3 +211,18 @@ export class RequestTarget extends URLSearchParams {
 	}
 }
 export type RequestTargetOrId = RequestTarget | Id;
+
+/** Authorization writes only on a target this dispatch owns, so a caller's query object stays reusable. */
+export function dispatchTarget<T>(target: T): T {
+	if (isDispatchTarget(target)) return target;
+	if ((target as any)[AUTHORIZATION_SELECT])
+		throw new ServerError(
+			'Can not authorize a query object that an earlier authorization already narrowed; pass a query object that has not been authorized'
+		);
+	if (target instanceof RequestTarget) return copyRequestTarget(target) as T;
+	if (target instanceof URLSearchParams) return Object.assign(new URLSearchParams(target), target);
+	if (Array.isArray(target)) return Object.assign([], target) as T;
+	const prototype = Object.getPrototypeOf(target);
+	if (prototype === Object.prototype) return { ...target };
+	return Object.create(prototype, ownAuthorizationFields(target, Object.getOwnPropertyDescriptors(target)));
+}

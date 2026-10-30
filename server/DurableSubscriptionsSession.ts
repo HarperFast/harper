@@ -7,7 +7,7 @@ import { transaction } from '../resources/transaction.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 import { server } from '../server/Server.ts';
-import { RequestTarget } from '../resources/RequestTarget.ts';
+import { RequestTarget, markDispatchTarget } from '../resources/RequestTarget.ts';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
@@ -387,7 +387,7 @@ class SubscriptionsSession {
 				url = '/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
 		} else isCollection = false; // must explicitly turn this off so topics that end in a slash are not treated as collections
-		const request = new RequestTarget(url);
+		const request = markDispatchTarget(new RequestTarget(url));
 		Object.assign(request, {
 			// bind parameterised path segments (e.g. :id, *rest) first, so a route param can never override a
 			// framework-controlled field below — most importantly checkPermission (matches REST.ts / publishMessage)
@@ -702,7 +702,7 @@ async function publishMessage(message: any, data: any, context: any) {
 		throw notFoundError;
 	}
 	message.url = entry.relativeURL;
-	const target = new RequestTarget(entry.relativeURL);
+	const target = markDispatchTarget(new RequestTarget(entry.relativeURL));
 	if (entry.params) Object.assign(target, entry.params); // bind parameterised path segments (e.g. :id, *rest)
 	target.checkPermission = context.user?.role?.permission ?? {};
 
