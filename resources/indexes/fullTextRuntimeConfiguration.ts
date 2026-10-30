@@ -3,6 +3,10 @@ import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 
+import { resolveFullTextQueryLimits, type FullTextQueryLimits } from './fullTextSearchLimits.ts';
+
+let queryPolicy: FullTextQueryLimits | undefined;
+
 const configurationKey = 'harper.fullTextRuntimeConfiguration';
 let snapshot: { runtime: unknown; query?: unknown } | undefined =
 	workerData?.fullTextRuntimeConfiguration ?? getEnvironmentData(configurationKey);
@@ -36,4 +40,8 @@ export function getFullTextRuntimeConfiguration(
 	if (snapshot.query && typeof snapshot.query === 'object') Object.freeze(snapshot.query);
 	if (snapshot.runtime && typeof snapshot.runtime === 'object') Object.freeze(snapshot.runtime);
 	return Object.freeze(snapshot);
+}
+
+export function getFullTextQueryPolicy(): FullTextQueryLimits {
+	return (queryPolicy ??= resolveFullTextQueryLimits(getFullTextRuntimeConfiguration().query));
 }

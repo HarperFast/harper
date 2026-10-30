@@ -221,7 +221,9 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_value?: Record[Property] | Record[Property][];
 	/** Optional source-field restriction for a named full-text index. */
 	fields?: string[];
+	/** Fuzzy edit distance 0–2, default 1; bounded by storage.fullText.query.maxFuzzyDistance. */
 	fuzzyDistance?: number;
+	/** Count adjacent swaps as one edit, default true; fuzzy comparators only. */
 	fuzzyTranspositions?: boolean;
 	/** Return configured full-text match spans and snippets; disabled by default. */
 	includeHighlights?: boolean;

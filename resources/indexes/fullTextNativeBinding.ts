@@ -225,7 +225,7 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 			const binding = await validateFullTextNativeBinding(module);
 			if (typeof binding.configureNativeFullTextRuntime !== 'function')
 				throw new TypeError('@harperfast/fulltext/native does not support process budgets');
-			const runtime = resolveFullTextSearchLimits(getFullTextRuntimeConfiguration()).runtime;
+			const runtime = resolveFullTextSearchLimits({ runtime: getFullTextRuntimeConfiguration().runtime }).runtime;
 			binding.configureNativeFullTextRuntime(runtime);
 			try {
 				const currentQuery = resolveFullTextQueryLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_QUERY));

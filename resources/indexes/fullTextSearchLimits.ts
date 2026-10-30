@@ -38,7 +38,6 @@ export type FullTextSearchLimits = Readonly<{
 	requestBudgetMilliseconds: number;
 	maxRawHitsPerRequest: number;
 	maxResultsPerRequest: number;
-	query: FullTextQueryLimits;
 	runtime: Readonly<NativeFullTextRuntimeBudget>;
 }>;
 
@@ -46,7 +45,6 @@ export const DEFAULT_FULL_TEXT_SEARCH_LIMITS: FullTextSearchLimits = Object.free
 	requestBudgetMilliseconds: 5_000,
 	maxRawHitsPerRequest: 10_000,
 	maxResultsPerRequest: 10_000,
-	query: DEFAULT_FULL_TEXT_QUERY_LIMITS,
 	runtime: Object.freeze({
 		maxResidentIndexes: 128,
 		maxIndexingThreads: 128,
@@ -57,9 +55,7 @@ export const DEFAULT_FULL_TEXT_SEARCH_LIMITS: FullTextSearchLimits = Object.free
 	}),
 });
 
-const policyDefaults = Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS).filter(
-	([name]) => name !== 'runtime' && name !== 'query'
-);
+const policyDefaults = Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS).filter(([name]) => name !== 'runtime');
 const runtimeDefaults = Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime);
 
 export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimits {
@@ -76,7 +72,7 @@ export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimit
 			`storage.fullText.runtime.${name}`
 		);
 	for (const name of Object.keys(config))
-		if (!Object.hasOwn(DEFAULT_FULL_TEXT_SEARCH_LIMITS, name))
+		if (name !== 'query' && !Object.hasOwn(DEFAULT_FULL_TEXT_SEARCH_LIMITS, name))
 			throw new TypeError(`Unknown storage.fullText option '${name}'`);
 	for (const name of Object.keys(runtime))
 		if (!Object.hasOwn(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime, name))
@@ -85,7 +81,6 @@ export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimit
 		if (budget[name] > 0xffffffff) throw new TypeError(`storage.fullText.runtime.${name} must fit a u32`);
 	return Object.freeze({
 		...limits,
-		query: resolveFullTextQueryLimits(config.query),
 		runtime: Object.freeze(budget),
 	}) as FullTextSearchLimits;
 }

@@ -132,7 +132,7 @@ describe('published native full-text Table.search integration', () => {
 		assert.deepStrictEqual(ids(exact), ['catalog']);
 		assert(exact[0].$highlights.title.length > 0);
 		await assert.rejects(
-			search({ value: 'catxxog', fuzzyDistance: 2 }),
+			async () => search({ value: 'catxxog', fuzzyDistance: 2 }),
 			(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
 		);
 		for (const options of [

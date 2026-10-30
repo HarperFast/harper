@@ -76,7 +76,8 @@ export function replayFullTextPrefix(
 	return { skipped, remaining, hits: skipped > 0 ? page.hits.slice(skipped) : page.hits };
 }
 
-export function fullTextFuzzyOptions(condition: NativeFullTextFuzzyOptions): NativeFullTextFuzzyOptions {
+export function fullTextFuzzyOptions(condition: NativeFullTextFuzzyOptions): NativeFullTextFuzzyOptions | undefined {
+	if (condition.fuzzyDistance === undefined && condition.fuzzyTranspositions === undefined) return;
 	return {
 		...(condition.fuzzyDistance === undefined ? null : { fuzzyDistance: condition.fuzzyDistance }),
 		...(condition.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: condition.fuzzyTranspositions }),

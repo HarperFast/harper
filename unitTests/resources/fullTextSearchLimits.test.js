@@ -73,6 +73,9 @@ describe('full-text search resource limits', () => {
 		assert.deepStrictEqual(errors({ requestBudgetMilliseconds: 7, runtime: { maxResidentIndexes: 256 } }), []);
 		for (const value of [
 			{ requestBudgetMilliseconds: 0 },
+			{ query: { maxQueryTerms: 0 } },
+			{ query: { maxQueryClauses: 4097 } },
+			{ query: { maxFuzzyDistance: 3 } },
 			{ maxCursor: 4 },
 			{ runtime: { maxSearchThreads: null } },
 			{ requestBudgetMilliseconds: -1 },
@@ -107,7 +110,16 @@ describe('full-text search resource limits', () => {
 		const { parse } = require('yaml');
 		const root = resolve(__dirname, '../..');
 		const yaml = parse(readFileSync(resolve(root, 'static/defaultConfig.yaml'), 'utf8'));
-		assert.deepStrictEqual(yaml.storage.fullText, DEFAULT_FULL_TEXT_SEARCH_LIMITS);
+		const { query, ...requestLimits } = yaml.storage.fullText;
+		assert.deepStrictEqual(requestLimits, DEFAULT_FULL_TEXT_SEARCH_LIMITS);
+		const { DEFAULT_FULL_TEXT_QUERY_LIMITS } = require('#src/resources/indexes/fullTextSearchLimits');
+		assert.deepStrictEqual(query, DEFAULT_FULL_TEXT_QUERY_LIMITS);
+		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_QUERY_LIMITS))
+			assert.strictEqual(schemaQueryDefault(name), value);
+		function schemaQueryDefault(name) {
+			return JSON.parse(readFileSync(resolve(root, 'config-root.schema.json'), 'utf8')).properties.storage.properties
+				.fullText.properties.query.properties[name].default;
+		}
 		const schema = JSON.parse(readFileSync(resolve(root, 'config-root.schema.json'), 'utf8'));
 		const policy = schema.properties.storage.properties.fullText;
 		assert.strictEqual(policy.additionalProperties, false);
@@ -123,8 +135,24 @@ describe('full-text search resource limits', () => {
 	it('exposes every limit through the conventional configuration parameter map', () => {
 		const { CONFIG_PARAM_MAP, CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 		const { flattenConfig } = require('#src/config/configUtils');
-		const flattened = flattenConfig({ storage: { fullText: structuredClone(DEFAULT_FULL_TEXT_SEARCH_LIMITS) } });
+		const flattened = flattenConfig({
+			storage: {
+				fullText: {
+					...structuredClone(DEFAULT_FULL_TEXT_SEARCH_LIMITS),
+					query: { maxQueryTerms: 64, maxQueryClauses: 256, maxFuzzyDistance: 1 },
+				},
+			},
+		});
 		assert.deepStrictEqual(flattened.storage_fulltext_runtime, DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime);
+		assert.deepStrictEqual(flattened.storage_fulltext_query, {
+			maxQueryTerms: 64,
+			maxQueryClauses: 256,
+			maxFuzzyDistance: 1,
+		});
+		assert.strictEqual(CONFIG_PARAM_MAP.storage_fulltext_query, CONFIG_PARAMS.STORAGE_FULL_TEXT_QUERY);
+		assert.strictEqual(flattened.storage_fulltext_query_maxqueryterms, 64);
+		assert.strictEqual(flattened.storage_fulltext_query_maxqueryclauses, 256);
+		assert.strictEqual(flattened.storage_fulltext_query_maxfuzzydistance, 1);
 		assert.strictEqual(CONFIG_PARAM_MAP.storage_fulltext_runtime, CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME);
 		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS)) {
 			const check = (path, expected) => {
@@ -198,6 +226,26 @@ describe('full-text host query policy', () => {
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
+		}
+	});
+	it('keeps writer lifecycle usable even when an unvalidated query snapshot is invalid', async function () {
+		this.timeout(30000);
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { execFileSync } = require('node:child_process');
+		const { mkdtempSync, rmSync } = require('node:fs');
+		const { join } = require('node:path');
+		const { setupTestDBPath } = require('../testUtils');
+		const root = mkdtempSync(join(setupTestDBPath(), 'writer-query-isolation-'));
+		try {
+			const output = execFileSync(
+				process.execPath,
+				[require.resolve('./fixtures/fullTextRuntimeConfigurationProcess.cjs'), '256', 'invalid-query', '{}', root],
+				{ encoding: 'utf8', timeout: 20000 }
+			);
+			assert.deepStrictEqual(JSON.parse(output.trim().split('\n').at(-1)), { writerAlive: true });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 	it('preserves defaults and strictly bounds independent host settings', () => {

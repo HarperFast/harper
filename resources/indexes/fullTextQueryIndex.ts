@@ -1,4 +1,4 @@
-import { getFullTextRuntimeConfiguration } from './fullTextRuntimeConfiguration.ts';
+import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import { createHash } from 'node:crypto';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -62,7 +62,7 @@ const MAX_CANDIDATE_KEYS = 4_096;
 // Four key-only reads remain cheaper than loading and decoding the authoritative record they replace.
 const MAX_POINT_PROBE_READS_PER_CANDIDATE = 4;
 const CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS = 1_000;
-// Query API v7 adds empty aggregation framing; traversal reserves 93 bytes plus 13 per versioned hit before strings.
+// Query API v7 traversal reserves 93 bytes plus 13 per versioned hit before strings.
 const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 93;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
@@ -152,7 +152,6 @@ export class FullTextQueryIndex {
 	#readerSlot?: ReaderSlot;
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
-	#maxFuzzyDistance?: number;
 	#maxSearchWindow?: number;
 	#maxFilteredRawPageSize?: number;
 	#maxAutocompleteResults?: number;
@@ -243,6 +242,10 @@ export class FullTextQueryIndex {
 		const waiting = waitForIndexMilliseconds > 0;
 		let coverage: DerivedIndexCoverage | undefined;
 		const execute = async () => {
+			assertFuzzyPolicy(
+				condition.fullTextQuery ?? leafExpression(condition),
+				getFullTextQueryPolicy().maxFuzzyDistance
+			);
 			assertReady(
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
@@ -449,7 +452,6 @@ export class FullTextQueryIndex {
 			let rawHitsFetched = 0;
 			const maxSearchWindow = this.#maxSearchWindow!;
 			const query = condition.fullTextQuery ?? leafExpression(condition);
-			assertFuzzyPolicy(query, this.#maxFuzzyDistance!);
 			const autocomplete = expressionUsesAutocomplete(query);
 			const searchWindow = maxSearchWindow;
 			const bounded = options.minResults !== undefined;
@@ -1113,10 +1115,9 @@ export class FullTextQueryIndex {
 				: configured
 			: await loadFullTextNativeBinding();
 		const info = validateFullTextQueryRuntimeInfo(await binding.runtimeInfo());
-		const queryPolicy = nativeFullTextQueryLimits(info, getFullTextRuntimeConfiguration().query);
+		const queryPolicy = nativeFullTextQueryLimits(info, getFullTextQueryPolicy());
 		this.#nativeOptions.limits.maxQueryTerms = queryPolicy.maxQueryTerms;
 		this.#nativeOptions.limits.maxQueryClauses = queryPolicy.maxQueryClauses;
-		this.#maxFuzzyDistance = queryPolicy.maxFuzzyDistance;
 		this.#nativeOptions.limits.searchThreads = nativeFullTextSearchThreads(
 			info,
 			this.#nativeOptions.limits.searchThreads
@@ -1239,8 +1240,7 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 }
 
 function leafExpression(condition: FullTextCondition): NativeFullTextSearchExpression {
-	const leaf = leafDescriptor(condition);
-	return leaf;
+	return leafDescriptor(condition);
 }
 
 function expressionUsesAutocomplete(expression: NativeFullTextSearchExpression): boolean {

@@ -309,4 +309,5 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 ## @harperfast/fulltext-v07 (dev dependency)
 
 - Need for usage: Exact npm alias for fulltext 0.7.0, used by the existing isolated upgrade fixture to write a real text-only checkpoint and verify 0.8 reuse and subsequent 0.7 reopen. The separate 0.5.0 alias retains coverage of the earlier incompatible engine.
+- Updates and removal: Renovate leaves this historical alias fixed. Remove it and its exclusion only when the 0.7 migration fixture is retired.
 - Cost and boundary: One additional root package and supported platform prebuild in development/CI only. No production runtime import; the previous-engine child exits before the current engine opens its files.

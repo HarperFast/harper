@@ -731,12 +731,16 @@ describe('published full-text 0.5.0 and 0.7.0 to 0.8.0 migration', function () {
 				upserts: [{ id: 'new', version: '2', fields: { title: 'catalog' } }],
 				deletes: [],
 			});
-			await index.publish(payload);
+			await index.publish(encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }));
 		} finally {
 			await index.close({ mode: 'rollback' });
 		}
 		const reopened = previousFullTextProcess('inspect', native, undefined, undefined, '0.7.0');
-		assert.deepStrictEqual(reopened.inspection, { state: 'checkpointed', committedPayload: payload });
+		assert.deepStrictEqual(reopened.inspection, {
+			state: 'checkpointed',
+			committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }),
+		});
+		assert.deepStrictEqual(reopened.searchIds, ['new', 'old']);
 		assert.strictEqual(reopened.openError, undefined);
 	});
 

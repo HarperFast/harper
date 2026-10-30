@@ -303,6 +303,36 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	it('rejects disallowed fuzzy controls before readiness waits or reader opens, even for zero results', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'early-fuzzy-policy';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'rebuilding');
+		let opens = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			onOpen: () => opens++,
+		});
+		try {
+			for (const waitForIndexMilliseconds of [0, 30000])
+				for (const minResults of [0, 1])
+					await assert.rejects(
+						async () =>
+							index.search(
+								{ comparator: 'matches_fuzzy', value: 'catalog', fuzzyDistance: 2, waitForIndexMilliseconds },
+								{},
+								{ minResults }
+							),
+						(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
+					);
+			assert.strictEqual(opens, 0);
+		} finally {
+			await index.close();
+		}
+	});
+
 	it('keeps a filled ordinary request out of native traversal admission', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'ordinary-query-admission';

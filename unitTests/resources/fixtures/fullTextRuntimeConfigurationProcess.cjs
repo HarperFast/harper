@@ -6,6 +6,7 @@ const { resolveFullTextSearchLimits } = require('#src/resources/indexes/fullText
 async function run() {
 	const maxSearchThreads = Number(process.argv[2]);
 	env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME, { maxSearchThreads });
+	if (process.argv[3] === 'invalid-query') env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_QUERY, { maxQueryTerms: 0 });
 	if (process.argv[3] === 'policy') env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_QUERY, JSON.parse(process.argv[4]));
 	if (process.argv[3] === 'unmanaged' || process.argv[3] === 'early-worker') {
 		const { Worker } = require('node:worker_threads');
@@ -35,6 +36,69 @@ async function run() {
 		return;
 	}
 	const snapshot = getFullTextRuntimeConfiguration();
+	if (process.argv[3] === 'invalid-query') {
+		const assert = require('node:assert');
+		const {
+			NativeFullTextDerivedIndexLifecycle,
+		} = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
+		const { getFullTextQueryPolicy } = require('#src/resources/indexes/fullTextRuntimeConfiguration');
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle({
+			storePath: process.argv[5],
+			storeName: 'writer-isolation',
+			indexId: 'writer-isolation',
+			sourceGeneration: 'one',
+			analyzer: 'english@2',
+			fields: [{ name: 'title' }],
+			limits: {
+				indexingThreads: 1,
+				searchThreads: 2,
+				writerMemoryBytes: 64000000,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64000000,
+				maxBatchBytes: 8388608,
+			},
+		});
+		await lifecycle.initialize({ reclaimRetired: false });
+		const writer = await lifecycle.open();
+		try {
+			assert.throws(() => getFullTextQueryPolicy(), /positive safe integer/);
+			await writer.publish('writer-alive');
+			assert.strictEqual(lifecycle.inspect().state, 'checkpointed');
+		} finally {
+			await writer.close({ mode: 'rollback' });
+		}
+		const { FullTextQueryIndex } = require('#src/resources/indexes/fullTextQueryIndex');
+		const query = new FullTextQueryIndex({
+			Table: {},
+			definition: {
+				name: 'catalogSearch',
+				fields: [{ name: 'title', weight: 1 }],
+				analyzer: 'english@2',
+				stopWords: true,
+				positions: true,
+				surfaceTerms: true,
+				synonyms: [],
+			},
+			auditStore: {},
+			readinessId: 'invalid-policy',
+			indexId: 'invalid-policy',
+			storePath: process.argv[5],
+			storeName: 'invalid-policy',
+			sourceGeneration: 'one',
+			limits: {},
+		});
+		try {
+			await assert.rejects(
+				async () => query.search({ comparator: 'matches', value: 'catalog' }, {}),
+				(error) => error.statusCode === 500 && error.message === "Full-text search on 'catalogSearch' failed"
+			);
+		} finally {
+			await query.close();
+		}
+		console.log(JSON.stringify({ writerAlive: true }));
+		return;
+	}
+
 	if (process.argv[3] === 'policy') {
 		const assert = require('node:assert');
 		const { Worker } = require('node:worker_threads');

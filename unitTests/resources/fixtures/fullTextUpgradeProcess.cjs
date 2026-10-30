@@ -34,15 +34,20 @@ const assert = require('node:assert');
 		}
 		const inspection = binding.inspectNativeFullTextIndex(options);
 		let openError;
+		let searchIds;
 		if (mode === 'inspect') {
 			try {
 				const reader = await binding.openNativeFullTextReader(options);
-				await reader.close();
+				try {
+					if (version === '0.7.0') searchIds = (await reader.search({ text: 'catalog' })).hits.map(({ id }) => id);
+				} finally {
+					await reader.close();
+				}
 			} catch (error) {
 				openError = error.code;
 			}
 		}
-		console.log(JSON.stringify({ inspection, openError, resetError, ghostIds }));
+		console.log(JSON.stringify({ inspection, openError, resetError, ghostIds, searchIds }));
 	} finally {
 		await index?.close({ mode: 'rollback' });
 	}
