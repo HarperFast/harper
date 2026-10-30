@@ -1,4 +1,5 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
+import { when } from '../utility/when.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP, ExtendedIterable } from '@harperfast/extended-iterable';
@@ -98,15 +99,7 @@ export function executeConditions(
 			const nextResults = executeCondition(condition);
 			results = results.concat(nextResults);
 		}
-		const returnedIds = new Set();
-		const deduped = results.filter((entry) => {
-			const id = entry.key ?? entry;
-			if (returnedIds.has(id))
-				// skip duplicate ids
-				return false;
-			returnedIds.add(id);
-			return true;
-		});
+		const deduped = distinctKeys(results);
 		// Record guards must hold on the OR union too — loading each surviving record and dropping the
 		// ones the guards reject (transformToEntries loads the record to evaluate a filter). Without this
 		// a row filter would be bypassed by any OR query.
@@ -164,6 +157,10 @@ export function executeConditions(
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
+			holderTable: table,
+			holderReadTxn: txn,
+			disableSnapshot: request.snapshot === false,
+			leaseHost: filtered,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
@@ -176,8 +173,12 @@ export function executeConditions(
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
 					const filters = mapConditionsToFilters(condition.conditions, !union, estimatedIncomingCount);
-					if (union) return (record, entry) => filters.some((filter) => filter(record, entry));
-					else return (record, entry) => filters.every((filter) => filter(record, entry));
+					const groupFilter: any = union
+						? (record, entry) => filters.some((filter) => filter(record, entry))
+						: (record, entry) => filters.every((filter) => filter(record, entry));
+					if (filters.some((filter) => filter.maybeAsync))
+						groupFilter.maybeAsync = (record, entry) => matchesFilters(filters, record, entry, union);
+					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
 				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount);
@@ -477,9 +478,39 @@ export class CandidateKeySet {
 		}
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
+	addIfAbsent(primaryKey: Id): boolean {
+		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
+			if (this.has(primaryKey)) return false;
+			this.add(primaryKey);
+			return true;
+		}
+		if (typeof primaryKey === 'bigint') {
+			const number = Number(primaryKey);
+			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
+			this.#holdsBigInt = true;
+		}
+		const identity = writeKeyId(primaryKey);
+		if (this.#encoded.has(identity)) return false;
+		this.#encoded.add(identity);
+		return true;
+	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
+}
+
+export function distinctKeys(entries: any): any {
+	if (Array.isArray(entries)) {
+		const returned = new CandidateKeySet();
+		return entries.filter((entry) => returned.addIfAbsent(entry.key ?? entry));
+	}
+	const distinct = new ExtendedIterable();
+	(distinct as any).iterate = (options) => {
+		const returned = new CandidateKeySet();
+		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
+		return entries.map((entry) => (returned.addIfAbsent(entry.key ?? entry) ? entry : SKIP)).iterate(options);
+	};
+	return distinct;
 }
 
 interface CandidateKeyScan {
@@ -528,37 +559,34 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	// The scan has to hold every key the record predicate admits, or results would depend on whether
 	// the plan was built. The index cannot supply a record lacking the attribute, a null one unless it
 	// indexes nulls, or one written as -0: ordered-binary encodes -0 past every number, and that entry's
-	// primary key decodes wrong. compareKeys ranks undefined below every scalar, so `rank < 100` admits
-	// a record with no rank at all; a condition admitting any of these is left to the predicate.
+	// primary key decodes wrong. A condition admitting any of these is left to the predicate.
 	const predicate = filterByType(condition, table, undefined, null);
 	if (predicate({}) || predicate({ [attributeName]: 0 }) || (!index.indexNulls && predicate({ [attributeName]: null })))
 		return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
 	const attributeType = findAttribute(table.attributes, attributeName)?.type;
+	const numericType =
+		attributeType === 'Int' || attributeType === 'Long' || attributeType === 'Float' || attributeType === 'BigInt';
+	// An untyped attribute can hold nested arrays, whose elements the predicate matches but no index holds, and
+	// BigInts, which share a Number's index key but not its order, so a range set over one can omit or over-admit.
+	if (comparator !== 'equals' && !numericType && attributeType !== 'String' && attributeType !== 'Date')
+		return undefined;
 	const predicateExact =
-		comparator !== 'equals' ||
-		value === null ||
-		typeof value === 'string' ||
-		typeof value === 'boolean' ||
-		attributeType === 'Int' ||
-		attributeType === 'Long' ||
-		attributeType === 'Float' ||
-		attributeType === 'BigInt';
+		comparator !== 'equals' || value === null || typeof value === 'string' || typeof value === 'boolean' || numericType;
 	let start;
 	let end;
 	let inclusiveEnd = false;
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// null, not searchByIndex's `true`: `true` sorts ABOVE null and false, so starting there
-			// would drop indexed rows the record predicate's compareKeys admits — an omission the
-			// post-filter cannot undo.
 			start = null;
+			exclusiveStart = true;
 			end = value;
 			break;
 		case 'le':
 			start = null;
+			exclusiveStart = true;
 			end = value;
 			inclusiveEnd = true;
 			break;
@@ -596,24 +624,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	)
 		return undefined;
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
-	let estimatedCount = condition.estimated_count;
+	const estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. Only
-	// lt/le widen below that, and the block they add is read FIRST and can dwarf the rest of the
-	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
-	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
-	// per-query cost this is here to avoid. The other comparators' own estimates already cover
-	// whatever they start at.
-	if (comparator === 'lt' || comparator === 'le') {
-		let belowTrue: number | undefined;
-		try {
-			belowTrue = index.estimateCount?.({ start: null, end: true })?.count;
-		} catch {
-			return undefined;
-		}
-		if (!(belowTrue >= 0)) return undefined;
-		estimatedCount += belowTrue;
-	}
 	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
 		index,
@@ -848,6 +860,26 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 	return distinct as any;
 }
 
+const RELATED_LEASES = Symbol('relatedLeases');
+
+// The join scans another database's index after the request commits, so it leases that link's handle;
+// the leases live on the search's `filtered` object until `Table.search` releases them.
+function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, disableSnapshot, leaseHost) {
+	if (!holderReadTxn || !leaseHost || !context) return;
+	const holder = holderTable._txnForContext(context);
+	const link = relatedTable._txnForContext(context);
+	if (link === holder) return holderReadTxn;
+	const leases = (leaseHost[RELATED_LEASES] ??= new Map());
+	let lease = leases.get(link);
+	if (!lease) leases.set(link, (lease = link.leaseReadTxn(holder, disableSnapshot)));
+	return lease.readTxn;
+}
+
+export function releaseRelatedLeases(leaseHost) {
+	const leases = leaseHost[RELATED_LEASES];
+	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
 /**
  * Search for records or keys, based on the search condition, using an index if available. The four
  * leading parameters are required at every call site; everything optional is named, so a new
@@ -873,13 +905,31 @@ export function searchByIndex(
 		minResults?: number;
 		// Rows before this offset are needed for correct paging but do not need highlight metadata.
 		resultOffset?: number;
+		// What a join into another database needs to lease that database's read handle for the search
+		// (see leaseRelatedReadTxn); without them it reads that database's latest committed state.
+		holderTable?: any;
+		holderReadTxn?: any;
+		disableSnapshot?: boolean;
+		leaseHost?: any;
+		leaseContext?: any;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults, resultOffset } = options;
+	const {
+		allowFullScan,
+		filtered,
+		context,
+		minResults,
+		resultOffset,
+		holderTable,
+		holderReadTxn,
+		disableSnapshot,
+		leaseHost,
+	} = options;
+	const leaseContext = options.leaseContext ?? context;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -906,6 +956,10 @@ export function searchByIndex(
 				);
 			const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
 			const joined = new Map();
+			const relatedTxn =
+				relatedTable.primaryStore.path === Table.primaryStore.path
+					? transaction
+					: leaseRelatedReadTxn(relatedTable, leaseContext, holderTable, holderReadTxn, disableSnapshot, leaseHost);
 			// search the related table
 			let results = searchByIndex(
 				{
@@ -914,17 +968,17 @@ export function searchByIndex(
 					comparator,
 					negated: searchCondition.negated,
 				},
-				transaction,
+				relatedTxn,
 				reverse,
 				relatedTable,
-				{ allowFullScan, filtered: joined }
+				{ allowFullScan, filtered: joined, holderTable, holderReadTxn, disableSnapshot, leaseHost, leaseContext }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
 				filtered[attribute_name[0]] = joined;
 				// Use the joinTo to join the results of the related table to the current table (can be one-to-many or many-to-many)
 				const isManyToMany = Boolean(findAttribute(relatedTable.attributes, attribute.relationship.to)?.elements);
-				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined);
+				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined, relatedTxn);
 			}
 			if (attribute.relationship.from) {
 				const searchEntry = (relatedEntry) => {
@@ -940,7 +994,7 @@ export function searchByIndex(
 				if (attribute.elements) {
 					filtered[attribute_name[0]] = joined;
 					// many-to-many relationship (forward), get all the ids first
-					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry);
+					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
 					results = (results as any).flatMap(searchEntry);
@@ -964,25 +1018,34 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
+	// A primary store keeps symbol-keyed metadata (0x02) below `false` and opens at `true`, as it always
+	// has; a secondary index starts just above its null block, which `true` would overshoot past `false`.
+	const openStart = isPrimaryKey ? true : null;
+	const openStartExclusive = !isPrimaryKey;
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
+	const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
 	if (value instanceof Date) value = value.getTime();
 	if (searchCondition.negated) {
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
 		// and exclude matching rows in the filter. Without overriding the range,
 		// the bounded index iteration would only visit *included* rows.
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 		needFullScan = true;
 	} else if (fullTextMode) {
-		start = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 	} else
-		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
+		switch (resolvedComparator) {
 			case 'lt':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				break;
 			case 'le':
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				inclusiveEnd = true;
 				break;
@@ -1005,7 +1068,8 @@ export function searchByIndex(
 			case 'starts_with':
 				start = value.toString();
 				if (start.length === 0) {
-					start = true;
+					start = openStart;
+					exclusiveStart = openStartExclusive;
 					needFullScan = true;
 				} else stringPrefix = true;
 				break;
@@ -1013,15 +1077,17 @@ export function searchByIndex(
 			case 'gele':
 			case 'gelt':
 			case 'gtlt':
-			case 'gtle':
+			case 'gtle': {
+				rangeBounds(comparator, value);
 				start = value[0];
-				if (start instanceof Date) start = start.getTime();
 				end = value[1];
+				if (start instanceof Date) start = start.getTime();
 				if (end instanceof Date) end = end.getTime();
 				inclusiveEnd =
-					(comparator as any) === 'gele' || (comparator as any) === 'gtle' || (comparator as any) === 'between';
-				exclusiveStart = (comparator as any) === 'gtlt' || (comparator as any) === 'gtle';
+					resolvedComparator === 'gele' || resolvedComparator === 'gtle' || resolvedComparator === 'between';
+				exclusiveStart = resolvedComparator === 'gtlt' || resolvedComparator === 'gtle';
 				break;
+			}
 			case 'equals':
 			case undefined:
 				start = value;
@@ -1033,7 +1099,8 @@ export function searchByIndex(
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
 				// `value` is expected to be an array (empty array matches no rows).
 				if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			case 'ne':
@@ -1047,7 +1114,8 @@ export function searchByIndex(
 			case 'contains':
 			case 'ends_with':
 				// we have to revert to full table scan here
-				start = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			default:
@@ -1356,60 +1424,167 @@ export function findAttribute(attributes, attribute_name) {
  * @param store
  * @param isManyToMany
  * @param joined
+ * @param transaction the read handle the right side was scanned with
  * @returns
  */
-function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>) {
-	return new rightIterable.constructor({
-		[Symbol.iterator]() {
-			let joinedIterator;
-			(joined as any).hasMappings = true;
+function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>, transaction) {
+	const rightProperty = attribute.relationship.to;
+	const addEntry = (key, entry) => {
+		let entriesForKey = joined.get(key);
+		if (entriesForKey) entriesForKey.push(entry);
+		else joined.set(key, (entriesForKey = [entry]));
+	};
+	const addRelated = (entry, record) => {
+		const leftKey = record?.[rightProperty];
+		if (leftKey == null) return;
+		if (isManyToMany) {
+			for (let i = 0; i < leftKey.length; i++) {
+				addEntry(leftKey[i], entry);
+			}
+		} else {
+			addEntry(leftKey, entry);
+		}
+	};
+	const results = new ExtendedIterable();
+	results.iterate = (options) => {
+		let joinedIterator;
+		(joined as any).hasMappings = true;
+		if (options?.async) {
+			const scan: JoinScan = { closed: false, transaction, checkActive: getReadTransactionGuard(transaction) };
+			let scanned: Promise<void>;
+			const readOptions = { transaction, async: true };
 			return {
 				next() {
-					if (!joinedIterator) {
-						const rightProperty = attribute.relationship.to;
-						const addEntry = (key, entry) => {
-							let entriesForKey = joined.get(key);
-							if (entriesForKey) entriesForKey.push(entry);
-							else joined.set(key, (entriesForKey = [entry]));
-						};
-						//let i = 0;
-						// get all the ids of the related records
-						for (const entry of rightIterable) {
-							const record = entry.value ?? store.getSync(entry.key ?? entry);
-							const leftKey = record?.[rightProperty];
-							if (leftKey == null) continue;
-							if ((joined as any).filters?.some((filter) => !filter(record))) continue;
-							if (isManyToMany) {
-								for (let i = 0; i < leftKey.length; i++) {
-									addEntry(leftKey[i], entry);
-								}
-							} else {
-								addEntry(leftKey, entry);
-							}
-							// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
-							/*
-							if (i++ > 100) {
-								// yield the event turn every 100 ids. See below for more explanation
-								await new Promise(setImmediate);
-								i = 0;
-							}*/
-						}
-						joinedIterator = joined.keys()[Symbol.iterator]();
-						return this.next();
-					}
-					const joinedEntry = joinedIterator.next();
-					if (joinedEntry.done) return joinedEntry;
-					return {
-						// if necessary, get the original key from the entries array
-						value: joinedEntry.value,
-					};
+					if (scanStopped(scan)) return { done: true, value: undefined };
+					if (joinedIterator) return joinedIterator.next();
+					scanned ??= scanRelated(
+						rightIterable,
+						(entry) => entry.value ?? when(store.getEntry(entry.key ?? entry, readOptions), entryValue),
+						joined,
+						addRelated,
+						scan
+					).then(() => {
+						joinedIterator = (scanStopped(scan) ? new Map() : joined).keys()[Symbol.iterator]();
+					});
+					return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : joinedIterator.next()));
 				},
 				return() {
-					if (joinedIterator?.return) return joinedIterator.return();
+					scan.closed = true;
+					return { done: true, value: undefined };
 				},
 			};
-		},
-	});
+		}
+		const readOptions = { transaction };
+		return {
+			next() {
+				if (!joinedIterator) {
+					//let i = 0;
+					// get all the ids of the related records
+					for (const entry of rightIterable) {
+						const record = entry.value ?? store.getSync(entry.key ?? entry, readOptions);
+						if (record != null && (joined as any).filters?.some((filter) => !filter(record))) continue;
+						addRelated(entry, record);
+						// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
+						/*
+						if (i++ > 100) {
+							// yield the event turn every 100 ids. See below for more explanation
+							await new Promise(setImmediate);
+							i = 0;
+						}*/
+					}
+					joinedIterator = joined.keys()[Symbol.iterator]();
+				}
+				return joinedIterator.next();
+			},
+			return() {
+				return { done: true, value: undefined };
+			},
+		};
+	};
+	return results;
+}
+const entryValue = (entry) => entry?.value;
+function ignoreReturnFailure() {}
+// when a later call throws, the earlier pending results are observed so their rejections are not reported unhandled
+function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
+	const results = [];
+	try {
+		for (const item of items) results.push(map(item));
+	} catch (error) {
+		Promise.all(results).catch(ignoreReturnFailure);
+		throw error;
+	}
+	return results;
+}
+// see the sorted iterator's stopped() in Table.transformToOrderedSelect
+function scanStopped(scan: JoinScan) {
+	if (scan.closed) return true;
+	scan.checkActive?.();
+	return scan.transaction?.isDone;
+}
+type JoinScan = { closed: boolean; transaction: any; checkActive?: () => void };
+async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinScan) {
+	// a custom index search can return a plain array
+	const iterator = (rightIterable[Symbol.asyncIterator] ?? rightIterable[Symbol.iterator]).call(rightIterable);
+	let done = false;
+	try {
+		while (!scanStopped(scan)) {
+			let iteration = iterator.next();
+			if (iteration.then) {
+				iteration = await iteration;
+				if (scanStopped(scan)) return;
+			}
+			if (iteration.done) {
+				done = true;
+				return;
+			}
+			const entry = iteration.value;
+			let record = readRecord(entry);
+			if (record?.then) {
+				record = await record;
+				if (scanStopped(scan)) return;
+			}
+			const filters = (joined as any).filters;
+			if (filters) {
+				if (record == null) continue;
+				let matches = matchesFilters(filters, record, undefined, false);
+				if (matches?.then) {
+					matches = await matches;
+					if (scanStopped(scan)) return;
+				}
+				if (!matches) continue;
+			}
+			add(entry, record);
+		}
+	} finally {
+		// a close that throws (likeliest right after a snapshot is released) must not replace the scan's error
+		if (!done)
+			try {
+				iterator.return?.()?.catch?.(ignoreReturnFailure);
+			} catch {}
+	}
+}
+function someRelatedMatch(entries, match, start: number) {
+	for (let i = start; i < entries.length; i++) {
+		const value = entries[i]?.value;
+		if (value == null) continue;
+		const matches = match(value);
+		if (matches?.then) return matches.then((matches) => matches || someRelatedMatch(entries, match, i + 1));
+		if (matches) return true;
+	}
+	return false;
+}
+function matchesFilters(filters, record, entry, any: boolean, start = 0) {
+	for (let i = start; i < filters.length; i++) {
+		const filter = filters[i];
+		const matches = (filter.maybeAsync ?? filter)(record, entry);
+		if (matches?.then)
+			return matches.then((matches) =>
+				(any ? matches : !matches) ? any : matchesFilters(filters, record, entry, any, i + 1)
+			);
+		if (any ? matches : !matches) return any;
+	}
+	return !any;
 }
 /**
  * This is used to join the results of a query where the right side is a set of ids and the left side is a set of records
@@ -1419,82 +1594,114 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
  * @param store
  * @param joined
  * @param searchEntry
+ * @param transaction the read handle the right side was scanned with
  * @returns
  */
-function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry) {
-	return new rightIterable.constructor({
-		[Symbol.iterator]() {
-			let idIterator;
-			let joinedIterator;
-			const seenIds = new Set();
-			return {
-				next() {
-					let joinedEntry;
-					if (joinedIterator) {
-						while (true) {
-							joinedEntry = joinedIterator.next();
-							if (joinedEntry.done) break; // and continue to find next
-							const id = joinedEntry.value;
-							if (seenIds.has(id)) continue;
-							seenIds.add(id);
-							return joinedEntry;
-						}
-					}
-					if (!idIterator) {
-						// get the ids of the related records as a Set so we can quickly check if it is in the set
-						// when are iterating through the results
-						const ids = new Set();
-						// Define the fromRecord function so that we can use it to filter the related records
-						// that are in the select(), to only those that are in this set of ids
-						(joined as any).fromRecord = (record) => {
-							// TODO: Sort based on order ids
-							return record[attribute.relationship.from]?.filter?.((id) => ids.has(id));
-						};
-						//let i = 0;
-						// get all the ids of the related records
-						for (const id of rightIterable) {
-							if ((joined as any).filters) {
-								// if additional filters are defined, we need to check them
-								const record = store.getSync(id);
-								if ((joined as any).filters.some((filter) => !filter(record))) continue;
-							}
-							ids.add(id);
-							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
-							/*
-							if (i++ > 100) {
-								// yield the event turn every 100 ids. We don't want to monopolize the
-								// event loop, give others a chance to run. However, we are much more aggressive
-								// about running here than in simple filter operations, because we are
-								// executing a very minimal range iteration and because this is consuming
-								// memory (so we want to get it over with) and the user isn't getting any
-								// results until we finish
-								await new Promise(setImmediate);
-								i = 0;
-							}*/
-						}
-						// and now start iterating through the ids
-						idIterator = ids[Symbol.iterator]();
-						return this.next();
-					}
-					do {
-						const idEntry = idIterator.next();
-						if (idEntry.done) return idEntry;
-						joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
-						return this.next();
-					} while (true);
-				},
-				return() {
-					return joinedIterator?.return?.();
-				},
-				throw() {
-					return joinedIterator?.throw?.();
-				},
+function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry, transaction) {
+	const results = new ExtendedIterable();
+	results.iterate = (options) => {
+		let idIterator;
+		let joinedIterator;
+		const seenIds = new Set();
+		// get the ids of the related records as a Set so we can quickly check if it is in the set
+		// when are iterating through the results
+		const ids = new Set();
+		// Define the fromRecord function so that we can use it to filter the related records
+		// that are in the select(), to only those that are in this set of ids
+		const defineFromRecord = () => {
+			(joined as any).fromRecord = (record) => {
+				// TODO: Sort based on order ids
+				return record[attribute.relationship.from]?.filter?.((id) => ids.has(id));
 			};
-		},
-	});
+		};
+		const nextJoined = () => {
+			while (true) {
+				if (joinedIterator) {
+					while (true) {
+						const joinedEntry = joinedIterator.next();
+						if (joinedEntry.done) break; // and continue to find next
+						const id = joinedEntry.value;
+						if (seenIds.has(id)) continue;
+						seenIds.add(id);
+						return joinedEntry;
+					}
+				}
+				const idEntry = idIterator.next();
+				if (idEntry.done) return idEntry;
+				joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
+			}
+		};
+		const scan: JoinScan = { closed: false, transaction, checkActive: getReadTransactionGuard(transaction) };
+		const iterator: any = {
+			return() {
+				scan.closed = true;
+				joinedIterator?.return?.();
+				return { done: true, value: undefined };
+			},
+			throw() {
+				scan.closed = true;
+				return joinedIterator?.throw?.();
+			},
+		};
+		if (options?.async) {
+			let scanned: Promise<void>;
+			const readOptions = { transaction, async: true };
+			iterator.next = () => {
+				if (scanStopped(scan)) return { done: true, value: undefined };
+				if (idIterator) return nextJoined();
+				if (!scanned) {
+					defineFromRecord();
+					scanned = scanRelated(
+						rightIterable,
+						(id) => ((joined as any).filters ? when(store.getEntry(id, readOptions), entryValue) : undefined),
+						joined,
+						(id) => ids.add(id),
+						scan
+					).then(() => {
+						idIterator = (scanStopped(scan) ? new Set() : ids)[Symbol.iterator]();
+					});
+				}
+				return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : nextJoined()));
+			};
+		} else {
+			const readOptions = { transaction };
+			iterator.next = () => {
+				if (!idIterator) {
+					defineFromRecord();
+					//let i = 0;
+					// get all the ids of the related records
+					for (const id of rightIterable) {
+						if ((joined as any).filters) {
+							// if additional filters are defined, we need to check them
+							const record = store.getSync(id, readOptions);
+							if ((joined as any).filters.some((filter) => !filter(record))) continue;
+						}
+						ids.add(id);
+						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
+						/*
+						if (i++ > 100) {
+							// yield the event turn every 100 ids. We don't want to monopolize the
+							// event loop, give others a chance to run. However, we are much more aggressive
+							// about running here than in simple filter operations, because we are
+							// executing a very minimal range iteration and because this is consuming
+							// memory (so we want to get it over with) and the user isn't getting any
+							// results until we finish
+							await new Promise(setImmediate);
+							i = 0;
+						}*/
+					}
+					// and now start iterating through the ids
+					idIterator = ids[Symbol.iterator]();
+				}
+				return nextJoined();
+			};
+		}
+		return iterator;
+	};
+	return results;
 }
 
-const ALTERNATE_COMPARATOR_NAMES = {
+export const ALTERNATE_COMPARATOR_NAMES = {
 	'eq': 'equals',
 	'greater_than': 'gt',
 	'greaterThan': 'gt',
@@ -1520,9 +1727,9 @@ const ALTERNATE_COMPARATOR_NAMES = {
 	'...': 'between',
 };
 
-// Comparators whose value is a list (array) of values. Used to recognize the
+// Canonical comparators whose value is a list (array) of values. Used to recognize the
 // REST `(v1,v2,...)` value syntax during parsing.
-const LIST_VALUE_COMPARATORS = new Set(['in', 'between']);
+const LIST_VALUE_COMPARATORS = new Set(['in', 'between', 'gele', 'gelt', 'gtlt', 'gtle']);
 
 // Base comparators that accept the `not_` prefix to produce a negated form.
 // `not_equal` is an existing alias for `ne` and keeps its existing semantics.
@@ -1561,6 +1768,11 @@ export function resolveComparator(comparator: string | undefined): {
 		}
 	}
 	return { comparator, negated: false };
+}
+
+function rangeBounds(comparator: string, value: any) {
+	if (!Array.isArray(value) || value.length !== 2)
+		throw new ClientError(`"${comparator}" comparator requires a two-element array value`);
 }
 
 /**
@@ -1669,12 +1881,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// if there is a single id we are looking for, we can create a new search condition that the
 								// attribute comparator could eventually use to create a recursive id set
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
-								for (const id of nextFilter.idFilter.idSet) {
-									searchCondition = {
-										attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-										value: id,
-									};
-								}
+								searchCondition = {
+									attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+									value: nextFilter.idFilter.onlyId,
+								};
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
 								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
 							} else
@@ -1688,20 +1898,49 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				const { subObject, subEntry } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
-				const filterMap = filtered?.[firstAttributeName];
-				if (!filterMap && filtered) {
+				preserveForSelect();
+				return subObject.some(nextFilter);
+			};
+			const loadEntries = resolver?.loadEntries;
+			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
+			const preserveForSelect = () => {
+				if (filtered && !filtered[firstAttributeName]) {
 					// establish a filtering that can preserve this filter for the select() results of these sub objects
 					filtered[firstAttributeName] = {
-						fromRecord(record) {
+						fromRecord(record, sync?: boolean) {
 							// this is called when selecting the fields to include in results
+							if (loadEntries && !sync) {
+								return when(loadEntries(record, context), (loaded) => {
+									if (!resolver.toMany || !loaded) return loaded?.value;
+									const values = loaded.map((entry) => entry?.value);
+									const matches = mapSettlingOnThrow(values, (value) => value != null && nextMatch(value));
+									const matchingIds = (matches) =>
+										values.filter((_value, i) => matches[i]).map((value) => value[relatedTable.primaryKey]);
+									return matches.some((matches) => matches?.then)
+										? Promise.all(matches).then(matchingIds)
+										: matchingIds(matches);
+								});
+							}
 							const value = getSubObject(record, undefined).subObject;
 							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
 							return value;
 						},
 					};
 				}
-				return subObject.some(nextFilter);
 			};
+			if (loadEntries) {
+				const matchLoaded = (loaded) => {
+					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
+					if (!loaded) return false;
+					preserveForSelect();
+					return someRelatedMatch(loaded, nextMatch, 0);
+				};
+				(recordFilter as any).maybeAsync = (record, entry) => {
+					if (nextFilter.idFilter) return recordFilter(record, entry);
+					const loaded = loadEntries(record, context);
+					return loaded?.then ? loaded.then(matchLoaded) : matchLoaded(loaded);
+				};
+			}
 			return recordFilter;
 		}
 	}
@@ -1746,6 +1985,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'gtlt':
 		case 'gtle':
 		case 'gelt': {
+			rangeBounds(comparator, value);
 			if (value[0] instanceof Date) value[0] = value[0].getTime();
 			if (value[1] instanceof Date) value[1] = value[1].getTime();
 			const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
@@ -1756,6 +1996,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
+					if (recordValue === undefined) return false;
 					const cmpStart = compareKeys(recordValue, value[0]);
 					const cmpEnd = compareKeys(recordValue, value[1]);
 					return (startInclusive ? cmpStart >= 0 : cmpStart > 0) && (endInclusive ? cmpEnd <= 0 : cmpEnd < 0);
@@ -1775,20 +2016,38 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
 			break;
 		}
+		// no index holds an entry for an omitted (undefined) value
 		case 'gt':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) > 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) > 0
+			);
 			break;
 		case 'ge':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) >= 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) >= 0
+			);
 			break;
 		case 'lt':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) < 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) < 0
+			);
 			break;
 		case 'le':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) <= 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) <= 0
+			);
 			break;
 		case 'ne':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) !== 0, false, true);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+				false,
+				true
+			);
 			break;
 		case 'sort':
 			return () => true;
@@ -1852,13 +2111,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 							(id) => Table.primaryStore.getSync(id)[(recordFilter as any).to]
 						);
 					} else {
-						matchingIds = (searchResults as any).map(flattenKey);
+						matchingIds = searchResults as any;
 					}
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
-					const idSet = new Set(matchingIds);
-					recordFilter.idFilter = (id) => idSet.has(flattenKey(id));
+					const idSet = new CandidateKeySet();
+					let firstId: Id | undefined;
+					for (const id of matchingIds) {
+						if (idSet.size === 0) firstId = id;
+						idSet.add(id);
+					}
+					recordFilter.idFilter = (id) => idSet.has(id);
 					(recordFilter.idFilter as any).idSet = idSet;
+					// the set holds encoded identities; the singleton relationship lookup needs the key itself
+					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
 				}
 			}
 			return matches;
@@ -1887,12 +2153,13 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	let range;
 	switch (searchType) {
 		case 'lt':
-			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
-			// index's `[null, primaryKey]` entries are outside the executed range
-			range = { start: true, end: value };
+			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
+			range = isPrimaryKey ? { start: true, end: value } : { start: null, exclusiveStart: true, end: value };
 			break;
 		case 'le':
-			range = { start: true, end: value, inclusiveEnd: true };
+			range = isPrimaryKey
+				? { start: true, end: value, inclusiveEnd: true }
+				: { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };
@@ -2109,10 +2376,15 @@ export function estimateCondition(table) {
 	}
 	return estimateConditionForTable;
 }
-class SyntaxViolation extends Violation {}
+class SyntaxViolation extends Violation {
+	statusCode = 400;
+}
 const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
-const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
+const VALUE_PARSER = /([^&|=[\]{}]*)([[\]{}]|[&|]=?|=|)/g;
+// Inside a `(...)` group a value may hold one level of balanced parentheses (the `(v1,v2)` list syntax), and an
+// unmatched `)` closes the group
+const PAREN_VALUE_PARSER = /((?:[^&|=()[\]{}]|\([^&|=()[\]{}]*\))*)([()[\]{}]|[&|]=?|=|)/g;
 const FIQL_OPERATOR_NAME = /^[a-zA-Z_][a-zA-Z_0-9]*$/;
 let lastIndex;
 let currentQuery;
@@ -2133,10 +2405,8 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 			parseBlock(currentQuery, '');
 			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
 			if ((currentQuery as any).parseErrorMessage) {
-				(currentQuery as any).parseError = new SyntaxViolation((query as any).parseErrorMessage);
-				if (!query) throw (currentQuery as any).parseError;
+				(currentQuery as any).parseError = new SyntaxViolation((currentQuery as any).parseErrorMessage);
 			}
-			return currentQuery;
 		} catch (error) {
 			error.statusCode = 400;
 			error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
@@ -2147,6 +2417,8 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 				throw error;
 			}
 		}
+		if (!query && (currentQuery as any).parseError) throw (currentQuery as any).parseError;
+		return currentQuery;
 	} else {
 		return query ?? new URLSearchParams(queryToParse);
 	}
@@ -2161,16 +2433,27 @@ function parseBlock(query, expectedEnd) {
 	let parser = QUERY_PARSER;
 	let match;
 	let attribute, comparator, expectingDelimiter, expectingValue;
+	let comparatorChosen = false;
 	let valueDecoder: any = decodeURIComponent;
 	let lastBinaryOperator;
 	while ((match = parser.exec(queryString))) {
 		lastIndex = parser.lastIndex;
+		if (match[0] === '' && lastIndex < queryString.length) {
+			recordError(`unexpected character '${queryString[lastIndex]}'`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		const [, value, operator] = match;
 		if (expectingDelimiter) {
 			if (value) recordError(`expected operator, but encountered '${value}'`);
 			expectingDelimiter = false;
 			expectingValue = false;
 		} else expectingValue = true;
+		if (attribute != null && (operator === '(' || operator === '[' || operator === '{')) {
+			recordError(`unexpected '${operator}' in a value`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		let entry;
 		switch (operator) {
 			case '=':
@@ -2178,8 +2461,10 @@ function parseBlock(query, expectedEnd) {
 					// FIQL operator like =gt= or =starts_with= — accept any identifier
 					// (letters, digits, underscores). Unknown comparator names are
 					// caught at execution time with a clearer error.
-					if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
+					if (comparatorChosen) recordError(`unexpected FIQL operator ${value} after comparator ${comparator}`);
+					else if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
 					else recordError(`invalid FIQL operator ${value}`);
+					comparatorChosen = true;
 					valueDecoder = fullTextComparatorMode(resolveComparator(comparator).comparator)
 						? decodeURIComponent
 						: typedDecoding;
@@ -2187,6 +2472,8 @@ function parseBlock(query, expectedEnd) {
 					// standard equal comparison
 					valueDecoder = decodeURIComponent; // use strict decoding
 					comparator = 'equals'; // strict equals
+					comparatorChosen = false;
+					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 					if (!value) recordError(`attribute must be specified before equality comparator`);
 					attribute = decodeProperty(value);
 				}
@@ -2202,6 +2489,8 @@ function parseBlock(query, expectedEnd) {
 			case '===':
 			case '!==':
 				comparator = SYMBOL_OPERATORS[operator];
+				comparatorChosen = true;
+				if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 				valueDecoder = COERCIBLE_OPERATORS[comparator] ? typedDecoding : decodeURIComponent;
 				if (!value) recordError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
@@ -2214,26 +2503,10 @@ function parseBlock(query, expectedEnd) {
 			case undefined:
 				if (attribute == null) {
 					if (attribute === undefined) {
-						if (expectedEnd)
-							recordError(
-								`expected '${expectedEnd}', but encountered ${operator[0] ? "'" + operator[0] + "'" : 'end of string'}}`
-							);
+						if (expectedEnd && operator) recordError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
 						recordError(`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`);
 					}
-				} else {
-					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
-					const condition = buildCondition(attribute, comparator, value, valueDecoder);
-					if (attribute === '') {
-						// this is a nested condition
-						const lastCondition = query.conditions[query.conditions.length - 1];
-						lastCondition.chainedConditions = lastCondition.chainedConditions || [];
-						lastCondition.chainedConditions.push(condition);
-						lastCondition.operator = lastBinaryOperator;
-					} else {
-						assignOperator(query, lastBinaryOperator);
-						query.conditions.push(condition);
-					}
-				}
+				} else addCondition(query, attribute, comparator, comparatorChosen, value, valueDecoder, lastBinaryOperator);
 				if (operator === '&') {
 					lastBinaryOperator = 'and';
 					attribute = undefined;
@@ -2243,9 +2516,11 @@ function parseBlock(query, expectedEnd) {
 				} else if (operator === '&=') {
 					lastBinaryOperator = 'and';
 					attribute = '';
+					comparatorChosen = false;
 				} else if (operator === '|=') {
 					lastBinaryOperator = 'or';
 					attribute = '';
+					comparatorChosen = false;
 				}
 				break;
 			case ',':
@@ -2268,11 +2543,22 @@ function parseBlock(query, expectedEnd) {
 					case 'limit':
 						switch (args.length) {
 							case 1:
-								query.limit = +args[0];
+								query.limit = args[0] === '' ? NaN : +args[0];
+								if (!Number.isInteger(query.limit) || query.limit < 0) {
+									recordError('limit must be a non-negative integer');
+								}
 								break;
 							case 2:
-								query.offset = +args[0];
-								query.limit = args[1] - query.offset;
+								query.offset = args[0] === '' ? NaN : +args[0];
+								query.limit = (args[1] === '' ? NaN : +args[1]) - query.offset;
+								if (
+									!Number.isInteger(query.offset) ||
+									query.offset < 0 ||
+									!Number.isInteger(query.limit) ||
+									query.limit < 0
+								) {
+									recordError('limit and offset must be non-negative integers');
+								}
 								break;
 							default:
 								recordError('limit must have 1 or 2 arguments');
@@ -2282,7 +2568,7 @@ function parseBlock(query, expectedEnd) {
 						if (Array.isArray(args[0]) && args.length === 1 && !(args[0] as any).name) {
 							query.select = args[0];
 							query.select.asArray = true;
-						} else if (args.length === 1) query.select = args[0];
+						} else if (args.length === 1 && !(args[0] as any).name) query.select = args[0];
 						else if (args.length === 2 && args[1] === '') query.select = args.slice(0, 1);
 						else query.select = args;
 						break;
@@ -2301,7 +2587,11 @@ function parseBlock(query, expectedEnd) {
 				attribute = null;
 				break;
 			case '{':
-				if (query.conditions) recordError('property sets are not allowed in a queries');
+				if (query.conditions) {
+					recordError('property sets are not allowed in a query');
+					lastIndex = queryString.length;
+					return query;
+				}
 				if (!value) recordError('property sets must have a defined parent property name');
 				// this is interpreted as property{subProperty}
 				QUERY_PARSER.lastIndex = lastIndex;
@@ -2328,6 +2618,7 @@ function parseBlock(query, expectedEnd) {
 						// handle the case of a query parameter like property[]=value, using the standard equal behavior
 						valueDecoder = decodeURIComponent; // use strict decoding
 						comparator = 'equals'; // strict equals
+						comparatorChosen = false;
 						attribute = decodeProperty(value);
 						parser.lastIndex = ++lastIndex;
 						break;
@@ -2335,7 +2626,9 @@ function parseBlock(query, expectedEnd) {
 						query.conditions.push(entry);
 						attribute = null;
 					}
-				} else query.push(entry);
+				} else {
+					query.push(entry);
+				}
 				if (queryString[lastIndex] === ',') {
 					parser.lastIndex = ++lastIndex;
 				} else expectingDelimiter = true;
@@ -2347,10 +2640,16 @@ function parseBlock(query, expectedEnd) {
 					// assert that it is expected
 					if (query.conditions) {
 						// finish condition
-						if (attribute) {
-							const condition = buildCondition(attribute, comparator || 'equals', value, valueDecoder);
-							assignOperator(query, lastBinaryOperator);
-							query.conditions.push(condition);
+						if (attribute != null) {
+							addCondition(
+								query,
+								attribute,
+								comparator || 'equals',
+								comparatorChosen,
+								value,
+								valueDecoder,
+								lastBinaryOperator
+							);
 						} else if (value) {
 							recordError('no attribute or comparison specified');
 						}
@@ -2363,13 +2662,31 @@ function parseBlock(query, expectedEnd) {
 			default:
 				recordError(`unexpected operator '${operator}'`);
 		}
-		if (expectedEnd !== ')') {
-			parser = attribute ? VALUE_PARSER : QUERY_PARSER;
-			parser.lastIndex = lastIndex;
+		parser = attribute == null ? QUERY_PARSER : expectedEnd === ')' ? PAREN_VALUE_PARSER : VALUE_PARSER;
+		parser.lastIndex = lastIndex;
+		if (lastIndex === queryString.length) {
+			// a condition still pending at the end of the string is finished by one more (empty) token
+			if (attribute != null && operator) continue;
+			if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
+			return query;
 		}
-		if (lastIndex === queryString.length) return query;
 	}
 	if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
+}
+function addCondition(query, attribute, comparator, comparatorChosen, value, valueDecoder, lastBinaryOperator) {
+	if (!query.conditions) return recordError('conditions/comparisons are not allowed in a property list');
+	if (attribute === '' && !comparatorChosen) return recordError('a chained condition needs a FIQL comparator');
+	const condition = buildCondition(attribute, comparator, value, valueDecoder);
+	if (attribute === '') {
+		const lastCondition = query.conditions[query.conditions.length - 1];
+		if (lastCondition?.attribute == null) return recordError('a chained condition must follow a comparison');
+		lastCondition.chainedConditions = lastCondition.chainedConditions || [];
+		lastCondition.chainedConditions.push(condition);
+		lastCondition.operator = lastBinaryOperator;
+	} else {
+		assignOperator(query, lastBinaryOperator);
+		query.conditions.push(condition);
+	}
 }
 function assignOperator(query, lastBinaryOperator) {
 	if (query.conditions.length > 0) {
@@ -2433,7 +2750,7 @@ function buildCondition(
 	const { comparator: resolvedComparator, negated } = resolveComparator(rawComparator);
 	let value: any;
 	if (
-		LIST_VALUE_COMPARATORS.has(resolvedComparator as string) &&
+		LIST_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[resolvedComparator] ?? resolvedComparator) &&
 		rawValue.length >= 2 &&
 		rawValue.charCodeAt(0) === 0x28 /* ( */ &&
 		rawValue.charCodeAt(rawValue.length - 1) === 0x29 /* ) */

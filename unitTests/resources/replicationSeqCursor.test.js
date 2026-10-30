@@ -153,6 +153,66 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('reports a failed cursor commit to the end_txn that carried it, so its source re-sends what it attached', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		const failures = [];
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorFailureReportTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				{
+					type: 'end_txn',
+					localTime: now,
+					timestamp: now,
+					remoteNodeIds: [47],
+					txnStream,
+					onFailure: (error, position, afterCommit) => {
+						failures.push({ error, afterCommit });
+						return false;
+					},
+				},
+				{ type: 'put', id: 3, value: { id: 3, name: 'repeat' }, timestamp: now },
+				{ type: 'end_txn', localTime: now, timestamp: now, remoteNodeIds: [47], txnStream, onFailure: () => false },
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				{
+					type: 'end_txn',
+					localTime: now + 1,
+					timestamp: now + 1,
+					remoteNodeIds: [47],
+					txnStream,
+					onFailure: () => false,
+				},
+			],
+			held
+		);
+		let failNext = true;
+		const spy = spyOnCursorWrites(ReplicatedTable, (transaction) => {
+			if (!failNext) return;
+			failNext = false;
+			transaction.commit = () => Promise.reject(new Error('forced cursor commit failure'));
+		});
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 47)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the next cursor still records',
+			});
+			assert.equal(
+				spy.staged.filter(({ value }) => value.seqId === now).length,
+				2,
+				'the repeated position wrote again'
+			);
+			assert.equal(failures.length, 1);
+			assert.match(failures[0].error.message, /forced cursor commit failure/);
+			assert.equal(failures[0].afterCommit, true, 'onCommit already ran, so the source must not release twice');
+		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
 	it('merges per-origin cursors attached at commit, even when the sequence does not advance', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
@@ -256,6 +316,151 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			);
 		} finally {
 			spy.restore();
+			release();
+		}
+	});
+
+	it('merges checkpoint-grade qualifiers, route marks and revocations, each on an update of its own', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		const update = (fields) => ({
+			type: 'end_txn',
+			localTime: now,
+			timestamp: now,
+			remoteNodeIds: [51],
+			txnStream,
+			onFailure: () => false,
+			...fields,
+		});
+		const floors = (list) => {
+			const event = update({});
+			event.onCommit = () => {
+				event.originFloors = list;
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorQualifierTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				floors([[9, now - 20, true, 'gen-1', true]]),
+				// a marks-only update reaches the row: a floor-only resume start, then a hole
+				update({ originRouteStates: [[9, now - 25, undefined, undefined, 'gen-1']] }),
+				update({ originRouteStates: [[9, now - 24, undefined, undefined, 'gen-1']] }),
+				// a mark derived under another generation is ignored
+				update({ originRouteStates: [[9, now - 30, undefined, undefined, 'gen-0']] }),
+				update({ originRouteStates: [[9, undefined, undefined, true]] }),
+				// a completed copy makes the route whole again
+				update({ originRouteStates: [[9, undefined, false, undefined]] }),
+				// a revocation for another generation is ignored; one for the row's clears the floor and sticks
+				update({ originFloorRevocations: [[9, 'gen-0']] }),
+				update({ originFloorRevocations: [[9, 'gen-1']] }),
+				floors([[9, now - 5, true, 'gen-1', true]]),
+				// a new origin generation starts the origin over
+				floors([[9, now - 3, true, 'gen-2', true]]),
+				floors([[9, now - 2, true, 'gen-2', true]]),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				update({ localTime: now + 1, timestamp: now + 1 }),
+			],
+			held
+		);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 51)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the frame after the qualifier updates recorded its sequence id',
+			});
+			const [state] = readCursor(ReplicatedTable, 51).nodes;
+			assert.deepEqual(
+				{ ...state },
+				{
+					id: 9,
+					closedFloor: now - 2,
+					relayable: true,
+					originGeneration: 'gen-2',
+					fullCoverage: true,
+					certifiedFrom: undefined,
+					partialHistory: false,
+					hole: undefined,
+					floorRevoked: undefined,
+					revokedFloor: undefined,
+				}
+			);
+		} finally {
+			release();
+		}
+	});
+
+	it('clears a level-1 floor on a genless revocation and restores a level-2 route coverage from a route mark', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		const update = (fields) => ({
+			type: 'end_txn',
+			localTime: now,
+			timestamp: now,
+			remoteNodeIds: [52],
+			txnStream,
+			onFailure: () => false,
+			...fields,
+		});
+		const floors = (list) => {
+			const event = update({});
+			event.onCommit = () => {
+				event.originFloors = list;
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorLevelOneRevocationTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				floors([
+					[11, now - 20, true],
+					[12, now - 20, true, 'gen-1', false],
+					[13, now - 20, true, 'gen-1', true],
+				]),
+				// a level-2 route now certifying at level 1 drops its generation, so a later revocation clears it
+				floors([[13, now - 18, true]]),
+				update({ originFloorRevocations: [13] }),
+				// a level-1 floor is cleared, not revoked, so a later certificate floors the route again
+				update({ originFloorRevocations: [11] }),
+				floors([[11, now - 15, false]]),
+				// coverage comes back only for a level-2 row, and only through the mark's own element
+				update({ originRouteStates: [[12, undefined, undefined, undefined, 'gen-1']] }),
+				update({ originRouteStates: [[11, undefined, undefined, undefined, undefined, true]] }),
+				update({ originRouteStates: [[12, undefined, undefined, undefined, 'gen-0', true]] }),
+				update({ originRouteStates: [[12, undefined, undefined, undefined, 'gen-1', true]] }),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				update({ localTime: now + 1, timestamp: now + 1 }),
+			],
+			held
+		);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 52)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the frame after the revocation and coverage updates recorded its sequence id',
+			});
+			const nodes = readCursor(ReplicatedTable, 52).nodes.map((node) => ({ ...node }));
+			assert.deepEqual(
+				nodes.find((node) => node.id === 11),
+				{
+					id: 11,
+					closedFloor: now - 15,
+					relayable: false,
+				}
+			);
+			const downgraded = nodes.find((node) => node.id === 13);
+			assert.equal(downgraded.closedFloor, undefined);
+			assert.equal(downgraded.relayable, false);
+			assert.equal(downgraded.originGeneration, undefined);
+			const levelTwo = nodes.find((node) => node.id === 12);
+			assert.equal(levelTwo.fullCoverage, true);
+			assert.equal(levelTwo.floorRevoked, undefined);
+			assert.equal(levelTwo.closedFloor, now - 20);
+		} finally {
 			release();
 		}
 	});

@@ -1,3 +1,4 @@
+const { getFullTextTestConfiguration, setFullTextTestConfiguration } = require('./fullTextTestConfiguration');
 require('../testUtils');
 const assert = require('node:assert');
 const { toBufferKey } = require('ordered-binary');
@@ -12,6 +13,22 @@ const {
 } = require('#src/resources/indexes/fullTextQueryIndex');
 const { encodeFullTextCursorPayload } = require('#src/resources/indexes/fullTextDerivedIndex');
 const { nativeFullTextIndexPath } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
+
+function withTraversal(reader) {
+	if (reader?.then) return reader.then(withTraversal);
+	if (typeof reader.searchPage === 'function') return reader;
+	reader.searchPage = async function ({ continuation, ...request }, options) {
+		const offset = Number(continuation ?? 0);
+		const result = await this.search({ ...request, offset }, options);
+		const next = offset + result.hits.length;
+		return {
+			...result,
+			totalRelation: 'exact',
+			continuation: result.hits.length > 0 && next < result.total ? String(next) : undefined,
+		};
+	};
+	return reader;
+}
 
 function sharedStore() {
 	const buffers = new Map();
@@ -113,6 +130,7 @@ function queryLimits(overrides = {}) {
 		maxCandidateIds: 1_024,
 		maxCandidateBytes: 1024 * 1024,
 		maxSearchWindow,
+		maxSearchPageSize: maxSearchWindow,
 		maxAutocompleteResults: Math.min(100, maxSearchWindow),
 		maxSearchResponseBytes: 8 * 1024 * 1024,
 		maxSearchBudgetMilliseconds: 30_000,
@@ -140,6 +158,8 @@ function simpleQueryIndex({
 	hits,
 	onReload,
 	onClose,
+	onOpen,
+	onTrace,
 	onGetEntry,
 	onSearch,
 	entryForKey,
@@ -149,6 +169,7 @@ function simpleQueryIndex({
 	sourceGeneration = 'generation',
 	maxSearchWindow = 10,
 	searchResult,
+	searchPageResult,
 }) {
 	let committedPayload = payload;
 	let reloads = 0;
@@ -182,7 +203,9 @@ function simpleQueryIndex({
 				};
 			},
 			async openNativeFullTextReader() {
-				return {
+				const readerId = onOpen?.();
+				return withTraversal({
+					...(onTrace ? { traceMatches: (request, records) => onTrace(request, records, readerId) } : null),
 					get committedPayload() {
 						return committedPayload;
 					},
@@ -193,6 +216,13 @@ function simpleQueryIndex({
 						const current = hits();
 						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
 					},
+					async searchPage({ continuation, ...request }) {
+						if (searchPageResult) return searchPageResult({ continuation, ...request });
+						const offset = Number(continuation ?? 0);
+						const result = await this.search({ ...request, offset });
+						const next = offset + result.hits.length;
+						return { ...result, continuation: next < result.total ? String(next) : undefined };
+					},
 					async reload() {
 						reloads++;
 						onReload?.();
@@ -200,7 +230,7 @@ function simpleQueryIndex({
 					async close() {
 						onClose?.();
 					},
-				};
+				});
 			},
 		},
 	});
@@ -226,7 +256,301 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	return fixture.index;
 }
 
+describe('full-text replay page protocol', () => {
+	const { replayFullTextPrefix } = require('#src/resources/indexes/fullTextQueryProtocol');
+	const prefix = [
+		{ id: 'a', score: 3, version: '1' },
+		{ id: 'b', score: 2, version: '1' },
+		{ id: 'c', score: 1, version: '1' },
+	];
+	it('accounts for a prefix split over several lower-bound pages before returning new hits', () => {
+		const first = { hits: prefix.slice(0, 1), totalRelation: 'lower-bound', continuation: 'next' };
+		const one = replayFullTextPrefix(prefix, 3, first);
+		assert.deepStrictEqual(one, { skipped: 1, remaining: 2, hits: [] });
+		assert.strictEqual(first.totalRelation, 'lower-bound');
+		const next = { id: 'd', score: 0, version: '1' };
+		assert.deepStrictEqual(replayFullTextPrefix(prefix, one.remaining, { hits: [...prefix.slice(1), next] }), {
+			skipped: 2,
+			remaining: 0,
+			hits: [next],
+		});
+	});
+	it('rejects an empty page claiming more hits, a changed prefix and premature exhaustion', () => {
+		for (const page of [
+			{ hits: [], continuation: 'next' },
+			{ hits: [{ ...prefix[0], version: '2' }], continuation: 'next' },
+			{ hits: prefix.slice(0, 1) },
+		])
+			assert.throws(
+				() => replayFullTextPrefix(prefix, 3, page),
+				(error) => error.statusCode === 500
+			);
+		assert.deepStrictEqual(replayFullTextPrefix(undefined, 0, { hits: [] }), { skipped: 0, remaining: 0, hits: [] });
+	});
+});
+
+describe('full-text traversal ordering guard', () => {
+	it('requires a new page to advance by score and then UTF-8 ID order', () => {
+		const { fullTextHitsAdvance } = require('#src/resources/indexes/fullTextQueryProtocol');
+		assert.strictEqual(fullTextHitsAdvance({ id: 'z', score: 2 }, { id: 'a', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: '\uE000', score: 1 }, { id: '😀', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'b', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'b', score: 2 }), false);
+	});
+});
+
 describe('FullTextQueryIndex', () => {
+	it('keeps a filled ordinary request out of native traversal admission', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'ordinary-query-admission';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), score: 1, version: '1' }],
+			searchPageResult: () => {
+				throw new Error('ordinary query must not enter traversal');
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		assert.strictEqual((await index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 })).length, 1);
+		await index.close();
+	});
+
+	for (const filtered of [false, true])
+		it(`rejects impossible replay work before traversal (${filtered ? 'filtered' : 'ordinary'})`, async () => {
+			const previous = getFullTextTestConfiguration();
+			const auditStore = sharedStore();
+			const readinessId = `impossible-replay-${filtered}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const hits = Array.from({ length: 1000 }, (_, i) => ({
+				id: nativeId(1, `record-${i}`),
+				version: '1',
+				score: 1000 - i,
+			}));
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				maxSearchWindow: 10000,
+				hits: () => hits,
+				onSearch: () => searches++,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 500 });
+				await assert.rejects(
+					index.search(
+						{ comparator: 'matches', value: 'shoe' },
+						{},
+						{
+							minResults: 300,
+							...(filtered ? { filter: () => false } : null),
+						}
+					),
+					(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
+				);
+				assert.strictEqual(searches, 1);
+			} finally {
+				setFullTextTestConfiguration(previous);
+				await index.close();
+			}
+		});
+
+	it('allows exhausted matches below the target when replay still fits the work budget', async () => {
+		const previous = getFullTextTestConfiguration();
+		const auditStore = sharedStore();
+		const readinessId = 'exhausted-replay-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 260 }, (_, i) => ({
+			id: nativeId(1, `record-${i}`),
+			version: '1',
+			score: 260 - i,
+		}));
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			maxSearchWindow: 10000,
+			hits: () => hits,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 600 });
+			const result = await index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 500 });
+			assert.strictEqual(result.length, 260);
+		} finally {
+			setFullTextTestConfiguration(previous);
+			await index.close();
+		}
+	});
+
+	for (const [count, budget, expectedCalls] of [
+		[1000, 500, 1],
+		[256, 512, 2],
+		[1000, 550, 2],
+	])
+		it(`bounds replay with an uninformative lower-bound total (${count} hits, budget ${budget})`, async () => {
+			const previous = getFullTextTestConfiguration();
+			const auditStore = sharedStore();
+			const readinessId = `lower-bound-replay-${count}-${budget}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const hits = Array.from({ length: count }, (_, i) => ({
+				id: nativeId(1, `record-${i}`),
+				version: '1',
+				score: count - i,
+			}));
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				maxSearchWindow: 10000,
+				hits: () => hits,
+				searchResult: ({ limit }) => {
+					searches++;
+					return { total: limit, totalRelation: 'lower-bound', hits: hits.slice(0, limit) };
+				},
+				searchPageResult: ({ continuation, limit }) => {
+					searches++;
+					const offset = Number(continuation ?? 0);
+					const page = hits.slice(offset, offset + limit);
+					const next = offset + page.length;
+					return {
+						total: count,
+						totalRelation: 'exact',
+						hits: page,
+						continuation: next < count ? String(next) : undefined,
+					};
+				},
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: budget });
+				const search = index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 300 });
+				if (count < 300) assert.strictEqual((await search).length, count);
+				else
+					await assert.rejects(
+						search,
+						(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
+					);
+				assert.strictEqual(searches, expectedCalls);
+			} finally {
+				setFullTextTestConfiguration(previous);
+				await index.close();
+			}
+		});
+
+	it('rejects an empty native page claiming a continuation', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'empty-traversal-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			searchResult: () => ({
+				total: 2,
+				totalRelation: 'exact',
+				hits: [{ id: nativeId(1, 'one'), score: 1, version: '1' }],
+			}),
+			searchPageResult: () => ({ total: 1, totalRelation: 'exact', hits: [], continuation: 'next' }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{ minResults: 1, filter: () => false }
+			),
+			/empty page with more results/
+		);
+		await index.close();
+	});
+
+	it('keeps retained result limits independent from raw work and reports invalid configuration', async () => {
+		const previous = getFullTextTestConfiguration();
+		const auditStore = sharedStore();
+		const readinessId = 'independent-results-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let searches = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+			onSearch: () => searches++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			setFullTextTestConfiguration({
+				...previous,
+				maxRawHitsPerRequest: 500000,
+				maxResultsPerRequest: 10,
+			});
+			await assert.rejects(
+				index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 11 }),
+				(error) => error.statusCode === 400 && /maxResultsPerRequest/.test(error.message)
+			);
+			assert.strictEqual(searches, 0);
+			setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 0 });
+			await assert.rejects(
+				index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+				(error) =>
+					error.statusCode === 500 && /Invalid full-text configuration:.*maxRawHitsPerRequest/.test(error.message)
+			);
+			assert.strictEqual(searches, 0);
+		} finally {
+			setFullTextTestConfiguration(previous);
+			await index.close();
+		}
+	});
+
+	it('rejects unbounded results at the actual work or retained-result ceiling', async () => {
+		const previous = getFullTextTestConfiguration();
+		const auditStore = sharedStore();
+		const readinessId = 'unbounded-result-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let nativeHitCount = 200;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			maxSearchWindow: 1000,
+			hits: () =>
+				Array.from({ length: nativeHitCount }, (_, i) => ({
+					id: nativeId(1, String(i)),
+					score: 200 - i,
+					version: '1',
+				})),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			for (const count of [200, 2000]) {
+				nativeHitCount = count;
+				for (const name of ['maxRawHitsPerRequest', 'maxResultsPerRequest']) {
+					setFullTextTestConfiguration({
+						...previous,
+						maxRawHitsPerRequest: 500,
+						maxResultsPerRequest: 500,
+						[name]: 100,
+					});
+					await assert.rejects(
+						index.search({ comparator: 'matches', value: 'shoe' }, {}),
+						(error) => error.statusCode === 400 && error.message.includes(`storage.fullText.${name}`)
+					);
+				}
+			}
+		} finally {
+			setFullTextTestConfiguration(previous);
+			await index.close();
+		}
+	});
+
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
 			assert.strictEqual(fullTextComparatorMode(comparator), undefined);
@@ -376,7 +700,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			async openNativeFullTextReader(options) {
 				readerOptions = options;
-				return reader;
+				return withTraversal(reader);
 			},
 		};
 		const Table = {
@@ -488,7 +812,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						get committedPayload() {
 							return payload;
 						},
@@ -507,7 +831,7 @@ describe('FullTextQueryIndex', () => {
 							}
 						},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -710,14 +1034,14 @@ describe('FullTextQueryIndex', () => {
 			isEntryCurrent: (entry) => entry.metadataFlags === 0,
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) => error.name === 'DerivedIndexLagError'
+		assert.deepStrictEqual(
+			await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			[]
 		);
 		await index.close();
 	});
 
-	it('reports an expired bounded native window as expired matches', async () => {
+	it('exhausts expired native matches beyond the ordinary window', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'expired-native-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -729,11 +1053,9 @@ describe('FullTextQueryIndex', () => {
 			entryForKey: (key) => ({ version: 1, value: { title: key }, expiresAt: Date.now() - 1 }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) =>
-				error.statusCode === 400 &&
-				/Expired full-text matches exhausted the 10-result search window/.test(error.message)
+		assert.deepStrictEqual(
+			await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			[]
 		);
 		await index.close();
 	});
@@ -854,14 +1176,14 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							committedPayload: payload,
 							async search() {},
 							async reload() {},
 							async close() {
 								closes++;
 							},
-						};
+						});
 					},
 				},
 			});
@@ -936,7 +1258,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+					return withTraversal({ committedPayload: undefined, async search() {}, async reload() {}, async close() {} });
 				},
 			},
 		});
@@ -980,7 +1302,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+					return withTraversal({ committedPayload: undefined, async search() {}, async reload() {}, async close() {} });
 				},
 			},
 		});
@@ -1029,7 +1351,7 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(opens, 0);
 	});
 
-	it('retries native capability discovery after a transient failure', async () => {
+	it('retries native capability discovery without unused candidate limits after a transient failure', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'binding-retry';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1048,21 +1370,24 @@ describe('FullTextQueryIndex', () => {
 			binding: {
 				async runtimeInfo() {
 					if (++probes === 1) throw new Error('temporary capability probe failure');
+					const limits = queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 });
+					delete limits.maxCandidateIds;
+					delete limits.maxCandidateBytes;
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
+						limits,
 					};
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return { total: 0, totalRelation: 'exact', hits: [] };
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1081,9 +1406,12 @@ describe('FullTextQueryIndex', () => {
 			'maxAutocompleteResults',
 			'maxRecordIdBytes',
 			'maxRecordVersionBytes',
-			'maxCandidateIds',
-			'maxCandidateBytes',
+			'maxSearchWindow',
+			'maxSearchPageSize',
 			'maxSearchResponseBytes',
+			'maxSearchBudgetMilliseconds',
+			'maxTraceRecords',
+			'maxTraceSourceBytes',
 		]) {
 			const readinessId = `binding-capabilities-${missing}`;
 			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1149,7 +1477,7 @@ describe('FullTextQueryIndex', () => {
 					},
 					async openNativeFullTextReader() {
 						opens++;
-						return {
+						return withTraversal({
 							async search(searchRequest) {
 								request = searchRequest;
 								return { total: 0, totalRelation: 'exact', hits: [] };
@@ -1157,7 +1485,7 @@ describe('FullTextQueryIndex', () => {
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -1171,19 +1499,19 @@ describe('FullTextQueryIndex', () => {
 			}
 		};
 		await assert.rejects(
-			search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }, 'matches', 0),
+			search('response-cannot-hold-hit', { maxSearchResponseBytes: 96 }, 'matches', 0),
 			(error) => error.statusCode === 500 && error.message === "Full-text search on 'catalogSearch' failed"
 		);
-		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 42 })).results, []);
+		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 111 })).results, []);
 		const autocomplete = await search(
 			'response-clamps-autocomplete-query',
-			{ maxSearchResponseBytes: 42 },
+			{ maxSearchResponseBytes: 111 },
 			'matches_prefix'
 		);
 		assert.deepStrictEqual(autocomplete.results, []);
 		assert.strictEqual(autocomplete.request.limit, 1);
 		assert.deepStrictEqual(
-			(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 43 })).results,
+			(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 112 })).results,
 			[]
 		);
 	});
@@ -1213,14 +1541,14 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							throw errors.shift();
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1254,7 +1582,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			async openNativeFullTextReader(options) {
 				opens.push(structuredClone(options));
-				return {
+				return withTraversal({
 					async search() {
 						return {
 							total: 1,
@@ -1272,7 +1600,7 @@ describe('FullTextQueryIndex', () => {
 					async close() {
 						closes++;
 					},
-				};
+				});
 			},
 		};
 		const index = new FullTextQueryIndex({
@@ -1338,7 +1666,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -1353,7 +1681,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -1373,7 +1701,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('requires callers to page searches larger than the native result window', async () => {
+	it('bounds unbounded searches but permits bounded requests beyond the native result window', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-window', 'ready');
 		let searches = 0;
@@ -1402,7 +1730,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							searches++;
 							lastRequest = request;
@@ -1412,13 +1740,14 @@ describe('FullTextQueryIndex', () => {
 								hits: [
 									{ id: nativeId(1, 'one'), version: '1', score: 2 },
 									{ id: nativeId(1, 'two'), version: '1', score: 1 },
-								],
+									{ id: nativeId(1, 'three'), version: '1', score: 0 },
+								].slice(request.offset ?? 0, (request.offset ?? 0) + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1426,8 +1755,7 @@ describe('FullTextQueryIndex', () => {
 		const query = { attribute: 'query-window', comparator: 'matches', value: 'shoe' };
 		assert.deepStrictEqual(await index.search(query, {}, { minResults: 0 }), []);
 		assert.strictEqual(searches, 0);
-		await assert.rejects(index.search(query, {}, { minResults: 3 }), /reduce offset or limit/);
-		assert.strictEqual(searches, 0);
+		assert.strictEqual((await index.search(query, {}, { minResults: 3 })).length, 3);
 		await assert.rejects(index.search(query, {}), /exceeds the 2-result search window/);
 		assert.strictEqual(lastRequest.exactTotal, true);
 		await index.close();
@@ -1465,7 +1793,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							requests.push(request);
 							return {
@@ -1477,7 +1805,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1488,7 +1816,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
 			[
 				{ offset: 0, limit: 256, exactTotal: true },
-				{ offset: 256, limit: 256, exactTotal: undefined },
+				{ offset: 0, limit: 512, exactTotal: undefined },
 			]
 		);
 		await index.close();
@@ -1525,7 +1853,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 40, limit: 160 },
+				{ offset: 0, limit: 200 },
 				{ offset: 200, limit: 640 },
 				{ offset: 840, limit: 1_022 },
 				{ offset: 1_862, limit: 1_022 },
@@ -1570,7 +1898,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 40, limit: 720 },
+				{ offset: 0, limit: 760 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -2509,7 +2837,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('uses the native autocomplete window for prefix expressions', async () => {
+	it('keeps the initial autocomplete window and traverses larger prefix expressions', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'autocomplete-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -2541,19 +2869,19 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							requests.push(request);
 							return {
 								total: hits.length,
 								totalRelation: 'exact',
-								hits: hits.slice(0, request.limit),
+								hits: hits.slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2570,75 +2898,88 @@ describe('FullTextQueryIndex', () => {
 				],
 			},
 		};
-		await assert.rejects(index.search(query, {}), /100-result search window; add a limit/);
-		assert.deepStrictEqual(
-			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
-			[{ offset: 0, limit: 100, exactTotal: true }]
-		);
+		assert.strictEqual((await index.search(query, {})).length, hits.length);
+		assert.deepStrictEqual((({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal }))(requests[0]), {
+			offset: 0,
+			limit: 100,
+			exactTotal: true,
+		});
+		requests.length = 0;
 		assert.strictEqual((await index.search(query, {}, { minResults: 100 })).length, 100);
-		await assert.rejects(index.search(query, {}, { minResults: 101 }), /100-result autocomplete search window/);
-		assert.strictEqual(requests.length, 2);
+		assert.strictEqual(requests.length, 1);
+		assert.strictEqual((await index.search(query, {}, { minResults: 101 })).length, 101);
 		await index.close();
 	});
 
-	it('applies one execution budget across every native result page', async () => {
-		const auditStore = sharedStore();
-		const readinessId = 'query-budget';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		let searches = 0;
-		const index = new FullTextQueryIndex({
-			Table: {
-				tableId: 1,
-				primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
-				_readTxnForContext: () => undefined,
-			},
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath: '/unused',
-			storeName: 'unused',
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					return {
-						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10_000, maxSearchBudgetMilliseconds: 20, maxTraceRecords: 10 }),
-					};
-				},
-				async openNativeFullTextReader() {
-					return {
-						async search(request) {
-							searches++;
-							await new Promise((resolve) => setTimeout(resolve, 25));
+	for (const configured of [false, true])
+		it(`applies the ${configured ? 'Harper' : 'native'} execution budget across every result page`, async () => {
+			const previous = getFullTextTestConfiguration();
+			if (configured) setFullTextTestConfiguration({ ...previous, requestBudgetMilliseconds: 20 });
+			try {
+				const auditStore = sharedStore();
+				const readinessId = 'query-budget';
+				publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+				let searches = 0;
+				const index = new FullTextQueryIndex({
+					Table: {
+						tableId: 1,
+						primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
+						_readTxnForContext: () => undefined,
+					},
+					definition: definition(),
+					auditStore,
+					readinessId,
+					indexId: readinessId,
+					storePath: '/unused',
+					storeName: 'unused',
+					sourceGeneration: 'generation',
+					limits: {},
+					binding: {
+						async runtimeInfo() {
 							return {
-								total: 300,
-								totalRelation: 'exact',
-								hits: Array.from({ length: request.limit }, (_value, offset) => ({
-									id: nativeId(1, `record-${request.offset + offset}`),
-									version: '1',
-									score: 300 - request.offset - offset,
-								})),
+								queryClassIsolationMinimumSearchThreads: 1,
+								limits: queryLimits({
+									maxSearchWindow: 10_000,
+									maxSearchBudgetMilliseconds: configured ? 30000 : 20,
+									maxTraceRecords: 10,
+								}),
 							};
 						},
-						committedPayload: publicationPayload(),
-						async reload() {},
-						async close() {},
-					};
-				},
-			},
+						async openNativeFullTextReader() {
+							return withTraversal({
+								async search(request) {
+									searches++;
+									await new Promise((resolve) => setTimeout(resolve, 25));
+									return {
+										total: 300,
+										totalRelation: 'exact',
+										hits: Array.from({ length: request.limit }, (_value, offset) => ({
+											id: nativeId(1, `record-${request.offset + offset}`),
+											version: '1',
+											score: 300 - request.offset - offset,
+										})),
+									};
+								},
+								committedPayload: publicationPayload(),
+								async reload() {},
+								async close() {},
+							});
+						},
+					},
+				});
+				attachCurrentCoverage(index, auditStore, readinessId);
+				await assert.rejects(
+					index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+					(error) => error.statusCode === 503 && /execution budget/.test(error.message)
+				);
+				assert.strictEqual(searches, 1);
+				await index.close();
+			} finally {
+				setFullTextTestConfiguration(previous);
+			}
 		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
-			(error) => error.statusCode === 503 && /execution budget/.test(error.message)
-		);
-		assert.strictEqual(searches, 1);
-		await index.close();
-	});
 
-	it('fails instead of returning an incomplete bounded page after filtering exhausts the native window', async () => {
+	it('returns an exhausted filtered page after traversing all raw results', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'filtered-window', 'ready');
 		const index = new FullTextQueryIndex({
@@ -2663,7 +3004,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 2,
@@ -2677,23 +3018,23 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
 		attachCurrentCoverage(index, auditStore, 'filtered-window');
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: 'filtered-window', comparator: 'matches', value: 'shoe' },
 				{},
 				{ minResults: 1, filter: () => false }
 			),
-			/filters exhausted the 2-result search window/
+			[]
 		);
 		await index.close();
 	});
 
-	it('reports stale native versions as retryable index lag', async () => {
+	it('returns no stale native versions after exhausting the snapshot', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'stale-window', 'ready');
 		const index = new FullTextQueryIndex({
@@ -2718,27 +3059,28 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
-						async search() {
+					return withTraversal({
+						async search(request) {
 							return {
 								total: 3,
 								totalRelation: 'lower-bound',
 								hits: [
 									{ id: nativeId(1, 'one'), version: '1', score: 2 },
 									{ id: nativeId(1, 'two'), version: '1', score: 1 },
-								],
+									{ id: nativeId(1, 'three'), version: '1', score: 0 },
+								].slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
 		attachCurrentCoverage(index, auditStore, 'stale-window');
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: 'stale-window', comparator: 'matches', value: 'shoe' },
 				{},
 				{
@@ -2751,12 +3093,12 @@ describe('FullTextQueryIndex', () => {
 					},
 				}
 			),
-			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
+			[]
 		);
 		await index.close();
 	});
 
-	it('samples companion-gate rejections before classifying window exhaustion', async () => {
+	it('exhausts companion-gate rejections without returning stale matches', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'stale-gate-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -2777,8 +3119,8 @@ describe('FullTextQueryIndex', () => {
 			entryForKey: () => ({ version: 2, value: { title: 'shoe' } }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
 				{},
 				{
@@ -2791,13 +3133,13 @@ describe('FullTextQueryIndex', () => {
 					},
 				}
 			),
-			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
+			[]
 		);
-		assert.strictEqual(sourceReads, 1, 'only the exhaustion sample should load a rejected record');
+		assert.strictEqual(sourceReads, 0, 'a complete gate can reject all hits without reading records');
 		await index.close();
 	});
 
-	it('reports expired companion-gate rejections when they exhaust the search window', async () => {
+	it('exhausts expired companion-gate rejections beyond the search window', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'expired-gate-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -2818,8 +3160,8 @@ describe('FullTextQueryIndex', () => {
 			entryForKey: () => ({ version: 1, expiresAt: 0, value: { title: 'shoe' } }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
 				{},
 				{
@@ -2832,9 +3174,9 @@ describe('FullTextQueryIndex', () => {
 					},
 				}
 			),
-			/Expired full-text matches exhausted the 4-result search window/
+			[]
 		);
-		assert.strictEqual(sourceReads, 4, 'only the bounded exhaustion sample should load rejected records');
+		assert.strictEqual(sourceReads, 0, 'a complete gate can reject expired hits without reading records');
 		await index.close();
 	});
 
@@ -2861,7 +3203,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							throw Object.assign(new Error('corrupt'), { code: 'E_INDEX_CORRUPT' });
 						},
@@ -2870,7 +3212,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							if (closeAttempts++ === 0) throw new Error('close failed');
 						},
-					};
+					});
 				},
 			},
 		});
@@ -2915,14 +3257,14 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								throw Object.assign(new Error('native storage cannot open'), { code });
 							},
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -2966,7 +3308,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -2977,7 +3319,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3029,10 +3371,10 @@ describe('FullTextQueryIndex', () => {
 				async openNativeFullTextReader() {
 					const readerIndex = opens++;
 					let readerHits = publishedHits;
-					return {
+					return withTraversal({
 						async search(request) {
 							pages.push({ readerIndex, offset: request.offset });
-							if (readerIndex === 0 && request.offset > 0) {
+							if (readerIndex === 0 && pages.filter((page) => page.readerIndex === 0).length === 2) {
 								firstStarted.resolve();
 								await firstSearch.promise;
 							}
@@ -3050,7 +3392,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -3077,7 +3419,7 @@ describe('FullTextQueryIndex', () => {
 			assert.strictEqual(reloads, 0);
 			assert.deepStrictEqual(pages, [
 				{ readerIndex: 0, offset: 0 },
-				{ readerIndex: 0, offset: 256 },
+				{ readerIndex: 0, offset: 0 },
 				{ readerIndex: 1, offset: 0 },
 			]);
 			await waitFor(() => closes === 1);
@@ -3118,7 +3460,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3131,7 +3473,7 @@ describe('FullTextQueryIndex', () => {
 							reloads++;
 						},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3189,7 +3531,7 @@ describe('FullTextQueryIndex', () => {
 						throw new Error('transient replacement open failure');
 					}
 					const first = opens === 1;
-					return {
+					return withTraversal({
 						async search() {
 							if (first) {
 								firstSearchStarted.resolve();
@@ -3206,7 +3548,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -3229,87 +3571,101 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(closes, opens - 1);
 	});
 
-	it('bounds close while a native search keeps a reader lease', async () => {
-		const auditStore = sharedStore();
-		const readinessId = 'query-reader-close-timeout';
-		const storePath = '/unused';
-		const storeName = 'query-reader-close-timeout';
-		const nativePath = nativeFullTextIndexPath(storePath, storeName);
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		const searchStarted = Promise.withResolvers();
-		const finishSearch = Promise.withResolvers();
-		let closes = 0;
-		const index = new FullTextQueryIndex({
-			Table: {
-				tableId: 1,
-				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
-				_readTxnForContext: () => undefined,
-			},
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath,
-			storeName,
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					return {
-						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10, maxSearchBudgetMilliseconds: 100, maxTraceRecords: 10 }),
-					};
-				},
-				async openNativeFullTextReader() {
-					return {
-						async search() {
-							searchStarted.resolve();
-							await finishSearch.promise;
+	for (const exceedsBudget of [false, true]) {
+		it(
+			exceedsBudget
+				? 'bounds close while a native search keeps a reader lease'
+				: 'lets an in-budget search finish through reader retirement and pause',
+			async () => {
+				const auditStore = sharedStore();
+				const readinessId = 'query-reader-close-timeout';
+				const storePath = '/unused';
+				const storeName = 'query-reader-close-timeout';
+				const nativePath = nativeFullTextIndexPath(storePath, storeName);
+				publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+				const searchStarted = Promise.withResolvers();
+				const finishSearch = Promise.withResolvers();
+				let closes = 0;
+				const index = new FullTextQueryIndex({
+					Table: {
+						tableId: 1,
+						primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+						_readTxnForContext: () => undefined,
+					},
+					definition: definition(),
+					auditStore,
+					readinessId,
+					indexId: readinessId,
+					storePath,
+					storeName,
+					sourceGeneration: 'generation',
+					limits: {},
+					binding: {
+						async runtimeInfo() {
 							return {
-								total: 1,
-								totalRelation: 'exact',
-								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+								queryClassIsolationMinimumSearchThreads: 1,
+								limits: queryLimits({
+									maxSearchWindow: 10,
+									maxSearchBudgetMilliseconds: exceedsBudget ? 100 : 5000,
+									maxTraceRecords: 10,
+								}),
 							};
 						},
-						committedPayload: publicationPayload(),
-						async reload() {},
-						async close() {
-							closes++;
+						async openNativeFullTextReader() {
+							return withTraversal({
+								async search() {
+									searchStarted.resolve();
+									await finishSearch.promise;
+									return {
+										total: 1,
+										totalRelation: 'exact',
+										hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+									};
+								},
+								committedPayload: publicationPayload(),
+								async reload() {},
+								async close() {
+									closes++;
+								},
+							});
 						},
-					};
-				},
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		const search = index.search(
-			{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
-			{},
-			{ minResults: 1 }
+					},
+				});
+				attachCurrentCoverage(index, auditStore, readinessId);
+				const search = index.search(
+					{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+					{},
+					{ minResults: 1 }
+				);
+				await searchStarted.promise;
+				let closeError;
+				const close = index.close().catch((error) => (closeError = error));
+				if (exceedsBudget) {
+					await waitFor(() => closeError, 3000);
+					assert.match(closeError.message, /reader drain did not settle/);
+					assert.strictEqual(closeError.statusCode, 503);
+				}
+				const replacement = readyQueryIndex(auditStore, 'replacement-readiness', storeName);
+				let pauseSettled = false;
+				const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
+					pauseSettled = true;
+				});
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(pauseSettled, false);
+				finishSearch.resolve();
+				if (exceedsBudget) await assert.rejects(search, /Full-text search exceeded its execution budget/);
+				else assert.strictEqual((await search).length, 1);
+				await close;
+				if (!exceedsBudget) assert.strictEqual(closeError, undefined);
+				await pause;
+				assert.strictEqual(pauseSettled, true);
+				resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
+				await waitFor(() => closes === 1);
+				await index.close();
+				await replacement.close();
+			}
 		);
-		await searchStarted.promise;
-		let closeError;
-		const close = index.close().catch((error) => (closeError = error));
-		await new Promise((resolve) => setTimeout(resolve, 1_500));
-		assert.match(closeError?.message, /reader drain did not settle/);
-		assert.strictEqual(closeError.statusCode, 503);
-		await close;
-		const replacement = readyQueryIndex(auditStore, 'replacement-readiness', storeName);
-		let pauseSettled = false;
-		const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
-			pauseSettled = true;
-		});
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.strictEqual(pauseSettled, false);
-		finishSearch.resolve();
-		assert.strictEqual((await search).length, 1);
-		await pause;
-		assert.strictEqual(pauseSettled, true);
-		resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
-		await waitFor(() => closes === 1);
-		await index.close();
-		await replacement.close();
-	});
-
+	}
 	it('does not let a native reader close failure reject lifecycle shutdown', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-close-failure';
@@ -3339,7 +3695,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3353,7 +3709,7 @@ describe('FullTextQueryIndex', () => {
 							closes++;
 							throw new Error('close failed');
 						},
-					};
+					});
 				},
 			},
 		});
@@ -3409,7 +3765,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3439,7 +3795,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3572,7 +3928,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 2,
@@ -3590,7 +3946,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3647,7 +4003,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3658,7 +4014,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3712,7 +4068,7 @@ describe('FullTextQueryIndex', () => {
 						openStarted.resolve();
 						await finishOpen.promise;
 					}
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3723,7 +4079,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3778,7 +4134,7 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								if (oldGeneration) {
 									searchStarted.resolve();
@@ -3795,7 +4151,7 @@ describe('FullTextQueryIndex', () => {
 							async close() {
 								if (oldGeneration) oldCloses++;
 							},
-						};
+						});
 					},
 				},
 			});
@@ -3907,7 +4263,7 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								return {
 									total: 1,
@@ -3918,7 +4274,7 @@ describe('FullTextQueryIndex', () => {
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -3984,7 +4340,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							searchStarted.resolve();
 							await finishSearch.promise;
@@ -3997,7 +4353,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -4118,7 +4474,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -4129,7 +4485,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -4296,7 +4652,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -4307,7 +4663,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 1 } }),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});

@@ -1,6 +1,16 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, LockUnavailableError } from '../utility/errors/hdbError.ts';
+import {
+	claimLocalKey,
+	freshLocalKey,
+	isValidFloor,
+	localIssuanceRatchet,
+	timestampAbove,
+} from './originClosedFloor.ts';
+import * as envMngr from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { parseDurationMs } from '../utility/common_utils.ts';
 
 /**
  * Exclusive per-record locks (harper#483).
@@ -66,13 +76,19 @@ export interface RecordLockHandle {
 	hold: boolean;
 	released: boolean;
 	expired: boolean;
+	writeRefused: boolean;
 	/** Monotonic timestamp at which tryLock succeeded; used as the base version for holder writes. */
 	acquiredAt: number;
 	/** Advance, but never lower, the version floor from the transaction that owns the actual write timestamp. */
 	noteHolderVersion(version: number): void;
-	/** Preserve a caller timestamp as a candidate floor without treating it as a committed write. */
-	noteCandidateFloor(version: number): void;
-	/** Compute a holder-write version without advancing the floor until that write commits. */
+	/**
+	 * Raise the floor holder writes start from without treating it as a committed write: a caller
+	 * timestamp, or the stamp above the state the lock was admitted on.
+	 */
+	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
+	/** Compute the next holder-write floor from committed holder versions without claiming a local key unless requested. */
+	holderVersionFloor(floor?: number, claim?: boolean): number;
+	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
 	clusterTsR?: number;
@@ -159,6 +175,67 @@ export function lockNotHeldError(handle: Pick<RecordLockHandle, 'expired'>): Cli
 	return new ClientError(handle.expired ? 'Record lock lease expired' : 'Record lock already released', 409);
 }
 
+/**
+ * The floor a newly admitted holder's writes start from: strictly above the version the lock reloaded
+ * (a tombstone's included) and the highest predecessor log position the admission waited for. A bound
+ * no valid timestamp exceeds fails the admission, rather than handing back a lock whose writes lose.
+ */
+export function admissionFloor(version: unknown, dependencyFloor: number | undefined): number | undefined {
+	const aboveVersion = stampAbove(version);
+	const aboveDependencies = stampAbove(dependencyFloor);
+	return aboveVersion === undefined || aboveDependencies > aboveVersion ? aboveDependencies : aboveVersion;
+}
+
+function stampAbove(bound: unknown): number | undefined {
+	if (!(typeof bound === 'number' && bound > 0)) return undefined;
+	const above = timestampAbove(bound);
+	if (!isValidFloor(above))
+		throw new ClientError(
+			`No valid timestamp is above ${bound}, so a write under this lock could not outrank the state it was admitted on`,
+			409
+		);
+	return above;
+}
+
+const DEFAULT_MAX_LOCK_CLOCK_SKEW_MS = 5000;
+let cachedMaxLockClockSkewConfig: unknown = Symbol('uninitialized');
+let maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS;
+
+function maxLockClockSkewMs(): number {
+	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+	if (configured === cachedMaxLockClockSkewConfig) return maxLockClockSkew;
+	cachedMaxLockClockSkewConfig = configured;
+	if (configured == null) return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
+	const skew = parseDurationMs(configured);
+	if (Number.isFinite(skew) && skew >= 0) return (maxLockClockSkew = skew);
+	harperLogger.warn?.(
+		`storage.maxLockClockSkew must be a finite, non-negative duration, but is ${configured}; using ${DEFAULT_MAX_LOCK_CLOCK_SKEW_MS}ms`
+	);
+	return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
+}
+
+/**
+ * The stamp a new holder's writes start from, given its admission floor. Holders admitted on one
+ * predecessor's state share a floor, so each claims a distinct record version to avoid treating
+ * separate writes as re-deliveries. Their log keys are reserved separately at save. A floor ahead
+ * of the clock within the configured skew lifts every later local key on this node above it; a floor
+ * beyond that limit is rejected before it can reserve a local key.
+ */
+export function admissionStamp(
+	rootStore: any,
+	floor: number,
+	acquiredAt: number,
+	claim = true
+): { floor: number; stamp: number; claimed: boolean } {
+	if (floor <= acquiredAt) return { floor, stamp: acquiredAt, claimed: false };
+	const maxSkew = maxLockClockSkewMs();
+	const skew = floor - rootStore.getMonotonicTimestamp();
+	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor, claimed: claim };
+	throw new LockUnavailableError(
+		`A record lock cannot be admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait.`
+	);
+}
+
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
 export function lockAttemptKey(tableId: number, id: any): any[] {
 	return Array.isArray(id) ? [LOCK_KEY_PREFIX, tableId, ...id] : [LOCK_KEY_PREFIX, tableId, id];
@@ -187,10 +264,13 @@ class KeyLockHandle implements RecordLockHandle {
 	hold: boolean;
 	released = false;
 	expired = false;
+	writeRefused = false;
 	acquiredAt: number;
 	clusterTsR: number | undefined;
+	#committedHolderVersion: number | undefined;
 	#lastHolderVersion: number | undefined;
 	#candidateFloor: number | undefined;
+	#candidateFloorToClaim: number | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	// Monotonic mirror of expiresAt. The wall-clock field stays public (callers and the cluster
 	// protocol both speak in timestamps) but the enforcement compares monotonic readings, so neither
@@ -216,22 +296,58 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	noteHolderVersion(version: number): void {
+		this.#committedHolderVersion = Math.max(this.#committedHolderVersion ?? version, version);
 		this.#lastHolderVersion = Math.max(this.#lastHolderVersion ?? version, version);
+		if (this.#candidateFloorToClaim != null && version >= this.#candidateFloorToClaim)
+			this.#candidateFloorToClaim = undefined;
 	}
 
-	noteCandidateFloor(version: number): void {
+	noteCandidateFloor(version: number, claimOnWrite = false): void {
 		this.#candidateFloor = Math.max(this.#candidateFloor ?? version, version);
+		if (claimOnWrite) this.#candidateFloorToClaim = Math.max(this.#candidateFloorToClaim ?? version, version);
+	}
+
+	holderVersionFloor(floor?: number, claim = false): number {
+		return this.#resolveCandidate(floor, claim, this.#committedHolderVersion);
 	}
 
 	holderVersionCandidate(floor?: number): number {
-		// A small nonzero step prevents exact LWW ties without materially moving past the observed floor.
-		const MIN_STEP = 0.000488;
+		return this.#resolveCandidate(floor, true, this.#lastHolderVersion);
+	}
+
+	#resolveCandidate(floor: number | undefined, claim: boolean, lastVersion: number | undefined): number {
+		const candidateFloor = Math.max(this.#candidateFloor ?? -Infinity, floor ?? -Infinity);
+		if (this.#candidateFloorToClaim != null && this.#candidateFloorToClaim > (lastVersion ?? this.acquiredAt)) {
+			const step = timestampAbove(this.#candidateFloorToClaim);
+			const rootStore = this.store.rootStore;
+			const claimed =
+				claim && typeof rootStore?.getUserSharedBuffer === 'function' ? claimLocalKey(rootStore, step) : step;
+			if (claim) {
+				this.#candidateFloor = Math.max(this.#candidateFloor ?? claimed, claimed);
+				this.#candidateFloorToClaim = undefined;
+			}
+			return Math.max(claimed, this.acquiredAt, candidateFloor);
+		}
 		return Math.max(
-			this.#lastHolderVersion != null ? this.#lastHolderVersion + MIN_STEP : this.acquiredAt,
+			lastVersion != null ? (claim ? this.#stepPast(lastVersion) : timestampAbove(lastVersion)) : this.acquiredAt,
 			this.acquiredAt,
-			this.#candidateFloor ?? -Infinity,
-			floor ?? -Infinity
+			candidateFloor
 		);
+	}
+
+	/**
+	 * The smallest step past the holder's last version, claimed when it could repeat an issued key,
+	 * including after clock catch-up. Ahead of the clock it is claimed like an admission stamp:
+	 * one ulp above the ratchet is otherwise the next key the ratchet issues.
+	 */
+	#stepPast(version: number): number {
+		const step = timestampAbove(version);
+		const rootStore = this.store.rootStore;
+		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
+		if (step <= timestampAbove(localIssuanceRatchet(rootStore))) return claimLocalKey(rootStore, step);
+		const lead = step - rootStore.getMonotonicTimestamp();
+		if (lead <= 0) return step;
+		return lead <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
 	}
 
 	isExpired(): boolean {
@@ -285,6 +401,7 @@ class KeyLockHandle implements RecordLockHandle {
 		if (remaining <= 0) return false;
 		this.clusterTsR = tsR;
 		this.acquiredAt = tsR;
+		this.#committedHolderVersion = undefined;
 		this.#lastHolderVersion = undefined;
 		this.#onRelease = onRelease;
 		this.expiresAt = tsR + leaseMs;
@@ -411,6 +528,9 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	upgradeToHold(lease: number): void {
+		// Initialize the next holder version before changing modes, so an allocation failure leaves
+		// the handle scoped.
+		this.nextHolderVersion();
 		this.hold = true;
 		clearTimeout(this.#timer);
 		// A granted cluster round may not be extended locally: peers bound the hold from the request
@@ -424,11 +544,6 @@ class KeyLockHandle implements RecordLockHandle {
 		this.#deadlineMono = deadline;
 		this.expiresAt = Date.now() + remaining;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
-		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
-		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
-		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
-		this.nextHolderVersion();
 	}
 }
 
@@ -476,7 +591,14 @@ export async function acquireRecordKey(
 					wakeResolve?.();
 				};
 		const acquired = store.tryLock(key, onUnlocked);
-		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, store.getMonotonicTimestamp());
+		if (acquired) {
+			try {
+				return makeKeyLockHandle(store, key, keyId, lease, hold, freshLocalKey(store.rootStore ?? store));
+			} catch (error) {
+				store.unlock(key);
+				throw error;
+			}
+		}
 		if (onUnlocked) hasCallback = true; // callback now registered; do not register another until it fires
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);

@@ -2,6 +2,7 @@
 
 import fs from 'fs-extra';
 import Joi from 'joi';
+import { resolveFullTextSearchLimits } from '../resources/indexes/fullTextSearchLimits.ts';
 import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -235,6 +236,7 @@ const providerEntrySchema = (kind) =>
 					kind,
 					openaiEntrySchema.keys({
 						inputPrefixes: kind === 'embedding' ? inputPrefixesSchema.optional() : Joi.forbidden(),
+						truncation: kind === 'embedding' ? string.valid('vllm').optional() : Joi.forbidden(),
 					})
 				),
 			},
@@ -557,6 +559,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			})
 		),
 		storage: Joi.object({
+			fullText: Joi.object()
+				.custom((value, helpers) => {
+					try {
+						resolveFullTextSearchLimits(value);
+						return value;
+					} catch (error) {
+						return helpers.message({ custom: error instanceof Error ? error.message : String(error) });
+					}
+				})
+				.optional(),
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
@@ -590,6 +602,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			]),
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
+			maxLockClockSkew: Joi.alternatives([
+				number
+					.min(0)
+					.custom((value, helpers) =>
+						Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+					),
+				string.custom((value, helpers) =>
+					Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+				),
+			]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),

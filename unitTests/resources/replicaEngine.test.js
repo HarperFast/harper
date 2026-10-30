@@ -38,29 +38,28 @@ describe('Replica storage engine support', function () {
 		return Records.primaryStore.getEntry(id);
 	}
 
-	function answer(entry, name, offset = 0) {
+	function answer(entry, body = 'complete') {
 		return {
 			key: entry.key,
-			value: { id: entry.key, name, body: 'complete' },
-			version: entry.version + offset,
+			value: { id: entry.key, name: 'stub', body },
+			version: entry.version,
 			originNode: server.hostname,
+			fullWriteHead: entry.version,
 		};
 	}
 
-	it('keeps indexes consistent when concurrent admissions answer one stub', async () => {
+	it('keeps one of concurrent admissions that answer one stub, with its index unchanged', async () => {
 		const entry = await stub('overlap');
 		const history = (await Records.getHistoryOfRecord(entry.key)).map(({ type, version }) => ({ type, version }));
 		const results = await Promise.all([
-			Records._storeReplica(entry, answer(entry, 'A', 2)),
-			Records._storeReplica(entry, answer(entry, 'B', 1)),
+			Records._storeReplica(entry, answer(entry, 'A')),
+			Records._storeReplica(entry, answer(entry, 'B')),
 		]);
 		const current = Records.primaryStore.getEntry(entry.key);
-		for (const name of ['stub', 'A', 'B']) {
-			const ids = [];
-			for await (const row of Records.search({ conditions: [{ attribute: 'name', value: name }], select: ['id'] }))
-				ids.push(row.id);
-			assert.deepEqual(ids, name === current.value.name ? [entry.key] : [], `index ${name} matches the stored row`);
-		}
+		const ids = [];
+		for await (const row of Records.search({ conditions: [{ attribute: 'name', value: 'stub' }], select: ['id'] }))
+			ids.push(row.id);
+		assert.deepEqual(ids, [entry.key]);
 		assert.equal(current.version, entry.version);
 		assert.deepEqual(
 			(await Records.getHistoryOfRecord(entry.key)).map(({ type, version }) => ({ type, version })),
@@ -75,7 +74,8 @@ describe('Replica storage engine support', function () {
 			assert.ok(!(current.metadataFlags & REPLICA));
 			assert.equal(Records.dbisDB.getSync(`${Records.tableName}/@replicas`), undefined);
 		} else {
-			assert.ok(results.includes(true));
+			assert.equal(results.filter(Boolean).length, 1, 'exactly one admission wins');
+			assert.equal(current.value.body, results[0] ? 'A' : 'B');
 			assert.ok(current.metadataFlags & REPLICA);
 		}
 	});
@@ -87,7 +87,7 @@ describe('Replica storage engine support', function () {
 		Records.sourcedFrom(
 			class extends Resource {
 				static async load(request) {
-					const response = answer(request, 'remote');
+					const response = answer(request);
 					admissions.push(await Records._storeReplica(request, response));
 					return response;
 				}
@@ -156,7 +156,7 @@ describe('Replica storage engine support', function () {
 			resource._writeInvalidate('loaded', { name: 'stub' }, { residencyId: 123 });
 		});
 		const entry = Created.primaryStore.getEntry('loaded');
-		assert.equal(await Created._storeReplica(entry, answer(entry, 'resident')), !isLMDB);
+		assert.equal(await Created._storeReplica(entry, answer(entry)), !isLMDB);
 		await closeDatabase(databaseName);
 		let Reloaded;
 		setMainIsWorker(false);

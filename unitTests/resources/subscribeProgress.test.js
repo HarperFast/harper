@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { getDatabaseGeneration, readAuditEntry } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
-const { deliveryCertified } = require('#src/resources/transactionBroadcast');
+const { deliveryCertified, setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -41,6 +41,51 @@ describe('Certified subscription progress', function () {
 		subscription.end();
 	});
 
+	it('reports the lowest late event the consumer has not consumed, and keeps only what a consumer has not taken', async () => {
+		const T = tableInOwnDatabase();
+		const send = (subscription, localTime) => subscription.send({ type: 'put', id: `k${localTime}`, localTime });
+		const queued = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		// 15 and 12 arrive below 20, 18 below 30; 12 follows 15, so 15 can never be the lowest
+		for (const key of [10, 20, 15, 12, 30, 18]) send(queued, key);
+		// a scan row and a control event carry no log position
+		queued.send({ type: 'put', id: 'scan', localTime: 1, fromScan: true });
+		queued.send({ type: 'checkpoint' });
+		assert.strictEqual(queued.lowestLateUnconsumed(0), 12);
+		assert.strictEqual(queued.lowestLateUnconsumed(3), 12);
+		assert.strictEqual(queued.lowestLateUnconsumed(4), 18, 'consumed through 12');
+		assert.strictEqual(queued.lowestLateUnconsumed(6), undefined, 'every late event consumed');
+		queued.end();
+		// a callback consumer takes each event as it is sent: only the last one taken can still be in hand
+		const listened = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: () => {} });
+		for (const key of [100, 50, 60, 70]) send(listened, key);
+		assert.strictEqual(listened.lowestLateUnconsumed(0), 60);
+		listened.end();
+	});
+
+	it('runs one follow-up pass, not a chain, while a key from another origin is ahead of this clock', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const delivered = [];
+		const subscription = await T.subscribe({
+			omitCurrent: true,
+			reportProgress: true,
+			listener: (event) => delivered.push(event.id),
+		});
+		const databaseRegistry = registry(subscription);
+		await waitFor(() => !databaseRegistry.notifyScheduled && !databaseRegistry.recheckPending);
+		// stands in for a replicated entry whose origin's clock leads this node's by a minute
+		const ahead = T.primaryStore.rootStore.getMonotonicTimestamp() + 60_000;
+		databaseRegistry.dispatchedThrough = ahead;
+		await T.put('local', { value: 'local' });
+		await waitFor(() => delivered.includes('local'));
+		await waitFor(() => !databaseRegistry.notifyScheduled && !databaseRegistry.recheckPending, {
+			timeout: 1_000,
+			message: 'notify passes kept following each other while the remote key was ahead',
+		});
+		assert.ok(!(databaseRegistry.certifiedThrough >= ahead), 'nothing certifies past this clock');
+		subscription.end();
+	});
+
 	it('follows the watermark once live, which a yield inside one transaction does not advance', async () => {
 		const T = tableInOwnDatabase();
 		await T.put('seed', { value: 0 });
@@ -70,6 +115,87 @@ describe('Certified subscription progress', function () {
 		subscription.end();
 		subscription.end();
 		assert.strictEqual(databaseRegistry.progressConsumers, 0, 'ending twice uncounts once');
+	});
+
+	it('a same-thread progress subscription follows its watermark, held below a write this thread still has open', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, crossThreads: false });
+		let commitHeld;
+		const held = transaction({}, async (context) => {
+			await T.put('held', { value: 'held' }, context);
+			await new Promise((resolve) => (commitHeld = resolve));
+		});
+		await waitFor(() => commitHeld);
+		await T.put('a', { value: 1 });
+		const key = T.primaryStore.getEntry('a').version;
+		await waitFor(() => subscription.progress() !== undefined);
+		assert.ok(subscription.progress() < key, `progress ${subscription.progress()} passed the held write below ${key}`);
+		commitHeld();
+		await held;
+		await waitFor(() => subscription.progress() >= key, {
+			message: () => `progress ${subscription.progress()} < ${key}`,
+		});
+		subscription.end();
+	});
+
+	it('a held same-thread registry leaves every write to the cross-thread subscriber on its thread', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const crossThread = [];
+		const across = await T.subscribe({
+			omitCurrent: true,
+			reportProgress: true,
+			listener: (event) => crossThread.push(event.id),
+		});
+		const sameThread = await T.subscribe({ omitCurrent: true, reportProgress: true, crossThreads: false });
+		let commitHeld;
+		const held = transaction({}, async (context) => {
+			await T.put('held', { value: 'held' }, context);
+			await new Promise((resolve) => (commitHeld = resolve));
+		});
+		await waitFor(() => commitHeld);
+		await T.put('a', { value: 1 });
+		await T.put('b', { value: 2 });
+		commitHeld();
+		await held;
+		await T.put('c', { value: 3 });
+		await waitFor(() => ['a', 'b', 'held', 'c'].every((id) => crossThread.includes(id)), {
+			message: () => `the cross-thread subscriber received ${crossThread}`,
+		});
+		const key = T.primaryStore.getEntry('c').version;
+		await waitFor(() => across.progress() >= key && sameThread.progress() >= key);
+		across.end();
+		sameThread.end();
+	});
+
+	it('a same-thread registry re-captures on its own timer when a held write aborts', async () => {
+		setOriginCaptureIntervalForTests(50);
+		try {
+			const T = tableInOwnDatabase();
+			await T.put('seed', { value: 0 });
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, crossThreads: false });
+			let abort;
+			const aborted = transaction({}, async (context) => {
+				await T.put('doomed', { value: 'doomed' }, context);
+				await new Promise((resolve) => (abort = resolve));
+				throw new Error('abort the held write');
+			}).catch(() => {});
+			await waitFor(() => abort);
+			await T.put('a', { value: 1 });
+			const key = T.primaryStore.getEntry('a').version;
+			await waitFor(() => subscription.progress() !== undefined);
+			assert.ok(subscription.progress() < key, 'the held write holds progress');
+			abort();
+			await aborted;
+			await waitFor(() => subscription.progress() >= key, {
+				timeout: 5_000,
+				message: 'progress did not catch up after the abort',
+			});
+			subscription.end();
+		} finally {
+			setOriginCaptureIntervalForTests();
+		}
 	});
 
 	it('does not register a new subscription at a watermark left from earlier tracking', async () => {
@@ -137,6 +263,154 @@ describe('Certified subscription progress', function () {
 		} finally {
 			range.failedLogs.delete('unreadable');
 			subscription.end();
+		}
+	});
+
+	for (const crossThreads of [true, false]) {
+		it(`certifies a held scalar replay after release without another commit (crossThreads: ${crossThreads})`, async () => {
+			setOriginCaptureIntervalForTests(60_000);
+			const name = `Replay${++sequence}`;
+			const T = tableInOwnDatabase(name);
+			const Other = table({
+				table: 'Other',
+				database: `progress_${name}`,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			let release;
+			let held;
+			let subscription;
+			let other;
+			try {
+				await T.put('seed', { value: 0 });
+				const startTime = T.primaryStore.getEntry('seed').version;
+				held = transaction({}, async (context) => {
+					await T.put('held', { value: 'held' }, context);
+					await new Promise((resolve) => (release = resolve));
+				});
+				await waitFor(() => release);
+				await T.put('higher', { value: 'higher' });
+				const higher = T.primaryStore.getEntry('higher').version;
+				other = await Other.subscribe({ omitCurrent: true, reportProgress: true });
+				subscription = await T.subscribe({
+					databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+					startTime,
+					reportProgress: true,
+					crossThreads,
+					listener: () => {},
+				});
+				assert.strictEqual(await subscription.resumeVerified, true);
+				assert.ok(!(subscription.progress() >= higher), 'replay cannot override the reservation ceiling');
+				assert.ok(!(other.progress() >= higher), 'the sibling table shares the held certificate');
+				if (!crossThreads) {
+					assert.strictEqual(subscription.progress(), undefined, 'same-thread replay uses only its live certificate');
+					assert.strictEqual(
+						registry(subscription).dispatchedThrough,
+						undefined,
+						'cross-thread history is not injected'
+					);
+				}
+				release();
+				await held;
+				if (crossThreads) {
+					await waitFor(() => subscription.progress() >= higher && other.progress() >= higher, {
+						message: 'completed replay did not catch up without an unrelated write or capture tick',
+					});
+				} else {
+					await T.put('own-live', { value: 'own-live' });
+					await waitFor(() => subscription.progress() >= T.primaryStore.getEntry('own-live').version);
+				}
+			} finally {
+				release?.();
+				await held;
+				subscription?.end();
+				other?.end();
+				setOriginCaptureIntervalForTests();
+			}
+		});
+	}
+
+	it('completes scalar replay while a notify pass is yielded without certifying its partial transaction', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		let startTime;
+		let replay;
+		let replayTask;
+		let sawYield = false;
+		const seen = [];
+		const live = await T.subscribe({
+			omitCurrent: true,
+			reportProgress: true,
+			listener: (event) => {
+				seen.push(event);
+				if (seen.length === 1)
+					replayTask = new Promise((resolve, reject) =>
+						setImmediate(async () => {
+							try {
+								sawYield = registry(live).passYielded;
+								assert.ok(sawYield, 'the first transaction is only partly dispatched');
+								replay = await T.subscribe({
+									startTime,
+									databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+									reportProgress: true,
+									listener: () => {},
+								});
+								assert.strictEqual(await replay.resumeVerified, true);
+								assert.ok(registry(live).passYielded, 'the short replay completed before the pending drain');
+								assert.ok(!(live.progress() >= event.localTime), 'a yielded pass cannot certify a partial transaction');
+								resolve();
+							} catch (error) {
+								reject(error);
+							}
+						})
+					);
+			},
+		});
+		try {
+			await waitFor(() => !registry(live).notifyScheduled);
+			registry(live).notifyScheduled = true;
+			await transaction({}, async (context) => {
+				for (let i = 0; i < 300; i++) await T.put(`bulk${i}`, { value: i }, context);
+			});
+			startTime = [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === 'bulk0').txnLogKey;
+			await T.put('tail', { value: 'tail' });
+			registry(live).notifyScheduled = false;
+			await T.put('trigger', { value: 'trigger' });
+			await waitFor(() => Boolean(replayTask));
+			await replayTask;
+			await waitFor(() => seen.length === 302 && live.progress() >= seen[0].localTime);
+			assert.ok(sawYield);
+			assert.strictEqual(seen.length, 302, 'the replay did not start an overlapping live drain');
+		} finally {
+			registry(live).notifyScheduled = false;
+			replay?.end();
+			live.end();
+		}
+	});
+
+	it('does not inject replay progress after a failed live range read', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const startTime = T.primaryStore.getEntry('seed').version;
+		await T.put('higher', { value: 1 });
+		const live = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		const range = T.auditStore.subscriptionLogRange;
+		range.failedLogs.add('unreadable');
+		let replay;
+		try {
+			replay = await T.subscribe({
+				startTime,
+				databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+				reportProgress: true,
+				listener: () => {},
+			});
+			await replay.resumeVerified;
+			assert.strictEqual(deliveryCertified(replay), false);
+			assert.strictEqual(registry(live).dispatchedThrough, undefined);
+		} finally {
+			range.failedLogs.delete('unreadable');
+			replay?.end();
+			live.end();
 		}
 	});
 

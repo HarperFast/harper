@@ -19,6 +19,8 @@ export class ComponentStatus {
 	public message?: string;
 	/** Error information if status is 'error' */
 	public error?: Error | string;
+	/** When this thread last finished loading the component, successfully or not; kept across later reports */
+	public loadedAt?: Date;
 	/** How the status was set */
 	public source?: ComponentStatusSource;
 	/** Optional metadata, unpopulated by the log bridge; its deadlines are tracked separately. */

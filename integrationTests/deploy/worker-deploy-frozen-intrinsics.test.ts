@@ -192,83 +192,100 @@ async function restartWorkersFromMainThread(ctx: ContextWithHarper) {
 	await waitForDeployer(ctx);
 }
 
-suite('deploy_component on a worker thread under freeze-after-load (harper#2881)', (ctx: ContextWithHarper) => {
-	before(async () => {
-		await startWithDeployer(ctx, {});
-	});
+for (const lockdown of [undefined, 'freeze-after-load']) {
+	suite(
+		`deploy_component on a worker thread under ${lockdown ?? 'the default lockdown'} (harper#2881)`,
+		(ctx: ContextWithHarper) => {
+			before(async () => {
+				await startWithDeployer(ctx, lockdown ? { applications: { lockdown } } : {});
+			});
 
-	after(async () => {
-		await teardownHarper(ctx);
-	});
+			after(async () => {
+				await teardownHarper(ctx);
+			});
 
-	test('a dependency that extends Reflect at load deploys from a worker on its first load there, and serves once workers restart', async () => {
-		const project = 'reflect-first-load';
-		const result = await deployFromWorker(
-			ctx,
-			project,
-			await buildReflectExtendingPayload(project, 'harperProbeFirstLoad', 1)
-		);
-		strictEqual(result.isMainThread, false, 'the deploy must execute on a worker thread to exercise the peer path');
-		ok(result.ok, `deploy from a worker failed: ${result.error}`);
+			test('a dependency that extends Reflect at load deploys from a worker on its first load there, and serves once workers restart', async () => {
+				const project = 'reflect-first-load';
+				const result = await deployFromWorker(
+					ctx,
+					project,
+					await buildReflectExtendingPayload(project, 'harperProbeFirstLoad', 1)
+				);
+				strictEqual(result.isMainThread, false, 'the deploy must execute on a worker thread to exercise the peer path');
+				ok(result.ok, `deploy from a worker failed: ${result.error}`);
 
-		await restartWorkersFromMainThread(ctx);
-		await waitForResource(ctx, resourceName(project), (body) => body.version === 1 && body.decorated === 'decorated');
-	});
+				await restartWorkersFromMainThread(ctx);
+				await waitForResource(
+					ctx,
+					resourceName(project),
+					(body) => body.version === 1 && body.decorated === 'decorated'
+				);
+			});
 
-	test('the same dependency redeploys from a worker that loaded the live copy at boot', async () => {
-		const project = 'reflect-redeploy';
-		// Through the operations API, so the restarted worker loads it at boot, before its intrinsics freeze.
-		await operation(ctx, {
-			operation: 'deploy_component',
-			project,
-			payload: await buildReflectExtendingPayload(project, 'harperProbeRedeploy', 1),
-			restart: true,
-		});
-		await waitForResource(ctx, resourceName(project), (body) => body.version === 1 && body.decorated === 'decorated');
-		await waitForDeployer(ctx);
+			test('the same dependency redeploys from a worker that loaded the live copy at boot', async () => {
+				const project = 'reflect-redeploy';
+				// Through the operations API, so the restarted worker loads it at boot, before its intrinsics lock.
+				await operation(ctx, {
+					operation: 'deploy_component',
+					project,
+					payload: await buildReflectExtendingPayload(project, 'harperProbeRedeploy', 1),
+					restart: true,
+				});
+				await waitForResource(
+					ctx,
+					resourceName(project),
+					(body) => body.version === 1 && body.decorated === 'decorated'
+				);
+				await waitForDeployer(ctx);
 
-		const result = await deployFromWorker(
-			ctx,
-			project,
-			await buildReflectExtendingPayload(project, 'harperProbeRedeploy', 2)
-		);
-		strictEqual(result.isMainThread, false);
-		ok(result.ok, `redeploy from a worker failed: ${result.error}`);
-	});
+				const result = await deployFromWorker(
+					ctx,
+					project,
+					await buildReflectExtendingPayload(project, 'harperProbeRedeploy', 2)
+				);
+				strictEqual(result.isMainThread, false);
+				ok(result.ok, `redeploy from a worker failed: ${result.error}`);
+			});
 
-	test('a deploy that restarts nothing gets no verdict: a candidate that throws at load is activated', async () => {
-		const project = 'broken-at-load';
-		const result = await deployFromWorker(ctx, project, await buildThrowingPayload());
-		strictEqual(result.isMainThread, false);
-		ok(result.ok, `the deploy was rejected: ${result.error}`);
+			test('a deploy that restarts nothing gets no verdict: a candidate that throws at load is activated', async () => {
+				const project = 'broken-at-load';
+				const result = await deployFromWorker(ctx, project, await buildThrowingPayload());
+				strictEqual(result.isMainThread, false);
+				ok(result.ok, `the deploy was rejected: ${result.error}`);
 
-		await restartWorkersFromMainThread(ctx);
-		const deadline = Date.now() + 30_000;
-		let status: string | undefined;
-		while (Date.now() < deadline) {
-			const { componentStatus = [] } = await operation(ctx, { operation: 'get_status' });
-			status = componentStatus.find((entry: { name: string }) => entry.name === `${project}.jsResource`)?.status;
-			if (status === 'error') break;
-			await sleep(250);
+				await restartWorkersFromMainThread(ctx);
+				const deadline = Date.now() + 30_000;
+				let status: string | undefined;
+				while (Date.now() < deadline) {
+					const { componentStatus = [] } = await operation(ctx, { operation: 'get_status' });
+					status = componentStatus.find((entry: { name: string }) => entry.name === `${project}.jsResource`)?.status;
+					if (status === 'error') break;
+					await sleep(250);
+				}
+				strictEqual(status, 'error', `expected ${project} to report its load failure`);
+			});
+
+			test('a dependency that extends Reflect at load is certified by its canary, which loads it before locking', async () => {
+				const project = 'reflect-certified';
+				const result = await deployFromWorker(
+					ctx,
+					project,
+					await buildReflectExtendingPayload(project, 'harperProbeCertified', 1),
+					true
+				);
+				strictEqual(result.isMainThread, false);
+				ok(result.ok, `the deploy was rejected: ${result.error}`);
+				strictEqual(result.certification, 'certified');
+				await waitForResource(
+					ctx,
+					resourceName(project),
+					(body) => body.version === 1 && body.decorated === 'decorated'
+				);
+				await waitForDeployer(ctx);
+			});
 		}
-		strictEqual(status, 'error', `expected ${project} to report its load failure`);
-	});
-
-	test('a dependency that extends Reflect at load is certified by its canary, which loads it before freezing', async () => {
-		const project = 'reflect-certified';
-		const result = await deployFromWorker(
-			ctx,
-			project,
-			await buildReflectExtendingPayload(project, 'harperProbeCertified', 1),
-			true
-		);
-		strictEqual(result.isMainThread, false);
-		ok(result.ok, `the deploy was rejected: ${result.error}`);
-		strictEqual(result.certification, 'certified');
-		await waitForResource(ctx, resourceName(project), (body) => body.version === 1 && body.decorated === 'decorated');
-		await waitForDeployer(ctx);
-	});
-});
+	);
+}
 
 suite('deploy_component on a worker thread under lockdown: none', (ctx: ContextWithHarper) => {
 	before(async () => {
@@ -302,30 +319,32 @@ suite('deploy_component on a worker thread under lockdown: none', (ctx: ContextW
 	});
 });
 
-suite('deploy_component on a worker thread under lockdown: freeze', (ctx: ContextWithHarper) => {
-	before(async () => {
-		await startWithDeployer(ctx, { applications: { lockdown: 'freeze' } });
-	});
+for (const lockdown of ['freeze', 'seal']) {
+	suite(`deploy_component on a worker thread under lockdown: ${lockdown}`, (ctx: ContextWithHarper) => {
+		before(async () => {
+			await startWithDeployer(ctx, { applications: { lockdown } });
+		});
 
-	after(async () => {
-		await teardownHarper(ctx);
-	});
+		after(async () => {
+			await teardownHarper(ctx);
+		});
 
-	test('a dependency that extends Reflect at load is rejected by its canary, as it fails at boot here', async () => {
-		const project = 'reflect-eager-freeze';
-		const result = await deployFromWorker(
-			ctx,
-			project,
-			await buildReflectExtendingPayload(project, 'harperProbeEagerFreeze', 1),
-			true
-		);
-		strictEqual(result.isMainThread, false);
-		strictEqual(result.ok, false, 'a candidate that cannot load at boot must not be certified');
-		strictEqual(result.certification?.status, 'rejected');
-		// V8 and JavaScriptCore word the frozen-Reflect TypeError differently; both say "not extensible".
-		ok(
-			result.error?.includes(`application '${project}'`) && result.error.includes('not extensible'),
-			`unexpected rejection: ${result.error}`
-		);
+		test('a dependency that extends Reflect at load is rejected by its canary, as it fails at boot here', async () => {
+			const project = `reflect-eager-${lockdown}`;
+			const result = await deployFromWorker(
+				ctx,
+				project,
+				await buildReflectExtendingPayload(project, 'harperProbeEagerLockdown', 1),
+				true
+			);
+			strictEqual(result.isMainThread, false);
+			strictEqual(result.ok, false, 'a candidate that cannot load at boot must not be certified');
+			strictEqual(result.certification?.status, 'rejected');
+			// V8 and JavaScriptCore word the locked-Reflect TypeError differently; both say "not extensible".
+			ok(
+				result.error?.includes(`application '${project}'`) && result.error.includes('not extensible'),
+				`unexpected rejection: ${result.error}`
+			);
+		});
 	});
-});
+}

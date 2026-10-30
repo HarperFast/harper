@@ -12,6 +12,9 @@ export {
 	assertActiveSuperUserRemains,
 	dropUser,
 	getSuperUser,
+	localPrincipal,
+	isLocalPrincipal,
+	LOCAL_USERNAME,
 	userInfo,
 	listUsers,
 	listUsersExternal,
@@ -56,6 +59,8 @@ export interface UserRoleNamedPermissions extends Partial<CRUDPermissions> {
 	operations?: string[];
 	/** Pre-expanded Set built from operations at cache-load time. Not persisted. */
 	_expandedOperations?: Set<string>;
+	/** The components this role may deploy and drop (security/componentGrant.ts). */
+	component_deploy?: import('./componentGrant.ts').ComponentGrant;
 }
 
 export interface UserRoleDatabasePermissions {
@@ -100,7 +105,6 @@ import _validate from 'validate.js';
 const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
-import * as env from '../utility/environment/environmentManager.ts';
 import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
@@ -138,14 +142,13 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 };
 const passwordHashCache = new Map();
 const promiseDelete = promisify(delete_.delete_);
-const configuredHashFunction =
-	env.get(terms.CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION) ?? password.HASH_FUNCTION.SHA256;
 const { USER_TABLE_NAME, ROLE_TABLE_NAME } = terms.SYSTEM_TABLE_NAMES;
 
 async function addUser(user: User | any): Promise<string> {
 	let cleanUser = validate.cleanAttributes(user, USER_ATTRIBUTE_ALLOWLIST);
 	let validationResp = validation.addUserValidation(cleanUser);
 	if (validationResp) throw new ClientError(validationResp.message);
+	if (cleanUser.username === LOCAL_USERNAME) throw new ClientError(HDB_ERROR_MSGS.RESERVED_USERNAME(LOCAL_USERNAME));
 
 	let searchRole = await search.searchByValue({
 		schema: 'system',
@@ -163,8 +166,9 @@ async function addUser(user: User | any): Promise<string> {
 		throw new ClientError(HDB_ERROR_MSGS.DUP_ROLES_FOUND(cleanUser.role), HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-	cleanUser.hash_function = configuredHashFunction;
+	const hashFunction = password.configuredHashFunction();
+	cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+	cleanUser.hash_function = hashFunction;
 	cleanUser.role = searchRole[0].id;
 
 	const insertResponse = await insert.insert({
@@ -206,8 +210,9 @@ async function alterUser(jsonMessage) {
 	}
 
 	if (!hdbUtility.isEmpty(cleanUser.password) && !hdbUtility.isEmptyOrZeroLength(cleanUser.password.trim())) {
-		cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-		cleanUser.hash_function = configuredHashFunction;
+		const hashFunction = password.configuredHashFunction();
+		cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+		cleanUser.hash_function = hashFunction;
 	}
 
 	// the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly
@@ -277,6 +282,7 @@ async function userInfo(body): Promise<string | User> {
 		return 'There was no user info in the body';
 	}
 
+	if (isLocalPrincipal(body.hdb_user)) return { username: LOCAL_USERNAME, active: true, role: LOCAL_ROLE_RECORD };
 	let user = cloneDeep(body.hdb_user);
 	let roleData =
 		user.role &&
@@ -536,6 +542,43 @@ function userView(username: string, entries: UserEntries): User {
 	return user;
 }
 
+const LOCAL_USERNAME = 'local';
+// a default install's super_user role, which applications authorize on by `role.id`
+const LOCAL_ROLE_RECORD = deepFreeze({
+	role: 'super_user',
+	id: 'super_user',
+	permission: { super_user: true },
+	__createdtime__: 0,
+	__updatedtime__: 0,
+} as UserRole);
+let localRole: UserRole | undefined;
+
+/** The principal of a request trusted by its transport; security/DESIGN.md has its rules. */
+function localPrincipal(): User {
+	if (!localRole) {
+		localRole = withSystemTablePermissions(LOCAL_ROLE_RECORD);
+		deepFreeze(localRole.permission.system);
+	}
+	return {
+		username: LOCAL_USERNAME,
+		active: true,
+		_localPrincipal: true,
+		role: { ...localRole, permission: { ...localRole.permission } },
+	};
+}
+
+// a string marker, not a symbol: the Bun/uWS fallback and the MQTT will row carry the principal as data
+function isLocalPrincipal(user: any): boolean {
+	return user?._localPrincipal === true && user.username === LOCAL_USERNAME;
+}
+
+function deepFreeze<T>(value: T): T {
+	if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+	Object.freeze(value);
+	for (const key of Object.keys(value)) deepFreeze(value[key]);
+	return value;
+}
+
 function getUserWithRole(username: string): User | undefined {
 	const entries = readUserEntries(username);
 	return entries.user && userView(username, entries);
@@ -636,19 +679,9 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	return user;
 }
 
-let superUsername: string | undefined;
-
 async function getSuperUser(): Promise<User | undefined> {
-	if (superUsername !== undefined) {
-		const user = getUserWithRole(superUsername);
-		if (user?.role?.role === 'super_user') return user;
-	}
-	superUsername = undefined;
 	for (const [username, user] of (await listUsers()) ?? []) {
-		if (user.role?.role === 'super_user') {
-			superUsername = username;
-			return getUserWithRole(username);
-		}
+		if (user.active === true && user.role?.permission?.super_user === true) return getUserWithRole(username);
 	}
 }
 

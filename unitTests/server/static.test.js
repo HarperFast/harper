@@ -641,6 +641,8 @@ describe('static plugin responses without a deferred rejection', () => {
 });
 
 const REQUEST_TIMEOUT_MS = 5000;
+// A port key another unit test file already passed to server.http/httpServer returns that file's server, TLS included,
+// for the rest of the process (serverGlobalCallerImpact.test.js starts at 19670).
 let nextTestPort = 19470;
 
 function listenWith(dispatch) {

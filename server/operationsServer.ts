@@ -45,6 +45,7 @@ import { Resources } from '../resources/Resources.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { sendItcEvent } from './threads/itc.ts';
 import { onMessageByType } from './threads/manageThreads.ts';
+import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE) ?? 1024 * 1024 * 1024; //this defaults to 1GB in bytes
@@ -398,7 +399,7 @@ function getCORSOpts(): FastifyCorsOptions {
 			propsCorsAccesslist[0] !== '*'
 		) {
 			corsOptions.origin = (origin, callback) => {
-				return callback(null, propsCorsAccesslist.indexOf(origin) !== -1);
+				return callback(null, corsAccessListAllows(propsCorsAccesslist, origin));
 			};
 		}
 	}
