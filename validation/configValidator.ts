@@ -332,8 +332,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
-	// Presence-based enablement: a profile is on iff its sub-block exists in
-	// config (same convention as `replication`). No `enabled` field.
+	// A profile is on when its sub-block exists, unless it sets `enabled: false`.
+	// `enabled: true` lets env-var config (where `{}` is dropped as "no overrides")
+	// create the block.
 	const mcpRateLimitSchema = Joi.object({
 		perToolPerSecond: number.min(0).optional(),
 		perToolBurst: number.min(0).optional(),
@@ -341,6 +342,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 		sessionPerSecond: number.min(0).optional(),
 	});
 	const mcpOperationsSchema = Joi.object({
+		// `convert: false` — validateConfig() doesn't write coerced mcp values back, so a quoted
+		// "false" would pass here and still leave the profile on.
+		enabled: boolean.optional().prefs({ convert: false }),
 		mountPath: string.optional().default('/mcp'),
 		allow: array.items(string).optional(),
 		deny: array.items(string).optional(),
