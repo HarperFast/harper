@@ -1959,8 +1959,14 @@ async function dropApplication(request, requester?: any, answerEarly?: any) {
 				const keep = req.keepBranches === true;
 				let branched = applicationHasBranchStorage(project);
 				if (keep) await clearPendingBranchRemoval(project);
-				else if (branched || poolMayHold || hadWorker || mainServes || declaresBranches(project)) {
-					recordPendingBranchRemoval(project);
+				else if (branched || declaresBranches(project)) recordPendingBranchRemoval(project);
+				else if (poolMayHold || hadWorker || mainServes) {
+					try {
+						recordPendingBranchRemoval(project);
+					} catch (error) {
+						// speculative, so a full disk does not stop the drop of an application that declares no branches
+						log.warn(`Could not record a removal in case a load of ${project} still creates a fork`, error);
+					}
 				}
 				if (present) await removeApplication(project, componentPath);
 				// a worker still loading it can have created one since

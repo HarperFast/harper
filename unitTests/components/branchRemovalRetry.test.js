@@ -10,10 +10,15 @@ testUtils.preTestPrep();
 const { getConfigFilePath, getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS, ITC_EVENT_TYPES, THREAD_TYPES } = require('#src/utility/hdbTerms');
 const operations = require('#js/components/operations');
-const { openBranchDatabase, table, resolveBranchPath } = require('#src/resources/databases');
+const {
+	openBranchDatabase,
+	table,
+	resolveBranchPath,
+	resolveDatabaseStorageRoot,
+} = require('#src/resources/databases');
 const { getOrCreateBranch, hasPendingBranchRemoval } = require('#src/resources/branchDatabase');
 const { setMainIsWorker, getWorkerIndex, startWorker } = require('#js/server/threads/manageThreads');
-const { preserveRootConfig, setRootConfigEntry } = require('../rootConfigFixture.js');
+const { preserveRootConfig, rootConfigEntry, setRootConfigEntry } = require('../rootConfigFixture.js');
 const { waitFor } = require('../waitFor.js');
 
 const BASE = 'retrybase';
@@ -24,6 +29,8 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 	preserveRootConfig();
 	const drop = (request) => operations.dropComponent({ operation: 'drop_component', ...request });
 	const forksOf = (app) => path.dirname(resolveBranchPath(BASE, app));
+	// the default database's, which in this harness is another storage root than BASE's
+	const markerDirectoryOf = (app) => path.join(resolveDatabaseStorageRoot('data'), '`branches`', app);
 	const releases = [];
 
 	/** A pool worker that reports nothing until told to. */
@@ -294,6 +301,26 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 			});
 		});
 
+		for (const [what, entry, drops] of [
+			['refuses the drop of an application that declares branches', { branchedDatabases: [BASE] }, false],
+			['still drops an application that declares none', {}, true],
+		]) {
+			it(`${what} when the removal cannot be recorded`, async function () {
+				if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip(); // root writes it anyway
+				const branchRoot = path.dirname(markerDirectoryOf('unwritable-app'));
+				mkdirSync(branchRoot, { recursive: true });
+				chmodSync(branchRoot, 0o555);
+				try {
+					const dropping = dropWhileLoading('unwritable-app', undefined, entry);
+					if (drops) await dropping;
+					else await assert.rejects(dropping, /EACCES/);
+				} finally {
+					chmodSync(branchRoot, 0o755);
+				}
+				assert.strictEqual(rootConfigEntry('unwritable-app') === undefined, drops);
+			});
+		}
+
 		it('leaves nothing behind when every worker reports that no fork was created', async () => {
 			await dropWhileLoading('never-app');
 			worker.postMessage(loaded());
@@ -302,7 +329,7 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 				interval: 50,
 				message: 'the removal stayed owed',
 			});
-			assert.strictEqual(existsSync(forksOf('never-app')), false);
+			assert.strictEqual(existsSync(markerDirectoryOf('never-app')), false);
 		});
 
 		it('survives the drop failing after the application is gone', async () => {
