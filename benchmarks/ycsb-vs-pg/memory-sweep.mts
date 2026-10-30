@@ -179,6 +179,7 @@ async function verifyRestoredData(running: Running, session: Session, keyWidth: 
 		const key = formatKey(index, keyWidth);
 		const response = await fetch(`${running.baseUrl}/${config.table}/${key}`, { signal: AbortSignal.timeout(30_000) });
 		const record = response.ok ? ((await response.json()) as Record<string, string>) : undefined;
+		if (!response.ok) await response.body?.cancel();
 		if (record?.field0?.length !== config.fieldLength) {
 			throw new Error(`restored dataset is missing ${key} (HTTP ${response.status})`);
 		}
