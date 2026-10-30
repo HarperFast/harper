@@ -411,11 +411,22 @@ export interface ProfiledWindow {
 	cpuMicrosPerOp: number;
 	byComponentCpuSeconds: Record<string, number>;
 	samples: Record<string, number>;
+	/**
+	 * Counters over the `ops` just before the recorded ones, without sampling: steady state, unlike a
+	 * measured window that can still carry JIT warmup when the profiler flags are on.
+	 */
+	steady: {
+		ops: number;
+		throughput: number;
+		cpuMicrosPerOp: number;
+		perf: { byComponent: Record<string, Counters>; total: Counters };
+	};
 }
 
 /**
- * Runs `ops` more of the workload under `perf record` on the target cores. Kept apart from the
- * measured window so sampling and its unwinding never touch the published numbers.
+ * Runs `ops` more of the workload under hardware counters only, then `ops` more under `perf record`
+ * on the target cores. Kept apart from the measured window so sampling and its unwinding never touch
+ * the published numbers.
  */
 async function profileWindow(
 	session: Session,
@@ -427,6 +438,29 @@ async function profileWindow(
 ): Promise<ProfiledWindow> {
 	const { dir, ops } = session.profile!;
 	const prefix = join(dir, label);
+	const steadyBefore = await sampleResources(running.targets);
+	const counters = await startCounters(running.targets.cgroups, RESULTS_DIR);
+	let steadyResult: PhaseResult;
+	let byComponent: Record<string, Counters>;
+	try {
+		steadyResult = await driver.runWorkload(workload, distribution, ops);
+	} finally {
+		byComponent = await counters.stop();
+	}
+	assertNoErrors(`steady ${workload}`, steadyResult);
+	const steadyDelta = diffResources(steadyBefore, await sampleResources(running.targets));
+	const steady = {
+		ops: steadyResult.ops,
+		throughput: steadyResult.throughput,
+		cpuMicrosPerOp: (steadyDelta.totalCpuSeconds * 1e6) / steadyResult.ops,
+		perf: { byComponent, total: sumCounters(byComponent) },
+	};
+	const t = steady.perf.total;
+	console.log(
+		`  [steady ${label}] ${steady.throughput.toFixed(0)} ops/sec, ${steady.cpuMicrosPerOp.toFixed(1)} CPU µs/op, ` +
+			`${((t.instructionsUser + t.instructionsKernel) / steady.ops / 1000).toFixed(1)}k instructions/op, ` +
+			`IPC ${((t.instructionsUser + t.instructionsKernel) / (t.cyclesUser + t.cyclesKernel)).toFixed(2)}`
+	);
 	const before = await sampleResources(running.targets);
 	const recorder = await startRecord(session.serverCpus, `${prefix}.perf.data`);
 	let result: PhaseResult;
@@ -453,6 +487,7 @@ async function profileWindow(
 		cpuMicrosPerOp,
 		byComponentCpuSeconds: delta.byComponent,
 		samples,
+		steady,
 	};
 }
 
