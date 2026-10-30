@@ -152,6 +152,28 @@ class sqlStatementBucket {
 	}
 
 	/**
+	 * Attributes an UPDATE or DELETE reads to pick rows (WHERE) or compute values (SET expressions).
+	 * They need read permission on top of the write permission the statement already needs. The primary
+	 * key is left out: the statement reports the keys of the rows it touched, as NoSQL update and delete do.
+	 */
+	getWriteStatementReads(): { schema: string; table: string; attributes: string[] } | undefined {
+		const ast = this.ast;
+		const isUpdate = ast instanceof (alasql as any).yy.Update;
+		if (!isUpdate && !(ast instanceof (alasql as any).yy.Delete)) return undefined;
+		const { databaseid: schema, tableid: table } = ast.table;
+		const tables = loadDatabaseRegistry()?.[schema];
+		const primaryKey = tables && Object.hasOwn(tables, table) ? (tables[table] as any)?.primaryKey : undefined;
+		const attributes = [];
+		const trees = [ast.where, ...(isUpdate ? (ast.columns ?? []).map((column) => column?.expression) : [])];
+		for (const tree of trees) {
+			for (const node of columnNodes(tree)) {
+				if (node.columnid !== primaryKey && !attributes.includes(node.columnid)) attributes.push(node.columnid);
+			}
+		}
+		return { schema, table, attributes };
+	}
+
+	/**
 	 *When a SELECT * is included in the AST for a non-SU, we need to convert the star into the specific attributes the
 	 * user has READ permissions
 	 *
@@ -202,10 +224,14 @@ class sqlStatementBucket {
 					.get(colSchema)
 					.get(colTable)
 					.filter((attr) => !terms.SEARCH_WILDCARDS.includes(attr));
+				// In a join an unqualified expansion would bind to whichever table declares the name, not
+				// necessarily the one whose permissions were just applied.
+				const isJoin = this.ast.from.length > 1 || this.ast.joins?.length > 0;
+				const qualifier = val.tableid ?? (isJoin ? (this.ast.from[0].as ?? this.ast.from[0].tableid) : undefined);
 				finalTableAttrs.forEach(({ attribute_name }) => {
 					let newColumn = new (alasql as any).yy.Column({ columnid: attribute_name });
-					if (val.tableid) {
-						newColumn.tableid = val.tableid;
+					if (qualifier) {
+						newColumn.tableid = qualifier;
 					}
 					this.ast.columns.push(newColumn);
 					if (!tableAffectedAttrs.includes(attribute_name)) {

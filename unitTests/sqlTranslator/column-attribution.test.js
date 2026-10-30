@@ -14,7 +14,7 @@ const { _setDatabasesLoader } = require('#src/sqlEngine/binder/defaultDatabase')
 const attributes = (...names) => ({ attributes: names.map((name) => ({ name })) });
 const REGISTRY = {
 	data: {
-		L: attributes('id', 'label', 'ssn'),
+		L: { ...attributes('id', 'label', 'ssn'), primaryKey: 'id' },
 		R: attributes('id', 'label', 'ssn', 'code'),
 		C: attributes('id', 'ssn', 'code'),
 	},
@@ -183,6 +183,31 @@ describe('SQL column attribution for attribute permissions', () => {
 		const bucket = bucketFor(`SELECT ssn FROM data.L WHERE label = 'x' ORDER BY id`);
 		assert.deepStrictEqual(attributesOf(bucket, 'data', 'L').sort(), ['id', 'label', 'ssn']);
 		assert.strictEqual(registryLoads, 0);
+	});
+
+	describe('reads made by UPDATE and DELETE', () => {
+		it('lists WHERE and SET-expression columns, but not the primary key or a SET target', () => {
+			const update = bucketFor(`UPDATE data.L SET label = UPPER(ssn) WHERE id = 'x' AND label = 'y'`);
+			assert.deepStrictEqual(update.getWriteStatementReads(), {
+				schema: 'data',
+				table: 'L',
+				attributes: ['label', 'ssn'],
+			});
+			const remove = bucketFor(`DELETE FROM data.L WHERE ssn = '1' OR id = 'x'`);
+			assert.deepStrictEqual(remove.getWriteStatementReads().attributes, ['ssn']);
+		});
+
+		it('lists nothing for a SELECT or INSERT', () => {
+			assert.strictEqual(bucketFor('SELECT label FROM data.L').getWriteStatementReads(), undefined);
+			assert.strictEqual(bucketFor("INSERT INTO data.L (id) VALUES ('x')").getWriteStatementReads(), undefined);
+		});
+
+		it('keeps the primary key when the registry cannot name it', () => {
+			registry = { data: {} };
+			assert.deepStrictEqual(bucketFor(`DELETE FROM data.L WHERE id = 'x'`).getWriteStatementReads().attributes, [
+				'id',
+			]);
+		});
 	});
 
 	describe('row accessors', () => {
