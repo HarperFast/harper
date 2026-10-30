@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { mkdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
@@ -27,7 +27,7 @@ import {
 } from './databases.ts';
 import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
 import { stampDatabaseDirectory } from './auditStore.ts';
-import { mkdirDurably, pathPresent, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
+import { fsyncDirectory, pathPresent, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Private per-application forks of a database, for running several variants of an application against
@@ -839,7 +839,8 @@ function branchDirectoriesFor(appName: string): {
 }
 
 /**
- * In each `<app>` directory of an application's branches: a drop owes their removal. It is written, durably, before
+ * In each `<app>` directory of an application's branches, or the default database's while it has none: a drop owes
+ * their removal, wherever they land. It is written, durably, before
  * that drop changes anything, so the debt outlives an answer the drop gives before the removal, and the process; only a
  * removal that completes, or a later drop that keeps them, clears it. A file, so `branchDirectoriesFor` never reads it
  * as a branch. Its temp file counts too: only a drop that discards the branches writes one, and a crash can leave it
@@ -853,10 +854,7 @@ function marksPendingRemoval(directory: string): boolean {
 }
 
 /**
- * Refused when a directory the removal would cover cannot be read, since no marker could cover it. With none on disk
- * yet, the default database's branches hold the marker: one marked directory stands for all of the application's, so
- * it covers a first fork wherever that lands.
- */
+/** Refused when a directory the removal would cover cannot be read, since no marker could cover it. */
 export function recordPendingBranchRemoval(appName: string): void {
 	const { directories, failures } = branchDirectoriesFor(appName);
 	if (failures.length) {
@@ -864,10 +862,13 @@ export function recordPendingBranchRemoval(appName: string): void {
 	}
 	if (!directories.length) {
 		const directory = join(resolveDatabaseStorageRoot(DEFAULT_DATABASE_NAME), BRANCH_ROOT_DIR, appName);
-		mkdirDurably(directory);
+		mkdirSync(directory, { recursive: true });
 		directories.push(directory);
 	}
 	for (const directory of directories) {
+		// this drop or an earlier one that failed may have created it
+		fsyncDirectory(dirname(dirname(directory)));
+		fsyncDirectory(dirname(directory));
 		writeFileDurably(join(directory, REMOVAL_PENDING_MARKER), new Date().toISOString(), REMOVAL_PENDING_PARTIAL);
 	}
 }

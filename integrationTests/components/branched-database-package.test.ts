@@ -380,13 +380,19 @@ for (const isolated of [false, true]) {
 					});
 					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
 					assert.ok(!existsSync(branchRoot()), 'no worker has loaded it');
+					const logFile = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+					const removals = async () =>
+						(await readFile(logFile, 'utf8')).split(
+							`Removed the branched database storage a drop of ${project} left in place`
+						).length;
+					const before = await removals();
 					const dropped = await operation({ operation: 'drop_component', project });
 					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
-					await waitForLogMatches(
-						join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log'),
-						[new RegExp(`Removed the branched database storage a drop of ${project} left in place`)],
-						60000
-					);
+					await waitFor(async () => (await removals()) > before, {
+						timeout: 60000,
+						interval: 250,
+						message: 'the drop recorded no removal',
+					});
 					await waitFor(() => !existsSync(branchRoot()), {
 						timeout: 60000,
 						interval: 250,
