@@ -316,56 +316,19 @@ A same-thread waiter that finds nothing valid in the store after the leader unlo
 
 ## getFromSource() keeps source versions separate from fill ordering
 
-`getFromSource()` reserves a fallback timestamp before calling the source so competing first fills
-whose source does not report a version have a stable ordering token. An inherited request/transaction
-timestamp is used when present; otherwise the storage engine supplies a monotonic timestamp. After
-the source responds, a valid positive, finite, Date-representable `sourceContext.lastModified` is the
-record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the
-existing version.
+`getFromSource()` reserves a fallback timestamp before calling the source so competing first fills whose source does not report a version have a stable ordering token. An inherited request/transaction timestamp is used when present; otherwise the storage engine supplies a monotonic timestamp. After the source responds, a valid positive, finite, Date-representable `sourceContext.lastModified` is the record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the existing version.
 
-The candidate is capped at local time (`max(reserved token, Date.now())`). A record's version is also
-this node's ordering token — `precedesExistingVersion()` compares a write's transaction timestamp
-against it — so a source that reports a `lastModified` ahead of local time (a skewed origin clock)
-would otherwise make every later local write to that row look out-of-order and be discarded until
-wall-clock caught up. Capping costs the shared-version property only for that misbehaving case, and
-the cap is logged.
+The candidate is capped at local time (`max(reserved token, Date.now())`). A record's version is also this node's ordering token — `precedesExistingVersion()` compares a write's transaction timestamp against it — so a source that reports a `lastModified` ahead of local time (a skewed origin clock) would otherwise make every later local write to that row look out-of-order and be discarded until wall-clock caught up. Capping costs the shared-version property only for that misbehaving case, and the cap is logged.
 
-The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction
-keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB
-stores the source candidate directly, preserving its separate source-version/local-time semantics;
-only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
+The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB stores the source candidate directly, preserving its separate source-version/local-time semantics; only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
 
-Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the
-fetch. First fills may replace a raced record only when their candidate version is strictly greater
-than the raced record's. The comparison is deliberately not `precedesExistingVersion()`: that breaks
-a version tie with the _executing_ node's name, and a fill from a shared source carries no node
-identity of its own, so two replicas resolving the same tie could keep different values at the same
-version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A
-RocksDB replacement whose candidate cannot advance the current version stores at the current version
-and carries `VERSION_REUSED` (`resources/RecordEncoder.ts`, aliasing rocksdb-js's own
-`VERSION_NOT_UNIQUE_FLAG`); rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
-then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
-an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
-vouched as fresh.
+Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the fetch. First fills may replace a raced record only when their candidate version is strictly greater than the raced record's. The comparison is deliberately not `precedesExistingVersion()`: that breaks a version tie with the _executing_ node's name, and a fill from a shared source carries no node identity of its own, so two replicas resolving the same tie could keep different values at the same version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A RocksDB replacement whose candidate cannot advance the current version stores at the current version and carries `VERSION_REUSED` (`resources/RecordEncoder.ts`, aliasing rocksdb-js's own `VERSION_NOT_UNIQUE_FLAG`); rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766)) then refuses to publish or confirm that version through the VerificationTable. This avoids inventing an epsilon timestamp solely to force replacement while keeping stale record-cache values from being vouched as fresh.
 
-The flag is applied generically to every RocksDB record write whose version does not advance past
-the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this source-fill path — an
-ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible
-for VerificationTable fast-path confirmation until a later write advances their version.
+The flag is applied generically to every RocksDB record write whose version does not advance past the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this source-fill path — an ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible for VerificationTable fast-path confirmation until a later write advances their version.
 
 The native layer reads the stored bytes itself: the big-endian version at offset 0, then a big-endian metadata word at offset 8 tagged `0x0E` (`ACTION_32_BIT`), with the flag at literal bit `0x10000`. The bit is persisted, so it cannot follow a renumbered rocksdb-js constant without a migration. `unitTests/resources/caching-rocks-database.test.js` ('marks a record whose version was reused…') pins the layout against raw stored values.
 
-A fill's puts carry no condition of their own: on LMDB the `LMDBTransaction` `ifVersion` block holds
-the condition with the primary, index and audit puts in one native write transaction (a per-put
-`ifVersion` cannot stop the index writes, and on the unversioned audit store it drops the write); on
-RocksDB a conflict retries the commit handler. A write the source makes to the same key through its
-context joins the fill's transaction, where neither check sees it. RocksDB reads the fill's
-`existingEntry` through that transaction; LMDB's optimistic path reads the committed record, so on
-LMDB the fill yields to any earlier same-key write not skipped (`followsAppliedWrite`), and a no-op
-`update()` removed at validation leaves the per-key chain (`LMDBTransaction.removeWrite`). On LMDB an
-invalidated record keeps its local time only while its audit entry exists to be replaced
-(`recordUpdater`), since an appended entry is keyed by the last assigned time.
-`unitTests/resources/sourceFillConditionalWrite.test.js` pins both engines.
+A fill's puts carry no condition of their own: on LMDB the `LMDBTransaction` `ifVersion` block holds the condition with the primary, index and audit puts in one native write transaction (a per-put `ifVersion` cannot stop the index writes, and on the unversioned audit store it drops the write); on RocksDB a conflict retries the commit handler. A write the source makes to the same key through its context joins the fill's transaction, where neither check sees it. RocksDB reads the fill's `existingEntry` through that transaction; LMDB's optimistic path reads the committed record, so on LMDB the fill yields to any earlier same-key write not skipped (`followsAppliedWrite`), and a no-op `update()` removed at validation leaves the per-key chain (`LMDBTransaction.removeWrite`). On LMDB an invalidated record keeps its local time only while its audit entry exists to be replaced (`recordUpdater`), since an appended entry is keyed by the last assigned time. `unitTests/resources/sourceFillConditionalWrite.test.js` pins both engines.
 
 ## getFromSource() record locks outlive neither their handle nor a close (`Table.ts`)
 
