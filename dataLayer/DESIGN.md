@@ -37,6 +37,8 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 
    **Version the directive to the first release that ships the dependent code, not a later one.** Directives only run when `current_version < directive_version <= upgrade_version` (`directivesController.getVersionsForUpgrade`). The `hdb_deployment` directive was originally mis-tagged `5.2.0` while the deployment-recorder code shipped in `5.1.0`, so on every `5.0.x -> 5.1.x` upgrade the directive was filtered out (`5.2.0 > 5.1.x`) and the table never got created — breaking replicated `deploy_component` on peer nodes for the entire existing customer base. Caveat: `utility/common_utils.ts:compareVersions` strips trailing `.0` and therefore sorts a pre-release (`5.1.0-beta.1`) _above_ its GA (`5.1.0`), so an install already on a `5.1.0-beta.x` data version will not pick up a `5.1.0` directive when upgrading to GA; those pre-release installs need the table created by other means.
 
+**Adding an attribute to an existing system table** takes only the `systemSchema.json` entry, as long as the directive for the release that ships it runs `registerSystemSchemaAttributes` (`upgrade/systemSchemaAttributes.ts`). A fresh install creates each table from the schema, but an upgraded install keeps the catalog its table was created with, so before 5.4.0 every attribute added to `hdb_deployment` after 5.1.0 (`activated_from`, `install_fingerprint`) was missing there (#2659). The function compares every system table this node has with its schema entry and adds what the catalog lacks, indexed the way a fresh install indexes the legacy `{ "attribute": … }` form. It never removes or changes an attribute, so each release's directive can list it again; 5.4.0's is the first. An attribute whose table declares its own shape on every boot (`hdb_oidc_token_use`, the certificate verification tables) belongs in that declaration instead. `mount_hdb` and the directives hand `table()` a copy of each schema attribute list, because `table()` keeps the array it is given as the table's live attribute list: without the copy, dropping an attribute from a fresh install's table also dropped it from the in-process schema.
+
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 Set `audit = true` on the directive's `CreateTableObject` (for upgrades): a fresh install audits every system table — `utility/mount_hdb.ts:createTables()` sets `createTable.audit = true` regardless of the schema entry — so a directive that leaves it off makes upgraded nodes diverge from fresh ones.
@@ -451,3 +453,19 @@ because the narrowing maps are keyed by physical table, not alias. Under the def
 parenthesized predicates are handled by `sqlEngine` v2, so only queries v2 still rejects (such as
 `IIF(...)` or standalone unindexed predicates) fall back here. Enforced by
 `unitTests/dataLayer/SQLSearch.test.js` and `integrationTests/database/sql-not-predicate.test.ts`.
+
+## SQL preserves sharding recovery refusals (`dataLayer/SQLSearch.ts`)
+
+An incomplete owner may return present bodies, but it must refuse owned misses and collection
+reads until its baseline is certified. SQL fetch and result-stage wrappers preserve
+`DatabaseShardingHeldError` and permanent `DATABASE_SHARDING_BLOCKED` refusals, including their
+503 status, retryable flag, and recovery or restart reason.
+Replacing it with a generic search error hides the operator action required to resume reads.
+`ResourceBridge.getRecords` also preserves this refusal instead of returning a message row,
+settling its transaction before rejecting `next()`. Unexpected SQL failures retain the existing
+generic response. Real baseline guards exercise
+scan, key, predicate, and aggregate query shapes in `unitTests/resources/shardingBaseline.test.js`;
+the Pro bootstrap suite checks the operations HTTP response after a lost origin is diagnosed.
+
+The unclean-exit fixture also checks permanent quarantine through scan, key, and legacy `IIF`
+queries before and after a worker starts with repaired configuration.

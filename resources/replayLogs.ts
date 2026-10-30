@@ -13,7 +13,7 @@ import {
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
-import { LOCAL_ONLY, purgeAgedLogs } from './auditStore.ts';
+import { LOCAL_ONLY, COPIED_RECORD, purgeAgedLogs } from './auditStore.ts';
 import { asBinary } from './asBinary.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -212,6 +212,7 @@ export function replayLogs(
 				version,
 				txnLogKey,
 				residencyId,
+				residencySlot,
 				expiresAt,
 				originatingOperation,
 				username,
@@ -297,7 +298,6 @@ export function replayLogs(
 				} as any;
 				const target = new RequestTarget();
 				target.id = null;
-				const tableInstance: any = Table.getResource(target, context, {});
 				// TODO: If this throws an error due to being unable to access structures, we need to iterate through
 				// other transaction logs to get the latest structure. Ultimately we may have to skip records
 				if (!warnedReplayHappening) {
@@ -322,13 +322,17 @@ export function replayLogs(
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
+				const tableInstance: any = Table.getResource(target, context, {});
 				const options = {
 					context,
+					isReplay: true,
 					residencyId,
+					residencySlot,
 					nodeId,
 					originatingOperation,
 					version,
 					localOnly: (extendedType & LOCAL_ONLY) !== 0,
+					copyFrame: (extendedType & COPIED_RECORD) !== 0,
 				};
 				writes++;
 				stagedWrites++;

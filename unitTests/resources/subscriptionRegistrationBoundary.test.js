@@ -38,6 +38,29 @@ describe('Subscription registration boundary', () => {
 		});
 	}
 
+	it('does not deliver a message published before the first subscriber of its database, when Date.now() trails the log keys', async () => {
+		const IdleTable = table({ table: 'SubBoundaryIdle', database: 'subBoundaryIdle', attributes, audit: true });
+		await IdleTable.publish('topic-before', { name: 'before' });
+		const realNow = Date.now;
+		Date.now = () => realNow() - 1000;
+		let subscription;
+		try {
+			subscription = await IdleTable.subscribe({ isCollection: true, omitCurrent: true });
+		} finally {
+			Date.now = realNow;
+		}
+		try {
+			const events = [];
+			subscription.on('data', (event) => events.push(event));
+			await IdleTable.publish('topic-after', { name: 'after' });
+			await waitFor(() => events.some((event) => event.id === 'topic-after'));
+			const messages = events.filter((event) => event.type === 'message').map((event) => event.id);
+			assert.deepEqual(messages, ['topic-after'], 'a message from before the subscription was delivered');
+		} finally {
+			subscription.end();
+		}
+	});
+
 	it('replays earlier messages for an explicit startTime', async () => {
 		const startTime = Date.now() - 1;
 		await BoundaryTable.publish('topic-history', { name: 'history' });

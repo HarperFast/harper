@@ -425,8 +425,8 @@ async function seededAdminIsUsable() {
 
 /**
  * Seeds the per-PID system database the way an install would: the standard system tables
- * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which
- * authorizeLocal/getSuperUser() need to authorize local requests), and self-signed
+ * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which a
+ * credential-free token mint from the local principal needs), and self-signed
  * certificates (which the TLS servers, e.g. MQTT's secure port, need). Suites that
  * exercise code requiring the system tables (e.g. findAndValidateUser) call this
  * after setupTestDBPath() instead of borrowing an installed Harper root's system

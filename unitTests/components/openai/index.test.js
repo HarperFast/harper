@@ -170,6 +170,60 @@ describe('OpenAIBackend', () => {
 			});
 		}
 
+		describe('truncation', () => {
+			const VLLM = { apiKey: API_KEY, model: 'nomic', baseUrl: 'http://vllm.local/v1', truncation: 'vllm' };
+
+			it("advertises truncate only for truncation: 'vllm', also once scoring is switched off", async () => {
+				assert.strictEqual(new OpenAIBackend({ apiKey: API_KEY, model: 'm' }).capabilities().truncate, undefined);
+				const fetch = mockFetch(() => jsonResponse({ choices: [{ message: { content: 'A' }, logprobs: null }] }));
+				const b = new OpenAIBackend(VLLM, fetch);
+				assert.strictEqual(b.capabilities().truncate, true);
+				assert.ok(Object.isFrozen(b.capabilities()));
+				await assert.rejects(
+					b.scoreChoices('q', ['x', 'y'], { accounting: ACCOUNTING }),
+					ChoiceScoringUnsupportedError
+				);
+				assert.strictEqual(b.capabilities().scoreChoices, false);
+				assert.strictEqual(b.capabilities().truncate, true);
+			});
+
+			it("sends vLLM's start-keeping truncation fields after the prefix, only with truncate: true", async () => {
+				for (const [truncate, expected] of [
+					[true, { truncate_prompt_tokens: -1, truncation_side: 'right' }],
+					[false, {}],
+					[undefined, {}],
+				]) {
+					const fetch = mockFetch(() => jsonResponse({ data: [{ embedding: [0] }, { embedding: [1] }] }));
+					const b = new OpenAIBackend({ ...VLLM, inputPrefixes: { document: 'search_document: ' } }, fetch);
+					const input = Object.freeze(['a', 'b']);
+					await b.embed(input, { accounting: ACCOUNTING, inputType: 'document', truncate });
+					assert.deepStrictEqual(
+						JSON.parse(fetch.calls[0].init.body),
+						{ model: 'nomic', input: ['search_document: a', 'search_document: b'], ...expected },
+						`truncate: ${truncate}`
+					);
+				}
+			});
+
+			it('never sends the vLLM fields without truncation configured, refusing truncate: true before any request', async () => {
+				const fetch = mockFetch(() => jsonResponse({ data: [{ embedding: [0] }] }));
+				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'text-embedding-3-small' }, fetch);
+				await assert.rejects(
+					b.embed('x', { accounting: ACCOUNTING, truncate: true }),
+					(err) => err instanceof OpenAIBackendError && /truncation: 'vllm'/.test(err.message)
+				);
+				assert.strictEqual(fetch.calls.length, 0);
+				await b.embed('x', { accounting: ACCOUNTING, truncate: false });
+				assert.deepStrictEqual(JSON.parse(fetch.calls[0].init.body), { model: 'text-embedding-3-small', input: ['x'] });
+			});
+
+			for (const truncation of ['tei', true, '', 'VLLM']) {
+				it(`rejects truncation ${JSON.stringify(truncation)} at construction`, () => {
+					assert.throws(() => new OpenAIBackend({ apiKey: API_KEY, truncation }), OpenAIBackendError);
+				});
+			}
+		});
+
 		it('POSTs /embeddings and returns Float32Array vectors', async () => {
 			const fetch = mockFetch(() =>
 				jsonResponse({

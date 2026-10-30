@@ -14,10 +14,12 @@ import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
-import { findAndValidateUser, type User } from './user.ts';
+import { findAndValidateUser, getSuperUser, isLocalPrincipal, type User } from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import {
 	WORKLOAD_IDENTITY_CLAIM,
+	DEPLOY_SOURCE_CLAIM,
+	attachDeploySourceToUser,
 	attachWorkloadIdentityToUser,
 	isWorkloadIdentityPrincipal,
 	markTokenAsWorkloadIdentity,
@@ -181,6 +183,16 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		return createScopedToken(authObj);
 	}
 
+	const credentialFree = !authObj?.username && !authObj?.password;
+	// A token naming the local principal would be a root credential nothing can revoke. Outside the
+	// try below, which would report a missing user as invalid credentials.
+	let localMintUsername: string | undefined;
+	if (credentialFree && isLocalPrincipal(authObj?.hdb_user)) {
+		localMintUsername = (await getSuperUser())?.username;
+		if (!localMintUsername)
+			throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_USER_TO_MINT_FOR, HTTP_STATUS_CODES.CONFLICT);
+	}
+
 	let user: any;
 	try {
 		// Trusted bypass is dispatch/async-context state (set by a component calling
@@ -188,7 +200,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		// caller-controlled and would let anyone mint tokens for an arbitrary username
 		// without a password (see operationAuthorizationState.ts).
 		let validatePassword: boolean = !isOperationAuthorizationBypassed();
-		if (!authObj.username && !authObj.password) {
+		if (credentialFree) {
 			// No passwordless self-mint: a scoped token's username is an unverified attribution label (a
 			// real user created later with that name would get the standing tokens), and a bearer-validator
 			// principal would trade a component's token for longer-lived Harper tokens.
@@ -196,7 +208,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 				throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 			}
 			// if the username and password are not provided, use the hdb_user making the request.
-			authObj.username = authObj.hdb_user?.username;
+			authObj.username = localMintUsername ?? authObj.hdb_user?.username;
 			// the password would have been checked by authHandler before getting here
 			validatePassword = false;
 		}
@@ -370,13 +382,15 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
  */
 export async function createOperationToken(
 	user: { username: string; super_user: boolean; operations?: string[] },
-	expiresIn: StringValue
+	expiresIn: StringValue,
+	deploySource?: Record<string, unknown>
 ): Promise<string> {
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const payload: { username: string; super_user: boolean; operations?: string[] } = {
 		username: user.username,
 		super_user: user.super_user,
 	};
+	if (deploySource) payload[DEPLOY_SOURCE_CLAIM] = deploySource;
 	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
 	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
 	// what keeps this from failing open.
@@ -463,6 +477,7 @@ async function validateToken(token: string, tokenType: string, deferInvalidToken
 		// Provenance rides the same lift: the claim is signed, so a caller cannot strip it to look
 		// like a password-minted principal at createTokens.
 		attachWorkloadIdentityToUser(user, tokenVerified[WORKLOAD_IDENTITY_CLAIM]);
+		attachDeploySourceToUser(user, tokenVerified[DEPLOY_SOURCE_CLAIM]);
 
 		return user;
 	} catch (err) {

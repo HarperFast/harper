@@ -37,6 +37,11 @@ export function getSharedRootConfigWatcher(): RootConfigWatcher {
 	return (sharedWatcher ??= new RootConfigWatcher());
 }
 
+/** The isolate-wide watcher if something already started it, without starting one. */
+export function existingSharedRootConfigWatcher(): RootConfigWatcher | undefined {
+	return sharedWatcher;
+}
+
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
 	#watchPath: string;

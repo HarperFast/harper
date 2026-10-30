@@ -45,6 +45,13 @@ parentPort
 					parentPort.postMessage({ type: 'incremented', intervals });
 					break;
 				}
+				case 'plain': {
+					for (let i = 0; i < message.count; i++) {
+						await LockTest.put({ id: `${message.prefix}-${threadId}-${i}`, n: i });
+					}
+					parentPort.postMessage({ type: 'plained' });
+					break;
+				}
 			}
 		} catch (error) {
 			parentPort.postMessage({

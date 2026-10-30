@@ -407,6 +407,9 @@
 				"attribute": "install_fingerprint"
 			},
 			{
+				"attribute": "preview"
+			},
+			{
 				"attribute": "status"
 			},
 			{
@@ -438,6 +441,12 @@
 			},
 			{
 				"attribute": "activated_from"
+			},
+			{
+				"attribute": "restart_job_id"
+			},
+			{
+				"attribute": "source"
 			},
 			{
 				"attribute": "error"
@@ -570,6 +579,29 @@
 		"attributes": [
 			{
 				"attribute": "id"
+			}
+		]
+	},
+	"hdb_residency_slots": {
+		"hash_attribute": "database",
+		"name": "hdb_residency_slots",
+		"schema": "system",
+		"residence": ["*"],
+		"attributes": [
+			{
+				"attribute": "database"
+			},
+			{
+				"attribute": "version"
+			},
+			{
+				"attribute": "digest"
+			},
+			{
+				"attribute": "slots"
+			},
+			{
+				"attribute": "ranges"
 			}
 		]
 	}

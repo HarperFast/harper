@@ -56,7 +56,7 @@ async function createHdbOidcTrustIfMissing() {
 
 	initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, OIDC_TRUST_TABLE);
 	const createTable = new (CreateTableObject as any)(terms.SYSTEM_SCHEMA_NAME, OIDC_TRUST_TABLE, schema.hash_attribute);
-	createTable.attributes = schema.attributes;
+	createTable.attributes = structuredClone(schema.attributes);
 	const primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === schema.hash_attribute);
 	if (primaryKeyAttribute) primaryKeyAttribute.isPrimaryKey = true;
 	// Must match `"audit": true` in systemSchema.json, or the fresh-install and upgrade paths diverge.
@@ -107,7 +107,7 @@ async function createSystemTableIfMissing(tableName: string, purpose: string) {
 
 	initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, tableName);
 	const createTable = new (CreateTableObject as any)(terms.SYSTEM_SCHEMA_NAME, tableName, schema.hash_attribute);
-	createTable.attributes = schema.attributes;
+	createTable.attributes = structuredClone(schema.attributes);
 	const primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === schema.hash_attribute);
 	if (primaryKeyAttribute) primaryKeyAttribute.isPrimaryKey = true;
 	createTable.audit = true;

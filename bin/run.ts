@@ -262,6 +262,11 @@ async function main(calledByInstall = false) {
 				? 1
 				: (env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdbTerms.CONFIG_PARAMS.THREADS))
 		);
+		// after main settled interrupted deploys and every pool worker reported what it loaded
+		import('../components/operations.ts').then(
+			({ retryPendingBranchRemovals }) => retryPendingBranchRemovals(),
+			(error) => hdbLogger.error(error)
+		);
 
 		if (!isScripted) started();
 	} catch (err) {

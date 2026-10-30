@@ -163,8 +163,8 @@ describe('table-reload marker (harper-pro#489)', () => {
 			assert.equal(confirmationCalls, 2, 'the replicable write staged before the marker is still confirmed');
 			assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the replicable write');
 
-			// the other write the confirmation walk skips: one with no stored entry at all — a delete
-			// leaves nothing to read back only when the table has neither audit nor delete tracking
+			// a trailing delete that leaves no stored entry (a table with neither audit nor delete tracking)
+			// replicates nothing, and must not suppress confirmation for the replicable put staged before it
 			const NoAuditTable = table({
 				table: 'ReloadMarkerNoAuditDelete',
 				attributes: [{ name: 'id', isPrimaryKey: true }],
@@ -172,18 +172,14 @@ describe('table-reload marker (harper-pro#489)', () => {
 			});
 			await NoAuditTable.put(1, { id: 1 });
 			const deleteContext = { transaction: new DatabaseTransaction() };
-			await NoAuditTable.put(2, { id: 2 }, deleteContext);
+			await ReloadTable.put(3, { id: 3 }, deleteContext);
 			await NoAuditTable.delete(1, deleteContext);
 			const deleteTransaction = isLMDB ? deleteContext.transaction.next : deleteContext.transaction;
 			deleteTransaction.replicatedConfirmation = 1;
 			confirmedVersion = undefined;
 			await deleteTransaction.commit({ doneWriting: true });
-			if (isLMDB) {
-				assert.equal(confirmationCalls, 2, 'an unaudited LMDB write has no log position for peers to acknowledge');
-			} else {
-				assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
-				assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the put, not the delete');
-			}
+			assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
+			assert.ok(confirmedVersion != null, 'confirmation targets the put, not the delete');
 		} finally {
 			setReplicationConfirmation(undefined);
 		}

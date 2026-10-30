@@ -9,18 +9,25 @@ const { getSession } = require('#src/server/DurableSubscriptionsSession');
 const { handleApplication, setTakeoverTimeoutForTests } = require('#src/server/mqtt');
 const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
+const { Worker } = require('node:worker_threads');
 const mqttPacket = require('mqtt-packet');
-const { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
+const {
+	DatabaseClosingError,
+	DatabaseGenerationChangedError,
+	ResumeHistoryUnavailableError,
+} = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
+const commonUtility = require('#src/utility/lmdb/commonUtility');
+const { getOriginClosedFloor, localStartBound } = require('#src/resources/originClosedFloor');
+const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 const user = { username: 'mqtt-durable-test', role: { permission: { super_user: true } } };
 
 let sequence = 0;
-function topicTable() {
-	const name = `DurableTopic${++sequence}`;
+function topicTable(name = `DurableTopic${++sequence}`) {
 	const T = table({
 		table: name,
 		database: `durable_${name}`,
@@ -659,13 +666,13 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		}
 	});
 
-	it('starts no checkpoint timer for a SUBSCRIBE that finishes after the session disconnected', async () => {
+	it('refuses a SUBSCRIBE that finishes after the session disconnected, and starts no checkpoint timer for it', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const { session } = await connect(`late-subscribe-${name}`);
 		const subscribing = session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 		session.disconnect(true);
-		await subscribing;
+		await assert.rejects(subscribing, { name: 'SessionEndedError', statusCode: 409, message: /has ended/ });
 		assert.strictEqual(session.checkpointTimer, undefined);
 	});
 
@@ -1551,6 +1558,140 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		second.handlers.close();
 	});
 
+	describe('a restored topic whose resume found no live subscription', () => {
+		async function subscribeAt(socket, topic, qos, messageId) {
+			socket.handlers.message(generate({ cmd: 'subscribe', messageId, subscriptions: [{ topic, qos, rh: 2 }] }, v5));
+			await waitFor(() => ofCommand(socket, 'suback').some((packet) => packet.messageId === messageId));
+			assert.deepStrictEqual(ofCommand(socket, 'suback').find((packet) => packet.messageId === messageId).granted, [
+				qos,
+			]);
+		}
+		async function reconnectWithoutSubscription(open, T, name, clientId, topic) {
+			let attempts = 0;
+			// the table's own audit store, so the saved receipts still name this database generation
+			class Silent extends T {
+				static subscribe() {
+					attempts++;
+				}
+			}
+			Resources.resources.set(name, Silent, { mqtt: true }, true);
+			let socket;
+			try {
+				socket = await openConnected(open, clientId);
+				await waitFor(() => attempts > 0);
+				const session = [...open.sessions].find((session) => session.sessionId === clientId);
+				await session.changes;
+				const restored = session.topics.get(topic);
+				assert.ok(restored, 'the topic is restored');
+				assert.strictEqual(restored.subscription, undefined, 'and has no live subscription');
+				return { socket, session, restored };
+			} finally {
+				Resources.resources.set(name, T, { mqtt: true }, true);
+			}
+		}
+		async function savedQoS2(open, T, clientId, topic) {
+			const socket = await subscribed(open, clientId, topic);
+			await T.put('a', { value: 'a' });
+			await T.put('b', { value: 'b' });
+			await waitFor(() => published(socket, 'b'));
+			const a = published(socket, 'a');
+			socket.handlers.message(generate({ cmd: 'pubrec', messageId: published(socket, 'b').messageId }, v5));
+			await waitFor(() => ofCommand(socket, 'pubrel').length === 1);
+			await storedEntry(clientId, (entry) => entry.receivedRuns?.length > 0 && entry.inFlight?.length > 0);
+			socket.handlers.close();
+			return a;
+		}
+
+		it('releases its receipts and packet ids when it is subscribed again at QoS 1', async () => {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const open = mqttListener();
+			const topic = `${name}/#`;
+			const clientId = `qos2-to-1-${name}`;
+			const a = await savedQoS2(open, T, clientId, topic);
+			const { socket, session, restored } = await reconnectWithoutSubscription(open, T, name, clientId, topic);
+			try {
+				assert.strictEqual(restored.entry.qos, 2);
+				assert.ok(session.receivedCount > 0, 'receipts are restored');
+				assert.ok(session.reservedIds.has(a.messageId), 'and the id of the delivery awaiting its PUBREC is reserved');
+				await subscribeAt(socket, topic, 1, 2);
+				assert.strictEqual(session.topics.get(topic).entry.qos, 1);
+				assert.strictEqual(session.receivedCount, 0);
+				assert.ok(!session.reservedIds.has(a.messageId));
+				const saved = (await stored(clientId)).subscriptions[0];
+				assert.strictEqual(saved.qos, 1);
+				for (const field of ['received', 'receivedRuns', 'receivedThrough', 'inFlight', 'receiptsGeneration'])
+					assert.strictEqual(saved[field], undefined, `${field} is not saved for a QoS 1 topic`);
+			} finally {
+				socket.handlers.close();
+			}
+		});
+
+		it('tracks its deliveries for PUBREC when it is subscribed again at QoS 2', async () => {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const open = mqttListener();
+			const topic = `${name}/#`;
+			const clientId = `qos1-to-2-${name}`;
+			const first = await openConnected(open, clientId);
+			await subscribeAt(first, topic, 1, 1);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => published(first, 'a'));
+			first.handlers.message(generate({ cmd: 'puback', messageId: published(first, 'a').messageId }, v5));
+			await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined || !isRocksDB);
+			first.handlers.close();
+			const { socket: second, session, restored } = await reconnectWithoutSubscription(open, T, name, clientId, topic);
+			assert.strictEqual(restored.entry.qos, 1);
+			await subscribeAt(second, topic, 2, 2);
+			assert.strictEqual(session.topics.get(topic).entry.qos, 2);
+			await T.put('c', { value: 'c' });
+			const sent = await waitFor(() => published(second, 'c'));
+			assert.strictEqual(sent.qos, 2);
+			session.checkpoint();
+			const saved = await storedEntry(clientId, (entry) => entry.qos === 2 && entry.inFlight?.length > 0);
+			assert.strictEqual(saved.inFlight[0][3], sent.messageId, 'the delivery awaiting its PUBREC is saved');
+			second.handlers.close();
+			const third = await openConnected(open, clientId);
+			try {
+				const resent = await waitFor(() => published(third, 'c'));
+				assert.strictEqual(resent.qos, 2);
+				assert.strictEqual(resent.messageId, sent.messageId);
+				assert.strictEqual(resent.dup, true);
+				third.handlers.message(generate({ cmd: 'pubrec', messageId: sent.messageId }, v5));
+				await waitFor(() => ofCommand(third, 'pubrel').length === 1);
+			} finally {
+				third.handlers.close();
+			}
+		});
+
+		it('keeps its receipts and packet ids when it is subscribed again at QoS 2', async () => {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const open = mqttListener();
+			const topic = `${name}/#`;
+			const clientId = `qos2-to-2-${name}`;
+			const a = await savedQoS2(open, T, clientId, topic);
+			const { socket, session } = await reconnectWithoutSubscription(open, T, name, clientId, topic);
+			try {
+				const receipts = session.receivedCount;
+				assert.ok(receipts > 0);
+				assert.ok(session.reservedIds.has(a.messageId));
+				await subscribeAt(socket, topic, 2, 2);
+				assert.strictEqual(session.topics.get(topic).entry.qos, 2);
+				assert.strictEqual(session.receivedCount, receipts);
+				const resent = await waitFor(() => published(socket, 'a'));
+				assert.strictEqual(resent.messageId, a.messageId, 'the delivery with no PUBREC keeps its id');
+				assert.strictEqual(resent.dup, true);
+				session.checkpoint();
+				const saved = await storedEntry(clientId, (entry) => entry.qos === 2 && entry.receivedRuns?.length > 0);
+				assert.strictEqual(saved.inFlight[0][3], a.messageId);
+				assert.ok(!published(socket, 'b'), 'the delivery whose PUBREC arrived is not sent again');
+			} finally {
+				socket.handlers.close();
+			}
+		});
+	});
+
 	it('tells apart a record published twice in one transaction, live and on a replay', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -2171,6 +2312,23 @@ describe('MQTT durable record topics on resume', function () {
 		session.disconnect(true);
 	});
 
+	it('sends no write committed before the first subscriber of its database, when Date.now() trails the log keys', async () => {
+		const { T, name } = topicTable();
+		await T.put('r', { value: 0 });
+		const { session, received } = await connect(`trailing-date-${name}`);
+		const realNow = Date.now;
+		Date.now = () => realNow() - 1000;
+		try {
+			await session.addSubscription({ topic: `${name}/r`, qos: 1, omitCurrent: true }, true);
+		} finally {
+			Date.now = realNow;
+		}
+		await T.put('r', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		assert.deepStrictEqual(values(received), [1]);
+		session.disconnect(true);
+	});
+
 	it('delivers only the newest version once when the record changed while away', async () => {
 		const { T, name } = topicTable();
 		const topic = `${name}/r`;
@@ -2246,6 +2404,237 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		});
 	}
 
+	async function subscribeWithClockOffset(context, session, subscription, offset) {
+		const realClock = commonUtility.getNextMonotonicTime;
+		commonUtility.getNextMonotonicTime = () => realClock() + offset;
+		// the source lane loads an ES module namespace, which ignores the assignment
+		if (commonUtility.getNextMonotonicTime === realClock) context.skip();
+		try {
+			await session.addSubscription(subscription, true);
+		} finally {
+			commonUtility.getNextMonotonicTime = realClock;
+		}
+	}
+
+	it('resumes with only the newer version when the JS clock trails the log keys', async function () {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('a', { value: 'a1' });
+		const clientId = `trailing-clock-${name}`;
+		const first = await connect(clientId);
+		await subscribeWithClockOffset(this, first.session, { topic, qos: 1, rh: 0 }, -1000);
+		await waitFor(() => first.received.length === 1);
+		await ackAll(first.session, first.received);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('a', { value: 'a2' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['a2', 'marker'], `${topic} replays no older version`);
+		second.session.disconnect(true);
+	});
+
+	it('resumes without a write committed before the topic was subscribed, without retained records, when the JS clock trails the log keys', async function () {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('before', { value: 'before' });
+		const clientId = `trailing-clock-rh2-${name}`;
+		const first = await connect(clientId);
+		await subscribeWithClockOffset(this, first.session, { topic, qos: 1, rh: 2 }, -1000);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('after', { value: 'after' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['after', 'marker'], `${topic} replays no earlier write`);
+		second.session.disconnect(true);
+	});
+
+	it('resumes with a write committed after the topic was subscribed when the JS clock leads the log keys', async function () {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('before', { value: 'before' });
+		const clientId = `leading-clock-${name}`;
+		const first = await connect(clientId);
+		await subscribeWithClockOffset(this, first.session, { topic, qos: 1, rh: 2 }, 1000);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('after', { value: 'after' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['after', 'marker'], `${topic} replays the later write alone`);
+		second.session.disconnect(true);
+	});
+
+	it('refuses a new durable topic while its LMDB store is closing, before reading its log', async function () {
+		if (isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const rootStore = T.auditStore.rootStore;
+		const { session } = await connect(`closing-${name}`);
+		const status = rootStore.status;
+		const getKeys = T.auditStore.getKeys;
+		let reads = 0;
+		T.auditStore.getKeys = function (...args) {
+			reads++;
+			return getKeys.apply(this, args);
+		};
+		rootStore.status = 'closing';
+		try {
+			await assert.rejects(session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 0 }, true), DatabaseClosingError);
+		} finally {
+			rootStore.status = status;
+			T.auditStore.getKeys = getKeys;
+		}
+		assert.strictEqual(reads, 0, 'the log was read');
+		session.disconnect(true);
+	});
+
+	it('starts a new LMDB subscription that reports progress at its newest committed log key, or 1 for an empty log', async function () {
+		if (isRocksDB) this.skip();
+		const { T } = topicTable();
+		const empty = await T.subscribe({ reportProgress: true, omitCurrent: true });
+		assert.strictEqual(empty.localResumeStart, 1);
+		empty.end();
+		await T.put('a', { value: 'a1' });
+		await T.put('z', { value: 'z1' });
+		const [newest] = T.auditStore.getKeys({ reverse: true, limit: 1 });
+		const started = await T.subscribe({ reportProgress: true, omitCurrent: true });
+		assert.strictEqual(started.localResumeStart, newest);
+		started.end();
+	});
+
+	it('resumes a topic subscribed while its log was empty with only what was written after', async () => {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const clientId = `empty-log-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await T.put('first', { value: 'first' });
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('marker', { value: 'marker' });
+		await waitFor(() => values(second.received).includes('marker'));
+		assert.deepStrictEqual(values(second.received), ['first', 'marker']);
+		second.session.disconnect(true);
+	});
+
+	it('holds the position below a first live delivery that committed below the start until it is acknowledged', async () => {
+		const { name } = topicTable();
+		const topic = `${name}/#`;
+		const { session } = await connect(`below-start-${name}`);
+		await session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		const state = session.topics.get(topic);
+		const key = state.entry.startTime - 1;
+		const messageId = session.needsAcknowledge({ topic, localTime: key, value: 'registering' }, 1);
+		assert.ok(session.nextPosition(state) < key, 'a resume would send the unacknowledged delivery again');
+		session.acknowledge(messageId);
+		const start = state.entry.startTime;
+		session.needsAcknowledge({ topic, localTime: start + 1, value: 'live' }, 1);
+		assert.ok(!(session.nextPosition(state) < start), 'a later delivery does not hold the position below the start');
+		session.disconnect(true);
+	});
+
+	it('resumes with a write that was in flight when the topic was subscribed', async function () {
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const commitInFlight = await heldTransaction(T, 'inflight');
+		const clientId = `in-flight-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await commitInFlight();
+
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => delivery(second.received, 'inflight'), { message: 'the in-flight write was not replayed' });
+		second.session.disconnect(true);
+	});
+
+	it('resumes with a write that was in flight when the topic was subscribed while another thread was mid-reservation', async function () {
+		if (!isRocksDB) this.skip(); // the mid-reservation state is RocksDB's
+		const name = `DurableTopic${++sequence}`;
+		const topic = `${name}/#`;
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		// the worker opens the database first, so main's certification tick cannot publish a floor before it parks
+		const worker = new Worker(require.resolve('../resources/originClosedFloor-thread.js'), {
+			workerData: {
+				mode: 'park-reserving',
+				gate,
+				tableName: name,
+				database: `durable_${name}`,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+				record: { id: 'parked', value: 'parked' },
+			},
+		});
+		const seen = [];
+		let failure;
+		worker.on('message', (message) => {
+			if (message.type === 'error') failure = new Error(message.message);
+			seen.push(message.type);
+		});
+		worker.on('error', (error) => (failure = error));
+		const exited = new Promise((resolve) => worker.once('exit', resolve));
+		const reached = (type) =>
+			waitFor(
+				() => {
+					if (failure) throw failure;
+					return seen.includes(type);
+				},
+				{ timeout: 20_000, message: `the worker never reported ${type}` }
+			);
+		const release = () => {
+			Atomics.store(gate, 0, 1);
+			Atomics.notify(gate, 0);
+		};
+		let commitInFlight;
+		try {
+			await reached('parked');
+			const { T } = topicTable(name);
+			commitInFlight = await heldTransaction(T, 'inflight');
+			const rootStore = T.primaryStore.rootStore;
+			// a JS-clock start would then be above the in-flight key
+			const nativeNow = rootStore.getMonotonicTimestamp();
+			await waitFor(() => commonUtility.getNextMonotonicTime() > nativeNow, 10_000);
+			assert.strictEqual(getOriginClosedFloor(rootStore), undefined, 'no floor is published yet');
+			const clientId = `mid-reservation-${name}`;
+			const first = await connect(clientId);
+			await first.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+			first.session.disconnect(true);
+			await first.session.writes;
+			const savedStart = (await stored(clientId)).subscriptions[0].startTime;
+			await commitInFlight();
+			const inFlightKey = T.primaryStore.getEntry('inflight').version;
+			assert.ok(savedStart < inFlightKey, `the start ${savedStart} is above the in-flight key ${inFlightKey}`);
+			release();
+			await reached('committed');
+
+			const second = await connect(clientId);
+			await second.session.resume();
+			await waitFor(() => delivery(second.received, 'inflight'), { message: 'the in-flight write was not replayed' });
+			await waitFor(() => delivery(second.received, 'parked'), {
+				message: "the parked thread's write was not replayed",
+			});
+			second.session.disconnect(true);
+		} finally {
+			release();
+			await commitInFlight?.();
+			await Promise.race([exited, worker.terminate()]);
+		}
+	});
+
 	it('keeps the position when a reload re-snapshot is acknowledged', async function () {
 		if (isRocksDB) this.skip(); // durable subscribers are closed at the marker instead
 		const { T, name } = topicTable();
@@ -2265,5 +2654,501 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			'acknowledging the re-snapshot did not move the position back'
 		);
 		session.disconnect(true);
+	});
+
+	it('holds the position below a local write that took its key before an acknowledged one, and replays it on resume', async function () {
+		if (!isRocksDB) this.skip(); // LMDB keys are assigned at commit
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `held-below-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(first.received, 'after'));
+		await ackAll(first.session, first.received);
+		first.session.checkpoint();
+		await first.session.writes;
+		const entry = await storedEntry(clientId, (saved) => saved.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		assert.ok(entry.startTime < lateKey, `the saved position ${entry.startTime} passed the held key ${lateKey}`);
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => delivery(second.received, 'late'), { message: 'the late commit was not replayed' });
+		second.session.disconnect(true);
+	});
+
+	it('keeps a scalar replay below a local write still open when it replays a higher key', async function () {
+		if (!isRocksDB) this.skip();
+		setOriginCaptureIntervalForTests(60_000);
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const clientId = `scalar-replay-held-${name}`;
+		const sessions = [];
+		let commitLate;
+		try {
+			await T.put('seed', { value: 0 });
+			const first = await connect(clientId);
+			sessions.push(first.session);
+			await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			await T.put('established', { value: 'established' });
+			await waitFor(() => delivery(first.received, 'established'));
+			await waitFor(
+				() => first.session.topics.get(topic).subscription.progress() >= T.primaryStore.getEntry('established').version
+			);
+			await ackAll(first.session, first.received);
+			first.session.checkpoint();
+			await first.session.writes;
+			await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+			first.session.disconnect(true);
+			await first.session.writes;
+			commitLate = await heldTransaction(T, 'late');
+			await T.put('after', { value: 'after' });
+			const second = await connect(clientId);
+			sessions.push(second.session);
+			await second.session.resume();
+			const state = second.session.topics.get(topic);
+			await waitFor(() => state.verified && delivery(second.received, 'after'));
+			assert.ok(state.subscription.resumeVerified, 'the scalar replay checks its database generation');
+			assert.strictEqual(await state.subscription.resumeVerified, true);
+			assert.strictEqual(state.entry.checkpoint, undefined, 'the resume uses a scalar position');
+			assert.strictEqual(getOriginClosedFloor(T.primaryStore.rootStore), undefined, 'no origin floor is published');
+			const heldBound = localStartBound(T.primaryStore.rootStore);
+			assert.ok('atOrAbove' in heldBound, 'the lower local write still owns a reservation');
+			const replayProgress = state.subscription.progress();
+			await waitFor(() => state.consumed === state.subscription.sentCount);
+			await ackAll(second.session, second.received);
+			second.session.checkpoint();
+			await second.session.writes;
+			second.session.disconnect(true);
+			await second.session.writes;
+			const savedStart = (await stored(clientId)).subscriptions[0].startTime;
+			await commitLate();
+			const lateAudit = [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === 'late');
+			const lateKey = lateAudit.txnLogKey;
+			assert.strictEqual(
+				lateKey,
+				heldBound.atOrAbove,
+				JSON.stringify({ replayProgress, heldBound, lateKey, savedStart })
+			);
+			const third = await connect(clientId);
+			sessions.push(third.session);
+			await third.session.resume();
+			await waitFor(() => delivery(third.received, 'late'), {
+				message: `the held key ${lateKey} was skipped after replay saved ${savedStart}`,
+			});
+			assert.ok(savedStart < lateKey, `the replay position ${savedStart} passed the held key ${lateKey}`);
+		} finally {
+			await commitLate?.();
+			for (const session of sessions) {
+				session.disconnect(true);
+				await session.writes;
+			}
+			setOriginCaptureIntervalForTests(5000);
+		}
+	});
+
+	it('does not pass a lower key that committed and released its reservation before its notify pass ran', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const { session, received } = await connect(`released-undispatched-${name}`);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(received, 'after'));
+		await ackAll(session, received);
+		const state = session.topics.get(topic);
+		const databaseSubscriptions = state.subscription.subscriptions.tables.envs;
+		// the pass that dispatched 'after' was held by the open write, so it scheduled a follow-up pass: let it settle
+		await waitFor(() => !databaseSubscriptions.notifyScheduled && !databaseSubscriptions.recheckPending);
+		// the commit's notify pass is held back: its reservation is released, its records are still unread
+		databaseSubscriptions.notifyScheduled = true;
+		try {
+			await commitLate();
+			await new Promise((resolve) => setImmediate(resolve));
+			const lateKey = T.primaryStore.getEntry('late').version;
+			assert.ok(!delivery(received, 'late'), 'precondition: the late commit is not dispatched yet');
+			session.advancePositions();
+			assert.ok(
+				state.entry.startTime < lateKey,
+				`the position ${state.entry.startTime} passed the undispatched key ${lateKey}`
+			);
+		} finally {
+			databaseSubscriptions.notifyScheduled = false;
+		}
+		await T.put('kick', { value: 'kick' });
+		await waitFor(() => delivery(received, 'late') && delivery(received, 'kick'));
+		await ackAll(session, received);
+		session.advancePositions();
+		assert.ok(
+			state.entry.startTime >= T.primaryStore.getEntry('kick').version,
+			'the position advances once dispatched'
+		);
+		session.disconnect(true);
+	});
+
+	it('holds the position between the batches of a late transaction larger than one notify batch, and replays the rest', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-batches-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const ids = Array.from({ length: 300 }, (_, n) => `late-${n}`);
+		const commitLate = await heldTransaction(T, ...ids);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(first.received, 'after'));
+		await ackAll(first.session, first.received);
+		// registered as the first batch starts, so it runs before the yield's continuation: between the batches
+		let between;
+		first.session.setListener((deliveredTopic, message, messageId) => {
+			first.received.push({ topic: deliveredTopic, message, messageId });
+			if (message?.value === 'late-0')
+				setImmediate(() => {
+					ackAll(first.session, first.received);
+					first.session.disconnect(true);
+					between = { delivered: first.received.length, position: first.session.topics.get(topic).entry.startTime };
+				});
+			return true;
+		});
+		await commitLate();
+		await waitFor(() => between !== undefined);
+		await first.session.writes;
+		const lateKey = T.primaryStore.getEntry('late-0').version;
+		assert.ok(between.delivered < ids.length + 2, 'precondition: the transaction was not delivered whole in one batch');
+		assert.ok(
+			between.position < lateKey,
+			`the position ${between.position} passed the partly dispatched key ${lateKey}`
+		);
+		const second = await connect(clientId);
+		// acknowledged as they arrive: the replay is paced by the unacknowledged deliveries in flight
+		second.session.setListener((deliveredTopic, message, messageId) => {
+			second.received.push({ topic: deliveredTopic, message, messageId });
+			second.session.acknowledge(messageId);
+			return true;
+		});
+		await second.session.resume();
+		await waitFor(() => ids.every((id) => delivery(second.received, id)), {
+			timeout: 20_000,
+			message: () => `missing ${ids.filter((id) => !delivery(second.received, id)).length} of the late records`,
+		});
+		second.session.disconnect(true);
+	});
+
+	it('starts a subscription that joins while a lower key is held below that key', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const first = await connect(`joined-first-${name}`);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(first.received, 'after'));
+		await ackAll(first.session, first.received);
+		const state = first.session.topics.get(topic);
+		await waitFor(() => state.subscription.progress() !== undefined, { message: 'no certified watermark' });
+		const clientId = `joined-second-${name}`;
+		const second = await connect(clientId);
+		await second.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		second.session.disconnect(true);
+		await second.session.writes;
+		const savedStart = (await stored(clientId)).subscriptions[0].startTime;
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		assert.ok(savedStart < lateKey, `the joining start ${savedStart} is above the held key ${lateKey}`);
+		const resumed = await connect(clientId);
+		await resumed.session.resume();
+		await waitFor(() => delivery(resumed.received, 'late'), { message: 'the held write was not replayed' });
+		resumed.session.disconnect(true);
+		first.session.disconnect(true);
+	});
+
+	it('releases the hold on the next capture tick when the held write aborts, with no further commit', async function () {
+		if (!isRocksDB) this.skip();
+		setOriginCaptureIntervalForTests(50);
+		try {
+			const { T, name } = topicTable();
+			const topic = `${name}/#`;
+			await T.put('seed', { value: 0 });
+			const { session, received } = await connect(`aborted-hold-${name}`);
+			await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			let abort;
+			const aborted = transaction({}, async (context) => {
+				await T.put('doomed', { value: 'doomed' }, context);
+				await new Promise((resolve) => (abort = resolve));
+				throw new Error('abort the held write');
+			}).catch(() => {});
+			await waitFor(() => abort);
+			await T.put('after', { value: 'after' });
+			await waitFor(() => delivery(received, 'after'));
+			await ackAll(session, received);
+			const state = session.topics.get(topic);
+			const afterKey = T.primaryStore.getEntry('after').version;
+			session.advancePositions();
+			assert.ok(state.entry.startTime < afterKey, `the position ${state.entry.startTime} passed the held write`);
+			abort();
+			await aborted;
+			await waitFor(
+				() => {
+					session.advancePositions();
+					return state.entry.startTime >= afterKey;
+				},
+				{ timeout: 5_000, message: 'the position did not catch up after the abort' }
+			);
+			session.disconnect(true);
+		} finally {
+			setOriginCaptureIntervalForTests();
+		}
+	});
+
+	it('does not pass a late lower key that is queued behind a delivery, and replays it after a reconnect', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-queued-whole-${name}`;
+		const { session } = await connect(clientId);
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		// every message is acknowledged as it is sent; 'stall' never finishes sending, so what follows it stays queued
+		session.setListener((_topic, message, messageId) => {
+			session.acknowledge(messageId);
+			return message?.value === 'stall' ? stalled : true;
+		});
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		const state = session.topics.get(topic);
+		await waitFor(() => state.deliveredKey === T.primaryStore.getEntry('stall').version);
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		await waitFor(() => state.subscription.queue?.some((event) => event.localTime === lateKey));
+		await waitFor(() => state.subscription.progress() > lateKey);
+		session.advancePositions();
+		assert.ok(
+			state.entry.startTime < lateKey,
+			`the position ${state.entry.startTime} passed the queued key ${lateKey}`
+		);
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the saved position passed it');
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		second.session.disconnect(true);
+	});
+
+	it('QoS 2: keeps receipts below a late lower key that is queued behind received deliveries, and delivers it after a reconnect', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-queued-qos2-${name}`;
+		const { session, received } = await connect(clientId);
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		session.setListener((_topic, message, messageId) => {
+			received.push({ message, messageId });
+			return message?.value === 'stall' ? stalled : true;
+		});
+		await session.addSubscription({ topic, qos: 2, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		await waitFor(() => delivery(received, 'stall'));
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		const state = session.topics.get(topic);
+		await waitFor(() => state.subscription.queue?.some((event) => event.localTime === lateKey));
+		await waitFor(() => state.subscription.progress() >= lateKey);
+		await session.received(delivery(received, 'early').messageId, false);
+		await session.received(delivery(received, 'stall').messageId, false);
+		assert.ok(
+			!(state.receivedThrough >= lateKey),
+			`receipts compacted through ${state.receivedThrough}, past the queued key ${lateKey}`
+		);
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the saved position passed it');
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		assert.ok(!values(second.received).includes('early'), 'a received delivery is not sent again');
+		second.session.disconnect(true);
+	});
+
+	it('QoS 2: compacts no receipts while a resumed replay is unverified, so a late key it has not read is still delivered', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-unread-qos2-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 2, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => delivery(first.received, 'a'));
+		await first.session.received(delivery(first.received, 'a').messageId, false);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		const commitLate = await heldTransaction(T, 'late');
+		for (let i = 0; i < 300; i++) await T.put(`h${i}`, { value: `h${i}` });
+		first.session.disconnect(true);
+		await first.session.writes;
+		// committed while the client is away: the log holds it after the 300 higher keys
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		const { session } = await connect(clientId);
+		const sent = [];
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		// each message is PUBREC'd as it is sent; h50 never finishes sending, so the replay stops reading at its high
+		// water mark, long before the late key
+		session.setListener((_topic, message, messageId) => {
+			sent.push(message?.value);
+			session.received(messageId, false);
+			return message?.value === 'h50' ? stalled : true;
+		});
+		await session.resume();
+		const state = session.topics.get(topic);
+		await waitFor(() => sent.includes('h50'));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.ok(!state.verified, 'precondition: the replay has not finished');
+		assert.ok(
+			!(state.receivedThrough >= lateKey),
+			`receipts compacted through ${state.receivedThrough}, past the unread key ${lateKey}`
+		);
+		session.checkpoint();
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		const third = await connect(clientId);
+		third.session.setListener((_topic, message, messageId) => {
+			third.received.push({ message, messageId });
+			Promise.resolve(third.session.received(messageId, false)).then(() => third.session.completed(messageId));
+			return true;
+		});
+		await third.session.resume();
+		await waitFor(() => values(third.received).includes('late'), 10_000);
+		third.session.disconnect(true);
+	});
+
+	it('does not pass a late key a resumed replay reads after higher ones when the topic is subscribed again', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-replayed-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		await waitFor(() => delivery(first.received, 'stall'));
+		await ackAll(first.session, first.received);
+		first.session.disconnect(true);
+		await first.session.writes;
+		// the late write commits while the client is away: the log holds it after the higher keys
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'precondition: saved below the late key');
+		const { session } = await connect(clientId);
+		const sent = [];
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		let stallOnce = true;
+		session.setListener((_topic, message, messageId) => {
+			sent.push(message?.value);
+			session.acknowledge(messageId);
+			if (message?.value === 'stall' && stallOnce) {
+				stallOnce = false;
+				return stalled;
+			}
+			return true;
+		});
+		await session.resume();
+		const state = session.topics.get(topic);
+		await waitFor(() => state.verified && sent.includes('stall'));
+		assert.ok(
+			state.subscription.queue?.some((event) => event.localTime === lateKey),
+			'precondition: the replay queued the late key behind the higher ones'
+		);
+		await waitFor(() => state.subscription.progress() >= lateKey);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		unstall();
+		await waitFor(() => sent.includes('late'), { message: `the replacement skipped the late key; sent ${sent}` });
+		session.disconnect(true);
+	});
+
+	it('holds the position at the bound a thread parked mid-reservation carries, through every retry (worker thread)', async function () {
+		if (!isRocksDB) this.skip();
+		const name = `DurableTopic${++sequence}`;
+		const topic = `${name}/#`;
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const worker = new Worker(require.resolve('../resources/originClosedFloor-thread.js'), {
+			workerData: {
+				mode: 'park-reserving',
+				gate,
+				tableName: name,
+				database: `durable_${name}`,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+				record: { id: 'parked', value: 'parked' },
+			},
+		});
+		const seen = [];
+		let failure;
+		worker.on('message', (message) => {
+			if (message.type === 'error') failure = new Error(message.message);
+			seen.push(message.type);
+		});
+		worker.on('error', (error) => (failure = error));
+		const exited = new Promise((resolve) => worker.once('exit', resolve));
+		const reached = (type) =>
+			waitFor(
+				() => {
+					if (failure) throw failure;
+					return seen.includes(type);
+				},
+				{ timeout: 20_000, message: `the worker never reported ${type}` }
+			);
+		const release = () => {
+			Atomics.store(gate, 0, 1);
+			Atomics.notify(gate, 0);
+		};
+		try {
+			await reached('parked');
+			const { T } = topicTable(name);
+			const { session, received } = await connect(`parked-${name}`);
+			await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			await T.put('after', { value: 'after' });
+			await waitFor(() => delivery(received, 'after'));
+			await ackAll(session, received);
+			const state = session.topics.get(topic);
+			const afterKey = T.primaryStore.getEntry('after').version;
+			session.advancePositions();
+			assert.ok(
+				state.entry.startTime < afterKey,
+				`the position ${state.entry.startTime} passed the parked thread's bound`
+			);
+			release();
+			await reached('committed');
+			await waitFor(() => delivery(received, 'parked'));
+			await ackAll(session, received);
+			session.advancePositions();
+			assert.ok(state.entry.startTime >= afterKey, 'the position advances once the parked thread committed');
+			session.disconnect(true);
+		} finally {
+			release();
+			await Promise.race([exited, worker.terminate()]);
+		}
 	});
 });

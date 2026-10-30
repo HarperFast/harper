@@ -238,7 +238,7 @@ describe('Test export.js', () => {
 	});
 
 	describe('Test saveToLocal', function () {
-		let saveToLocal = hdb_export.__get__('saveToLocal');
+		const { saveToLocal } = hdb_export;
 		let file_name = undefined;
 		let data_object = [
 			{

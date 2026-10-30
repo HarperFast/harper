@@ -12,6 +12,8 @@ import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import { isLocalPrincipal, localPrincipal } from '../security/user.ts';
 import {
 	ORIGIN_ID,
 	admitCheckpoint,
@@ -120,6 +122,9 @@ export async function replayLastWill(will: any): Promise<void> {
 		} else warn('Dropping will from an expired scoped token', data);
 	} else if (isPastBearerExpiry(message.user)) {
 		warn('Dropping will from an expired bearer token', data);
+	} else if (isLocalPrincipal(message.user)) {
+		message.user = localPrincipal();
+		await publishMessage(message, data, message);
 	} else {
 		const persistedUser = message.user;
 		if (persistedUser?.username) message.user = await (server as any).getUser(persistedUser.username);
@@ -219,7 +224,9 @@ export async function getSession({
 				}
 			: user?._bearerValidator
 				? { username: user.username, authExpiresAt: user.authExpiresAt }
-				: { username: user?.username };
+				: isLocalPrincipal(user)
+					? { username: user.username, _localPrincipal: true }
+					: { username: user?.username };
 		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
 		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
@@ -660,6 +667,7 @@ class SubscriptionsSession {
 					// A scoped will authorizes under its own embedded role, never the disconnecting
 					// session's user (which may be a later same-clientId reconnect).
 					if (will.user?._scopedToken) context.user = will.user;
+					else if (isLocalPrincipal(will.user)) context.user = localPrincipal();
 					await publishMessage(will, will.data, context);
 				}
 			}
@@ -997,12 +1005,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			return;
 		}
 		if (!state || !(state.entry.qos > 0)) {
-			const startTime = subscription.registeredThrough ?? getNextMonotonicTime();
+			const startTime = subscription.registeredThrough ?? subscription.localResumeStart ?? getNextMonotonicTime();
 			const databaseGeneration =
 				subscription.registeredThrough === undefined ? undefined : subscription.databaseGeneration;
 			state = newTopicState({ qos: subscription.qos, topic: subscription.topic, startTime, databaseGeneration });
 			this.topics.set(subscription.topic, state);
-		} else if (state.subscription) {
+		} else {
 			const replaced = state;
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
 			this.topics.set(subscription.topic, state);
@@ -1116,16 +1124,21 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const floor = checkpointFloor ?? state.subscription?.checkpointFloor?.();
 			if (floor === undefined) return;
 			if (floor < bound) bound = floor;
-		} else {
-			// a transaction that took a key below the delivered ones can still commit until progress passes it
-			const progress = state.subscription?.progress?.();
-			if (progress !== undefined && progress < bound) bound = progress;
+		} else if (state.subscription?.progress !== undefined) {
+			// a transaction that took a key below the delivered ones can still commit until progress passes it; a
+			// resumed replay reads the log in commit order, so before its verdict a lower key can still be unread
+			if (!state.verified) return;
+			const progress = state.subscription.progress();
+			if (progress === undefined) return;
+			if (progress < bound) bound = progress;
 		}
 		for (const { key } of state.unacked.values()) {
 			if (key < bound) bound = key;
 			// with none late, the oldest unacknowledged delivery has the lowest key
 			if (state.lateUnacked === 0) break;
 		}
+		const late = this.lateUnconsumed(state);
+		if (late < bound) bound = late;
 		for (const [key] of state.resend?.values() ?? []) if (key < bound) bound = key;
 		let through = state.receivedThrough;
 		for (const key of state.receivedRuns?.keys() ?? []) {
@@ -1156,8 +1169,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (state && !update.fromScan && typeof update.localTime === 'number') {
 			const key = update.localTime;
 			if (key !== state.deliveredKey) {
-				// a transaction can commit after one with a higher key, so it arrives below the last delivered key
-				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
+				// a transaction can commit after one with a higher key, so it arrives below the last delivered key;
+				// one that committed while the subscription registered can arrive below the start
+				const previous =
+					state.deliveredKey === undefined || state.deliveredKey < state.entry.startTime
+						? state.entry.startTime
+						: state.deliveredKey;
+				state.keyBefore = key < previous ? positionBefore(key) : previous;
 				state.deliveredKey = key;
 			}
 			if (qos === 2) this.inFlightChanged = true;
@@ -1263,7 +1281,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const needed = this.savesStarted + 1;
 		return new Promise((resolve, reject) => {
 			this.saveWaiters.push({ needed, resolve, reject });
-			this.persist().catch(() => {});
+			this.persist();
 		});
 	}
 	/** The final save waits for inbound QoS 2 publishes still committing, so it keeps their ids; nothing saves after it. */
@@ -1339,7 +1357,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 			} else started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
-			if (durable || started) await this.persist();
+			if (durable || started) await this.saveExchanges();
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
@@ -1370,7 +1388,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state) this.forgetTopic(state);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
-			if (saved || this.dirty || this.saving) await this.persist();
+			if (saved || this.dirty || this.saving) await this.saveExchanges();
 			return result || saved;
 		});
 	}
@@ -1403,9 +1421,25 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.lateUnacked === 0) break;
 		}
 		if (boundary === undefined || !certified) return boundary;
+		const late = this.lateUnconsumed(state);
+		if (late !== undefined) {
+			const before = positionBefore(late);
+			if (before < boundary) boundary = before;
+		}
 		const progress = subscription.progress();
-		if (progress === undefined) return;
+		// nothing certifies an advance yet, but holding below an unacknowledged delivery needs no certificate
+		if (progress === undefined) return boundary < state.entry.startTime ? boundary : undefined;
 		return boundary < progress ? boundary : progress;
+	}
+	/**
+	 * The lowest key sent to the topic's subscription and not yet consumed, among events sent below a key sent before
+	 * them (a late commit, or a replay reading the log in commit order): one can wait in the queue behind deliveries
+	 * of higher keys. Every other queued event is at or above the last delivered key.
+	 */
+	lateUnconsumed(state: TopicState): number | undefined {
+		const subscription = state.subscription;
+		if (subscription?.sentCount === state.consumed) return;
+		return subscription?.lowestLateUnconsumed?.(state.consumed);
 	}
 	/** `fresh`: false reuses the checkpoints a `received` computed for this pass. */
 	advancePositions(fresh = true): boolean {
@@ -1431,7 +1465,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.entry.checkpoint === undefined) this.pruneReceipts(state, next);
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
-				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
+				state.subscription.progress?.() === undefined ? undefined : state.subscription.databaseGeneration;
 			changed = true;
 		}
 		for (const state of this.topics.values()) {
@@ -1621,7 +1655,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.settleSaveWaiters(saveNumber);
 	}
 	endedError() {
-		return new Error(`MQTT session ${this.sessionId} has ended`);
+		return new SessionEndedError(this.sessionId);
 	}
 	settleSaveWaiters(saveNumber: number, error?: Error) {
 		if (this.saveWaiters.length === 0) return;
@@ -1696,6 +1730,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		super.disconnect(clientTerminated);
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
 		this.seal((changed || this.dirty || this.hasInFlight()) && !this.discarded);
+	}
+}
+
+class SessionEndedError extends ClientError {
+	constructor(sessionId: string) {
+		super(`MQTT session ${sessionId} has ended`, 409);
+		this.name = 'SessionEndedError';
 	}
 }
 

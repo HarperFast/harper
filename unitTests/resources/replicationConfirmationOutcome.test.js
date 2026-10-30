@@ -757,11 +757,20 @@ describe('Replication confirmation failure after a local commit', () => {
 				}
 				const stream = contentTypes.get(type).serializeStream(source(), undefined, { method: 'GET' });
 				const chunks = [];
-				for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+				let streamError;
+				try {
+					for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+				} catch (error) {
+					streamError = error;
+				}
 				const text = Buffer.concat(chunks).toString();
+				if (type === 'application/json') {
+					assert.ok(streamError, 'a failed JSON-array stream must fail rather than end');
+					assert.throws(() => JSON.parse(text), SyntaxError);
+				} else assert.strictEqual(streamError, undefined);
 				const records =
 					type === 'application/json'
-						? JSON.parse(text)
+						? JSON.parse(text + ']')
 						: type === 'text/event-stream'
 							? text
 									.split('\n')
@@ -990,6 +999,40 @@ describe('Replication confirmation failure after a local commit', () => {
 			const winner = First.primaryStore.getEntry(id);
 			assert.strictEqual(versions[0], isLMDB ? winner.localTime : winner.version);
 		});
+
+		for (const scenario of ['fresh', 'existing', 'mixed']) {
+			(isLMDB ? it : it.skip)(
+				`confirms an omitted LMDB residency row (${scenario}) at its audit position`,
+				async () => {
+					const id = nextId();
+					if (scenario === 'existing') await First.put({ id, name: 'old' });
+					const plain = table({
+						database: 'confirmation-outcome-first',
+						table: 'Unplaced',
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					});
+					const calls = [];
+					registerConfirmation((_database, position, count, owners) => calls.push({ position, count, owners }));
+					First.setResidencyById(() => ['confirmation-owner']);
+					try {
+						await transaction({ replicatedConfirmation: 1 }, async () => {
+							if (scenario === 'mixed') await plain.put({ id });
+							await First.put({ id, name: 'remote' });
+						});
+						const auditPosition = [
+							...First.auditStore.getKeys({ start: Infinity, end: 1, reverse: true, limit: 1 }),
+						][0];
+						assert.strictEqual(calls.length, 1);
+						assert.strictEqual(calls[0].position, auditPosition);
+						assert.strictEqual(calls[0].count, 1);
+						assert.deepStrictEqual(calls[0].owners, [['confirmation-owner']]);
+						assert.notStrictEqual(First.primaryStore.getEntry(id)?.value?.name, 'remote');
+					} finally {
+						First.setResidencyById(undefined);
+					}
+				}
+			);
+		}
 
 		it('does not call the waiter for a read-only scope or an unconfirmed write', async () => {
 			const id = nextId();

@@ -43,10 +43,10 @@ import {
 	writePidRecord,
 } from './spawnPidFile.ts';
 import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
-import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
+import { thisThreadOwnsApplication, thisThreadsIsolatedApplication } from '../server/threads/isolatedApplications.ts';
 import { onStartup } from '../utility/lifecycle.ts';
+import { lockDownIntrinsics, type Lockdown } from './intrinsicsLockdown.ts';
 
-type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
 let APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
 const HARPER_MODULE_IDS = new Set([
 	'harper',
@@ -84,12 +84,9 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 				stackFiltering: 'verbose',
 			});
 		} else {
-			preventFunctionConstructor();
-			if (APPLICATIONS_LOCKDOWN === 'freeze-after-load') {
-				whenComponentsLoaded.then(freezeIntrinsics);
-			} else {
-				freezeIntrinsics();
-			}
+			lockDownIntrinsics(APPLICATIONS_LOCKDOWN, whenComponentsLoaded)?.catch((error) =>
+				logger.error(`applications.lockdown ${APPLICATIONS_LOCKDOWN} failed; intrinsics may be partly locked`, error)
+			);
 		}
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
@@ -973,6 +970,7 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 	}
 	// now assign Harper scope-specific variables
 	Object.assign(appGlobal, {
+		...scopedDatabaseBindings(scope),
 		server: scope.server ?? server,
 		logger: scope.logger ?? logger,
 		resources: scope.resources,
@@ -1029,6 +1027,25 @@ function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 	return function (name: string, shape: any, options?: any) {
 		return defineTableUsing(declareTable, name, shape, options);
 	} as typeof defineTable;
+}
+
+/**
+ * An isolated application's own worker loads nothing else, so its global object belongs to that application, and the
+ * bare `databases` and `tables` globals can take its branch view — the only way to reach them under
+ * `vm-current-context`, whose modules share the thread's global. Harper's own modules import `databases` rather than
+ * read the global, and a name the application did not branch, `system` included, still resolves to the base.
+ * Replication places nothing on a dedicated worker (harper-pro#974), so no peer's writes land in the branch. Returns
+ * whether it bound them.
+ */
+export function bindIsolatedApplicationGlobals(
+	scope: ApplicationScope,
+	owner: string | undefined = thisThreadsIsolatedApplication()
+): boolean {
+	if (!scope.branches?.size || !thisThreadOwnsApplication(scope.name, owner)) return false;
+	const bindings = scopedDatabaseBindings(scope);
+	(globalThis as any).databases = bindings.databases;
+	(globalThis as any).tables = bindings.tables;
+	return true;
 }
 
 /** Everything an application sees differently because of what it declared. Built once, at load. */
@@ -1311,70 +1328,4 @@ export function getUser() {
 }
 export function getResponse() {
 	return (contextStorage.getStore() as any)?.response;
-}
-
-export function preventFunctionConstructor() {
-	Function.prototype.constructor = function () {}; // prevent this from being used to eval data in a parent context
-}
-
-function freezeIntrinsics() {
-	overridableProperty(Object.prototype, 'toString');
-	overridableProperty(Object.prototype, 'valueOf');
-	overridableProperty(Object.prototype, 'hasOwnProperty');
-	overridableProperty(Object.prototype, 'constructor');
-	overridableProperty(Promise.prototype, 'then');
-	overridableProperty(Date, 'now');
-	for (let name of ['get', 'set', 'has', 'delete', 'clear', 'forEach', 'entries', 'keys', 'values']) {
-		overridableProperty(Map.prototype, name);
-	}
-	for (let Intrinsic of [
-		Object,
-		Array,
-		Promise,
-		BigInt,
-		String,
-		Number,
-		Boolean,
-		Symbol,
-		RegExp,
-		Date,
-		Map,
-		Set,
-		WeakMap,
-		WeakSet,
-		Math,
-		JSON,
-		Reflect,
-		Atomics,
-		SharedArrayBuffer,
-		WeakRef,
-		FinalizationRegistry,
-	]) {
-		Object.freeze(Intrinsic);
-		Object.freeze((Intrinsic as any).prototype);
-	}
-	Object.freeze(Function);
-}
-
-/**
- * This can redefine a property into a getter/setter that will allow derivatives of a prototype to assign
- * a value to the property without incurring an error from the property being frozen and readonly.
- * @param target
- * @param name
- * @param value
- */
-function overridableProperty(target, name, value = target[name]) {
-	Object.defineProperty(target, name, {
-		get() {
-			return value;
-		},
-		set(value) {
-			Object.defineProperty(this, name, {
-				value,
-				configurable: true,
-				enumerable: true,
-				writable: true,
-			});
-		},
-	});
 }

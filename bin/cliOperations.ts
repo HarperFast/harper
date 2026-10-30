@@ -18,6 +18,8 @@ import { buildMultipartBody } from './multipartBuilder.ts';
 import { fileIdentity, statArchiveFile } from '../utility/fileIdentity.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
+import { awaitRollout, summarizeRollout, type RolloutOutcome } from './deployRollout.ts';
+import { declaredDeploySource } from './deploySource.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
 import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
@@ -626,6 +628,15 @@ const PREPARE_OPERATION: any = {
 		req._multipart = true;
 	},
 	deploy_component: async (req) => {
+		// Consumed here: they say how long this command follows a rolling deploy, which is no business of the server's.
+		req._wait = req.wait;
+		req._waitTimeout = req.wait_timeout;
+		delete req.wait;
+		delete req.wait_timeout;
+		// Checked before anything is sent: a deploy that went live and then refused its own wait would read as failed.
+		if (req._waitTimeout !== undefined && !(typeof req._waitTimeout === 'number' && req._waitTimeout >= 0)) {
+			throw new Error(`wait_timeout must be a number of milliseconds, got ${JSON.stringify(req._waitTimeout)}`);
+		}
 		if (req.deployment_id) {
 			// `by_ref`/`ref` are consumed here and never transmitted, so the server's validator cannot see
 			// this conflict.
@@ -639,6 +650,7 @@ const PREPARE_OPERATION: any = {
 			return;
 		}
 		if (req.package) {
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
@@ -646,10 +658,12 @@ const PREPARE_OPERATION: any = {
 		// Templates scaffold `by_ref=true`; without the flag the payload path below is unchanged.
 		if (req.by_ref || req.ref) {
 			prepareDeployByRef(req);
+			req.source ??= declaredDeploySource({});
 			return;
 		}
 
 		const projectPath = process.cwd();
+		req.source ??= declaredDeploySource({ directory: projectPath });
 		if (!req.project) req.project = directoryProjectName(projectPath);
 		const packageOptions = {
 			skip_node_modules: req.skip_node_modules !== false,
@@ -940,6 +954,43 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	return { options, target };
 }
 
+/**
+ * Wait for a rolling deploy's other nodes on the same connection and credential the deploy used: a fresh `harper`
+ * command per poll would trade a new identity token each time under OIDC.
+ */
+async function followRollout(options: any, response: any, waitTimeout: unknown): Promise<RolloutOutcome | undefined> {
+	if (response?.status !== 'rolling_out' || typeof response.deployment_id !== 'string') return undefined;
+	const timeoutMs = waitTimeout as number | undefined;
+	const pollOptions = {
+		...options,
+		timeout: CLI_OPERATION_TIMEOUT_MS,
+		headers: { ...options.headers, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+	};
+	delete pollOptions.streamResponse;
+	delete pollOptions.headers['Transfer-Encoding'];
+	return awaitRollout(
+		response.deployment_id,
+		async (deploymentId, remainingMs) => {
+			const reply = await httpRequest(
+				// The idle timeout restarts on every byte, so a reply that trickles in would outlive the wait without the signal.
+				{
+					...pollOptions,
+					timeout: Math.min(CLI_OPERATION_TIMEOUT_MS, remainingMs),
+					signal: AbortSignal.timeout(remainingMs),
+				},
+				{ operation: 'get_deployment', deployment_id: deploymentId }
+			);
+			if (reply.statusCode !== 200) {
+				const error: any = new Error(`get_deployment answered ${reply.statusCode}: ${reply.body}`);
+				error.statusCode = reply.statusCode;
+				throw error;
+			}
+			return JSON.parse(reply.body);
+		},
+		{ timeoutMs }
+	);
+}
+
 async function cliOperations(req: any, skipResponseLog = false) {
 	dotenv.config();
 
@@ -1123,6 +1174,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			}
 		}
 
+		const rollout =
+			!failedStatus && req.operation === 'deploy_component' && req._wait !== false
+				? await followRollout(options, responseData, req._waitTimeout)
+				: undefined;
+		if (rollout) responseData.rollout = summarizeRollout(rollout);
+
 		let responseLog;
 		if (req.json) {
 			responseLog = JSON.stringify(responseData, null, 2);
@@ -1138,6 +1195,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		if (!skipResponseLog) {
 			console.log(responseLog);
+		}
+		if (rollout?.failure) {
+			console.error(`error: ${rollout.failure}`);
+			process.exit(1);
 		}
 
 		if (target) {

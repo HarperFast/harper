@@ -20,7 +20,8 @@
  *   2. seeding — records under the OLD `Int`/`String` types, plus proof that 2^31 is loudly REJECTED
  *      before the widening (so its acceptance afterwards is a real change, not a pre-existing one).
  *   3. the widening — rewrite the INSTALLED schema copy, restart, and confirm `describe_table` now
- *      reports `Long`/`Any` with `count` still indexed.
+ *      reports `Long`/`Any` with `count` still indexed. The type change rebuilds the `count` index in
+ *      the background; the arm waits for it through the range query's `503 INDEX_REBUILDING` signal.
  *   4. old-record fidelity — every seeded record reads back byte-identical, value AND type, through
  *      both REST and the ops-API `search_by_hash` path, each against the value it was written with.
  *   5. the widened type's new reach — 2^31 and 5e9 now round-trip; exactly 2^53 is accepted and 2^53+2
@@ -84,6 +85,8 @@ const FIVE_BILLION = 5000000000;
 const WORKER_COUNT = 4;
 
 const READY_TIMEOUT_MS = 120_000;
+const REBUILD_POLL_MS = 250;
+const MIN_REQUEST_MS = 1_000;
 const RESTART_TEST_TIMEOUT_MS = 300_000;
 
 // Written over the INSTALLED component copy mid-run; the fixture source on disk is never touched.
@@ -276,20 +279,29 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				);
 			}
 
-			async function rangeAboveThreshold(): Promise<Array<{ id: number; count: number }>> {
-				const response = await client
-					.req()
-					.send({
-						operation: 'search_by_conditions',
-						schema: DATABASE,
-						table: TABLE,
-						operator: 'and',
-						conditions: [{ search_attribute: 'count', search_type: 'greater_than', search_value: RANGE_THRESHOLD }],
-						get_attributes: ['id', 'count'],
-					})
-					.timeout(30_000)
-					.expect(200);
-				return response.body.map((row: DumpedRow) => ({ id: row.id, count: row.count }));
+			async function rangeAboveThreshold(readyWithinMs = 0): Promise<Array<{ id: number; count: number }>> {
+				const deadline = Date.now() + readyWithinMs;
+				for (;;) {
+					const response = await client
+						.req()
+						.send({
+							operation: 'search_by_conditions',
+							schema: DATABASE,
+							table: TABLE,
+							operator: 'and',
+							conditions: [{ search_attribute: 'count', search_type: 'greater_than', search_value: RANGE_THRESHOLD }],
+							get_attributes: ['id', 'count'],
+						})
+						.timeout(readyWithinMs ? Math.min(30_000, Math.max(MIN_REQUEST_MS, deadline - Date.now())) : 30_000);
+					const rebuilding = response.status === 503 && response.body?.code === 'INDEX_REBUILDING';
+					if (rebuilding && deadline - Date.now() > REBUILD_POLL_MS + MIN_REQUEST_MS) {
+						await sleep(REBUILD_POLL_MS);
+						continue;
+					}
+					ok(!rebuilding || !readyWithinMs, `the count index was still rebuilding after ${readyWithinMs}ms`);
+					strictEqual(response.status, 200, `range query over count => ${response.status}: ${response.text}`);
+					return response.body.map((row: DumpedRow) => ({ id: row.id, count: row.count }));
+				}
 			}
 
 			/** Loud at fewer than four workers, so the cross-worker arm cannot pass on a single one. */
@@ -393,6 +405,14 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						count: { type: 'Long', indexed: true, primaryKey: false },
 						label: { type: 'Any', indexed: false, primaryKey: false },
 					});
+
+					// The type change rebuilds `count` in the background, and nothing about startup waits for it.
+					// Reading the index or restarting before it lands would observe, or interrupt, a half-built one.
+					deepStrictEqual(
+						await rangeAboveThreshold(READY_TIMEOUT_MS),
+						ABOVE_THRESHOLD.filter(({ id }) => OLD_RECORDS.some((record) => record.id === id)),
+						'the rebuilt count index does not answer the range query over the old-encoded rows'
+					);
 				}
 			);
 

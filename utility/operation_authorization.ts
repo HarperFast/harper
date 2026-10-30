@@ -44,10 +44,18 @@ import * as analytics from '../resources/analytics/read.ts';
 import * as status from '../server/status/index.ts';
 import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
+import {
+	COMPONENT_GRANT_OPERATIONS,
+	componentGrantOf,
+	grantCoversComponent,
+	type ComponentGrant,
+} from '../security/componentGrant.ts';
+import { canonicalProjectName, projectNameFromPackage } from './componentNames.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
+import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
 import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
@@ -366,6 +374,10 @@ requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
 );
+requiredPermissions.set(
+	releaseOperations.handleListReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_RELEASES)
+);
 // get_deployment_payload streams the full tarball (which can embed secrets), unlike
 // get_deployment/list_deployments (metadata only), so it ALSO enforces super_user directly in
 // the handler — it cannot be delegated through a role's `operations` allowlist (gate-2 bypass
@@ -658,6 +670,50 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 }
 
 /**
+ * Checked ahead of gate 2, so an `operations` listing of one of the grant's operations, which would otherwise admit
+ * it for every component, still answers to the grant's names. A deploy or drop is checked here against the component it names, resolved as the handler resolves it. The reads
+ * name no component up front, so their handlers answer only for the components the grant covers.
+ */
+function componentGrantDenial(
+	grant: ComponentGrant,
+	apiName: string,
+	requestJson: any,
+	permsResponse: PermissionResponseObject
+) {
+	let component: unknown;
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT && requestJson._deploymentId !== undefined) {
+		return permsResponse.handleUnauthorizedItem(
+			`'_deploymentId' is set by replication; a deploy under a component grant cannot carry it`
+		);
+	}
+	if (
+		apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT &&
+		Array.isArray(requestJson.credentials) &&
+		requestJson.credentials.some((entry: any) => entry?.token !== undefined)
+	) {
+		return permsResponse.handleUnauthorizedItem(
+			'A deploy under a component grant can only reference stored credentials; sealing a literal token needs super_user'
+		);
+	}
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT) {
+		component =
+			typeof requestJson.project === 'string' && requestJson.project
+				? canonicalProjectName(requestJson.project)
+				: typeof requestJson.package === 'string'
+					? projectNameFromPackage(requestJson.package)
+					: undefined;
+	} else if (apiName === terms.OPERATIONS_ENUM.DROP_COMPONENT) {
+		component = requestJson.project;
+	} else {
+		return null;
+	}
+	if (grantCoversComponent(grant, component)) return null;
+	return permsResponse.handleUnauthorizedItem(
+		`Component '${String(component)}' is not covered by this role's component grant`
+	);
+}
+
+/**
  * Gate 1 of the role `operations` allowlist, callable from every authorization path. The SQL path
  * (chooseOperation → checkASTPermissions) never reaches verifyPerms, so it must call this
  * directly — otherwise an allowlisted role could reach unlisted operations through `sql`.
@@ -839,6 +895,12 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
 	// regardless; get_backup is kept out of reach by registering it without an api_name, which gate 1
 	// can never match.
+	const apiName = requiredPermissions.get(op)?.api_name;
+	if (COMPONENT_GRANT_OPERATIONS.has(apiName)) {
+		const componentGrant = componentGrantOf(requestJson.hdb_user);
+		if (componentGrant) return componentGrantDenial(componentGrant, apiName, requestJson, permsResponse);
+	}
+
 	if (allowedOperationsList !== undefined && requiredPermissions.get(op)?.requires_su) {
 		return null;
 	}
