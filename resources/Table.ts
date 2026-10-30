@@ -2252,9 +2252,19 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		static _copyUnlistedAttributes(record: any, selected: any): void {
-			for (const key of Object.keys(record)) selected[key] = record[key];
+			for (const key of Object.keys(record)) {
+				// a source-loaded record can carry an own '__proto__'; assignment would run the inherited setter
+				if (key === '__proto__')
+					Object.defineProperty(selected, key, {
+						value: record[key],
+						enumerable: true,
+						writable: true,
+						configurable: true,
+					});
+				else selected[key] = record[key];
+			}
 			for (const name of enumerableAttributeNames) {
-				if (name in selected || propertyResolvers[name]?.definition?.tableClass) continue;
+				if (Object.hasOwn(selected, name) || propertyResolvers[name]?.definition?.tableClass) continue;
 				const value = record[name];
 				if (value !== undefined) selected[name] = value;
 			}

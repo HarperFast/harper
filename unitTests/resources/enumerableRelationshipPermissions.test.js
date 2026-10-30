@@ -546,6 +546,30 @@ describe('Default reads authorize @enumerable relationships against the related 
 		]);
 	});
 
+	it("keeps a source record's own __proto__ field when narrowing a default read", async () => {
+		const EnumCachedEmp = table({
+			table: 'EnumCachedEmp',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'deptId' },
+				{ name: 'dept', relationship: { from: 'deptId' }, definition: { tableClass: EnumDept }, enumerable: true },
+			],
+		});
+		EnumCachedEmp.sourcedFrom({
+			get: (id) => JSON.parse(`{"id":"${id}","name":"Pat","deptId":"d1","__proto__":{"name":"shadow"}}`),
+		});
+		const target = new RequestTarget('/c1');
+		target.id = 'c1';
+		target.checkPermission = true;
+		const user = roleWith({ EnumCachedEmp: READ, EnumDept: readOnly('id', 'name') });
+		const record = await EnumCachedEmp.get(target, { user });
+		assert.equal(Object.getPrototypeOf(record), Object.prototype);
+		assert.deepStrictEqual(Object.keys(record), ['id', 'name', 'deptId', '__proto__', 'dept']);
+		assert.deepStrictEqual(Object.getOwnPropertyDescriptor(record, '__proto__').value, { name: 'shadow' });
+	});
+
 	it('expands * only in a select written by authorization', async () => {
 		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ, EnumPublisher: READ });
 		const superUser = { role: { permission: { super_user: true } } };
