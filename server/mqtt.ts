@@ -700,7 +700,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						try {
 							granted.push((await session.removeSubscription(subscription)) ? 0 : 0x11); // no subscription existed
 						} catch (error) {
-							mqttLog.warn?.(error);
+							if (error?.statusCode < 500) mqttLog.info?.(error);
+							else mqttLog.warn?.(error);
 							granted.push(0x80); // unspecified error
 						}
 					}
