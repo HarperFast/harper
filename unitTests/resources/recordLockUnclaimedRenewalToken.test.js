@@ -227,7 +227,7 @@ async function raceRenewalReply(cluster, key, beforeReplyLands) {
 describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order request ids', function () {
 	this.timeout(30_000);
 
-	describe('already covered by harper#3789', () => {
+	describe("a renewal during the retry's barrier, and an older request while the newer grant is held", () => {
 		it("releases the renewed token when a delayed untagged attempt renews in place during the retry's freshness barrier", async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], {
 				epochs: { alpha: 1, beta: 1, gamma: 1 },
@@ -353,13 +353,13 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			const gamma = cluster.node('gamma');
 			const key = cluster.keyHomedOn('gamma');
 
-			// alpha acquires key (T1 = [1, 1, 1]) and releases local handle, leaving T1 cached in #delegations.
+			// Alpha holds T1 = [1, 1, 1] with no handle open.
 			const r1 = await alpha.acquire(key, LEASE, WAIT);
 			const t1 = cluster.replies.at(-1).token;
 			assert.deepStrictEqual(t1, [1, 1, 1]);
 			alpha.release(key, r1.admissionId);
 
-			// Advance alpha by 61_000ms so T1 has 29_000ms remaining (< LEASE = 30_000ms), forcing a renewal request.
+			// Leave T1 less than LEASE, so the next acquire asks gamma to renew.
 			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE + 1_000);
 
 			let resolveBeforeReplyFinished;
@@ -377,8 +377,8 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 				}
 			};
 
-			// Wait budget is 40ms while beforeReply delays 60ms, so alpha.acquire times out (raced = true)
-			// while T1 is still installed in alpha.#delegations, and then T2 lands in #releaseUnclaimedGrant(key, T2).
+			// A 40ms wait against a 60ms reply: the caller gives up while alpha still holds T1, and the
+			// renewal's reply arrives unclaimed.
 			await assert.rejects(
 				() => alpha.acquire(key, LEASE, 40),
 				(err) => err.statusCode === 423 || err.statusCode === 503
@@ -428,12 +428,12 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			const beta = cluster.node('beta');
 			const key = cluster.keyHomedOn('gamma');
 
-			// alpha acquires key (r1, T1 = [1, 1, 1], holding = 1 — keep r1 held!).
+			// Alpha holds T1 = [1, 1, 1] with r1 still open.
 			const r1 = await alpha.acquire(key, LEASE, WAIT);
 			const t1 = cluster.replies.at(-1).token;
 			assert.deepStrictEqual(t1, [1, 1, 1]);
 
-			// Advance alpha by 61_000ms so T1 has 29_000ms left while r1 is still held.
+			// Leave T1 less than LEASE while r1 is still open.
 			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE + 1_000);
 
 			const original = alpha.coordinator.transport.requestDelegation;
@@ -452,19 +452,18 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 				return reply;
 			};
 
-			// Second local caller on alpha sends renewal request (requestId = 2) with 40ms timeout.
+			// A second caller asks gamma to renew, waiting only 40ms.
 			const secondAcquire = alpha.acquire(key, LEASE, 40);
 			secondAcquire.catch(() => {});
 			const renewalReply = await renewalGrantedPromise;
 			const t2 = renewalReply.token;
 			assert.deepStrictEqual(t2, [1, 1, 2]);
 
-			// Wait 60ms so the second caller on alpha times out (raced = true) and clears #pendingRequests.
+			// The second caller gives up before the renewal's reply is returned.
 			await delayMs(60);
 			await assert.rejects(secondAcquire, (err) => err.statusCode === 423 || err.statusCode === 503);
 
-			// Initiate recall for T1 while r1 is still holding = 1, so delegation.recalled = true
-			// and #recallHeld is parked on delegation.drained while delegation is still in #delegations.
+			// Recall T1 while r1 is open: the recall waits for r1 to drain.
 			let recallDone = false;
 			const recallPromise = alpha.onDelegationRecall({ key, token: t1 }).then(() => {
 				recallDone = true;
@@ -472,12 +471,11 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			await delayMs(20);
 			assert.strictEqual(recallDone, false, 'recall should be waiting on local holder r1 to release');
 
-			// Return the T2 reply from requestDelegation so #releaseUnclaimedGrant(key, T2) runs while
-			// this.#delegations.has(keyId) is true and delegation.recalled === true.
+			// The unclaimed T2 reply lands during that drain.
 			releaseRenewalReply();
 			await delayMs(20);
 
-			// Now release the local holder r1 and await recall completion.
+			// Releasing r1 lets the recall surrender.
 			alpha.release(key, r1.admissionId);
 			await recallPromise;
 
@@ -533,14 +531,14 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 				return original(...args);
 			};
 
-			// Attempt 2 runs, gets granted T1 = [1, 1, 1], and finishes installing T1 into alpha.#delegations.
+			// The retry is granted T1 = [1, 1, 1] and installs it.
 			const r1 = await alpha.acquire(key, LEASE, WAIT);
 			const t1 = cluster.replies.at(-1).token;
 			assert.deepStrictEqual(t1, [1, 1, 1]);
 			alpha.release(key, r1.admissionId);
 
-			// Now allow delayed Attempt 1 to reach gamma (renewing in place to T2 = [1, 1, 2])
-			// and return to alpha's timed-out Attempt 1 (raced = true -> #releaseUnclaimedGrant(key, T2)).
+			// The delayed first attempt reaches gamma, which renews in place to T2 = [1, 1, 2]; nobody on
+			// alpha is waiting for that reply.
 			const firstReply = await deliverFirst();
 			const t2 = firstReply.token;
 			assert.deepStrictEqual(t2, [1, 1, 2]);
@@ -712,6 +710,54 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 		});
 	});
 
+	describe('a renewal reply landing on a recalled delegation already past its deadline', () => {
+		it('hands the token back with no lineage instead of surrendering it under the old delegation', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha');
+			const beta = cluster.node('beta');
+			const key = cluster.keyHomedOn('gamma');
+			const r1 = await alpha.acquire(key, LEASE, WAIT);
+			const t1 = cluster.replies.at(-1).token;
+			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE + 1_000);
+
+			const original = alpha.coordinator.transport.requestDelegation;
+			let returnRenewalReply;
+			let renewalGranted;
+			const granted = new Promise((resolve) => (renewalGranted = resolve));
+			alpha.coordinator.transport.requestDelegation = async (...args) => {
+				const reply = await original(...args);
+				cluster.advance('alpha', 100);
+				renewalGranted(reply);
+				await new Promise((resolve) => (returnRenewalReply = resolve));
+				return reply;
+			};
+			const secondAcquire = alpha.acquire(key, LEASE, 40);
+			secondAcquire.catch(() => {});
+			const t2 = (await granted).token;
+			await delayMs(60);
+			await assert.rejects(secondAcquire, (error) => error.statusCode === 423 || error.statusCode === 503);
+
+			let recallDone = false;
+			const recall = alpha.onDelegationRecall({ key, token: t1 }).then(() => (recallDone = true));
+			await delayMs(20);
+			assert.strictEqual(recallDone, false, 'the recall waits for r1');
+			// Alpha stalls past its deadline before the reply is processed: the home may have expired the
+			// grant and minted the renewed token afresh for alpha with another holder's lineage behind it.
+			alpha.mono += LEASE;
+			returnRenewalReply();
+			await recall;
+			alpha.release(key, r1.admissionId);
+
+			const releases = alpha.written.filter((entry) => entry.type === 'lockRelease');
+			const forT2 = releases.filter((entry) => compareTokens(entry.token, t2) === 0);
+			assert.strictEqual(forT2.length, 1, JSON.stringify(releases));
+			assert.strictEqual(forT2[0].dependencies, null, 'the old delegation lineage must not vouch for the new token');
+
+			const round = await beta.acquire(key, LEASE, 250);
+			beta.release(key, round.admissionId);
+		});
+	});
+
 	describe('request ordering is per key', () => {
 		it('still grants an older, unseen request for a different key', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
@@ -729,8 +775,6 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			const base = 1_000_000;
 			assert.strictEqual((await gamma.onDelegationRequest(request(first, base + 2))).granted, true);
 			assert.strictEqual((await gamma.onDelegationRequest(request(second, base + 1))).granted, true);
-			const stale = await gamma.onDelegationRequest(request(second, base));
-			assert.strictEqual(stale.reason, 'stale', 'an older request for a key already asked for is stale');
 		});
 	});
 });

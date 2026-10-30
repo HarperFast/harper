@@ -1044,8 +1044,8 @@ epoch)`: an id already seen, or older than the window, is `stale` — never a fr
   home started that renewal's lease after the delegation's deadline was anchored at its own send: on
   local expiry it surrenders (fence, then release with its lineage) instead of dropping silently,
   which would leave a later recall confirming with nothing released and the key refused until the
-  home lease. A delegation draining a recall records it as the token its surrender names. One already
-  past its local deadline proves no continuity (the token may be a fresh grant carrying another
+  home lease. A live delegation draining a recall records it as the token its surrender names. One
+  already past its local deadline, recalled or not, proves no continuity (the token may be a fresh grant carrying another
   node's lineage), so it is collected as `tick` would and the token handed back with no lineage. An
   in-place renewal installed through `#acquire` clears the mark: its deadline is anchored afresh.
 - A recall carries the grant's `delegateEpoch`. The delegate's unknown-token branch _fails_ a recall

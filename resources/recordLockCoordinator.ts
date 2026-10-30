@@ -3197,16 +3197,14 @@ export class LockCoordinator {
 		const held = this.#delegations.get(keyId);
 		if (held) {
 			if (token[0] !== held.token[0] || compareTokens(token, held.releaseToken ?? held.token) <= 0) return;
-			// Draining a recall: the surrender that ends it names this token.
-			if (held.recalled) {
-				held.releaseToken = token;
-				return;
-			}
 			if (held.expiresMono > this.#monotonic()) {
 				// The home outwaits a live delegation, so its grant to this node has been continuous and
-				// a newer token can only be its in-place renewal.
-				held.token = token;
-				held.releaseOnExpiry = true;
+				// a newer token can only be its in-place renewal. A recall's drain surrenders under it.
+				if (held.recalled) held.releaseToken = token;
+				else {
+					held.token = token;
+					held.releaseOnExpiry = true;
+				}
 				return;
 			}
 			// Expired here but not yet collected: the home may have expired it too and minted this token as
