@@ -6,6 +6,15 @@ import { isDeepStrictEqual } from 'node:util';
 
 export const ASSERT_TRACKED_WRITABLE = Symbol('assert-tracked-writable');
 export const GET_TRACKED_WRITE_GENERATION = Symbol('get-tracked-write-generation');
+const EXACT_NUMBER_DELTA = Symbol('exact-number-delta');
+// the largest integer magnitude a number holds exactly, the bound for converting a bigint to a number attribute
+const MAX_EXACT_INTEGER = 2n ** 53n;
+
+function exactNumber(name: string, value: bigint) {
+	if (value > MAX_EXACT_INTEGER || value < -MAX_EXACT_INTEGER)
+		throw new ClientError(`${name} must be a number, and ${value} can not be converted to one exactly`);
+	return Number(value);
+}
 
 function assertWritable(target, generation?) {
 	target[ASSERT_TRACKED_WRITABLE]?.(generation);
@@ -34,6 +43,7 @@ function getChanges(target) {
 export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
 	const prototype = Target.prototype;
 	const descriptors = Object.create(null);
+	const numberAttributes = new Set<string>();
 	// Read the Array form. `typeDef.properties` is now a Record<string, JsonSchemaFragment>
 	// after the schema-metadata alignment; iterating it with for...of would throw.
 	// For typeDefs that only carry the Record (e.g. a programmatic Resource that declared
@@ -85,16 +95,28 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					break;
 				case 'Float':
 				case 'Number':
+					numberAttributes.add(name);
 					set = function (value) {
-						const scalarValue = value?.__op__ ? value.value : value;
+						let scalarValue = value?.__op__ ? value.value : value;
+						if (typeof scalarValue === 'bigint') {
+							scalarValue = exactNumber(name, scalarValue);
+							if (value.__op__) value.value = scalarValue;
+							else value = scalarValue;
+						}
 						if (!(typeof scalarValue === 'number' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a number, attempt to assign ${scalarValue}`);
 						getChanges(this)[name] = value;
 					};
 					break;
 				case 'Int':
+					numberAttributes.add(name);
 					set = function (value) {
 						let scalarValue = value?.__op__ ? value.value : value;
+						if (typeof scalarValue === 'bigint') {
+							scalarValue = exactNumber(name, scalarValue);
+							if (value.__op__) value.value = scalarValue;
+							else value = scalarValue;
+						}
 						if (!(scalarValue >> 0 === scalarValue || (value == null && attribute.nullable !== false))) {
 							if (typeof scalarValue === 'number' && Math.abs((scalarValue >> 0) - scalarValue) <= 1) {
 								// if it just needs to be rounded, do the conversion without complaining
@@ -110,10 +132,16 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					};
 					break;
 				case 'Long':
+					numberAttributes.add(name);
 					set = function (value) {
 						let scalarValue = value?.__op__ ? value.value : value;
+						if (typeof scalarValue === 'bigint') {
+							scalarValue = exactNumber(name, scalarValue);
+							if (value.__op__) value.value = scalarValue;
+							else value = scalarValue;
+						}
 						if (!(
-							(Math.round(scalarValue) === value && Math.abs(scalarValue) <= 9007199254740992) ||
+							(Math.round(scalarValue) === scalarValue && Math.abs(scalarValue) <= 9007199254740992) ||
 							(value == null && attribute.nullable !== false)
 						)) {
 							if (typeof scalarValue === 'number' && Math.abs(scalarValue) <= 9007199254740992) {
@@ -190,11 +218,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					let changes = this.getChanges?.();
 					if (changes && name in changes) {
 						const value = changes[name];
-						if (value?.__op__) {
-							const sourceValue = this.getRecord()?.[name];
-							return value.update(sourceValue);
-						}
-						return value;
+						return value?.__op__ ? resolveOperation(value, this.getRecord()?.[name]) : value;
 					}
 					const sourceValue = this.getRecord()?.[name];
 					if (sourceValue && typeof sourceValue === 'object') {
@@ -230,23 +254,28 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 			delete prototype[name];
 	}
 	setMethod('getProperty', function (name) {
+		if (hasOwnChange(this, name)) return this[name];
 		const descriptor = descriptors[name];
 		if (descriptor) {
 			return descriptor.get.call(this);
 		}
-		const changes = this.getChanges();
-		if (changes?.[name] !== undefined) return changes[name];
-		const value = this.getRecord()?.[name];
-		return value && typeof value === 'object' ? readCopy(this, name, value) : value;
+		return getUndeclaredProperty(this, name);
 	});
 	setMethod('set', function (name, value) {
 		const descriptor = descriptors[name];
-		if (descriptor) return descriptor.set.call(this, value);
-		if (typeDef.sealed) throw new ClientError('Can not add a property to a sealed table schema');
-		getChanges(this)[name] = value;
+		if (descriptor) descriptor.set.call(this, value);
+		else {
+			if (typeDef.sealed) throw new ClientError('Can not add a property to a sealed table schema');
+			getChanges(this)[name] = value;
+		}
+		removeOwnProperty(this, name);
 	});
 	setMethod('deleteProperty', function (name) {
 		getChanges(this)[name] = undefined;
+		removeOwnProperty(this, name);
+	});
+	setMethod(EXACT_NUMBER_DELTA, function (name, value) {
+		return numberAttributes.has(name) ? exactNumber(name, value) : value;
 	});
 	setMethod('toJSON', function () {
 		const changes = this.getChanges?.();
@@ -255,16 +284,13 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 			// copy the source first so we have properties in the right order and can override them
 			if (!copiedSource) copiedSource = { ...this.getRecord() };
 			let value = changes[key];
-			if (value?.__op__) {
-				const sourceValue = copiedSource[key];
-				value = value.update(sourceValue);
-			}
+			if (value?.__op__) value = resolveOperation(value, copiedSource[key]);
 			copiedSource[key] = value; // let recursive calls to toJSON handle sub-objects
 		}
-		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
-		if (keys.length > 0) {
+		for (const key of Object.keys(this)) {
+			if (!hasOwnChange(this, key)) continue;
 			if (!copiedSource) copiedSource = { ...this.getRecord() };
-			Object.assign(copiedSource, this);
+			copiedSource[key] = this[key];
 		}
 		return copiedSource || this.getRecord();
 	});
@@ -299,25 +325,38 @@ function getProxiedProperty(target, name, receiver) {
 	if (typeof name === 'string') {
 		if (name === 'then' || name === 'getRecord' || name === 'getChanges') return undefined; // shortcut
 		if (ObjectPrototype[name]) return ObjectPrototype[name];
-		let changes = receiver.getChanges?.();
-		if (changes && name in changes) {
-			return changes[name];
-		}
-		const sourceValue = receiver.getRecord?.()?.[name];
-		if (sourceValue && typeof sourceValue === 'object') {
-			const updatedValue = trackObject(sourceValue, undefined, receiver);
-			if (updatedValue !== sourceValue) {
-				if (!changes) {
-					changes = Object.create(null);
-					receiver._setChanges(changes);
-				}
-				changes[name] = updatedValue;
-				return updatedValue;
-			}
-			return readCopy(receiver, name, sourceValue);
-		}
-		return sourceValue;
+		return getUndeclaredProperty(receiver, name);
 	}
+}
+function getUndeclaredProperty(receiver, name: string) {
+	let changes = receiver.getChanges?.();
+	if (changes && name in changes) {
+		const value = changes[name];
+		return value?.__op__ ? resolveOperation(value, receiver.getRecord?.()?.[name]) : value;
+	}
+	const sourceValue = receiver.getRecord?.()?.[name];
+	if (sourceValue && typeof sourceValue === 'object') {
+		const updatedValue = trackObject(sourceValue, undefined, receiver);
+		if (updatedValue !== sourceValue) {
+			if (!changes) {
+				changes = Object.create(null);
+				receiver._setChanges(changes);
+			}
+			changes[name] = updatedValue;
+			return updatedValue;
+		}
+		return readCopy(receiver, name, sourceValue);
+	}
+	return sourceValue;
+}
+// The value a pending operation gives the property, resolved through the operation registry like the apply path,
+// since a patch can carry a plain `{ __op__, value }` envelope; an unrecognized operation reads as itself
+function resolveOperation(operation, sourceValue) {
+	const apply = crdtOperations.operations[operation.__op__];
+	if (!apply) return operation;
+	const scratch = { value: sourceValue };
+	apply(scratch, 'value', operation);
+	return scratch.value;
 }
 function setProxiedProperty(target: any, name: string | symbol, value, receiver) {
 	if (typeof name === 'string') {
@@ -457,16 +496,21 @@ export function collapseData(target) {
 		if (!copiedSource) copiedSource = isTracked(target) ? { ...target.getRecord() } : {};
 		let value = changes[key];
 		if (value && typeof value === 'object') {
-			if (value.__op__) {
-				const sourceValue = copiedSource[key];
-				value = value.update(sourceValue);
-			} else value = collapseData(value);
+			if (value.__op__) value = resolveOperation(value, copiedSource[key]);
+			else value = collapseData(value);
 		}
 		copiedSource[key] = value;
 	}
 	const keys = Object.keys(target); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
-	if (keys.length > 0) {
-		if (!copiedSource) copiedSource = isTracked(target) ? { ...target.getRecord() } : {};
+	if (isTracked(target)) {
+		for (const key of keys) {
+			if (!hasOwnChange(target, key)) continue;
+			if (!copiedSource) copiedSource = { ...target.getRecord() };
+			const value = target[key];
+			copiedSource[key] = isTracked(value) ? collapseData(value) : value;
+		}
+	} else if (keys.length > 0) {
+		if (!copiedSource) copiedSource = {};
 		Object.assign(copiedSource, target);
 	}
 	return copiedSource || (isTracked(target) ? target.getRecord() : undefined) || target;
@@ -536,11 +580,10 @@ export function updateAndFreeze(target, changes = target.getChanges?.(), mergeOw
 	}
 	// now copy any properties on the instances itself to the merged updated object
 	if (mergeOwnProperties && !Array.isArray(target) && isTracked(target)) {
-		for (const key in target) {
-			if (hasOwnProperty.call(target, key)) {
-				if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord() };
-				mergedUpdatedObject[key] = target[key];
-			}
+		for (const key of Object.keys(target)) {
+			if (!hasOwnChange(target, key)) continue;
+			if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord() };
+			mergedUpdatedObject[key] = committedOwnValue(target[key]);
 		}
 	}
 	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : isTracked(target) ? target.getRecord() : target;
@@ -598,15 +641,17 @@ const IDENTITY = Symbol('identity');
 export function recordOwnBaseline(instance: any) {
 	let baseline;
 	for (const key of Object.keys(instance)) {
-		let value = instance[key];
-		if (typeof value === 'function') value = { [IDENTITY]: value };
-		else if (value !== null && typeof value === 'object') {
-			const copy = contentCopy(value);
-			value = copy === undefined ? { [IDENTITY]: value } : { [SNAPSHOT]: copy };
-		}
-		(baseline ??= Object.create(null))[key] = value;
+		(baseline ??= Object.create(null))[key] = baselineEntry(instance[key]);
 	}
 	if (baseline) ownBaselines.set(instance, baseline);
+}
+function baselineEntry(value) {
+	if (typeof value === 'function') return { [IDENTITY]: value };
+	if (value !== null && typeof value === 'object') {
+		const copy = contentCopy(value);
+		return copy === undefined ? { [IDENTITY]: value } : { [SNAPSHOT]: copy };
+	}
+	return value;
 }
 function atOwnBaseline(target, key: string, value) {
 	const baseline = ownBaselines.get(target);
@@ -616,14 +661,32 @@ function atOwnBaseline(target, key: string, value) {
 	if (initial?.[IDENTITY]) return value === initial[IDENTITY];
 	return sameValue(value, initial);
 }
-/** After a commit, an own property it wrote is compared with the record, not with its initial value */
-export function releaseOwnBaseline(target, patch) {
-	const baseline = ownBaselines.get(target);
-	if (baseline === undefined) return;
-	for (const key in patch) {
-		if (key in baseline && hasOwnProperty.call(target, key) && !atOwnBaseline(target, key, target[key]))
-			delete baseline[key];
+/**
+ * After a commit, an own property it wrote is compared with the value written, so it is a change again only once
+ * edited; an own property the patch did not take from the instance (an untouched class field) keeps its baseline
+ */
+export function releaseOwnBaseline(target, patch, ownKeys = Object.keys(target)) {
+	let baseline = ownBaselines.get(target);
+	for (const key of ownKeys) {
+		if (!(key in patch) || !hasOwnChange(target, key)) continue;
+		const entry = baselineEntry(patch[key]);
+		// compared by identity, an in-place edit after this commit would read as unchanged
+		if (entry?.[IDENTITY]) {
+			if (baseline !== undefined) delete baseline[key];
+			continue;
+		}
+		if (baseline === undefined) ownBaselines.set(target, (baseline = Object.create(null)));
+		baseline[key] = entry;
 	}
+}
+function committedOwnValue(value) {
+	return isTracked(value) ? collapseData(value) : plainCopy(value);
+}
+function removeOwnProperty(target, name: string) {
+	if (!hasOwnProperty.call(target, name)) return;
+	delete target[name];
+	const baseline = ownBaselines.get(target);
+	if (baseline !== undefined) delete baseline[name];
 }
 /** Whether an own property of the instance is data to write, rather than an untouched class field */
 export function hasOwnChange(target, key: string) {
@@ -714,7 +777,7 @@ export function collapseChanges(target, changes, includeOwnProperties: boolean |
 		const value = target[key];
 		if (sameOwnValue(value, source?.[key]) || atOwnBaseline(target, key, value)) continue;
 		if (patch === changes) patch = Object.assign(Object.create(null), changes);
-		patch[key] = isTracked(value) ? collapseData(value) : plainCopy(value);
+		patch[key] = committedOwnValue(value);
 		keyCount++;
 	}
 	// with no record to compare against, any update (even an empty one) writes, as hasChanges decides
@@ -741,7 +804,10 @@ export function applyOwnChanges(target, patch, ownKeys = Object.keys(target)) {
  * already set for it: a pending addition folds into a single addition, an assigned value becomes the
  * sum.
  */
-export function addToChanges(target, property: string, value: number | bigint) {
+export function addToChanges(target, property: string, value: number | bigint, fullUpdate = false) {
+	if (typeof value === 'bigint') value = target[EXACT_NUMBER_DELTA](property, value);
+	// a full update stores its changes, not own properties, so an own value moves into them
+	if (fullUpdate) return target.set(property, crdtOperations.addValues(target.getProperty(property), value));
 	if (hasOwnChange(target, property)) {
 		target[property] = crdtOperations.addValues(target[property], value);
 		return;

@@ -193,7 +193,6 @@ import {
 	assignTrackedAccessors,
 	collapseChanges,
 	recordOwnBaseline,
-	hasOwnChange,
 	releaseOwnBaseline,
 	updateAndFreeze,
 	hasChanges,
@@ -274,13 +273,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
-import {
-	addValues,
-	commutativeOpsOf,
-	operations as crdtOperations,
-	rebuildUpdateBefore,
-	remainingAgainstRecord,
-} from './crdt.ts';
+import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -4499,16 +4492,9 @@ export function makeTable(options): TableResourceClass {
 		addTo(property: any, value: any) {
 			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
-				if (this.#savingOperation?.fullUpdate) {
-					// a full update stores its changes, not own properties, so an own value moves into them
-					const own = hasOwnChange(this, property);
-					const sum = addValues(own ? this[property] : this.getProperty(property), value);
-					(this as any).set(property, sum);
-					if (own) delete this[property];
-				} else {
-					if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
-					addToChanges(this, property, value);
-				}
+				const fullUpdate = this.#savingOperation?.fullUpdate;
+				if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
+				addToChanges(this, property, value, fullUpdate);
 			} else {
 				throw new Error('Can not add a non-numeric value');
 			}
@@ -5643,6 +5629,7 @@ export function makeTable(options): TableResourceClass {
 			// validation is picked up
 			const tracksInstance = !fullUpdate && (recordUpdate === undefined || recordUpdate === this.#changes);
 			let instanceChanges = tracksInstance ? recordUpdate : undefined;
+			let ownKeys: string[] | undefined;
 			let captureChanges, releaseChanges;
 			if (recordUpdate === undefined) {
 				let captured = false;
@@ -5732,7 +5719,6 @@ export function makeTable(options): TableResourceClass {
 							);
 						}
 					}
-					let ownKeys: string[] | undefined;
 					let ownMerged = false;
 					if (tracksInstance) {
 						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
@@ -6923,7 +6909,7 @@ export function makeTable(options): TableResourceClass {
 						(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 					writeCommit(true);
 					// not before: a throw while staging (residency, indexes) leaves a retry comparing against the baselines
-					if (tracksInstance) releaseOwnBaseline(this, recordUpdate);
+					if (ownKeys?.length > 0) releaseOwnBaseline(this, recordUpdate, ownKeys);
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
 						scheduleCleanup(); // arm for replicated writes too, not just local-context writes
