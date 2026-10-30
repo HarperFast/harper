@@ -769,7 +769,9 @@ export type TransactionWrite = {
 	// what this write left for its key in this transaction, once its commit handler stored it (a
 	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
 	// a retry round that takes an early return doesn't leave the prior round's state behind.
-	stagedEntry?: Partial<Entry>;
+	// `unchanged`: staged by a write that left the record as it found it (a publish), with no earlier
+	// write in this transaction having changed it either.
+	stagedEntry?: Partial<Entry> & { unchanged?: boolean };
 	// A later attribute patch needs the complete write even when stagedEntry is a local index stub.
 	completeResidencyRecord?: any;
 	// a later write to the same key in this transaction replaced (or deleted) the record this write
