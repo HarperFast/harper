@@ -5784,6 +5784,8 @@ export function makeTable(options): TableResourceClass {
 							// TODO: else freeze after we have applied the changes
 						}
 					} else {
+						// every own change already equals the record
+						if (ownKeys?.length > 0) releaseOwnBaseline(this, undefined, ownKeys);
 						(committedBy as any).removeWrite?.(write);
 						return false;
 					}

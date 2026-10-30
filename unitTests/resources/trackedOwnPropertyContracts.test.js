@@ -210,7 +210,7 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 			}
 		});
 
-		// (b) After rec.addTo('hits', 5) while own property rec.hits remains at baseline 0
+		// (b) After rec.addTo('hits', 5) on an untouched class field
 		await transaction(async (ctx) => {
 			const rec = await WithField.update('cd-1', ctx);
 			rec.addTo('hits', 5);

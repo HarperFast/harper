@@ -100,8 +100,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 						let scalarValue = value?.__op__ ? value.value : value;
 						if (typeof scalarValue === 'bigint') {
 							scalarValue = exactNumber(name, scalarValue);
-							if (value.__op__) value.value = scalarValue;
-							else value = scalarValue;
+							value = value.__op__ ? { ...value, value: scalarValue } : scalarValue;
 						}
 						if (!(typeof scalarValue === 'number' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a number, attempt to assign ${scalarValue}`);
@@ -114,8 +113,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 						let scalarValue = value?.__op__ ? value.value : value;
 						if (typeof scalarValue === 'bigint') {
 							scalarValue = exactNumber(name, scalarValue);
-							if (value.__op__) value.value = scalarValue;
-							else value = scalarValue;
+							value = value.__op__ ? { ...value, value: scalarValue } : scalarValue;
 						}
 						if (!(scalarValue >> 0 === scalarValue || (value == null && attribute.nullable !== false))) {
 							if (typeof scalarValue === 'number' && Math.abs((scalarValue >> 0) - scalarValue) <= 1) {
@@ -137,8 +135,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 						let scalarValue = value?.__op__ ? value.value : value;
 						if (typeof scalarValue === 'bigint') {
 							scalarValue = exactNumber(name, scalarValue);
-							if (value.__op__) value.value = scalarValue;
-							else value = scalarValue;
+							value = value.__op__ ? { ...value, value: scalarValue } : scalarValue;
 						}
 						if (!(
 							(Math.round(scalarValue) === scalarValue && Math.abs(scalarValue) <= 9007199254740992) ||
@@ -661,15 +658,16 @@ function atOwnBaseline(target, key: string, value) {
 	return sameValue(value, initial);
 }
 /**
- * After a commit, an own property it wrote is compared with the value written, so it is a change again only once
- * edited; an own property the patch did not take from the instance (an untouched class field) keeps its baseline
+ * After a commit (or a save with nothing to write), a changed own property is compared with the value the record now
+ * holds, which the patch wrote or already had, so it is a change again only once edited; an own property still at its
+ * baseline (an untouched class field) keeps it
  */
 export function releaseOwnBaseline(target, patch, ownKeys = Object.keys(target)) {
 	let baseline = ownBaselines.get(target);
 	for (const key of ownKeys) {
-		if (!(key in patch) || !hasOwnChange(target, key)) continue;
+		if (!hasOwnChange(target, key)) continue;
 		if (baseline === undefined) ownBaselines.set(target, (baseline = Object.create(null)));
-		baseline[key] = baselineEntry(patch[key]);
+		baseline[key] = baselineEntry(patch && key in patch ? patch[key] : target[key]);
 	}
 }
 function committedOwnValue(value) {

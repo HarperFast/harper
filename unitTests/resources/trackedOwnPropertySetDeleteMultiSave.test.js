@@ -399,6 +399,39 @@ describe('Tracked record own properties vs set/deleteProperty/addTo, across save
 			assert.strictEqual((await TrackedLifecycleTable.get('edge-class-field-add')).countInt, 10);
 		});
 
+		it('an own value equal to the stored one, saved with or without other changes, is not a change in the next save', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // held locks are RocksDB-only
+			class WithField extends TrackedLifecycleTable {
+				hits = 0;
+				misses = 0;
+			}
+			await TrackedLifecycleTable.put('edge-equal-own', { title: 'init', hits: 10, misses: 20 });
+			await TrackedLifecycleTable.put('edge-equal-anchor', { title: 'anchor' });
+			let held;
+			await transaction(async (ctx) => {
+				const anchor = await WithField.update('edge-equal-anchor', ctx);
+				held = await anchor.lock('edge-equal-own', { hold: true, lease: 10_000 });
+			});
+			try {
+				held.hits = 10;
+				held.title = 'v2';
+				await held.save();
+				held.misses = 20;
+				await held.save();
+				held.addTo('hits', 5);
+				held.addTo('misses', 5);
+				const patch = collapseChanges(held, held.getChanges());
+				assert.strictEqual(patch.hits?.__op__, 'add');
+				assert.strictEqual(patch.misses?.__op__, 'add');
+				await held.save();
+			} finally {
+				await held.unlock();
+			}
+			const saved = await TrackedLifecycleTable.get('edge-equal-own');
+			assert.strictEqual(saved.hits, 15);
+			assert.strictEqual(saved.misses, 25);
+		});
+
 		it('an own assignment back to the stored value after set() or addTo() keeps the stored value', async () => {
 			class WithField extends TrackedLifecycleTable {
 				hits = 0;
