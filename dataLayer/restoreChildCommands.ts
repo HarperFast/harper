@@ -39,7 +39,7 @@ export function assertReceiptAuthorizes(authorization: ReceiptAuthorization): bo
 	);
 }
 
-export interface ApplyAndProveArgs {
+interface ApplyAndProveArgs {
 	/** `staged_tree`: `backupDir` is a staging area whose extracted archive is installed, not engine-restored. */
 	sourceKind?: RestoreSourceKind;
 	operationId?: string;
@@ -81,7 +81,7 @@ async function probeEngineLock(databaseName: string, databasePath: string): Prom
 }
 
 /** Where an apply-and-prove failed: only `verify` and `probe` leave the target untouched. */
-export type RestorePhase = 'verify' | 'probe' | 'apply' | 'prove';
+type RestorePhase = 'verify' | 'probe' | 'apply' | 'prove';
 
 async function inPhase<T>(phase: RestorePhase, run: () => Promise<T>): Promise<T> {
 	try {
@@ -144,7 +144,7 @@ async function applyStagedTreeAndProve(args: ApplyAndProveArgs): Promise<Restore
 	const installBlobs = args.manifest.blobs;
 	const operationTag = args.operationId ?? String(process.pid);
 	await inPhase('verify', async () => {
-		const plan = await verifyStagedTree(args.backupDir);
+		const plan = await verifyStagedTree(args.backupDir, args.databasePath, args.blobRoots);
 		await assertInstallFits(args.backupDir, plan, args.databasePath, args.blobRoots, installBlobs, operationTag);
 	});
 	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));

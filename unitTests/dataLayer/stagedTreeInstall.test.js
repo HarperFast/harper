@@ -11,11 +11,12 @@ const {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statfsSync,
 	statSync,
 	writeFileSync,
 } = fs;
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const { waitFor } = require('../waitFor.js');
 const { closeDatabase, table } = require('#src/resources/databases');
@@ -167,7 +168,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('on one device', function () {
 		it('hard-links table and blob files, copies the rest, and leaves the tree whole', async function () {
 			const { stagingDir, treeDir } = await stage(fullArchive);
-			await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir, tmpdir(), []);
 			const target = fresh('target');
 			const blobRoot = fresh('blobroot');
 
@@ -195,7 +196,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			assertSameBytes(treeDir, target, engineFiles);
 			assert.ok(!readdirSync(target).some((entry) => entry.startsWith('.harper-restore-')), 'the temp dir is gone');
 			assert.ok(walk(blobRoot).length > 0, 'the blob root was installed');
-			await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir, tmpdir(), []);
 			assertRecords(target);
 		});
 	});
@@ -203,7 +204,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('when the filesystem will not link', function () {
 		it('copies every file, verified, and succeeds', async function () {
 			const { stagingDir, treeDir } = await stage(engineArchive);
-			await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir, tmpdir(), []);
 			const target = fresh('target');
 			const restore = (() => {
 				const original = fs.linkSync;
@@ -230,7 +231,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('the install plan', function () {
 		it('counts top-level table and blob files, and per-root blobs, without the blobs README', async function () {
 			const { stagingDir, treeDir } = await stage(fullArchive);
-			const plan = await verifyStagedTree(stagingDir);
+			const plan = await verifyStagedTree(stagingDir, tmpdir(), []);
 
 			const top = walk(treeDir).filter((file) => ENGINE_FILE.test(file));
 			assert.ok(top.length > 0);
@@ -240,11 +241,25 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			const roots = [...plan.blobRoots.entries()];
 			assert.ok(roots.length > 0);
 			assert.ok(roots.every(([index, root]) => Number.isInteger(index) && root.files > 0));
+			const blobDirectories = new Set(blobFiles.map((file) => dirname(file)));
 			assert.strictEqual(
 				roots.reduce((sum, [, root]) => sum + root.files, 0),
-				blobFiles.length,
-				'a blobs README is not counted'
+				blobFiles.length + blobDirectories.size,
+				'every blob file and the directory holding it, and no blobs README'
 			);
+		});
+
+		it('counts copies in whole blocks of the destination volume', async function () {
+			const { stagingDir, treeDir } = await stage(fullArchive);
+			const plan = await verifyStagedTree(stagingDir, tmpdir(), []);
+			const blockSize = statfsSync(tmpdir()).bsize;
+			const top = walk(treeDir).filter((file) => ENGINE_FILE.test(file));
+			const allocated = top.reduce(
+				(sum, file) => sum + Math.ceil(statSync(join(treeDir, file)).size / blockSize) * blockSize,
+				0
+			);
+			assert.strictEqual(plan.immutableEngine.bytes, allocated);
+			assert.strictEqual(plan.immutableEngine.bytes % blockSize, 0);
 		});
 	});
 
@@ -254,7 +269,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 		for (const linking of [true, false]) {
 			it(`leaves no link probe behind when linking ${linking ? 'works' : 'fails with EXDEV'}`, async function () {
 				const { stagingDir } = await stage(fullArchive);
-				const plan = await verifyStagedTree(stagingDir);
+				const plan = await verifyStagedTree(stagingDir, tmpdir(), []);
 				const parent = fresh('parent');
 				const blobParent = fresh('blobparent');
 				mkdirSync(parent, { recursive: true });
@@ -282,7 +297,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			const sst = largest(treeDir, /^[^/]+\.sst$/);
 			flipMiddleByte(join(treeDir, sst));
 
-			await assert.rejects(verifyStagedTree(stagingDir), (error) => {
+			await assert.rejects(verifyStagedTree(stagingDir, tmpdir(), []), (error) => {
 				assert.strictEqual(error.statusCode, 409);
 				assert.ok(error.message.includes(sst), error.message);
 				return true;
@@ -295,7 +310,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			rmSync(join(treeDir, sst));
 
 			await assert.rejects(
-				verifyStagedTree(stagingDir),
+				verifyStagedTree(stagingDir, tmpdir(), []),
 				(error) => error.statusCode === 410 && error.message.includes(sst)
 			);
 		});
@@ -304,7 +319,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 	describe('an interrupted install', function () {
 		it('leaves the tree whole and installs on the rerun', async function () {
 			const { stagingDir, treeDir } = await stage(engineArchive);
-			await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir, tmpdir(), []);
 			const target = fresh('target');
 			const failure = new Error('simulated rename failure');
 			const restore = failingOnCall('renameSync', 2, failure);
@@ -316,7 +331,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 
 			assert.ok(!existsSync(join(target, 'CURRENT')), 'CURRENT is installed last, so the target cannot open');
 			assert.ok(readdirSync(target).length > 0, 'the target is partial');
-			await verifyStagedTree(stagingDir);
+			await verifyStagedTree(stagingDir, tmpdir(), []);
 
 			await installStagedTree(stagingDir, target, [], false, 'op3');
 
@@ -348,20 +363,20 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			it(`refuses ${label} before reading any file`, async function () {
 				const line = JSON.stringify({ path, size: 1, sha256: 'x' });
 				writeFileSync(join(stagingDir, STAGED_INVENTORY_FILE), `${line}\n${original}`);
-				await assert.rejects(verifyStagedTree(stagingDir), /invalid entry/);
+				await assert.rejects(verifyStagedTree(stagingDir, tmpdir(), []), /invalid entry/);
 			});
 		}
 
 		it('refuses a line that is not JSON', async function () {
 			writeFileSync(join(stagingDir, STAGED_INVENTORY_FILE), `not json\n${original}`);
-			await assert.rejects(verifyStagedTree(stagingDir), /invalid entry/);
+			await assert.rejects(verifyStagedTree(stagingDir, tmpdir(), []), /invalid entry/);
 		});
 	});
 
 	describe('an engine-only archive', function () {
 		it('leaves existing blob roots untouched', async function () {
 			const { stagingDir } = await stage(engineArchive);
-			const plan = await verifyStagedTree(stagingDir);
+			const plan = await verifyStagedTree(stagingDir, tmpdir(), []);
 			assert.strictEqual(plan.blobRoots.size, 0, 'precondition: no blobs staged');
 			const blobRoot = fresh('blobroot');
 			mkdirSync(join(blobRoot, 'ab'), { recursive: true });

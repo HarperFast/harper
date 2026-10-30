@@ -164,7 +164,7 @@ export function checkRestoreState(dbPath: string): RestoreState {
 }
 
 /** A receipt that is not committed — or cannot be read — reserves its database just as a marker does. */
-export function receiptReservesDatabase(dbPath: string): boolean {
+function receiptReservesDatabase(dbPath: string): boolean {
 	return receiptBlocksDiscovery(readRestoreReceipt(dbPath));
 }
 

@@ -14,7 +14,7 @@ export function defaultReserve({ size }: StorageSpaceStats): number {
 	return Math.max(GIB, Math.ceil(size * 0.05));
 }
 
-export function defaultInodeReserve(files: number): number {
+function defaultInodeReserve(files: number): number {
 	return Math.max(1024, Math.ceil(files * 0.01));
 }
 
@@ -143,7 +143,6 @@ export class DiskLedger {
 		};
 	}
 
-	/** What is left on the device holding `path` after charges, holds and the reserve. */
 	async remaining(path: string): Promise<{ bytes: number; inodes: number; basis: StorageSpaceStats['basis'] }> {
 		const budget = await this.#budgetFor(path);
 		return { bytes: remainingBytes(budget), inodes: remainingInodes(budget), basis: budget.basis };

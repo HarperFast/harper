@@ -16,6 +16,7 @@ import {
 	readdirSync,
 	renameSync,
 	rmSync,
+	statfsSync,
 	statSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
@@ -89,8 +90,21 @@ export interface InstallPlan {
  * Before anything is destroyed: every staged file must still be byte-for-byte what was verified when
  * the archive was staged — a restart restore can wait on its staging for a long time.
  */
-export async function verifyStagedTree(stagingDir: string): Promise<InstallPlan> {
+export async function verifyStagedTree(
+	stagingDir: string,
+	databasePath: string,
+	blobRoots: string[]
+): Promise<InstallPlan> {
 	const treeDir = stagedTreeDir(stagingDir);
+	// a copy takes whole blocks of the volume it lands on, so a plan counts allocation, not file length
+	const blockSizes = new Map<string, number>();
+	const allocated = (destination: string, size: number) => {
+		let blockSize = blockSizes.get(destination);
+		if (blockSize === undefined)
+			blockSizes.set(destination, (blockSize = statfsSync(nearestExisting(destination)).bsize));
+		return Math.ceil(size / blockSize) * blockSize;
+	};
+	const directories = new Set<string>();
 	const plan: InstallPlan = {
 		immutableEngine: { bytes: 0, files: 0 },
 		otherEngine: { bytes: 0, files: 0 },
@@ -114,16 +128,27 @@ export async function verifyStagedTree(stagingDir: string): Promise<InstallPlan>
 			const index = blobRootIndex(file.path);
 			if (index === undefined) continue;
 			const root = plan.blobRoots.get(index) ?? { bytes: 0, files: 0, sample: file.path };
-			root.bytes += file.size;
+			const destination = blobRoots[index] ?? databasePath;
+			root.bytes += allocated(destination, file.size);
 			root.files++;
+			if (!directories.has(dirname(file.path))) {
+				directories.add(dirname(file.path));
+				root.bytes += allocated(destination, 1);
+				root.files++;
+			}
 			plan.blobRoots.set(index, root);
 		} else if (IMMUTABLE_ENGINE_FILE.test(file.path)) {
-			plan.immutableEngine.bytes += file.size;
+			plan.immutableEngine.bytes += allocated(databasePath, file.size);
 			plan.immutableEngine.files++;
 			plan.immutableEngine.sample ??= file.path;
 		} else {
-			plan.otherEngine.bytes += file.size;
+			plan.otherEngine.bytes += allocated(databasePath, file.size);
 			plan.otherEngine.files++;
+			if (!directories.has(dirname(file.path))) {
+				directories.add(dirname(file.path));
+				plan.otherEngine.bytes += allocated(databasePath, 1);
+				plan.otherEngine.files++;
+			}
 		}
 	}
 	return plan;

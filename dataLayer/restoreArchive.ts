@@ -472,8 +472,14 @@ export function releaseArchiveStaging(source: { backup_dir: string; source_kind?
  */
 export function releaseLapsedStaging(databaseName: string): void {
 	const stagingRoot = join(backupDirForDatabase(databaseName), IMPORT_STAGING_DIR);
-	if (!existsSync(stagingRoot)) return;
-	for (const id of readdirSync(stagingRoot)) {
+	let ids: string[];
+	try {
+		ids = existsSync(stagingRoot) ? readdirSync(stagingRoot) : [];
+	} catch (error) {
+		logger.warn(`Could not list the restore staging areas in ${stagingRoot}; the next sweep retries`, error);
+		return;
+	}
+	for (const id of ids) {
 		const stagingDir = join(stagingRoot, id);
 		try {
 			if (readBackupPins(stagingDir).length > 0) releaseStagingIfUnowned(stagingDir);

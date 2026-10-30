@@ -217,10 +217,8 @@ async function writeInventory(treeDir: string, inventoryPath: string): Promise<v
 }
 
 /**
- * Brings the archive onto disk, tallies it, reserves the peak it needs, extracts it under the entry
- * filter, proves its logs and catalogue, reads every record, and records every file's digest. The
- * extracted tree then is the restore's source: the install verifies it against that inventory before
- * destroying anything and links or copies it into place, leaving it whole until the restore publishes.
+ * The extracted tree is the restore's source, so it must be proven readable and inventoried before any
+ * target is touched; see dataLayer/DESIGN.md.
  */
 export async function stageArchive(args: StageArchiveArgs) {
 	const { databaseName, stagingDir } = args;

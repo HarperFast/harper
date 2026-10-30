@@ -2111,3 +2111,50 @@ describe('releaseArchiveStaging', function () {
 		assert.ok(!existsSync(dir));
 	});
 });
+
+describe('releaseLapsedStaging', function () {
+	const { acquireRestoreLock, releaseRestoreLock } = require('#src/dataLayer/restoreMarker');
+	const { pinBackup } = require('#src/dataLayer/backupRepository');
+	const name = `release_lapsed_${process.pid}`;
+	let targets;
+
+	beforeEach(function () {
+		targets = mkdtempSync(join(tmpdir(), 'harper.unit-test.release-lapsed-'));
+	});
+
+	afterEach(function () {
+		rmSync(backupDirForDatabase(name), { recursive: true, force: true });
+		if (targets) rmSync(targets, { recursive: true, force: true });
+	});
+
+	function pinnedStaging(target) {
+		const dir = join(backupDirForDatabase(name), '.staging', randomUUID());
+		mkdirSync(join(dir, 'tree'), { recursive: true });
+		pinBackup(dir, 'restore-pin', 1, 'test restore', target);
+		return dir;
+	}
+
+	it('keeps an area a restore still in progress holds, and removes it once that restore lets go', function () {
+		const target = join(targets, 'running');
+		mkdirSync(target);
+		const running = pinnedStaging(target);
+		const unpinned = join(backupDirForDatabase(name), '.staging', randomUUID());
+		mkdirSync(unpinned, { recursive: true });
+		const lock = acquireRestoreLock(target);
+		try {
+			restoreArchive.releaseLapsedStaging(name);
+			assert.ok(existsSync(running), 'the running restore keeps its source');
+		} finally {
+			releaseRestoreLock(lock);
+		}
+		restoreArchive.releaseLapsedStaging(name);
+		assert.ok(!existsSync(running), 'released once nothing holds its pin');
+		assert.ok(existsSync(unpinned), 'an area no restore pinned is still being staged');
+	});
+
+	it('does not throw when the staging folder cannot be listed', function () {
+		mkdirSync(backupDirForDatabase(name), { recursive: true });
+		writeFileSync(join(backupDirForDatabase(name), '.staging'), 'not a directory');
+		assert.doesNotThrow(() => restoreArchive.releaseLapsedStaging(name));
+	});
+});

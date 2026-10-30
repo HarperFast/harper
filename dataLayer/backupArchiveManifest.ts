@@ -18,7 +18,7 @@ export const ARCHIVE_MANIFEST_ENTRY = 'harper-backup.json';
 export const ARCHIVE_SCHEMA_VERSION = 1;
 
 /** Bumped for additive fields. Written for operators; no reader gates on it. */
-export const ARCHIVE_SCHEMA_MINOR = 0;
+const ARCHIVE_SCHEMA_MINOR = 0;
 
 /** Capability tokens this build can satisfy when reading an archive. */
 export const SUPPORTED_ARCHIVE_CAPABILITIES: readonly string[] = [

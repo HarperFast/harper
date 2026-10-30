@@ -65,7 +65,7 @@ export interface RestoreChildOptions {
 	beforeDestruction?: () => void;
 }
 
-export class RestoreChildError extends Error {
+class RestoreChildError extends Error {
 	statusCode?: number;
 	constructor(message: string, statusCode?: number, cause?: unknown) {
 		super(message, cause === undefined ? undefined : { cause });
