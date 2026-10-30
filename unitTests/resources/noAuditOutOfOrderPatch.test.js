@@ -485,13 +485,17 @@ describe('out-of-order patch on an audit:false table', () => {
 		sourceGate = new Promise((resolve) => (release = resolve));
 		sourceCalled = () => (called = true);
 		const read = NoAuditSourced.get(id);
+		const readSettled = read.then(
+			() => {},
+			() => {}
+		);
 		try {
 			await waitFor(() => called, { timeout: 5000, message: 'the expired read never called the source' });
 			await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		} finally {
 			release();
 			sourceGate = sourceCalled = undefined;
-			await read.catch(() => {});
+			await readSettled;
 		}
 		await read;
 		await waitFor(() => !NoAuditSourced.primaryStore.hasLock(id), { message: 'the revalidation never settled' });
