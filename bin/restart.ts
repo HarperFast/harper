@@ -19,7 +19,9 @@ const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
 import { rmSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { getThisNodeName } from '../server/nodeName.ts';
+import { REPLICATION_NOT_IMPLEMENTED } from '../server/Server.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
 
@@ -34,7 +36,7 @@ const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 let calledFromCli;
 
-export { restart, restartService, activateDeploymentOnPeers };
+export { restart, restartService, activateDeploymentOnPeers, restartEachPeer };
 
 // Add ITC event listener to main thread which will be called from child that receives restart request.
 if (isMainThread) {
@@ -158,16 +160,34 @@ async function activateDeploymentOnPeers(activation: any) {
 			true
 		);
 	}
+	const { finishRollout, abandonRollout } = await import('../components/deploymentRecorder.ts');
 	const thisNode = getThisNodeName();
-	const otherNodes = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
-	const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
 	const results = [];
-	if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results);
-	// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
-	for (const name of nodes ?? []) {
-		if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
-			results.push({ node: name, error: 'it is no longer one of the nodes in this cluster' });
+	let ending = false;
+	try {
+		const otherNodes = otherKnownNodes(thisNode);
+		const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
+		const unrecorded = [];
+		if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results, unrecorded);
+		// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
+		for (const name of nodes ?? []) {
+			if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
+				const result = { node: name, error: 'it is no longer one of the nodes in this cluster' };
+				results.push(result);
+				unrecorded.push(result);
+			}
 		}
+		ending = true;
+		await finishRollout(deploymentRow, results, unrecorded);
+	} catch (error) {
+		// The job's own record keeps every outcome, for the boot-time settlement to recover when the row could not take it.
+		if (error && typeof error === 'object') error.http_resp_msg ??= { error: error.message, activated: results };
+		// Only a job that failed before visiting every peer: the outcomes it holds are no reason to call one it did `partial`.
+		if (!ending)
+			await abandonRollout(deploymentRow, error?.message ?? String(error)).catch((abandonError) =>
+				hdbLogger.warn(`Failed to end the record of deployment ${deploymentId}:`, abandonError)
+			);
+		throw error;
 	}
 	const failed = results.filter((result) => result.error);
 	if (failed.length > 0) {
@@ -182,10 +202,27 @@ async function activateDeploymentOnPeers(activation: any) {
 	return { activated: results };
 }
 
-async function activateEachPeer(peers: any[], { project, deploymentId, deploymentRow }, results: any[]) {
+/** The cluster's other nodes. A job thread starts with an empty `server.nodes`; subscribing to node updates fills it. */
+function otherKnownNodes(thisNode: string): any[] {
+	try {
+		(global as any).server.replication.monitorNodeCAs();
+	} catch (error) {
+		// Harper core alone has no replication, so no peers; any other failure leaves the list unknown, not empty.
+		if (error?.code !== REPLICATION_NOT_IMPLEMENTED) throw error;
+	}
+	return ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
+}
+
+/** Records each peer's outcome on the deployment row as it lands, except the last, which `unrecorded` hands on. */
+async function activateEachPeer(
+	peers: any[],
+	{ project, deploymentId, deploymentRow },
+	results: any[],
+	unrecorded: any[]
+) {
 	const replication = (global as any).server.replication;
-	replication.monitorNodeCAs();
 	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.ts');
+	const { recordPeerActivation } = await import('../components/deploymentRecorder.ts');
 	const timeoutMs = peerDeployAnswerTimeoutMs({ restart: true });
 	for (const node of peers) {
 		try {
@@ -206,7 +243,118 @@ async function activateEachPeer(peers: any[], { project, deploymentId, deploymen
 		} catch (error) {
 			results.push({ node: node.name, error: error?.message ?? String(error) });
 		}
+		const result = results[results.length - 1];
+		if (node === peers[peers.length - 1] || !(await recordPeerActivation(deploymentRow, result)))
+			unrecorded.push(result);
 	}
+}
+
+const PEER_RESTART_TIMING = {
+	attempts: 3,
+	retryDelayMs: 1000,
+	dispatchTimeoutMs: 60 * 1000,
+	pollIntervalMs: 250,
+	pollTimeoutMs: 30 * 1000,
+	jobDeadlineMs: 10 * 60 * 1000,
+};
+// A peer that refused the operation for write back-pressure never started it. Errors cross replication as
+// text, and 5.3 peers word it "too long of queue".
+const WRITE_QUEUE_BACK_PRESSURE = /Outstanding write transactions have too long (?:a|of) queue/;
+// Rejections known to precede the request reaching the peer. Anything else with a socket error code, or the
+// replicator's "outcome there is unknown" (a timeout, or the connection closing first) or the session's code-less
+// "Connection closed" rejection of requests pending at close, may have started it.
+const NEVER_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+const OUTCOME_UNKNOWN = /outcome there is unknown|^Connection closed\b/;
+const PEER_JOB_PENDING: string[] = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
+
+// See components/DESIGN.md, "A rolling restart job completes only if every peer restarted".
+async function restartEachPeer(peers: any[], request: any, timing = PEER_RESTART_TIMING) {
+	const replication = (global as any).server.replication;
+	const replicated = [];
+	const queue = peers.map((node) => ({ node, attempt: 1, retryAt: 0 }));
+	let haltedBy: string | undefined;
+	while (queue.length > 0) {
+		const { node, attempt, retryAt } = queue.shift();
+		if (haltedBy) {
+			replicated.push({ node: node.name, error: `skipped: the restart of ${haltedBy} did not complete` });
+			continue;
+		}
+		if (retryAt > Date.now()) await delay(retryAt - Date.now());
+		let jobId;
+		try {
+			const answer = await replication.sendOperationToNode(node, request, { timeoutMs: timing.dispatchTimeoutMs });
+			jobId = answer?.job_id;
+		} catch (error) {
+			const message = error?.message ?? String(error);
+			if (attempt < timing.attempts && WRITE_QUEUE_BACK_PRESSURE.test(message)) {
+				hdbLogger.warn(`Restart of ${node.name} was refused (${message}); retrying after the other nodes`);
+				queue.push({ node, attempt: attempt + 1, retryAt: Date.now() + timing.retryDelayMs * 2 ** (attempt - 1) });
+			} else {
+				replicated.push({ node: node.name, error: message });
+				if (mayHaveStarted(error, message)) haltedBy = node.name;
+			}
+			continue;
+		}
+		const outcome = jobId
+			? await awaitPeerJob(replication, node, jobId, timing)
+			: { node: node.name, error: 'it answered without a restart job id' };
+		replicated.push(outcome);
+		if (outcome.error !== undefined) haltedBy = node.name;
+	}
+	const failed = replicated.filter((outcome) => outcome.error !== undefined);
+	if (failed.length > 0) {
+		const error: any = new Error(
+			`Restart of ${request.service} did not complete on ${failed.length} of ${replicated.length} peer node(s): ` +
+				failed
+					.map(({ node, error }) => `${node} (${typeof error === 'string' ? error : JSON.stringify(error)})`)
+					.join('; ')
+		);
+		error.result = { replicated };
+		throw error;
+	}
+	return { replicated };
+}
+
+// A peer's own error answer carries no code; a socket error usually does, a session close does not.
+function mayHaveStarted(error: any, message: string) {
+	if (OUTCOME_UNKNOWN.test(message)) return true;
+	const code = error?.code;
+	return code !== undefined && !NEVER_CONNECTED.has(code);
+}
+
+async function awaitPeerJob(replication: any, node: any, jobId: string, timing: typeof PEER_RESTART_TIMING) {
+	const deadline = Date.now() + timing.jobDeadlineMs;
+	let lastPollError;
+	while (Date.now() < deadline) {
+		await delay(timing.pollIntervalMs);
+		let response;
+		try {
+			response = await replication.sendOperationToNode(
+				node,
+				{ operation: 'get_job', id: jobId },
+				{ timeoutMs: Math.max(1, Math.min(timing.pollTimeoutMs, deadline - Date.now())) }
+			);
+		} catch (error) {
+			// The peer drops this connection while it restarts its own workers.
+			lastPollError = error?.message ?? String(error);
+			hdbLogger.debug?.(`Polling restart job ${jobId} on ${node.name} failed, still waiting:`, lastPollError);
+			continue;
+		}
+		lastPollError = undefined;
+		const job = response?.results?.[0];
+		if (!job) return { node: node.name, error: `its restart job ${jobId} was not found` };
+		if (job.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE) return { node: node.name, message: job.message };
+		if (job.status === hdbTerms.JOB_STATUS_ENUM.ERROR)
+			return { node: node.name, error: job.message ?? `its restart job ${jobId} failed` };
+		if (!PEER_JOB_PENDING.includes(job.status))
+			return { node: node.name, error: `its restart job ${jobId} reported status ${job.status}` };
+	}
+	return {
+		node: node.name,
+		error:
+			`Timed out waiting for restart job ${jobId} to complete` +
+			(lastPollError ? `; the last poll failed: ${lastPollError}` : ''),
+	};
 }
 
 /**
@@ -295,53 +443,10 @@ async function restartService(req: any) {
 				}
 			});
 		});
-		let replicatedResponses;
 		if (req.replicated) {
-			req.replicated = false; // don't send a replicated flag to the nodes we are sending to
-			replicatedResponses = [];
-			for (let node of (global as any).server.nodes) {
-				if (node.name === getThisNodeName()) continue;
-				// for now, only one at a time
-				let job_id;
-				try {
-					({ job_id } = await (global as any).server.replication.sendOperationToNode(node, req));
-				} catch (err) {
-					// If request to node fails, add the error to the response and continue to the next node
-					replicatedResponses.push({ node: node.name, message: err.message });
-					continue;
-				}
-				// wait for the job to finish by polling for the completion of the job
-				replicatedResponses.push(
-					await new Promise((resolve, reject) => {
-						const RETRY_INTERVAL = 250;
-						let retriesLeft = 2400; // 10 minutes
-						let interval = setInterval(async () => {
-							if (retriesLeft-- <= 0) {
-								clearInterval(interval);
-								let error: any = new Error('Timed out waiting for restart job to complete');
-								error.replicated = replicatedResponses; // report the finished restarts
-								reject(error);
-							}
-							let response = await (global as any).server.replication.sendOperationToNode(node, {
-								operation: 'get_job',
-								id: job_id,
-							});
-							const jobResult = response.results[0];
-							if (jobResult.status === 'COMPLETE') {
-								clearInterval(interval);
-								resolve({ node: node.name, message: jobResult.message });
-							}
-							if (jobResult.status === 'ERROR') {
-								clearInterval(interval);
-								let error: any = new Error(jobResult.message);
-								error.replicated = replicatedResponses; // report the finished restarts
-								reject(error);
-							}
-						}, RETRY_INTERVAL);
-					})
-				);
-			}
-			return { replicated: replicatedResponses };
+			const thisNode = getThisNodeName();
+			const peers = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
+			return restartEachPeer(peers, { ...req, replicated: false });
 		}
 		return;
 	}

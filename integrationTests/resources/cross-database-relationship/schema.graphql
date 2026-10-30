@@ -1,0 +1,26 @@
+type Emp @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	vaultId: ID @indexed
+	vault: Vault @relationship(from: vaultId)
+	badgeIds: [ID] @indexed
+	badges: [Badge] @relationship(from: badgeIds)
+}
+
+type Vault @table(database: "hr") @export {
+	id: ID @primaryKey
+	name: String @indexed
+	orgId: ID @indexed
+	org: Org @relationship(from: orgId)
+	emps: [Emp] @relationship(to: vaultId)
+}
+
+type Badge @table(database: "hr") @export {
+	id: ID @primaryKey
+	label: String @indexed
+}
+
+type Org @table(database: "org") @export {
+	id: ID @primaryKey
+	name: String @indexed
+}

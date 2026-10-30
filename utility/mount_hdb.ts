@@ -38,7 +38,8 @@ async function createTables() {
 		try {
 			initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, tableName);
 			let createTable = new (CreateTableObject as any)(terms.SYSTEM_SCHEMA_NAME, tableName, hash_attribute);
-			createTable.attributes = (systemSchema as any)[tableName].attributes;
+			// A copy: `table()` keeps the array it is given as the table's live attribute list.
+			createTable.attributes = structuredClone((systemSchema as any)[tableName].attributes);
 			let primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === hash_attribute);
 			primaryKeyAttribute.isPrimaryKey = true;
 

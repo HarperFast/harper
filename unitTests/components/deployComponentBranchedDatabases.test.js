@@ -13,7 +13,7 @@ const validator = require('#src/components/operationsValidation');
 const { deployComponent } = require('#src/components/operations');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
-const { preserveRootConfig, rootConfigEntry } = require('../rootConfigFixture.js');
+const { preserveRootConfig, removeDeployedComponents, rootConfigEntry } = require('../rootConfigFixture.js');
 
 // deployComponentValidator returns undefined when valid and an Error when invalid.
 const valid = (res) => res === undefined;
@@ -46,9 +46,10 @@ describe('deployComponentValidator branchedDatabases (harper#643)', () => {
 	});
 });
 
-describe('deploy_component branchedDatabases (harper#3044)', function () {
+describe('deploy_component branchedDatabases (harper#3044, harper#3043)', function () {
 	this.timeout(30_000);
 	preserveRootConfig();
+	removeDeployedComponents();
 	let workDirectory;
 	let payload;
 	let tarball;
@@ -70,45 +71,33 @@ describe('deploy_component branchedDatabases (harper#3044)', function () {
 		if (workDirectory) await fs.rm(workDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
-	it('refuses it on a payload deploy, which publishes no root-config entry to carry it', async () => {
+	it('publishes it on the root-config entry of a payload deploy (harper#3043)', async () => {
 		const project = 'branched-payload';
-		await assert.rejects(
-			deployComponent({
-				operation: 'deploy_component',
-				project,
-				payload,
-				branchedDatabases: ['data'],
-				restart: false,
-			}),
-			(error) => {
-				assert.strictEqual(error.statusCode, 400);
-				assert.strictEqual(
-					error.message,
-					"'branchedDatabases' is only supported for package deployments; set it on the application's root config entry instead"
-				);
-				return true;
-			}
-		);
-		assert.strictEqual(rootConfigEntry(project), undefined);
+		const response = await deployComponent({
+			operation: 'deploy_component',
+			project,
+			payload,
+			branchedDatabases: ['data'],
+			restart: false,
+		});
+
+		assert.strictEqual(response.message, `Successfully deployed: ${project}`);
+		assert.deepStrictEqual(rootConfigEntry(project), { branchedDatabases: ['data'] });
 	});
 
-	it('refuses it on a peer replaying a payload deploy, as an origin before this check could send one', async () => {
-		await assert.rejects(
-			deployComponent({
-				operation: 'deploy_component',
-				project: 'branched-replicated',
-				payload,
-				branchedDatabases: ['data'],
-				restart: false,
-				// A replicated execution: the payload stays in the operation when `system` does not replicate.
-				_deploymentId: randomUUID(),
-			}),
-			(error) => {
-				assert.strictEqual(error.statusCode, 400);
-				assert.match(error.message, /'branchedDatabases' is only supported for package deployments/);
-				return true;
-			}
-		);
+	it('publishes it on a peer replaying a payload deploy', async () => {
+		const project = 'branched-replicated';
+		await deployComponent({
+			operation: 'deploy_component',
+			project,
+			payload,
+			branchedDatabases: ['data'],
+			restart: false,
+			// A replicated execution: the payload stays in the operation when `system` does not replicate.
+			_deploymentId: randomUUID(),
+		});
+
+		assert.deepStrictEqual(rootConfigEntry(project), { branchedDatabases: ['data'] });
 	});
 
 	it('publishes it on the root-config entry of a package deploy', async () => {

@@ -16,6 +16,8 @@ import { installApplications, recoverInterruptedActivations } from '../component
 import { failClosedReleases, liveDeploymentId, RejectedReleaseError } from '../components/releaseCertification.ts';
 import { errorForLog } from '../utility/logging/harper_logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { settleInterruptedRolloutsOnce } from '../components/deploymentRecorder.ts';
+import { sweepFailedPayloadsOnce } from '../components/payloadRetention.ts';
 
 let loadedComponents: any = new Map();
 
@@ -94,7 +96,13 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// An unreconciled job row is misleading, but it is no reason to refuse to start. This function re-runs
 	// on every root component reload; the sweep itself holds the once-per-process guard.
 	if (isMainThread) {
-		jobOwnershipRuntimeModule.reconcileInterruptedJobsOnce().catch((error) => console.error(errorForLog(error)));
+		jobOwnershipRuntimeModule
+			.reconcileInterruptedJobsOnce()
+			// A rolling deploy's record is ended by its job, so settle the records once their jobs are.
+			.then(() => settleInterruptedRolloutsOnce())
+			.catch((error) => console.error(errorForLog(error)));
+		// Same shape: once per process, not awaited; expiring old payloads is no reason to hold up boot.
+		sweepFailedPayloadsOnce().catch((error) => console.error(errorForLog(error)));
 	}
 
 	await loadCertificates();

@@ -7,6 +7,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { INVALIDATED } = require('#src/resources/Table');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor.js');
 
 // LMDB keys its log by local time, so a stored tombstone carries no origin log key to tie a later
@@ -14,7 +15,7 @@ const { waitFor } = require('../waitFor.js');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Re-delivered replicated deletes (harper-pro#826)', () => {
-	let Nodes, Unindexed, auditStore;
+	let Nodes, Unindexed, auditStore, peerNodeId, otherPeerNodeId;
 
 	// Each applied transaction needs its own log key: a second transaction at an existing key would
 	// hide the first from auditStore.get.
@@ -35,7 +36,7 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 	function applyFrame(logKey, writes, TableClass = Nodes) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
-			for (const { type, id, record, version = logKey, nodeId = 1 } of writes) {
+			for (const { type, id, record, version = logKey, nodeId = peerNodeId } of writes) {
 				const resource = await TableClass.getResource(id, context);
 				if (type === 'delete') resource._writeDelete(id, { nodeId, version });
 				else if (type === 'invalidate') resource._writeInvalidate(id, undefined, { nodeId, version });
@@ -72,6 +73,10 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 			audit: true,
 		});
 		auditStore = Nodes.primaryStore.rootStore.auditStore;
+		// an id with no mapped node name is this node's own, and a local write mints its log key;
+		// a same-version tie goes to the later node name, so the other peer's name sorts last
+		peerNodeId = getIdOfRemoteNode('redelivery-peer-a', auditStore);
+		otherPeerNodeId = getIdOfRemoteNode('redelivery-peer-b', auditStore);
 	});
 
 	it('does not re-log a delete re-delivered onto its own tombstone', async function () {
@@ -134,8 +139,8 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 	it('still applies a same-version delete from a different origin', async function () {
 		const id = 'other-origin';
 		const deleteKey = originClock();
-		await applyFrame(deleteKey, [del(id, { nodeId: 1 })]);
-		await applyFrame(deleteKey, [del(id, { nodeId: 2 })]);
+		await applyFrame(deleteKey, [del(id, { nodeId: peerNodeId })]);
+		await applyFrame(deleteKey, [del(id, { nodeId: otherPeerNodeId })]);
 		assert.equal(entriesFor(Nodes, id, 'delete').length, 2);
 	});
 
@@ -183,7 +188,9 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 		const logKey = originClock();
 		await applyFrame(logKey, [put(id, 'counted'), del(id)]);
 		// the put's dedup reads the log by key, which can lag a just-committed entry (harper#1137)
-		await waitFor(() => auditStore.get(logKey, Nodes.tableId, id, 1), { message: 'the entries become readable' });
+		await waitFor(() => auditStore.get(logKey, Nodes.tableId, id, peerNodeId), {
+			message: 'the entries become readable',
+		});
 		await applyFrame(logKey, [put(id, 'counted'), del(id)]);
 		assert.equal(entriesFor(Nodes, id, 'put').length, 1);
 		assert.equal(entriesFor(Nodes, id, 'delete').length, 1);
@@ -223,7 +230,7 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 		const deleteKey = originClock();
 		const markerKey = originClock();
 		const frame = (timestamp, writes) => ({ type: 'transaction', timestamp, writes });
-		const deleteWrite = { type: 'delete', id, nodeId: 1, version: deleteKey };
+		const deleteWrite = { type: 'delete', id, nodeId: peerNodeId, version: deleteKey };
 		const Dispatched = table({
 			table: 'RedeliveredDeletesDispatched',
 			database: 'test',
@@ -234,14 +241,14 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 			{
 				subscribeOnThisThread: () => true,
 				async *subscribe() {
-					yield frame(putKey, [{ type: 'put', id, value: { id, name: 'peer' }, nodeId: 1, version: putKey }]);
+					yield frame(putKey, [{ type: 'put', id, value: { id, name: 'peer' }, nodeId: peerNodeId, version: putKey }]);
 					yield frame(deleteKey, [deleteWrite]);
 					yield frame(
 						deleteKey,
 						Array.from({ length: 20 }, () => ({ ...deleteWrite }))
 					);
 					yield frame(markerKey, [
-						{ type: 'put', id: 'marker', value: { id: 'marker' }, nodeId: 1, version: markerKey },
+						{ type: 'put', id: 'marker', value: { id: 'marker' }, nodeId: peerNodeId, version: markerKey },
 					]);
 					await held;
 				},

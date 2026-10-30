@@ -25,27 +25,27 @@ const WEBPACK_CACHE_SEGMENT = join('cache', 'webpack');
  * It does that whether or not the path already existed, so component content there survives no load and
  * packaging it cannot be preserving component source — while packaging it walks the whole install, since
  * the packer dereferences symlinks and recurses into linked directories.
- *
- * `harperdb` is deliberately NOT here, and the asymmetry is the reason: the loader only *repairs*
- * `node_modules/harperdb` when that path already exists. A legacy component shipping a real
- * npm-installed `harperdb` that has never been loaded on this host therefore owns it — and excluding it
- * would strip it from the tarball, after which `installApplication` skips installing (it returns early
- * when `node_modules` exists), the loader's present-gate never fires, and `import from 'harperdb'`
- * fails on the target — and that holds whether the path is skipped by name or by resolved identity,
- * because an archive that simply OMITS it cannot restore it. So a `harperdb` link to the install is
- * still followed. Closing that means packing a placeholder at the path so the loader's present-gate can
- * fire on the target, not skipping it; tracked in harper#2577.
  */
 const INSTALL_OWNED_PATH = join('node_modules', 'harper');
+
+/**
+ * The legacy name for the same link. Unlike `harper`, the loader only re-links `node_modules/harperdb` when
+ * the path already exists, and `installApplication` skips installing when `node_modules` exists. A tarball
+ * that omits the path therefore loses it on the target, and a real npm-installed `harperdb` there is the
+ * component's own. So only a link to the install is install-owned, and it ships as an empty directory the
+ * loader then replaces with the link (harper#2577).
+ */
+const LEGACY_INSTALL_LINK = 'harperdb';
 
 // Callback `realpath`, not `fs/promises`: the loader's `realpathSync` algorithm, which unlike the native one does no
 // case conversion on a case-insensitive filesystem.
 const resolveLink = promisify(realpath);
 
 /**
- * The loader also links the install into `node_modules/harper` of each component it loads from `node_modules` (a
- * config.yaml `package:` entry). Deeper down only such a link is skipped, not the name: a real `harper` under a package
- * nothing loads as a component is that package's own dependency (see the note above).
+ * The loader also links the install into `node_modules/harper` (and an existing `harperdb`) of each component it
+ * loads from `node_modules` (a config.yaml `package:` entry). Deeper down only such a link is install-owned, not the
+ * name: a real `harper` under a package nothing loads as a component is that package's own dependency (see the
+ * notes above).
  */
 async function linksToInstall(link: string): Promise<boolean> {
 	try {
@@ -84,7 +84,11 @@ export interface PackageDirectoryScan {
 	 * the link. `streamPackagedDirectory` skips these paths so the walk continues past them.
 	 */
 	danglingSymlinks: string[];
-	/** Relative paths of nested `node_modules/harper` links to the install, left out under every option. */
+	/**
+	 * Relative paths of `node_modules/harper` and `node_modules/harperdb` links to the install that are
+	 * not the application's own `harper` (skipped by name), left out under every option. The `harperdb`
+	 * ones are replaced by an empty directory entry in the archive.
+	 */
 	installLinks: string[];
 }
 
@@ -121,7 +125,11 @@ export async function scanPackageDirectory(
 			const fullPath = join(dir, entry.name);
 			if (isExcluded(directory, fullPath, options)) continue;
 			if (entry.isSymbolicLink()) {
-				if (entry.name === 'harper' && basename(dir) === 'node_modules' && (await linksToInstall(fullPath))) {
+				if (
+					(entry.name === 'harper' || entry.name === LEGACY_INSTALL_LINK) &&
+					basename(dir) === 'node_modules' &&
+					(await linksToInstall(fullPath))
+				) {
 					installLinks.push(relative(directory, fullPath));
 					continue;
 				}
@@ -187,9 +195,18 @@ export function streamPackagedDirectory(
 			if (gzip.destroyed) return;
 			const skipped = new Set(installLinks);
 			if (dereference) for (const link of danglingSymlinks) skipped.add(link);
+			const placeholders = installLinks.filter((link) => basename(link) === LEGACY_INSTALL_LINK);
 			const packStream = tar.pack(directory, {
 				dereference,
 				ignore: (name: string) => isExcluded(directory, name, options) || skipped.has(relative(directory, name)),
+				// tar-fs can only drop or rewrite walked entries, so the placeholders are added after the walk.
+				finalize: false,
+				finish: (pack) => {
+					for (const link of placeholders) {
+						pack.entry({ name: link.split(sep).join('/'), type: 'directory', mode: 0o755 });
+					}
+					pack.finalize();
+				},
 				map: (header) => {
 					if (header.type === 'directory') {
 						header.mode = 0o755;

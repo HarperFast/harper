@@ -186,9 +186,16 @@ export function rejectionReason(live: LiveCertification, incarnation: string): s
 }
 
 export class RejectedReleaseError extends Error {
-	constructor(component: string, deploymentId: string, reason: string) {
+	/**
+	 * Rejected and still live, failed closed, because there was nothing to restore or main could not record the
+	 * rejection: if the release is isolated, deciding it withdrew its dedicated worker. Not a release being restored, nor a
+	 * record that cannot be read or was never decided.
+	 */
+	slotWithdrawn: boolean;
+	constructor(component: string, deploymentId: string, reason: string, slotWithdrawn = false) {
 		super(`Not loading ${component}: its release ${deploymentId} is not certified to run on this node, ${reason}`);
 		this.name = 'RejectedReleaseError';
+		this.slotWithdrawn = slotWithdrawn;
 	}
 }
 
@@ -228,7 +235,9 @@ export async function failClosedReleases(
 		}));
 		if (!live || live.deploymentId !== entry.name) continue;
 		const reason = rejectionReason(live, incarnation);
-		if (reason) failClosed.set(owner, new RejectedReleaseError(owner, entry.name, reason));
+		if (!reason) continue;
+		const slotWithdrawn = 'record' in live && live.record.state === 'rejected' && !live.record.previous;
+		failClosed.set(owner, new RejectedReleaseError(owner, entry.name, reason, slotWithdrawn));
 	}
 	return failClosed;
 }

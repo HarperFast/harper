@@ -11,6 +11,7 @@ const {
 	assertUsableComponentName,
 	resolveComponentName,
 	resolveGitHost,
+	resolveSetupComponent,
 	storeSealedSecret,
 } = require('#src/bin/deploySetup');
 const { directoryProjectName } = require('#src/utility/componentNames');
@@ -97,6 +98,14 @@ describe('deploySetup', () => {
 				else process.env.GITHUB_SHA = savedSha;
 				fs.removeSync(root);
 			}
+		});
+	});
+
+	describe('resolveSetupComponent', () => {
+		it('accepts a component-name pattern only for a deploy credential (harper#3090)', async () => {
+			assert.strictEqual(await resolveSetupComponent({ project: 'my-app-pr-*' }, 'm', true), 'my-app-pr-*');
+			await assert.rejects(resolveSetupComponent({ project: 'my-app-pr-*' }, 'm'), /not a usable component name/);
+			await assert.rejects(resolveSetupComponent({ project: '*' }, 'm', true), /not a usable component name/);
 		});
 	});
 

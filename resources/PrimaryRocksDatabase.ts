@@ -42,7 +42,13 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		const enableCache = (options as any)?.cache === true;
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
-			this.#cache = new WeakLRUCache();
+			// weak-lru-cache holds `cacheSize` entries strongly (4 LRU generations of cacheSize/4)
+			// and lets everything beyond that live on WeakRefs until GC. The default is 32768
+			// entries, which on a table larger than that caps how much of the working set stays
+			// strongly reachable. Its expirer is a module-level singleton, so the first cache
+			// constructed in a thread fixes the size for every store in that thread.
+			const cacheSize = Number(process.env.HARPER_RECORD_CACHE_SIZE) || undefined;
+			this.#cache = new WeakLRUCache(cacheSize ? { cacheSize } : undefined);
 		}
 	}
 
@@ -147,17 +153,19 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				: undefined;
 		const expectedVersion = cached?.version;
 
-		// Build get options, always merging with caller options to preserve
-		// transaction snapshot. Pass expectedVersion when cached:
+		// Build get options, carrying the caller's transaction to preserve its snapshot. Pass
+		// expectedVersion when cached:
 		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
 		// native layer seeds the VT slot in the same call.
+		// Copy only the keys rocksdb-js reads, not the caller's options: HNSW passes a whole
+		// DatabaseTransaction here.
 		let getOptions: any;
 		if (expectedVersion != null) {
-			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
+			getOptions = { transaction: options?.transaction, expectedVersion };
 		} else if (cache) {
-			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
+			getOptions = { transaction: options?.transaction, populateVersion: true };
 		} else {
 			getOptions = options;
 		}

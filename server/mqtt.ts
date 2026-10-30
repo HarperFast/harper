@@ -3,7 +3,7 @@
 import _mqtt_packet from 'mqtt-packet';
 const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
-import { getSuperUser } from '../security/user.ts';
+import { localPrincipal } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
 	getSharedMessageEncoding,
@@ -38,8 +38,13 @@ let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? proces
 onStartup(() => {
 	AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 });
-export function bypassAuth() {
+/** Test mode: trust loopback connections. Returns a function that restores the previous setting. */
+export function bypassAuth(): () => void {
+	const previous = AUTHORIZE_LOCAL;
 	AUTHORIZE_LOCAL = true;
+	return () => {
+		AUTHORIZE_LOCAL = previous;
+	};
 }
 
 const authorizeLocal = (remoteAddress: string) =>
@@ -191,8 +196,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						}
 					}
 					if (!user && authorizeLocal(socket.remoteAddress)) {
-						user = await getSuperUser();
-						mqttLog.debug?.('Auto-authorizing local connection', user?.username);
+						user = localPrincipal();
+						mqttLog.debug?.('Auto-authorizing local connection');
 					}
 
 					const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user, mqttSettings);
@@ -213,6 +218,25 @@ const REASON_STRING_LIMIT = 256; // bytes
 const ACK_PACKET_OVERHEAD = 16;
 /** `AccessViolation` is 401 for a request with no user and 403 for a user lacking permission; an MQTT client sees both as "Not authorized". */
 const isNotAuthorized = (error: any) => error?.statusCode === 401 || error?.statusCode === 403;
+/** mqtt-packet writes `reasonCode` to a v5 client and `returnCode` to a 3.1/3.1.1 client, so a refusal carries both. */
+const CONNACK_REFUSALS = {
+	badCredentials: { reasonCode: 0x86, returnCode: 4 },
+	notAuthorized: { reasonCode: 0x87, returnCode: 5 },
+	unspecified: { reasonCode: 0x80, returnCode: 3 }, // 3.1.1 has no generic refusal; "server unavailable" is closest
+};
+const V5_CONNACK_REFUSAL_CODES = new Set([
+	0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8c, 0x90, 0x95, 0x97, 0x99, 0x9a, 0x9b, 0x9c,
+	0x9d, 0x9f,
+]);
+/** The code goes into one byte: an HTTP status written raw would wrap into an unrelated code. */
+function connackRefusalFor(error: any, protocolVersion: number | undefined, fallback = CONNACK_REFUSALS.unspecified) {
+	const { code } = error ?? {};
+	const allowed =
+		protocolVersion === 5 ? V5_CONNACK_REFUSAL_CODES.has(code) : Number.isInteger(code) && code >= 1 && code <= 5;
+	if (allowed) return { reasonCode: code, returnCode: code };
+	if (isNotAuthorized(error) || code === 401 || code === 403) return CONNACK_REFUSALS.notAuthorized;
+	return fallback;
+}
 /** Only failures this layer maps to a code of their own are safe to describe: any other carries an internal message. */
 const hasClientSafeMessage = (error: any) => isNotAuthorized(error) || error?.statusCode === 404;
 /** REASON_STRING_LIMIT counts encoded bytes, and a character must not be cut in half. */
@@ -459,8 +483,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							return generateAndSendPacket({
 								// Send a connection acknowledgment with indication of auth failure
 								cmd: 'connack',
-								reasonCode: 0x04, // bad username or password, v3.1.1
-								returnCode: 0x86, // bad username or password, v5
+								...CONNACK_REFUSALS.badCredentials,
 							});
 						}
 					}
@@ -470,13 +493,27 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
-							reasonCode: 0x04, // bad username or password, v3.1.1
-							returnCode: 0x86, // bad username or password, v5
+							...CONNACK_REFUSALS.badCredentials,
 						});
 					}
+					const refuseConnect = (error, fallback?) => {
+						mqttLog.error?.(error);
+						emitEvent('auth-failed', packet, socket, error);
+						recordActionBinary(false, 'connection', 'mqtt', 'connect');
+						return generateAndSendPacket({
+							// Send a connection acknowledgment with indication of auth failure
+							cmd: 'connack',
+							...connackRefusalFor(error, packet.protocolVersion, fallback),
+						});
+					};
 					try {
 						// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used) or is this sufficient?
-						mqttSettings.authorizeClient?.(packet, user);
+						try {
+							mqttSettings.authorizeClient?.(packet, user);
+						} catch (error) {
+							// a hook refuses by throwing, and a bare Error is a denial, not a server fault
+							return refuseConnect(error, CONNACK_REFUSALS.notAuthorized);
+						}
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
 						if (packet.will) {
@@ -546,15 +583,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							releaseClaim?.();
 						}
 					} catch (error) {
-						mqttLog.error?.(error);
-						emitEvent('auth-failed', packet, socket, error);
-						recordActionBinary(false, 'connection', 'mqtt', 'connect');
-						return generateAndSendPacket({
-							// Send a connection acknowledgment with indication of auth failure
-							cmd: 'connack',
-							reasonCode: error.code || 0x05,
-							returnCode: error.code || 0x80, // generic error
-						});
+						return refuseConnect(error);
 					}
 					emitEvent('connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
@@ -691,7 +720,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						try {
 							granted.push((await session.removeSubscription(subscription)) ? 0 : 0x11); // no subscription existed
 						} catch (error) {
-							mqttLog.warn?.(error);
+							if (error?.statusCode < 500) mqttLog.info?.(error);
+							else mqttLog.warn?.(error);
 							granted.push(0x80); // unspecified error
 						}
 					}

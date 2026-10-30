@@ -11,8 +11,9 @@
  * reach more of the filesystem than a remote CLI.
  */
 
-import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
+import { writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
 import { resolve, dirname, relative, sep, isAbsolute, basename } from 'node:path';
+import { MAX_CREDENTIAL_FILE_BYTES, maskCredentialFile, maskCredentialValues } from '../../utility/credentials.ts';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
 const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB — grep skips larger files
@@ -62,7 +63,7 @@ function optionalInteger(value: unknown, name: string, minimum: number): number 
 const KEY_FILE_NAME = /\.(?:pem|key)$|^\.jwtPass$/i;
 // Checked against the text a tool returns, so a key without armor passes; the name and key-directory
 // rules are the guarantee.
-const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+export const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 const ARMOR_LINE_OVERLAP_BYTES = 64;
 // Longer than any PEM private-key block, post-quantum ones included (FrodoKEM-1344 is ~57 KB), so a window
 // whose start lies inside a key normally sees its BEGIN line.
@@ -81,7 +82,12 @@ type Scope = 'components' | 'logs' | 'config';
 const SCOPES: Scope[] = ['components', 'logs', 'config'];
 const SCOPE_DESCRIPTION =
 	"Which scope the `path` is relative to: 'components' (app source directory, the only writable scope), " +
-	"'logs' (read-only), or 'config' (read-only). Defaults to 'components'.";
+	"'logs' (read-only), or 'config' (read-only). Defaults to 'components'. In the read-only scopes, credential " +
+	'values (apiKey, password, token, secret and the like) come back as `*`s.';
+
+function masksCredentials(scope: Scope): boolean {
+	return scope !== 'components';
+}
 
 function scopeRoot(scopes: AgentScopes, scope: Scope): string {
 	switch (scope) {
@@ -156,16 +162,87 @@ function assertOutsidePrivateKey(state: KeyState, path: string, insideMessage: s
 	}
 }
 
-/** Where byte `start` lies relative to a PEM private-key block, judged by what comes before it. */
-async function keyStateAt(fh: FileHandle, start: number): Promise<KeyState> {
-	if (start === 0) return 'outside';
+interface Reader {
+	read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+}
+
+interface Source {
+	reader: Reader;
+	size: number;
+	masked?: Buffer;
+}
+
+/**
+ * A config-scope file is read and masked whole, so the YAML parse sees every key. One too large to parse
+ * on this thread, or not UTF-8, is refused: the per-page text scan cannot resolve a key YAML reads
+ * differently from how it is written.
+ */
+async function openSource(fh: FileHandle, scope: Scope, requested: string): Promise<Source> {
+	const { size } = await fh.stat();
+	if (scope !== 'config') return { reader: fh, size };
+	if (size > MAX_CREDENTIAL_FILE_BYTES) {
+		throw new Error(
+			`Refusing to read ${requested}: a config-scope file over ${MAX_CREDENTIAL_FILE_BYTES / 1024} KiB cannot be checked for credentials`
+		);
+	}
+	const file = await readWhole(fh, size);
+	const masked = maskCredentialFile(file);
+	if (!masked)
+		throw new Error(`Refusing to read ${requested}: it is not UTF-8 text, so it cannot be checked for credentials`);
+	const reader: Reader = {
+		read: async (buffer, offset, length, position) => ({
+			bytesRead: position >= file.length ? 0 : file.copy(buffer, offset, position, position + length),
+		}),
+	};
+	return { reader, size: file.length, masked };
+}
+
+async function readWhole(fh: FileHandle, size: number): Promise<Buffer> {
+	const whole = Buffer.alloc(size);
+	let filled = 0;
+	while (filled < size) {
+		const { bytesRead } = await fh.read(whole, filled, size - filled, filled);
+		if (bytesRead === 0) break;
+		filled += bytesRead;
+	}
+	return whole.subarray(0, filled);
+}
+
+interface Window {
+	page: Buffer;
+	reachesEnd: boolean;
+	before: string;
+	/** `before`, read on into the page far enough to hold an armor line that the page start cuts. */
+	beforeWithOverlap: string;
+	beforeAtFileStart: boolean;
+}
+
+/**
+ * Up to `budget` bytes from `start`, and the look-back the key-material and credential checks judge them by,
+ * taken by the same read.
+ */
+async function readWindow(reader: Reader, size: number, start: number, budget: number): Promise<Window> {
 	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);
-	// Read past `start` so an armor line cut by it still matches, but count only lines that begin before it:
-	// an END line just after `start` must not clear a page that starts on the key's last body line.
-	const before = Buffer.alloc(start - from + ARMOR_LINE_OVERLAP_BYTES);
-	const { bytesRead } = await fh.read(before, 0, before.length, from);
-	const limit = before.toString('utf8', 0, Math.min(start - from, bytesRead)).length;
-	return keyStateAfter(before.toString('utf8', 0, bytesRead), limit, from === 0);
+	const pageLength = Math.min(budget, size - start);
+	const buffer = Buffer.alloc(start - from + Math.max(pageLength, ARMOR_LINE_OVERLAP_BYTES));
+	const { bytesRead } = await reader.read(buffer, 0, buffer.length, from);
+	const pageStart = Math.min(start - from, bytesRead);
+	const page = buffer.subarray(pageStart, Math.min(bytesRead, start - from + pageLength));
+	return {
+		page,
+		reachesEnd: start + page.length >= size,
+		before: buffer.toString('utf8', 0, pageStart),
+		beforeWithOverlap: buffer.toString('utf8', 0, Math.min(bytesRead, start - from + ARMOR_LINE_OVERLAP_BYTES)),
+		beforeAtFileStart: from === 0,
+	};
+}
+
+/**
+ * Where the page lies relative to a PEM private-key block. Only armor lines that begin before it count: an
+ * END line just after its start must not clear a page that starts on the key's last body line.
+ */
+function keyStateAt(window: Window): KeyState {
+	return keyStateAfter(window.beforeWithOverlap, window.before.length, window.beforeAtFileStart);
 }
 
 /** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */
@@ -282,24 +359,36 @@ export const readFileTool: AgentTool = {
 		const startLine = offset === undefined ? (requestedLine ?? 1) : requestedLine;
 		const fh = await open(path, 'r');
 		try {
-			const { size } = await fh.stat();
+			const source = await openSource(fh, scope, requested);
+			const { size } = source;
 			if (offset !== undefined && offset > size) {
 				throw new Error(`offset ${offset} is past the end of the file (${size} bytes)`);
 			}
 			let start = offset;
 			if (start === undefined) {
-				const located = await findLineStart(fh, size, startLine, ctx.signal);
+				const located = await findLineStart(source.reader, size, startLine, ctx.signal);
 				if ('totalLines' in located) return { path, size, startLine, content: '', totalLines: located.totalLines };
 				start = located.offset;
 			}
-			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx, path));
+			const budget = pageBytes(ctx, path);
+			const window = await readWindow(source.reader, size, start, budget);
+			const page = readPage(window.page, window.reachesEnd, start, lineCount, budget);
+			if (page.endOffset === start && start < size) {
+				throw new Error(`${requested} changed while it was read; read it again`);
+			}
 			assertNoPrivateKey(page.content, requested);
 			assertOutsidePrivateKey(
-				await keyStateAt(fh, start),
+				keyStateAt(window),
 				requested,
 				`Refusing to read key material: ${requested} holds a PEM private key at that position`
 			);
-			const result: Record<string, unknown> = { path, size, offset: start, content: page.content };
+			// Masking never lengthens text, so the page still fits the budget it was cut to.
+			const content = source.masked
+				? source.masked.toString('utf8', start, page.endOffset)
+				: masksCredentials(scope)
+					? maskCredentialValues(page.content, { before: window.before, beforeAtSourceStart: window.beforeAtFileStart })
+					: page.content;
+			const result: Record<string, unknown> = { path, size, offset: start, content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
 			if (startLine !== undefined) Object.assign(result, { startLine, endLine });
 			if (page.lineTruncated) result.lineTruncated = true;
@@ -329,11 +418,7 @@ interface Page {
  * bytes; when not even one line fits, the part of it that does. `content` is the file's exact bytes
  * and `endOffset` always lands on a character boundary.
  */
-async function readPage(fh: FileHandle, size: number, start: number, lineCount: number, budget: number): Promise<Page> {
-	const window = Buffer.alloc(Math.min(budget, size - start));
-	const { bytesRead } = await fh.read(window, 0, window.length, start);
-	const bytes = window.subarray(0, bytesRead);
-	const reachesEnd = start + bytesRead >= size;
+function readPage(bytes: Buffer, reachesEnd: boolean, start: number, lineCount: number, budget: number): Page {
 	let end = 0;
 	let lines = 0;
 	let used = 0;
@@ -361,7 +446,7 @@ async function readPage(fh: FileHandle, size: number, start: number, lineCount: 
 
 /** The byte offset where `line` starts, or the file's line count when it has fewer lines than that. */
 async function findLineStart(
-	fh: FileHandle,
+	reader: Reader,
 	size: number,
 	line: number,
 	signal?: AbortSignal
@@ -372,7 +457,7 @@ async function findLineStart(
 	let lastByte = NEWLINE;
 	for (let position = 0; position < size;) {
 		signal?.throwIfAborted();
-		const { bytesRead } = await fh.read(chunk, 0, Math.min(chunk.length, size - position), position);
+		const { bytesRead } = await reader.read(chunk, 0, Math.min(chunk.length, size - position), position);
 		if (bytesRead === 0) break;
 		const read = chunk.subarray(0, bytesRead);
 		for (let index = read.indexOf(NEWLINE); index !== -1; index = read.indexOf(NEWLINE, index + 1)) {
@@ -517,8 +602,8 @@ export const grepFilesTool: AgentTool = {
 		description:
 			'Search recursively within a scope for a regex pattern. Returns matched lines with line numbers ' +
 			`(each cut to ${MAX_GREP_LINE_CHARS} characters), up to one page of results; \`truncated: true\` ` +
-			'means the search stopped early, so narrow the pattern or path. Files over 5 MiB are not searched; ' +
-			'`skippedFiles` counts them, and read_file pages through them.',
+			'means the search stopped early, so narrow the pattern or path. Files over 5 MiB, and config-scope files over ' +
+			'256 KiB or not UTF-8, are not searched; `skippedFiles` counts them, and read_file pages through larger logs.',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -546,6 +631,7 @@ export const grepFilesTool: AgentTool = {
 			throw new Error(`grep pattern exceeds ${MAX_PATTERN_LENGTH}-char cap`);
 		}
 		const pattern = new RegExp(patternSource, args.flags ?? 'i');
+		const masks = masksCredentials(scope);
 		const cap = Math.min(args.maxResults ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS);
 		const budget = pageBytes(ctx, root);
 		let resultBytes = 0;
@@ -554,23 +640,35 @@ export const grepFilesTool: AgentTool = {
 		const results: Array<{ path: string; line: number; text: string }> = [];
 		const grepFile = async (file: string): Promise<boolean> => {
 			if (truncated) return false;
-			// `stat` first so a multi-GB log or database file can't be slurped into memory by a
-			// well-formed grep request. Anything over the read cap is silently skipped.
-			let size = 0;
+			// Sized on the open handle and read no further than that size, so a multi-GB log, or a file that
+			// grows after the check, is never slurped into memory or handed to the YAML parse.
+			let bytes: Buffer;
 			try {
-				const st = await stat(file);
-				size = st.size;
+				const handle = await open(file, 'r');
+				try {
+					const { size } = await handle.stat();
+					if (size > (scope === 'config' ? MAX_CREDENTIAL_FILE_BYTES : MAX_READ_BYTES)) {
+						skippedFiles++;
+						return true;
+					}
+					bytes = await readWhole(handle, size);
+				} finally {
+					await handle.close();
+				}
 			} catch {
 				return true;
 			}
-			if (size > MAX_READ_BYTES) {
+			const text = bytes.toString('utf8');
+			// Skipped whole, like an oversize file: a matched line could be one line of a key.
+			if (!text || PRIVATE_KEY_ARMOR.test(text)) return true;
+			// Matched after masking, or whether a guessed value matches would tell the model what was masked.
+			const searched =
+				scope === 'config' ? maskCredentialFile(bytes)?.toString('utf8') : masks ? maskCredentialValues(text) : text;
+			if (searched === undefined) {
 				skippedFiles++;
 				return true;
 			}
-			const text = await readFile(file, 'utf8').catch(() => '');
-			// Skipped whole, like an oversize file: a matched line could be one line of a key.
-			if (!text || PRIVATE_KEY_ARMOR.test(text)) return true;
-			const lines = text.split('\n');
+			const lines = searched.split('\n');
 			for (let i = 0; i < lines.length; i++) {
 				if (!pattern.test(lines[i])) continue;
 				const match = { path: file, line: i + 1, text: clipLine(lines[i]) };
@@ -632,37 +730,52 @@ export const tailFileTool: AgentTool = {
 		try {
 			// Read only the trailing page — a multi-GB log file otherwise OOMs the process — and the bytes
 			// before it that can hold the BEGIN line of a key the page ends inside.
-			const { size } = await fh.stat();
+			const source = await openSource(fh, scope, requested);
+			const { size } = source;
 			const start = Math.max(0, size - budget);
 			const scanStart = Math.max(0, start - KEY_LOOKBACK_BYTES);
 			const scanned = Buffer.alloc(size - scanStart);
-			const { bytesRead } = await fh.read(scanned, 0, scanned.length, scanStart);
+			const { bytesRead } = await source.reader.read(scanned, 0, scanned.length, scanStart);
 			const bytes = scanned.subarray(start - scanStart, bytesRead);
 			let firstChar = 0;
 			while (start > 0 && firstChar < bytes.length && (bytes[firstChar] & 0xc0) === 0x80) firstChar++;
-			const all = bytes.toString('utf8', firstChar).split('\n');
+			const rawText = bytes.toString('utf8', firstChar);
+			const pageAt = Math.min(start - scanStart + firstChar, bytesRead);
+			const text = source.masked
+				? source.masked.toString('utf8', start + firstChar, scanStart + bytesRead)
+				: masksCredentials(scope)
+					? maskCredentialValues(rawText, {
+							before: scanned.toString('utf8', 0, pageAt),
+							beforeAtSourceStart: scanStart === 0,
+						})
+					: rawText;
+			// Masking keeps every line break, so the raw and masked lines pair up by index.
+			const all = text.split('\n');
+			const rawAll = text === rawText ? all : rawText.split('\n');
 			// `split('\n')` on a file ending with `\n` leaves a trailing empty entry — drop it so the
 			// "last N lines" the agent sees matches what a human reading the file would see.
-			if (all.length > 0 && all[all.length - 1] === '') all.pop();
+			const end = all.length > 0 && all[all.length - 1] === '' ? all.length - 1 : all.length;
 			// From a mid-file offset the first "line" is almost certainly a fragment; drop it, unless it
 			// is the only line, which is then the cut end of a line longer than the page.
-			let lastLineCut = start > 0 && all.length === 1;
-			if (start > 0 && all.length > 1) all.shift();
-			const lines = all.slice(Math.max(0, all.length - wanted));
-			let used = lines.reduce((total, line) => total + escapedBytes(line) + 3, 0);
-			while (lines.length > 1 && used > budget) used -= escapedBytes(lines.shift()!) + 3;
+			let lastLineCut = start > 0 && end === 1;
+			let begin = Math.max(start > 0 && end > 1 ? 1 : 0, end - wanted);
+			let used = 0;
+			for (let index = begin; index < end; index++) used += escapedBytes(all[index]) + 3;
+			while (end - begin > 1 && used > budget) used -= escapedBytes(all[begin++]) + 3;
+			const lines = all.slice(begin, end);
+			const rawLines = rawAll.slice(begin, end);
 			if (lines.length === 1 && used > budget) {
 				lines[0] = escapedTail(lines[0], budget);
 				lastLineCut = true;
 			}
-			assertNoPrivateKey(lines.join('\n'), requested);
+			assertNoPrivateKey(rawLines.join('\n'), requested);
 			const scannedText = scanned.toString('utf8', 0, bytesRead);
 			assertOutsidePrivateKey(
 				keyStateAfter(scannedText, scannedText.length, scanStart === 0),
 				requested,
 				`Refusing to read key material: ${requested} ends inside a PEM private key`
 			);
-			const omitted = lines.length < Math.min(wanted, start > 0 ? Infinity : all.length);
+			const omitted = lines.length < Math.min(wanted, start > 0 ? Infinity : end);
 			return { path, lines, truncated: omitted || lastLineCut };
 		} finally {
 			await fh.close();

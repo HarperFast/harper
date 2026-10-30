@@ -14,6 +14,7 @@ import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
 	PROJECT_NAME_PATTERN as PROJECT_FILE_NAME_REGEX,
 	GIT_HOST_PATTERN,
+	isComponentNamePattern,
 	isReservedComponentName,
 } from '../utility/componentNames.ts';
 import { assertBranchedDatabases } from './Application.ts';
@@ -217,7 +218,10 @@ function dropComponentFileValidator(req) {
 						"'keepBranches' cannot be combined with 'restart: true'; drop without restart, then restart the workers",
 				}),
 			}),
-	});
+		ifDeploymentId: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
+			'string.pattern.base': `'ifDeploymentId' must be a UUID`,
+		}),
+	}).without('ifDeploymentId', 'file');
 
 	return validator.validateBySchema(req, dropCompSchema);
 }
@@ -350,7 +354,16 @@ function setSecretValidator(req) {
 function grantSecretValidator(req) {
 	const schema = Joi.object({
 		name: SECRET_NAME,
-		component: Joi.string().min(1).required(),
+		// A pattern that is not valid would match nothing at all, so it is refused rather than stored inert.
+		component: Joi.string()
+			.min(1)
+			.required()
+			.custom((value, helpers) =>
+				value.includes('*') && !isComponentNamePattern(value) ? helpers.error('string.componentPattern') : value
+			)
+			.messages({
+				'string.componentPattern': `{#label} may only end in one '*' after a component name prefix, as in 'my-app-pr-*'`,
+			}),
 	});
 
 	return validator.validateBySchema(req, schema);
@@ -609,6 +622,26 @@ function deployComponentValidator(req) {
 				})
 			)
 			.optional(),
+		preview: Joi.object({
+			app: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).required(),
+			pr: Joi.number().integer().min(1).strict().required(),
+			repository: Joi.string().max(256).optional(),
+			branch: Joi.string().max(256).optional(),
+			sha: Joi.string()
+				.pattern(/^[0-9a-f]{7,64}$/i)
+				.optional(),
+			// Required: nothing else would ever drop a preview a caller forgot to date.
+			expiresAt: Joi.alternatives().try(Joi.number().integer().min(0).strict(), Joi.string().isoDate()).required(),
+		})
+			.unknown(false)
+			// The cap counts previews by `app`, so a preview's name has to say which application it is a preview of.
+			.custom((value, helpers) =>
+				req.project === `${value.app}-pr-${value.pr}`
+					? value
+					: helpers.error('object.previewName', { name: `${value.app}-pr-${value.pr}` })
+			)
+			.optional()
+			.messages({ 'object.previewName': `{#label} describes a preview that must be deployed as '{#name}'` }),
 		// `registryAuth` was this field's name on the 5.2 dev line before it grew to carry other
 		// credential kinds. Rejected rather than ignored: validation allows unknown keys, so a caller
 		// still sending it would otherwise get a deploy that silently installs with no credentials.
@@ -616,8 +649,6 @@ function deployComponentValidator(req) {
 			'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
 		}),
 	})
-		.with('urlPath', 'package')
-		.with('host', 'package')
 		// An activation has no build inputs and takes no routing or packaging opinions: the artifact's own
 		// descriptor is the authority for what it publishes, and silently ignoring these would hide that.
 		.without('deployment_id', [
@@ -632,6 +663,7 @@ function deployComponentValidator(req) {
 			'host',
 			'branchedDatabases',
 			'isolated',
+			'preview',
 		]);
 
 	return validator.validateBySchema(req, deployProjSchema);
