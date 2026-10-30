@@ -143,6 +143,10 @@ const OPERATION_AUTH_ERROR_MSGS = {
 	UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
 	UNRESOLVED_SQL_TABLE:
 		'This operation is not authorized: the statement references a table that could not be resolved to a single database. Qualify the table with its database name (e.g. `database.table`).',
+	UNRESOLVED_SQL_COLUMN: (columns: string[]) =>
+		`This operation is not authorized: the statement qualifies ${columns.join(', ')} with a table name or alias that does not identify exactly one table in the statement.`,
+	SQL_ROW_ACCESSOR:
+		'This operation is not authorized: the statement reads whole rows through `_`, `SELECT VALUE`/`ROW`, or a JavaScript expression, which attribute permissions cannot be applied to. Name the attributes to read instead.',
 	USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
 	DROP_SYSTEM:
 		"The 'system' database, tables and records are used internally by Harper and cannot be updated or removed.",

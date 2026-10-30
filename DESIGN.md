@@ -6,7 +6,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## sqlTranslator/ — legacy SQL integration
 
-- [CommonJS date functions](sqlTranslator/DESIGN.md#commonjs-date-functions) — Both runtimes use the same CommonJS helper object, enforced by `alasqlFunctionImporter.test.js`.
+- [CommonJS date functions](sqlTranslator/DESIGN.md#commonjs-date-functions) — Both runtimes use the same CommonJS helper object, enforced by `alasqlFunctionImporter.test.js`. · [SQL authorization attributes every column with the engine's own resolution rules (`sql_statement_bucket.ts`, `sqlEngine/binder/columnScope.ts`)](sqlTranslator/DESIGN.md#sql-authorization-attributes-every-column-with-the-engines-own-resolution-rules-sql_statement_bucketts-sqlenginebindercolumnscopets) — The bucket and the v2 binder share one column resolver; unresolved qualifiers and whole-row accessors are refused for non-super users.
 
 ## .github/ — CI workflows
 
