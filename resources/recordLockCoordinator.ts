@@ -721,6 +721,13 @@ interface Delegation {
 	fencing?: Promise<void>;
 	/** The token the in-flight surrender releases under: the recalled token when the home had renewed past ours. */
 	releaseToken?: FencingToken;
+	/**
+	 * `token` was adopted from a renewal the home made in place for a request this node had stopped
+	 * waiting on. The home started that renewal's lease after `expiresMono` was anchored, so it can
+	 * outlast this delegation by up to a full lease: local expiry surrenders (fence, then release)
+	 * rather than dropping silently, or a recall arriving after it would confirm with nothing released.
+	 */
+	releaseOnExpiry?: boolean;
 }
 
 /**
@@ -976,6 +983,12 @@ interface ReplayWindow {
 	epoch: number | undefined;
 	highest: number;
 	seen: Uint32Array;
+	/**
+	 * The newest id admitted per ring key. The requester only waits on its latest request for a key,
+	 * so an older one for that key is stale even though the window must admit older ids for OTHER
+	 * keys. Kept only while inside the window: anything older is refused by the window already.
+	 */
+	lastByKey: Map<string, number>;
 }
 const replayWindows = new Map<string, ReplayWindow>();
 
@@ -985,14 +998,21 @@ const replayWindows = new Map<string, ReplayWindow>();
  * threw) and across the first tag it sees; only a HIGHER epoch — a restart — starts it afresh, and a
  * LOWER one is a dead incarnation's delayed request that must not touch the live epoch's history.
  */
-function admitRequestId(database: string, requester: string, epoch: number | undefined, requestId: number): boolean {
+function admitRequestId(
+	database: string,
+	requester: string,
+	epoch: number | undefined,
+	requestId: number,
+	ringKey: string
+): boolean {
 	const key = `${database}\u0000${requester}`;
 	let window = replayWindows.get(key);
 	if (window && epoch !== undefined && window.epoch !== undefined && epoch < window.epoch) return false;
 	if (!window || (epoch !== undefined && window.epoch !== undefined && epoch > window.epoch)) {
-		window = { epoch, highest: requestId, seen: new Uint32Array(REQUEST_REPLAY_WINDOW / 32) };
+		window = { epoch, highest: requestId, seen: new Uint32Array(REQUEST_REPLAY_WINDOW / 32), lastByKey: new Map() };
 		replayWindows.set(key, window);
 		window.seen[(requestId & (REQUEST_REPLAY_WINDOW - 1)) >>> 5] |= 1 << (requestId & 31);
+		window.lastByKey.set(ringKey, requestId);
 		return true;
 	}
 	if (requestId > window.highest) {
@@ -1003,15 +1023,30 @@ function admitRequestId(database: string, requester: string, epoch: number | und
 		window.highest = requestId;
 		window.seen[(requestId & (REQUEST_REPLAY_WINDOW - 1)) >>> 5] |= 1 << (requestId & 31);
 		if (window.epoch === undefined) window.epoch = epoch;
+		recordLastForKey(window, ringKey, requestId);
 		return true;
 	}
 	if (window.highest - requestId >= REQUEST_REPLAY_WINDOW) return false;
 	const word = (requestId & (REQUEST_REPLAY_WINDOW - 1)) >>> 5;
 	const bit = 1 << (requestId & 31);
 	if (window.seen[word] & bit) return false;
+	const lastForKey = window.lastByKey.get(ringKey);
+	if (lastForKey !== undefined && requestId < lastForKey) return false;
 	window.seen[word] |= bit;
 	if (window.epoch === undefined) window.epoch = epoch;
+	recordLastForKey(window, ringKey, requestId);
 	return true;
+}
+
+function recordLastForKey(window: ReplayWindow, ringKey: string, requestId: number): void {
+	const { lastByKey } = window;
+	// At most one in-window entry per id, so a sweep at twice the window leaves at most half of it.
+	if (lastByKey.size >= 2 * REQUEST_REPLAY_WINDOW && !lastByKey.has(ringKey)) {
+		const floor = window.highest - REQUEST_REPLAY_WINDOW;
+		for (const [staleKey, id] of lastByKey) if (id <= floor) lastByKey.delete(staleKey);
+	}
+	const last = lastByKey.get(ringKey);
+	if (last === undefined || requestId > last) lastByKey.set(ringKey, requestId);
 }
 
 /**
@@ -1733,8 +1768,10 @@ export class LockCoordinator {
 						// The home renewed this grant in place while it waited: the token it holds is the one a
 						// release here must name.
 						const ours = installed !== undefined && compareTokens(installed.token, reply.token) === 0;
-						if (installed && ours && pending.supersededBy && compareTokens(pending.supersededBy, installed.token) > 0)
+						if (installed && ours && pending.supersededBy && compareTokens(pending.supersededBy, installed.token) > 0) {
 							installed.token = pending.supersededBy;
+							installed.releaseOnExpiry = true;
+						}
 						// A reply that outlived its own delegation grants nothing; fall through and ask again
 						// rather than admitting on authority the home has already expired.
 						if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs)
@@ -2492,6 +2529,10 @@ export class LockCoordinator {
 				});
 			});
 		}
+		// A renewal reply that landed during the drain may have recorded a newer token than the recall's.
+		const pendingRelease = delegation.releaseToken;
+		if (pendingRelease && !(releaseToken && compareTokens(releaseToken, pendingRelease) >= 0))
+			releaseToken = pendingRelease;
 		// The swap may have landed during the drain. The delegation OBJECT moved to the successor, so
 		// surrendering here would revoke through an index this coordinator no longer owns and leave the
 		// successor still holding a delegation whose release has already been written.
@@ -2519,15 +2560,7 @@ export class LockCoordinator {
 			if (budget <= 0) break;
 			if (delegation.expiresMono > now) continue;
 			budget--;
-			// A delegate may drop early; the handles it admitted are fenced by their own lease, which
-			// never outlives the delegation that admitted them.
-			this.#delegations.delete(keyId);
-			this.#revokeAll(delegation);
-			const waiters = delegation.drained;
-			if (waiters) {
-				delegation.drained = undefined;
-				for (const resolve of waiters) resolve();
-			}
+			this.#expireDelegation(keyId, delegation);
 		}
 		budget = MAX_EXPIRIES_PER_TICK;
 		for (const [keyId, grant] of this.#grants) {
@@ -2544,6 +2577,23 @@ export class LockCoordinator {
 			!this.#pendingRemoteRevokes
 		)
 			tickingCoordinators.delete(this);
+	}
+
+	#expireDelegation(keyId: unknown, delegation: Delegation): void {
+		this.#delegations.delete(keyId);
+		// A recalled one is surrendered by its drain, which the waiters below resume.
+		if (delegation.releaseOnExpiry && !delegation.recalled)
+			this.#surrender(keyId, delegation).catch((error) =>
+				warnOnce('failed to release an expired record lock delegation', error)
+			);
+		// A delegate may drop early; the handles it admitted are fenced by their own lease, which
+		// never outlives the delegation that admitted them.
+		else this.#revokeAll(delegation);
+		const waiters = delegation.drained;
+		if (waiters) {
+			delegation.drained = undefined;
+			for (const resolve of waiters) resolve();
+		}
 	}
 
 	/**
@@ -2981,6 +3031,7 @@ export class LockCoordinator {
 			// orphaned them, and the next recall then surrendered while a live handle could still commit.
 			existing.token = token;
 			existing.expiresMono = expiresMono;
+			existing.releaseOnExpiry = undefined;
 			if (dependencyFloor > (existing.dependencyFloor ?? -Infinity)) existing.dependencyFloor = dependencyFloor;
 			this.#startTicking();
 			return existing;
@@ -3139,8 +3190,27 @@ export class LockCoordinator {
 		// ANY live delegation for this key — installed, or still inside its freshness barrier — means this
 		// node is using it, and the tokens need not match: a delayed request from this node renews the
 		// home's grant IN PLACE, so the home can hold a newer token than the one installed here, and
-		// releasing it would clear the grant still backing a live delegation.
-		if (this.#delegations.has(keyId)) return;
+		// releasing it would clear the grant still backing a live delegation. That newer token is the
+		// one the home will only clear on a release naming it, so the delegation takes it over.
+		const held = this.#delegations.get(keyId);
+		if (held) {
+			if (token[0] !== held.token[0] || compareTokens(token, held.releaseToken ?? held.token) <= 0) return;
+			// Draining a recall: the surrender that ends it names this token.
+			if (held.recalled) {
+				held.releaseToken = token;
+				return;
+			}
+			if (held.expiresMono > this.#monotonic()) {
+				// The home outwaits a live delegation, so its grant to this node has been continuous and
+				// a newer token can only be its in-place renewal.
+				held.token = token;
+				held.releaseOnExpiry = true;
+				return;
+			}
+			// Expired here but not yet collected: the home may have expired it too and minted this token as
+			// a fresh grant carrying another node's lineage. Collect it as `tick` would, then hand back.
+			this.#expireDelegation(keyId, held);
+		}
 		const waiting = this.#pendingDelegations.get(keyId);
 		if (waiting) {
 			if (token[0] === waiting.token[0] && compareTokens(token, waiting.supersededBy ?? waiting.token) > 0)
@@ -3233,7 +3303,7 @@ export class LockCoordinator {
 			delegateEpoch < existing.delegateEpoch
 		)
 			return { granted: false, reason: 'retired' };
-		if (requestId !== undefined && !admitRequestId(this.database, requester, delegateEpoch, requestId))
+		if (requestId !== undefined && !admitRequestId(this.database, requester, delegateEpoch, requestId, ringKey))
 			return { granted: false, reason: 'stale' };
 		if (existing) {
 			if (existing.recalling || existing.recallConfirmed)
