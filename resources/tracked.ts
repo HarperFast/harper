@@ -672,12 +672,19 @@ function sameCopy(copy, source) {
  * nothing changed on an existing record, and `changes` itself when it needs no normalization; never
  * mutates `changes`, which is the instance's live tracked state or the caller's update object.
  */
-export function collapseChanges(target, changes) {
-	// a non-object root (an array, binary data) is not a patch; leave it for the write's root validation
-	if (changes != null && (typeof changes !== 'object' || Array.isArray(changes) || ArrayBuffer.isView(changes)))
+export function collapseChanges(target, changes, includeOwnProperties = true) {
+	// a non-object root (null, a primitive, an array, binary data) is not a patch; leave it for the write's root validation
+	if (
+		changes !== undefined &&
+		(changes === null ||
+			typeof changes !== 'object' ||
+			Array.isArray(changes) ||
+			ArrayBuffer.isView(changes) ||
+			changes instanceof ArrayBuffer)
+	)
 		return changes;
 	const source = target.getRecord?.();
-	const ownKeys = Object.keys(target);
+	const ownKeys = includeOwnProperties ? Object.keys(target) : [];
 	let patch = changes;
 	let keyCount = 0;
 	for (const key in changes) {
@@ -711,6 +718,19 @@ export function collapseChanges(target, changes) {
 	return patch;
 }
 const OMITTED = {};
+
+export function applyOwnChanges(target, patch) {
+	for (const name of Object.keys(target)) {
+		if (
+			hasOwnChange(target, name) &&
+			Object.hasOwn(patch, name) &&
+			!sameOwnValue(target[name], patch[name]) &&
+			!Reflect.set(target, name, plainCopy(patch[name]))
+		) {
+			throw new ClientError(`Property ${name} is read-only, so its value cannot be converted`);
+		}
+	}
+}
 
 /**
  * Add a numeric delta to a property of a tracked object, composing with whatever this transaction

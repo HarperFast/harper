@@ -186,6 +186,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
 	addToChanges,
+	applyOwnChanges,
 	assignTrackedAccessors,
 	collapseChanges,
 	recordOwnBaseline,
@@ -5592,7 +5593,8 @@ export function makeTable(options): TableResourceClass {
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
-					if (!(context as any)?.source && (fullUpdate || recordUpdate !== undefined)) {
+					const rootUpdate = tracksInstance ? instanceChanges : recordUpdate;
+					if (!(context as any)?.source && (fullUpdate || rootUpdate !== undefined)) {
 						// A record must be a plain object. Reject primitive, string/number, bare-binary,
 						// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
 						// JSON string/number body, or a top-level JSON array. Such roots carry no primary
@@ -5600,19 +5602,14 @@ export function makeTable(options): TableResourceClass {
 						// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
 						// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
 						// publish payloads are unaffected.)
-						const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
-						if (
-							recordUpdate === null ||
-							typeof recordUpdate !== 'object' ||
-							isBinaryRoot ||
-							Array.isArray(recordUpdate)
-						) {
+						const isBinaryRoot = ArrayBuffer.isView(rootUpdate) || rootUpdate instanceof ArrayBuffer;
+						if (rootUpdate === null || typeof rootUpdate !== 'object' || isBinaryRoot || Array.isArray(rootUpdate)) {
 							// Avoid dumping every byte of a large binary body or huge payload into the error.
 							let received: string;
 							if (isBinaryRoot) {
-								received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
+								received = `${rootUpdate.constructor?.name ?? 'binary'} of ${rootUpdate.byteLength} bytes`;
 							} else {
-								const full = stringify(recordUpdate) ?? typeof recordUpdate;
+								const full = stringify(rootUpdate) ?? typeof rootUpdate;
 								received = full.length > 200 ? full.slice(0, 200) + '...' : full;
 							}
 							throw new ClientError(
@@ -5621,32 +5618,12 @@ export function makeTable(options): TableResourceClass {
 							);
 						}
 					}
+					const collapseOwn = (this.constructor as any).loadAsInstance !== false;
 					if (tracksInstance) {
-						recordUpdate = collapseChanges(this, instanceChanges);
+						recordUpdate = collapseChanges(this, instanceChanges, collapseOwn);
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
 						// blobs are found here; before/beforeIntermediate run after validate
 						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
-					}
-					let ownFieldNames: string[];
-					if (
-						writtenHere &&
-						!fullUpdate &&
-						!committedBy.isReplay &&
-						!(context as any)?.source &&
-						(this.constructor as any).loadAsInstance !== false
-					) {
-						const names = Object.keys(this);
-						if (names.length) {
-							ownFieldNames = names;
-							// merge into the change set itself, so validation coercion and the timestamp stamps
-							// below reach the instance and a source put, not a detached copy
-							if (recordUpdate === undefined || isFrozenRecordObject(recordUpdate)) {
-								const merged = Object.assign(Object.create(null), recordUpdate);
-								if (this.#changes === recordUpdate) this.#changes = merged;
-								recordUpdate = merged;
-							}
-							for (const name of names) recordUpdate[name] = this[name];
-						}
 					}
 					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
 					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
@@ -5662,13 +5639,9 @@ export function makeTable(options): TableResourceClass {
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
-							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
-							if (ownFieldNames) {
-								// the write stores the instance's own fields, so a converted value has to land on it
-								for (const name of ownFieldNames) {
-									if (!Object.is(this[name], recordUpdate[name]) && !Reflect.set(this, name, recordUpdate[name]))
-										throw new ClientError(`Property ${name} is read-only, so its value cannot be converted`);
-								}
+							if (!committedBy.isReplay) {
+								this.validate(recordUpdate, !fullUpdate);
+								if (tracksInstance && collapseOwn) applyOwnChanges(this, recordUpdate);
 							}
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
