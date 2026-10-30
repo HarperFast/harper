@@ -29,6 +29,7 @@ import {
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
 import sortBy from 'lodash/sortBy.js';
@@ -778,6 +779,9 @@ const RELOAD_REFUSAL =
 const UNREADABLE_LOG_REFUSAL =
 	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
+const STRIP_BATCH_SIZE = 100;
+const STRIP_MAX_ATTEMPTS = 20;
+const STRIP_RETRY_BUDGET_MS = 30_000;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
@@ -1245,6 +1249,7 @@ interface TableResourceClass {
 	get lockCoordinator(): LockCoordinator | undefined;
 	addAttributes(attributesToAdd: Attribute[]): Promise<any>;
 	removeAttributes(names: string[]): Promise<any>;
+	stripAttributeValues(names: string[]): Promise<void>;
 	/**
 	 * Get the size of the table in bytes (based on amount of pages stored in the database)
 	 */
@@ -10123,6 +10128,20 @@ export function makeTable(options): TableResourceClass {
 			return (TableResource as any).indexingOperation;
 		}
 		/**
+		 * Remove the named properties only after their schema attributes and indexes have been removed.
+		 */
+		static async stripAttributeValues(names: string[]) {
+			assertAttributesRemoved(names);
+			let keys: Id[] = [];
+			for (const key of primaryStore.getKeys({ start: true, snapshot: false })) {
+				keys.push(key);
+				if (keys.length < STRIP_BATCH_SIZE) continue;
+				await stripBatch(keys, names);
+				keys = [];
+			}
+			if (keys.length > 0) await stripBatch(keys, names);
+		}
+		/**
 		 * Get the size of the table in bytes (based on amount of pages stored in the database)
 		 * @param options
 		 */
@@ -13441,6 +13460,85 @@ export function makeTable(options): TableResourceClass {
 				} catch {}
 				throw error;
 			}
+		);
+	}
+	function assertAttributesRemoved(names: string[]) {
+		const declaredName = names.find((name) => attributes.some((attribute) => attribute.name === name));
+		if (declaredName !== undefined)
+			throw new ClientError(
+				`Cannot strip ${declaredName} from ${tableName} while it is still declared; remove the attribute from the schema first`,
+				409
+			);
+	}
+	function stripBatch(
+		keys: Id[],
+		names: string[],
+		attempt = 1,
+		deadline = Date.now() + STRIP_RETRY_BUDGET_MS
+	): Promise<unknown> {
+		assertAttributesRemoved(names);
+		const completions: Promise<unknown>[] = [];
+		const stripKeys = (transaction?: RocksTransaction) => {
+			for (const key of keys) {
+				const entry = primaryStore.getEntry(key, transaction && { transaction, uncachedRead: true });
+				const completion = stripRecord(key, entry, names, transaction);
+				if (completion?.then) {
+					completion.then(undefined, () => {});
+					completions.push(completion);
+				}
+			}
+		};
+		// nested in an open lmdb-js write transaction, transaction() runs the callback inline and returns its result
+		if (!isRocksDB)
+			return when(
+				primaryStore.transaction(() => stripKeys()),
+				() => Promise.all(completions)
+			);
+		const transaction = new RocksTransaction(primaryStore.store, { coordinatedRetry: true });
+		try {
+			stripKeys(transaction);
+		} catch (error) {
+			(transaction as any).abort();
+			throw error;
+		}
+		return commitRawTransaction(transaction).then((committed) => {
+			if (committed) return Promise.all(completions);
+			if (attempt >= STRIP_MAX_ATTEMPTS || Date.now() > deadline)
+				throw new ServerError(
+					`Could not remove ${names.join(', ')} from ${tableName}: a batch of records conflicted with other writes ${attempt} times; run drop_attribute again`,
+					503
+				);
+			// randomized so two strips crossing on the same keys stop retrying in lockstep
+			return sleep(Math.ceil(Math.min(attempt * 20, 1000) * Math.random())).then(() =>
+				stripBatch(keys, names, attempt + 1, deadline)
+			);
+		});
+	}
+
+	function stripRecord(key: Id, entry: Entry | undefined, names: string[], transaction?: RocksTransaction) {
+		const record = entry?.value;
+		if (record == null || typeof record !== 'object' || !names.some((name) => Object.hasOwn(record, name))) return;
+		const stripped = { ...record };
+		for (const name of names) delete stripped[name];
+		return updateRecord(
+			key,
+			stripped,
+			withoutBlobRelease(entry),
+			// a row a raw put stored has no version; RocksDB cannot decode a metadata word without one
+			entry.version ?? (isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime()),
+			// the record-state flags; the rest are re-derived from the payloads they announce
+			entry.metadataFlags & (INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY),
+			false,
+			{
+				expiresAt: entry.expiresAt,
+				residencyId: entry.residencyId,
+				recordNodeId: entry.nodeId,
+				additionalAuditRefs: entry.additionalAuditRefs,
+				receivedIdentityRefs: entry.receivedIdentityRefs,
+				transaction,
+			},
+			'put',
+			true // on LMDB, keeps the local time while its audit entry exists
 		);
 	}
 	function withoutBlobRelease(entry: Entry): Entry {
