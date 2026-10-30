@@ -5371,6 +5371,81 @@ describe('record locks across a node restart: edge cases of the delegate epoch a
 		assert.ok(contender.tsR > 0);
 	}).timeout(20_000);
 
+	/**
+	 * The retry's grant T1 waits in its freshness barrier while the first attempt, delivered late to an
+	 * older home (no request ids), renews that grant in place to T2. Resolves once T2's reply has landed
+	 * on alpha, with the barrier still held.
+	 */
+	async function renewedInPlaceDuringBarrier() {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha');
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const previous = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		cluster.node('beta').coordinator.release(key, previous.admissionId);
+		const original = alpha.coordinator.transport.requestDelegation;
+		let attempts = 0;
+		let deliverFirst;
+		alpha.coordinator.transport.requestDelegation = (...args) => {
+			if (++attempts === 1) return new Promise((resolve) => (deliverFirst = () => original(...args).then(resolve)));
+			return original(...args);
+		};
+		let releaseBarrier;
+		cluster.beforeFreshness = (name) => {
+			if (name !== 'alpha') return;
+			cluster.beforeFreshness = undefined;
+			return new Promise((resolve) => (releaseBarrier = resolve));
+		};
+		gamma.onDelegationRequest = (() => {
+			const real = gamma.onDelegationRequest.bind(gamma);
+			return async (request) => real({ ...request, requestId: undefined, delegateEpoch: undefined });
+		})();
+		const round = alpha.coordinator.acquire(key, LEASE, WAIT);
+		round.catch(() => {});
+		await waitFor(() => releaseBarrier !== undefined, 10_000);
+		const t1 = cluster.replies.at(-1).token;
+		const replied = cluster.replies.length;
+		deliverFirst();
+		await waitFor(() => cluster.replies.length > replied, 10_000);
+		const t2 = cluster.replies.at(-1).token;
+		assert.ok(t2[2] > t1[2], 'the late request did not renew the grant in place');
+		await delayMs(50);
+		assert.strictEqual(alpha.written.length, 0, 'a token was handed back while the retry still waits on it');
+		return { cluster, alpha, key, round, releaseBarrier, t1, t2 };
+	}
+
+	it('a grant the home renewed in place during the barrier installs under the newer token', async () => {
+		const { cluster, alpha, key, round, releaseBarrier, t2 } = await renewedInPlaceDuringBarrier();
+		releaseBarrier();
+		const admitted = await round;
+		alpha.coordinator.release(key, admitted.admissionId);
+		// Surrendering releases under the installed token; only T2 clears the home's grant.
+		const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+		await alpha.coordinator.quiesce(result, () => 1_000);
+		assert.strictEqual(result.surrendered, 1);
+		assert.deepStrictEqual(
+			alpha.written.filter((e) => e.type === 'lockRelease').map((e) => e.token),
+			[t2]
+		);
+		const contender = await cluster.node('beta').coordinator.acquire(key, LEASE, 2_000);
+		assert.ok(contender.tsR > 0);
+	}).timeout(20_000);
+
+	it('a grant the home renewed in place during a barrier that then fails is handed back under both tokens', async () => {
+		const { cluster, alpha, key, round, releaseBarrier, t1, t2 } = await renewedInPlaceDuringBarrier();
+		alpha.freshnessError = new Error('freshness unavailable');
+		releaseBarrier();
+		await assert.rejects(round, /Could not establish successor freshness/);
+		await waitFor(() => alpha.written.filter((e) => e.type === 'lockRelease').length === 2, 5_000);
+		assert.deepStrictEqual(
+			alpha.written.filter((e) => e.type === 'lockRelease').map((e) => e.token),
+			[t1, t2]
+		);
+		alpha.freshnessError = undefined;
+		const contender = await cluster.node('beta').coordinator.acquire(key, LEASE, 2_000);
+		assert.ok(contender.tsR > 0);
+	}).timeout(20_000);
+
 	it('a late reply arriving while a retry is pending is handed back once that retry has settled without the key', async () => {
 		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 		const alpha = cluster.node('alpha');
