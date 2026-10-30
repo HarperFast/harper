@@ -249,11 +249,12 @@ function worstNaming(namings: Naming[]): Naming {
 	return namings.includes('head') ? 'head' : namings.includes('unknown') ? 'unknown' : 'base';
 }
 
-/** A script split at newlines and `;`, `&` and `|`, none of which separates escaped, quoted or inside `${{ }}`. */
+/** A script split at newlines and `;`, `&` and `|`, unless escaped, quoted, or inside `${{ }}` or `$( )`, or part of `2>&1`. */
 function shellCommands(script: string): string[] {
 	const commands: string[] = [];
 	let command = '';
 	let quote: string | undefined;
+	let substitutions = 0;
 	for (let index = 0; index < script.length; index++) {
 		const character = script[index];
 		if (character === '\\' && quote !== "'") {
@@ -267,11 +268,18 @@ function shellCommands(script: string): string[] {
 		} else if (quote) {
 			if (character === quote) quote = undefined;
 			command += character;
-		} else if (character === '\n' || character === ';' || character === '&' || character === '|') {
+		} else if (
+			substitutions === 0 &&
+			/[\n;&|]/.test(character) &&
+			script[index - 1] !== '>' &&
+			script[index + 1] !== '>'
+		) {
 			commands.push(command);
 			command = '';
 		} else {
-			if (character === '"' || character === "'") quote = character;
+			if (character === '"' || character === "'" || character === '`') quote = character;
+			if (script.startsWith('$(', index)) substitutions++;
+			else if (character === ')' && substitutions > 0) substitutions--;
 			command += character;
 		}
 	}

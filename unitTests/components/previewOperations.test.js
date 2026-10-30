@@ -427,6 +427,27 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			await disablePreviews({ operation: 'disable_previews', app: 'opsboth', hdb_user: SU });
 		});
 
+		it('keeps what it knows when the census after the drops fails', async () => {
+			await enablePreviews(enableRequest('opslost'));
+			const { deployment_id } = await deploy('opslost-pr-3', metadata('opslost', 3));
+			const peer = withPeer([{ project: 'opslost-pr-3', deployment_id }], () => {
+				server.replication.replicateOperation = async () => {
+					throw new Error('census down');
+				};
+				return { value: { componentRemoved: false } };
+			});
+			try {
+				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opslost', hdb_user: SU }), {
+					statusCode: 500,
+					message: /revoked but not removed: the census after the drops: census down/,
+				});
+			} finally {
+				peer.restore();
+			}
+			assert.ok(await getRoleByName('opslost-ci-preview'), 'the role is kept for the rerun');
+			await disablePreviews({ operation: 'disable_previews', app: 'opslost', hdb_user: SU });
+		});
+
 		it('finishes when what a drop finds live in its place is not a preview', async () => {
 			const newer = { deployment_id: 'opsother-y', status: 'success', preview: null };
 			const response = await disableAgainstNewerRelease('opsother', newer);
