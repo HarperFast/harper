@@ -161,6 +161,7 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 					`SELECT VALUE FROM data.ColPermRight r WHERE r.label = 'shared'`,
 					`SELECT _->id AS k FROM data.ColPermRight r WHERE r.label = 'shared'`,
 					"SELECT ``p`` AS rec FROM data.ColPermRight r WHERE r.label = 'shared'",
+					"SELECT {__proto__:{rec:_}} AS obj FROM data.ColPermRight r WHERE r.label LIKE '%shared%'",
 				]) {
 					assertRefused(await asReader(sql), sql);
 				}
@@ -191,14 +192,19 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 			test('UPDATE or DELETE that filters on a read-denied column is refused and changes nothing', async () => {
 				const update = `UPDATE data.ColPermLeft SET label = 'changed' WHERE ssn = '111'`;
 				assertRefused(await asReader(update), update);
-				const remove = `DELETE FROM data.ColPermLeft WHERE ssn = '222'`;
-				assertRefused(await asReader(remove), remove);
+				for (const remove of [
+					`DELETE FROM data.ColPermLeft WHERE ssn = '222'`,
+					`DELETE FROM data.ColPermLeft WHERE bogus.id IS NULL`,
+				]) {
+					assertRefused(await asReader(remove), remove);
+				}
 				deepStrictEqual(await adminRow('l1'), { id: 'l1', label: 'shared' });
 				deepStrictEqual(await adminRow('l2'), { id: 'l2', label: 'other' });
 			});
 
 			test('UPDATE and DELETE on readable columns and the primary key still run', async () => {
 				for (const sql of [
+					`UPDATE data.ColPermLeft SET label = id WHERE id = 'l2'`,
 					`UPDATE data.ColPermLeft SET label = 'other' WHERE id = 'l2'`,
 					`UPDATE data.ColPermLeft SET label = 'other' WHERE label = 'other'`,
 					`DELETE FROM data.ColPermLeft WHERE id = 'l3'`,

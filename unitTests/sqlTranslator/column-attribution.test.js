@@ -17,6 +17,7 @@ const REGISTRY = {
 		L: { ...attributes('id', 'label', 'ssn'), primaryKey: 'id' },
 		R: attributes('id', 'label', 'ssn', 'code'),
 		C: attributes('id', 'ssn', 'code'),
+		S: attributes('id', 'secret'),
 	},
 	vault: { L: attributes('id', 'secret') },
 };
@@ -98,6 +99,13 @@ describe('SQL column attribution for attribute permissions', () => {
 			}
 		});
 
+		it('falls back to a table joined after the ON when none joined so far declares the column', () => {
+			const bucket = bucketFor(
+				`SELECT a.id FROM data.L a JOIN data.R b ON a.id = b.id AND secret = 'x' JOIN data.S c ON b.id = c.id`
+			);
+			assert.ok(attributesOf(bucket, 'data', 'S').includes('secret'));
+		});
+
 		it('keeps same-named tables in different databases apart', () => {
 			const bucket = bucketFor(`SELECT l.label FROM data.L l JOIN vault.L v ON l.id = v.id WHERE secret = 'x'`);
 			assert.ok(attributesOf(bucket, 'vault', 'L').includes('secret'));
@@ -153,6 +161,22 @@ describe('SQL column attribution for attribute permissions', () => {
 			assert.deepStrictEqual(bucket.getUnresolvedColumnRefs(), ['L.ssn']);
 		});
 
+		it('reports a joined SELECT * whose FROM alias another table also claims', () => {
+			const bucket = bucketFor('SELECT * FROM data.L JOIN data.R L ON L.id = L.id');
+			assert.ok(bucket.getUnresolvedColumnRefs().includes('L.*'));
+			assert.ok(!bucketFor('SELECT * FROM data.L l JOIN data.R r ON l.id = r.id').getUnresolvedColumnRefs().length);
+		});
+
+		it('reports a write statement column qualified by a name other than its table', () => {
+			assert.deepStrictEqual(bucketFor('DELETE FROM data.L WHERE bogus.id IS NULL').getUnresolvedColumnRefs(), [
+				'bogus.id',
+			]);
+			assert.deepStrictEqual(
+				bucketFor('UPDATE data.L SET label = bogus.ssn WHERE L.id = 1').getUnresolvedColumnRefs(),
+				['bogus.ssn']
+			);
+		});
+
 		it('accepts a base table name for an aliased single table', () => {
 			const bucket = bucketFor('SELECT L.ssn FROM data.L AS l');
 			assert.deepStrictEqual(bucket.getUnresolvedColumnRefs(), []);
@@ -197,6 +221,12 @@ describe('SQL column attribution for attribute permissions', () => {
 			assert.deepStrictEqual(remove.getWriteStatementReads().attributes, ['ssn']);
 		});
 
+		it('checks SET targets for update but not the columns a SET expression reads', () => {
+			const update = bucketFor(`UPDATE data.L SET label = ssn WHERE id = 'x'`);
+			assert.deepStrictEqual(attributesOf(update, 'data', 'L'), ['label']);
+			assert.deepStrictEqual(update.getWriteStatementReads().attributes, ['ssn']);
+		});
+
 		it('lists nothing for a SELECT or INSERT', () => {
 			assert.strictEqual(bucketFor('SELECT label FROM data.L').getWriteStatementReads(), undefined);
 			assert.strictEqual(bucketFor("INSERT INTO data.L (id) VALUES ('x')").getWriteStatementReads(), undefined);
@@ -217,6 +247,15 @@ describe('SQL column attribution for attribute permissions', () => {
 			assert.deepStrictEqual(bucketFor('UPDATE data.L SET label = ``1`` WHERE id = 1').getRowAccessors(), [
 				'JavaScript expression',
 			]);
+		});
+
+		it('refuses a JSON literal that hides an expression behind __proto__', () => {
+			for (const sql of [
+				"SELECT {__proto__:{rec:_}} AS obj FROM data.L WHERE label = 'x'",
+				"SELECT {a:{__proto__:{rec:label}}} AS obj FROM data.L WHERE label = 'x'",
+			]) {
+				assert.ok(bucketFor(sql).getRowAccessors().includes('JSON literal with __proto__'), sql);
+			}
 		});
 
 		it('finds an accessor nested deeper than 100 levels', () => {
