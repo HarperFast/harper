@@ -83,11 +83,15 @@ function resumeRequests(session) {
 
 /** A record saved in another database generation: another node's, or this database's before a restore. */
 const ANOTHER_GENERATION = 'another-generation';
-async function fromAnotherGeneration(clientId) {
+async function fromAnotherGeneration(clientId, overrides) {
 	const record = await stored(clientId);
 	await databases.system.hdb_durable_session.put({
 		id: clientId,
-		subscriptions: record.subscriptions.map((entry) => ({ ...entry, databaseGeneration: ANOTHER_GENERATION })),
+		subscriptions: record.subscriptions.map((entry) => ({
+			...entry,
+			databaseGeneration: ANOTHER_GENERATION,
+			...overrides,
+		})),
 	});
 }
 
@@ -186,8 +190,8 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await commitLate();
 		const lateKey = logKeyOf(T, 'late');
 		assert.ok(checkpointFloor(checkpoint) <= lateKey, 'the checkpoint waited for the open transaction');
+		await fromAnotherGeneration(clientId, { startTime: logKeyOf(T, 'early') });
 		const entry = (await stored(clientId)).subscriptions[0];
-		await fromAnotherGeneration(clientId);
 		const second = await connect(clientId);
 		assert.strictEqual(second.session.sessionWasPresent, true);
 		const requests = resumeRequests(second.session);
@@ -281,7 +285,7 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		}
 	});
 
-	it('keeps the scalar at what the session reached while the checkpoint holds below an open transaction', async () => {
+	it('holds both the checkpoint and the scalar below an open transaction, and a scalar resume skips what was acknowledged', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const clientId = `scalar-${name}`;
@@ -304,12 +308,16 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 			checkpointFloor(entry.checkpoint) <= logKeyOf(T, 'late'),
 			'the checkpoint holds below the open transaction'
 		);
-		assert.ok(entry.startTime >= logKeyOf(T, 'early'), 'the scalar is not held under the checkpoint');
+		assert.ok(entry.startTime < logKeyOf(T, 'late'), 'the scalar also holds below the open transaction');
 		const second = await connect(clientId);
 		await second.session.resume();
 		await T.put('after', { value: 'after' });
 		await waitFor(() => values(second.received).includes('after'));
-		assert.ok(!values(second.received).includes('early'), 'the acknowledged delivery is not sent again');
+		assert.deepStrictEqual(
+			values(second.received),
+			['late', 'after'],
+			'the open transaction is delivered and the acknowledged delivery is not sent again'
+		);
 		second.session.disconnect(true);
 	});
 
@@ -590,23 +598,28 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 	it('adopts a first checkpoint only once its floor passes what the topic acknowledged without keeping a receipt', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
+		const thaw = freezeFloor(T);
 		const clientId = `first-${name}`;
 		const first = await connect(clientId);
-		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
-		const commitLate = await heldTransaction(T, 'late');
-		await T.put('early', { value: 'early' });
-		await waitFor(() => values(first.received).includes('early'));
-		await first.session.acknowledge(delivery(first.received, 'early').messageId);
-		// the open transaction holds this floor below the acknowledged delivery, whose receipt the scalar passed
-		await sleep(2);
-		certify(T);
-		await sleep(400);
-		first.session.checkpoint();
-		await first.session.writes;
-		assert.strictEqual((await stored(clientId)).subscriptions[0].checkpoint, undefined, 'not adopted below it');
-		await commitLate();
-		await waitFor(() => values(first.received).includes('late'));
-		await first.session.acknowledge(delivery(first.received, 'late').messageId);
+		try {
+			await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+			await sleep(2);
+			const rootStore = T.primaryStore.rootStore;
+			let earlyFloor = certifyOriginFloor(rootStore);
+			for (let retry = 0; earlyFloor === null && retry < 100; retry++) earlyFloor = certifyOriginFloor(rootStore);
+			await T.put('early', { value: 'early' });
+			await waitFor(() => values(first.received).includes('early'));
+			await first.session.acknowledge(delivery(first.received, 'early').messageId);
+			// a floor from after the SUBSCRIBE and before the acknowledged delivery, whose receipt the scalar passed
+			persistOriginClosedFloor(T.auditStore, earlyFloor);
+			publishOriginFloor(rootStore, earlyFloor);
+			await sleep(400);
+			first.session.checkpoint();
+			await first.session.writes;
+			assert.strictEqual((await stored(clientId)).subscriptions[0].checkpoint, undefined, 'not adopted below it');
+		} finally {
+			thaw();
+		}
 		const checkpoint = await storedCheckpoint(T, first.session, clientId);
 		assert.ok(checkpointFloor(checkpoint) > logKeyOf(T, 'early'), 'adopted once the floor passes it');
 		first.session.disconnect(true);

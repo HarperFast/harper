@@ -2906,10 +2906,12 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			return true;
 		});
 		await second.session.resume();
-		await waitFor(() => ids.every((id) => delivery(second.received, id)), {
+		const rest = ids.slice(1);
+		await waitFor(() => rest.every((id) => delivery(second.received, id)), {
 			timeout: 20_000,
-			message: () => `missing ${ids.filter((id) => !delivery(second.received, id)).length} of the late records`,
+			message: () => `missing ${rest.filter((id) => !delivery(second.received, id)).length} of the unacknowledged late records`,
 		});
+		assert.strictEqual(delivery(second.received, 'late-0'), undefined, 'the acknowledged first record is not sent again');
 		second.session.disconnect(true);
 	});
 
@@ -3121,14 +3123,16 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		const clientId = `late-replayed-${name}`;
 		const first = await connect(clientId);
 		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => delivery(first.received, 'a'));
+		await ackAll(first.session, first.received);
+		await waitFor(async () => (await stored(clientId))?.subscriptions?.[0]?.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		await first.session.writes;
+		// the late write commits after the higher keys while the client is away
 		const commitLate = await heldTransaction(T, 'late');
 		await T.put('early', { value: 'early' });
 		await T.put('stall', { value: 'stall' });
-		await waitFor(() => delivery(first.received, 'stall'));
-		await ackAll(first.session, first.received);
-		first.session.disconnect(true);
-		await first.session.writes;
-		// the late write commits while the client is away: the log holds it after the higher keys
 		await commitLate();
 		const lateKey = T.primaryStore.getEntry('late').version;
 		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'precondition: saved below the late key');
