@@ -1,6 +1,13 @@
 import { dirname } from 'node:path';
 import { Script } from 'node:vm';
-import { scopedTableFactory, table } from './databases.ts';
+import { scopedTableFactory, table, databaseResidencyBlockReason, databases as loadedDatabases } from './databases.ts';
+import {
+	prepareResidencyDeclaration,
+	readResidencyMap,
+	assertResidencyEngine,
+	ResidencyPlacementError,
+} from './residencyMaps.ts';
+import { normalizeResidencyPolicy, sameResidencyPolicy, unsupportedResidencyPolicy } from './residencyPolicy.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 import { Resources } from './Resources.ts';
@@ -145,6 +152,7 @@ if (!server.knownGraphQLDirectives) {
 }
 server.knownGraphQLDirectives.push(
 	'table',
+	'sharded',
 	'sealed',
 	'export',
 	'primaryKey',
@@ -192,7 +200,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			entry.absolutePath,
 			scope.resources,
 			scopedTableFactory(scope.applicationScope?.branches, thisThreadOwnsApplication(scope.applicationScope?.name)),
-			scope.logger
+			scope.logger,
+			scope.applicationScope?.branches
 		);
 	});
 	// Settles with the load's real outcome, so a diagnosed failure is not left for the loader's watchdog
@@ -214,7 +223,8 @@ async function processGraphQLSchema(
 	filePath,
 	resources,
 	declareTable: typeof table = table,
-	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger
+	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger,
+	branches?: Map<string, unknown>
 ) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind, specifiedDirectives } = await import('graphql');
@@ -238,6 +248,7 @@ async function processGraphQLSchema(
 	}
 	const types = new Map();
 	const tables = [];
+	const shardedDeclarations = new Map<any, any>();
 	// we begin by iterating through the definitions in the AST to get the types and convert them
 	// to a friendly format for table attributes
 	for (const definition of ast.definitions) {
@@ -254,6 +265,7 @@ async function processGraphQLSchema(
 					properties: typeProperties,
 					fullTextIndexes: [],
 					fullTextFields: [],
+					residency: null,
 				};
 				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
@@ -262,6 +274,8 @@ async function processGraphQLSchema(
 					const directiveName = directive.name.value;
 					if (directiveName === 'table') {
 						for (const arg of directive.arguments) {
+							if (arg.name.value === 'residency' || arg.name.value === 'sharded')
+								throw new ClientError('Use the @sharded directive', 400);
 							typeDef[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
 						// @table is the canonical schema-defined declaration; pass the flag explicitly so
@@ -283,6 +297,19 @@ async function processGraphQLSchema(
 										.replace(/[\r\n]+/g, ' ')
 										.trim();
 						tables.push(typeDef);
+					}
+					if (directiveName === 'residency') throw new ClientError('Unknown directive @residency; use @sharded', 400);
+					if (directiveName === 'sharded') {
+						if (shardedDeclarations.has(typeDef)) throw new ClientError('A table may declare @sharded only once', 400);
+						const policy = {};
+						for (const arg of directive.arguments ?? []) {
+							if (!['slots', 'by', 'slotFrom'].includes(arg.name.value))
+								throw new ClientError(`Unknown @sharded argument ${arg.name.value}`, 400);
+							if (Object.hasOwn(policy, arg.name.value))
+								throw new ClientError(`Duplicate @sharded argument ${arg.name.value}`, 400);
+							policy[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						shardedDeclarations.set(typeDef, policy);
 					}
 					if (directive.name.value === 'sealed') typeDef.sealed = true;
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
@@ -464,6 +491,16 @@ async function processGraphQLSchema(
 					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
 				assertDerivedFieldOwnership(attributes as any[]);
+				if (shardedDeclarations.has(typeDef) && !typeDef.table)
+					throw new ClientError('@sharded is only supported on a @table type', 400);
+				if (
+					shardedDeclarations.get(typeDef)?.by !== undefined &&
+					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey)
+				)
+					throw new ClientError(
+						'@sharded by requires a secondary index until slot-bearing id-only stubs are supported',
+						400
+					);
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
 					throw new ClientError('@fullText is only supported on a @table type', 400);
 				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);
@@ -514,9 +551,60 @@ async function processGraphQLSchema(
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
+		const declaration = shardedDeclarations.get(typeDef);
+		if (declaration) {
+			const unsupported = unsupportedResidencyPolicy(declaration, `${typeDef.database || 'data'}.${typeDef.table}`);
+			if (unsupported) throw new ClientError(unsupported, 400);
+		}
+		if (declaration?.by !== undefined) {
+			const attribute = typeDef.attributes.find((attribute) => attribute.name === declaration.by);
+			if (!attribute || attribute.computed || attribute.relationship)
+				throw new ClientError('@sharded by must name a declared stored attribute', 400);
+			if (!declaration.slotFrom && !['ID', 'String', 'Int', 'Float', 'Long', 'Any'].includes(attribute.type))
+				throw new ClientError('@sharded by must name a string or number attribute unless slotFrom is provided', 400);
+		}
+		if (declaration && branches?.has(typeDef.database || 'data'))
+			throw new ClientError('Cannot use sharding in application database branches', 400);
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
-		typeDef.tableClass = declareTable(typeDef);
+		const quarantined = databaseResidencyBlockReason(typeDef.database || 'data');
+		if (quarantined) {
+			typeDef.tableClass = loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+			// Defer new tables in this database until a repaired restart; healthy declarations still load.
+			if (!typeDef.tableClass) continue;
+		}
+		const residencyDeadline = Date.now() + 5000;
+		for (; !quarantined;) {
+			try {
+				if (declaration) {
+					const database = typeDef.database || 'data';
+					const previous = loadedDatabases[database]?.[typeDef.table]?.residency;
+					if (previous) assertResidencyEngine(database);
+					const resolved = normalizeResidencyPolicy({
+						...declaration,
+						slots: declaration.slots ?? readResidencyMap(database)?.slots ?? 1024,
+					});
+					typeDef.residency =
+						previous && sameResidencyPolicy(previous, resolved)
+							? previous
+							: await prepareResidencyDeclaration(database, typeDef.table, declaration);
+				}
+				typeDef.tableClass = declareTable(typeDef);
+				break;
+			} catch (error) {
+				if (error instanceof ResidencyPlacementError && error.statusCode === 503 && !(error as any).residencyMapBusy) {
+					typeDef.tableClass = loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+					if (declaration && !typeDef.tableClass?.residency)
+						harperLogger.warn?.(
+							`Sharding declaration for ${typeDef.database || 'data'}.${typeDef.table} could not activate: ${error.message}`
+						);
+					break;
+				}
+				if (!declaration || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+		}
+		if (!typeDef.tableClass) continue;
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
 			const pk = (typeDef.attributes as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';

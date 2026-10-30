@@ -1046,7 +1046,8 @@ export function updateConfigValue(
 	parsedArgs = undefined,
 	createBackup = false,
 	update_config_obj = false,
-	skipParamMap = false
+	skipParamMap = false,
+	options?: { fromOperation?: boolean }
 ) {
 	if (flatConfigObj === undefined) {
 		initConfig();
@@ -1054,6 +1055,7 @@ export function updateConfigValue(
 
 	const configFilePath = getRootConfigFilePath(getConfigValue(CONFIG_PARAM_MAP.hdb_root));
 	const configDoc = parseYamlDoc(configFilePath);
+	const previousDocument = options?.fromOperation ? String(configDoc) : undefined;
 	let schemasArgs;
 
 	// Don't do the update if the values are the same.
@@ -1063,12 +1065,11 @@ export function updateConfigValue(
 	// loose equality (the previous approach) handled string<->number but not
 	// string<->boolean or string<->array, which made the check fire spuriously
 	// every boot for any non-string env var.
-	if (parsedArgs && flatConfigObj) {
+	if (parsedArgs && flatConfigObj && !options?.fromOperation) {
 		let doUpdate = false;
 		for (const arg in parsedArgs) {
 			const castedValue = castConfigValue(arg, parsedArgs[arg]);
-			// set_configuration leaves the startup snapshot unchanged, so model rollbacks must bypass it.
-			if (lookupConfigWriteParam(arg) === 'models' || !isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
+			if (!isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
 				doUpdate = true;
 				break;
 			}
@@ -1168,11 +1169,6 @@ export function updateConfigValue(
 	validateConfig(configDoc);
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 
-	if (createBackup === true) {
-		// Creates a backup of config before new config is written to disk.
-		backupConfigFile(configFilePath, hdbRoot);
-	}
-
 	if (configDoc.errors?.length > 0) {
 		throw handleHDBError(
 			new Error(),
@@ -1180,7 +1176,10 @@ export function updateConfigValue(
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 		);
 	}
-	atomicWriteFile(configFilePath, String(configDoc));
+	const nextDocument = String(configDoc);
+	if (previousDocument === nextDocument) return;
+	if (createBackup === true) backupConfigFile(configFilePath, hdbRoot);
+	atomicWriteFile(configFilePath, nextDocument);
 	if (update_config_obj) {
 		flatConfigObj = setActiveConfig(configDoc.toJSON());
 	}
@@ -1421,7 +1420,9 @@ export async function setConfiguration(setConfigJson) {
 	try {
 		// Imported lazily: the publication lock's module loads this one.
 		const { withRootConfigPublicationLock } = await import('../components/rootConfigPublication.ts');
-		await withRootConfigPublicationLock(async () => updateConfigValue(undefined, undefined, configFields, true));
+		await withRootConfigPublicationLock(async () =>
+			updateConfigValue(undefined, undefined, configFields, true, false, false, { fromOperation: true })
+		);
 		if (replicated) {
 			// Opt-in fan-out to all cluster nodes (#660). replicateOperation forwards the
 			// body with `replicated: false`, so peers apply locally without re-replicating;

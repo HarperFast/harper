@@ -1,0 +1,10 @@
+{
+	"name": "ycsb-pg-app",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"fastify": "^5.2.1",
+		"ioredis": "^5.4.2",
+		"pg": "^8.13.1"
+	}
+}

@@ -20,7 +20,8 @@
  * 3. **Operations API stability** — search_by_conditions, read_audit_log, and
  *    search_by_value return well-formed response shapes (array, typed fields) after
  *    upgrade and after cold restart.
- * 4. **system.hdb_deployment** — the table the 5.1.0 directive provisions is present after upgrade.
+ * 4. **system.hdb_deployment** — the table the 5.1.0 directive provisions is present after upgrade, with every
+ *    attribute a fresh install creates once the build is on 5.4 (the 5.4.0 directive registers the later ones).
  */
 import { suite, test, before, after } from 'node:test';
 import {
@@ -32,8 +33,9 @@ import {
 } from '@harperfast/integration-testing';
 import { ok, deepStrictEqual, strictEqual } from 'node:assert';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import {
+	CURRENT_VERSION,
 	FIRST_BOOT_ENV,
 	NO_PREVIOUS_MINOR,
 	SUITE_TIMEOUT_MS,
@@ -43,6 +45,14 @@ import {
 	seedWidgets,
 	skipCrossVersion,
 } from './minorVersionFixtures.ts';
+
+const [currentMajor, currentMinor] = CURRENT_VERSION.split('.').map(Number);
+// The directive that registers system-table attributes added since a table was created ships in 5.4.0, and runs only
+// once package.json reaches it.
+const ATTRIBUTE_DIRECTIVE_SKIP =
+	currentMajor > 5 || (currentMajor === 5 && currentMinor >= 4)
+		? false
+		: `the 5.4.0 attribute directive does not run for an upgrade to ${CURRENT_VERSION}`;
 
 if (previousMinorInstalls.length === 0)
 	suite('previous minor → current minor upgrade', { skip: NO_PREVIOUS_MINOR }, () => {});
@@ -187,6 +197,26 @@ for (const previousMinor of previousMinorInstalls) {
 					throw new Error(`system.hdb_deployment not found after minor upgrade: ${err?.message ?? err}`);
 				}
 			});
+
+			test(
+				'upgrade: system.hdb_deployment has every attribute a fresh install creates (harper#2659)',
+				{ skip: ATTRIBUTE_DIRECTIVE_SKIP },
+				async () => {
+					const systemSchema = JSON.parse(
+						readFileSync(join(import.meta.dirname, '../../json/systemSchema.json'), 'utf8')
+					);
+					const desc = await sendOperation(ctx.harper, {
+						operation: 'describe_table',
+						database: 'system',
+						table: 'hdb_deployment',
+					});
+					const described = new Set(desc.attributes.map(({ attribute }: { attribute: string }) => attribute));
+					const missing = systemSchema.hdb_deployment.attributes
+						.map(({ attribute }: { attribute: string }) => attribute)
+						.filter((name: string) => !described.has(name));
+					deepStrictEqual(missing, []);
+				}
+			);
 		}
 	);
 

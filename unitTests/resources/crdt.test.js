@@ -444,18 +444,20 @@ describe('crdt getRecordAtTime', () => {
 
 	it('does not fill an unknown field from a prototype member (own-property check)', () => {
 		// put(v:1, no `toString`) -> patch(v:2) -> patch(toString:'b') -> current. `toString` is
-		// unknown at t=25 and is NOT an own key of the reconstructed record, so it must keep its live
-		// value rather than being assigned Object.prototype.toString (which `key in priorRecord` did).
+		// unknown at t=25 and is NOT an own key of the reconstructed record, so it is never assigned
+		// Object.prototype.toString (which `key in priorRecord` did): with the full history it was
+		// absent then, and with the base put pruned it keeps its live value.
 		const events = [
 			{ version: 10, type: 'put', value: { id: 'P', v: 1 }, previousVersion: 0 },
 			{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
 			{ version: 30, type: 'patch', value: { toString: 'b' }, previousVersion: 20 },
 		];
-		const store = makeStore(events);
 		const current = currentEntry({ id: 'P', v: 2, toString: 'b' }, 30);
-		const result = getRecordAtTime(current, 25, store, 1, 'P');
-		assert.strictEqual(result.toString, 'b');
-		assert.strictEqual(typeof result.toString, 'string');
+		const result = getRecordAtTime(current, 25, makeStore(events), 1, 'P');
+		assert.strictEqual(Object.hasOwn(result, 'toString'), false);
+		assert.deepStrictEqual(result, { id: 'P', v: 2 });
+		const pruned = getRecordAtTime(current, 25, makeStore(events.slice(1)), 1, 'P');
+		assert.strictEqual(pruned.toString, 'b');
 	});
 
 	it('fills an unknown field from an older plain put when reconstructing forward', () => {
@@ -469,6 +471,280 @@ describe('crdt getRecordAtTime', () => {
 		const store = makeStore(events);
 		const current = currentEntry({ id: 'S', status: 'b', v: 2 }, 30);
 		assert.deepStrictEqual(getRecordAtTime(current, 25, store, 1, 'S'), { id: 'S', status: 'a', v: 2 });
+	});
+
+	describe('a field first written by a patch newer than the requested time', () => {
+		const add = (value) => ({ __op__: 'add', value });
+
+		it('omits a plain field the newer patch introduced', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'A', v: 1 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { extra: 'later' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'A', v: 2, extra: 'later' }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'A'), { id: 'A', v: 2 });
+		});
+
+		it('omits a counter the newer add established, for number and bigint deltas', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'B', v: 1 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(5), big: add(7n) }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'B', v: 2, count: 5, big: 7n }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'B'), { id: 'B', v: 2 });
+		});
+
+		it('restores the null an add established its counter from', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'C', v: 1, count: null }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(5) }, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { count: add(2) }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ id: 'C', v: 2, count: 7 }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'C'), { id: 'C', v: 2, count: null });
+			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'C'), { id: 'C', v: 2, count: 5 });
+		});
+
+		it('keeps a counter that was already 0', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'D', count: 0 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { count: add(5) }, previousVersion: 10 },
+			]);
+			const current = currentEntry({ id: 'D', count: 5 }, 20);
+			assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'D'), { id: 'D', count: 0 });
+		});
+
+		it('omits it when the record began with a patch rather than a put', () => {
+			const store = makeStore([
+				{ version: 10, type: 'patch', value: { v: 1 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { extra: 'later', count: add(3) }, previousVersion: 10 },
+			]);
+			const current = currentEntry({ v: 1, extra: 'later', count: 3 }, 20);
+			assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'E'), { v: 1 });
+		});
+
+		it('omits it when a delete bounds the older history', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'F', extra: 'old', count: 9 }, previousVersion: 0 },
+				{ version: 20, type: 'delete', value: null, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { v: 1 }, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { extra: 'later', count: add(3) }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ v: 1, extra: 'later', count: 3 }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'F'), { v: 1 });
+		});
+
+		it('omits it when no put or patch follows the delete that bounds the older history', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'L', extra: 'old' }, previousVersion: 0 },
+				{ version: 20, type: 'delete', value: null, previousVersion: 10 },
+				{ version: 30, type: 'message', value: { id: 'L', note: 'hi' }, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { extra: 'later', count: add(3) }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ id: 'L', extra: 'later', count: 3 }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'L'), { id: 'L' });
+		});
+
+		it('does not claim absence across an invalidate, whose stub omits unindexed fields', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'Q' }, previousVersion: 0 },
+				{ version: 20, type: 'invalidate', value: { id: 'Q', status: 'open' }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { status: 'closed' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'Q', status: 'closed' }, 30);
+			assert.ok(Object.hasOwn(getRecordAtTime(current, 25, store, 1, 'Q'), 'status'));
+		});
+
+		it('does not fill a field from writes older than an invalidate', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'S', status: 'initial' }, previousVersion: 0 },
+				{ version: 20, type: 'invalidate', value: { id: 'S', status: 'open' }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { status: 'closed' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'S', status: 'closed' }, 30);
+			assert.notStrictEqual(getRecordAtTime(current, 25, store, 1, 'S').status, 'initial');
+		});
+
+		it('does not fold an add after an invalidate onto an empty base', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'T', count: 10 }, previousVersion: 0 },
+				{ version: 20, type: 'invalidate', value: { id: 'T', count: 10 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(1.5) }, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { count: 100 }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ id: 'T', count: 100 }, 40);
+			// history before the invalidate cannot settle `count`, so the newer plain set's value stands
+			assert.strictEqual(getRecordAtTime(current, 30, store, 1, 'T').count, 100);
+			assert.strictEqual(getRecordAtTime(current, 25, store, 1, 'T').count, 100);
+		});
+
+		it('does not reverse an older add under a newer plain set', () => {
+			const store = makeStore([
+				// version 10 (put { id: 'U', count: 1 }) was pruned by audit retention
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(2.5) }, previousVersion: 20 },
+				{ version: 40, type: 'patch', value: { count: 10n }, previousVersion: 30 },
+			]);
+			const current = currentEntry({ id: 'U', v: 2, count: 10n }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'U'), { id: 'U', v: 2, count: 10n });
+		});
+
+		it('rebuilds a snapshot older than a newer invalidate from history, not from its stub', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'R', a: 1, b: 2 }, previousVersion: 0 },
+				{ version: 12, type: 'patch', value: { a: 3 }, previousVersion: 10 },
+				{ version: 20, type: 'invalidate', value: { id: 'R', a: 3 }, previousVersion: 12 },
+			]);
+			const current = currentEntry({ id: 'R', a: 3 }, 20);
+			assert.deepStrictEqual(getRecordAtTime(current, 12, store, 1, 'R'), { id: 'R', a: 3, b: 2 });
+		});
+
+		it('keeps the reversed value of a key the surviving history cannot settle when the base was pruned', () => {
+			const store = makeStore([
+				// version 10 (put { id: 'G', v: 1, score: 1, count: 3 }) was pruned by audit retention
+				{ version: 20, type: 'patch', value: { v: 2, count: null }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { score: add(2.5), count: add(4), extra: 'later' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'G', v: 2, score: 3.5, count: 4, extra: 'later' }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'G'), {
+				id: 'G',
+				v: 2,
+				score: 1,
+				count: null,
+				extra: 'later',
+			});
+		});
+
+		it('does not settle a key from writes older than an entry with no readable body', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'K', label: 'a' }, previousVersion: 0 },
+				// wrote { label: 'b' }; its body is no longer readable
+				{ version: 20, type: 'patch', value: undefined, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { label: 'c' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'K', label: 'c' }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'K'), { id: 'K', label: 'c' });
+		});
+
+		it('settles a counter with a fractional delta from history rather than its float residue', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'L', total: 0.1 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { total: add(0.2) }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'L', v: 2, total: 0.1 + 0.2 }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'L'), { id: 'L', v: 2, total: 0.1 });
+		});
+
+		it('settles a counter whose newer total exceeded safe-integer precision from history', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'N', count: 3 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { count: add(5e15) }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(5e15) }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'N', count: 3 + 5e15 + 5e15 }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'N'), { id: 'N', count: 5000000000000003 });
+		});
+
+		it('does not claim absence across an out-of-order write merged on another branch', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'O', v: 1 }, previousVersion: 0 },
+				{ version: 30, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				// another node's write, versioned 20, merged at log key 40 after the newer version 30
+				{ txnLogKey: 40, version: 20, nodeId: 2, type: 'patch', value: { extra: 'x' } },
+				{
+					version: 50,
+					type: 'patch',
+					value: { extra: 'y' },
+					previousVersion: 30,
+					previousNodeId: 1,
+					previousAdditionalAuditRefs: [{ version: 40, nodeId: 2 }],
+				},
+			]);
+			const current = currentEntry({ id: 'O', v: 2, extra: 'y' }, 50);
+			assert.deepStrictEqual(getRecordAtTime(current, 40, store, 1, 'O'), { id: 'O', v: 2, extra: 'y' });
+			// before the merge there is no branch to miss
+			assert.deepStrictEqual(getRecordAtTime(current, 30, store, 1, 'O'), { id: 'O', v: 2 });
+		});
+
+		it('rebuilds from older history across a newer patch with no readable body', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'P', label: 'a' }, previousVersion: 0 },
+				// wrote { label: 'b' }; its body is no longer readable
+				{ version: 20, type: 'patch', value: undefined, previousVersion: 10 },
+			]);
+			const current = currentEntry({ id: 'P', label: 'b' }, 20);
+			assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'P'), { id: 'P', label: 'a' });
+		});
+
+		it('trusts a nonzero integer counter reversal without reading older history', () => {
+			const store = makeStore([
+				{ version: 10, type: 'put', value: { id: 'M', count: 3 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { count: add(2) }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(4), big: add(1n) }, previousVersion: 20 },
+			]);
+			const read = [];
+			const get = store.rootStore.auditStore.get;
+			store.rootStore.auditStore.get = (version, ...rest) => {
+				read.push(version);
+				return get(version, ...rest);
+			};
+			const current = currentEntry({ id: 'M', count: 9, big: 5n }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'M'), { id: 'M', count: 5, big: 4n });
+			assert.deepStrictEqual(read, [30, 20]);
+		});
+
+		it('treats an older entry with no readable body as incomplete history', () => {
+			const store = makeStore([
+				// a put whose body was never written (or no longer decodes): getValue returns undefined
+				{ version: 10, type: 'put', value: undefined, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(3), extra: 'later' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'H', v: 2, count: 13, extra: 'later' }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'H'), {
+				id: 'H',
+				v: 2,
+				count: 10,
+				extra: 'later',
+			});
+		});
+
+		it('treats a corrupt older entry as incomplete history, not as the start of it', () => {
+			const store = makeStore([
+				// a corrupt entry decodes to a sentinel with no type and no previous link
+				{ version: 10, type: undefined, value: undefined },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: add(3), extra: 'later' }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'I', v: 2, count: 13, extra: 'later' }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'I'), {
+				id: 'I',
+				v: 2,
+				count: 10,
+				extra: 'later',
+			});
+		});
+
+		it('reverses a bigint delta that was folded into a number field', () => {
+			const events = [
+				{ version: 10, type: 'put', value: { id: 'J', count: 5 }, previousVersion: 0 },
+				{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+				// addValues(5, 3n) === 8: the field stays a number
+				{ version: 30, type: 'patch', value: { count: add(3n) }, previousVersion: 20 },
+			];
+			const current = currentEntry({ id: 'J', v: 2, count: 8 }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, makeStore(events), 1, 'J'), { id: 'J', v: 2, count: 5 });
+			// with the base pruned, the reversed value is the answer
+			assert.deepStrictEqual(getRecordAtTime(current, 20, makeStore(events.slice(1)), 1, 'J'), {
+				id: 'J',
+				v: 2,
+				count: 5,
+			});
+		});
 	});
 
 	describe('record evicted or deleted from primary store (issue #3164)', () => {

@@ -2,7 +2,6 @@ import * as crypto from 'node:crypto';
 import * as argon2 from 'argon2';
 import { get } from './environment/environmentManager.ts';
 import { CONFIG_PARAMS } from './hdbTerms.ts';
-const configuredHashFunction = get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION)?.toLowerCase();
 
 const SALT_LENGTH = 16;
 const SALT_LENGTH_MD5 = 9;
@@ -13,6 +12,10 @@ export const HASH_FUNCTION = {
 };
 
 type HashFunction = (typeof HASH_FUNCTION)[keyof typeof HASH_FUNCTION];
+
+export function configuredHashFunction(): HashFunction {
+	return HASH_FUNCTION[get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION)?.toUpperCase()] ?? HASH_FUNCTION.SHA256;
+}
 
 /**
  * Generate a secure salt
@@ -73,12 +76,9 @@ const validateAlgorithms = {
 /**
  * Create a hash for the given password (MD5, SHA-256 or argon2id)
  * @param password Plain text password
- * @param algorithm Hashing algorithm to use (default: SHA-256)
+ * @param algorithm Hashing algorithm to use (default: the configured `authentication.hashFunction`)
  */
-export function hash(
-	password: string,
-	algorithm: HashFunction = HASH_FUNCTION[configuredHashFunction?.toUpperCase()] ?? HASH_FUNCTION.SHA256
-): string | Promise<string> {
+export function hash(password: string, algorithm: HashFunction = configuredHashFunction()): string | Promise<string> {
 	return hashAlgorithms[algorithm](password);
 }
 
@@ -91,7 +91,7 @@ export function hash(
 export function validate(
 	storedHash: string,
 	password: string,
-	algorithm: HashFunction = HASH_FUNCTION[configuredHashFunction?.toUpperCase()] ?? HASH_FUNCTION.SHA256
+	algorithm: HashFunction = HASH_FUNCTION.SHA256
 ): boolean | Promise<boolean> {
 	if (!storedHash) return false;
 

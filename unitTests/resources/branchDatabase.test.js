@@ -939,6 +939,46 @@ describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)',
 		assert.strictEqual((await Declared.get('g'))?.note, 'through the branch');
 	});
 
+	it('refuses branch residency before installing a map in the live database', async function () {
+		this.timeout(30000);
+		const applicationScope = await branchedApplicationScope();
+		const env = require('#src/utility/environment/environmentManager');
+		const { readResidencyMap } = require('#src/resources/residencyMaps');
+		const oldList = env.get('replication_shards'),
+			oldShard = env.get('replication_shard');
+		env.setProperty('replication_shards', [0]);
+		env.setProperty('replication_shard', 0);
+		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.branched-residency-'));
+		writeFileSync(
+			join(directory, 'schema.graphql'),
+			`type BranchSlots @table(database: "${BASE}") @sharded(slots: 2) { id: ID @primaryKey }`
+		);
+		const configFilePath = join(directory, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'schema.graphql' } }));
+		openScope = new Scope(basename(directory), 'graphqlSchema', directory, configFilePath, applicationScope);
+		await openScope.ready;
+		try {
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			await assert.rejects(handleApplication(openScope), /sharding.*branches/);
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			assert.strictEqual(applicationScope.branches.get(BASE).tables.BranchSlots, undefined);
+			const { scopedTableFactory } = require('#src/resources/databases');
+			assert.throws(
+				() =>
+					scopedTableFactory(applicationScope.branches)({
+						database: BASE,
+						table: 'BranchSlots',
+						residency: { slots: 2 },
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				/sharding.*branches/
+			);
+		} finally {
+			env.setProperty('replication_shards', oldList);
+			env.setProperty('replication_shard', oldShard);
+		}
+	});
+
 	it('lands scope.ensureTable in the branch', async function () {
 		this.timeout(30000);
 		const applicationScope = await branchedApplicationScope();
@@ -2173,6 +2213,61 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		}
 		assert.ok(exists(branchPath), 'nothing was removed');
 		await removeBranchesForApplication('cycleApp');
+	});
+
+	it('records an owed removal beside the branches, and only a removal that completes clears it (harper#3463)', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const { chmodSync, writeFileSync } = require('node:fs');
+		const { dirname, join } = require('node:path');
+		const {
+			recordPendingBranchRemoval,
+			applicationsWithPendingBranchRemoval,
+		} = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const marker = join(dirname(branchPath), '`removal-pending`');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.close();
+
+		recordPendingBranchRemoval('cycleApp');
+		assert.ok(exists(marker), 'the debt is on disk beside the branch');
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+		const hold = join(branchPath, 'hold');
+		mkdirSync(hold);
+		writeFileSync(join(hold, 'keep'), '');
+		chmodSync(hold, 0o555);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /Could not remove branch storage/);
+		} finally {
+			chmodSync(join(`${branchPath}\`removing\``, 'hold'), 0o755);
+		}
+		assert.ok(exists(marker), 'a removal that failed keeps it');
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(
+			exists(dirname(branchPath)),
+			false,
+			'a removal that completed takes it, and the empty directory'
+		);
+		assert.ok(!applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+	});
+
+	it('forgets an owed removal without touching the branches it names (harper#3463)', async function () {
+		this.timeout(30000);
+		const { dirname, join } = require('node:path');
+		const { recordPendingBranchRemoval, clearPendingBranchRemoval } = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.tables.Cycle.put({ id: 'kept' });
+		await closeBranchAt(branchPath);
+		recordPendingBranchRemoval('cycleApp');
+
+		await clearPendingBranchRemoval('cycleApp');
+
+		assert.strictEqual(exists(join(dirname(branchPath), '`removal-pending`')), false);
+		const reopened = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.ok(await reopened.tables.Cycle.get('kept'), 'the branch is untouched');
 	});
 });
 

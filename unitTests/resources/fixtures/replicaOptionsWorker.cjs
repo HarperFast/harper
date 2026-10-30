@@ -34,8 +34,9 @@ sourcePort.on('message', (message) => {
 			entry: {
 				key: message.key,
 				version: message.version,
-				value: { id: message.key, name: 'resident', body: 'complete' },
+				value: { id: message.key, name: 'stub', body: 'complete' },
 				originNode: server.hostname,
+				fullWriteHead: message.version,
 			},
 		});
 	} else {

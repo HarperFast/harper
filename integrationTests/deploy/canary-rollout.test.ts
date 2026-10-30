@@ -11,6 +11,8 @@ import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseDocument } from 'yaml';
@@ -25,6 +27,7 @@ import {
 import { authHeader, operation } from './redeploy-restart-flag-helpers.ts';
 
 const PROJECT = 'canary-web';
+const HARPER_BIN = join(import.meta.dirname, '../../dist/bin/harper.js');
 const HARPER_CONFIG = { threads: { count: 2 } };
 
 // Worker restarts on Windows routinely outlast the readiness deadlines below (harper#1813).
@@ -319,6 +322,47 @@ suite(
 				await sleep(250);
 			}
 			strictEqual(job?.status, 'COMPLETE', JSON.stringify(job));
+
+			// The record says the rollout ran until the job ended it (harper#3060).
+			strictEqual(body.status, 'rolling_out');
+			const record = await operation(ctx, { operation: 'get_deployment', deployment_id: body.deployment_id });
+			strictEqual(record.status, 'success', JSON.stringify(record));
+			strictEqual(record.restart_job_id, body.restartJobId);
+		});
+
+		test('harper deploy restart=rolling follows the record until the rollout ends, then exits 0 (harper#3058)', async () => {
+			const dir = await mkdtemp(join(tmpdir(), 'canary-rollout-cli-'));
+			const home = await mkdtemp(join(tmpdir(), 'canary-rollout-cli-home-'));
+			try {
+				await writeRelease(dir, PROJECT, { version: 6 });
+				const env: Record<string, string | undefined> = { ...process.env, HOME: home };
+				for (const key of Object.keys(env)) {
+					if (key.startsWith('HARPER_CLI_') || key.startsWith('CLI_TARGET_')) delete env[key];
+				}
+				delete env.NODE_OPTIONS;
+				const { stdout, stderr } = await promisify(execFile)(
+					process.execPath,
+					[
+						HARPER_BIN,
+						'deploy',
+						`project=${PROJECT}`,
+						'restart=rolling',
+						`target=${ctx.harper.operationsAPIURL}`,
+						`auth_username=${ctx.harper.admin.username}`,
+						`auth_password=${ctx.harper.admin.password}`,
+						'json=true',
+					],
+					{ cwd: dir, env }
+				);
+				const printed = JSON.parse(stdout);
+				strictEqual(printed.status, 'rolling_out');
+				deepStrictEqual(printed.rollout, { status: 'success', nodes: [] });
+				match(stderr, /Waiting for the other nodes to take deployment/);
+				await waitForServedVersion(ctx, PROJECT, 6);
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+				await rm(home, { recursive: true, force: true });
+			}
 		});
 
 		test("a worker the rollout has not reached yet imports lazily from the live tree: the canary certifies only a boot's load", async () => {

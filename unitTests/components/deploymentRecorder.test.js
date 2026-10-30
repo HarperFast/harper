@@ -11,6 +11,9 @@
 // need to control the `.get()` return value or assert side effects.
 
 const assert = require('node:assert');
+const crypto = require('node:crypto');
+const { PassThrough, Readable } = require('node:stream');
+const { closeSync, ftruncateSync, openSync, writeSync } = require('node:fs');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -21,8 +24,13 @@ const {
 	ingestTransactionTimeoutMs,
 	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
 } = require('#src/components/deploymentRecorder');
-const { databases } = require('#src/resources/databases');
+const { databases, table } = require('#src/resources/databases');
+const { createBlob, saveBlob, decodeFromDatabase, getFilePathForBlob, getFileId } = require('#src/resources/blob');
 const { contextStorage } = require('#src/resources/transaction');
+const { setTxnExpiration, COMMIT_PHASE_GRACE } = require('#src/resources/DatabaseTransaction');
+const envMngr = require('#src/utility/environment/environmentManager');
+const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
+const systemSchema = require('../../json/systemSchema.json');
 const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const terms = require('#src/utility/hdbTerms');
 const { waitFor } = require('../waitFor.js');
@@ -57,7 +65,7 @@ describe('DeploymentRecorder.recordPeer', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('normalizes a single-peer success result', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -184,7 +192,7 @@ describe('DeploymentRecorder.recordPeers (bulk wrapper)', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('iterates the input array and upserts each entry', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -217,7 +225,7 @@ describe('DeploymentRecorder.getFailedPeers', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('returns an empty array when no peers were recorded', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -280,7 +288,7 @@ describe('DeploymentRecorder.seal', () => {
 			},
 		};
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('stops persisting intermediate updates once sealed, but finish() writes the terminal state', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -315,7 +323,7 @@ describe('DeploymentRecorder.dropPayload', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('nulls the payload_blob and returns the freed size, retaining size/hash metadata', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
@@ -375,7 +383,7 @@ describe('awaitDeploymentRow', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('returns the row immediately when it is already present with payload_blob', async () => {
 		const row = { deployment_id: 'd1', payload_blob: { fake: true } };
@@ -590,6 +598,143 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 	});
 });
 
+describe('DeploymentRecorder.ingestPayload streaming source', () => {
+	// The commit gate under test lives in the real write path (startPreCommitBlobsForRecord holds
+	// the commit until the file-backed blob is durable), so this needs a real table, shaped like
+	// hdb_deployment, rather than the Map mock above.
+	const TICK_MS = 20;
+	const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+	let IngestTable;
+	let mainWasWorker;
+
+	before(() => {
+		mainWasWorker = getWorkerIndex() === 0;
+		testUtils.setupTestDBPath();
+		setMainIsWorker(true);
+		IngestTable = table({
+			table: 'DeploymentIngestStream',
+			database: 'test',
+			attributes: systemSchema[DEPLOYMENT_TABLE].attributes.map(({ attribute }) =>
+				attribute === systemSchema[DEPLOYMENT_TABLE].hash_attribute
+					? { name: attribute, isPrimaryKey: true }
+					: { name: attribute }
+			),
+		});
+	});
+	after(() => {
+		if (mainWasWorker !== undefined) setMainIsWorker(mainWasWorker);
+	});
+
+	function installRealDeploymentTable() {
+		const writes = [];
+		if (!databases.system) databases.system = {};
+		const prior = databases.system[DEPLOYMENT_TABLE];
+		databases.system[DEPLOYMENT_TABLE] = {
+			get: (id) => IngestTable.get(id),
+			put(row) {
+				const context = contextStorage.getStore();
+				writes.push({
+					context,
+					transaction: context?.transaction,
+					timeoutBudget: context?.transaction?.timeoutBudget,
+					hasBlob: row.payload_blob != null,
+				});
+				return IngestTable.put(row);
+			},
+		};
+		return {
+			writes,
+			restore() {
+				databases.system[DEPLOYMENT_TABLE] = prior;
+			},
+		};
+	}
+
+	it('streams into a file-backed blob in its own transaction, under the ingest budget, past the generic open limit', async function () {
+		this.timeout(20_000);
+		const configuredBudget = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 2;
+		const chunks = [crypto.randomBytes(64 * 1024), crypto.randomBytes(64 * 1024), 'trailing string chunk'];
+		const expected = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+		const source = new PassThrough();
+		const ambientTransaction = { marker: 'ambient' };
+		const ambientContext = { user: { username: 'deploy-user' }, transaction: ambientTransaction };
+		const installed = installRealDeploymentTable();
+		const priorExpiration = envMngr.get(terms.CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
+		let recorder;
+		let ingest;
+		try {
+			recorder = await contextStorage.run(ambientContext, () =>
+				DeploymentRecorder.create({ project: 'p', ingestTimeoutMs: configuredBudget })
+			);
+			setTxnExpiration(TICK_MS);
+			source.write(chunks[0]);
+			ingest = contextStorage.run(ambientContext, () => recorder.ingestPayload(source));
+			let ingestError;
+			ingest.catch((error) => (ingestError = error));
+			await waitFor(() => installed.writes.some((write) => write.hasBlob) || ingestError);
+			const blobWrite = installed.writes.find((write) => write.hasBlob);
+			assert.ok(blobWrite, `ingest failed before its write: ${ingestError?.message}`);
+			assert.ok(blobWrite.transaction);
+			// Identity checks as booleans: a failing assert would otherwise inspect a whole Harper transaction.
+			assert.ok(blobWrite.context !== ambientContext, 'ingest write ran in the caller context');
+			assert.ok(blobWrite.transaction !== ambientTransaction, 'ingest write joined the caller transaction');
+			assert.ok(
+				blobWrite.transaction !== installed.writes[0].transaction,
+				'ingest write reused the create transaction'
+			);
+			assert.strictEqual(blobWrite.timeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
+			assert.strictEqual(blobWrite.context.user, ambientContext.user);
+			// TODO(harper#2057): the budget does not reach LMDB's chained transaction, so the monitor
+			// check below is RocksDB-only.
+			if (!isLMDB) {
+				// Without the budget, the countdown plus the commit-phase grace (each spare re-arms one
+				// tick) aborts the write in about 2 * COMMIT_PHASE_GRACE + 2 monitor ticks.
+				const ingestTransaction = blobWrite.transaction;
+				const armedTimeout = ingestTransaction.timeout;
+				await waitFor(
+					() =>
+						ingestTransaction.timedOut ||
+						armedTimeout - ingestTransaction.timeout >= (2 * COMMIT_PHASE_GRACE + 4) * TICK_MS,
+					{
+						timeout: 15_000,
+						message: () => `the monitor did not tick the ingest transaction (timeout ${ingestTransaction.timeout}ms)`,
+					}
+				);
+				assert.ok(!ingestTransaction.timedOut, 'the monitor aborted the ingest write at the generic open limit');
+			}
+			assert.strictEqual(ingestError, undefined);
+			source.write(chunks[1]);
+			source.end(chunks[2]);
+			await ingest;
+		} finally {
+			// A failed assertion leaves the ingest mid-stream; its cleanup put must land in this
+			// fixture, not in whatever table restore() puts back.
+			if (!source.writableEnded) source.destroy();
+			await ingest?.catch(() => {});
+			setTxnExpiration(priorExpiration);
+			installed.restore();
+		}
+
+		const ingestWrites = installed.writes.slice(1);
+		assert.strictEqual(ingestWrites.length, 2);
+		for (const write of ingestWrites) {
+			assert.strictEqual(write.timeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
+			assert.ok(write.transaction !== ambientTransaction, 'ingest write joined the caller transaction');
+		}
+		assert.ok(ingestWrites[0].transaction !== ingestWrites[1].transaction, 'ingest writes shared a transaction');
+		assert.strictEqual(installed.writes[0].timeoutBudget, 0);
+		assert.strictEqual(ambientTransaction.timeoutBudget, undefined);
+
+		const expectedHash = crypto.createHash('sha256').update(expected).digest('hex');
+		assert.strictEqual(recorder.row.payload_hash, expectedHash);
+		assert.strictEqual(recorder.row.payload_size, expected.length);
+		const stored = await IngestTable.get(recorder.deploymentId);
+		assert.strictEqual(stored.payload_hash, expectedHash);
+		assert.strictEqual(stored.payload_size, expected.length);
+		assert.ok(Buffer.from(await stored.payload_blob.bytes()).equals(expected));
+	});
+});
+
 describe('readPayloadBlobWithRetry', () => {
 	// Mirrors what resources/blob.ts's stream() rejects a ReadableStream with: an Error carrying
 	// a `statusCode` (503 = BLOB_UNAVAILABLE_STATUS/retryable, 500 = corrupt/permanent).
@@ -633,6 +778,22 @@ describe('readPayloadBlobWithRetry', () => {
 				controller.error(error);
 			},
 		});
+	}
+
+	function pullSequenceStream(steps) {
+		let step = 0;
+		return new ReadableStream({
+			pull(controller) {
+				const next = steps[step++];
+				if (next instanceof Error) controller.error(next);
+				else if (next === undefined) controller.close();
+				else controller.enqueue(next);
+			},
+		});
+	}
+
+	function unavailableError(message) {
+		return Object.assign(new Error(message), { statusCode: 503 });
 	}
 
 	async function readAll(stream) {
@@ -699,6 +860,131 @@ describe('readPayloadBlobWithRetry', () => {
 		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
 		await assert.rejects(() => readAll(stream), /stalled mid-stream/);
 		assert.strictEqual(attempts, 1, 'a stall after partial content must not be retried');
+	});
+
+	for (const [kind, emptyChunk] of [
+		['Buffer', () => Buffer.alloc(0)],
+		['Uint8Array', () => new Uint8Array(0)],
+	]) {
+		it(`retries a 503 that follows only a zero-length ${kind} chunk, and forwards no empty chunk`, async () => {
+			let attempts = 0;
+			const streamFactory = () => {
+				attempts++;
+				return attempts === 1
+					? pullSequenceStream([emptyChunk(), unavailableError('stalled with 0 bytes readable')])
+					: pullSequenceStream([emptyChunk(), Buffer.from('tarball-bytes')]);
+			};
+			const forwarded = [];
+			const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+			for await (const chunk of stream) forwarded.push(chunk);
+			assert.strictEqual(attempts, 2, 'a zero-length chunk is not content, so the 503 is retried');
+			assert.deepStrictEqual(
+				forwarded.map((chunk) => Buffer.from(chunk).toString()),
+				['tarball-bytes']
+			);
+		});
+	}
+
+	it('stops reading a source of only zero-length chunks once the consumer destroys the stream', async () => {
+		let cancelled = false;
+		const streamFactory = () =>
+			new ReadableStream({
+				pull(controller) {
+					controller.enqueue(new Uint8Array(0));
+					return new Promise((resolve) => setTimeout(resolve, 1));
+				},
+				cancel() {
+					cancelled = true;
+				},
+			});
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000 });
+		stream.resume();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		stream.destroy();
+		await waitFor(() => cancelled, { timeout: 1000, message: 'the source was never cancelled after destroy()' });
+	});
+
+	it('does not retry a 503 after content, even when zero-length chunks surround it', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return pullSequenceStream([
+				Buffer.alloc(0),
+				Buffer.from('partial-'),
+				Buffer.alloc(0),
+				unavailableError('stalled mid-stream'),
+			]);
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+		await assert.rejects(() => readAll(stream), /stalled mid-stream/);
+		assert.strictEqual(attempts, 1);
+	});
+
+	describe('over a real file-backed blob', () => {
+		const HEADER_SIZE = 8;
+		let StallTable;
+		let mainWasWorker;
+
+		before(() => {
+			mainWasWorker = getWorkerIndex() === 0;
+			testUtils.setupTestDBPath();
+			setMainIsWorker(true);
+			StallTable = table({
+				table: 'DeploymentPayloadStall',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			});
+		});
+		after(() => {
+			if (mainWasWorker !== undefined) setMainIsWorker(mainWasWorker);
+		});
+
+		it('retries a blob holding only its header until the content lands', async () => {
+			const store = StallTable.primaryStore.rootStore;
+			const payload = crypto.randomBytes(300_000);
+			const blob = createBlob(Readable.from([payload]), { size: payload.length });
+			await decodeFromDatabase(() => saveBlob(blob).saving, store);
+			const filePath = getFilePathForBlob(blob);
+			const lockKey = getFileId(blob) + ':blob';
+			assert.ok(store.tryLock(lockKey), 'the test must hold the blob write lock');
+			const fd = openSync(filePath, 'r+');
+			let landed = false;
+			const landContent = () => {
+				if (landed) return;
+				landed = true;
+				try {
+					writeSync(fd, payload, 0, payload.length, HEADER_SIZE);
+				} finally {
+					closeSync(fd);
+					store.unlock(lockKey);
+				}
+			};
+			try {
+				ftruncateSync(fd, HEADER_SIZE);
+				envMngr.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+				let attempts = 0;
+				const streamFactory = () => {
+					attempts++;
+					// Only after the first read has stalled out, so success requires a retry.
+					if (attempts === 2) landContent();
+					return blob.stream();
+				};
+				const stream = readPayloadBlobWithRetry(streamFactory, {
+					timeoutMs: 5000,
+					initialBackoffMs: 10,
+					maxBackoffMs: 10,
+				});
+				const result = await readAll(stream);
+				assert.strictEqual(attempts, 2);
+				assert.ok(result.equals(payload), 'the retried read delivers the whole payload exactly once');
+			} finally {
+				landContent();
+				envMngr.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+			}
+		});
 	});
 
 	it('succeeds on the first attempt without waiting when the stream is healthy', async () => {
@@ -803,5 +1089,199 @@ describe('readPayloadBlobWithRetry', () => {
 			attemptsAfterGracePeriod,
 			'retries must stop within a bounded window after destroy(), not continue toward the full timeout budget'
 		);
+	});
+});
+
+describe('DeploymentRecorder.finish (harper#3062)', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed?.restore());
+
+	it('ends the deploy without sending an internal event through its emitter or into event_log', async () => {
+		const emitter = new ProgressEmitter();
+		const seen = [];
+		emitter.subscribe((event) => seen.push(event.event));
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter });
+		emitter.emit('phase', { phase: 'prepare', status: 'start' });
+		emitter.emit('phase', { phase: 'success', status: 'done' });
+		await recorder.finish('success');
+
+		assert.deepStrictEqual(seen, ['phase', 'phase']);
+		const persisted = await installed.mock.get(recorder.deploymentId);
+		assert.deepStrictEqual(
+			persisted.event_log.map((entry) => entry.event),
+			['phase', 'phase']
+		);
+	});
+});
+
+describe("a rolling deploy's own terminal write (harper#3060)", () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed?.restore());
+
+	it('keeps what the activation job already recorded rather than replacing it with its in-memory row', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer({ node: 'peer-a', status: 'success' });
+		recorder.seal();
+		const activation = { activated: false, certification: null, message: null, error: 'rejected', completed_at: 5 };
+		installed.mock.rows.set(recorder.deploymentId, {
+			...recorder.row,
+			status: 'partial',
+			completed_at: 10,
+			error: { message: 'Not activated on 1 of 1 peer node(s): peer-a (rejected)', nodes: ['peer-a'] },
+			peer_results: [{ node: 'peer-a', status: 'success', error: null, activation }],
+			event_log: [{ t: 5, event: 'peer_activation', data: { node: 'peer-a', error: 'rejected' } }],
+		});
+		await recorder.finish('rolling_out');
+		const stored = installed.mock.rows.get(recorder.deploymentId);
+		assert.strictEqual(stored.status, 'partial');
+		assert.deepStrictEqual(stored.error.nodes, ['peer-a']);
+		assert.deepStrictEqual(stored.peer_results[0].activation, activation);
+		assert.ok(stored.event_log.some((entry) => entry.event === 'peer_activation'));
+	});
+
+	it("holds the row's lock across its read and write, so a job write cannot land between them", async () => {
+		const { recordPeerActivation, rolloutTiming } = require('#src/components/deploymentRecorder');
+		const writeSpacingMs = rolloutTiming.writeSpacingMs;
+		rolloutTiming.writeSpacingMs = 0;
+		try {
+			const recorder = await DeploymentRecorder.create({ project: 'p' });
+			recorder.recordPeer({ node: 'peer-a', status: 'success' });
+			recorder.seal();
+			// The job's wait for this write is over, as after its bound ran out.
+			installed.mock.rows.set(recorder.deploymentId, { ...recorder.row, status: 'rolling_out' });
+			let holder = Promise.resolve();
+			installed.mock.lock = async (_id, options) => {
+				assert.strictEqual(options.hold, true);
+				assert.strictEqual(options.scope, 'node');
+				const previous = holder;
+				let release;
+				holder = new Promise((resolve) => (release = resolve));
+				await previous;
+				return { unlock: async () => release() };
+			};
+			const get = installed.mock.get;
+			let jobWrite;
+			installed.mock.get = async (id) => {
+				const row = await get(id);
+				if (!jobWrite) {
+					// The job records a peer while the origin has read the row and not yet written it back.
+					jobWrite = recordPeerActivation(id, { node: 'peer-a', certification: 'certified' });
+					await Promise.race([jobWrite, new Promise((resolve) => setTimeout(resolve, 200))]);
+				}
+				return row;
+			};
+			await recorder.finish('rolling_out');
+			await jobWrite;
+			const stored = installed.mock.rows.get(recorder.deploymentId);
+			assert.strictEqual(stored.peer_results[0].activation?.activated, true);
+		} finally {
+			rolloutTiming.writeSpacingMs = writeSpacingMs;
+		}
+	});
+});
+
+describe('ending a rolling deploy record whose activation job was interrupted (harper#3060)', () => {
+	const { settleInterruptedRollouts } = require('#src/components/deploymentRecorder');
+	const { hostname } = require('node:os');
+	const JOB_TABLE = terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME;
+	let installed;
+	let priorJobs;
+	let jobs;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+		installed.mock.search = async function* (conditions) {
+			for (const row of installed.mock.rows.values()) {
+				if (conditions.every(({ attribute, value }) => row[attribute] === value)) yield row;
+			}
+		};
+		jobs = new Map();
+		priorJobs = databases.system[JOB_TABLE];
+		databases.system[JOB_TABLE] = { get: async (id) => jobs.get(id) };
+	});
+	afterEach(() => {
+		installed?.restore();
+		if (databases.system) databases.system[JOB_TABLE] = priorJobs;
+	});
+
+	const rollout = (id, jobStatus, peers, extra = {}) => {
+		jobs.set(`job-${id}`, { id: `job-${id}`, status: jobStatus });
+		installed.mock.rows.set(id, {
+			deployment_id: id,
+			status: 'rolling_out',
+			origin_node: hostname(),
+			restart_job_id: `job-${id}`,
+			peer_results: peers,
+			...extra,
+		});
+	};
+	const took = (node) => ({ node, activation: { activated: true } });
+
+	it('ends each record its interrupted job left, and leaves a running job and another node alone', async () => {
+		rollout('interrupted', 'ERROR', [took('a'), { node: 'b' }]);
+		rollout('finished', 'COMPLETE', [took('a'), took('b')]);
+		rollout('running', 'IN_PROGRESS', [took('a'), { node: 'b' }]);
+		rollout('elsewhere', 'ERROR', [{ node: 'b' }], { origin_node: 'another-node' });
+
+		assert.strictEqual(await settleInterruptedRollouts(), 2);
+		const rows = installed.mock.rows;
+		assert.strictEqual(rows.get('interrupted').status, 'partial');
+		assert.deepStrictEqual(rows.get('interrupted').error.nodes, ['b']);
+		assert.match(rows.get('interrupted').error.message, /job-interrupted ended without finishing this record/);
+		assert.strictEqual(rows.get('finished').status, 'success');
+		assert.strictEqual(rows.get('running').status, 'rolling_out');
+		assert.strictEqual(rows.get('elsewhere').status, 'rolling_out');
+	});
+
+	it("recovers each peer's outcome from the job's own record when its writes to the row were lost", async () => {
+		const took = (node) => ({ node, certification: 'certified' });
+		rollout('completed', 'COMPLETE', [took('a'), { node: 'b' }]);
+		jobs.get('job-completed').result = { activated: [took('a'), took('b')] };
+		rollout('unpublished', 'ERROR', [{ node: 'a' }, { node: 'b' }]);
+		jobs.get('job-unpublished').message = { error: 'disk full', activated: [took('a'), took('b')] };
+		rollout('rejected', 'ERROR', [{ node: 'a' }, { node: 'b' }]);
+		jobs.get('job-rejected').message = { error: 'rejected', activated: [took('a'), { node: 'b', error: 'rejected' }] };
+
+		assert.strictEqual(await settleInterruptedRollouts(), 3);
+		const rows = installed.mock.rows;
+		assert.strictEqual(rows.get('completed').status, 'success');
+		assert.strictEqual(rows.get('completed').peer_results[1].activation.activated, true);
+		assert.strictEqual(rows.get('unpublished').status, 'success');
+		assert.strictEqual(rows.get('rejected').status, 'partial');
+		assert.deepStrictEqual(rows.get('rejected').error.nodes, ['b']);
+	});
+});
+
+describe("the rollout row's lock on the system table (harper#3060)", () => {
+	const { recordPeerActivation, rolloutTiming } = require('#src/components/deploymentRecorder');
+	const ID = '33333333-3333-3333-3333-333333333333';
+	let table;
+	let writeSpacingMs;
+	before(async () => {
+		await testUtils.ensureSystemTables();
+		table = databases.system[DEPLOYMENT_TABLE];
+		writeSpacingMs = rolloutTiming.writeSpacingMs;
+		rolloutTiming.writeSpacingMs = 0;
+	});
+	after(async () => {
+		rolloutTiming.writeSpacingMs = writeSpacingMs;
+		await table?.delete(ID);
+	});
+
+	it("makes the job's write wait while another writer holds the row", async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // LMDB has no record locks
+		await table.put({ deployment_id: ID, project: 'p', status: 'rolling_out', peer_results: [{ node: 'peer-a' }] });
+		const holder = await table.lock(ID, { hold: true, scope: 'node' }, {});
+		const write = recordPeerActivation(ID, { node: 'peer-a', certification: 'certified' });
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.strictEqual((await table.get(ID)).peer_results[0].activation, undefined, 'written while the row was held');
+		await holder.unlock();
+		assert.strictEqual(await write, true);
+		assert.strictEqual((await table.get(ID)).peer_results[0].activation.activated, true);
 	});
 });

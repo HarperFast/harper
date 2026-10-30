@@ -90,6 +90,12 @@ export interface ModelCapabilities {
 	 * capability: it cannot be required, and a call above it is declined without a request.
 	 */
 	maxScoredChoices?: number;
+	/**
+	 * `embed` honors `truncate: true`: each input is cut to what the model accepts, keeping its start,
+	 * instead of failing. Like `structuredOutput`, says what Harper asks the provider for (for an
+	 * OpenAI-compatible entry, what its `truncation` setting declares the endpoint does). Absent reads as false.
+	 */
+	truncate?: boolean;
 }
 
 /** A capability a call can require of its backend (a boolean key of `ModelCapabilities`). */
@@ -147,6 +153,8 @@ export interface DefineBackendSpec {
 	structuredOutput?: boolean;
 	/** The most choices one `scoreChoices` call accepts, a positive integer. Default: no limit. */
 	maxScoredChoices?: number;
+	/** `embed` honors `truncate: true`, cutting each input to the model's limit and keeping its start. Default `false`. */
+	truncate?: boolean;
 }
 
 export type EmbedOpts = {
@@ -155,6 +163,15 @@ export type EmbedOpts = {
 	requires?: Capability[];
 	/** For models that distinguish document-vs-query embeddings (e.g. nomic-embed-text); ignored otherwise. */
 	inputType?: 'document' | 'query';
+	/**
+	 * `true` cuts each input to what the model accepts, keeping its start (and any task prefix the
+	 * backend adds), instead of failing on an input longer than the context window. It requires the
+	 * `truncate` capability: backends that cannot truncate are skipped, and when none can, the call
+	 * fails with `ModelCapabilityError` before any request. Absent or `false` sends nothing extra, so
+	 * the provider's own handling applies: OpenAI, vLLM and Bedrock Titan reject an over-long input,
+	 * while Ollama and Bedrock Cohere embed v3 cut it by default.
+	 */
+	truncate?: boolean;
 	signal?: AbortSignal;
 };
 

@@ -409,6 +409,44 @@ describe('the root-config effect of an interrupted activation', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('publishes the routing a payload activation journaled (harper#3043)', async () => {
+		const root = await newRoot('effect-routing');
+		setRootConfigEntry('web', { package: 'npm:web@1', host: 'web.example.com' });
+		const routing = { host: 'pr-12.app.example.com', urlPath: null, isolated: true, branchedDatabases: ['data'] };
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'unset-package', routing }),
+		});
+
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), {
+			host: 'pr-12.app.example.com',
+			isolated: true,
+			branchedDatabases: ['data'],
+		});
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('refuses to roll forward a journal whose routing could not be published', async () => {
+		const root = await newRoot('effect-bad-routing');
+		setRootConfigEntry('web', { host: 'web.example.com' });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'unset-package', routing: { branchedDatabases: ['system'] } }),
+		});
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.match(failures.get('web')?.message ?? '', /cannot be published/);
+		assert.deepStrictEqual(rootConfigEntry('web'), { host: 'web.example.com' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('leaves config alone when it rolls back an activation that never committed', async () => {
 		const root = await newRoot('effect-rollback');
 		setRootConfigEntry('web', { package: 'npm:web@1' });

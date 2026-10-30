@@ -5,7 +5,7 @@
  * Run:
  *   npm run test:integration -- "integrationTests/mqtt/durable-resume.test.ts"
  */
-import { suite, test, before, after } from 'node:test';
+import { suite, test, before, after, describe } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -270,7 +270,7 @@ suite(
 		});
 
 		/** A v5 client over raw packets, for exchanges mqtt.js completes on its own. */
-		async function rawConnect(clientId: string, clean = false) {
+		async function rawConnect(clientId: string, clean = false, inConnectFrame: any[] = []) {
 			const credentials = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
 			const socket = new WebSocket(mqttURL, 'mqtt', { headers: { Authorization: `Basic ${credentials}` } });
 			const packets: any[] = [];
@@ -282,8 +282,13 @@ suite(
 				socket.once('open', resolvePromise);
 				socket.once('error', reject);
 			});
-			const send = (packet: any) => socket.send(generate(packet, { protocolVersion: 5 }));
-			send({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean });
+			const encode = (packet: any) => generate(packet, { protocolVersion: 5 });
+			const send = (packet: any) => socket.send(encode(packet));
+			socket.send(
+				Buffer.concat(
+					[{ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean }, ...inConnectFrame].map(encode)
+				)
+			);
 			if (!(await waitFor(() => packets.some((packet) => packet.cmd === 'connack')))) {
 				socket.terminate();
 				throw new Error(`no CONNACK for ${clientId}`);
@@ -405,6 +410,50 @@ suite(
 				await put('Readings', id, 2);
 				ok(await waitFor(() => second.publishes(topic).length > 1), 'a later update is published');
 				deepStrictEqual(second.publishes(topic).map(valueOf), [1, 2]);
+			} finally {
+				await second.drop();
+			}
+		});
+
+		test('a PUBREC for a restored delivery not yet sent again is accepted, and the delivery is not sent again (QoS 2)', async () => {
+			const prefix = `qos2-restored-${randomUUID().slice(0, 6)}`;
+			const [topicA, topicB] = [`Readings/${prefix}-a`, `Readings/${prefix}-b`];
+			await cleanStart(prefix);
+			const first = await rawConnect(prefix);
+			let a, b;
+			try {
+				await first.subscribe('Readings/#', 2);
+				await put('Readings', `${prefix}-a`, 1);
+				await put('Readings', `${prefix}-b`, 2);
+				ok(await waitFor(() => first.publishes(topicB).length > 0), 'both updates are published');
+				[a] = first.publishes(topicA);
+				[b] = first.publishes(topicB);
+			} finally {
+				await first.drop();
+			}
+			ok(
+				await waitFor(async () => (await storedSession(prefix)).subscriptions[0].inFlight?.length === 2),
+				'the closing save keeps both deliveries in flight'
+			);
+
+			const second = await rawConnect(prefix, false, [{ cmd: 'pubrec', messageId: b.messageId }]);
+			try {
+				strictEqual(second.connack.sessionPresent, true);
+				await resumed((barrier) => second.subscribe(barrier, 1));
+				deepStrictEqual(
+					second.packets
+						.filter((packet) => packet.cmd === 'pubrel')
+						.map((packet) => [packet.messageId, packet.reasonCode]),
+					[[b.messageId, 0]],
+					'the PUBREC is answered as for a delivery already sent'
+				);
+				deepStrictEqual(
+					second.publishes(topicA).map((packet) => [valueOf(packet), packet.messageId, packet.dup]),
+					[[1, a.messageId, true]],
+					'the delivery without a PUBREC is sent again under its packet id'
+				);
+				deepStrictEqual(second.publishes(topicB), [], 'the one PUBREC-ed before its resend is not sent');
+				second.send({ cmd: 'pubrec', messageId: a.messageId });
 			} finally {
 				await second.drop();
 			}
@@ -599,6 +648,149 @@ suite(
 			} finally {
 				await end(mqttClient);
 			}
+		});
+
+		describe('a restored topic whose resume found no live subscription', () => {
+			const topic = 'Gated/#';
+
+			async function setGate(closed: boolean) {
+				const response = await fetch(`${ctx.harper.httpURL}/Gate/`, {
+					method: 'POST',
+					headers: { ...client.headers, 'Content-Type': 'application/json' },
+					body: JSON.stringify({ closed }),
+				});
+				ok(response.ok, `POST /Gate/: ${response.status}`);
+			}
+
+			const savedEntry = async (clientId: string) =>
+				(await storedSession(clientId)).subscriptions.find((entry: any) => entry.topic === topic);
+
+			async function reconnectGated(clientId: string) {
+				await setGate(true);
+				try {
+					const connection = await rawConnect(clientId);
+					strictEqual(connection.connack.sessionPresent, true);
+					await resumed((barrier) => connection.subscribe(barrier, 1));
+					return connection;
+				} finally {
+					await setGate(false);
+				}
+			}
+
+			async function savedQoS2(clientId: string) {
+				await cleanStart(clientId);
+				const first = await rawConnect(clientId);
+				try {
+					await first.subscribe(topic, 2);
+					await put('Gated', `a-${clientId}`, 1);
+					await put('Gated', `b-${clientId}`, 2);
+					ok(await waitFor(() => first.publishes('Gated/b-' + clientId).length > 0), 'both are published');
+					const [b] = first.publishes('Gated/b-' + clientId);
+					first.send({ cmd: 'pubrec', messageId: b.messageId });
+					ok(await waitFor(() => first.packets.some((packet) => packet.cmd === 'pubrel')), 'PUBREL answers the PUBREC');
+				} finally {
+					await first.drop();
+				}
+				ok(
+					await waitFor(async () => {
+						const entry = await savedEntry(clientId);
+						return entry?.receivedRuns?.length > 0 && entry.inFlight?.length === 1;
+					}),
+					'the receipt and the delivery in flight are saved'
+				);
+				return (await savedEntry(clientId)).inFlight[0][3];
+			}
+
+			test('releases its receipts when it is subscribed again at QoS 1', async () => {
+				const clientId = `to-qos1-${randomUUID().slice(0, 6)}`;
+				await savedQoS2(clientId);
+				const second = await reconnectGated(clientId);
+				try {
+					await second.subscribe(topic, 1);
+					ok(
+						await waitFor(async () => (await savedEntry(clientId))?.qos === 1),
+						`the saved topic is QoS 1: ${JSON.stringify(await savedEntry(clientId))}`
+					);
+					const saved = await savedEntry(clientId);
+					for (const field of ['received', 'receivedRuns', 'receivedThrough', 'inFlight', 'receiptsGeneration'])
+						strictEqual(saved[field], undefined, `${field} is not saved for a QoS 1 topic`);
+				} finally {
+					await second.drop();
+				}
+			});
+
+			test('sends its deliveries at QoS 2 and keeps them in flight when it is subscribed again at QoS 2', async () => {
+				const clientId = `to-qos2-${randomUUID().slice(0, 6)}`;
+				const id = `c-${clientId}`;
+				await cleanStart(clientId);
+				const first = await rawConnect(clientId);
+				try {
+					await first.subscribe(topic, 1);
+					await put('Gated', `seen-${clientId}`, 0);
+					ok(await waitFor(() => first.publishes(`Gated/seen-${clientId}`).length > 0), 'the QoS 1 delivery arrives');
+					first.send({ cmd: 'puback', messageId: first.publishes(`Gated/seen-${clientId}`)[0].messageId });
+					ok(
+						await waitFor(async () => (await savedEntry(clientId))?.databaseGeneration !== undefined),
+						'its acknowledgement is saved'
+					);
+				} finally {
+					await first.drop();
+				}
+				const second = await reconnectGated(clientId);
+				let published;
+				try {
+					await second.subscribe(topic, 2);
+					await put('Gated', id, 1);
+					ok(await waitFor(() => second.publishes(`Gated/${id}`).length > 0), 'the update is published');
+					[published] = second.publishes(`Gated/${id}`);
+					strictEqual(published.qos, 2);
+				} finally {
+					await second.drop();
+				}
+				ok(
+					await waitFor(async () => {
+						const entry = await savedEntry(clientId);
+						return entry?.qos === 2 && entry.inFlight?.length === 1;
+					}),
+					`the closing save keeps the delivery in flight: ${JSON.stringify(await savedEntry(clientId))}`
+				);
+				const third = await rawConnect(clientId);
+				try {
+					await resumed((barrier) => third.subscribe(barrier, 1));
+					deepStrictEqual(
+						third.publishes(`Gated/${id}`).map((packet) => [valueOf(packet), packet.qos, packet.messageId, packet.dup]),
+						[[1, 2, published.messageId, true]],
+						'sent again once, at QoS 2, under its packet id with DUP'
+					);
+					third.send({ cmd: 'pubrec', messageId: published.messageId });
+					ok(await waitFor(() => third.packets.some((packet) => packet.cmd === 'pubrel')), 'PUBREL answers the PUBREC');
+				} finally {
+					await third.drop();
+				}
+			});
+
+			test('keeps its receipts and the delivery in flight when it is subscribed again at QoS 2', async () => {
+				const clientId = `same-qos2-${randomUUID().slice(0, 6)}`;
+				const inFlightId = await savedQoS2(clientId);
+				const second = await reconnectGated(clientId);
+				try {
+					await second.subscribe(topic, 2);
+					ok(
+						await waitFor(() => second.publishes(`Gated/a-${clientId}`).length > 0),
+						'the delivery awaiting its PUBREC is sent again'
+					);
+					deepStrictEqual(
+						second.publishes(`Gated/a-${clientId}`).map((packet) => [packet.messageId, packet.dup]),
+						[[inFlightId, true]]
+					);
+					deepStrictEqual(second.publishes(`Gated/b-${clientId}`), [], 'the one whose PUBREC arrived is not');
+					const saved = await savedEntry(clientId);
+					strictEqual(saved.qos, 2);
+					ok(saved.receivedRuns?.length > 0, 'its receipt is kept');
+				} finally {
+					await second.drop();
+				}
+			});
 		});
 
 		test(

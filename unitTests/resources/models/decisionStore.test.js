@@ -278,6 +278,14 @@ describe('models config hash', () => {
 		const withToken = getModelsConfigHash();
 		setModelsConfigHash({ generative: { default: { backend: 'acme', model: 'a', accessToken: 'two' } } });
 		assert.strictEqual(getModelsConfigHash(), withToken, 'a rotated token is not a configuration change');
+		setModelsConfigHash({ generative: { default: { backend: 'acme', model: 'a', passphrase: 'one' } } });
+		const withPassphrase = getModelsConfigHash();
+		setModelsConfigHash({ generative: { default: { backend: 'acme', model: 'a', passphrase: 'two' } } });
+		assert.strictEqual(getModelsConfigHash(), withPassphrase, 'a rotated passphrase is not a configuration change');
+		setModelsConfigHash({ generative: { default: { backend: 'acme', model: 'a', AWS_ACCESS_KEY_ID: 'one' } } });
+		const withPrefixedKeyId = getModelsConfigHash();
+		setModelsConfigHash({ generative: { default: { backend: 'acme', model: 'a', AWS_ACCESS_KEY_ID: 'two' } } });
+		assert.strictEqual(getModelsConfigHash(), withPrefixedKeyId, 'a rotated prefixed access key id is not a change');
 		setModelsConfigHash({
 			generative: { default: { backend: 'bedrock', accessKeyId: 'a', secretAccessKey: 's', sessionToken: 't' } },
 		});

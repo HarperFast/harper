@@ -142,6 +142,8 @@ jobs:
             resources/nodeIdMapping.ts
             resources/originClosedFloor.ts
             resources/replayLogs.ts
+            resources/residencyMaps.ts
+            resources/residencyPolicy.ts
             resources/search.ts
             server/http.ts
             server/transactionLogCooling.ts

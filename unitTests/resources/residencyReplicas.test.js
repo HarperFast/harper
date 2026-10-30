@@ -8,6 +8,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const {
 	INVALIDATED,
 	REPLICA,
+	FULL_WRITE_HEAD,
 	DEFAULT_REPLICA_EXPIRATION_MS,
 	setMinReplicaScanIntervalForTesting,
 } = require('#src/resources/Table');
@@ -17,6 +18,8 @@ const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resou
 const { existsSync } = require('node:fs');
 const { randomBytes } = require('node:crypto');
 const { server } = require('#src/server/Server');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { setNextEncoding, HAS_RESIDENCY_ID } = require('#src/resources/RecordEncoder');
 
 const RESIDENCY_ID = 123;
 const OTHER_RESIDENCY_ID = 456;
@@ -129,6 +132,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 			value: { id: ID, name: 'indexed', body: 'complete' },
 			version: stubVersion,
 			originNode: server.hostname,
+			fullWriteHead: stubVersion,
 		};
 	});
 
@@ -198,9 +202,12 @@ describeReplicas('Local replicas of residency stubs', function () {
 		}
 	});
 
-	it('keeps a newer response under the stub identity', async () => {
+	it('serves a newer response without keeping it', async () => {
 		response = { ...response, version: stubVersion + 5 };
-		const entry = await replica();
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(stored, [false]);
+		const entry = Records.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & INVALIDATED);
 		assert.equal(entry.version, stubVersion);
 	});
 
@@ -210,7 +217,13 @@ describeReplicas('Local replicas of residency stubs', function () {
 			return transaction(context, async () => {
 				const resource = await Records.getResource(ID, context, { ensureLoaded: false });
 				resource._writeDelete(ID, { version: stubVersion + 1, nodeId: 0 });
-			}).then(() => ({ key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: stubVersion }));
+			}).then(() => ({
+				key: ID,
+				value: { id: ID, name: 'indexed', body: 'complete' },
+				version: stubVersion,
+				originNode: server.hostname,
+				fullWriteHead: stubVersion,
+			}));
 		};
 		await Records.get(ID);
 		assert.deepEqual(stored, [false]);
@@ -237,9 +250,10 @@ describeReplicas('Local replicas of residency stubs', function () {
 		assert.deepEqual(calls, [], 'an expired stub never fetches the expired record from a resident');
 	});
 
-	it('keeps an equal-version answer only from the stub writer, and a newer one from anyone', async () => {
+	it('keeps an answer only from the stub writer', async () => {
+		const fromWriter = response;
 		for (const originNode of ['some-other-writer', undefined]) {
-			response = { ...response, originNode };
+			response = { ...fromWriter, originNode };
 			calls = [];
 			stored = [];
 			assert.equal((await Records.get(ID)).body, 'complete');
@@ -247,8 +261,125 @@ describeReplicas('Local replicas of residency stubs', function () {
 			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
 		}
 		stored = [];
-		response = { ...response, originNode: undefined, version: stubVersion + 1 };
+		response = fromWriter;
 		await replica();
+	});
+
+	it('serves but never keeps an answer without the resident’s full-write certificate', async () => {
+		const certified = response;
+		for (const fullWriteHead of [
+			undefined,
+			false,
+			true,
+			String(certified.fullWriteHead),
+			certified.fullWriteHead + 1,
+		]) {
+			response = { ...certified, fullWriteHead };
+			calls = [];
+			stored = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(stored, [false], `certificate ${JSON.stringify(fullWriteHead)} must not be kept`);
+			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+		}
+		stored = [];
+		response = certified;
+		await replica();
+	});
+
+	it('keeps only the write logged at the stub’s version, and no stub carrying an audit ref', async () => {
+		// the resident's head is another write its writer made at this version, under another log key
+		response = { ...response, fullWriteHead: stubVersion - 10 };
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(stored, [false]);
+		// a second write at the stub's version, under a later log key, leaves the stub a ref
+		const context = { sourceApply: true, timestamp: stubVersion + 10 };
+		await transaction(context, async () => {
+			const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, Object.freeze({ name: 'indexed' }), {
+				residencyId: RESIDENCY_ID,
+				version: stubVersion,
+				nodeId: Records.primaryStore.getEntry(ID).nodeId ?? 0,
+			});
+		});
+		const second = Records.primaryStore.getEntry(ID);
+		assert.equal(second.version, stubVersion);
+		assert.equal(second.additionalAuditRefs?.length, 1, 'premise: the stub carries a ref');
+		for (const fullWriteHead of [stubVersion, second.additionalAuditRefs[0].version]) {
+			response = { ...response, fullWriteHead };
+			stored = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(stored, [false], `certificate ${fullWriteHead}`);
+		}
+	});
+
+	it('keeps a body whose created time its stub lacks, as a live residency stub does', async () => {
+		const Created = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasCreated',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'body' },
+				{ name: 'created', assignCreatedTime: true },
+			],
+			audit: true,
+		});
+		const kept = [];
+		Created.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = {
+						key: ID,
+						value: { id: ID, name: 'indexed', body: 'complete', created: 1_000 },
+						version: entry.version,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					};
+					kept.push(await Created._storeReplica(entry, found));
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Created.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal(Created.primaryStore.getEntry(ID).value.created, undefined, 'premise: the stub has no created time');
+		assert.equal((await Created.get(ID)).body, 'complete');
+		assert.deepEqual(kept, [true]);
+	});
+
+	it('marks a replica with the certificate, keeps it through demotion, and admits the key again', async () => {
+		const kept = await replica();
+		assert.ok(kept.metadataFlags & FULL_WRITE_HEAD);
+		await Records.evict(ID, kept.value, kept.version);
+		const demoted = Records.primaryStore.getEntry(ID);
+		assert.ok(demoted.metadataFlags & INVALIDATED);
+		assert.ok(demoted.metadataFlags & FULL_WRITE_HEAD, 'the stub is still its head put’s projection');
+		stored = [];
+		await replica();
+	});
+
+	it('stops renewing a replica kept without the certificate, so the sweep demotes it', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 2 });
+		const kept = await replica();
+		const first = deadlineOf(ID);
+		// what an earlier build kept: the same row without the certificate bit
+		setNextEncoding(kept.version, REPLICA | HAS_RESIDENCY_ID, -1, -1, kept.residencyId);
+		Records.primaryStore.putSync(ID, kept.value, { version: kept.version });
+		const legacy = Records.primaryStore.getEntry(ID);
+		assert.ok(legacy.metadataFlags & REPLICA && !(legacy.metadataFlags & FULL_WRITE_HEAD), 'premise: a legacy replica');
+		advanceClock(1100); // past the renewal point of a 2 s lifetime
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await sleep(100);
+		assert.equal(deadlineOf(ID), first, 'a read hit does not renew it');
+		advanceClock(1000);
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the sweep to demote the legacy replica'
+		);
 	});
 
 	it('serves a replica past its deadline until the sweep demotes it; reads honor only the record expiry', async () => {
@@ -284,6 +415,8 @@ describeReplicas('Local replicas of residency stubs', function () {
 		});
 		const loaded = [];
 		let residentExpiresAt = Date.now() + 3600_000;
+		const writer = 'residency-replicas-writer';
+		const writerId = getIdOfRemoteNode(writer, Expiring.auditStore);
 		Expiring.sourcedFrom(
 			class extends Resource {
 				static async load(entry) {
@@ -292,7 +425,8 @@ describeReplicas('Local replicas of residency stubs', function () {
 						key: ID,
 						value: { id: ID, name: 'indexed', body: 'complete' },
 						version: entry.version,
-						originNode: server.hostname,
+						originNode: writer,
+						fullWriteHead: entry.version,
 						expiresAt: residentExpiresAt,
 					};
 					await Expiring._storeReplica(entry, found);
@@ -305,7 +439,11 @@ describeReplicas('Local replicas of residency stubs', function () {
 			const context = { sourceApply: true, timestamp: Date.now() + newer };
 			await transaction(context, async () => {
 				const resource = await Expiring.getResource(ID, context, { ensureLoaded: false });
-				resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID, version: context.timestamp });
+				resource._writeInvalidate(
+					ID,
+					{ name: 'indexed' },
+					{ residencyId: RESIDENCY_ID, version: context.timestamp, nodeId: writerId }
+				);
 			});
 		};
 		await stub(0);
@@ -367,6 +505,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 						value: { id: ID, sku: 'A1', name: 'resident' },
 						version: entry.version,
 						originNode: server.hostname,
+						fullWriteHead: entry.version,
 					};
 					results.push(await Computed._storeReplica(entry, found));
 					return found;
@@ -401,6 +540,81 @@ describeReplicas('Local replicas of residency stubs', function () {
 		assert.ok(stub.metadataFlags & INVALIDATED);
 		assert.equal(stub.value.sku, 'A2');
 		assert.equal(stub.residencyId, RESIDENCY_ID);
+	});
+
+	it('demotes a replica on a computed-index table without running the resolver', async () => {
+		const Computed = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasComputedDemotion',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'sku', indexed: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+			audit: true,
+		});
+		// a resolver that needs a request (its context, another table) cannot run in a maintenance sweep
+		let sweeping = false;
+		Computed.setComputedAttribute('upper', (record) => {
+			if (sweeping) throw new Error('resolver inputs are unavailable in a sweep');
+			return record.name.toUpperCase();
+		});
+		Computed.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = {
+						key: ID,
+						value: { id: ID, sku: 'A1', name: 'resident' },
+						version: entry.version,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					};
+					await Computed._storeReplica(entry, found);
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		await Computed.put(ID, { id: ID, sku: 'A1', name: 'original' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Computed.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { id: ID, sku: 'A1' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Computed.get(ID)).name, 'resident');
+		const entry = Computed.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA, 'premise: a replica');
+		sweeping = true;
+		try {
+			await Computed.evict(ID, entry.value, entry.version);
+		} finally {
+			sweeping = false;
+		}
+		const stub = Computed.primaryStore.getEntry(ID);
+		assert.ok(stub.metadataFlags & INVALIDATED, 'the replica was not demoted');
+		assert.equal(stub.value.id, ID);
+		assert.equal(stub.value.sku, 'A1');
+		assert.equal(stub.value.name, undefined);
+	});
+
+	it('keeps the primary key when a patch turns a replica back into a stub, so an index-only select stays local', async () => {
+		const before = await replica();
+		const context = { sourceApply: true, timestamp: before.version + 1 };
+		await transaction(context, async () => {
+			const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+			resource._writeUpdate(ID, { name: 'patched' }, false, {
+				version: before.version + 1,
+				nodeId: before.nodeId ?? 0,
+			});
+			resource.save();
+		});
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED, 'premise: the patch stores a stub');
+		calls = [];
+		assert.deepEqual(await query(['id', 'name'], [{ attribute: 'name', value: 'patched' }]), [
+			{ id: ID, name: 'patched' },
+		]);
+		assert.deepEqual(calls, []);
 	});
 
 	for (const [label, apply, expectStub, expectBody, expectName = 'changed'] of [
@@ -553,10 +767,9 @@ describeReplicas('Local replicas of residency stubs', function () {
 		await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'a quarter of the lifetime to renew');
 
 		Records.setTTLExpiration({ replicaExpiration: 2, replicaRefreshFraction: 1 });
-		await Records.delete(ID);
+		const kept = Records.primaryStore.getEntry(ID);
+		await Records.evict(ID, kept.value, kept.version);
 		stored = [];
-		const stub = await invalidate(Object.freeze({ name: 'indexed' }), {}, 1);
-		response = { ...response, version: stub.version };
 		await replica();
 		const fixed = deadlineOf(ID);
 		advanceClock(1100);
@@ -605,7 +818,11 @@ describeReplicas('Local replicas of residency stubs', function () {
 			class extends Resource {
 				static async load(entry) {
 					const found = { key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: entry.version };
-					await Repaired._storeReplica(entry, { ...found, originNode: server.hostname });
+					await Repaired._storeReplica(entry, {
+						...found,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					});
 					return found;
 				}
 			},
@@ -634,7 +851,11 @@ describeReplicas('Local replicas of residency stubs', function () {
 			class extends Resource {
 				static async load(entry) {
 					const found = { key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: entry.version };
-					await Dropped._storeReplica(entry, { ...found, originNode: server.hostname });
+					await Dropped._storeReplica(entry, {
+						...found,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					});
 					return found;
 				}
 			},
@@ -702,5 +923,144 @@ describeReplicas('Local replicas of residency stubs', function () {
 		assert.equal((await Records.get(ID)).body, 'complete');
 		assert.deepEqual(stored, [false]);
 		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+	});
+
+	describe('keeps only an answer that is the stub’s own state', () => {
+		const ORIGIN = 'residency-replicas-origin';
+		let Counters, origin, answer, kept;
+		before(() => {
+			Counters = table({
+				database: 'residencyReplicas',
+				table: 'ResidencyReplicasCounters',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'count', type: 'Int', indexed: true },
+					{ name: 'views', type: 'Int' },
+					{ name: 'body', type: 'String' },
+				],
+				audit: true,
+			});
+			Counters.dbisDB.putSync([Symbol.for('residency_by_id'), RESIDENCY_ID], ['resident-a', 'resident-b']);
+			origin = getIdOfRemoteNode(ORIGIN, Counters.auditStore);
+			Counters.sourcedFrom(
+				class extends Resource {
+					static async load(entry) {
+						if (answer) kept.push(await Counters._storeReplica(entry, answer));
+						return answer;
+					}
+				},
+				{ intermediateSource: true }
+			);
+		});
+		beforeEach(() => {
+			Counters.setTTLExpiration({ replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000 });
+			answer = undefined;
+			kept = [];
+		});
+
+		function fromOrigin(version, write) {
+			const context = { source: {}, sourceApply: true, timestamp: version };
+			return transaction(context, async () => write(await Counters.getResource(ID, context, { ensureLoaded: false })));
+		}
+		const stubAt = (version, projection) =>
+			fromOrigin(version, (resource) =>
+				resource._writeInvalidate(ID, { id: ID, ...projection }, { residencyId: RESIDENCY_ID, version, nodeId: origin })
+			);
+		const patchAt = (version, patch) =>
+			fromOrigin(version, (resource) => {
+				resource._writeUpdate(ID, patch, false, { isNotification: true, version, nodeId: origin });
+				resource.save();
+			});
+		const add = (value) => ({ __op__: 'add', value });
+		const resident = (version, value) => ({
+			key: ID,
+			value: { id: ID, ...value },
+			version,
+			originNode: ORIGIN,
+			fullWriteHead: version,
+		});
+		async function countedAs(count) {
+			const ids = [];
+			for await (const record of Counters.search({
+				conditions: [{ attribute: 'count', value: count }],
+				select: ['id'],
+			}))
+				if (record.id === ID) ids.push(record.id);
+			return ids;
+		}
+
+		it('serves a newer answer uncached, so its own in-order add(1) folds once (harper#3640)', async () => {
+			const T1 = Date.now() - 60_000;
+			await stubAt(T1, { count: 1 });
+			answer = resident(T1 + 10, { count: 2, body: 'complete' });
+			assert.equal((await Counters.get(ID)).count, 2, 'the caller receives the newer record');
+			await patchAt(T1 + 10, { count: add(1) });
+			const stub = Counters.primaryStore.getEntry(ID);
+			assert.ok(stub.metadataFlags & INVALIDATED);
+			assert.equal(stub.value.count, 2);
+			assert.deepEqual(await countedAs(2), [ID]);
+			assert.deepEqual(await countedAs(3), []);
+			assert.deepEqual(kept, [false]);
+		});
+
+		it('serves uncached an answer lacking an out-of-order write the stub folded, so a hot key converges (harper#3642)', async () => {
+			Counters.setTTLExpiration({ replicaExpiration: 2 });
+			const T = Date.now() - 60_000;
+			await stubAt(T, { count: 1 });
+			await patchAt(T - 5, { views: add(1) });
+			answer = resident(T, { count: 1, views: 0, body: 'without P' });
+			assert.equal((await Counters.get(ID)).body, 'without P');
+			await patchAt(T - 5, { views: add(1) });
+			answer = resident(T, { count: 1, views: 1, body: 'with P' });
+			for (let read = 0; read < 3; read++) {
+				advanceClock(1100);
+				assert.equal((await Counters.get(ID)).body, 'with P');
+				await sleep(20);
+			}
+			assert.ok(Counters.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+			assert.deepEqual(kept, [false, false, false, false]);
+		});
+
+		it('serves uncached an answer carrying an out-of-order write not yet received here, so that write folds once', async () => {
+			const T = Date.now() - 60_000;
+			await stubAt(T, { count: 1 });
+			answer = resident(T, { count: 2, body: 'with Q' });
+			assert.equal((await Counters.get(ID)).count, 2);
+			await patchAt(T - 5, { count: add(1) });
+			assert.equal(Counters.primaryStore.getEntry(ID).value.count, 2);
+			assert.deepEqual(await countedAs(2), [ID]);
+			assert.deepEqual(kept, [false]);
+		});
+
+		it('serves uncached an answer lacking an in-order write the stub received, so the index keeps it', async () => {
+			const T = Date.now() - 60_000;
+			await stubAt(T - 10, { count: 0 });
+			await patchAt(T - 5, { count: add(1) });
+			await stubAt(T, { count: 1 });
+			answer = resident(T, { count: 0, body: 'without the add' });
+			assert.equal((await Counters.get(ID)).count, 0);
+			assert.deepEqual(await countedAs(1), [ID]);
+			assert.deepEqual(await countedAs(0), []);
+			assert.deepEqual(kept, [false]);
+		});
+
+		it('serves uncached a stub carrying audit refs, which keep deduplicating its writes', async () => {
+			await stubAt(Date.now() - 60_000, { count: 1 });
+			const explicit = Date.now() + 60_000;
+			await Counters.patch(ID, { count: add(1) }, { timestamp: explicit });
+			const stub = Counters.primaryStore.getEntry(ID);
+			assert.ok(stub.metadataFlags & INVALIDATED);
+			assert.equal(stub.additionalAuditRefs?.length, 1, 'premise: a head ref');
+			assert.equal(stub.receivedIdentityRefs?.length, 1, 'premise: a received identity');
+			answer = { ...resident(stub.version, { count: 2, body: 'complete' }), originNode: server.hostname };
+			assert.equal((await Counters.get(ID)).body, 'complete');
+			assert.deepEqual(kept, [false]);
+			const after = Counters.primaryStore.getEntry(ID);
+			assert.ok(after.metadataFlags & INVALIDATED);
+			for (const refs of ['additionalAuditRefs', 'receivedIdentityRefs']) assert.deepEqual(after[refs], stub[refs]);
+			await Counters.patch(ID, { count: add(1) }, { timestamp: explicit });
+			assert.equal(Counters.primaryStore.getEntry(ID).value.count, 2, 'a re-delivery is not folded again');
+		});
 	});
 });

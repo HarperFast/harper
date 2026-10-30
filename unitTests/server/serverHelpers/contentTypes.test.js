@@ -2,18 +2,25 @@
 
 const assert = require('node:assert');
 const http = require('node:http');
+const { Readable } = require('node:stream');
+const { generate } = require('mqtt-packet');
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const {
 	contentTypes,
 	findBestSerializer,
+	isPassThroughEnvelope,
+	isHttpPassThroughEnvelope,
+	serialize,
+	serializeMessage,
 	waitForStreamStartup,
 	discardSerializedStream,
 	brotliOptions,
 } = require('#src/server/serverHelpers/contentTypes');
 const { constants } = require('node:zlib');
 const { pipeBodyToResponse } = require('#src/server/http');
+const { Headers } = require('#src/server/serverHelpers/Headers');
 
 function streamToString(readable) {
 	return new Promise((resolve, reject) => {
@@ -858,7 +865,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 describe('contentTypes – JSON terminal metadata', () => {
 	for (const asynchronous of [false, true]) {
 		for (const property of ['replicationUnconfirmed', 'retryable']) {
-			it(`finishes valid JSON when ${property} throws in a ${asynchronous ? 'async' : 'sync'} iterator error`, async function () {
+			it(`writes the error element and fails the stream when ${property} throws in a ${asynchronous ? 'async' : 'sync'} iterator error`, async function () {
 				this.timeout(2000);
 				const failure = new Proxy(new Error('Iterator failed'), {
 					get(target, key, receiver) {
@@ -877,9 +884,11 @@ describe('contentTypes – JSON terminal metadata', () => {
 				const readable = contentTypes
 					.get('application/json')
 					.serializeStream(asynchronous ? asyncSource() : syncSource());
+				let text = '';
+				readable.on('data', (chunk) => (text += chunk));
 				try {
-					const result = JSON.parse(await streamToString(readable));
-					assert.deepStrictEqual(result, [{ id: 'first' }, { error: 'Error: Iterator failed' }]);
+					await assert.rejects(streamToString(readable), /Iterator failed/);
+					assert.strictEqual(text, '[{"id":"first"},{"error":"Error: Iterator failed"}');
 				} finally {
 					readable.destroy();
 				}
@@ -928,4 +937,118 @@ describe('contentTypes – readable outcome with unreadable status', () => {
 			});
 		}
 	}
+});
+
+describe('contentTypes – pass-through envelopes', function () {
+	const collidingData = [{ a: 1 }, [1, 2], 5, 0, true, false, null, undefined, new Map(), Symbol.iterator];
+	const textAndBytes = [
+		'text',
+		'',
+		Buffer.from('bytes'),
+		Buffer.alloc(0),
+		new Uint8Array([1, 2, 3]).subarray(1),
+		new Uint16Array(2),
+		new DataView(new ArrayBuffer(4)),
+	];
+
+	function httpRequest() {
+		return { headers: { asObject: { accept: 'application/json' } } };
+	}
+
+	describe('isPassThroughEnvelope', function () {
+		it('accepts a string content type with text or a binary view as data', function () {
+			for (const data of textAndBytes) assert.strictEqual(isPassThroughEnvelope({ contentType: 'x/y', data }), true);
+		});
+
+		it('rejects data that is not text or a binary view', function () {
+			for (const data of [...collidingData, new ArrayBuffer(2), Readable.from([]), new Blob(['b'])])
+				assert.strictEqual(isPassThroughEnvelope({ contentType: 'x/y', data }), false, String(data));
+		});
+
+		it('rejects a content type that is not a string, and values that are not objects', function () {
+			for (const contentType of [5, {}, null, undefined, ['x/y']])
+				assert.strictEqual(isPassThroughEnvelope({ contentType, data: 'text' }), false, String(contentType));
+			for (const value of [null, undefined, 'text', 5, Buffer.from('x'), { data: 'text' }])
+				assert.strictEqual(isPassThroughEnvelope(value), false);
+		});
+	});
+
+	describe('isHttpPassThroughEnvelope', function () {
+		it('accepts everything the message predicate does, plus a Blob, streams, async iterables and generators', function () {
+			const extra = [
+				new Blob(['b']),
+				Readable.from(['s']),
+				new ReadableStream(),
+				(async function* () {})(),
+				(function* () {})(),
+			];
+			for (const data of [...textAndBytes, ...extra])
+				assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 'x/y', data }), true);
+		});
+
+		it('rejects the shapes a table record can hold', function () {
+			for (const data of [...collidingData, new ArrayBuffer(2), new Set([1]), { next: 1 }])
+				assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 'x/y', data }), false, String(data));
+			assert.strictEqual(isHttpPassThroughEnvelope({ contentType: 5, data: 'text' }), false);
+			assert.strictEqual(isHttpPassThroughEnvelope(null), false);
+		});
+	});
+
+	describe('serializeMessage', function () {
+		it('serializes a record whose contentType and data attributes are not an envelope as a record', function () {
+			for (const data of [{ a: 1 }, 5, 0, [1], true]) {
+				const record = { id: 'k', contentType: 'x/y', data };
+				const payload = serializeMessage(record, { headers: { accept: 'application/json' } });
+				assert.deepStrictEqual(JSON.parse(payload), record);
+				generate({ cmd: 'publish', topic: 't', payload, qos: 1, messageId: 1, dup: false, retain: false });
+			}
+		});
+
+		it('still delivers a real string or binary envelope as its data', function () {
+			assert.strictEqual(serializeMessage({ contentType: 'text/x-custom', data: 'text' }), 'text');
+			const buffer = Buffer.from('bytes');
+			assert.strictEqual(serializeMessage({ contentType: 'application/octet-stream', data: buffer }), buffer);
+			const view = new Uint8Array([9, 1, 2, 9]).subarray(1, 3);
+			const wrapped = serializeMessage({ contentType: 'application/octet-stream', data: view });
+			assert.ok(Buffer.isBuffer(wrapped));
+			assert.deepStrictEqual([...wrapped], [1, 2]);
+		});
+
+		it('serializes a record whose data is a Blob, which no protocol encoder accepts', function () {
+			const payload = serializeMessage({ id: 'k', contentType: 'image/png', data: new Blob(['b']) }, httpRequest());
+			assert.strictEqual(JSON.parse(payload).contentType, 'image/png');
+		});
+	});
+
+	describe('serialize', function () {
+		it('serializes a record whose contentType and data attributes are not an envelope as a record', function () {
+			for (const data of [{ a: 1 }, 5, [1]]) {
+				const record = { id: 'k', contentType: 'x/y', data };
+				const response = { headers: new Headers() };
+				const body = serialize(record, httpRequest(), response);
+				assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
+				assert.deepStrictEqual(JSON.parse(body), record);
+			}
+		});
+
+		it('still answers a real envelope with its own content type and data', function () {
+			const buffer = Buffer.from('bytes');
+			for (const [contentType, data] of [
+				['text/x-custom', 'text'],
+				['application/octet-stream', buffer],
+			]) {
+				const response = { headers: new Headers() };
+				assert.strictEqual(serialize({ contentType, data }, httpRequest(), response), data);
+				assert.strictEqual(response.headers.get('Content-Type'), contentType);
+			}
+		});
+
+		it('hands a Blob, stream or generator envelope to the HTTP writer unchanged', function () {
+			for (const data of [new Blob(['b']), Readable.from(['s']), new ReadableStream(), (async function* () {})()]) {
+				const response = { headers: new Headers() };
+				assert.strictEqual(serialize({ contentType: 'x/y', data }, httpRequest(), response), data);
+				assert.strictEqual(response.headers.get('Content-Type'), 'x/y');
+			}
+		});
+	});
 });

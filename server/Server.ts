@@ -173,6 +173,11 @@ export function getBearerValidators(): readonly BearerValidatorEntry[] {
 	return bearerValidatorsSnapshot;
 }
 
+/** What Harper core's replication stand-ins throw, so a caller can tell no replication from a failure of it. */
+export const REPLICATION_NOT_IMPLEMENTED = 'REPLICATION_NOT_IMPLEMENTED';
+const replicationNotImplemented = () =>
+	Object.assign(new Error('Replication not implemented.'), { code: REPLICATION_NOT_IMPLEMENTED });
+
 export const server: Server = {
 	registerBearerValidator(validator: BearerValidator, options?: BearerValidatorOptions): () => void {
 		if (typeof validator !== 'function') {
@@ -200,15 +205,13 @@ export const server: Server = {
 	},
 	replication: {
 		replicateOperation(operation, _options) {
-			return operation.replicated
-				? Promise.reject(new Error('Replication not implemented.'))
-				: Promise.resolve({ message: '' });
+			return operation.replicated ? Promise.reject(replicationNotImplemented()) : Promise.resolve({ message: '' });
 		},
 		monitorNodeCAs(_listener) {
-			throw new Error('Replication not implemented.');
+			throw replicationNotImplemented();
 		},
 		sendOperationToNode() {
-			return Promise.reject(new Error('Replication not implemented.'));
+			return Promise.reject(replicationNotImplemented());
 		},
 	},
 } as any;

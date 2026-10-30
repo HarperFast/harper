@@ -22,6 +22,7 @@ class FullTextNativeTestBinding {
 			applyMutationBatch() {}
 			publish() {}
 			close() {}
+			searchPage() {}
 		};
 	}
 
@@ -29,11 +30,11 @@ class FullTextNativeTestBinding {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 3,
+			queryApiVersion: 4,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
@@ -42,6 +43,7 @@ class FullTextNativeTestBinding {
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
 				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
 				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
@@ -127,6 +129,12 @@ class FullTextNativeTestBinding {
 					totalRelation: 'exact',
 					hits: hits.slice(offset, offset + limit),
 				};
+			},
+			async searchPage({ continuation, ...request }, options) {
+				const offset = Number(continuation ?? 0);
+				const result = await this.search({ ...request, offset }, options);
+				const next = offset + result.hits.length;
+				return { ...result, continuation: next < result.total ? String(next) : undefined };
 			},
 			async traceMatches(request, records) {
 				validateTraceRequest(request);
