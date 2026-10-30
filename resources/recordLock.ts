@@ -106,6 +106,8 @@ export interface RecordLockHandle {
 	 * have passed their own bound and the key may already belong to someone else.
 	 */
 	isLeaseExpired(): boolean;
+	/** What remains of the native lease, in ms: Infinity without one, 0 once it has lapsed. */
+	leaseRemainingMs?(): number;
 	/** Revoke authority ahead of the lease, so a staged-but-uncommitted write is fenced at commit. */
 	revokeLease(): void;
 	/**
@@ -356,6 +358,11 @@ class KeyLockHandle implements RecordLockHandle {
 
 	isLeaseExpired(): boolean {
 		return this.expired || this.#leaseLapsed();
+	}
+
+	leaseRemainingMs(): number {
+		if (this.expired) return 0;
+		return this.#deadlineMono === undefined ? Infinity : Math.max(0, this.#deadlineMono - performance.now());
 	}
 
 	// The single place the deadline is evaluated, so the two predicates cannot disagree about it. A
