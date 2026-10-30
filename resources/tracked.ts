@@ -33,7 +33,7 @@ function getChanges(target) {
  */
 export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
 	const prototype = Target.prototype;
-	const descriptors = {};
+	const descriptors = Object.create(null);
 	// Read the Array form. `typeDef.properties` is now a Record<string, JsonSchemaFragment>
 	// after the schema-metadata alignment; iterating it with for...of would throw.
 	// For typeDefs that only carry the Record (e.g. a programmatic Resource that declared
@@ -224,6 +224,10 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 		) {
 			Object.defineProperty(prototype, name, descriptor);
 		}
+	}
+	for (const name of Object.getOwnPropertyNames(prototype)) {
+		if ((Object.getOwnPropertyDescriptor(prototype, name).get as any)?.isAttribute && !(name in descriptors))
+			delete prototype[name];
 	}
 	setMethod('getProperty', function (name) {
 		const descriptor = descriptors[name];
@@ -668,12 +672,23 @@ function sameCopy(copy, source) {
  * nothing changed on an existing record, and `changes` itself when it needs no normalization; never
  * mutates `changes`, which is the instance's live tracked state or the caller's update object.
  */
-export function collapseChanges(target, changes) {
-	// a non-object root (an array, binary data) is not a patch; leave it for the write's root validation
-	if (changes != null && (typeof changes !== 'object' || Array.isArray(changes) || ArrayBuffer.isView(changes)))
+export function collapseChanges(target, changes, includeOwnProperties: boolean | string[] = true) {
+	// a non-object root (null, a primitive, an array, binary data) is not a patch; leave it for the write's root validation
+	if (
+		changes !== undefined &&
+		(changes === null ||
+			typeof changes !== 'object' ||
+			Array.isArray(changes) ||
+			ArrayBuffer.isView(changes) ||
+			changes instanceof ArrayBuffer)
+	)
 		return changes;
 	const source = target.getRecord?.();
-	const ownKeys = Object.keys(target);
+	const ownKeys = Array.isArray(includeOwnProperties)
+		? includeOwnProperties
+		: includeOwnProperties
+			? Object.keys(target)
+			: [];
 	let patch = changes;
 	let keyCount = 0;
 	for (const key in changes) {
@@ -707,6 +722,19 @@ export function collapseChanges(target, changes) {
 	return patch;
 }
 const OMITTED = {};
+
+export function applyOwnChanges(target, patch, ownKeys = Object.keys(target)) {
+	for (const name of ownKeys) {
+		if (
+			hasOwnChange(target, name) &&
+			Object.hasOwn(patch, name) &&
+			!sameOwnValue(target[name], patch[name]) &&
+			!Reflect.set(target, name, plainCopy(patch[name]))
+		) {
+			throw new ClientError(`Property ${name} is read-only, so its value cannot be converted`);
+		}
+	}
+}
 
 /**
  * Add a numeric delta to a property of a tracked object, composing with whatever this transaction

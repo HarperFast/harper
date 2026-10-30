@@ -188,6 +188,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
 	addToChanges,
+	applyOwnChanges,
 	assignTrackedAccessors,
 	collapseChanges,
 	recordOwnBaseline,
@@ -5600,8 +5601,38 @@ export function makeTable(options): TableResourceClass {
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
+					const rootUpdate = tracksInstance ? instanceChanges : recordUpdate;
+					if (!(context as any)?.source && (fullUpdate || rootUpdate !== undefined)) {
+						// A record must be a plain object. Reject primitive, string/number, bare-binary,
+						// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
+						// JSON string/number body, or a top-level JSON array. Such roots carry no primary
+						// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
+						// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
+						// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
+						// publish payloads are unaffected.)
+						const isBinaryRoot = ArrayBuffer.isView(rootUpdate) || rootUpdate instanceof ArrayBuffer;
+						if (rootUpdate === null || typeof rootUpdate !== 'object' || isBinaryRoot || Array.isArray(rootUpdate)) {
+							// Avoid dumping every byte of a large binary body or huge payload into the error.
+							let received: string;
+							if (isBinaryRoot) {
+								received = `${rootUpdate.constructor?.name ?? 'binary'} of ${rootUpdate.byteLength} bytes`;
+							} else {
+								const full = stringify(rootUpdate) ?? typeof rootUpdate;
+								received = full.length > 200 ? full.slice(0, 200) + '...' : full;
+							}
+							throw new ClientError(
+								`A record must be an object, but received ${received}. To store binary data, put it ` +
+									`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
+							);
+						}
+					}
+					let ownKeys: string[] | undefined;
+					let ownMerged = false;
 					if (tracksInstance) {
-						recordUpdate = collapseChanges(this, instanceChanges);
+						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
+						ownKeys = collapseOwn ? Object.keys(this) : [];
+						recordUpdate = collapseChanges(this, instanceChanges, ownKeys);
+						ownMerged = ownKeys.length > 0 && recordUpdate !== instanceChanges;
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
 						// blobs are found here; before/beforeIntermediate run after validate
 						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
@@ -5610,33 +5641,6 @@ export function makeTable(options): TableResourceClass {
 					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
-							// A record must be a plain object. Reject primitive, string/number, bare-binary,
-							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
-							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
-							// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
-							// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
-							// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
-							// publish payloads are unaffected.)
-							const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
-							if (
-								recordUpdate === null ||
-								typeof recordUpdate !== 'object' ||
-								isBinaryRoot ||
-								Array.isArray(recordUpdate)
-							) {
-								// Avoid dumping every byte of a large binary body or huge payload into the error.
-								let received: string;
-								if (isBinaryRoot) {
-									received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
-								} else {
-									const full = stringify(recordUpdate) ?? typeof recordUpdate;
-									received = full.length > 200 ? full.slice(0, 200) + '...' : full;
-								}
-								throw new ClientError(
-									`A record must be an object, but received ${received}. To store binary data, put it ` +
-										`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
-								);
-							}
 							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
 							// caching relies on it), so mutating in place would corrupt cached/shared state.
 							// validate() coerces values and we stamp created/updated times + the primary key
@@ -5647,7 +5651,10 @@ export function makeTable(options): TableResourceClass {
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
-							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
+							if (!committedBy.isReplay) {
+								this.validate(recordUpdate, !fullUpdate);
+								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
+							}
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
@@ -10329,6 +10336,18 @@ export function makeTable(options): TableResourceClass {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			const computedResolvers = new Map();
+			for (const attribute of this.attributes) {
+				if (!attribute.relationship && attribute.computed) {
+					if (typeof attribute.computed.from === 'function') {
+						computedResolvers.set(attribute, attribute.computed.from);
+					} else if (attribute.computedFromExpression) {
+						const attributesFallback: { [key: string]: undefined } = {};
+						for (const attr of this.attributes) attributesFallback[attr.name] = undefined;
+						computedResolvers.set(attribute, createComputedFrom(attribute.computedFromExpression, attributesFallback));
+					}
+				}
+			}
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			// Declarations are refused before they are saved; here a descriptor an earlier build
@@ -10340,7 +10359,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
 			this.decideAttributes = (this.attributes as any[]).filter((a) => a?.decide);
-			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
+			const nextExpiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed` / `@decide`, so a dropped
 			// directive doesn't leave a stale hook or block a default refresh on re-add.
 			const embedNames = new Set(this.embedAttributes.map((a) => a.name));
@@ -10351,7 +10370,7 @@ export function makeTable(options): TableResourceClass {
 			for (const name of this.userSetDeciders) if (!decideNames.has(name)) this.userSetDeciders.delete(name);
 			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
 			// (setPrototypeOf keeps fast properties; Object.create(null) starts in dictionary mode)
-			propertyResolvers = this.propertyResolvers = Object.setPrototypeOf(
+			const nextPropertyResolvers = Object.setPrototypeOf(
 				{
 					$id: (object, context, entry) => ({ value: entry.key }),
 					$updatedtime: (object, context, entry) => entry.version,
@@ -10382,10 +10401,13 @@ export function makeTable(options): TableResourceClass {
 				},
 				null
 			);
-			propertyResolvers.$highlights.directReturn = true;
-			primaryKeyAttribute = undefined;
+			nextPropertyResolvers.$highlights.directReturn = true;
+			let nextPrimaryKeyAttribute, nextCreatedTimeProperty, nextUpdatedTimeProperty;
+			let nextHasRelationships = false;
 			for (const attribute of this.attributes) {
-				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
+				if (attribute.isPrimaryKey) nextPrimaryKeyAttribute = attribute;
+				if (attribute.assignCreatedTime || attribute.name === '__createdtime__') nextCreatedTimeProperty = attribute;
+				if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') nextUpdatedTimeProperty = attribute;
 				attribute.resolve = null; // reset this
 				// Also the setter, or a reload that turns a @relationship into a @computed keeps the
 				// relationship's setter and writes a foreign key from a computed assignment.
@@ -10411,7 +10433,7 @@ export function makeTable(options): TableResourceClass {
 							`A relationship property is already computed and can not be combined with a computed function (the relationship will be given precedence)`
 						);
 					}
-					hasRelationships = true;
+					nextHasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
 							const searchRelated = (
@@ -10426,7 +10448,7 @@ export function makeTable(options): TableResourceClass {
 									attribute.elements.definition.tableClass,
 									{ allowFullScan: false }
 								) as any;
-							propertyResolvers[attribute.name] = attribute.resolve = (
+							nextPropertyResolvers[attribute.name] = attribute.resolve = (
 								object,
 								context,
 								entry,
@@ -10472,7 +10494,7 @@ export function makeTable(options): TableResourceClass {
 					} else if (relationship.from) {
 						const definition = attribute.definition || attribute.elements?.definition;
 						if (definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (
+							nextPropertyResolvers[attribute.name] = attribute.resolve = (
 								object,
 								context,
 								entry,
@@ -10555,19 +10577,7 @@ export function makeTable(options): TableResourceClass {
 						);
 					}
 				} else if (computed) {
-					if (typeof computed.from === 'function') {
-						this.setComputedAttribute(attribute.name, computed.from);
-					} else if (attribute.computedFromExpression) {
-						// build a fallback scope object with all attribute names set to undefined,
-						// matching the behavior in graphql.ts to prevent ReferenceErrors
-						const attributesFallback: { [key: string]: undefined } = {};
-						for (const attr of this.attributes) attributesFallback[attr.name] = undefined;
-						this.setComputedAttribute(
-							attribute.name,
-							createComputedFrom(attribute.computedFromExpression, attributesFallback)
-						);
-					}
-					propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
+					nextPropertyResolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
 						const value = typeof computed.from === 'string' ? object[computed.from] : object;
 						const userResolver = this.userResolvers[attribute.name];
 						if (userResolver) return userResolver(value, context, entry);
@@ -10588,7 +10598,7 @@ export function makeTable(options): TableResourceClass {
 					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
 					const customIndex = indices[attribute.name].customIndex;
-					propertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort, comparing) => {
+					nextPropertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort, comparing) => {
 						const value = object[attribute.name];
 						const sortAttribute = sort?.attribute;
 						const resolvesSort =
@@ -10597,9 +10607,16 @@ export function makeTable(options): TableResourceClass {
 								(Array.isArray(sortAttribute) && sortAttribute[sortAttribute.length - 1] === attribute.name));
 						return customIndex.propertyResolver(value, context, entry, resolvesSort ? sort : undefined);
 					};
-					propertyResolvers[attribute.name].directReturn = true;
+					nextPropertyResolvers[attribute.name].directReturn = true;
 				}
 			}
+			for (const [attribute, resolver] of computedResolvers) this.setComputedAttribute(attribute.name, resolver);
+			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
+			primaryKeyAttribute = nextPrimaryKeyAttribute;
+			expiresAtProperty = nextExpiresAtProperty;
+			hasRelationships = nextHasRelationships;
+			this.createdTimeProperty = createdTimeProperty = nextCreatedTimeProperty;
+			this.updatedTimeProperty = updatedTimeProperty = nextUpdatedTimeProperty;
 			assignTrackedAccessors(this, this);
 			assignTrackedAccessors(Updatable, this, true);
 			// updatedAttributes() re-runs on every schema reload, so rebuild these from scratch rather than
@@ -10647,8 +10664,11 @@ export function makeTable(options): TableResourceClass {
 			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
 			// Undefined rather than an empty set for a table with no resolved attributes: that is the
 			// check which keeps the projection off an unaffected store's write path.
-			primaryStore.encoder.resolvedAttributeNames =
-				resolvedAttributeNames.length > 0 ? new Set(resolvedAttributeNames) : undefined;
+			const resolvedAttributeNamesSet = resolvedAttributeNames.length > 0 ? new Set(resolvedAttributeNames) : undefined;
+			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? []) {
+				if (!resolvedAttributeNamesSet?.has(name)) delete primaryStore.encoder.structPrototype[name];
+			}
+			primaryStore.encoder.resolvedAttributeNames = resolvedAttributeNamesSet;
 			primaryStore.encoder.resolvedAttributeNamesList = resolvedAttributeNames;
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
@@ -12255,7 +12275,7 @@ export function makeTable(options): TableResourceClass {
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
-				let updatedRecord, assignCreatedTime, sourceVersion;
+				let updatedRecord, createdTimeToAssign, sourceVersion;
 				let reusedCachedRecord = false;
 				let hasChanges, invalidated;
 				try {
@@ -12376,7 +12396,9 @@ export function makeTable(options): TableResourceClass {
 						assertLocalShardWrite(
 							residencyOwners(databaseName, calculateResidencySlot(id, updatedRecord), residencyPolicy.slots)
 						);
-					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;
+					// a reload can rebind createdTimeProperty before the commit below runs
+					createdTimeToAssign =
+						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
 					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null
@@ -12392,12 +12414,12 @@ export function makeTable(options): TableResourceClass {
 										? new Date(resolvedVersion).toISOString()
 										: resolvedVersion;
 						}
-						if (assignCreatedTime) {
-							updatedRecord[createdTimeProperty.name] =
-								existingRecord?.[createdTimeProperty.name] ??
-								(createdTimeProperty.type === 'Date'
+						if (createdTimeToAssign) {
+							updatedRecord[createdTimeToAssign.name] =
+								existingRecord?.[createdTimeToAssign.name] ??
+								(createdTimeToAssign.type === 'Date'
 									? new Date(resolvedVersion)
-									: createdTimeProperty.type === 'String'
+									: createdTimeToAssign.type === 'String'
 										? new Date(resolvedVersion).toISOString()
 										: resolvedVersion);
 						}
@@ -12510,10 +12532,10 @@ export function makeTable(options): TableResourceClass {
 							// a first fill replacing a record that landed during the source call keeps its created time,
 							// as a put would; copied, since the caller already holds updatedRecord
 							const racedCreatedTime =
-								assignCreatedTime && existingVersion == null ? currentRecord?.[createdTimeProperty.name] : undefined;
+								createdTimeToAssign && existingVersion == null ? currentRecord?.[createdTimeToAssign.name] : undefined;
 							if (racedCreatedTime != null) {
 								recordToStore = Object.setPrototypeOf({ ...updatedRecord }, Object.getPrototypeOf(updatedRecord));
-								recordToStore[createdTimeProperty.name] = racedCreatedTime;
+								recordToStore[createdTimeToAssign.name] = racedCreatedTime;
 								const fillEntry = entryMap.get(updatedRecord);
 								if (fillEntry) entryMap.set(recordToStore, fillEntry);
 							}
