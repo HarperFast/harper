@@ -1525,7 +1525,7 @@ describe('Record locks (harper#483)', () => {
 		let originalCommit;
 		const cleanups = [];
 		before(function () {
-			({ Transaction } = require('../rocksdbBindings.mts').rocksdbBindings());
+			({ Transaction } = require('@harperfast/rocksdb-js'));
 			StampTest = table({
 				table: 'RecordLockStampTest',
 				database: 'test',
