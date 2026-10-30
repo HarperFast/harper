@@ -215,12 +215,20 @@ anyway.
 1. Only committed entries are delivered; the runtime never reads uncommitted log entries.
 2. One worker runs a given backend at a time (a process-wide `tryLock` per backend). The owner
    merges every physical log into one serial stream and keeps a cursor per log.
-3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> } }`. It advances
-   only at `endTxn` and only after the backend's durability barrier covers the whole transaction.
+3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> }, floors?: { <log
+name>: <log sequence> } }`. `logs` advances only at `endTxn` and only after the backend's durability
+   barrier covers the whole transaction. `floors` anchors a log that held no completed transaction when
+   the rebuild captured its boundary: the lowest sequence that must stay retained for the log to be read
+   from its beginning — its oldest retained file, or the writer's sequence when none remains (recorded
+   only when past 1). Floors are cursor identity like `logs` — `sameCursor`
+   compares them, so a backend cannot report a floor the owner never offered — and they survive
+   backend persistence (the full-text payload codec carries them; HNSW stores the object).
 4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
    or a full backend queue delays indexing; it cannot skip durable log work.
 5. Resume proves every saved log position with `exactStart`. A missing, incomplete or duplicate
-   boundary condemns the generation; approximate resume is not permitted.
+   boundary condemns the generation; approximate resume is not permitted. The one exception is a
+   `missing` boundary whose loss is proven harmless (below, `#recoverPurgedAnchors`): that log is
+   re-anchored by a floor instead.
 6. The runtime resolves the current primary entry once per changed record and projects only the
    registered attributes. Backends never see the log entry's body: a conflict retry can re-resolve a
    record after its log payload was staged, so the entry is identity and version evidence, not state.
@@ -265,10 +273,43 @@ Transaction timestamps are unique per physical log but **not monotone in physica
 (`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
 the runtime never compares timestamps to decide progress or retention. Resume is exact-start: find
 the transaction, iterate after it. Repeat detection is a per-log set of completed timestamps
-retained since the durable cursor. A log the cursor does not name is read from its beginning only
-if it still retains it — `fileCount === 0 || oldestSequenceNumber === 1`; rocksdb-js reports
-`oldestSequenceNumber: 0` for a log that has never written a file — otherwise the generation is
-condemned.
+retained since the durable cursor. A log the cursor does not anchor by timestamp is read from its
+beginning only while every file from its floor on is still retained —
+`fileCount === 0 ? currentSequenceNumber <= floor : oldestSequenceNumber <= floor`, with floor 1 for a
+log the cursor has no floor for — otherwise the generation is condemned (`log-retention`). Since
+rocksdb-js 2.12 retention can purge every file of a flushed log, so `fileCount === 0` no longer means
+"never written": an emptied log reports `currentSequenceNumber` past 1, and its history since the
+cursor may be gone. The floor is what tells the two apart, which is why a rebuild records it instead
+of failing on a log with no committed tail (the scan covers that log's past, and later commits land
+at the floor or above). The floor is proven at three sites: `#validateLogSet` when a cursor is installed, `#anchor` before the
+log's first completed transaction replaces it with an exact timestamp (files between the floor and that
+transaction may have been purged since the install check), and `#reconcileDurableCursor` before any
+durable advance publishes coverage or ready — the one path every catch-up publication takes, checked
+against the newest accepted vector, since a log anchored there was proven past its floor when read. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
+once; its runtime and HNSW drop the field on clone and judge the log by the old rule.
+
+Retention also purges the file holding a log's **timestamp anchor** once the log is idle and flushed, so
+the next install finds that boundary `missing` although nothing committed after it.
+`#recoverPurgedAnchors` proves this harmless instead of condemning. Persisted `coverage` C is **bound**:
+the index reflects every commit at or before C and none after. Purge deletes only files wholly at or
+before the flush witness W (`lastFlushedPosition`, never moved backwards). If W equals C, every reflected
+commit is flushed (a tail lost at power loss leaves W short of C) and nothing unreflected was purged. C at
+offset 0 of W's next sequence is also accepted, but only with W's segment gone from the inventory: a purge
+removes a segment only once fully flushed, while a size rotation leaves it on disk. The log is then read
+from a floor taken from an inventory sampled in an earlier `getStats` call than W, because one call reads
+the flush position before the inventory.
+
+Binding rules: only an idle pass's capture is persisted (`CoverageCapture.bound`), since a turn that reads
+entries can read some appended after its capture; persisting also needs no mutation accepted past the
+durable vector. Backends keep coverage only for the same vector with nothing applied since, and strip it
+from any cursor they write after applying records (HNSW `#appliedPastCoverage`, full-text
+`#hasStagedMutations`). The conversion is an empty `#pendingBatch` carrying the old coverage (it reflects
+the same commits), so the saved vector stays offered until it is durable. Anything else rebuilds: a
+flushed post-purge write, lagging coverage, other range failures, an unproven sibling. Accepted: coverage
+persisted by an older build, the window between a native flush and its cursor write, and a segment that
+power-loss recovery shortened to W and a purge then removed, all reachable only with a power loss (#3673). A runner's idle grace counts from its last delivered work or acquisition,
+not from its last wake: commits with no log work (the origin-closed floor, every 5 s) wake every runner,
+and must not keep it from releasing. A failure while the root store is closing or closed condemns nothing.
 
 ### Offered versus durable progress
 
@@ -657,10 +698,13 @@ cursor. Reconciliation publishes it only when that cursor, or a later entry in t
 is durable. Unrelated-only progress may publish without a new barrier only if **all** non-durable
 registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
 be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
-optional `coverage` field in the existing durable cursor value, preserved by later cursor writes and
-removed with the cursor before reset. No native file format changes.
+optional `coverage` field in the existing durable cursor value, kept by a later cursor write only while
+it keeps the same vector, persisted only from an idle pass's capture or carried onto a purged-anchor floor
+conversion, which reflects the same commits (see the purged-anchor paragraph under cursors), and removed
+with the cursor before reset. No native file format changes.
 
-Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic. The
+Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic, except
+that a durable vector advance resets the cadence, since the backend dropped the old vector's coverage. The
 shared time can refresh sooner once its prefix is durable. A coverage-only write failure logs and skips
 publication instead of rebuilding the healthy graph. Strict queries may wait for the next persisted proof.
 
