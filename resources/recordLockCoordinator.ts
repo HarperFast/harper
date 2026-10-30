@@ -3207,6 +3207,8 @@ export class LockCoordinator {
 				}
 				return;
 			}
+			// A close without a successor leaves its delegations here, expired, until their handles fence.
+			if (this.#closed) return;
 			// Expired here but not yet collected: the home may have expired it too and minted this token as
 			// a fresh grant carrying another node's lineage. Collect it as `tick` would, then hand back.
 			this.#expireDelegation(keyId, held);

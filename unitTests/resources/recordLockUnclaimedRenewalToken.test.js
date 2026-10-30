@@ -701,6 +701,55 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			const round = await beta.acquire(key, LEASE, 250);
 			beta.release(key, round.admissionId);
 		});
+		it('releases a token adopted during the freshness barrier once the delegation expires locally', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha');
+			const beta = cluster.node('beta');
+			const gamma = cluster.node('gamma');
+			const key = cluster.keyHomedOn('gamma');
+			// A prior holder gives alpha's grant a lineage, so its freshness barrier runs and can be held open.
+			const previous = await beta.acquire(key, LEASE, WAIT);
+			beta.release(key, previous.admissionId);
+			await beta.quiesce();
+
+			const original = alpha.coordinator.transport.requestDelegation;
+			let attempts = 0;
+			let deliverFirst;
+			alpha.fastFirstAttempt = true;
+			alpha.coordinator.transport.requestDelegation = (...args) => {
+				if (++attempts === 1) {
+					cluster.advance('alpha', RESTART_ATTEMPT_MS + 100);
+					return new Promise((resolve) => (deliverFirst = () => original(...args).then(resolve)));
+				}
+				return original(...args);
+			};
+			let releaseBarrier;
+			cluster.beforeFreshness = (name) => {
+				if (name !== 'alpha') return;
+				cluster.beforeFreshness = undefined;
+				return new Promise((resolve) => (releaseBarrier = resolve));
+			};
+			// An untagged home renews in place for the delayed first attempt.
+			const realOnRequest = gamma.coordinator.onDelegationRequest.bind(gamma.coordinator);
+			gamma.coordinator.onDelegationRequest = async (request) =>
+				realOnRequest({ ...request, requestId: undefined, delegateEpoch: undefined });
+
+			const round = alpha.acquire(key, LEASE, WAIT);
+			await waitFor(() => releaseBarrier !== undefined, 10_000);
+			const repliedBefore = cluster.replies.length;
+			deliverFirst();
+			await waitFor(() => cluster.replies.length > repliedBefore, 10_000);
+			const renewed = cluster.replies.at(-1).token;
+			await delayMs(30);
+			releaseBarrier();
+			const admitted = await round;
+			alpha.release(key, admitted.admissionId);
+			assert.strictEqual(alpha.written.filter((entry) => entry.type === 'lockRelease').length, 0);
+
+			cluster.advance('alpha', DELEGATION_LEASE_MS);
+			await waitFor(() => alpha.written.some((entry) => entry.type === 'lockRelease'), 2_000);
+			assert.deepStrictEqual(alpha.written.find((entry) => entry.type === 'lockRelease').token, renewed);
+		});
 	});
 
 	describe('a renewal reply landing on a recalled delegation already past its deadline', () => {
