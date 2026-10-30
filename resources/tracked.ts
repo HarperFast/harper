@@ -119,8 +119,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 							if (typeof scalarValue === 'number' && Math.abs((scalarValue >> 0) - scalarValue) <= 1) {
 								// if it just needs to be rounded, do the conversion without complaining
 								scalarValue = Math.round(scalarValue);
-								if (value?.__op__) value.value = scalarValue;
-								else value = scalarValue;
+								value = value?.__op__ ? { ...value, value: scalarValue } : scalarValue;
 							} else
 								throw new ClientError(
 									`${name} must be an integer between -2147483648 and 2147483647, attempt to assign ${value}`
@@ -144,8 +143,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 							if (typeof scalarValue === 'number' && Math.abs(scalarValue) <= 9007199254740992) {
 								// if it just needs to be rounded, do the conversion without complaining
 								scalarValue = Math.round(scalarValue);
-								if (value?.__op__) value.value = scalarValue;
-								else value = scalarValue;
+								value = value?.__op__ ? { ...value, value: scalarValue } : scalarValue;
 							} else
 								throw new ClientError(
 									`${name} must be an integer between -9007199254740992 and 9007199254740992, attempt to assign ${value}`
@@ -251,7 +249,10 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 			delete prototype[name];
 	}
 	setMethod('getProperty', function (name) {
-		if (hasOwnChange(this, name)) return this[name];
+		if (hasOwnChange(this, name)) {
+			const value = this[name];
+			return value?.__op__ ? resolveOperation(value, this.getRecord()?.[name]) : value;
+		}
 		const descriptor = descriptors[name];
 		if (descriptor) {
 			return descriptor.get.call(this);
@@ -287,7 +288,8 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 		for (const key of Object.keys(this)) {
 			if (!hasOwnChange(this, key)) continue;
 			if (!copiedSource) copiedSource = { ...this.getRecord() };
-			copiedSource[key] = this[key];
+			const value = this[key];
+			copiedSource[key] = value?.__op__ ? resolveOperation(value, copiedSource[key]) : value;
 		}
 		return copiedSource || this.getRecord();
 	});
@@ -348,6 +350,7 @@ function getUndeclaredProperty(receiver, name: string) {
 }
 // through the registry, like the apply path: a patch can carry a plain `{ __op__, value }` envelope
 function resolveOperation(operation, sourceValue) {
+	if (operation.__op__ === 'add') return crdtOperations.addValues(sourceValue, operation.value);
 	const apply = crdtOperations.operations[operation.__op__];
 	if (!apply) return operation;
 	const scratch = { value: sourceValue };
