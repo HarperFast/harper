@@ -270,6 +270,57 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	it('does not send again after a reconnect the half of a transaction that was acknowledged (QoS 1)', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `half-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('before', { value: 'before' });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		await transaction({}, async (context) => {
+			await T.put('x', { value: 'x' }, context);
+			await T.put('y', { value: 'y' }, context);
+		});
+		await waitFor(() => values(first.received).includes('y'));
+		await first.session.acknowledge(delivery(first.received, 'y').messageId);
+		first.session.disconnect(true);
+		await first.session.writes;
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('after', { value: 'after' });
+		await waitFor(() => values(second.received).includes('after'));
+		assert.deepStrictEqual(values(second.received), ['x', 'after'], 'only the unacknowledged message is sent again');
+		second.session.disconnect(true);
+	});
+
+	it('keeps a QoS 1 topic’s receipts when a SUBSCRIBE replaces it at QoS 1', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `replace-${name}`;
+		const { session, received } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('before', { value: 'before' });
+		await waitFor(() => received.length >= 1);
+		await ackAll(session, received);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		await transaction({}, async (context) => {
+			await T.put('x', { value: 'x' }, context);
+			await T.put('y', { value: 'y' }, context);
+		});
+		await waitFor(() => values(received).includes('y'));
+		await session.acknowledge(delivery(received, 'y').messageId);
+		const replacedAt = received.length;
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => values(received).includes('after'));
+		assert.deepStrictEqual(values(received.slice(replacedAt)), ['x', 'after'], 'the acknowledged message is skipped');
+		session.disconnect(true);
+	});
+
 	it('keeps a delivered transaction that committed after a higher key until it is acknowledged', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -2258,6 +2309,26 @@ describe('MQTT durable sessions on LMDB', function () {
 		second.session.disconnect(true);
 	});
 
+	it('does not send again after a reconnect a delivery acknowledged behind an unacknowledged one (QoS 1)', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `lmdb-behind-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await T.put('b', { value: 'b' });
+		await waitFor(() => values(first.received).includes('b'));
+		await first.session.acknowledge(delivery(first.received, 'b').messageId);
+		first.session.disconnect(true);
+		await first.session.writes;
+		const second = await connect(clientId);
+		await second.session.resume();
+		await T.put('c', { value: 'c' });
+		await waitFor(() => values(second.received).includes('c'));
+		assert.deepStrictEqual(values(second.received), ['a', 'c'], 'only the unacknowledged delivery is sent again');
+		second.session.disconnect(true);
+	});
+
 	resetsAcrossReloadWhileAway(false);
 });
 
@@ -2835,10 +2906,17 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			return true;
 		});
 		await second.session.resume();
-		await waitFor(() => ids.every((id) => delivery(second.received, id)), {
+		const rest = ids.slice(1);
+		await waitFor(() => rest.every((id) => delivery(second.received, id)), {
 			timeout: 20_000,
-			message: () => `missing ${ids.filter((id) => !delivery(second.received, id)).length} of the late records`,
+			message: () =>
+				`missing ${rest.filter((id) => !delivery(second.received, id)).length} of the unacknowledged late records`,
 		});
+		assert.strictEqual(
+			delivery(second.received, 'late-0'),
+			undefined,
+			'the acknowledged first record is not sent again'
+		);
 		second.session.disconnect(true);
 	});
 
@@ -3050,14 +3128,16 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		const clientId = `late-replayed-${name}`;
 		const first = await connect(clientId);
 		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => delivery(first.received, 'a'));
+		await ackAll(first.session, first.received);
+		await waitFor(async () => (await stored(clientId))?.subscriptions?.[0]?.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		await first.session.writes;
+		// the late write commits after the higher keys while the client is away
 		const commitLate = await heldTransaction(T, 'late');
 		await T.put('early', { value: 'early' });
 		await T.put('stall', { value: 'stall' });
-		await waitFor(() => delivery(first.received, 'stall'));
-		await ackAll(first.session, first.received);
-		first.session.disconnect(true);
-		await first.session.writes;
-		// the late write commits while the client is away: the log holds it after the higher keys
 		await commitLate();
 		const lateKey = T.primaryStore.getEntry('late').version;
 		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'precondition: saved below the late key');
