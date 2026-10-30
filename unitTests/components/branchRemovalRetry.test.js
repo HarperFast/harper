@@ -43,7 +43,6 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		}
 	}
 
-	/** What `idleHttpWorker` echoes as the report a pool worker sends once its load finished. */
 	const loaded = (...applications) => ({
 		report: { type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, components: [], applications },
 	});
@@ -228,16 +227,15 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		});
 	});
 
-	describe('of an application that declares branches and has none on disk', () => {
+	describe('of an application with no fork on disk that a worker is still loading', () => {
 		let worker;
 		const stopWorker = async () => {
 			await worker?.terminate();
 			worker = undefined;
 		};
-		/** A worker still loading `app` when `request` drops it. */
-		async function dropWhileLoading(app, request) {
+		async function dropWhileLoading(app, request, entry = { branchedDatabases: [BASE] }) {
 			operations.setBranchRemovalRetryDelayForTests?.(60 * 60_000);
-			setRootConfigEntry(app, { branchedDatabases: [BASE] });
+			setRootConfigEntry(app, entry);
 			worker = idleHttpWorker();
 			await drop({ project: app, ...request });
 			await operations.retryPendingBranchRemovals();
@@ -260,6 +258,18 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 
 			await stopWorker();
 			await waitFor(() => !existsSync(forksOf('late-app')), {
+				timeout: 10_000,
+				interval: 50,
+				message: 'the fork was left on disk',
+			});
+		});
+
+		it('records the removal when the root config no longer declares branches the worker read', async () => {
+			await dropWhileLoading('stale-app', undefined, {});
+			assert.strictEqual(hasPendingBranchRemoval('stale-app'), true);
+			await createFork('stale-app');
+			await stopWorker();
+			await waitFor(() => !existsSync(forksOf('stale-app')), {
 				timeout: 10_000,
 				interval: 50,
 				message: 'the fork was left on disk',
@@ -332,10 +342,19 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		['declares no branches', {}],
 		['declares an empty list of them', { branchedDatabases: [] }],
 	]) {
-		it(`writes nothing for an application that ${what}`, async () => {
+		it(`writes nothing for an application that ${what}, once every worker reported its load`, async () => {
 			setRootConfigEntry('plain-app', entry);
-			await drop({ project: 'plain-app' });
-			assert.strictEqual(existsSync(forksOf('plain-app')), false);
+			// a worker holding it keeps the retry from clearing a marker the drop should not have written
+			const worker = idleHttpWorker();
+			try {
+				worker.postMessage(loaded('plain-app'));
+				await waitFor(() => worker.loadedApplications?.has('plain-app'), { timeout: 10_000, interval: 50 });
+				await drop({ project: 'plain-app' });
+				await operations.retryPendingBranchRemovals();
+				assert.strictEqual(existsSync(forksOf('plain-app')), false);
+			} finally {
+				await worker.terminate();
+			}
 		});
 	}
 

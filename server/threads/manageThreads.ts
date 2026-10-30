@@ -236,6 +236,7 @@ export {
 	requestFromMainThread,
 	answerMainThreadRequests,
 	poolMayHold,
+	mayStillLoad,
 	onWorkerRelease,
 	failedClosedInMemory,
 	setCanaryVerdictTimeout,
@@ -1570,6 +1571,15 @@ function poolMayHold(application: string) {
 			worker.name === hdbTerms.THREAD_TYPES.HTTP &&
 			!worker.application &&
 			(!worker.loadedApplications || worker.loadedApplications.has(application))
+	);
+}
+
+/** Only a worker that has not reported what it loaded can still create an application's forks. */
+function mayStillLoad(application: string) {
+	return workers.some(
+		(worker) =>
+			!worker.loadedApplications &&
+			(worker.application ? worker.application === application : worker.name === hdbTerms.THREAD_TYPES.HTTP)
 	);
 }
 
