@@ -845,8 +845,9 @@ function openOnFirstStep(open: () => any, async: boolean): Iterable<any> | Async
 				const source = open();
 				iterator = async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
 				if (closed) {
-					iterator.return?.();
-					return { value: undefined, done: true };
+					const closing = iterator.return?.();
+					const done = { value: undefined, done: true };
+					return typeof closing?.then === 'function' ? closing.then(() => done) : done;
 				}
 			}
 			return iterator.next();
@@ -862,7 +863,9 @@ function openOnFirstStep(open: () => any, async: boolean): Iterable<any> | Async
 // pipe() reads the source on the next tick, past a discard in this one, and pipeline() destroys the source only on a
 // later tick. So connect on the first read, and destroy the source synchronously with the transform.
 function pipelineOnRead(source: Readable, transform: Transform): Transform {
+	// pipeline() would listen for errors on both streams from here on
 	source.once('error', (error) => transform.destroy(error));
+	transform.on('error', () => {});
 	const read = transform._read;
 	transform._read = function (size) {
 		transform._read = read;
