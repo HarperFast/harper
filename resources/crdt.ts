@@ -97,7 +97,7 @@ export function commutativeOpsOf(update: any) {
 	return ops;
 }
 
-/** `commutativeOpsOf(update) !== undefined` without allocating the operations object. */
+/** Whether `commutativeOpsOf(update)` finds any operation, without allocating its result. */
 export function hasCommutativeOp(update: any): boolean {
 	for (const key in update) {
 		if (update[key]?.__op__) return true;
