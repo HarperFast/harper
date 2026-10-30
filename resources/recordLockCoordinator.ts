@@ -1016,8 +1016,10 @@ function admitRequestId(
 		return true;
 	}
 	if (requestId > window.highest) {
-		if (requestId - window.highest >= REQUEST_REPLAY_WINDOW) window.seen.fill(0);
-		else
+		if (requestId - window.highest >= REQUEST_REPLAY_WINDOW) {
+			window.seen.fill(0);
+			window.lastByKey.clear();
+		} else
 			for (let id = window.highest + 1; id < requestId; id++)
 				window.seen[(id & (REQUEST_REPLAY_WINDOW - 1)) >>> 5] &= ~(1 << (id & 31));
 		window.highest = requestId;
@@ -1038,15 +1040,15 @@ function admitRequestId(
 	return true;
 }
 
+/** Callers have already refused an id older than the key's last, so this only ever raises it. */
 function recordLastForKey(window: ReplayWindow, ringKey: string, requestId: number): void {
 	const { lastByKey } = window;
+	lastByKey.set(ringKey, requestId);
 	// At most one in-window entry per id, so a sweep at twice the window leaves at most half of it.
-	if (lastByKey.size >= 2 * REQUEST_REPLAY_WINDOW && !lastByKey.has(ringKey)) {
+	if (lastByKey.size > 2 * REQUEST_REPLAY_WINDOW) {
 		const floor = window.highest - REQUEST_REPLAY_WINDOW;
 		for (const [staleKey, id] of lastByKey) if (id <= floor) lastByKey.delete(staleKey);
 	}
-	const last = lastByKey.get(ringKey);
-	if (last === undefined || requestId > last) lastByKey.set(ringKey, requestId);
 }
 
 /**

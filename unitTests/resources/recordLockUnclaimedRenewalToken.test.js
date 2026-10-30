@@ -570,7 +570,6 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 
 	describe('an older request delivered after a newer one for the same key', () => {
 		it('is stale after the newer grant moved to a contender or was released', async () => {
-			// --- Sub-case (3a): Contender eviction & Sub-case (3b): Ghost grant after release ---
 			const cluster3a = new FakeCluster(['alpha', 'beta', 'gamma'], {
 				epochs: { alpha: 1, beta: 1, gamma: 1 },
 			});
@@ -638,7 +637,7 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			beta3a.release(key1, rBetaCached.admissionId);
 			const betaExtraRequests = cluster3a.requests.filter((r) => r.from === 'beta').length - betaRequestsBefore;
 
-			// Finish Sub-case (3b) setup: release and quiesce alpha on key2 so gamma has no active grant.
+			// Release alpha's newer grant on key2 so gamma holds none.
 			alpha3b.release(key2, rAlphaKey2.admissionId);
 			await alpha3b.quiesce();
 			assert.strictEqual(gamma3b.coordinator.stats.granted, 0);
@@ -654,20 +653,19 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			}
 			if (rBetaKey2) beta3b.release(key2, rBetaKey2.admissionId);
 
-			// Assert Sub-case (3a) and Sub-case (3b)
 			assert.deepStrictEqual(
 				lateReply3a,
 				{ granted: false, reason: 'stale', requestId: firstReq3a.requestId },
-				`Sub-case (3a) expected stale refusal for older requestId, got ${JSON.stringify(lateReply3a)} (recalls=${recallsAfter3a}, betaExtraRequests=${betaExtraRequests}); ` +
-					`Sub-case (3b) got ${JSON.stringify(lateReply3b)} (beta.acquire threw ${beta3bErr?.statusCode}: ${beta3bErr?.message})`
+				`after transfer expected stale refusal for older requestId, got ${JSON.stringify(lateReply3a)} (recalls=${recallsAfter3a}, betaExtraRequests=${betaExtraRequests}); ` +
+					`after release got ${JSON.stringify(lateReply3b)} (beta.acquire threw ${beta3bErr?.statusCode}: ${beta3bErr?.message})`
 			);
-			assert.strictEqual(recallsAfter3a, 1, 'Sub-case (3a): delayed older requestId must not recall contender beta');
-			assert.strictEqual(betaExtraRequests, 0, 'Sub-case (3a): beta cached delegation T2 must remain intact');
+			assert.strictEqual(recallsAfter3a, 1, 'after transfer: delayed older requestId must not recall contender beta');
+			assert.strictEqual(betaExtraRequests, 0, 'after transfer: beta cached delegation T2 must remain intact');
 
 			assert.deepStrictEqual(
 				lateReply3b,
 				{ granted: false, reason: 'stale', requestId: firstReqKey2.requestId },
-				`Sub-case (3b) expected stale refusal for older requestId after release, got ${JSON.stringify(lateReply3b)} (beta.acquire threw ${beta3bErr?.statusCode}: ${beta3bErr?.message})`
+				`after release expected stale refusal for older requestId after release, got ${JSON.stringify(lateReply3b)} (beta.acquire threw ${beta3bErr?.statusCode}: ${beta3bErr?.message})`
 			);
 			assert.ifError(beta3bErr);
 		});
