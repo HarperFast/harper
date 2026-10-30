@@ -249,10 +249,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 			delete prototype[name];
 	}
 	setMethod('getProperty', function (name) {
-		if (hasOwnChange(this, name)) {
-			const value = this[name];
-			return value?.__op__ ? resolveOperation(value, this.getRecord()?.[name]) : value;
-		}
+		if (hasOwnChange(this, name)) return this[name];
 		const descriptor = descriptors[name];
 		if (descriptor) {
 			return descriptor.get.call(this);
@@ -288,8 +285,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 		for (const key of Object.keys(this)) {
 			if (!hasOwnChange(this, key)) continue;
 			if (!copiedSource) copiedSource = { ...this.getRecord() };
-			const value = this[key];
-			copiedSource[key] = value?.__op__ ? resolveOperation(value, copiedSource[key]) : value;
+			copiedSource[key] = this[key];
 		}
 		return copiedSource || this.getRecord();
 	});

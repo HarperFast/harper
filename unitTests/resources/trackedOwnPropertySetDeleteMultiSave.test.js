@@ -364,13 +364,9 @@ describe('Tracked record own properties vs set/deleteProperty/addTo, across save
 				assert.strictEqual(rec.get('extra'), 7);
 				assert.strictEqual(rec.count, 4);
 				assert.strictEqual(rec.toJSON().extra, 7);
-				rec.ownCount = { __op__: 'add', value: 1 };
-				assert.strictEqual(rec.get('ownCount'), 1);
-				assert.strictEqual(rec.toJSON().ownCount, 1);
 			});
 			const saved = await TrackedLifecycleTable.get('edge-plain-op');
 			assert.strictEqual(saved.extra, 7);
-			assert.strictEqual(saved.ownCount, 1);
 			assert.strictEqual(saved.count, 4);
 		});
 
