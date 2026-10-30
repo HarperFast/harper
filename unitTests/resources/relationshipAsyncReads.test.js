@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { searchByIndex } = require('#src/resources/search');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -352,6 +353,23 @@ describe('Queries read related records asynchronously', () => {
 			it('a leading many-to-many join with another condition on the same relationship', async function () {
 				const results = await collect(
 					ColdParent.search({
+						enforceExecutionOrder: true,
+						conditions: [
+							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
+							{ attribute: ['children', 'label'], value: 'label 10' },
+						],
+						select: ['id'],
+					})
+				);
+				assert.deepEqual(results, [{ id: 'parent-2' }]);
+				assert.equal(childReads.sync, 0);
+				assert(childReads.promised > 0, 'the joined children were read in the background');
+			});
+
+			it('a leading many-to-many join with a key condition on the same relationship reads no children', async function () {
+				const results = await collect(
+					ColdParent.search({
+						enforceExecutionOrder: true,
 						conditions: [
 							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
 							{ attribute: ['children', 'id'], value: 'child-10' },
@@ -360,8 +378,51 @@ describe('Queries read related records asynchronously', () => {
 					})
 				);
 				assert.deepEqual(results, [{ id: 'parent-2' }]);
+				assert.equal(childReads.sync + childReads.async, 0);
+			});
+
+			it('a leading many-to-many join reads only the children its key condition keeps', async function () {
+				const results = await collect(
+					ColdParent.search({
+						enforceExecutionOrder: true,
+						conditions: [
+							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
+							{ attribute: ['children', 'label'], value: 'label 10' },
+							{ attribute: ['children', 'id'], value: 'child-10' },
+						],
+						select: ['id'],
+					})
+				);
+				assert.deepEqual(results, [{ id: 'parent-2' }]);
 				assert.equal(childReads.sync, 0);
-				assert(childReads.promised > 0, 'the joined children were read in the background');
+				assert.equal(childReads.async, 1);
+			});
+
+			it('a joined filter that switches to an id filter mid-scan rejects the later children by key', async function () {
+				for (const sync of [false, true]) {
+					childReads.sync = childReads.async = 0;
+					let calls = 0;
+					const switching = (record) => {
+						calls++;
+						switching.idFilter = (id) => id === 'child-10';
+						return record.name === 'child 1';
+					};
+					const filtered = {};
+					const results = searchByIndex(
+						{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
+						ColdParent._readTxnForContext({}),
+						false,
+						ColdParent,
+						{ filtered }
+					);
+					filtered.children.filters = [switching];
+					const ids = [];
+					if (sync) for (const id of results) ids.push(id);
+					else for await (const id of results) ids.push(id);
+					assert.deepEqual(ids.sort(), ['parent-2', 'parent-wide']);
+					assert.equal(calls, 1);
+					assert.equal(sync ? childReads.sync : childReads.async, 1);
+				}
 			});
 		});
 
@@ -461,6 +522,31 @@ describe('Queries read related records asynchronously', () => {
 				});
 				assert(parentReads.async <= 1, `only the read already in flight completes (${parentReads.async} reads)`);
 			});
+		});
+
+		it('a closed join scan starts no joined filter after a pending one resolves', async function () {
+			const filtered = {};
+			const results = searchByIndex(
+				{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
+				ColdParent._readTxnForContext({}),
+				false,
+				ColdParent,
+				{ filtered }
+			);
+			let release;
+			let laterCalls = 0;
+			filtered.children.filters = [
+				Object.assign(() => true, { maybeAsync: () => new Promise((resolve) => (release = resolve)) }),
+				() => ++laterCalls > 0,
+			];
+			const iterator = results[Symbol.asyncIterator]();
+			const next = iterator.next();
+			for (let turns = 0; !release && turns < 100; turns++) await new Promise(setImmediate);
+			assert(release, 'premise: the first joined filter is pending');
+			iterator.return();
+			release(true);
+			assert.deepEqual(await next, { done: true, value: undefined });
+			assert.equal(laterCalls, 0);
 		});
 
 		it('sort by a related attribute', async function () {

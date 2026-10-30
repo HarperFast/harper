@@ -526,6 +526,8 @@ class KeyLockHandle implements RecordLockHandle {
 	release(): boolean {
 		if (this.released) return false;
 		this.released = true;
+		// released past the deadline before the lease timer ran: the lease lapsed first, and must still read so
+		if (this.#deadlineMono !== undefined && performance.now() >= this.#deadlineMono) this.expired = true;
 		clearTimeout(this.#timer);
 		if (this.#commitHolds > 0) {
 			return this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');

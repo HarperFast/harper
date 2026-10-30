@@ -1,0 +1,6 @@
+# No @indexed attribute, so invalidate() leaves a null record: the cache stub a query must revalidate.
+type CachedRow @table(expiration: 3600) @export {
+	id: ID @primaryKey
+	body: String
+	rank: Int
+}

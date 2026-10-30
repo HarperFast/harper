@@ -644,6 +644,10 @@ function isPlainData(value: any, budget: { nodes: number }, depth: number): bool
 	const prototype = Object.getPrototypeOf(value);
 	return (prototype === Object.prototype || prototype === null) && hasPlainOwnValues(value, budget, depth);
 }
+function timestampValue(attribute: Attribute, time: number): Date | string | number {
+	return attribute.type === 'Date' ? new Date(time) : attribute.type === 'String' ? new Date(time).toISOString() : time;
+}
+
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
 // a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
@@ -1749,6 +1753,16 @@ export function makeTable(options): TableResourceClass {
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updatedTimeProperty = attribute;
 		if (attribute.expiresAt) expiresAtProperty = attribute;
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
+	}
+	// Copies rather than assigns: the merge onto no record can return the caller's delta itself.
+	function completeCreatedRecord(record: any, id: Id, version: number) {
+		const missingKey = primaryKey && record[primaryKey] == null;
+		const missingCreatedTime = createdTimeProperty && record[createdTimeProperty.name] == null;
+		if (!missingKey && !missingCreatedTime) return record;
+		const completed = { ...record };
+		if (missingKey) completed[primaryKey] = id;
+		if (missingCreatedTime) completed[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
+		return Object.freeze(completed);
 	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
 	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
@@ -4465,6 +4479,31 @@ export function makeTable(options): TableResourceClass {
 				return result;
 			}
 		}
+		/**
+		 * Read without recordLockFor's pruning, so a lapsed lease still refuses the write. Called again after
+		 * _writeUpdate's async model hooks: a handle that lapsed while bound keeps refusing it even if a
+		 * re-lock replaced it, and only one released by unlock() lets it go.
+		 */
+		#bindWriteLock(write: any, id: Id, transaction: any): void {
+			const bound = write.lockHandle;
+			if (bound && (bound.expired || (!bound.released && bound.isLeaseExpired()))) return;
+			const own = this.#lockHandle;
+			const tableLocks = transaction.recordLocks?.get(primaryStore);
+			if (!own && !tableLocks && !write.lockJoined) return;
+			const keyId = (write.keyId ??= writeKeyId(id));
+			if (own?.keyId === keyId) {
+				write.lockHandle = own;
+				return;
+			}
+			const joined = tableLocks?.get(keyId);
+			if (joined) {
+				write.lockHandle = joined;
+				write.lockJoined = true;
+			} else if (write.lockJoined) {
+				write.lockHandle = undefined;
+				write.lockJoined = false;
+			}
+		}
 		#closeWriteChain(operation: any) {
 			const owner = operation.stagedIn;
 			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
@@ -4482,7 +4521,7 @@ export function makeTable(options): TableResourceClass {
 					(this as any).set(property, sum);
 					if (own) delete this[property];
 				} else {
-					if (!this.#savingOperation) (this as any).update();
+					if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
 					addToChanges(this, property, value);
 				}
 			} else {
@@ -4544,7 +4583,7 @@ export function makeTable(options): TableResourceClass {
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				chainsStagedState: true,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
@@ -4667,6 +4706,7 @@ export function makeTable(options): TableResourceClass {
 					// TODO: recordDeletion?
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, partialRecord);
 			transaction.addWrite(write);
 		}
@@ -4686,7 +4726,7 @@ export function makeTable(options): TableResourceClass {
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				reloadCommitBase: true,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
@@ -4769,6 +4809,7 @@ export function makeTable(options): TableResourceClass {
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			transaction.addWrite(write);
 		}
 
@@ -5225,7 +5266,7 @@ export function makeTable(options): TableResourceClass {
 						const transactionCannotAdopt =
 							explicit &&
 							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
-								link.hasUnlockedWrite() ||
+								link.hasUnlockedWrite(primaryStore, keyId) ||
 								(link.timestamp !== undefined && link.timestamp >= floor));
 						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
 					}
@@ -5290,6 +5331,7 @@ export function makeTable(options): TableResourceClass {
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
 					const releaseAfterReloadFailure = (error) => {
+						detachScopedUpgradeWrite(link, keyId, handle, true, true);
 						link.unregisterRecordLock(handle);
 						handle.release();
 						if (
@@ -5400,7 +5442,7 @@ export function makeTable(options): TableResourceClass {
 			// run into the released-handle guard at the sweep.
 			if (this.#savingOperation && !this.#savingOperation.saved && this.#savingOperation.lockHandle === handle)
 				this.#savingOperation = null;
-			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle);
+			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
 		}
@@ -5674,11 +5716,7 @@ export function makeTable(options): TableResourceClass {
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
-				// Include the lock handle (if any) so the expired-handle guard in
-				// DatabaseTransaction.save() can throw 409 when the lease has lapsed.
-				// Only attach the hold handle when it covers exactly this key; off-key writes
-				// are ordinary and must not carry an unrelated hold's handle.
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				captureChanges,
 				releaseChanges,
@@ -5739,30 +5777,26 @@ export function makeTable(options): TableResourceClass {
 								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
 							}
 							if (updatedTimeProperty) {
-								recordUpdate[updatedTimeProperty.name] =
-									updatedTimeProperty.type === 'Date'
-										? new Date(txnTime)
-										: updatedTimeProperty.type === 'String'
-											? new Date(txnTime).toISOString()
-											: txnTime;
+								recordUpdate[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, txnTime);
 							}
 							if (createdTimeProperty) {
 								// the reloaded commit base, not the pre-read one: a full PUT racing a create
 								// would otherwise stamp a fresh created time over the real one
 								const base = write.entry;
-								if (base?.value) {
+								// a cache stub without a created time was never stored; a residency stub's record lives on its residents
+								if (
+									base?.value &&
+									(!(base.metadataFlags & INVALIDATED) ||
+										base.residencyId ||
+										base.value[createdTimeProperty.name] != null)
+								) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
 										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
 									}
 								} else {
 									// new entry, set created time
-									recordUpdate[createdTimeProperty.name] =
-										createdTimeProperty.type === 'Date'
-											? new Date(txnTime)
-											: createdTimeProperty.type === 'String'
-												? new Date(txnTime).toISOString()
-												: txnTime;
+									recordUpdate[createdTimeProperty.name] = timestampValue(createdTimeProperty, txnTime);
 								}
 							}
 							if (primaryKey && recordUpdate[primaryKey] !== id && (fullUpdate || primaryKey in recordUpdate)) {
@@ -5907,6 +5941,7 @@ export function makeTable(options): TableResourceClass {
 					// (resolved below, once recordToStore is merged) overrides the table default in both
 					// directions; the table default is the final fallback. -1 means no expiration.
 					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
+					let auditExpiresAt: number | undefined;
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					let receivedIdentityRefs: Array<{ version: number; nodeId: number }> | undefined;
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
@@ -6707,6 +6742,9 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
+					// A patch that merges onto no record may lack both fields (a retry is not re-logged); fill them identically on every node
+					if (!fullUpdate && existingRecord == null && recordToStore)
+						recordToStore = completeCreatedRecord(recordToStore, id, options?.version ?? txnTime);
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
@@ -6845,6 +6883,12 @@ export function makeTable(options): TableResourceClass {
 						const fieldDeadline = fieldExpiresAtMs(recordToStore);
 						expiresAt = Number.isFinite(fieldDeadline) ? fieldDeadline : expirationMs ? expirationMs + Date.now() : -1;
 					}
+					// The head is what the write merged onto; not existingEntry once the transaction wrote the key, since
+					// RocksDB reloads that through the transaction and LMDB does not.
+					if (precedesExisting < 0 && Object.is(fieldExpiresAtMs(recordToStore), fieldExpiresAtMs(existingRecord))) {
+						auditExpiresAt = expiresAt;
+						expiresAt = (priorStaged ?? existingEntry).expiresAt ?? -1;
+					}
 					if (!fullUpdate && type !== 'put') {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
 						auditRecordToStore = recordUpdate;
@@ -6951,6 +6995,7 @@ export function makeTable(options): TableResourceClass {
 								residencyId,
 								residencySlot,
 								expiresAt,
+								auditExpiresAt,
 								recordVersion: txnTime,
 								recordNodeId: precedesExisting < 0 ? existingEntry?.nodeId : options?.nodeId,
 								nodeId: options?.nodeId,
@@ -7003,6 +7048,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
@@ -7033,6 +7079,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			const proceed = (): any => {
 				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
+				if (modelHooksBefore) this.#bindWriteLock(write, id, transaction);
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
 				if (!tracksInstance)
@@ -7127,7 +7174,7 @@ export function makeTable(options): TableResourceClass {
 				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
@@ -7238,6 +7285,7 @@ export function makeTable(options): TableResourceClass {
 					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			transaction.addWrite(write);
 			if (condition) condition.consumed = true;
 			return true;
@@ -11979,13 +12027,28 @@ export function makeTable(options): TableResourceClass {
 	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
 	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
 	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
-	 * instead of resolving a detached, dead reference.
+	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or one staged
+	 * before lock()) is the caller's own: an upgrade keeps it, and a release within the lease (`releasing`)
+	 * returns it to an ordinary unlocked write, which is what it would be had it been staged after the
+	 * unlock. Past the lease it keeps the handle, so its save is refused like any lapsed lock write. A
+	 * `lockFailed` lock() was never handed to the caller, so its joined writes always revert.
 	 */
-	function detachScopedUpgradeWrite(link: any, keyId: unknown, handle: RecordLockHandle): void {
+	function detachScopedUpgradeWrite(
+		link: any,
+		keyId: unknown,
+		handle: RecordLockHandle,
+		releasing = false,
+		lockFailed = false
+	): void {
 		for (const write of link.writes) {
-			if (write && !write.saved && write.lockHandle === handle && writeKeyId(write.key) === keyId) {
+			if (!write || write.saved || write.lockHandle !== handle || writeKeyId(write.key) !== keyId) continue;
+			if (!write.lockJoined) {
 				write.dropped = true;
 				link.detachWrite(write);
+			} else if (lockFailed || (releasing && !handle.isLeaseExpired())) {
+				write.lockHandle = undefined;
+				write.lockJoined = false;
+				link.unlockedWriteScan = undefined;
 			}
 		}
 	}
@@ -12140,41 +12203,47 @@ export function makeTable(options): TableResourceClass {
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
-		const filtersLength = filters?.length;
+		const filtersLength = filters?.length ?? 0;
 		const loadOptions = {
 			transaction: readTxn,
 			lazy: filtersLength > 0 || typeof select === 'string' || select?.length < 4,
 			alwaysPrefetch: true,
 		};
-		let idFiltersApplied;
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 		const matchers = filters?.some((filter) => filter.maybeAsync)
 			? filters.map((filter) => filter.maybeAsync ?? filter)
 			: undefined;
+		// an id filter compares the whole key, where a record filter tests each element of an array key
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
-			// apply the record-level filters
+			if (!record && !(entry?.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+			const key = id === undefined ? entry.key : id;
 			for (let i = 0; i < filtersLength; i++) {
-				if (idFiltersApplied?.includes(i)) continue; // already applied
-				if (!filters[i](record, entry)) return SKIP; // didn't match filters
+				const filter = filters[i];
+				const idFilter = filter.idFilter;
+				if (idFilter ? !idFilter(key) : !record || !filter(record, entry)) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
 			return entry;
 		}
 		function processEntryMaybeAsync(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
-			return applyFilters(record, entry, id, idFiltersApplied, 0);
+			if (!record && !(entry?.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+			return applyFilters(record, entry, id, id === undefined ? entry.key : id, 0);
 		}
-		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
+		function applyFilters(record, entry: Entry, id, key, start: number) {
 			for (let i = start; i < filtersLength; i++) {
-				if (applied?.includes(i)) continue;
+				const idFilter = filters[i].idFilter;
+				if (idFilter) {
+					if (!idFilter(key)) return SKIP;
+					continue;
+				}
+				if (!record) return SKIP;
 				const matches = matchers[i](record, entry);
 				if (matches?.then)
-					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
+					return matches.then((matches) => (matches ? applyFilters(record, entry, id, key, i + 1) : SKIP));
 				if (!matches) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
@@ -12182,22 +12251,17 @@ export function makeTable(options): TableResourceClass {
 		}
 		if (filtersLength > 0 || !ids.hasEntries) {
 			let results = ids.map(function (this: any, idOrEntry) {
-				idFiltersApplied = null;
 				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
 					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {
 					return SKIP;
 				}
-				// it is an id, so we can try to use id any filters that are available (note that these can come into existence later, during the query)
+				// it is an id, so any id filters that are available can rule it out before loading the record (note that
+				// these can come into existence later, during the query)
 				for (let i = 0; i < filtersLength; i++) {
-					const filter = filters[i];
-					const idFilter = filter.idFilter;
-					if (idFilter) {
-						if (!idFilter(idOrEntry)) return SKIP; // didn't match filters
-						if (!idFiltersApplied) idFiltersApplied = [];
-						idFiltersApplied.push(i);
-					}
+					const idFilter = filters[i].idFilter;
+					if (idFilter && !idFilter(idOrEntry)) return SKIP; // didn't match filters
 				}
 				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
 			});
@@ -12550,21 +12614,11 @@ export function makeTable(options): TableResourceClass {
 					// before resolve(): a write that is not skipped commits at exactly resolvedVersion
 					if (updatedRecord) {
 						if (updatedTimeProperty) {
-							updatedRecord[updatedTimeProperty.name] =
-								updatedTimeProperty.type === 'Date'
-									? new Date(resolvedVersion)
-									: updatedTimeProperty.type === 'String'
-										? new Date(resolvedVersion).toISOString()
-										: resolvedVersion;
+							updatedRecord[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, resolvedVersion);
 						}
 						if (createdTimeToAssign) {
 							updatedRecord[createdTimeToAssign.name] =
-								existingRecord?.[createdTimeToAssign.name] ??
-								(createdTimeToAssign.type === 'Date'
-									? new Date(resolvedVersion)
-									: createdTimeToAssign.type === 'String'
-										? new Date(resolvedVersion).toISOString()
-										: resolvedVersion);
+								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
 					}
 					const resolvedEntry: Entry = {
@@ -13175,7 +13229,11 @@ export function makeTable(options): TableResourceClass {
 								);
 								const backpressure = trackInFlight(repair);
 								if (backpressure) await backpressure;
-							} else if (recordEntry.value[expiresAtName] < Date.now()) {
+							} else if (
+								recordEntry.expiresAt != undefined
+									? hasExpired(recordEntry)
+									: recordEntry.value[expiresAtName] < Date.now()
+							) {
 								// make sure the record hasn't changed and won't change while removing
 								const eviction = TableResource.evict(
 									id,

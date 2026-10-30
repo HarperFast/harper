@@ -93,6 +93,19 @@ Consequences that shape the code:
   `DatabaseTransaction.save()`'s guard on `operation.lockHandle`, plus the hold branch's own liveness
   check in `Table.save()` — not duplicated for scoped, since its eagerly-staged write already carries
   `lockHandle` into the same guard.
+- **A write on a locked key carries the lock, whichever instance staged it.** `DatabaseTransaction`
+  applies lock rules (holder stamps, hold floor or 409, lease-expiry 409, `refuseLockWrites`,
+  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` sets it at all four staging sites
+  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`) from the instance's own handle,
+  else from `recordLocks` — so static verbs and other instances on the same context are covered — and
+  `registerRecordLock` binds unsaved writes already staged on the key, so admission's
+  `hasUnlockedWrite(store, keyId)` already discounts them and claims the stamp the clock may then adopt.
+  Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
+  without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
+  been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
+  replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
+  the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
+  into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
   (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
   than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that
@@ -246,6 +259,11 @@ is tracked in harper#3246.
 the acquiring transaction committed is fine (each write auto-commits as an ImmediateTransaction).
 Taking the lock again in a second `transaction()` scope issues a fresh `lock()` call rather than
 relying on the first hold still being re-entrant in that scope.
+On a hold, `addTo()`/`subtractFrom()` stage nothing until the explicit `save()`, like `set()` (no
+eager `update()`); an explicit `holder.update()` stages like any `update()` and commits with its
+transaction. An abort marks the unsaved writes it discards `dropped`, so a holder whose pending
+write (from `holder.update()`) was staged in the aborted transaction restages its changes at its next
+`save()` instead of re-saving an orphan no transaction tracks (`recordLockHoldAddToAbort.test.js`).
 
 An abort during the `acquireRecordKey` wait is covered single-threaded by "a transaction aborted while
 lock() waiters are parked leaves the key unlocked" (`unitTests/resources/recordLock.test.js`), which
@@ -1017,7 +1035,10 @@ of scope here.
   remaining lease, so the delegate's token and the home's never diverge. A request that no longer
   matches a grant is checked against a 1024-id sliding window per `(database, requester, delegate
 epoch)`: an id already seen, or older than the window, is `stale` — never a fresh grant nobody is
-  waiting for. `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
+  waiting for. The window admits an older unseen id, since ids are per thread and requests for
+  different keys reorder freely, but not one older than the newest it admitted for the _same_ key:
+  the requester waits only on its latest request for a key, so that one is `stale` whether the grant
+  it produced is still held, recalled to a contender, or released (harper#3788). `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
   epoch's replay never retries) and ends 503. The requester discards a reply whose echo is not its
   outstanding request, handing back anything it granted. The window lives on the owner thread like the
   grants it protects; a replayed id from a _live_ epoch across a home's handoff is bounded by the
@@ -1034,6 +1055,17 @@ epoch)`: an id already seen, or older than the window, is `stale` — never a fr
   inherits, and a lost renewal reply no longer leaves the key held to expiry (§5.2's residue). A drain
   (`quiesce`) clears `recallRetryAfterMono` before it recalls, so a drain inside a failed contention
   recall's backoff still sends. Neither touches the epoch: a retire expires a grant whatever its token.
+- A reply the delegate stopped waiting on (`#releaseUnclaimedGrant`) that names a newer token than a
+  delegation it holds for the key, in the same generation, is the home's in-place renewal of that
+  delegation: the delegate's deadline never outlasts the home's, so the home's grant to it has been
+  continuous. A live delegation takes the token over and is marked `releaseOnExpiry`, because the
+  home started that renewal's lease after the delegation's deadline was anchored at its own send: on
+  local expiry it surrenders (fence, then release with its lineage) instead of dropping silently,
+  which would leave a later recall confirming with nothing released and the key refused until the
+  home lease. A live delegation draining a recall records it as the token its surrender names. One
+  already past its local deadline, recalled or not, proves no continuity (the token may be a fresh grant carrying another
+  node's lineage), so it is collected as `tick` would and the token handed back with no lineage. An
+  in-place renewal installed through `#acquire` clears the mark: its deadline is anchored afresh.
 - A recall carries the grant's `delegateEpoch`. The delegate's unknown-token branch _fails_ a recall
   tagged below its own epoch — the token belongs to an exited epoch and was never held here — instead
   of confirming it; the home's `RECALL_RETRY_MS` retry stays in force until the retire frees the key.
@@ -1107,9 +1139,9 @@ clock at receipt overlaps the next delegate.
   does not name can neither obtain a delegation nor clear one. The `requestId` half is §4.5's request
   identity (harper#2582): the home answers a duplicate with the token it already issued and refuses a
   replay through a per-requester window, and the requester discards a reply whose echo is not its
-  outstanding request. Core still refuses to hand back a grant while any delegation for the key is
-  held. The generation half: the map is re-read after the round and a grant minted under a superseded
-  generation is handed back rather than installed.
+  outstanding request. Core never hands back a grant while a live delegation for the key is
+  held; a newer token for it is taken over instead (§4.5). The generation half: the map is re-read
+  after the round and a grant minted under a superseded generation is handed back rather than installed.
 - **Every local handle is bounded by `min(requested lease, delegation deadline)`** — including
   re-entrant acquisition and the `{hold: true}` upgrade. The branch's
   `upgradeToHold` already clamps to the granted round's deadline rather than extending it
