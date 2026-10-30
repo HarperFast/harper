@@ -1,0 +1,18 @@
+type ReuseDepartment @table @export {
+	id: ID @primaryKey
+	label: String
+	secret: String
+}
+
+type ReuseEmployee @table @export {
+	id: ID @primaryKey
+	name: String
+	departmentId: ID @indexed
+	department: ReuseDepartment @relationship(from: "departmentId")
+}
+
+type ReuseCachedLabel @table(expiration: 3600) {
+	id: ID @primaryKey
+	label: String
+	secret: String
+}
