@@ -22,10 +22,11 @@ const WORD_PROPOSED = 0;
 const WORD_PUBLISHED = 1;
 const WORD_RATCHET = 2;
 // Non-zero once a key may have been issued from the ratchet rather than the native clock (the clock
-// was behind the recovered floor); native keys then pass through the ratchet word for the rest of
+// was behind a recovered floor or a runtime claim); native keys then pass through it for the rest of
 // the process, since any later hand-back to load-only admission races a fallback still in flight.
 const WORD_STRICT = 3;
-const HEADER_WORDS = 4;
+const WORD_INITIAL_CEILING = 4;
+const HEADER_WORDS = 5;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
 const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
@@ -40,6 +41,7 @@ export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
 const RETIRED_BIT = 1n << 40n;
 const RESERVATION = Symbol('originFloorReservation');
 const REGISTRY = Symbol('originFloorRegistry');
+const ISSUANCE_COVER = Symbol('localIssuanceCover');
 
 // Positive doubles order as their bit patterns read as signed 64-bit integers: a compare-and-swap
 // maximum on the bits is one on the values, and +1 on the bits is nextafter.
@@ -54,6 +56,11 @@ function fromBits(bits: bigint): number {
 	return FLOAT_SCRATCH[0];
 }
 const INFINITY_BITS = toBits(Infinity);
+
+/** The next representable timestamp above a positive `value`: the step the native clock breaks ties by. */
+export function timestampAbove(value: number): number {
+	return fromBits(toBits(value) + 1n);
+}
 
 function storeMax(words: BigInt64Array, index: number, value: number): number {
 	const bits = toBits(value);
@@ -80,6 +87,7 @@ class ThreadRegistry {
 	private retired = false;
 	private released = 0;
 	private settledBound = Infinity;
+	private coveredThrough = 0;
 
 	constructor(rootStore: RocksDatabase) {
 		this.rootStore = rootStore;
@@ -207,9 +215,27 @@ class ThreadRegistry {
 			const again = this.rootStore.getMonotonicTimestamp();
 			if (this.admitNative(toBits(again))) return again;
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
-			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) === ratchet)
-				return fromBits(ratchet + 1n);
+			const next = ratchet + 1n;
+			this.covered(fromBits(next));
+			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, next) === ratchet) return fromBits(next);
 		}
+	}
+
+	/**
+	 * A key issued from the ratchet is ahead of the clock, which a restart cannot recover, so a ceiling
+	 * above it is persisted before it is used; open seeds issuance above that ceiling.
+	 */
+	private covered(key: number): number {
+		if (key > this.coveredThrough) {
+			const cover: ((key: number) => number) | undefined = (this.rootStore as any)[ISSUANCE_COVER];
+			if (cover) this.coveredThrough = cover(key);
+		}
+		return key;
+	}
+
+	/** Persist a claim's ceiling before making its floor visible to other workers. */
+	coverBeforeClaim(floor: number): void {
+		this.covered(floor);
 	}
 
 	reserve(handle: RocksTransaction, explicit: number | undefined): number {
@@ -355,6 +381,48 @@ export function reservedLocalKey(handle: RocksTransaction | undefined): number |
 
 export function reservedAroundCallerValue(handle: RocksTransaction | undefined): boolean {
 	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
+}
+
+/** The highest key the ratchet has issued or admitted. */
+export function localIssuanceRatchet(rootStore: RocksDatabase): number {
+	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_RATCHET));
+}
+
+/**
+ * A timestamp no local append on this node is issued at: the clock's next one, or the ratchet's while it
+ * is ahead. A raw clock sample can equal a key the ratchet issued ahead of the clock once the clock
+ * catches up, and an equal version on one record reads as a re-delivery.
+ */
+export function freshLocalKey(rootStore: any): number {
+	return typeof rootStore?.getUserSharedBuffer === 'function'
+		? registryFor(rootStore).freshKey()
+		: rootStore.getMonotonicTimestamp();
+}
+
+/** Claim a record-version floor with a fresh local key, leaving all later local keys above it. */
+export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
+	const registry = registryFor(rootStore);
+	registry.coverBeforeClaim(floor);
+	storeMax(registry.words, WORD_RATCHET, fromBits(toBits(floor) - 1n));
+	return registry.freshKey();
+}
+
+/**
+ * Install per-thread coverage and seed a fresh registry above the earlier process's persisted ceiling.
+ * Later openers share that initial snapshot without consuming newly reserved headroom.
+ */
+export function seedLocalIssuance(rootStore: RocksDatabase, ceiling: number, cover: (key: number) => number): void {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	(rootStore as any)[ISSUANCE_COVER] = cover;
+	const words = registryFor(rootStore).words;
+	// Only recovery consumes the disk reserve. Later workers must not turn unused headroom into a lead.
+	const encoded = isValidFloor(ceiling) ? toBits(ceiling) : -1n;
+	const prior = Atomics.compareExchange(words, WORD_INITIAL_CEILING, 0n, encoded);
+	const initial = prior === 0n ? encoded : prior;
+	if (initial === -1n) return;
+	const recovered = fromBits(initial);
+	storeMax(words, WORD_RATCHET, recovered);
+	if (rootStore.getMonotonicTimestamp() <= recovered) Atomics.store(words, WORD_STRICT, 1n);
 }
 
 function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {

@@ -88,6 +88,7 @@ import {
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
+	freshLocalKey,
 	isValidFloor,
 	releaseLocalKey,
 	reserveLocalKey,
@@ -96,6 +97,8 @@ import {
 } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
+	admissionFloor,
+	admissionStamp,
 	lockAttemptKey,
 	lockNotHeldError,
 	resolveLockOptions,
@@ -884,9 +887,14 @@ interface TableResourceInstance<Record extends object = any> {
 	/**
 	 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 	 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
-	 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
-	 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
-	 * gated or blocked. The generation expires after `lease` if it is never released.
+	 * in process memory and does not write a lock record or audit entry. A lock admitted above the
+	 * local clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart
+	 * cannot reuse a key; admission farther ahead fails with `LockUnavailableError` until wall time
+	 * catches up. Admission can raise the current transaction timestamp to the admitted version; a
+	 * claimed version can also put this node's local write clock ahead of wall time until it catches
+	 * up. Phase 0 contract: lock() is mutually exclusive with other lock() calls on the same key;
+	 * plain writes (put/patch/delete/create) are never gated or blocked. The generation expires after
+	 * `lease` if it is never released.
 	 *
 	 * Transaction-scoped (default): write through the returned record (or the table's static verbs
 	 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
@@ -1697,6 +1705,7 @@ export function makeTable(options): TableResourceClass {
 	let lockCoordinator: LockCoordinator | undefined;
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
+	let lastIssuanceFailureWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
@@ -2075,9 +2084,15 @@ export function makeTable(options): TableResourceClass {
 			// Off-key writes through the same resource instance are ordinary; only guard the
 			// exact key the lock was acquired for.
 			if (handle.keyId !== writeKeyId(id)) return;
+			if (handle.writeRefused) this.#rejectRefusedLockWrite(handle);
 			if (handle.isExpired()) {
 				throw lockNotHeldError(handle);
 			}
+		}
+		#rejectRefusedLockWrite(handle: RecordLockHandle): never {
+			const owner = this.#savingOperation?.stagedIn ?? txnForContext(this.getContext());
+			owner.refuseLockWrites(handle, this.#savingOperation);
+			throw new ClientError('This lock write was refused; unlock and acquire a fresh lock before retrying', 409);
 		}
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
@@ -4256,6 +4271,10 @@ export function makeTable(options): TableResourceClass {
 		 */
 		save() {
 			const operation = this.#savingOperation;
+			const lockHandle = operation ? operation.lockHandle : this.#lockHandle;
+			if (this.#lockWritable && lockHandle?.writeRefused) {
+				this.#rejectRefusedLockWrite(lockHandle);
+			}
 			if (
 				!this.#lockWritable &&
 				this.#writeGeneration?.closed &&
@@ -4326,7 +4345,7 @@ export function makeTable(options): TableResourceClass {
 				try {
 					result = this.#saveOperation(operation);
 				} catch (error) {
-					if (!operation.saved) this.#savingOperation = operation;
+					if (!operation.saved && !operation.dropped) this.#savingOperation = operation;
 					throw error;
 				}
 				const innerCommit = operation.innerCommit;
@@ -4850,9 +4869,14 @@ export function makeTable(options): TableResourceClass {
 		/**
 		 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
-		 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
-		 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
-		 * gated or blocked. The generation expires after `lease` if it is never released.
+		 * in process memory and does not write a lock record or audit entry. A lock admitted above the
+		 * local clock within `storage.maxLockClockSkew` may persist an issuance ceiling so a restart
+		 * cannot reuse a key; admission farther ahead fails with `LockUnavailableError` until wall time
+		 * catches up. Admission can raise the current transaction timestamp to the admitted version; a
+		 * claimed version can also put this node's local write clock ahead of wall time until it catches
+		 * up. Phase 0 contract: lock() is mutually exclusive with other lock() calls on the same key;
+		 * plain writes (put/patch/delete/create) are never gated or blocked. The generation expires after
+		 * `lease` if it is never released.
 		 *
 		 * Transaction-scoped (default): write through the returned record (or the table's static verbs
 		 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
@@ -4982,8 +5006,8 @@ export function makeTable(options): TableResourceClass {
 							);
 							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
-								detachScopedUpgradeWrite(link, keyId, acquired);
 								acquired.upgradeToHold(resolved.lease);
+								detachScopedUpgradeWrite(link, keyId, acquired);
 							}
 							return this.#reloadLocked(id, acquired, true);
 						}
@@ -5011,6 +5035,13 @@ export function makeTable(options): TableResourceClass {
 				resolved.hold
 			);
 			const clusterStart = performance.now();
+			// One read for both the floor and the reload: a write landing between two reads would be uncovered.
+			let admittedEntry: any;
+			let previousTimestamp: number | undefined;
+			let raisedTimestamp: number | undefined;
+			let pinnedTimestamp: number | undefined;
+			let timestampChanged = false;
+			let writesBeforeTimestampRaise: number | undefined;
 			// What a follower waits on must span the cluster round and registration, not just the native
 			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
 			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
@@ -5048,6 +5079,7 @@ export function makeTable(options): TableResourceClass {
 					handle.release();
 					throw transportUnavailable(databaseName);
 				}
+				let dependencyFloor: number | undefined;
 				if (coordinator) {
 					try {
 						// Not a 423 when the budget is gone, and not a skip either: the native wait can consume
@@ -5085,6 +5117,7 @@ export function makeTable(options): TableResourceClass {
 						// The getter again: a swap during the acquisition moved this admission to the
 						// successor, and registering on the predecessor would revoke a handle that is fine.
 						TableResource.admittingCoordinator?.registerAdmission(round.admissionId, () => handle.revokeLease());
+						dependencyFloor = round.dependencyFloor;
 					} catch (error) {
 						handle.release();
 						throw error;
@@ -5094,6 +5127,25 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
+				let admitted: { floor: number; stamp: number; claimed: boolean } | undefined;
+				try {
+					admittedEntry = (primaryStore as any).getEntry(id);
+					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
+					if (floor !== undefined) {
+						const explicit = link.open === TRANSACTION_STATE.OPEN && !link.saveCommits;
+						const transactionCannotAdopt =
+							explicit &&
+							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
+								link.hasUnlockedWrite() ||
+								(link.timestamp !== undefined && link.timestamp >= floor));
+						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
+					}
+				} catch (error) {
+					handle.release();
+					throw error;
+				}
+				if (admitted)
+					handle.noteCandidateFloor(admitted.stamp, !admitted.claimed && admitted.floor > handle.acquiredAt);
 				link.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
@@ -5104,7 +5156,25 @@ export function makeTable(options): TableResourceClass {
 					// excluded (saveCommits=true) — its clock is never pinned in lock();
 					// each save() stamps from the handle's committed version floor instead.
 					if (link.writes.length === 0 && !link.timestamp) {
+						previousTimestamp = link.timestamp;
+						writesBeforeTimestampRaise = link.writes.length;
+						timestampChanged = true;
 						link.timestamp = handle.acquiredAt;
+						pinnedTimestamp = link.timestamp;
+					}
+					if (
+						admitted &&
+						admitted.floor > link.timestamp &&
+						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
+						!link.hasUnlockedWrite()
+					) {
+						if (!timestampChanged) {
+							previousTimestamp = link.timestamp;
+							writesBeforeTimestampRaise = link.writes.length;
+							timestampChanged = true;
+						}
+						link.timestamp = Math.max(admitted.stamp, link.timestamp || handle.acquiredAt);
+						raisedTimestamp = link.timestamp;
 					}
 					if (!resolved.hold && link.transaction) {
 						// Scoped lock: the read snapshot may predate the lock; drop it so the
@@ -5130,12 +5200,22 @@ export function makeTable(options): TableResourceClass {
 			return acquisition.then(
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					try {
-						return this.#reloadLocked(id, handle);
-					} catch (error) {
+					const releaseAfterReloadFailure = (error) => {
 						link.unregisterRecordLock(handle);
 						handle.release();
+						if (
+							timestampChanged &&
+							(link.timestamp === raisedTimestamp || link.timestamp === pinnedTimestamp) &&
+							link.writes.length === writesBeforeTimestampRaise
+						)
+							link.timestamp = previousTimestamp;
 						throw error;
+					};
+					try {
+						const result = this.#reloadLocked(id, handle, false, { entry: admittedEntry });
+						return result?.then ? result.catch(releaseAfterReloadFailure) : result;
+					} catch (error) {
+						return releaseAfterReloadFailure(error);
 					}
 				},
 				(error) => {
@@ -5144,7 +5224,7 @@ export function makeTable(options): TableResourceClass {
 				}
 			);
 		}
-		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false) {
+		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false, admitted?: { entry: any }) {
 			// For freshness, read the committed entry (snapshot-free) so a hold lock sees concurrent
 			// committed writes rather than a stale snapshot.  A write earlier in THIS explicit
 			// transaction has not landed in that committed entry yet (harper#1968: Harper defers an
@@ -5153,7 +5233,7 @@ export function makeTable(options): TableResourceClass {
 			// record comes from the prior staged write, the rest of the entry (version, audit chain,
 			// blob metadata) stays the pre-transaction one.
 			const link = txnForContext(this.getContext());
-			let entryForReload: any = primaryStore.getEntry(id);
+			let entryForReload: any = admitted ? admitted.entry : primaryStore.getEntry(id);
 			if (link.open === TRANSACTION_STATE.OPEN) {
 				const keyId = writeKeyId(id);
 				const tailWrite = link.writesByKey?.get(primaryStore)?.get(keyId);
@@ -9673,7 +9753,7 @@ export function makeTable(options): TableResourceClass {
 						? (entry: LockControlEntry) => transport.writeControl!(tableName, entry)
 						: (entry: LockControlEntry) => TableResource.writeLockControlEntry(entry),
 					keyIdOf: writeKeyId,
-					nextTimestamp: () => (primaryStore as any).getMonotonicTimestamp(),
+					nextTimestamp: () => freshLocalKey(tableRootStore),
 					grantableAfterMono: transport.grantableAfterMono,
 				});
 				predecessor?.close();
@@ -11904,9 +11984,28 @@ export function makeTable(options): TableResourceClass {
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		const sourceTimestamp =
-			inheritedTimestamp ||
-			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
+		let sourceTimestamp = inheritedTimestamp;
+		let issuanceFailed = false;
+		if (!sourceTimestamp) {
+			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+			else {
+				try {
+					sourceTimestamp = freshLocalKey(tableRootStore);
+				} catch (error) {
+					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
+					issuanceFailed = true;
+					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+					const now = performance.now();
+					if (now - lastIssuanceFailureWarn >= 60_000) {
+						lastIssuanceFailureWarn = now;
+						logger.warn?.(
+							`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
+							error
+						);
+					}
+				}
+			}
+		}
 		let wake: () => void;
 		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);
@@ -11976,7 +12075,7 @@ export function makeTable(options): TableResourceClass {
 			// Once dropTable() has started, no new source-fill write may begin; still resolve the
 			// caller's read with fresh source data, just don't cache it into a table that's going away.
 			// No write can commit on a read-only node, so a fill there is served but never staged.
-			noCacheStore: droppingTable || isReadOnlyMode(),
+			noCacheStore: issuanceFailed || droppingTable || isReadOnlyMode(),
 			source: null,
 			transaction: undefined,
 			expiresAt: undefined,
@@ -12155,7 +12254,7 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					if (!sourceContext.noCacheStore) sharedEntry = resolvedEntry;
+					if (!issuanceFailed && !sourceContext.noCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -12193,7 +12292,7 @@ export function makeTable(options): TableResourceClass {
 					sourceContext.transaction.abort();
 					return;
 				}
-				if (context?.noCacheStore || sourceContext.noCacheStore || droppingTable) {
+				if (issuanceFailed || context?.noCacheStore || sourceContext.noCacheStore || droppingTable) {
 					// abort before we write any change. droppingTable is re-checked live (not just
 					// the noCacheStore snapshot taken at call start) because a call admitted before
 					// dropTable() began can still be sitting here after it started - the await above
