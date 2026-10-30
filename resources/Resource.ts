@@ -1319,13 +1319,20 @@ export function transformForSelect(select, resource) {
 				);
 			}
 		}
-	if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined))
+	if (typeof select === 'string')
+		return function transform(object) {
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
+			if (Array.isArray(object)) return settleAll(object.map(transform));
+			return readPropertyFromObject(object, select, propertyResolvers, context, select === '__proto__');
+		};
+	if (!Array.isArray(select) && select?.name !== undefined)
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return settleAll(object.map(transform));
 			return handleProperty(
-				selectFromObject(object, propertyResolvers, context, (select?.name ?? select) === '__proto__'),
+				selectFromObject(object, propertyResolvers, context, select.name === '__proto__'),
 				object
 			)(select);
 		};
