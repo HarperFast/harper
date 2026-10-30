@@ -1485,7 +1485,8 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		if (unexpected) runExitHandler(options.onUnexpectedExit, 'onUnexpectedExit', worker, exitedThreadId);
 		else if (!processShuttingDown && worker.wasPermanentlyStopped)
 			runExitHandler(options.onPermanentStop, 'onPermanentStop', worker, exitedThreadId);
-		if (unexpected && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
+		// Re-read: the handler may have begun process shutdown.
+		if (exitedUnexpectedly(worker) && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;

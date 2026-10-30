@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { join } = require('node:path');
+const rewire = require('rewire');
 const sinon = require('sinon');
 const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const { getDatabases } = require('#src/resources/databases');
@@ -159,7 +160,7 @@ describe('jobOwnership', function () {
 			const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID, owner_pid: process.pid });
 			seeded.push(id);
 
-			// The gap this closes: the row is owned by a live process, so the sweep leaves it running.
+			// The boot sweep leaves a row owned by a live process alone.
 			assert.strictEqual(await reconcileInterruptedJobs(), 0);
 			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.IN_PROGRESS);
 
@@ -213,6 +214,23 @@ describe('jobOwnership', function () {
 			assert.strictEqual(await settleAbandonedJob(id), false);
 			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.ERROR);
 		});
+
+		for (const hook of ['onUnexpectedExit', 'onPermanentStop']) {
+			it(`is what a job worker's ${hook} runs`, async function () {
+				const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID });
+				seeded.push(id);
+				const startWorker = sinon.stub(manageThreads, 'startWorker');
+				try {
+					rewire('#js/server/jobs/jobRunner').__get__('startJobWorker')(id);
+					const [path, options] = startWorker.firstCall.args;
+					assert.match(path, /jobProcess\.[jt]s$/);
+					await options[hook]();
+				} finally {
+					startWorker.restore();
+				}
+				assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.ERROR);
+			});
+		}
 	});
 
 	describe('job rows', function () {

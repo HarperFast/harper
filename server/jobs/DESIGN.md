@@ -15,9 +15,12 @@ Ownership is a per-boot uuid rather than a pid because pids are reused, and a re
 dead job look alive. Both mechanisms report an interrupted row as `ERROR` rather than a new status, because
 every existing `get_job` consumer already handles `ERROR`; the distinction lives in the message.
 
-The exit hook uses `startWorker`'s `onUnexpectedExit` option for an unplanned death and its
-`onPermanentStop` option for a deliberate stop with no replacement while the process stays alive.
-Rolling restarts do not settle the row because `startCopy()` gives it a successor; process teardown
-leaves it to the boot sweep. These are **options** rather than listeners the caller attaches to the
+The exit hook uses `startWorker`'s `onUnexpectedExit` option for every exit the worker makes on its
+own, a finished job's included, and its `onPermanentStop` option for a deliberate stop with no
+replacement while the process stays alive. `settleAbandonedJob()` re-reads the row, so a job that
+wrote its own terminal status is left alone. A restart through `startCopy()` does not settle the row,
+because the replacement re-runs the job from its stored request; that re-run predates this hook, and
+it repeats any effects the first run applied. Process teardown leaves the row to the boot sweep. A
+settle that fails is logged and not retried in-process; the next boot's sweep claims the row. These are **options** rather than listeners the caller attaches to the
 returned worker because `startCopy()` restarts through the same options object: a listener bound to the
 first worker never reaches the replacements, which can die the same way.
