@@ -1875,7 +1875,6 @@ export function filterByType(
 	const negated = searchCondition.negated;
 	let attribute = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
-	// an omitted attribute is the primary key, as in searchByIndex
 	if (attribute == null && Table?.primaryKey != null) {
 		attribute = Table.primaryKey;
 		isPrimaryKey = true;
@@ -2373,8 +2372,21 @@ function usableIndex(table, attributeName): any {
 	return index?.isIndexing ? undefined : index;
 }
 
-// Only an AND's executing lead matters: an OR's branches never share a relationship join with its siblings. A
-// relationship whose own scan cannot run is not kept, so promotion can still lead with a local index instead.
+function relationshipScanRuns(table, attribute, condition): boolean {
+	const relationship = findAttribute(table.attributes, attribute[0]);
+	const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
+	if (!relationship?.relationship || !relatedTable) return false;
+	const from = relationship.relationship.from;
+	if (from && from !== table.primaryKey && !usableIndex(table, from)) return false;
+	const rest = attribute.slice(1);
+	if (rest.length > 1) return relationshipScanRuns(relatedTable, rest, condition);
+	return conditionDrivesIndex(relatedTable, {
+		attribute: rest[0],
+		comparator: condition.comparator,
+		value: condition[1] ?? condition.value,
+		negated: condition.negated,
+	});
+}
 export function leadsByRelationship(table, condition): boolean {
 	if (condition.conditions)
 		return (
@@ -2383,18 +2395,7 @@ export function leadsByRelationship(table, condition): boolean {
 			leadsByRelationship(table, condition.conditions[0])
 		);
 	const attribute = condition[0] ?? condition.attribute;
-	if (!Array.isArray(attribute) || attribute.length < 2) return false;
-	const relationship = findAttribute(table.attributes, attribute[0]);
-	const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
-	if (!relationship?.relationship || !relatedTable) return false;
-	const from = relationship.relationship.from;
-	if (from && from !== table.primaryKey && !usableIndex(table, from)) return false;
-	return conditionDrivesIndex(relatedTable, {
-		attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
-		comparator: condition.comparator,
-		value: condition[1] ?? condition.value,
-		negated: condition.negated,
-	});
+	return Array.isArray(attribute) && attribute.length > 1 && relationshipScanRuns(table, attribute, condition);
 }
 
 // must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)

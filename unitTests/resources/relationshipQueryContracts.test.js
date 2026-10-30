@@ -163,6 +163,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 
 		await Company.put({ id: 'co-split', group: 'g1' });
 		await Company.put({ id: 'co-match', group: 'g1' });
+		for (let i = 0; i < 40; i++) await Company.put({ id: `co-empty-${i}`, group: 'g1' });
 		await Department.put({ id: 'dept-split', companyId: 'co-split', name: 'Split Dept' });
 		// two to-many hops wide enough that resolving them together would exceed one read window
 		await Company.put({ id: 'co-wide', group: 'wide-co' });
@@ -430,6 +431,15 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					departments: [{ id: 'dept-match', employees: [{ id: 'emp-match-1', role: 'eng', active: true }] }],
 				},
 			]);
+		});
+
+		it('a two-hop path that leads by estimate keeps the lead ahead of a local index', async function () {
+			const hop = (attribute, value) => ({ attribute: ['departments', 'employees', attribute], value });
+			const conditions = [hop('role', 'eng'), hop('active', true), { attribute: 'group', value: 'g1' }];
+			const ids = async (options) => (await collect(Company.search({ conditions, ...options }))).map((row) => row.id);
+			assert.deepStrictEqual(await ids({ enforceExecutionOrder: true, allowFullScan: true }), ['co-match']);
+			conditions.unshift(conditions.pop());
+			assert.deepStrictEqual(await ids({ allowFullScan: false }), ['co-match']);
 		});
 
 		it('a non-leading two-hop condition restricts the nested select()', async function () {

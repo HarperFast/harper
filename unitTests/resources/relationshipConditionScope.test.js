@@ -43,7 +43,6 @@ describe('A condition inside an OR decides which rows match, not which related r
 		});
 		childrenAttribute.elements.definition.tableClass = Child;
 		kidsAttribute.elements.definition.tableClass = Child;
-		// p1 meets `name = a` and `label = y` only through different children, p2 through one, p3 not at all
 		const children = [
 			{ id: 'c1', name: 'a', label: 'x', parentId: 'p1' },
 			{ id: 'c2', name: 'b', label: 'y', parentId: 'p1' },
@@ -181,7 +180,6 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		];
 		const { conditions: planned } = await Parent.search({ conditions, explain: true, allowFullScan: true });
 		assert.deepStrictEqual(planned[0].attribute, ['kids', 'name']);
-		// a group that leads with a local condition is not a relationship lead
 		const grouped = [
 			{ attribute: 'group', value: 'g1' },
 			{ operator: 'and', conditions: [{ attribute: 'b', comparator: 'in', value: [3] }, conditions[1]] },
@@ -189,7 +187,6 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		const rows = [];
 		for await (const row of Parent.search({ conditions: grouped, allowFullScan: false })) rows.push(row.id);
 		assert.deepStrictEqual(rows, ['p1']);
-		// an OR holding a relationship branch does not block the indexed outer condition from leading
 		const union = [
 			{ attribute: 'group', value: 'g1' },
 			{
@@ -209,7 +206,6 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 			return found;
 		};
 		const needle = { attribute: 'text', comparator: 'contains', value: 'needle' };
-		// a relationship whose own scan cannot run does not keep the lead
 		assert.deepStrictEqual(
 			await run(
 				[
@@ -223,7 +219,6 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 			),
 			['p1']
 		);
-		// a nested group led by a relationship join is not promoted ahead of the local index
 		assert.deepStrictEqual(
 			await run(
 				[
