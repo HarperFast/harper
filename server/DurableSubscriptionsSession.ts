@@ -1124,16 +1124,21 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const floor = checkpointFloor ?? state.subscription?.checkpointFloor?.();
 			if (floor === undefined) return;
 			if (floor < bound) bound = floor;
-		} else {
-			// a transaction that took a key below the delivered ones can still commit until progress passes it
-			const progress = state.subscription?.progress?.();
-			if (progress !== undefined && progress < bound) bound = progress;
+		} else if (state.subscription?.progress !== undefined) {
+			// a transaction that took a key below the delivered ones can still commit until progress passes it; a
+			// resumed replay reads the log in commit order, so before its verdict a lower key can still be unread
+			if (!state.verified) return;
+			const progress = state.subscription.progress();
+			if (progress === undefined) return;
+			if (progress < bound) bound = progress;
 		}
 		for (const { key } of state.unacked.values()) {
 			if (key < bound) bound = key;
 			// with none late, the oldest unacknowledged delivery has the lowest key
 			if (state.lateUnacked === 0) break;
 		}
+		const late = this.lateUnconsumed(state);
+		if (late < bound) bound = late;
 		for (const [key] of state.resend?.values() ?? []) if (key < bound) bound = key;
 		let through = state.receivedThrough;
 		for (const key of state.receivedRuns?.keys() ?? []) {
@@ -1416,10 +1421,25 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.lateUnacked === 0) break;
 		}
 		if (boundary === undefined || !certified) return boundary;
+		const late = this.lateUnconsumed(state);
+		if (late !== undefined) {
+			const before = positionBefore(late);
+			if (before < boundary) boundary = before;
+		}
 		const progress = subscription.progress();
 		// nothing certifies an advance yet, but holding below an unacknowledged delivery needs no certificate
 		if (progress === undefined) return boundary < state.entry.startTime ? boundary : undefined;
 		return boundary < progress ? boundary : progress;
+	}
+	/**
+	 * The lowest key sent to the topic's subscription and not yet consumed, among events sent below a key sent before
+	 * them (a late commit, or a replay reading the log in commit order): one can wait in the queue behind deliveries
+	 * of higher keys. Every other queued event is at or above the last delivered key.
+	 */
+	lateUnconsumed(state: TopicState): number | undefined {
+		const subscription = state.subscription;
+		if (subscription?.sentCount === state.consumed) return;
+		return subscription?.lowestLateUnconsumed?.(state.consumed);
 	}
 	/** `fresh`: false reuses the checkpoints a `received` computed for this pass. */
 	advancePositions(fresh = true): boolean {

@@ -19,7 +19,8 @@ const {
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const commonUtility = require('#src/utility/lmdb/commonUtility');
-const { getOriginClosedFloor } = require('#src/resources/originClosedFloor');
+const { getOriginClosedFloor, localStartBound } = require('#src/resources/originClosedFloor');
+const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
@@ -2653,5 +2654,501 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			'acknowledging the re-snapshot did not move the position back'
 		);
 		session.disconnect(true);
+	});
+
+	it('holds the position below a local write that took its key before an acknowledged one, and replays it on resume', async function () {
+		if (!isRocksDB) this.skip(); // LMDB keys are assigned at commit
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `held-below-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(first.received, 'after'));
+		await ackAll(first.session, first.received);
+		first.session.checkpoint();
+		await first.session.writes;
+		const entry = await storedEntry(clientId, (saved) => saved.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		assert.ok(entry.startTime < lateKey, `the saved position ${entry.startTime} passed the held key ${lateKey}`);
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => delivery(second.received, 'late'), { message: 'the late commit was not replayed' });
+		second.session.disconnect(true);
+	});
+
+	it('keeps a scalar replay below a local write still open when it replays a higher key', async function () {
+		if (!isRocksDB) this.skip();
+		setOriginCaptureIntervalForTests(60_000);
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		const clientId = `scalar-replay-held-${name}`;
+		const sessions = [];
+		let commitLate;
+		try {
+			await T.put('seed', { value: 0 });
+			const first = await connect(clientId);
+			sessions.push(first.session);
+			await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			await T.put('established', { value: 'established' });
+			await waitFor(() => delivery(first.received, 'established'));
+			await waitFor(
+				() => first.session.topics.get(topic).subscription.progress() >= T.primaryStore.getEntry('established').version
+			);
+			await ackAll(first.session, first.received);
+			first.session.checkpoint();
+			await first.session.writes;
+			await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+			first.session.disconnect(true);
+			await first.session.writes;
+			commitLate = await heldTransaction(T, 'late');
+			await T.put('after', { value: 'after' });
+			const second = await connect(clientId);
+			sessions.push(second.session);
+			await second.session.resume();
+			const state = second.session.topics.get(topic);
+			await waitFor(() => state.verified && delivery(second.received, 'after'));
+			assert.ok(state.subscription.resumeVerified, 'the scalar replay checks its database generation');
+			assert.strictEqual(await state.subscription.resumeVerified, true);
+			assert.strictEqual(state.entry.checkpoint, undefined, 'the resume uses a scalar position');
+			assert.strictEqual(getOriginClosedFloor(T.primaryStore.rootStore), undefined, 'no origin floor is published');
+			const heldBound = localStartBound(T.primaryStore.rootStore);
+			assert.ok('atOrAbove' in heldBound, 'the lower local write still owns a reservation');
+			const replayProgress = state.subscription.progress();
+			await waitFor(() => state.consumed === state.subscription.sentCount);
+			await ackAll(second.session, second.received);
+			second.session.checkpoint();
+			await second.session.writes;
+			second.session.disconnect(true);
+			await second.session.writes;
+			const savedStart = (await stored(clientId)).subscriptions[0].startTime;
+			await commitLate();
+			const lateAudit = [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === 'late');
+			const lateKey = lateAudit.txnLogKey;
+			assert.strictEqual(
+				lateKey,
+				heldBound.atOrAbove,
+				JSON.stringify({ replayProgress, heldBound, lateKey, savedStart })
+			);
+			const third = await connect(clientId);
+			sessions.push(third.session);
+			await third.session.resume();
+			await waitFor(() => delivery(third.received, 'late'), {
+				message: `the held key ${lateKey} was skipped after replay saved ${savedStart}`,
+			});
+			assert.ok(savedStart < lateKey, `the replay position ${savedStart} passed the held key ${lateKey}`);
+		} finally {
+			await commitLate?.();
+			for (const session of sessions) {
+				session.disconnect(true);
+				await session.writes;
+			}
+			setOriginCaptureIntervalForTests(5000);
+		}
+	});
+
+	it('does not pass a lower key that committed and released its reservation before its notify pass ran', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const { session, received } = await connect(`released-undispatched-${name}`);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(received, 'after'));
+		await ackAll(session, received);
+		const state = session.topics.get(topic);
+		const databaseSubscriptions = state.subscription.subscriptions.tables.envs;
+		// the pass that dispatched 'after' was held by the open write, so it scheduled a follow-up pass: let it settle
+		await waitFor(() => !databaseSubscriptions.notifyScheduled && !databaseSubscriptions.recheckPending);
+		// the commit's notify pass is held back: its reservation is released, its records are still unread
+		databaseSubscriptions.notifyScheduled = true;
+		try {
+			await commitLate();
+			await new Promise((resolve) => setImmediate(resolve));
+			const lateKey = T.primaryStore.getEntry('late').version;
+			assert.ok(!delivery(received, 'late'), 'precondition: the late commit is not dispatched yet');
+			session.advancePositions();
+			assert.ok(
+				state.entry.startTime < lateKey,
+				`the position ${state.entry.startTime} passed the undispatched key ${lateKey}`
+			);
+		} finally {
+			databaseSubscriptions.notifyScheduled = false;
+		}
+		await T.put('kick', { value: 'kick' });
+		await waitFor(() => delivery(received, 'late') && delivery(received, 'kick'));
+		await ackAll(session, received);
+		session.advancePositions();
+		assert.ok(
+			state.entry.startTime >= T.primaryStore.getEntry('kick').version,
+			'the position advances once dispatched'
+		);
+		session.disconnect(true);
+	});
+
+	it('holds the position between the batches of a late transaction larger than one notify batch, and replays the rest', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-batches-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const ids = Array.from({ length: 300 }, (_, n) => `late-${n}`);
+		const commitLate = await heldTransaction(T, ...ids);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(first.received, 'after'));
+		await ackAll(first.session, first.received);
+		// registered as the first batch starts, so it runs before the yield's continuation: between the batches
+		let between;
+		first.session.setListener((deliveredTopic, message, messageId) => {
+			first.received.push({ topic: deliveredTopic, message, messageId });
+			if (message?.value === 'late-0')
+				setImmediate(() => {
+					ackAll(first.session, first.received);
+					first.session.disconnect(true);
+					between = { delivered: first.received.length, position: first.session.topics.get(topic).entry.startTime };
+				});
+			return true;
+		});
+		await commitLate();
+		await waitFor(() => between !== undefined);
+		await first.session.writes;
+		const lateKey = T.primaryStore.getEntry('late-0').version;
+		assert.ok(between.delivered < ids.length + 2, 'precondition: the transaction was not delivered whole in one batch');
+		assert.ok(
+			between.position < lateKey,
+			`the position ${between.position} passed the partly dispatched key ${lateKey}`
+		);
+		const second = await connect(clientId);
+		// acknowledged as they arrive: the replay is paced by the unacknowledged deliveries in flight
+		second.session.setListener((deliveredTopic, message, messageId) => {
+			second.received.push({ topic: deliveredTopic, message, messageId });
+			second.session.acknowledge(messageId);
+			return true;
+		});
+		await second.session.resume();
+		await waitFor(() => ids.every((id) => delivery(second.received, id)), {
+			timeout: 20_000,
+			message: () => `missing ${ids.filter((id) => !delivery(second.received, id)).length} of the late records`,
+		});
+		second.session.disconnect(true);
+	});
+
+	it('starts a subscription that joins while a lower key is held below that key', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const first = await connect(`joined-first-${name}`);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('after', { value: 'after' });
+		await waitFor(() => delivery(first.received, 'after'));
+		await ackAll(first.session, first.received);
+		const state = first.session.topics.get(topic);
+		await waitFor(() => state.subscription.progress() !== undefined, { message: 'no certified watermark' });
+		const clientId = `joined-second-${name}`;
+		const second = await connect(clientId);
+		await second.session.addSubscription({ topic, qos: 1, rh: 0 }, true);
+		second.session.disconnect(true);
+		await second.session.writes;
+		const savedStart = (await stored(clientId)).subscriptions[0].startTime;
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		assert.ok(savedStart < lateKey, `the joining start ${savedStart} is above the held key ${lateKey}`);
+		const resumed = await connect(clientId);
+		await resumed.session.resume();
+		await waitFor(() => delivery(resumed.received, 'late'), { message: 'the held write was not replayed' });
+		resumed.session.disconnect(true);
+		first.session.disconnect(true);
+	});
+
+	it('releases the hold on the next capture tick when the held write aborts, with no further commit', async function () {
+		if (!isRocksDB) this.skip();
+		setOriginCaptureIntervalForTests(50);
+		try {
+			const { T, name } = topicTable();
+			const topic = `${name}/#`;
+			await T.put('seed', { value: 0 });
+			const { session, received } = await connect(`aborted-hold-${name}`);
+			await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			let abort;
+			const aborted = transaction({}, async (context) => {
+				await T.put('doomed', { value: 'doomed' }, context);
+				await new Promise((resolve) => (abort = resolve));
+				throw new Error('abort the held write');
+			}).catch(() => {});
+			await waitFor(() => abort);
+			await T.put('after', { value: 'after' });
+			await waitFor(() => delivery(received, 'after'));
+			await ackAll(session, received);
+			const state = session.topics.get(topic);
+			const afterKey = T.primaryStore.getEntry('after').version;
+			session.advancePositions();
+			assert.ok(state.entry.startTime < afterKey, `the position ${state.entry.startTime} passed the held write`);
+			abort();
+			await aborted;
+			await waitFor(
+				() => {
+					session.advancePositions();
+					return state.entry.startTime >= afterKey;
+				},
+				{ timeout: 5_000, message: 'the position did not catch up after the abort' }
+			);
+			session.disconnect(true);
+		} finally {
+			setOriginCaptureIntervalForTests();
+		}
+	});
+
+	it('does not pass a late lower key that is queued behind a delivery, and replays it after a reconnect', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-queued-whole-${name}`;
+		const { session } = await connect(clientId);
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		// every message is acknowledged as it is sent; 'stall' never finishes sending, so what follows it stays queued
+		session.setListener((_topic, message, messageId) => {
+			session.acknowledge(messageId);
+			return message?.value === 'stall' ? stalled : true;
+		});
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		const state = session.topics.get(topic);
+		await waitFor(() => state.deliveredKey === T.primaryStore.getEntry('stall').version);
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		await waitFor(() => state.subscription.queue?.some((event) => event.localTime === lateKey));
+		await waitFor(() => state.subscription.progress() > lateKey);
+		session.advancePositions();
+		assert.ok(
+			state.entry.startTime < lateKey,
+			`the position ${state.entry.startTime} passed the queued key ${lateKey}`
+		);
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the saved position passed it');
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		second.session.disconnect(true);
+	});
+
+	it('QoS 2: keeps receipts below a late lower key that is queued behind received deliveries, and delivers it after a reconnect', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-queued-qos2-${name}`;
+		const { session, received } = await connect(clientId);
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		session.setListener((_topic, message, messageId) => {
+			received.push({ message, messageId });
+			return message?.value === 'stall' ? stalled : true;
+		});
+		await session.addSubscription({ topic, qos: 2, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		await waitFor(() => delivery(received, 'stall'));
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		const state = session.topics.get(topic);
+		await waitFor(() => state.subscription.queue?.some((event) => event.localTime === lateKey));
+		await waitFor(() => state.subscription.progress() >= lateKey);
+		await session.received(delivery(received, 'early').messageId, false);
+		await session.received(delivery(received, 'stall').messageId, false);
+		assert.ok(
+			!(state.receivedThrough >= lateKey),
+			`receipts compacted through ${state.receivedThrough}, past the queued key ${lateKey}`
+		);
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the saved position passed it');
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		assert.ok(!values(second.received).includes('early'), 'a received delivery is not sent again');
+		second.session.disconnect(true);
+	});
+
+	it('QoS 2: compacts no receipts while a resumed replay is unverified, so a late key it has not read is still delivered', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-unread-qos2-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 2, rh: 2 }, true);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => delivery(first.received, 'a'));
+		await first.session.received(delivery(first.received, 'a').messageId, false);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		const commitLate = await heldTransaction(T, 'late');
+		for (let i = 0; i < 300; i++) await T.put(`h${i}`, { value: `h${i}` });
+		first.session.disconnect(true);
+		await first.session.writes;
+		// committed while the client is away: the log holds it after the 300 higher keys
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		const { session } = await connect(clientId);
+		const sent = [];
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		// each message is PUBREC'd as it is sent; h50 never finishes sending, so the replay stops reading at its high
+		// water mark, long before the late key
+		session.setListener((_topic, message, messageId) => {
+			sent.push(message?.value);
+			session.received(messageId, false);
+			return message?.value === 'h50' ? stalled : true;
+		});
+		await session.resume();
+		const state = session.topics.get(topic);
+		await waitFor(() => sent.includes('h50'));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.ok(!state.verified, 'precondition: the replay has not finished');
+		assert.ok(
+			!(state.receivedThrough >= lateKey),
+			`receipts compacted through ${state.receivedThrough}, past the unread key ${lateKey}`
+		);
+		session.checkpoint();
+		session.disconnect(true);
+		await session.writes;
+		unstall();
+		const third = await connect(clientId);
+		third.session.setListener((_topic, message, messageId) => {
+			third.received.push({ message, messageId });
+			Promise.resolve(third.session.received(messageId, false)).then(() => third.session.completed(messageId));
+			return true;
+		});
+		await third.session.resume();
+		await waitFor(() => values(third.received).includes('late'), 10_000);
+		third.session.disconnect(true);
+	});
+
+	it('does not pass a late key a resumed replay reads after higher ones when the topic is subscribed again', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		const topic = `${name}/#`;
+		await T.put('seed', { value: 0 });
+		const clientId = `late-replayed-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await T.put('stall', { value: 'stall' });
+		await waitFor(() => delivery(first.received, 'stall'));
+		await ackAll(first.session, first.received);
+		first.session.disconnect(true);
+		await first.session.writes;
+		// the late write commits while the client is away: the log holds it after the higher keys
+		await commitLate();
+		const lateKey = T.primaryStore.getEntry('late').version;
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'precondition: saved below the late key');
+		const { session } = await connect(clientId);
+		const sent = [];
+		let unstall;
+		const stalled = new Promise((resolve) => (unstall = resolve));
+		let stallOnce = true;
+		session.setListener((_topic, message, messageId) => {
+			sent.push(message?.value);
+			session.acknowledge(messageId);
+			if (message?.value === 'stall' && stallOnce) {
+				stallOnce = false;
+				return stalled;
+			}
+			return true;
+		});
+		await session.resume();
+		const state = session.topics.get(topic);
+		await waitFor(() => state.verified && sent.includes('stall'));
+		assert.ok(
+			state.subscription.queue?.some((event) => event.localTime === lateKey),
+			'precondition: the replay queued the late key behind the higher ones'
+		);
+		await waitFor(() => state.subscription.progress() >= lateKey);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		unstall();
+		await waitFor(() => sent.includes('late'), { message: `the replacement skipped the late key; sent ${sent}` });
+		session.disconnect(true);
+	});
+
+	it('holds the position at the bound a thread parked mid-reservation carries, through every retry (worker thread)', async function () {
+		if (!isRocksDB) this.skip();
+		const name = `DurableTopic${++sequence}`;
+		const topic = `${name}/#`;
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const worker = new Worker(require.resolve('../resources/originClosedFloor-thread.js'), {
+			workerData: {
+				mode: 'park-reserving',
+				gate,
+				tableName: name,
+				database: `durable_${name}`,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+				record: { id: 'parked', value: 'parked' },
+			},
+		});
+		const seen = [];
+		let failure;
+		worker.on('message', (message) => {
+			if (message.type === 'error') failure = new Error(message.message);
+			seen.push(message.type);
+		});
+		worker.on('error', (error) => (failure = error));
+		const exited = new Promise((resolve) => worker.once('exit', resolve));
+		const reached = (type) =>
+			waitFor(
+				() => {
+					if (failure) throw failure;
+					return seen.includes(type);
+				},
+				{ timeout: 20_000, message: `the worker never reported ${type}` }
+			);
+		const release = () => {
+			Atomics.store(gate, 0, 1);
+			Atomics.notify(gate, 0);
+		};
+		try {
+			await reached('parked');
+			const { T } = topicTable(name);
+			const { session, received } = await connect(`parked-${name}`);
+			await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			await T.put('after', { value: 'after' });
+			await waitFor(() => delivery(received, 'after'));
+			await ackAll(session, received);
+			const state = session.topics.get(topic);
+			const afterKey = T.primaryStore.getEntry('after').version;
+			session.advancePositions();
+			assert.ok(
+				state.entry.startTime < afterKey,
+				`the position ${state.entry.startTime} passed the parked thread's bound`
+			);
+			release();
+			await reached('committed');
+			await waitFor(() => delivery(received, 'parked'));
+			await ackAll(session, received);
+			session.advancePositions();
+			assert.ok(state.entry.startTime >= afterKey, 'the position advances once the parked thread committed');
+			session.disconnect(true);
+		} finally {
+			release();
+			await Promise.race([exited, worker.terminate()]);
+		}
 	});
 });
