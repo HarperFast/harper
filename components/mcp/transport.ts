@@ -92,6 +92,11 @@ export interface NormRequest {
 	 * (socket vs trusted header) happens in `resolveClientIdentity`.
 	 */
 	clientIp?: string;
+	/**
+	 * `protocol://host` the client used (application adapter only). Resource URIs
+	 * and the OpenAPI server URL are built from it.
+	 */
+	baseUrl?: string;
 }
 
 export interface NormResponse {
@@ -775,6 +780,7 @@ function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, me
 		profile: request.profile,
 		offset,
 		limit: DEFAULT_RESOURCE_PAGE_LIMIT,
+		baseUrl: request.baseUrl,
 	});
 	const body: { resources: unknown[]; nextCursor?: string } = { resources: result.resources };
 	if (result.nextCursor) body.nextCursor = result.nextCursor;
@@ -791,7 +797,7 @@ function dispatchResourceTemplatesList(
 	if (offset === INVALID_CURSOR) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
 	}
-	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset);
+	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset, undefined, request.baseUrl);
 	const result: { resourceTemplates: unknown[]; nextCursor?: string } = { resourceTemplates };
 	if (nextCursor) result.nextCursor = nextCursor;
 	return jsonResponse(200, buildSuccess(messageId, result));
@@ -893,6 +899,7 @@ function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messa
 			// custom mcpResources templates complete from author-declared values,
 			// selected by the template the client is completing against (#1609)
 			refUri: typeof params?.ref?.uri === 'string' ? params.ref.uri : undefined,
+			baseUrl: request.baseUrl,
 		});
 	} else if (refType === 'ref/prompt') {
 		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;
@@ -974,7 +981,12 @@ async function dispatchResourcesRead(
 	if (!uri) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/read requires params.uri'));
 	}
-	const outcome = await readResource({ uri, user: effectiveUser(request), profile: request.profile });
+	const outcome = await readResource({
+		uri,
+		user: effectiveUser(request),
+		profile: request.profile,
+		baseUrl: request.baseUrl,
+	});
 	if (outcome.ok !== true) {
 		const fail = outcome as { ok: false; reason: string };
 		// Per MCP §server/resources, "resource not found" and access-control
