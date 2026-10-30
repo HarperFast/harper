@@ -276,6 +276,24 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 			});
 		});
 
+		it('records the removal while a worker that reported it holds a load it deferred', async () => {
+			operations.setBranchRemovalRetryDelayForTests?.(60 * 60_000);
+			setRootConfigEntry('deferred-app', {});
+			worker = idleHttpWorker();
+			worker.postMessage(loaded('deferred-app'));
+			await waitFor(() => worker.loadedApplications?.has('deferred-app'), { timeout: 10_000, interval: 50 });
+			await drop({ project: 'deferred-app' });
+			assert.strictEqual(hasPendingBranchRemoval('deferred-app'), true);
+
+			await createFork('deferred-app');
+			await stopWorker();
+			await waitFor(() => !existsSync(forksOf('deferred-app')), {
+				timeout: 10_000,
+				interval: 50,
+				message: 'the fork was left on disk',
+			});
+		});
+
 		it('leaves nothing behind when every worker reports that no fork was created', async () => {
 			await dropWhileLoading('never-app');
 			worker.postMessage(loaded());
@@ -337,26 +355,6 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 			assert.strictEqual(existsSync(forksOf('kept-late-app')), false);
 		});
 	});
-
-	for (const [what, entry] of [
-		['declares no branches', {}],
-		['declares an empty list of them', { branchedDatabases: [] }],
-	]) {
-		it(`writes nothing for an application that ${what}, once every worker reported its load`, async () => {
-			setRootConfigEntry('plain-app', entry);
-			// a worker holding it keeps the retry from clearing a marker the drop should not have written
-			const worker = idleHttpWorker();
-			try {
-				worker.postMessage(loaded('plain-app'));
-				await waitFor(() => worker.loadedApplications?.has('plain-app'), { timeout: 10_000, interval: 50 });
-				await drop({ project: 'plain-app' });
-				await operations.retryPendingBranchRemovals();
-				assert.strictEqual(existsSync(forksOf('plain-app')), false);
-			} finally {
-				await worker.terminate();
-			}
-		});
-	}
 
 	it('removes the forks and their directory when a crash cut the marker write short', async () => {
 		const release = await heldFork('debris-app');

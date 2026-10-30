@@ -1909,8 +1909,8 @@ async function dropComponent(req?: any) {
  * dropped by doing nothing, and nothing restarts. An isolated application's dedicated worker is stopped whatever
  * `restart` says, a leftover one included, and the shared workers restart only when asked and only when they may hold
  * it. Its branched databases go last, once nothing holds them, and are recorded as owed before anything is removed, so
- * `retryPendingBranchRemovals` finishes a removal this drop could not. One that declares them, or that a worker still
- * loading can have, is recorded with none on disk too, since that worker can create the first after this drop looked.
+ * `retryPendingBranchRemovals` finishes a removal this drop could not. One that declares them, or that a worker may
+ * hold, is recorded with none on disk too, since a load still running there can create the first after this drop looked.
  * `answerEarly` answers a worker that asked for this before a step that stops it; `null` in an answer means not known
  * yet.
  */
@@ -1959,7 +1959,7 @@ async function dropApplication(request, requester?: any, answerEarly?: any) {
 				const keep = req.keepBranches === true;
 				let branched = applicationHasBranchStorage(project);
 				if (keep) await clearPendingBranchRemoval(project);
-				else if (branched || manageThreads.mayStillLoad(project) || declaresBranches(project)) {
+				else if (branched || poolMayHold || hadWorker || declaresBranches(project)) {
 					recordPendingBranchRemoval(project);
 				}
 				if (present) await removeApplication(project, componentPath);

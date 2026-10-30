@@ -853,7 +853,6 @@ function marksPendingRemoval(directory: string): boolean {
 	return pathPresent(join(directory, REMOVAL_PENDING_MARKER)) || pathPresent(join(directory, REMOVAL_PENDING_PARTIAL));
 }
 
-/**
 /** Refused when a directory the removal would cover cannot be read, since no marker could cover it. */
 export function recordPendingBranchRemoval(appName: string): void {
 	const { directories, failures } = branchDirectoriesFor(appName);
@@ -862,7 +861,8 @@ export function recordPendingBranchRemoval(appName: string): void {
 	}
 	if (!directories.length) {
 		const directory = join(resolveDatabaseStorageRoot(DEFAULT_DATABASE_NAME), BRANCH_ROOT_DIR, appName);
-		mkdirSync(directory, { recursive: true });
+		const firstCreated = mkdirSync(directory, { recursive: true });
+		if (firstCreated) fsyncDirectory(dirname(firstCreated));
 		directories.push(directory);
 	}
 	for (const directory of directories) {
