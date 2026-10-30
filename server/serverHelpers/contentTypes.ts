@@ -838,7 +838,7 @@ function asyncPreferred(data) {
 }
 
 // Readable.from() takes its source's iterator at construction; this one opens the source on the first next(). A sync
-// source keeps the sync protocol, under which Readable.from() awaits a row that is a Promise. mapValue applies to each
+// source keeps the sync protocol, under which Readable.from() awaits a value that is a Promise. mapValue applies to each
 // step as it comes, so an async source's steps that are already settled are not wrapped in a Promise.
 function openOnFirstStep(
 	open: () => any,
@@ -847,7 +847,17 @@ function openOnFirstStep(
 ): Iterable<any> | AsyncIterable<any> {
 	let iterator;
 	let closed = false;
-	const mapStep = mapValue && ((step) => (step.done ? step : { value: mapValue(step.value), done: false }));
+	const mapStep =
+		mapValue &&
+		((step) => {
+			if (closed) return { value: undefined, done: true };
+			if (step.done) return step;
+			const { value } = step;
+			return {
+				value: !async && typeof value?.then === 'function' ? value.then(mapValue) : mapValue(value),
+				done: false,
+			};
+		});
 	const deferred: any = {
 		[async ? Symbol.asyncIterator : Symbol.iterator]() {
 			return this;

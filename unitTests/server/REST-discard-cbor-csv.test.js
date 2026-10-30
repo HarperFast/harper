@@ -772,9 +772,11 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 		assert.deepStrictEqual(decode(cbor.body), json);
 	});
 
-	it('awaits the Promise rows of a sync iterable in CSV', async () => {
+	it('awaits the Promise rows of a sync iterable in CSV and msgpack', async () => {
 		const csv = await dispatchRequest('GET', '/PromiseRows/', { accept: 'text/csv' });
 		assert.deepStrictEqual(csv.body.toString().trim().split(/\r?\n/), ['"id"', '"p1"', '"p2"']);
+		const msgpack = await dispatchRequest('GET', '/PromiseRows/', { accept: 'application/x-msgpack' });
+		assert.deepStrictEqual(unpackMultiple(msgpack.body), [{ id: 'p1' }, { id: 'p2' }]);
 	});
 
 	it('streams a CBOR array with a definite length and an iterable as an indefinite one', async () => {
