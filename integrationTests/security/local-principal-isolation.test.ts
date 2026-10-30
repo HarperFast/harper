@@ -630,7 +630,7 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 			strictEqual(reply.info.json.username, username);
 		}
 		const row = (await sessionRows()).find((candidate: any) => candidate.id === loginId);
-		note('arm5 login session row (control: user field is visible when stored)', row);
+		note('arm5 login session row user (control: the user field is visible when stored)', row?.user);
 		strictEqual(row?.user, username);
 	});
 

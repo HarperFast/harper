@@ -189,7 +189,7 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 					});
 				}
 			);
-			req.setTimeout(30_000, () => req.destroy(new Error(`no response for ${method} ${path}`)));
+			req.setTimeout(90_000, () => req.destroy(new Error(`no response for ${method} ${path}`)));
 			req.on('error', reject);
 			if (payload) req.write(payload);
 			req.end();
@@ -253,7 +253,12 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 	before(async () => {
 		dir = mkdtempSync(join(tmpdir(), 'sealed-redeclare-'));
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: { threads: { count: 2 }, logging: { console: true, level: 'error' } },
+			// held transactions outlive the 30 s default maxTransactionOpenTime if convergence is slow
+			config: {
+				threads: { count: 2 },
+				storage: { maxTransactionOpenTime: 180_000 },
+				logging: { console: true, level: 'error' },
+			},
 			env: {},
 		});
 		httpURL = ctx.harper.httpURL;

@@ -1,5 +1,4 @@
-// harper#3594 sealed-table fixture: tracked-instance edits held across a code-first table re-declaration, two workers.
-// Every worker declares the OLD shape (with legacyCode) at module load.
+// Every worker declares the old shape (with legacyCode) at module load; a Qa request can re-declare it without.
 import { Resource, defineTable, types, transaction } from 'harper';
 import { threadId } from 'node:worker_threads';
 import fs from 'node:fs';
