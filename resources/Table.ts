@@ -90,7 +90,6 @@ import {
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
 	freshLocalKey,
-	isValidFloor,
 	releaseLocalKey,
 	reserveLocalKey,
 	reservedAroundCallerValue,
@@ -120,6 +119,7 @@ import {
 	positionBefore,
 	readOriginStateEpoch,
 	validateCheckpoint,
+	withReplacedGeneration,
 	type MemberBoundary,
 	type ResumePlan,
 	type SubscriptionCheckpoint,
@@ -2537,6 +2537,7 @@ export function makeTable(options): TableResourceClass {
 									if (!nodeState) {
 										nodeState = { id: nodeId, seqId: 0 };
 										nodeStates.push(nodeState);
+										qualifiersChanged = true;
 									}
 									nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
 									if (nodeId === committingNodeId) {
@@ -2545,10 +2546,10 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 							let originCursorsChanged = false;
+							const nodeCount = nodeStates.length;
 							if (originCursors)
 								for (const [nodeId, originLogKey] of originCursors) {
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateIn(nodeStates, nodeId);
 									if (!(nodeState.originLogKey >= originLogKey)) {
 										nodeState.originLogKey = originLogKey;
 										originCursorsChanged = true;
@@ -2557,17 +2558,24 @@ export function makeTable(options): TableResourceClass {
 							if (originFloors)
 								for (const [nodeId, closedFloor, relayable, originGeneration, fullCoverage] of originFloors) {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									const nodeState = nodeStateIn(nodeStates, nodeId);
+									const previousGeneration = nodeState.originGeneration ?? nodeState.lastGeneration;
 									const generationChanged =
 										typeof originGeneration === 'string' &&
-										typeof nodeState.originGeneration === 'string' &&
-										nodeState.originGeneration !== originGeneration;
+										typeof previousGeneration === 'string' &&
+										previousGeneration !== originGeneration;
 									if (generationChanged) {
+										// the origin itself certified one history and then another: what orders its generations
+										if (nodeId === event.remoteNodeIds[0]) {
+											nodeState.replacedGenerations = withReplacedGeneration(
+												nodeState.replacedGenerations,
+												previousGeneration,
+												originGeneration
+											);
+										}
 										// a new history identity: what was certified under the old one is void, and the route
 										// must prove its prefix again (certifiedFrom) before this generation qualifies
 										nodeState.floorRevoked = undefined;
-										nodeState.revokedFloor = undefined;
 										nodeState.hole = undefined;
 										nodeState.closedFloor = undefined;
 										nodeState.relayable = false;
@@ -2577,13 +2585,23 @@ export function makeTable(options): TableResourceClass {
 									}
 									// a revoked origin keeps no floor within its generation: a later or higher certificate never clears it
 									if (nodeState.floorRevoked === true) continue;
+									if (typeof originGeneration === 'string' && nodeState.lastGeneration !== undefined) {
+										nodeState.lastGeneration = undefined;
+									}
 									// a certificate without a generation from a route that had one: that route no longer certifies
 									// at level 2, so its checkpoint-grade qualifiers no longer hold for what follows
 									if (typeof originGeneration !== 'string' && typeof nodeState.originGeneration === 'string') {
+										nodeState.lastGeneration = nodeState.originGeneration;
 										nodeState.originGeneration = undefined;
 										nodeState.fullCoverage = undefined;
 										nodeState.certifiedFrom = undefined;
 										qualifiersChanged = true;
+									}
+									// a floor or start recorded with no generation belongs to none: level 2 starts from its own
+									if (typeof originGeneration === 'string' && typeof nodeState.originGeneration !== 'string') {
+										nodeState.closedFloor = undefined;
+										nodeState.relayable = false;
+										nodeState.certifiedFrom = undefined;
 									}
 									if (!(nodeState.closedFloor >= closedFloor)) {
 										nodeState.closedFloor = closedFloor;
@@ -2608,10 +2626,15 @@ export function makeTable(options): TableResourceClass {
 								for (const revocation of originFloorRevocations) {
 									const nodeId = Array.isArray(revocation) ? revocation[0] : revocation;
 									const generation = Array.isArray(revocation) ? revocation[1] : undefined;
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-									if (nodeState.floorRevoked === true) continue;
-									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									// a route that never certified the origin has nothing to revoke, and must not make it known here
+									const nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState || nodeState.floorRevoked === true) continue;
+									// a route at level 1 still stands for the generation it last certified
+									if (
+										generation !== undefined &&
+										(nodeState.originGeneration ?? nodeState.lastGeneration) !== generation
+									)
+										continue;
 									if (generation === undefined && typeof nodeState.originGeneration !== 'string') {
 										// a level-1 floor has no generation to stay revoked within: clear it, and a later certificate floors again
 										if (nodeState.closedFloor !== undefined || nodeState.relayable) {
@@ -2622,8 +2645,6 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									nodeState.floorRevoked = true;
-									// the floor it was revoked at still dates this generation against another's rows
-									if (isValidFloor(nodeState.closedFloor)) nodeState.revokedFloor = nodeState.closedFloor;
 									nodeState.closedFloor = undefined;
 									nodeState.relayable = false;
 									qualifiersChanged = true;
@@ -2637,9 +2658,16 @@ export function makeTable(options): TableResourceClass {
 									generation,
 									fullCoverage,
 								] of originRouteStates) {
-									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
+									// a mark for a generation the route has not certified is ignored, so it must not add the origin
+									const nodeState =
+										generation === undefined
+											? nodeStateIn(nodeStates, nodeId)
+											: nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (
+										generation !== undefined &&
+										(nodeState?.originGeneration ?? nodeState?.lastGeneration) !== generation
+									)
+										continue;
 									if (
 										typeof certifiedFrom === 'number' &&
 										Number.isFinite(certifiedFrom) &&
@@ -2676,6 +2704,8 @@ export function makeTable(options): TableResourceClass {
 										qualifiersChanged = true;
 									}
 								}
+							// an origin new to the row is a new admission fact, so a replay admitted before it rechecks
+							if (nodeStates.length > nodeCount) qualifiersChanged = true;
 							if (qualifiersChanged) originCursorsChanged = true;
 							const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
 							// compared with the persisted row, not the cache, which moves before this write lands
@@ -2816,8 +2846,6 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									const advancesSequence = !!event.localTime && stream.lastSequenceId !== event.localTime;
-									const previousSequenceId = stream.lastSequenceId;
-									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
 									// outrun the commit/conflict-check window, and guarantees the sequence id never
@@ -2883,12 +2911,13 @@ export function makeTable(options): TableResourceClass {
 										try {
 											await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 										} catch (error) {
-											// the transaction landed but its position and route state did not: a repeat of this position
-											// must write again, and the source that attached them must learn it, or it counts them as recorded
-											stream.lastSequenceId = previousSequenceId;
+											// the transaction landed but its position and route state did not: the source that attached
+											// them must learn it, or it counts them as recorded
 											if (event.onFailure && (await event.onFailure(error, failurePosition, true))) stream.held = true;
 											throw error;
 										}
+									// only once recorded: a repeat of a position whose commit or write failed must write it again
+									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									continue;
 								}
 								if (txnInProgress) {
@@ -14041,6 +14070,14 @@ function rejectNaN(value: number) {
 	if (isNaN(value)) throw new SyntaxError(); // will set the message in the catch block with more context
 	return value;
 }
+
+/** The seq row's state for `nodeId`, added to `nodeStates` when the row has none. */
+function nodeStateIn(nodeStates: any[], nodeId: number): any {
+	let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+	if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+	return nodeState;
+}
+
 function refuseReplay(subscription: any, tableName: string, refusal: Error): false {
 	logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
 	try {
