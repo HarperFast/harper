@@ -9,6 +9,13 @@ const token_auth = rewire('#src/security/tokenAuthentication');
 const password_function = require('#src/utility/password');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
+const serverModule = require('#src/server/Server');
+const {
+	credentialRejectionError,
+	authenticationChallengeForError,
+	deferCredentialRejection,
+	isCredentialRejection,
+} = require('#src/security/deferredAuthentication');
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -203,6 +210,75 @@ describe('Test authorize function', function () {
 			assert.equal(user.role.id, VALID_ROLE.id);
 			assert.equal(user.role.role, VALID_ROLE.role);
 			assert.equal(user.role.permission.super_user, true);
+			done();
+		});
+	});
+
+	it('settles a credential the middleware deferred instead of authenticating it again', function (done) {
+		// a request passport would accept, carrying a rejection the middleware already recorded; the base
+		// request has no headers, so re-running authentication() on it would fail differently, and a user
+		// application middleware set afterwards does not outrank the recorded rejection
+		const baseRequest = {};
+		deferCredentialRejection(baseRequest, credentialRejectionError('Account blocked', 401), 'mTLS');
+		const request = { ...active_basic_request, raw: { baseRequest, user: { username: 'set-by-app-middleware' } } };
+
+		auth.authorize(request, null, function (err, user) {
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err.message, 'Account blocked');
+			assert.strictEqual(err.statusCode, 401);
+			assert.strictEqual(isCredentialRejection(err), true);
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Basic realm="Harper"');
+			done();
+		});
+	});
+
+	it('settles a rejection that its own authentication run deferred instead of falling to passport', function (done) {
+		const originalGetUser = serverModule.server.getUser;
+		serverModule.server.getUser = async () => {
+			throw credentialRejectionError('Account blocked', 401);
+		};
+		const headerObject = { authorization: active_basic_request.headers.authorization };
+		const baseRequest = {
+			method: 'POST',
+			url: '/legacy-auth',
+			pathname: '/legacy-auth',
+			ip: '203.0.113.7',
+			headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			peerCertificate: { subject: null },
+		};
+		const request = { ...active_basic_request, raw: { baseRequest } };
+
+		auth.authorize(request, null, function (err, user) {
+			serverModule.server.getUser = originalGetUser;
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err?.message, 'Account blocked', 'passport must not accept a credential getUser refused');
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Basic realm="Harper"');
+			done();
+		});
+	});
+
+	it('fails closed when its own authentication run faults instead of falling to passport', function (done) {
+		const originalGetUser = serverModule.server.getUser;
+		serverModule.server.getUser = async () => {
+			throw new Error('user store unavailable');
+		};
+		const headerObject = { authorization: active_basic_request.headers.authorization, accept: 'application/cbor' };
+		const baseRequest = {
+			method: 'POST',
+			url: '/legacy-auth',
+			pathname: '/legacy-auth',
+			ip: '203.0.113.7',
+			headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			peerCertificate: { subject: null },
+		};
+		const request = { ...active_basic_request, raw: { baseRequest } };
+
+		auth.authorize(request, null, function (err, user) {
+			serverModule.server.getUser = originalGetUser;
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err?.message, 'Login failed');
+			assert.strictEqual(isCredentialRejection(err), false);
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Bearer realm="Harper"');
 			done();
 		});
 	});

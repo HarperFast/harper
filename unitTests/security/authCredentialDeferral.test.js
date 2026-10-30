@@ -266,6 +266,8 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 		assert.strictEqual(response.status, 401);
 		assert.deepStrictEqual(trace, []);
+		assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
+		assert.strictEqual(response.headers.get('WWW-Authenticate') ?? null, null);
 	});
 
 	it('keeps the legacy blank Basic credential anonymous instead of deferring it', async () => {
@@ -295,6 +297,8 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 		assert.strictEqual(response.status, 401);
 		assert.deepStrictEqual(trace, []);
+		assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
+		assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic realm="Harper"');
 	});
 
 	it('fails closed when the credential store raises a bare, unclassified error', async () => {
@@ -336,6 +340,7 @@ describe('deferred credential rejection through the app-port middleware chain', 
 			assert.strictEqual(response.status, 401);
 			assert.strictEqual(body.error, 'Login failed');
 			assert.deepStrictEqual(trace, [], 'a refresh-validation fault must not reach the catch-all');
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Bearer realm="Harper"');
 		} finally {
 			tokenAuthentication.validateRefreshToken = async () => {
 				throw credentialRejectionError('invalid token', 401);
@@ -452,15 +457,22 @@ describe('deferred credential rejection through the app-port middleware chain', 
 			assert.ok(response.headers.get('Vary').includes('Authorization'));
 		});
 
-		it('keeps a settled Harper-owned rejection wire-identical to the in-line 401 it replaced', async () => {
+		it('challenges a settled Harper-owned rejection without redirecting it to the login page', async () => {
 			resourcesModule.resources.loginPath = () => '/login';
 
 			const { response } = await sendBrowser(HARPER_OWNED, WORDPRESS_BASIC);
 
 			assert.strictEqual(response.status, 401);
 			assert.strictEqual(response.headers.get('Location') ?? null, null);
-			assert.strictEqual(response.headers.get('WWW-Authenticate') ?? null, null);
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic realm="Harper"');
 			assert.deepStrictEqual(JSON.parse(response.body), { error: 'Login failed' });
+		});
+
+		it('challenges a settled Bearer rejection with a Bearer challenge', async () => {
+			const { response } = await send(HARPER_OWNED, DOWNSTREAM_BEARER);
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Bearer realm="Harper", error="invalid_token"');
 		});
 
 		it('still redirects a browser with no credentials at all to the login page', async () => {
@@ -476,7 +488,7 @@ describe('deferred credential rejection through the app-port middleware chain', 
 			const { response } = await send(HARPER_OWNED, undefined);
 
 			assert.strictEqual(response.status, 401);
-			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic');
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic realm="Harper"');
 		});
 	});
 });
