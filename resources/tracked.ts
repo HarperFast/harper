@@ -349,8 +349,7 @@ function getUndeclaredProperty(receiver, name: string) {
 	}
 	return sourceValue;
 }
-// The value a pending operation gives the property, resolved through the operation registry like the apply path,
-// since a patch can carry a plain `{ __op__, value }` envelope; an unrecognized operation reads as itself
+// through the registry, like the apply path: a patch can carry a plain `{ __op__, value }` envelope
 function resolveOperation(operation, sourceValue) {
 	const apply = crdtOperations.operations[operation.__op__];
 	if (!apply) return operation;
@@ -669,14 +668,8 @@ export function releaseOwnBaseline(target, patch, ownKeys = Object.keys(target))
 	let baseline = ownBaselines.get(target);
 	for (const key of ownKeys) {
 		if (!(key in patch) || !hasOwnChange(target, key)) continue;
-		const entry = baselineEntry(patch[key]);
-		// compared by identity, an in-place edit after this commit would read as unchanged
-		if (entry?.[IDENTITY]) {
-			if (baseline !== undefined) delete baseline[key];
-			continue;
-		}
 		if (baseline === undefined) ownBaselines.set(target, (baseline = Object.create(null)));
-		baseline[key] = entry;
+		baseline[key] = baselineEntry(patch[key]);
 	}
 }
 function committedOwnValue(value) {

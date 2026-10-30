@@ -1,5 +1,5 @@
 'use strict';
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { describe, it, before } = globalThis.describe ? globalThis : require('node:test');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases } = require('#src/resources/databases');
@@ -45,25 +45,25 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 
 		await transaction(async (ctx) => {
 			const rec = await WithField.update('pc-1', ctx);
-			assert.equal(hasChanges(rec), false);
-			assert.equal(collapseChanges(rec), undefined);
+			assert.strictEqual(hasChanges(rec), false);
+			assert.strictEqual(collapseChanges(rec), undefined);
 
 			rec.title = 'updated';
 			rec.addTo('count', 5);
-			assert.equal(rec.count, 15);
-			assert.equal(rec.get('count'), 15);
+			assert.strictEqual(rec.count, 15);
+			assert.strictEqual(rec.get('count'), 15);
 
 			rec.addTo('unindexedCount', 5);
-			assert.equal(hasChanges(rec), true);
+			assert.strictEqual(hasChanges(rec), true);
 		});
 
 		const stored = await BaseTable.get('pc-1');
-		assert.equal(stored.title, 'updated');
-		assert.equal(stored.hits, 100);
-		assert.equal(stored.tag, 'important');
-		assert.equal(stored.count, 15);
-		assert.equal(stored.unindexedCount, 25);
-		assert.equal('meta' in stored, false);
+		assert.strictEqual(stored.title, 'updated');
+		assert.strictEqual(stored.hits, 100);
+		assert.strictEqual(stored.tag, 'important');
+		assert.strictEqual(stored.count, 15);
+		assert.strictEqual(stored.unindexedCount, 25);
+		assert.strictEqual('meta' in stored, false);
 	});
 
 	it('a source patch event and a non-instance _writeUpdate through a subclass keep stored values over untouched class fields', async () => {
@@ -143,7 +143,7 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 		});
 		putCalls.length = 0;
 
-		assert.equal(typeof notifySource, 'function');
+		assert.strictEqual(typeof notifySource, 'function');
 		await notifySource({
 			type: 'patch',
 			table: 'OwnPropSourced',
@@ -162,17 +162,17 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 		const src2Put = putCalls.find((c) => c.id === 'src-2');
 		assert.ok(src2Put, 'Expected source.put to be called for src-2');
 
-		assert.equal(stored1.title, 'from-source-patch');
-		assert.equal(stored1.tag, 'important');
-		assert.equal(stored1.hits, 100);
+		assert.strictEqual(stored1.title, 'from-source-patch');
+		assert.strictEqual(stored1.tag, 'important');
+		assert.strictEqual(stored1.hits, 100);
 
-		assert.equal(stored2.title, 'from-write-update');
-		assert.equal(stored2.tag, 'important-2');
-		assert.equal(stored2.hits, 200);
+		assert.strictEqual(stored2.title, 'from-write-update');
+		assert.strictEqual(stored2.tag, 'important-2');
+		assert.strictEqual(stored2.hits, 200);
 
-		assert.equal(src2Put.data.title, 'from-write-update');
-		assert.equal(src2Put.data.tag, 'important-2');
-		assert.equal(src2Put.data.hits, 200);
+		assert.strictEqual(src2Put.data.title, 'from-write-update');
+		assert.strictEqual(src2Put.data.tag, 'important-2');
+		assert.strictEqual(src2Put.data.hits, 200);
 	});
 
 	it('collapseData, toJSON and updateAndFreeze leave out untouched class fields and keep pending addTo deltas', async () => {
@@ -196,17 +196,17 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 		// (a) Before any mutation (hasChanges(rec) === false)
 		await transaction(async (ctx) => {
 			const rec = await WithField.update('cd-1', ctx);
-			assert.equal(hasChanges(rec), false);
+			assert.strictEqual(hasChanges(rec), false);
 
 			const collapsed = collapseData(rec);
 			const json = rec.toJSON();
 			const frozen = updateAndFreeze(rec);
 
 			for (const snapshot of [collapsed, json, frozen]) {
-				assert.equal(snapshot.hits, 100);
-				assert.equal(snapshot.tag, 'important');
-				assert.equal('meta' in snapshot, false);
-				assert.equal('helper' in snapshot, false);
+				assert.strictEqual(snapshot.hits, 100);
+				assert.strictEqual(snapshot.tag, 'important');
+				assert.strictEqual('meta' in snapshot, false);
+				assert.strictEqual('helper' in snapshot, false);
 			}
 		});
 
@@ -219,9 +219,9 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 			const json = rec.toJSON();
 			const frozen = updateAndFreeze(rec);
 
-			assert.equal(collapsed.hits, 105);
-			assert.equal(json.hits, 105);
-			assert.equal(frozen.hits, 105);
+			assert.strictEqual(collapsed.hits, 105);
+			assert.strictEqual(json.hits, 105);
+			assert.strictEqual(frozen.hits, 105);
 		});
 
 		// (c) When own class fields ARE intentionally mutated, all three include the mutations
@@ -235,8 +235,8 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 			const frozen = updateAndFreeze(rec);
 
 			for (const snapshot of [collapsed, json, frozen]) {
-				assert.equal(snapshot.tag, 'custom-tag');
-				assert.deepEqual(snapshot.meta, { values: [1, 2] });
+				assert.strictEqual(snapshot.tag, 'custom-tag');
+				assert.deepStrictEqual(snapshot.meta, { values: [1, 2] });
 			}
 		});
 	});
@@ -257,17 +257,17 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 			rec.addTo('unindexedBig', 10n);
 			rec.addTo('brandNewCounter', 7);
 
-			assert.equal(rec.unindexedCount, 22);
-			assert.equal(rec.get('unindexedCount'), 22);
-			assert.equal(rec.getProperty('unindexedCount'), 22);
+			assert.strictEqual(rec.unindexedCount, 22);
+			assert.strictEqual(rec.get('unindexedCount'), 22);
+			assert.strictEqual(rec.getProperty('unindexedCount'), 22);
 
-			assert.equal(rec.unindexedBig, 60n);
-			assert.equal(rec.get('unindexedBig'), 60n);
-			assert.equal(rec.getProperty('unindexedBig'), 60n);
+			assert.strictEqual(rec.unindexedBig, 60n);
+			assert.strictEqual(rec.get('unindexedBig'), 60n);
+			assert.strictEqual(rec.getProperty('unindexedBig'), 60n);
 
-			assert.equal(rec.brandNewCounter, 7);
-			assert.equal(rec.get('brandNewCounter'), 7);
-			assert.equal(rec.getProperty('brandNewCounter'), 7);
+			assert.strictEqual(rec.brandNewCounter, 7);
+			assert.strictEqual(rec.get('brandNewCounter'), 7);
+			assert.strictEqual(rec.getProperty('brandNewCounter'), 7);
 		});
 	});
 
@@ -287,27 +287,27 @@ describe('Tracked instance own properties: class-field baselines in every merge,
 
 			// (a) Direct own-property assignment on undeclared property
 			rec.extra = 'v2';
-			assert.equal(rec.get('extra'), 'v2');
-			assert.equal(rec.getProperty('extra'), 'v2');
+			assert.strictEqual(rec.get('extra'), 'v2');
+			assert.strictEqual(rec.getProperty('extra'), 'v2');
 
 			// (b) Delete undeclared property via deleteProperty
 			rec.deleteProperty('toDelete');
-			assert.equal(rec.toDelete, undefined);
-			assert.equal(rec.get('toDelete'), undefined);
-			assert.equal(rec.getProperty('toDelete'), undefined);
+			assert.strictEqual(rec.toDelete, undefined);
+			assert.strictEqual(rec.get('toDelete'), undefined);
+			assert.strictEqual(rec.getProperty('toDelete'), undefined);
 
 			// (c) Nested mutation through rec.get('unindexedObj') and rec.get('unindexedArr')
 			const obj = rec.get('unindexedObj');
 			obj.nested = 'mutated';
 			const arr = rec.get('unindexedArr');
 			arr.push('b');
-			assert.equal(hasChanges(rec), true);
+			assert.strictEqual(hasChanges(rec), true);
 		});
 
 		const stored = await BaseTable.get('get-prop-1');
-		assert.equal(stored.extra, 'v2');
-		assert.equal(stored.toDelete, undefined);
-		assert.deepEqual(stored.unindexedObj, { nested: 'mutated', count: 1 });
-		assert.deepEqual(stored.unindexedArr, ['a', 'b']);
+		assert.strictEqual(stored.extra, 'v2');
+		assert.strictEqual(stored.toDelete, undefined);
+		assert.deepStrictEqual(stored.unindexedObj, { nested: 'mutated', count: 1 });
+		assert.deepStrictEqual(stored.unindexedArr, ['a', 'b']);
 	});
 });

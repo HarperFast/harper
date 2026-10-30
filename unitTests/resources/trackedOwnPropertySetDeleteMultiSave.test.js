@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { hasChanges, collapseChanges, releaseOwnBaseline, updateAndFreeze } = require('#src/resources/tracked');
@@ -397,6 +397,26 @@ describe('Tracked record own properties vs set/deleteProperty/addTo, across save
 				assert.strictEqual(collapseChanges(rec, rec.getChanges()).countInt?.__op__, 'add');
 			});
 			assert.strictEqual((await TrackedLifecycleTable.get('edge-class-field-add')).countInt, 10);
+		});
+
+		it('an own assignment back to the stored value after set() or addTo() keeps the stored value', async () => {
+			class WithField extends TrackedLifecycleTable {
+				hits = 0;
+			}
+			await TrackedLifecycleTable.put('edge-own-after-set', { title: 'init', extra: 'v1', hits: 100 });
+			await transaction(async (ctx) => {
+				const rec = await WithField.update('edge-own-after-set', ctx);
+				rec.set('extra', 'v2');
+				rec.extra = 'v1';
+				rec.addTo('hits', 5);
+				assert.strictEqual(Object.hasOwn(rec, 'hits'), false);
+				rec.hits = 100;
+				assert.strictEqual(rec.get('extra'), 'v1');
+				assert.strictEqual(rec.get('hits'), 100);
+			});
+			const saved = await TrackedLifecycleTable.get('edge-own-after-set');
+			assert.strictEqual(saved.extra, 'v1');
+			assert.strictEqual(saved.hits, 100);
 		});
 
 		it('a full-update addTo adds to an assigned class field and moves it into the changes', async () => {
