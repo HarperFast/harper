@@ -41,8 +41,6 @@ describe('startWorker exit handlers', function () {
 		assert.deepStrictEqual(exits, [worker]);
 	});
 
-	// A handler that fails must not take the process down with the thread — a throw inside an 'exit'
-	// listener is uncaught, and an async handler's rejection is unhandled.
 	for (const [kind, handler] of [
 		[
 			'throws',
@@ -74,7 +72,6 @@ describe('startWorker exit handlers', function () {
 		});
 	}
 
-	// A replacement can be stranded exactly like the worker it replaced.
 	it('fires for a replacement started by startCopy', async function () {
 		const exits = [];
 		const worker = await startFixtureWorker(exits);

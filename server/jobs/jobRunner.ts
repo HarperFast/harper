@@ -152,16 +152,23 @@ async function launchJobThread(job_id: any) {
 	}
 }
 
-function startJobWorker(jobId: any) {
+function jobWorkerOptions(jobId: any) {
 	const settleOnUnownedExit = () =>
 		settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error));
-	return threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
+	return {
 		autoRestart: false,
 		name: hdbTerms.THREAD_TYPES.JOB,
 		env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${jobId}` },
 		onUnexpectedExit: settleOnUnownedExit,
 		onPermanentStop: settleOnUnownedExit,
-	});
+	};
+}
+
+function startJobWorker(jobId: any) {
+	return threadsStart.startWorker(
+		join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`),
+		jobWorkerOptions(jobId)
+	);
 }
 
 if (isMainThread) {
@@ -184,4 +191,4 @@ if (isMainThread) {
 	});
 }
 
-export { parseMessage, RunnerMessage };
+export { parseMessage, RunnerMessage, jobWorkerOptions };

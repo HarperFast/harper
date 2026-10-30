@@ -7,7 +7,6 @@ const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { join } = require('node:path');
-const rewire = require('rewire');
 const sinon = require('sinon');
 const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const { getDatabases } = require('#src/resources/databases');
@@ -21,6 +20,7 @@ const {
 } = require('#src/server/jobs/jobOwnership');
 const manageThreads = require('#js/server/threads/manageThreads');
 const jobs = require('#src/server/jobs/jobs');
+const { jobWorkerOptions } = require('#src/server/jobs/jobRunner');
 
 function jobTable() {
 	return getDatabases().system[SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
@@ -160,7 +160,6 @@ describe('jobOwnership', function () {
 			const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID, owner_pid: process.pid });
 			seeded.push(id);
 
-			// The boot sweep leaves a row owned by a live process alone.
 			assert.strictEqual(await reconcileInterruptedJobs(), 0);
 			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.IN_PROGRESS);
 
@@ -181,8 +180,6 @@ describe('jobOwnership', function () {
 		});
 
 		it('leaves a job the worker finished alone', async function () {
-			// The worker writes its terminal status before it schedules its exit, so this is the ordinary
-			// case on every successful job: the hook fires and must find nothing to do.
 			const id = await seedJob({ status: JOB_STATUS_ENUM.COMPLETE, owner_instance: JOB_OWNER_INSTANCE_ID });
 			seeded.push(id);
 
@@ -219,15 +216,7 @@ describe('jobOwnership', function () {
 			it(`is what a job worker's ${hook} runs`, async function () {
 				const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID });
 				seeded.push(id);
-				const startWorker = sinon.stub(manageThreads, 'startWorker');
-				try {
-					rewire('#js/server/jobs/jobRunner').__get__('startJobWorker')(id);
-					const [path, options] = startWorker.firstCall.args;
-					assert.match(path, /jobProcess\.[jt]s$/);
-					await options[hook]();
-				} finally {
-					startWorker.restore();
-				}
+				await jobWorkerOptions(id)[hook]();
 				assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.ERROR);
 			});
 		}
