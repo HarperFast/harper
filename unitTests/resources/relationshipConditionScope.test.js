@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { filterByType } = require('#src/resources/search');
 
 describe('A condition inside an OR decides which rows match, not which related records they select', function () {
 	this.timeout(60000);
@@ -514,6 +515,22 @@ describe('AND-joined conditions on one relationship meet one related record whic
 				found.push(row.id);
 			assert.deepStrictEqual(found, ['gm'], JSON.stringify(conditions));
 		}
+	});
+
+	it('keeps a filter per condition on a to-one relationship, so its id shortcut stays available', () => {
+		const scope = Object.create(null);
+		const [byId, byGroup] = [
+			{ attribute: ['owner', 'id'], value: 'p1' },
+			{ attribute: ['owner', 'group'], value: 'common' },
+		].map((condition) => filterByType(condition, Grand, null, scope, false, 100));
+		assert.strictEqual(typeof byId, 'function');
+		assert.strictEqual(typeof byGroup, 'function');
+		const toMany = [
+			{ attribute: ['kids', 'name'], value: 'a' },
+			{ attribute: ['kids', 'label'], value: 'y' },
+		].map((condition) => filterByType(condition, Parent, null, scope, false, 100));
+		assert.strictEqual(typeof toMany[0], 'function');
+		assert.strictEqual(toMany[1], undefined, 'the second to-many condition joins the first one');
 	});
 
 	it('deletes only the parent whose one child meets both conditions', async () => {

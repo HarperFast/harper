@@ -1013,7 +1013,6 @@ export function searchByIndex(
 					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
-					// siblings of this lead share the to-many relationship joined inside `joined`
 					if (attribute_name.length > 2 && filtered) siblingFilters(filtered, attribute_name[0], joined);
 					results = (results as any).flatMap(searchEntry);
 				}
@@ -1990,6 +1989,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					if (selection) Object.assign(siblings, { filters: selection.filters, selection, scope: selection });
 				}
 			}
+			// a to-one relationship has one related record, so only its inner scope is shared
+			const shared = firstAttribute.elements ? siblings : undefined;
 			const nextFilter = filterByType(
 				{
 					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
@@ -2001,7 +2002,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				context,
 				join ?? siblings?.scope,
 				attribute[1] === relatedTable.primaryKey,
-				siblings?.registered ? undefined : estimatedIncomingCount
+				shared?.registered ? undefined : estimatedIncomingCount
 			);
 			if (!nextFilter) return;
 			if (join) {
@@ -2009,21 +2010,21 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				join.filters.push(nextFilter);
 				return;
 			}
-			if (siblings) {
+			if (shared) {
 				// the first checks the whole set so the conditions meet one related record, as a leading join does
-				siblings.filters.push(nextFilter);
-				if (siblings.registered) return;
-				siblings.registered = true;
-				if (siblings.selection) restrictRelationship(filtered, firstAttributeName, siblings.selection);
+				shared.filters.push(nextFilter);
+				if (shared.registered) return;
+				shared.registered = true;
+				if (shared.selection) restrictRelationship(filtered, firstAttributeName, shared.selection);
 			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
 			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
 			const usesIdFilter = () =>
 				nextFilter.idFilter &&
-				(!siblings || siblings.filters.length === 1) &&
+				(!shared || shared.filters.length === 1) &&
 				(!resolver.to || nextFilter.idFilter.mappedTo);
-			const matchesRelated = siblings ? (value, entry) => everyFilter(siblings.filters, value, entry) : nextFilter;
+			const matchesRelated = shared ? (value, entry) => everyFilter(shared.filters, value, entry) : nextFilter;
 			const recordFilter = (record, entry) => {
 				if (resolver && usesIdFilter()) {
 					// if we are filtering by id, we can use the idFilter to avoid loading the record
@@ -2061,8 +2062,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				if (!Array.isArray(subObject)) return matchesRelated(subObject, subEntry);
 				return subObject.some((value, i) => matchesRelated(value, subEntries?.[i]));
 			};
-			const nextMatch = siblings
-				? (value, entry) => matchesFilters(siblings.filters, value, entry, false)
+			const nextMatch = shared
+				? (value, entry) => matchesFilters(shared.filters, value, entry, false)
 				: (nextFilter.maybeAsync ?? nextFilter);
 			if (loadEntries) {
 				const matchLoaded = (loaded) => {
