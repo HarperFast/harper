@@ -85,7 +85,7 @@ A mount is a routing prefix, not an isolation boundary:
 
 Host matching ignores the port and is case-insensitive. IPv6 hosts are configured as a bare literal (`::1`), not bracketed.
 
-Custom components can configure the same behavior programmatically with `server.http(listener, { host, urlPath })`. See [`HttpOptions`](./api#httpoptions) for matching priority and middleware ordering options.
+Custom components can configure handler routing programmatically with `server.http(listener, { host, urlPath })`. These handler options have been available since v5.1.0; the root-configuration and deployment options above were added in v5.2.0. See [`HttpOptions`](./api#httpoptions) for matching priority and middleware ordering options.
 
 ## Protocols Served
 

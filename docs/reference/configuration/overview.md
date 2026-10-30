@@ -299,7 +299,7 @@ logging:
 Setting `HARPER_SAFE_MODE` to any value starts Harper without loading user applications or components. Harper's core services (database, operations API, HTTP server) start normally, but no applications from the components directory are loaded and no package-based extensions are initialized.
 
 ```bash
-HARPER_SAFE_MODE=1 harperdb
+HARPER_SAFE_MODE=1 harper run
 ```
 
 This is useful when a broken or misbehaving component prevents Harper from starting. Safe mode lets you access the operations API to inspect, repair, or remove the problematic component without needing to manually edit files on disk.

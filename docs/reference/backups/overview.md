@@ -5,12 +5,12 @@ title: Backups
 
 <!-- Source: HarperFast/harper#1831 (RocksDB managed backup and restore operations) -->
 
-Harper can back up and restore its databases natively. A backup is a whole-database copy of authoritative state — all tables, the audit/transaction log, and any file-backed blobs — so a restored database is a consistent point-in-time image. Local derived state, including full-text index files, is excluded and rebuilt after restore. (`get_backup` on an LMDB database is the exception: it can stream a subset of tables, and includes the audit store only when requested.)
+Harper can back up and restore its databases natively. A RocksDB managed backup or snapshot download is a whole-database copy of authoritative state — all tables, the audit/transaction log, and file-backed blobs unless `exclude_blobs` is requested — so a restored database is a consistent point-in-time image. Local derived state, including full-text index files, is excluded and rebuilt after restore. LMDB `get_backup` is the exception: it streams only the `.mdb` file, can stream a subset of tables (including the audit store only when requested), and leaves external blob files to a separate, coordinated backup.
 
 Two complementary mechanisms are available:
 
 - **Managed backups** <VersionBadge version="v5.2.0" /> <EngineBadge engines="RocksDB" /> — incremental, verifiable backups kept in a server-side repository. Harper creates, lists, verifies, deletes, purges, and restores them through the [backup operations](./operations.md).
-- **Snapshot download** <EngineBadge engines="RocksDB, LMDB" /> — [`get_backup`](./operations.md#get_backup) streams a full snapshot of a database over HTTP for storage off-host, with no server-side artifact.
+- **Snapshot download** <EngineBadge engines="RocksDB, LMDB" /> — [`get_backup`](./operations.md#get_backup) streams a RocksDB archive or an LMDB `.mdb` file over HTTP for storage off-host, with no server-side artifact.
 
 Every backup operation is available through the [Operations API](../operations-api/overview.md) and as a [CLI command](./operations.md#running-backup-operations-from-the-cli) under the same operation name.
 
@@ -20,7 +20,7 @@ Managed backups use the RocksDB backup engine. Each backup is a directory under 
 
 Every managed backup includes the database's transaction log — so a restored database keeps its `read_audit_log` history as of the backup point — and, for a database with file-backed blobs, a snapshot of those blobs (skip it with `exclude_blobs`).
 
-Only the RocksDB data files are shared and incremental. The transaction log and the blob snapshot are each copied in full on every backup, so with a large audit-retention window or many blobs, frequent backups cost more than the data-only view suggests.
+Each backup copies the transaction-log snapshot. Blob snapshots use hard links when supported on the same filesystem, and copy the files otherwise. Measure physical repository growth over successive backups, including the log copies and blob snapshots. Exports that do not preserve file sharing require space for the full materialized copies.
 
 The long-running operations (`create_backup`, `verify_backup`, `restore_backup`) run as background [jobs](../operations-api/operations.md#jobs) when invoked through a running server: the operation returns a `job_id` immediately, and [`get_job`](../operations-api/operations.md#get_job) reports the outcome.
 
@@ -33,8 +33,8 @@ The offline path matters for restore. RocksDB is single-writer, so an in-place r
 ## Limitations
 
 - **Managed backups require the RocksDB storage engine.** For LMDB databases, use [`get_backup`](./operations.md#get_backup) or [volume snapshots](../cli/commands.md#how-backups-work).
-- **Whole-database granularity.** There is no per-table backup or restore. (The one exception: `get_backup` on an LMDB database can stream individual tables, and includes the audit store only with `include_audit`.)
-- **One storage root per database.** A database whose tables use per-table `path` storage configs spans multiple root stores and cannot be backed up with these operations.
+- **Whole-database granularity.** There is no per-table backup or restore. The exception is `get_backup` on LMDB, which can stream selected tables; a table-filtered download includes the audit store only with `include_audit`.
+- **One storage root per database.** Backup is rejected if the database's tables resolve to multiple storage roots. A custom database-level `storage.path`, or per-table paths that still resolve to a single root, are supported.
 - **Backups live on the node that created them.** The backup repository is a local directory. RocksDB shares files across backup IDs (a backup ID is not a self-contained folder), so disaster-recovery copies must take the entire per-database repository — `<backupPath>/<database>` — not an individual backup, and must do so while no backup operation is running, or from an atomic filesystem snapshot. A live recursive copy can race `create_backup`/`delete_backup`/`purge_backups` and produce an unrestorable copy. Alternatively, use `get_backup` to pull a snapshot from a running server.
 - **`get_backup` always streams the current state.** It cannot download a historical managed backup; to move a retained backup off-host, copy its whole per-database repository as above.
 - **A restore is a point-in-time rollback.** In a replicated cluster, coordinate a restore with replication before bringing the node back.
@@ -65,7 +65,7 @@ Create a managed backup of the `data` database (the default):
 harper create_backup database=data
 ```
 
-The first backup copies the entire database; each one after that only copies the RocksDB data files that changed, so re-backing-up the data is cheap. (The transaction-log snapshot, and the blob snapshot for databases with file-backed blobs, are copied in full each time — see [how managed backups work](#how-managed-backups-work).) Schedule `create_backup` as often as your recovery point requires, and manage retention with `purge_backups`:
+Later backups share unchanged RocksDB data files, while transaction-log copies and blob snapshots have their own storage cost; see [how managed backups work](#how-managed-backups-work). Schedule `create_backup` as often as your recovery point requires, and manage retention with `purge_backups`:
 
 ```bash
 harper purge_backups database=data keep_count=7
@@ -95,14 +95,18 @@ For a RocksDB database the stream is a `tar` archive, gzipped by default. It con
 
 ```bash
 harper get_backup database=data out=./data.tar.gz
-# or pull from another node — this clones that node's database onto the current one
+# or read the snapshot from another node, still writing it to a file here
 harper get_backup database=data target=https://node-2.example.com:9925 out=./data.tar.gz
 ```
 
 **If the database has no file-backed blobs,** the archive extracts into a directory that opens directly as a RocksDB database. Stop Harper, replace the database's directory under the storage path with the extracted archive, and start Harper again:
 
+`harper stop` returns before Harper finishes closing databases, so the procedures below capture its PID and wait for the process to exit before changing files.
+
 ```bash
+HARPER_PID=$(cat ~/hdb/hdb.pid)
 harper stop
+while kill -0 "$HARPER_PID" 2>/dev/null; do sleep 1; done
 mv ~/hdb/database/data ~/hdb/database/data.old # optional: keep a copy of the previous database
 mkdir -p ~/hdb/database/data
 tar -xzf data.tar.gz -C ~/hdb/database/data
@@ -112,7 +116,9 @@ harper start
 **If the database has file-backed blobs,** the RocksDB files and the `blobs/` tree restore to different locations: the RocksDB files into the database directory, and each `blobs/<rootIndex>/...` tree into its blob root (by default `<rootPath>/blobs/<database>`, or the paths configured in [`storage.blobPaths`](../configuration/options.md#storage); the archive's `blobs/README.md` lists the index-to-path mapping). Extracting the whole archive into the database directory would bury the blobs where the engine can't find them, silently losing blob data. Restore the two parts separately:
 
 ```bash
+HARPER_PID=$(cat ~/hdb/hdb.pid)
 harper stop
+while kill -0 "$HARPER_PID" 2>/dev/null; do sleep 1; done
 # 1. RocksDB files -> database directory (exclude the blobs tree)
 mv ~/hdb/database/data ~/hdb/database/data.old # optional: keep a copy of the previous database
 mkdir -p ~/hdb/database/data
@@ -127,6 +133,10 @@ The target node must have at least as many blob roots configured as the snapshot
 
 ### LMDB <EngineBadge engines="LMDB" />
 
+:::warning
+This stream does not include external blob files. For LMDB databases with file-backed blobs, use a coordinated filesystem or volume backup of the `.mdb` file and every configured blob root with Harper stopped. Restore that matching set and validate blob reads before serving traffic; restoring the `.mdb` file alone leaves its external blob references unresolved if the source files are lost.
+:::
+
 For an LMDB database the stream is the database's single `.mdb` file:
 
 ```bash
@@ -138,7 +148,9 @@ harper get_backup database=data target=https://node-2.example.com:9925 out=./dat
 To restore it, stop Harper, replace the database's `.mdb` file under the storage path (`<storage.path>/<database>.mdb`) with the downloaded file, and start Harper again:
 
 ```bash
+HARPER_PID=$(cat ~/hdb/hdb.pid)
 harper stop
+while kill -0 "$HARPER_PID" 2>/dev/null; do sleep 1; done
 mv ~/hdb/database/data.mdb ~/hdb/database/data.mdb.old # optional: keep a copy of the previous database
 cp data.mdb ~/hdb/database/data.mdb
 harper start

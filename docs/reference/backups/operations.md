@@ -42,7 +42,7 @@ Offline invocation matters most for restore: an in-place `restore_backup` of the
 
 Creates an incremental directory backup of the database under the configured backup root ([`storage.backupPath`](../configuration/options.md#storage), default `<rootPath>/backup`). Through a running server this runs as a background [job](../operations-api/operations.md#jobs): the operation returns a `job_id` immediately, and [`get_job`](../operations-api/operations.md#get_job) reports the outcome including the new `backup_id`, `size`, and `timestamp`.
 
-Backups of the same database share unchanged RocksDB data files, so the second and subsequent backups only copy the data that changed. The transaction-log snapshot — and the blob snapshot, if the database has file-backed blobs — is copied in full on every backup, so those portions are not incremental; with a large audit-retention window, frequent backups are not free for them. Pass `exclude_blobs: true` to skip the blob snapshot. Use [`purge_backups`](#purge_backups) to manage retention.
+Backups of the same database share unchanged RocksDB data files within the repository. Each backup also copies the transaction-log snapshot. Blob snapshots use hard links when the source and destination filesystem support them, and copy the files otherwise. Pass `exclude_blobs: true` to skip the blob snapshot. Measure physical repository growth to plan capacity, and use [`purge_backups`](#purge_backups) to manage retention.
 
 ```json
 { "operation": "create_backup", "database": "data" }
@@ -77,7 +77,13 @@ harper list_backups database=data
 
 <VersionBadge version="v5.2.0" /> <EngineBadge engines="RocksDB" />
 
-Verifies a managed backup's RocksDB file sizes — and their checksums when `verify_checksum` is `true` (slower) — together with the framing of its transaction-log snapshot (always checked). The blob snapshot is not verified. Through a running server this runs as a background [job](../operations-api/operations.md#jobs). `backup_id` is required.
+Verifies a managed backup. `backup_id` is required.
+
+- **RocksDB files:** checks file sizes and, when `verify_checksum` is `true`, checksums. Checksum verification takes longer.
+- **Transaction log:** always checks the snapshot's framing.
+- **Blob snapshot:** checks that a snapshot is present if the backup recorded blobs. A missing snapshot fails verification. Individual blob sizes, checksums, and readability are not checked, so damaged blob contents can pass verification.
+
+Through a running server, verification runs as a background [job](../operations-api/operations.md#jobs). Poll `get_job` for its result.
 
 ```json
 { "operation": "verify_backup", "database": "data", "backup_id": 1, "verify_checksum": true }
@@ -121,6 +127,8 @@ harper purge_backups database=data keep_count=3
 
 Restores a database in place from a managed backup. `backup_id` defaults to the latest backup. The audit/transaction log is restored alongside the data, and — for a database with file-backed blobs — the blob roots are purged and rewritten from the backup's blob snapshot.
 
+<VersionBadge version="v5.3.0" /> `allow_engine_only` (optional, default `false`) permits restoring a backup created with `exclude_blobs: true`. Without it, that restore is refused, including when using `target_database`. Enabling it accepts the risk that restored records reference missing or unrelated blob files; recover and validate those blobs separately.
+
 Through a running server this runs as a background [job](../operations-api/operations.md#jobs): Harper closes the database across all worker threads, checks the backup, restores it, and reloads it. This works only when no loaded component is holding the database open — if one does, the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) telling you to restore offline. Restoring the `system` database is rejected up front, before a job is created, as is `target_database` while the server is running. These cases require running the command from the CLI with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
 
 As of v5.3.1, subscriptions opened before a restore do not carry over to the restored data. When Harper reloads the database, each one ends, and its last message is a `DatabaseGenerationChangedError` (status code 409, code `DATABASE_GENERATION_CHANGED`). Resubscribe to resynchronize against the restored state. A restore that fails before it changes anything reloads the database as it was; those subscriptions end instead with a retryable `DatabaseClosingError` (status code 503, code `DATABASE_CLOSING`); resubscribe to continue.
@@ -157,7 +165,7 @@ harper restore_backup database=data backup_id=1 target_database=data_restored
 Streams a full snapshot of the specified database in the HTTP response for download — there is no server-side artifact and nothing to clean up. The server must be running; this is the one backup operation with no offline form. Behavior depends on the storage engine:
 
 - **RocksDB** <VersionBadge type="changed" version="v5.2.0" /> — streams a `tar` archive of the current database state — all tables, the transaction log, and any file-backed blobs — gzipped by default (`gzip` is a RocksDB-only option and compresses the snapshot substantially). Pass `"gzip": false` for a plain `tar`, or `"exclude_blobs": true` to leave blobs out. The snapshot is always the current state; downloading a specific historical `backup_id` is not supported — to move a retained managed backup off-host, copy its whole per-database backup repository (see [Limitations](./overview.md#limitations)). Restoring a RocksDB snapshot by hand takes an extra step when the database has blobs — see [download a snapshot and restore it manually](./overview.md#example-download-a-snapshot-and-restore-it-manually).
-- **LMDB** — streams the `.mdb` file. Specify `"table"` for a single table or `"tables"` for a set, and `"include_audit": true` to include the audit store. These options are LMDB-only.
+- **LMDB** — streams the `.mdb` file, without external blob files. Specify `"table"` for a single table or `"tables"` for a set; a table-filtered download includes the audit store only with `"include_audit": true`. These options are LMDB-only. For databases with file-backed blobs, use a coordinated filesystem or volume backup of the database and all blob roots with Harper stopped; see [LMDB recovery](./overview.md#lmdb-).
 
 ```json
 { "operation": "get_backup", "database": "data" }

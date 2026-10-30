@@ -466,7 +466,7 @@ Creates a new component project in the component root directory using a template
 - `install_command` _(optional)_ — Install command. Defaults to `npm install`
 - `install_timeout` _(optional)_ — Install timeout in milliseconds. Defaults to `300000` (5 minutes)
 - `install_allow_scripts` _(optional)_ — Allow install scripts to run. Defaults to `false`, which causes `--ignore-scripts` to be passed to the install command (this is ignored with `install_command`).
-- `replicated` _(optional)_ — Replicate to all cluster nodes
+- `replicated` _(optional)_ — On Harper Pro and Fabric, replicate to all cluster nodes by default; pass `false` to apply on this node only. Harper core on its own does not replicate
 
 ```json
 {
@@ -578,7 +578,7 @@ On a `.env` file it replaces the whole file with the payload, so saving back the
 - `file` _(required)_ — Path relative to project folder
 - `payload` _(required)_ — File content to write
 - `encoding` _(optional)_ — File encoding. Defaults to `utf8`
-- `replicated` _(optional)_ — Replicate update to all cluster nodes
+- `replicated` _(optional)_ — On Harper Pro and Fabric, replicate the update to all cluster nodes by default; pass `false` to apply on this node only. Harper core on its own does not replicate
 
 ```json
 {
@@ -601,7 +601,7 @@ For deploying from private repositories, SSH keys must be registered on the Harp
 - `host` <VersionBadge type="changed" version="v5.3.0" /> _(required)_ — Host alias for SSH config (used in `package` URL): a single alias, not a pattern
 - `hostname` <VersionBadge type="changed" version="v5.3.0" /> _(required)_ — Actual domain (e.g., `github.com`)
 - `known_hosts` _(optional)_ — Public SSH keys of the host. Auto-retrieved for `github.com`
-- `replicated` _(optional)_ — Replicate to all cluster nodes
+- `replicated` _(optional)_ — On Harper Pro and Fabric, replicate to all cluster nodes by default; pass `false` to apply on this node only. Harper core on its own does not replicate
 
 A `key`, `host` or `hostname` that ssh couldn't use is refused with a `400` naming the problem; see [what `key`, `host` and `hostname` must be](../operations-api/operations.md#what-key-host-and-hostname-must-be). Each key's settings live in a block of `<rootPath>/ssh/config` that Harper owns; you can edit the file outside those blocks (see [the key's block in the ssh config](../operations-api/operations.md#the-keys-block-in-the-ssh-config)).
 

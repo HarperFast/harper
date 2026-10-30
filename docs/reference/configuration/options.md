@@ -243,7 +243,7 @@ logging:
 - `root` — Log directory; _Default_: `<rootPath>/log`
 - `path` — Explicit log file path (overrides `root`)
 - `stdStreams` — Write to stdout/stderr; _Default_: `false`
-- `console` — Include `console.*` output; _Default_: `true`
+- `console` — Include `console.*` output in the log file; _Default_: `false`
 - `auditLog` — Enable table transaction audit logging; _Default_: `true`
 - `auditRetention` — Audit log retention duration; _Default_: `3d`
 - `external` — Logging for components using the logger API; sub-options: `level`, `path`

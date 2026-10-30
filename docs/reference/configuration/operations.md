@@ -76,7 +76,7 @@ The `replicated` array reports per-node outcomes. A failed peer appears as `{ "s
 }
 ```
 
-To restart the whole cluster afterward, follow with [restart_service](../operations-api/operations.md#restart_service) using `"replicated": true` — it restarts nodes one at a time, so the cluster stays available:
+To restart the whole cluster afterward, follow with [restart_service](../operations-api/operations.md#restart_service) using `"replicated": true` — it restarts nodes one at a time, so they never all restart at once. Each node stays in rotation while it restarts, so drain a node first if it must not serve during the change:
 
 ```json
 {

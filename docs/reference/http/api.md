@@ -40,7 +40,7 @@ To continue the middleware chain, call `next(request)`. To short-circuit, return
 
 ### `HttpOptions`
 
-<VersionBadge version="v5.2.0" /> (`name`, `before`, `after`, `urlPath`, and `host`)
+<VersionBadge version="v5.1.0" /> (`name`, `before`, `after`, `urlPath`, and `host`)
 
 | Property     | Type    | Default                      | Description                                                                                                                                                                                              |
 | ------------ | ------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

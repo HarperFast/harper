@@ -284,7 +284,7 @@ deploy:
   env:
     HARPER_CLI_TARGET: ${{ vars.HARPER_CLI_TARGET }}
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         persist-credentials: false
     - run: npm install --global harper@^5.3
@@ -293,7 +293,7 @@ deploy:
 
 It is one job, not a whole workflow. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#path-a-deploy-a-tagged-release-from-your-repository) has complete workflows that run as written, including the step that waits for a rolling deploy to reach every node.
 
-Every step in a job with `id-token: write` can request an identity token, not only `harper`: GitHub gives each one `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. So the job above runs none of the repository's code, and `persist-credentials: false` keeps the job's GitHub token out of `.git/config`, which `harper deploy` uploads with the rest of the checkout. A workflow that installs dependencies or builds should do that in a job without `id-token: write`, as [Path B](/learn/developers/deploying-from-ci#path-b-build-in-ci-publish-to-github-packages-deploy-the-artifact) does.
+Every step in a job with `id-token: write` can request an identity token, not only `harper`: GitHub gives each one `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. So the job above runs none of the repository's code, and `persist-credentials: false` stops `actions/checkout` from saving the job's GitHub token for later steps. Before v6, checkout saved it in `.git/config`, which `harper deploy` uploads with the rest of the checkout. A workflow that installs dependencies or builds should do that in a job without `id-token: write`, as [Path B](/learn/developers/deploying-from-ci#path-b-build-in-ci-publish-to-github-packages-deploy-the-artifact) does.
 
 Harper currently detects GitHub Actions only. Other CI systems expose the same idea differently; on one Harper does not recognize, the CLI falls through to its other credential sources rather than failing.
 
