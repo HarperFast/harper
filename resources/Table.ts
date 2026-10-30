@@ -11712,8 +11712,7 @@ export function makeTable(options): TableResourceClass {
 		const attribute_permissions = tablePermission.attribute_permissions;
 		const property = target?.property;
 		if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
-			if (attribute_permissions?.length > 0 && !attributesAsObject(attribute_permissions, 'read')[property])
-				return false;
+			if (attribute_permissions?.length > 0 && TableResource._readDenial([property], user, target)) return false;
 			const selection = TableResource._authorizeRelatedSelection(
 				target.select == null ? property : { name: property, select: target.select },
 				user,
