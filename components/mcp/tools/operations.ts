@@ -294,6 +294,66 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
 }
 
 /**
+ * Maximum number of items or serialized bytes collected from a non-array iterable
+ * or async iterable operation result (`read_audit_log`, `get_analytics`, full-text
+ * `search_by_conditions`, etc.). Exceeding either cap fails with an explicit error
+ * rather than silently clipping results or buffering an unbounded cursor in memory.
+ */
+export const MAX_OPERATION_ITERABLE_ITEMS = 10_000;
+export const MAX_OPERATION_ITERABLE_BYTES = 10 * 1024 * 1024;
+
+function isCollectibleIterable(data: unknown): data is AsyncIterable<unknown> | Iterable<unknown> {
+	if (data === null || typeof data !== 'object') return false;
+	if (Array.isArray(data) || data instanceof Readable || ArrayBuffer.isView(data)) return false;
+	const candidate = data as { [Symbol.asyncIterator]?: unknown; [Symbol.iterator]?: unknown };
+	return typeof candidate[Symbol.asyncIterator] === 'function' || typeof candidate[Symbol.iterator] === 'function';
+}
+
+async function collectIterableResult(
+	operationName: string,
+	iterable: AsyncIterable<unknown> | Iterable<unknown>,
+	signal?: AbortSignal
+): Promise<unknown[]> {
+	const maybeMapError = (
+		iterable as { mapError?: (fn: (error: any) => unknown) => AsyncIterable<unknown> | Iterable<unknown> }
+	).mapError;
+	if (typeof maybeMapError === 'function') {
+		iterable = maybeMapError.call(iterable, (error: any) => ({
+			error: error?.name ?? 'Error',
+			message: error?.message ?? String(error),
+			...error?.partialObject,
+		}));
+	}
+	const items: unknown[] = [];
+	let totalBytes = 0;
+	for await (const item of iterable) {
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		const resolved = await item;
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		if (items.length >= MAX_OPERATION_ITERABLE_ITEMS) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		totalBytes += Buffer.byteLength(typeof resolved === 'string' ? resolved : (JSON.stringify(resolved) ?? ''));
+		if (totalBytes > MAX_OPERATION_ITERABLE_BYTES) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result byte limit of ${MAX_OPERATION_ITERABLE_BYTES} bytes; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		items.push(resolved);
+	}
+	if (signal?.aborted) {
+		throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+	}
+	return items;
+}
+
+/**
  * Build the dispatch handler for one operation. Returns a function suitable
  * for `ToolDef.handler` that delegates to Harper's normal operation pipeline.
  *
@@ -303,7 +363,10 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
  * adapt to the failure.
  */
 export function makeOperationToolHandler(operationName: string) {
-	return async function operationToolHandler(args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+	return async function operationToolHandler(
+		args: unknown,
+		context: { user: AuthedUser; signal?: AbortSignal }
+	): Promise<ToolResult> {
 		const body: Record<string, unknown> = {
 			...(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}),
 			operation: operationName,
@@ -335,7 +398,10 @@ export function makeOperationToolHandler(operationName: string) {
 				throw new Error('Harper operations runtime unavailable');
 			}
 			const operationFn = chooseOperation(body);
-			const data = await processLocalTransaction({ body }, operationFn);
+			let data = await processLocalTransaction({ body }, operationFn);
+			if (isCollectibleIterable(data)) {
+				data = await collectIterableResult(operationName, data, context?.signal);
+			}
 			if (data instanceof Readable) {
 				// Backstop for an operation outside STREAMING_OPERATIONS unexpectedly returning a
 				// stream (e.g. a future op added without updating that set). JSON.stringify would

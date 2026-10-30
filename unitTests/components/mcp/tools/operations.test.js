@@ -4,6 +4,8 @@ const {
 	registerOperationsTools,
 	DEFAULT_ALLOW,
 	DEFAULT_EXCLUDED,
+	MAX_OPERATION_ITERABLE_ITEMS,
+	MAX_OPERATION_ITERABLE_BYTES,
 	_setOperationFunctionMapForTest,
 	_setChooseOperationForTest,
 	_setProcessLocalTransactionForTest,
@@ -653,12 +655,12 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		);
 	}
 
-	async function callReturning(operationName, value) {
+	async function callReturning(operationName, value, extraContext = {}) {
 		_setChooseOperationForTest(() => async () => value);
 		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
 		_setOperationFunctionMapForTest(makeOpMap([[operationName, null]]));
 		registerOperationsTools();
-		return getTool(operationName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+		return getTool(operationName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's', ...extraContext });
 	}
 
 	let envOverrides;
@@ -723,6 +725,195 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		envOverrides.mcp_operations_allow = ['sql'];
 		const res = await callReturning('sql', []);
 		assert.deepEqual(res.structuredContent, { results: [] });
+		assertSpecLegal(res);
+	});
+
+	it('collects an async generator result (read_audit_log timestamp branch) into a JSON array and { results }', async () => {
+		const entries = [
+			{ version: 100, type: 'put', records: [{ id: 'row-1' }] },
+			{ version: 101, type: 'patch', records: [{ id: 'row-1' }] },
+		];
+		async function* generateAuditEntries() {
+			for (const entry of entries) {
+				yield entry;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', generateAuditEntries());
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), entries);
+		assert.deepEqual(res.structuredContent, { results: entries });
+		assertSpecLegal(res);
+	});
+
+	it('collects an async-mapped iterable result (get_analytics ExtendedIterable) awaiting element promises', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const rawMetrics = [
+			{ id: [1000, 'request'], metric: 'request', count: 3 },
+			{ id: [1000, 'connection'], metric: 'connection', count: 5 },
+		];
+		const mapped = new ExtendedIterable(rawMetrics).map(async (item) => {
+			await Promise.resolve();
+			return { id: item.id, metric: item.metric, period: [1000, 2000], count: item.count };
+		});
+
+		const res = await callReturning('get_analytics', mapped);
+
+		const expected = [
+			{ id: [1000, 'request'], metric: 'request', period: [1000, 2000], count: 3 },
+			{ id: [1000, 'connection'], metric: 'connection', period: [1000, 2000], count: 5 },
+		];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('collects an async-only ExtendedIterable whose synchronous toJSON() throws (full-text search_by_conditions)', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const rows = [
+			{ id: 'pub-1', title: 'alpha' },
+			{ id: 'pub-2', title: 'beta' },
+		];
+		const asyncExtended = new ExtendedIterable();
+		asyncExtended.iterate = async function* () {
+			for (const row of rows) {
+				yield row;
+			}
+		};
+		assert.throws(() => JSON.stringify(asyncExtended), /Can not serialize async iterables/);
+
+		const res = await callReturning('search_by_conditions', asyncExtended);
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), rows);
+		assert.deepEqual(res.structuredContent, { results: rows });
+		assertSpecLegal(res);
+	});
+
+	it('collects a non-array sync iterable yielding promises into a resolved JSON array', async () => {
+		const syncIterableOfPromises = {
+			*[Symbol.iterator]() {
+				yield Promise.resolve({ id: 'a', score: 1 });
+				yield Promise.resolve({ id: 'b', score: 2 });
+			},
+		};
+
+		const res = await callReturning('search_by_conditions', syncIterableOfPromises);
+
+		const expected = [
+			{ id: 'a', score: 1 },
+			{ id: 'b', score: 2 },
+		];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('maps recoverable element errors via .mapError when present on an ExtendedIterable', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const mapped = new ExtendedIterable([{ id: 'ok-1' }, { id: 'bad-2' }, { id: 'ok-3' }]).map(async (item) => {
+			if (item.id === 'bad-2') {
+				const err = new Error('corrupt row');
+				err.partialObject = { id: 'bad-2' };
+				throw err;
+			}
+			return item;
+		});
+
+		const res = await callReturning('search_by_conditions', mapped);
+
+		const expected = [{ id: 'ok-1' }, { error: 'Error', message: 'corrupt row', id: 'bad-2' }, { id: 'ok-3' }];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('rejects an iterable result that exceeds MAX_OPERATION_ITERABLE_ITEMS and closes the iterator', async () => {
+		let closed = false;
+		let yielded = 0;
+		async function* unboundedEntries() {
+			try {
+				while (true) {
+					yield { seq: ++yielded };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', unboundedEntries());
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when aborting at the cap');
+		assert.equal(yielded, MAX_OPERATION_ITERABLE_ITEMS + 1);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.ok(
+			payload.message.includes(String(MAX_OPERATION_ITERABLE_ITEMS)),
+			`Expected error message to mention ${MAX_OPERATION_ITERABLE_ITEMS}, got: ${payload.message}`
+		);
+		assertSpecLegal(res);
+	});
+
+	it('rejects an iterable result that exceeds MAX_OPERATION_ITERABLE_BYTES and closes the iterator', async () => {
+		let closed = false;
+		let yielded = 0;
+		const chunk = 'x'.repeat(1024 * 1024);
+		async function* largeEntries() {
+			try {
+				while (true) {
+					yield { seq: ++yielded, chunk };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', largeEntries());
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when aborting at the byte cap');
+		assert.ok(yielded <= 11, `Expected byte cap to trip within 11 x 1 MiB rows, got yielded=${yielded}`);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.ok(
+			payload.message.includes(String(MAX_OPERATION_ITERABLE_BYTES)),
+			`Expected error message to mention ${MAX_OPERATION_ITERABLE_BYTES}, got: ${payload.message}`
+		);
+		assertSpecLegal(res);
+	});
+
+	it('aborts draining and closes the iterator when context.signal is aborted mid-iteration', async () => {
+		const ac = new AbortController();
+		let closed = false;
+		let yielded = 0;
+		async function* cancellableEntries() {
+			try {
+				while (true) {
+					yielded++;
+					if (yielded === 2) ac.abort();
+					yield { seq: yielded };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', cancellableEntries(), { signal: ac.signal });
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when context.signal aborts');
+		assert.equal(yielded, 2);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.match(payload.message, /aborted/i);
 		assertSpecLegal(res);
 	});
 });
