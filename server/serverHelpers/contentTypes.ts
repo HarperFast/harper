@@ -2,7 +2,7 @@ import { streamAsJSON, stringify, parse } from './JSONStream.ts';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ReadSnapshotExpiredError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -353,6 +353,21 @@ export function registerContentHandlers(app) {
 	app.addHook('onResponse', releaseUnreadUpload);
 }
 
+function recoversRowErrors(contentType: string): boolean {
+	return (
+		contentType !== 'application/x-ndjson' &&
+		contentType !== 'application/ndjson' &&
+		contentType !== 'text/event-stream'
+	);
+}
+
+/** A row's own failure becomes a row value; a lost read snapshot ends the whole read, so it must fail the stream. */
+function recoverRowError(error: any) {
+	if (error instanceof ReadSnapshotExpiredError) throw error;
+	error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+	return error;
+}
+
 const registerFastifySerializers = fp(
 	function (fastify, opts, done) {
 		fastify.addHook('preSerialization', async (request, reply) => {
@@ -380,14 +395,10 @@ const registerFastifySerializers = fp(
 					(data[Symbol.iterator] || data[Symbol.asyncIterator]) &&
 					serializer.serializeStream
 				) {
-					if (data.mapError) {
+					if (data.mapError && recoversRowErrors(type)) {
 						// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 						const getColumns = data.getColumns;
-						data = data.mapError((error) => {
-							// make errors serializable in a descriptive way
-							error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
-							return error;
-						});
+						data = data.mapError(recoverRowError);
 						data.getColumns = getColumns;
 					}
 					serialize = serializer.serializeStream;
@@ -541,19 +552,13 @@ export function serialize(responseData, request, responseObject) {
 			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (
-				responseData.mapError &&
-				contentType !== 'application/x-ndjson' &&
-				contentType !== 'application/ndjson' &&
-				contentType !== 'text/event-stream'
-			) {
+			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
 				responseData = responseData.mapError((error) => {
-					// make errors serializable in a descriptive way
-					error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
-					return error;
+					return row;
 				});
 				responseData.getColumns = getColumns;
 			}
@@ -816,6 +821,11 @@ function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	return readable;
 }
 
+// transformIterable's return() opens and closes a source it never started, so destroying the stream closes it
+export function closesSourceOnDiscard(stream): boolean {
+	return Boolean(stream?.[streamStartup]);
+}
+
 export function discardSerializedStream(stream) {
 	if (typeof stream?.then === 'function') {
 		Promise.resolve(stream).then(discardSerializedStream, () => {});
@@ -1011,8 +1021,8 @@ export function toCsvStream(data, columns?) {
 		},
 	});
 
-	// Pipe the data read stream through our CSV transform
-	return readStream.pipe(csvTransform);
+	// a source error must fail the returned stream, which is what the HTTP layer reports
+	return stream.pipeline(readStream, csvTransform, () => {});
 }
 
 /**

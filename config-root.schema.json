@@ -119,8 +119,9 @@
 					"items": { "type": "string" }
 				},
 				"corsAccessControlAllowHeaders": {
-					"type": "string",
-					"description": "Comma-separated list of header keys for Access-Control-Allow-Headers on OPTIONS requests. Default: 'Accept, Content-Type, Authorization'"
+					"type": ["string", "array", "null"],
+					"items": { "type": "string" },
+					"description": "Comma-separated list or array of header keys for Access-Control-Allow-Headers on OPTIONS requests. Each serialized value must be a valid HTTP header value; invalid control characters are rejected at configuration validation. Default: 'Accept, Content-Type, Authorization'"
 				},
 				"headersTimeout": {
 					"type": "integer",
@@ -132,7 +133,11 @@
 				},
 				"requestQueueLimit": {
 					"type": "integer",
-					"description": "Max estimated request queue time (ms) before rejecting with 503. Default: 20000"
+					"description": "Max estimated request queue time (ms) for methods other than GET, HEAD and OPTIONS before rejecting with 503 on node:http (including Bun compatibility) and uWS listeners. Default: 20000"
+				},
+				"readRequestQueueLimit": {
+					"oneOf": [{ "type": ["integer", "null"], "minimum": 0 }, { "const": false }],
+					"description": "Max event-loop delay (ms) before GET, HEAD and OPTIONS are rejected with 503 on every HTTP listener, including the operations API: a read arriving after the current loop iteration has run longer than this is answered immediately without running its handler. Reads are never queued; admitted reads dispatch immediately. Not an in-flight concurrency limit, and blind to a stall that ended before the first read after an idle period. Default (also when null): 5000. 0 rejects every read while reads keep arriving (only the first read after an idle iteration is admitted); false disables read admission. Use actual numbers/booleans, not quoted strings. A rejected OPTIONS preflight surfaces as a CORS failure in browsers because preflight requires a 2xx response. Takes effect on restart."
 				},
 				"keepAliveTimeout": { "type": "integer", "description": "Keep-alive inactivity timeout in ms. Default: 30000" },
 				"port": { "type": "integer", "description": "HTTP port. Default: 9926" },
@@ -715,6 +720,10 @@
 				"maxTransactionQueueTime": {
 					"type": "string",
 					"description": "Max write queue time before rejecting (e.g. '45s')."
+				},
+				"maxLockClockSkew": {
+					"type": ["string", "number"],
+					"description": "Maximum clock lead in which a record lock may admit stored state and advance the local transaction-log clock above it. Above the limit, lock() fails with LockUnavailableError until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait. A string accepts ms, s, m, h, or d (e.g. '500ms' or '5s'); a number is seconds. Default: '5s'."
 				},
 				"longTransactionReportThreshold": {
 					"type": ["string", "number"],

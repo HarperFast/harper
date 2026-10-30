@@ -721,7 +721,7 @@ short, so the serialization the lock buys is bounded by the timeout rather than 
 
 `readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:
 
-- **Retry is only safe before any byte has reached the consumer.** Once a chunk is handed downstream, re-opening `Blob.stream()` from byte 0 would duplicate it (there's no cheap way to resume from an arbitrary offset across a fresh stream without also plumbing `Blob.slice()`, which was out of scope for this fix). So the helper retries only while the current attempt has yielded nothing yet; a stall after partial content fails immediately, same as before this existed.
+- **Retry is only safe before any byte has reached the consumer.** Once a chunk is handed downstream, re-opening `Blob.stream()` from byte 0 would duplicate it (there's no cheap way to resume from an arbitrary offset across a fresh stream without also plumbing `Blob.slice()`, which was out of scope for this fix). So the helper retries only while the current attempt has forwarded no bytes; a stall after partial content fails immediately, same as before this existed. The guard counts bytes, not chunks: `Blob.stream()`'s first pull over a file holding only its header — the state a peer's replication receive leaves while content is in flight — enqueues a zero-length chunk, and counting that chunk disabled the retry for exactly the stall it exists for (harper-pro#1185). Each retry logs a `warn`, so an operator can tell a retried stall from a single-window failure.
 - **Backpressure and cancellation are two different problems, and both are easy to get wrong with a hand-rolled `ReadableStream`.** An early version wrapped the retry loop in `new ReadableStream({ async start(controller) { for await (...) controller.enqueue(chunk) } })` — this eagerly drains `streamFactory()` regardless of `controller.desiredSize`, defeating the whole point of not buffering a multi-GB payload in memory. Switching to an `async function*` consumed via `Readable.from()` restores real backpressure (the generator only resumes when the consumer wants more, matching how the un-wrapped `Blob.stream()` behaved pre-fix). But `Readable.from()`'s `return()`-on-destroy cancellation only takes effect at the generator's _next_ `yield` — while the loop is stuck retrying (no `yield` reached yet), destroying the `Readable` does nothing until the loop naturally exits, verified empirically (a generator that never yields kept retrying long after `.destroy()`). The fix: thread the constructed `Readable` back into the generator via a mutable cell (`readable` doesn't exist until after `Readable.from()` returns, so it can't be closed over directly) and check `.destroyed` explicitly at each loop iteration and after each backoff sleep.
 
 ## An origin waits for a peer's deploy answer only as long as the peer may take
@@ -766,13 +766,13 @@ that has no directory and no root-config entry is not on this node: nothing is r
 `restart` says, but a dedicated worker a failed earlier drop left running is still stopped. An isolated application's
 worker is stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
 mirrors, once the peers have answered; the pool restarts only when asked and only when it may hold the application.
-Branched databases go last, once nothing holds them, unless `keepBranches` keeps them; they also stay while the pool
-may still have them open, and a later drop of the now-absent application discards them. `keepBranches` is refused with
-`restart: true`: a peer on an earlier version ignores it, and its restart path removes the branches. Each node answers
-`{ node, componentRemoved, workerStopped, branchesRemoved }`, and the origin returns its peers' in `replicated`
-(`dropPeerResults`), where `null` is a peer that did not say and `error` a peer that failed. A worker the coming stop or
-restart replaces is answered just before it, with any retention already decided and `null` for what is not done yet;
-a later failure to remove branches is only logged, and a second drop retries it (harper#3091).
+Branched databases go last, once nothing holds them, unless `keepBranches` keeps them (refused with `restart: true`: an
+earlier peer ignores it and its restart removes them), or while the pool may hold them. Each node answers `{ node,
+componentRemoved, workerStopped, branchesRemoved }`; `replicated` (`dropPeerResults`) has its peers', `null` where one
+did not say, `error` where one failed. A worker the coming stop or restart replaces is answered first, `null` for what is
+not done (harper#3091), so the owed removal is a durable `` `removal-pending` `` file beside the branches (or its temp file, which a crash can leave unrenamed), written before
+the drop changes anything, cleared only by a completed removal or a `keepBranches` drop. Main retries each under its lock
+and marker recheck after every drop, after a start's pool reports, when a worker exits or reports its load, and on capped backoff. A redeployed one waits for a drop, a held one (or an unreadable root config) a pass, one main serves as the only worker a start.
 
 ## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
 

@@ -9,6 +9,7 @@ const { previousFullTextProcess } = require('./fullTextUpgradeHelpers.cjs');
 
 (async () => {
 	const [directory, phase] = process.argv.slice(2);
+	process.on('exit', (code) => fs.writeFileSync(path.join(directory, `exit-${phase}.json`), JSON.stringify({ code })));
 	const watchdog = setTimeout(() => {
 		console.error(`Incomplete full-text upgrade crash phase: ${phase}`);
 		process.exit(1);

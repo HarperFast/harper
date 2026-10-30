@@ -3,7 +3,7 @@
 import _mqtt_packet from 'mqtt-packet';
 const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
-import { getSuperUser } from '../security/user.ts';
+import { localPrincipal } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
 	getSharedMessageEncoding,
@@ -38,8 +38,13 @@ let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? proces
 onStartup(() => {
 	AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 });
-export function bypassAuth() {
+/** Test mode: trust loopback connections. Returns a function that restores the previous setting. */
+export function bypassAuth(): () => void {
+	const previous = AUTHORIZE_LOCAL;
 	AUTHORIZE_LOCAL = true;
+	return () => {
+		AUTHORIZE_LOCAL = previous;
+	};
 }
 
 const authorizeLocal = (remoteAddress: string) =>
@@ -191,8 +196,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						}
 					}
 					if (!user && authorizeLocal(socket.remoteAddress)) {
-						user = await getSuperUser();
-						mqttLog.debug?.('Auto-authorizing local connection', user?.username);
+						user = localPrincipal();
+						mqttLog.debug?.('Auto-authorizing local connection');
 					}
 
 					const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user, mqttSettings);
@@ -715,7 +720,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						try {
 							granted.push((await session.removeSubscription(subscription)) ? 0 : 0x11); // no subscription existed
 						} catch (error) {
-							mqttLog.warn?.(error);
+							if (error?.statusCode < 500) mqttLog.info?.(error);
+							else mqttLog.warn?.(error);
 							granted.push(0x80); // unspecified error
 						}
 					}

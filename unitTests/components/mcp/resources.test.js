@@ -585,6 +585,23 @@ describe('mcp/resources', () => {
 			assert.ok(!httpUris.includes('harper+rest://app.test:9926/NoVerbs'));
 		});
 
+		it('uses the request base URL over the server guess (load balancer / Fabric)', async () => {
+			_setHttpUrlPrefixForTest(undefined);
+			const baseUrl = 'https://public.example.com';
+			const uris = listResources({ user: SUPER, profile: 'application', baseUrl }).resources.map((r) => r.uri);
+			assert.ok(uris.includes('harper+rest://public.example.com/HasVerbs'));
+			const templates = listResourceTemplates('application', undefined, undefined, baseUrl).resourceTemplates;
+			assert.ok(templates.some((t) => t.uriTemplate === 'harper+rest://public.example.com/{resourcePath}'));
+			let serverUrl;
+			_setOpenApiGeneratorForTest((_resources, url) => ((serverUrl = url), { openapi: '3.0.3' }));
+			try {
+				await readResource({ uri: 'harper://openapi', user: SUPER, profile: 'application', baseUrl });
+			} finally {
+				_setOpenApiGeneratorForTest(undefined);
+			}
+			assert.equal(serverUrl, baseUrl);
+		});
+
 		it('lists the same https:// surface for any caller (no list-time RBAC)', () => {
 			const sup = listResources({ user: SUPER, profile: 'application' }).resources.filter((r) =>
 				r.uri.startsWith('harper+rest://')

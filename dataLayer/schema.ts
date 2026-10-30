@@ -309,18 +309,12 @@ export async function dropAttribute(dropAttributeObject: any) {
 		);
 	}
 
+	const targetTable = getDatabases()[dropAttributeObject.schema][dropAttributeObject.table];
 	if (
-		dropAttributeObject.attribute ===
-		global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table].primary_key
+		dropAttributeObject.attribute === targetTable.primaryKey ||
+		dropAttributeObject.attribute === targetTable.attributes.find((attribute) => attribute.isPrimaryKey)?.name
 	) {
-		throw handleHDBError(
-			new Error(),
-			'You cannot drop a hash attribute',
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
+		throw new ClientError('You cannot drop a hash attribute');
 	}
 
 	if (hdbTerms.TIME_STAMP_NAMES.indexOf(dropAttributeObject.attribute) >= 0) {

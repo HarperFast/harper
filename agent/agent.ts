@@ -24,7 +24,7 @@ import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
 import { workers } from '../server/threads/manageThreads.ts';
 import { composeToolset } from './toolset.ts';
 import { buildInspectorTools } from './tools/inspectorTool.ts';
-import { buildHttpFetchTool, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
+import { buildHttpFetchTool, operationsApiPortsFrom, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
 import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
@@ -128,7 +128,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
 
 	// Built from the boot config, never `liveConfig`: no runtime config change can widen what it reaches.
-	const httpFetchTool = buildHttpFetchTool(config.httpFetch);
+	const httpFetchTool = buildHttpFetchTool(config.httpFetch, resolveOperationsApiPorts());
 
 	// The grounding + best-practices portion of the system prompt is static for the component's
 	// lifetime (scopes don't change), so build it once here; only the operator's per-run
@@ -405,6 +405,13 @@ export function resolveScopes(
 		...configScope,
 		keyDirs: [join(rootPath, LICENSE_KEY_DIR_NAME), join(rootPath, SSH_KEY_DIR_NAME)],
 	};
+}
+
+export function resolveOperationsApiPorts(): number[] {
+	return operationsApiPortsFrom([
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT),
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT),
+	]);
 }
 
 export function mergeConfig(opts: StartOpts): AgentConfig {

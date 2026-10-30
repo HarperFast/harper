@@ -90,6 +90,7 @@ storage:
   path: null
   backupPath: null
   prefetchWrites: true
+  maxLockClockSkew: 5s
 tls:
   privateKey: null
   certificateWatchInterval: 300000
