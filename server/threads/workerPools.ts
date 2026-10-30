@@ -5,14 +5,26 @@
  */
 import { isMainThread, workerData } from 'node:worker_threads';
 import { THREAD_TYPES } from '../../utility/hdbTerms.ts';
+import * as harperLogger from '../../utility/logging/harper_logger.ts';
 
 const DEDICATED_POOL_TYPES: readonly string[] = [THREAD_TYPES.REPLICATION];
 
 let activePools: string[] = [];
+let undecided: { types: string[]; decide: () => void; decided: Promise<void> } | undefined;
+let admittedPools: string[] | undefined;
+const poolUnsupportedTables: string[] = [];
 
-/** Main thread: record the pool types started, so every worker spawned from here learns them. */
-export function setActiveWorkerPools(types: string[]): void {
+/**
+ * Main thread: record the pool types started, so every worker spawned from here learns them. A `pending` type (a
+ * defaulted pool) is decided by the first shared HTTP worker's load report: on the main thread it counts as active
+ * until then, so placement defers to it; a worker treats it as not yet active until admitted.
+ */
+export function setActiveWorkerPools(types: string[], pending: string[] = []): void {
 	activePools = types;
+	undecided = undefined;
+	if (pending.length === 0) return;
+	const { promise, resolve } = Promise.withResolvers<void>();
+	undecided = { types: pending, decide: resolve, decided: promise };
 }
 
 /**
@@ -20,11 +32,57 @@ export function setActiveWorkerPools(types: string[]): void {
  * or crash, so a listener it owns is never handed back to the HTTP workers in the meantime.
  */
 export function activeWorkerPools(): string[] {
-	return isMainThread ? activePools : ((workerData as any)?.workerPools ?? []);
+	return isMainThread ? activePools : (admittedPools ?? (workerData as any)?.workerPools ?? []);
 }
 
 export function isWorkerPoolActive(type: string): boolean {
 	return activeWorkerPools().includes(type);
+}
+
+export function pendingWorkerPools(): string[] {
+	if (isMainThread) return undecided?.types ?? [];
+	return admittedPools ? [] : ((workerData as any)?.pendingWorkerPools ?? []);
+}
+
+export function isWorkerPoolPending(type: string): boolean {
+	return pendingWorkerPools().includes(type);
+}
+
+/** Main thread: resolves once the pending pools are decided; undefined when none are pending. */
+export function workerPoolDecision(): Promise<void> | undefined {
+	return undecided?.decided;
+}
+
+/**
+ * Main thread: decide the pending pools from a shared HTTP worker's load report. Every shared worker loads the same
+ * applications, so the first report decides; a table that needs application code on the replication path keeps
+ * replication on the HTTP workers. Later reports change nothing (a deploy is warned at registration, not re-decided).
+ */
+export function decideWorkerPools(unsupportedTables: string[] = []): void {
+	if (!undecided) return;
+	const { types, decide } = undecided;
+	undecided = undefined;
+	if (unsupportedTables.length > 0) {
+		activePools = activePools.filter((type) => !types.includes(type));
+		harperLogger.warn(
+			`Starting no replication pool: replication.threads is not set and ${unsupportedTables.join(', ')} use deprecated features that replication pool workers do not support; replication runs on the HTTP workers. Set replication.threads: 0 in harper-config.yaml to keep this choice explicit.`
+		);
+	}
+	decide();
+}
+
+/** Worker: apply the pools the main thread admitted this worker under, before it binds any listener. */
+export function admitWorkerPools(types: string[]): void {
+	admittedPools = types;
+}
+
+/** Record a table that needs application code on the replication path; reported in this worker's load report. */
+export function notePoolUnsupportedTable(table: string): void {
+	if (!poolUnsupportedTables.includes(table)) poolUnsupportedTables.push(table);
+}
+
+export function poolUnsupportedTablesHere(): string[] {
+	return poolUnsupportedTables;
 }
 
 /** This thread's worker type, or undefined on the main thread. */

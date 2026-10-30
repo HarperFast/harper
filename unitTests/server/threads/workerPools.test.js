@@ -207,6 +207,71 @@ describe('dedicated worker pools', () => {
 		});
 	});
 
+	describe('a pending (defaulted) pool', () => {
+		const harperLogger = () => require('#js/utility/logging/harper_logger');
+		const capturingWarnings = (run) => {
+			const warnings = [];
+			const logger = harperLogger();
+			const originalWarn = logger.warn;
+			logger.warn = (...args) => warnings.push(args.join(' '));
+			try {
+				run();
+			} finally {
+				logger.warn = originalWarn;
+			}
+			return warnings;
+		};
+		afterEach(() => pools().setActiveWorkerPools([]));
+
+		it('counts as active on the main thread until decided', () => {
+			const { setActiveWorkerPools, isWorkerPoolActive, isWorkerPoolPending, workerPoolDecision } = pools();
+			setActiveWorkerPools(['replication'], ['replication']);
+			assert.strictEqual(isWorkerPoolActive('replication'), true);
+			assert.strictEqual(isWorkerPoolPending('replication'), true);
+			assert.ok(workerPoolDecision() instanceof Promise);
+		});
+
+		it('is admitted when the first report lists no unsupported table, and later reports change nothing', async () => {
+			const { setActiveWorkerPools, decideWorkerPools, isWorkerPoolActive, isWorkerPoolPending, workerPoolDecision } =
+				pools();
+			setActiveWorkerPools(['replication'], ['replication']);
+			const decision = workerPoolDecision();
+			assert.deepStrictEqual(
+				capturingWarnings(() => decideWorkerPools([])),
+				[]
+			);
+			await decision;
+			assert.strictEqual(isWorkerPoolActive('replication'), true);
+			assert.strictEqual(isWorkerPoolPending('replication'), false);
+			assert.strictEqual(workerPoolDecision(), undefined);
+			decideWorkerPools(['data.Late']);
+			assert.strictEqual(isWorkerPoolActive('replication'), true, 'a later report does not re-decide');
+		});
+
+		it('is declined, with one warning naming the tables, when the first report lists one', async () => {
+			const { setActiveWorkerPools, decideWorkerPools, isWorkerPoolActive, workerPoolDecision } = pools();
+			setActiveWorkerPools(['replication'], ['replication']);
+			const decision = workerPoolDecision();
+			const warnings = capturingWarnings(() => decideWorkerPools(['data.ComputedRow', 'data.Sharded']));
+			await decision;
+			assert.strictEqual(isWorkerPoolActive('replication'), false);
+			assert.strictEqual(warnings.length, 1);
+			assert.match(
+				warnings[0],
+				/Starting no replication pool: replication\.threads is not set and data\.ComputedRow, data\.Sharded/
+			);
+			assert.match(warnings[0], /replication\.threads: 0/);
+		});
+
+		it('never applies to an explicit pool', () => {
+			const { setActiveWorkerPools, decideWorkerPools, isWorkerPoolActive, workerPoolDecision } = pools();
+			setActiveWorkerPools(['replication']);
+			assert.strictEqual(workerPoolDecision(), undefined);
+			decideWorkerPools(['data.ComputedRow']);
+			assert.strictEqual(isWorkerPoolActive('replication'), true);
+		});
+	});
+
 	it('loads no application on a pool worker', () => {
 		const config = { shared: { package: 'x' }, isolatedApp: { package: 'x', isolated: true } };
 		assert.strictEqual(iso().shouldLoadApplicationHere('shared', undefined, config, true), false);
