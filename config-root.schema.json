@@ -322,6 +322,11 @@
 								"additionalProperties": false,
 								"properties": {
 									"hostname": { "type": "string" },
+									"url": {
+										"type": "string",
+										"format": "uri",
+										"description": "Connection URL; its host may be an alias of the canonical hostname."
+									},
 									"port": { "type": "integer" },
 									"startTime": {
 										"type": "string",
@@ -329,7 +334,8 @@
 										"description": "ISO 8601 UTC start time to begin replication."
 									}
 								},
-								"required": ["hostname", "port"]
+								"required": ["hostname"],
+								"anyOf": [{ "required": ["port"] }, { "required": ["url"] }]
 							}
 						]
 					}
@@ -393,6 +399,18 @@
 						}
 					}
 				},
+				"confirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for explicit replicatedConfirmation. Default: 900000, or blobTimeout if greater. An explicit value overrides that default."
+				},
+				"shardingConfirmationTimeout": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Max time (ms) to wait for automatic new-owner confirmation after an attribute-slot change. Default: 30000. Timeout reports an uncertain committed outcome."
+				},
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
 				"blobGapReconnectMs": {
 					"type": "number",
@@ -443,7 +461,15 @@
 					"type": "boolean",
 					"description": "Attempt fail-over to different node when unreachable. Default: true"
 				},
-				"shard": { "type": "integer", "description": "Shard id for this instance." },
+				"shard": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "Shard id for this instance." },
+				"shards": {
+					"type": "array",
+					"minItems": 1,
+					"maxItems": 65536,
+					"uniqueItems": true,
+					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a sharding map automatically; installed maps remain authoritative. Different lists block declarative writes."
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		},
@@ -689,6 +715,10 @@
 				"maxTransactionQueueTime": {
 					"type": "string",
 					"description": "Max write queue time before rejecting (e.g. '45s')."
+				},
+				"maxLockClockSkew": {
+					"type": ["string", "number"],
+					"description": "Maximum clock lead in which a record lock may admit stored state and advance the local transaction-log clock above it. Above the limit, lock() fails with LockUnavailableError until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait. A string accepts ms, s, m, h, or d (e.g. '500ms' or '5s'); a number is seconds. Default: '5s'."
 				},
 				"longTransactionReportThreshold": {
 					"type": ["string", "number"],

@@ -18,11 +18,18 @@ import log from '../utility/logging/harper_logger.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import harperBridge from './harperBridge/harperBridge.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import { hdbErrors } from '../utility/errors/hdbError.ts';
+import { DatabaseClosingError, DatabaseShardingHeldError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
+
+function isShardingRefusal(error: unknown): boolean {
+	return (
+		error instanceof DatabaseShardingHeldError ||
+		(error instanceof DatabaseClosingError && error.code === 'DATABASE_SHARDING_BLOCKED')
+	);
+}
 
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
@@ -122,6 +129,7 @@ class SQLSearch {
 				return emptySqlResults;
 			}
 		} catch (err) {
+			if (isShardingRefusal(err)) throw err;
 			log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -134,6 +142,7 @@ class SQLSearch {
 				return simpleQueryResults;
 			}
 		} catch (err) {
+			if (isShardingRefusal(err)) throw err;
 			log.error('Error thrown from getFetchAttributeValues in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -150,6 +159,7 @@ class SQLSearch {
 			// Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
 			joinResults = await this._processJoins();
 		} catch (err) {
+			if (isShardingRefusal(err)) throw err;
 			log.error('Error thrown from processJoins in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -159,6 +169,7 @@ class SQLSearch {
 			// Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
 			await this._getFinalAttributeData(joinResults.existing_attributes, joinResults.joined_length);
 		} catch (err) {
+			if (isShardingRefusal(err)) throw err;
 			log.error('Error thrown from getFinalAttributeData in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -168,6 +179,7 @@ class SQLSearch {
 			searchResults = await this._finalSQL();
 			return searchResults;
 		} catch (err) {
+			if (isShardingRefusal(err)) throw err;
 			log.error('Error thrown from finalSQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -691,6 +703,7 @@ class SQLSearch {
 							}
 						}
 					} catch (err) {
+						if (isShardingRefusal(err)) throw err;
 						log.error(
 							'Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
@@ -718,6 +731,7 @@ class SQLSearch {
 							})
 						);
 					} catch (err) {
+						if (isShardingRefusal(err)) throw err;
 						log.error(
 							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
@@ -758,6 +772,7 @@ class SQLSearch {
 						}
 					}
 				} catch (err) {
+					if (isShardingRefusal(err)) throw err;
 					log.error(
 						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.'
 					);
@@ -789,6 +804,7 @@ class SQLSearch {
 						}
 					}
 				} catch (err) {
+					if (isShardingRefusal(err)) throw err;
 					log.error(
 						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.'
 					);
@@ -1102,6 +1118,7 @@ class SQLSearch {
 		try {
 			await this._getData(allColumns);
 		} catch (e) {
+			if (isShardingRefusal(e)) throw e;
 			log.error('Error thrown from getData in SQLSearch class method getFinalAttributeData.');
 			log.error(e);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -1405,6 +1422,7 @@ class SQLSearch {
 						record[attribute.attribute] ?? null;
 				}
 			} catch (err) {
+				if (isShardingRefusal(err)) throw err;
 				log.error('There was an error when processing this SQL operation.  Check your logs');
 				log.error(err);
 				throw new Error(SEARCH_ERROR_MSG);

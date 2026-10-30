@@ -8,6 +8,8 @@
 import { Encoder } from 'msgpackr';
 import { createStructon, SOURCE_SYMBOL } from 'structon';
 import {
+	HAS_CURRENT_RESIDENCY_SLOT,
+	HAS_PREVIOUS_RESIDENCY_SLOT,
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_EXPIRATION_EXTENDED_TYPE,
@@ -16,6 +18,7 @@ import {
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
 	LOCAL_ONLY,
+	COPIED_RECORD,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -100,6 +103,7 @@ export type Entry = {
 	metadataFlags: number;
 	nodeId: number;
 	residencyId: number;
+	residencySlot?: number;
 	size: number;
 	deref?: () => any;
 	[METADATA]?: any;
@@ -129,6 +133,7 @@ export const TIMESTAMP_ASSIGN_PREVIOUS = 3;
 export const TIMESTAMP_RECORD_PREVIOUS = 4;
 export const HAS_EXPIRATION = 16;
 export const HAS_RESIDENCY_ID = 32;
+export const HAS_RESIDENCY_SLOT = 0x200;
 export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
@@ -154,6 +159,12 @@ if (
 	throw new Error(
 		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it — requires @harperfast/rocksdb-js >= 2.8.0`
 	);
+// The write at the row's version replaced the whole record (a put, or a delete's tombstone) and nothing has
+// changed the body since, so no older write can (set in Table.ts). RocksDB, audited tables; clear proves
+// nothing. Record-only: harper-pro's copy walk masks it from the audit flags it mirrors.
+export const FULL_WRITE_HEAD = 0x40000;
+if (VERSION_REUSED === FULL_WRITE_HEAD)
+	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -185,6 +196,7 @@ let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0,
+	residencySlotAtNextEncoding: number | undefined,
 	nodeIdAtNextEncoding = -1,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined,
 	receivedIdentityRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
@@ -372,6 +384,7 @@ export class RecordEncoder extends StructonEncoder {
 				let metadata = metadataInNextEncoding;
 				const expiresAt = expiresAtNextEncoding;
 				const residencyId = residencyIdAtNextEncoding;
+				const residencySlot = residencySlotAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
 				const logKeyRefs = additionalAuditRefsNextEncoding;
 				const identityRefs = receivedIdentityRefsNextEncoding;
@@ -396,6 +409,11 @@ export class RecordEncoder extends StructonEncoder {
 						if (!(metadata & HAS_RESIDENCY_ID)) {
 							throw new Error('Residency id included, but not in metadata flags');
 						}
+					}
+					if (residencySlot !== undefined) {
+						valueStart += 2;
+						residencySlotAtNextEncoding = undefined;
+						if (!(metadata & HAS_RESIDENCY_SLOT)) throw new Error('Residency slot missing its metadata flag');
 					}
 					if (nodeId >= 0) {
 						valueStart += 4; // make room for node id
@@ -452,6 +470,10 @@ export class RecordEncoder extends StructonEncoder {
 					if (residencyId) {
 						dataView.setUint32(position, residencyId);
 						position += 4;
+					}
+					if (residencySlot !== undefined) {
+						dataView.setUint16(position, residencySlot);
+						position += 2;
 					}
 					if (nodeId >= 0) {
 						dataView.setUint32(position, nodeId);
@@ -650,7 +672,7 @@ export class RecordEncoder extends StructonEncoder {
 					localTime = getTimestamp();
 					nextByte = buffer[position];
 				}
-				let expiresAt, residencyId, nodeId, additionalAuditRefs, receivedIdentityRefs;
+				let expiresAt, residencyId, residencySlot, nodeId, additionalAuditRefs, receivedIdentityRefs;
 				if (nextByte < 32) {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
@@ -673,6 +695,12 @@ export class RecordEncoder extends StructonEncoder {
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 						residencyId = dataView.getUint32(position);
 						position += 4;
+					}
+					if (metadataFlags & HAS_RESIDENCY_SLOT) {
+						const dataView =
+							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+						residencySlot = dataView.getUint16(position);
+						position += 2;
 					}
 					if (metadataFlags & HAS_NODE_ID) {
 						// we need to read the node id
@@ -717,6 +745,7 @@ export class RecordEncoder extends StructonEncoder {
 					size: end - start,
 					value,
 				} as any;
+				if (residencySlot !== undefined) lastMetadata.residencySlot = residencySlot;
 				if (this.isRocksDB) return lastMetadata;
 				return value;
 			} // else a normal entry
@@ -765,6 +794,18 @@ export function handleLocalTimeForGets(store, rootStore) {
 	store.rootStore = rootStore;
 	store.encoder.rootStore = rootStore;
 	store.decoder = store.encoder;
+	// the store's prototype carries the computed-attribute getters
+	const asRecordObject = (value) =>
+		value?.constructor === Object
+			? assignStoredFields(new store.encoder.structPrototype.constructor(), value, store.encoder)
+			: value;
+	if (store.cache) {
+		// the WeakRef lmdb-js makes of this value cannot be retargeted, so it must be the promoted record
+		const cacheSetValue = store.cache.setValue;
+		store.cache.setValue = function (key, value, expirationPriority) {
+			return cacheSetValue.call(this, key, asRecordObject(value), expirationPriority);
+		};
+	}
 	const storeGetEntry = store.getEntry;
 
 	store.getEntry = function (id, options) {
@@ -775,6 +816,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.metadataFlags = lastMetadata[METADATA];
 			entry.localTime = lastMetadata.localTime;
 			entry.residencyId = lastMetadata.residencyId;
+			if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 			entry.nodeId = lastMetadata.nodeId;
 			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
 			entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
@@ -791,12 +833,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
 		function withEntry(entry) {
 			if (entry.value) {
-				if (entry.value.constructor === Object) {
-					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
-					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					assignStoredFields(entry.value, originalValue, store.encoder);
-				}
+				entry.value = asRecordObject(entry.value);
 				entryMap.set(entry.value, entry); // allow the record to access the entry
 			}
 			entry.key = id;
@@ -836,6 +873,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.metadataFlags = lastMetadata[METADATA];
 				entry.localTime = lastMetadata.localTime;
 				entry.residencyId = lastMetadata.residencyId;
+				if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
 				entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
@@ -843,14 +881,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (lastMetadata.expiresAt >= 0) entry.expiresAt = lastMetadata.expiresAt;
 				lastMetadata = null;
 			}
-			if (entry.value) {
-				if (entry.value.constructor === Object) {
-					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
-					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					assignStoredFields(entry.value, originalValue, store.encoder);
-				}
-			}
+			if (entry.value) entry.value = asRecordObject(entry.value);
 			return entry;
 		});
 	};
@@ -931,12 +962,20 @@ export function setReadTxnExpiration(ms: number) {
 	READ_TXN_TIMEOUT_TICKS = Math.round(ms / 15000);
 	return trackedTxns;
 }
-export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
+export function setNextEncoding(
+	timestamp: number,
+	metadata: number,
+	expiresAt = -1,
+	nodeId = -1,
+	residencyId = 0,
+	residencySlot?: number
+) {
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
 	expiresAtNextEncoding = expiresAt;
 	nodeIdAtNextEncoding = nodeId;
 	residencyIdAtNextEncoding = residencyId;
+	residencySlotAtNextEncoding = residencySlot;
 }
 /**
  * Reset the module-level "next encoding" metadata to its no-metadata defaults. These globals are
@@ -951,10 +990,16 @@ export function clearNextEncoding() {
 	expiresAtNextEncoding = -1;
 	nodeIdAtNextEncoding = -1;
 	residencyIdAtNextEncoding = 0;
+	residencySlotAtNextEncoding = undefined;
 	additionalAuditRefsNextEncoding = undefined;
 	receivedIdentityRefsNextEncoding = undefined;
 }
-export function recordUpdater(store, tableId, auditStore) {
+export function recordUpdater(
+	store,
+	tableId,
+	auditStore,
+	retainAuditBlobs?: (id: any, entry: any, retained?: Set<string>, transaction?: any) => Set<string> | undefined
+) {
 	return function (
 		id,
 		record,
@@ -975,6 +1020,7 @@ export function recordUpdater(store, tableId, auditStore) {
 		// them all; nested values keep their own toJSON serialization.
 		record = storedFieldsOnly(store.encoder, record);
 		const isRocksDB = store instanceof RocksDatabase;
+		let replacingAuditEntry;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
 			// with rocksdb, we simplify to just storing the singular version/timestamp
@@ -982,11 +1028,14 @@ export function recordUpdater(store, tableId, auditStore) {
 		} else if (audit == null)
 			// if not auditing, there is no local timestamp to reference
 			timestampNextEncoding = NO_TIMESTAMP;
-		else if (resolveRecord)
-			// preserve existing timestamp, if possible
-			timestampNextEncoding = existingEntry?.localTime
-				? TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS
-				: NO_TIMESTAMP;
+		else if (
+			resolveRecord &&
+			existingEntry?.localTime &&
+			(replacingAuditEntry = auditStore.get(existingEntry.localTime, tableId, id, existingEntry.nodeId))
+		)
+			// keep the local time only while its audit entry is there to replace: an appended entry is keyed by the
+			// last assigned time, which is this write's own only when it assigns one
+			timestampNextEncoding = TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS;
 		else
 			timestampNextEncoding = audit // for audit, we need it
 				? existingEntry?.localTime // we already have a timestamp, we need to record the previous one in the audit log
@@ -1004,17 +1053,26 @@ export function recordUpdater(store, tableId, auditStore) {
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
-			ifVersion?: number;
 			transaction?: any;
 		} = {
 			version: newVersion,
 			instructedWrite: timestampNextEncoding > 0,
 			transaction: options?.transaction,
 		};
-		let ifVersion;
 		let extendedType = 0;
 		try {
 			let previousResidencyId = existingEntry?.residencyId;
+			const residencySlot = options?.residencySlot ?? existingEntry?.residencySlot;
+			const previousResidencySlot = existingEntry?.residencySlot;
+			if (residencySlot !== undefined) {
+				if (!Number.isInteger(residencySlot) || residencySlot < 0 || residencySlot > 65535)
+					throw new RangeError('Invalid sharding slot');
+				residencySlotAtNextEncoding = residencySlot;
+				metadataInNextEncoding |= HAS_RESIDENCY_SLOT;
+				extendedType |= HAS_CURRENT_RESIDENCY_SLOT;
+			} else residencySlotAtNextEncoding = undefined;
+			if (previousResidencySlot !== undefined && (previousResidencySlot !== residencySlot || type === 'delete'))
+				extendedType |= HAS_PREVIOUS_RESIDENCY_SLOT;
 			const residencyId = options?.residencyId; //getResidency(record, previousResidencyId);
 			if (residencyId) {
 				residencyIdAtNextEncoding = residencyId;
@@ -1048,8 +1106,7 @@ export function recordUpdater(store, tableId, auditStore) {
 			}
 			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
-			// we use resolveRecord outside of transaction, so must explicitly make it conditional
-			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
+			if (options?.copyFrame) extendedType |= COPIED_RECORD;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
 				// Delete the prior row's blob files — except any the new record still references.
 				// Without the retention check, updating an unrelated attribute on a row that
@@ -1063,6 +1120,8 @@ export function recordUpdater(store, tableId, auditStore) {
 						if (fileId) (retainedFileIds ??= new Set()).add(fileId);
 					});
 				}
+				const auditFiles = retainAuditBlobs?.(id, existingEntry, retainedFileIds, options?.transaction);
+				if (auditFiles) for (const fileId of auditFiles) (retainedFileIds ??= new Set()).add(fileId);
 				deleteBlobsInObject(existingEntry.value, retainedFileIds);
 			}
 			let result: Promise<void>;
@@ -1111,7 +1170,9 @@ export function recordUpdater(store, tableId, auditStore) {
 							}
 						}
 					}
-					replacingEntry ??= auditStore.get(replacingId, tableId, id, existingEntry.nodeId);
+					replacingEntry ??= isRocksDB
+						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId)
+						: replacingAuditEntry;
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](
@@ -1128,11 +1189,13 @@ export function recordUpdater(store, tableId, auditStore) {
 								extendedType,
 								residencyId,
 								previousResidencyId,
+								residencySlot,
+								previousResidencySlot,
 								expiresAt,
 								structureVersion,
 								previousAdditionalAuditRefs,
 							},
-							{ ifVersion: ifVersion, transaction: options.transaction, nodeId, viaNodeId }
+							{ transaction: options.transaction, nodeId, viaNodeId }
 						);
 						noteStagedAudit(options, extendedType);
 						return result;
@@ -1152,6 +1215,8 @@ export function recordUpdater(store, tableId, auditStore) {
 						extendedType,
 						residencyId,
 						previousResidencyId,
+						residencySlot,
+						previousResidencySlot,
 						expiresAt,
 						structureVersion,
 						originatingOperation: options?.originatingOperation,
@@ -1161,7 +1226,6 @@ export function recordUpdater(store, tableId, auditStore) {
 						// turn off append flag, as we are concerned this may be related to db corruption issues
 						// append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
 						instructedWrite: true,
-						ifVersion,
 						transaction: options.transaction,
 						nodeId,
 						viaNodeId,

@@ -79,6 +79,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
+	/** false: a table class evaluates HTTP write preconditions itself, from its request headers */
+	static preconditions?: boolean;
 	static description?: string;
 	static properties?: { [name: string]: JsonSchemaFragment };
 	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
@@ -130,7 +132,10 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static get = transactional(
 		function (resource: any, query: RequestTarget, request: Context, _data: any) {
 			const loadAsInstance = resource.constructor.loadAsInstance;
-			if (loadAsInstance && query?.select && (query as any).parseError) throw (query as any).parseError;
+			if (loadAsInstance && query?.select) {
+				if ((query as any).parseError) throw (query as any).parseError;
+				assertNestedQueryOptions(query.select, resource.constructor);
+			}
 			const result = resource.get?.(query);
 			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
 			if (loadAsInstance === false) {
@@ -146,7 +151,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
-					if (typeof result?.map === 'function') {
+					if (Array.isArray(result)) {
+						return settleAll(result.map(transform));
+					} else if (typeof result?.map === 'function') {
 						return result.map(transform);
 					} else {
 						return transform(result);
@@ -371,7 +378,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return result.map(transform);
+						return Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
 					}
 					return result;
 				})
@@ -634,6 +641,33 @@ _assignPackageExport('Resource', Resource);
  */
 export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
 
+/** @internal Captured at load, before application code can replace it. */
+export const defaultGetResource = Resource.getResource;
+
+/**
+ * @internal Registered per exact class, so subclasses never match. On NOT_HANDLED the general dispatch
+ * continues with the context resolved for the getter, so a getter must not consume its arguments.
+ */
+type PrimitiveIdGet = (id: string | number, context: Context, resourceOptions: any) => any;
+const primitiveIdGets = new WeakMap<object, PrimitiveIdGet>();
+/** @internal */
+export const NOT_HANDLED = Symbol('not-handled');
+/** @internal */
+export function registerPrimitiveIdGet(resourceClass: object, get: PrimitiveIdGet): void {
+	primitiveIdGets.set(resourceClass, get);
+}
+/** @internal */
+export function primitiveIdGetFor(resourceClass: object): PrimitiveIdGet | undefined {
+	return primitiveIdGets.get(resourceClass);
+}
+/** @internal */
+export class LoadingResource {
+	loaded: Promise<ResourceInterface>;
+	constructor(loaded: Promise<ResourceInterface>) {
+		this.loaded = loaded;
+	}
+}
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -710,6 +744,8 @@ function transactional(
 	const hasContent = options.hasContent;
 	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
 	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
+	// a primitive-id getter takes the second argument as the context, as only a body-less get does
+	const isGet = options.method === 'get' && hasContent === false;
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
@@ -719,6 +755,21 @@ function transactional(
 		// An absent argument, not a context — and not this call's data either.
 		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
 		if (isReleasedTransaction(context)) context = undefined;
+		let loadingResource: Promise<ResourceInterface> | undefined;
+		if (isGet && !context && (typeof idOrQuery === 'string' || typeof idOrQuery === 'number')) {
+			const getPrimitiveId = primitiveIdGets.get(this);
+			if (getPrimitiveId) {
+				context = dataOrContext
+					? (dataOrContext as any).getContext?.() || dataOrContext
+					: (contextStorage.getStore() ?? {});
+				dataOrContext = undefined;
+				if (isJoinableScope(context.transaction)) {
+					const result = getPrimitiveId(idOrQuery, context, options);
+					if (result instanceof LoadingResource) loadingResource = result.loaded;
+					else if (result !== NOT_HANDLED) return promiseNormalize(result, options as any);
+				}
+			}
+		}
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (hasContent) {
 			// for put, post, patch, publish, query
@@ -920,7 +971,7 @@ function transactional(
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
 		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut || context?.transaction?.disconnected) {
 			// we are already in a transaction (or it was poisoned and must fail), proceed
-			const resource = this.getResource(query, context, resourceOptions);
+			const resource = loadingResource ?? this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
 				: promiseNormalize(authorizeActionOnResource(resource), resourceOptions);
@@ -1028,6 +1079,15 @@ function authorizeSearchResult(result: any, user: any) {
 				if (state && typeof state === 'object') {
 					if (state.error) throw state.error;
 					if (!state.allowed) throw new AccessViolation(user);
+					// only the gate itself is replaced: a transform derived from it must still run
+					const { gate } = state;
+					if (gate) {
+						if (result === gate) return state.results;
+						if (result.headers && result.data === gate) {
+							if (Object.isFrozen(result)) return { ...result, data: state.results };
+							result.data = state.results;
+						}
+					}
 				} else if (!state) throw new AccessViolation(user);
 				return result;
 			})
@@ -1089,11 +1149,12 @@ function registerLiveSubscriptionForContext(
 ) {
 	const user: any = context?.user;
 	const username = user?.username;
-	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
-	if (!username) return subscription;
+	securityUser ??= userRuntimeModule;
+	// Internal watchers and replication have no user principal, and no record backs the local
+	// principal — nothing to re-authorize.
+	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	securityUser ??= userRuntimeModule;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
 	// A select written by authorization names no relationship, so the default allowRead's result still
 	// reads only the role's table permission; a caller's select can reach related tables' allowRead.
@@ -1171,127 +1232,205 @@ export function allowedMethods(resource: any) {
 	return allow;
 }
 
+// an inherited `__proto__` is the object's prototype (a table record's carries accessors), not data
+export function readSelectedProperty(object: any, property: string) {
+	return property === '__proto__' && !Object.hasOwn(object, property) ? undefined : object[property];
+}
 /**
  * This is responsible for handling a select query parameter/call that selects specific
  * properties from the returned record(s).
  * @param object
  * @returns
  */
-function selectFromObject(object, propertyResolvers, context) {
+function selectFromObject(object, propertyResolvers, context, selectsPrototype: boolean) {
 	// TODO: eventually we will do aggregate functions here
-	return (property) => readPropertyFromObject(object, property, propertyResolvers, context);
+	return (property) => readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype);
 }
+export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
+function settleAll(results: any[]) {
+	for (let i = 0, l = results.length; i < l; i++) {
+		if (typeof results[i]?.then === 'function') return Promise.all(results);
+	}
+	return results;
+}
+export function hasNestedQueryOptions(property) {
+	return (
+		property &&
+		typeof property === 'object' &&
+		((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
+			property.operator !== undefined ||
+			property.limit !== undefined ||
+			property.offset !== undefined ||
+			(typeof property.sort === 'object' && property.sort))
+	);
+}
+
+export function assertNestedQueryOptions(select, resource) {
+	for (const property of Array.isArray(select) ? select : []) {
+		if (!property || typeof property !== 'object') continue;
+		const related = resource?.propertyResolvers?.[property.name]?.definition?.tableClass;
+		if (
+			((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
+				property.operator !== undefined) &&
+			(!resource?._prepareRelationshipSelection || !related)
+		)
+			throw new ClientError('Nested query constraints require a relationship attribute');
+		assertNestedQueryOptions(property.select || (Array.isArray(property) ? property : undefined), related);
+	}
+}
+
 export function transformForSelect(select, resource) {
+	assertNestedQueryOptions(select, resource);
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
-	let subTransforms;
+	let subTransforms: Map<any, (object: any) => any>;
+	if (
+		select === '*' ||
+		(!resource && Array.isArray(select) && select.length === 1 && select[0] === '*' && !(select as any).asArray)
+	)
+		return function transform(object) {
+			return typeof object?.then === 'function' ? object.then(transform) : object;
+		};
+	let relationshipSelections;
+	if (resource?._prepareRelationshipSelection)
+		for (const property of Array.isArray(select) ? select : []) {
+			if (propertyResolvers?.[property.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
+				(relationshipSelections ||= Object.create(null))[property.name] = resource._prepareRelationshipSelection(
+					property,
+					context ?? contextStorage.getStore()
+				);
+			}
+		}
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
-			if (Array.isArray(object)) return object.map(transform);
-			return readPropertyFromObject(object, select, propertyResolvers, context);
+			if (Array.isArray(object)) return settleAll(object.map(transform));
+			return readPropertyFromObject(object, select, propertyResolvers, context, select === '__proto__');
 		};
-	else if (typeof select === 'object') {
+	else if (Array.isArray(select)) {
 		// if it is an array, return an array
-		if (select.asArray)
+		const selectsPrototype = select.some((property) => (property?.name ?? property) === '__proto__');
+		if ((select as any).asArray)
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
-				if (Array.isArray(object)) return object.map(transform);
+				if (Array.isArray(object)) return settleAll(object.map(transform));
 				const results = [];
-				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+				const getProperty = handleProperty(
+					selectFromObject(object, propertyResolvers, context, selectsPrototype),
+					object
+				);
+				let pending = false;
 				for (const property of select) {
-					results.push(getProperty(property));
+					const value = property === '*' ? object : getProperty(property);
+					if (typeof value?.then === 'function') pending = true;
+					results.push(value);
 				}
-				return results;
+				return pending ? Promise.all(results) : results;
 			};
-		const forceNulls = select.forceNulls;
-		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
+		const forceNulls = (select as any).forceNulls;
+		const selectsWildcard = select.includes('*');
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
-				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
+				return settleAll(object.map((value) => (value && typeof value === 'object' ? transform(value) : value)));
+			// a tracked instance's toJSON() is its current view: record, folded pending changes and own fields
+			const wildcardSource =
+				selectsWildcard &&
+				!(ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob) &&
+				(typeof object.getRecord !== 'function'
+					? object
+					: typeof object.toJSON === 'function'
+						? object.toJSON()
+						: object.getRecord());
 			// finally the case of returning objects
 			const selectedData = {};
-			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
-			if (selectsPrototype)
-				Object.defineProperty(selectedData, '__proto__', {
-					value: undefined,
-					writable: true,
-					enumerable: true,
-					configurable: true,
-				});
+			const getProperty = handleProperty(
+				selectFromObject(object, propertyResolvers, context, selectsPrototype),
+				object
+			);
+			if (selectsPrototype) Object.defineProperty(selectedData, '__proto__', ownDataProperty);
 			let promises;
 			for (const property of select) {
 				if (property === '*') {
-					for (const key in object) {
-						selectedData[key] = object[key];
-					}
+					if (wildcardSource)
+						for (const key in wildcardSource) {
+							const value = wildcardSource[key];
+							if (typeof value === 'function') continue;
+							if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
+							else selectedData[key] = value;
+						}
 					continue;
 				}
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {
 					if (!promises) promises = [];
-					promises.push(value.then((value) => (selectedData[property.name || property] = value)));
+					promises.push(
+						value.then(
+							(value) => (selectedData[property.name || property] = value === undefined && forceNulls ? null : value)
+						)
+					);
 				} else selectedData[property.name || property] = value;
 			}
 			if (promises) return Promise.all(promises).then(() => selectedData);
 			return selectedData;
 		};
-	} else throw new Error('Invalid select argument type ' + typeof select);
-	function handleProperty(getProperty) {
+	} else throw new ClientError('Invalid select, expected an attribute name or a list of attributes');
+	function projectNested(property, value) {
+		if (!value || typeof value !== 'object' || value instanceof Date) return value;
+		if (typeof value.then === 'function') return value.then((value) => projectNested(property, value));
+		if (!subTransforms) subTransforms = new Map();
+		let transform = subTransforms.get(property);
+		if (!transform) {
+			transform = nestedTransform(property);
+			subTransforms.set(property, transform);
+		}
+		return transform(value);
+	}
+	function nestedTransform(property) {
+		const targetResource =
+			propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+				? propertyResolvers[property.name]?.definition?.tableClass
+				: undefined;
+		return nestedSelectTransform(property, targetResource);
+	}
+	function handleProperty(getProperty, object) {
 		return (property) => {
 			if (typeof property === 'string') {
 				return getProperty(property);
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
-					const value = getProperty(property.name);
-					if (!value || typeof value !== 'object' || value instanceof Date) return value;
-					if (!subTransforms) subTransforms = new WeakMap();
-					let transform = subTransforms.get(property);
-					if (!transform) {
-						const subSelect = property.select ?? (Array.isArray(property) ? property : null);
-						const targetResource =
-							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
-								? propertyResolvers[property.name]?.definition?.tableClass
-								: undefined;
-						const innerTransform =
-							subSelect && !(subSelect[0] === '*' && subSelect.length === 1)
-								? transformForSelect(subSelect, targetResource)
-								: (v) => v;
-						const sort = typeof property.sort === 'object' ? property.sort : null;
-						const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
-						const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
-						if (sort || offset !== undefined || limit !== undefined) {
-							const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
-							for (let clause = sort; clause; clause = clause.next) {
-								sortClauses.push(clause);
-							}
-							const applySubQuery = (resolvedValue) => {
-								if (!resolvedValue || typeof resolvedValue !== 'object' || resolvedValue instanceof Date)
-									return resolvedValue;
-								if (typeof resolvedValue.then === 'function') return resolvedValue.then(applySubQuery);
-								if (Array.isArray(resolvedValue)) {
-									return innerTransform(sortAndSliceArray(resolvedValue, sortClauses, offset, limit, targetResource));
-								}
-								return innerTransform(resolvedValue);
-							};
-							transform = applySubQuery;
-						} else {
-							transform = innerTransform;
-						}
-						subTransforms.set(property, transform);
-					}
-					return transform(value);
+					const selection = relationshipSelections?.[property.name];
+					if (selection)
+						return selection(typeof object.getRecord === 'function' ? object.getRecord() || object : object);
+					return projectNested(property, getProperty(property.name));
 				} else return getProperty(property);
 			} else return property;
 		};
 	}
+}
+
+/** The transform for a `{ name, select?, sort?, offset?, limit? }` selector's value; `targetResource` supplies resolvers. */
+export function nestedSelectTransform(property: any, targetResource?: any): (value: any) => any {
+	const subSelect = property.select ?? (Array.isArray(property) ? property : null);
+	const innerTransform =
+		subSelect && !(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray)
+			? transformForSelect(subSelect, targetResource)
+			: (value) => value;
+	const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
+	for (let clause = typeof property.sort === 'object' ? property.sort : null; clause; clause = clause.next) {
+		sortClauses.push(clause);
+	}
+	const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
+	const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
+	if (sortClauses.length === 0 && offset === undefined && limit === undefined) return innerTransform;
+	return (value) =>
+		innerTransform(Array.isArray(value) ? sortAndSliceArray(value, sortClauses, offset, limit, targetResource) : value);
 }
 
 export function sortAndSliceArray(
@@ -1345,27 +1484,24 @@ export function convertToComparableKeys(value) {
 	return value;
 }
 
-function readPropertyFromObject(object, property, propertyResolvers, context) {
+function readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype: boolean) {
 	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
+	let value, resolver;
 	if (record) {
-		let value, resolver;
 		if (Object.hasOwn(object, property) && typeof (value = object[property]) !== 'function') {
 			return value;
 		}
 		const ownData = object.getChanges?.();
-		if (ownData && property in ownData) {
-			return ownData[property];
+		if (ownData && Object.hasOwn(ownData, property)) {
+			value = selectsPrototype ? readSelectedProperty(ownData, property) : ownData[property];
+			return typeof value === 'function' ? undefined : value;
 		}
-		if (propertyResolvers && Object.hasOwn(propertyResolvers, property) && (resolver = propertyResolvers[property])) {
-			return resolver(object, context);
-		}
-		return record[property];
 	}
-	if (propertyResolvers) {
-		const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
-		if (resolver) return resolver(object, context);
+	if (propertyResolvers && Object.hasOwn(propertyResolvers, property) && (resolver = propertyResolvers[property])) {
+		return resolver(object, context);
 	}
-	const value = object[property];
+	const source = record ?? object;
+	value = selectsPrototype ? readSelectedProperty(source, property) : source[property];
 	return typeof value === 'function' ? undefined : value;
 }
 
@@ -1376,7 +1512,7 @@ function getComparableKey(item, attribute, resolvers, ctx) {
 		let currentResolvers = resolvers;
 		for (const part of attribute) {
 			if (value == null || typeof value !== 'object') return undefined;
-			value = readPropertyFromObject(value, part, currentResolvers, ctx);
+			value = readPropertyFromObject(value, part, currentResolvers, ctx, part === '__proto__');
 			currentResolvers =
 				currentResolvers && Object.hasOwn(currentResolvers, part)
 					? (currentResolvers[part]?.definition || currentResolvers[part]?.elements?.definition)?.tableClass
@@ -1385,5 +1521,5 @@ function getComparableKey(item, attribute, resolvers, ctx) {
 		}
 		return convertToComparableKeys(value);
 	}
-	return convertToComparableKeys(readPropertyFromObject(item, attribute, resolvers, ctx));
+	return convertToComparableKeys(readPropertyFromObject(item, attribute, resolvers, ctx, attribute === '__proto__'));
 }

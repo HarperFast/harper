@@ -174,24 +174,18 @@ describe('Parsing queries', () => {
 		const scalarQuery = parseQuery('select(title)');
 		assert.strictEqual(scalarQuery.select, 'title');
 	});
-	it('Rejects bracketed filter conditions inside select(...) with 400 SyntaxViolation', function () {
+	it('Preserves named bracketed filter conditions inside select(...) for schema validation', function () {
 		for (const raw of [
 			'select(children[label=child-label-c1])',
 			'select(id,children[label=child-label-c1])',
 			'select(children[label=child-label-c1],id)',
 		]) {
-			assert.throws(
-				() => parseQuery(raw),
-				(err) => {
-					assert.strictEqual(err.statusCode, 400);
-					assert.match(err.message, /conditions\/comparisons are not allowed in a property list/);
-					return true;
-				}
-			);
-			const target = new RequestTarget(`?${raw}`);
-			assert.ok(target.parseError);
-			assert.strictEqual(target.parseError.statusCode, 400);
-			assert.match(target.parseError.message, /conditions\/comparisons are not allowed in a property list/);
+			const query = parseQuery(raw);
+			const child = query.select.find((property) => property.name === 'children');
+			assert.strictEqual(child.conditions.length, 1);
+			assert.strictEqual(child.conditions[0].attribute, 'label');
+			assert.strictEqual(child.conditions[0].value, 'child-label-c1');
+			assert.strictEqual(new RequestTarget(`?${raw}`).parseError, undefined);
 		}
 	});
 	it('Allows bracketed non-condition operators like sort() and limit() inside select(...)', function () {

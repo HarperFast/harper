@@ -257,8 +257,13 @@ export interface Sort<Record extends object = any> {
 	next?: Sort<Record>;
 }
 export interface SubSelect {
+	conditions?: Conditions;
+	operator?: string;
+	limit?: number;
+	offset?: number;
+	sort?: Sort;
 	name: string;
-	select: (string | SubSelect)[];
+	select?: (string | SubSelect)[];
 }
 export type Select = (string | SubSelect)[];
 
@@ -367,6 +372,12 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	progress?: () => number | undefined;
 	/** Present only when subscribed with `reportProgress`: how many events have been sent to this subscription. */
 	sentCount?: number;
+	/**
+	 * Present only when subscribed with `reportProgress`: the lowest log key among the events sent after the first
+	 * `consumed`, counting only events sent below a key sent before them (a later event never is), or undefined.
+	 * Requires a sequential consumer with at most one event taken from the queue but not yet counted in `consumed`.
+	 */
+	lowestLateUnconsumed?: (consumed: number) => number | undefined;
 	/**
 	 * Present only when subscribed with `reportProgress` (RocksDB): the compact per-origin checkpoint every event
 	 * below which has been taken from this subscription, or undefined while none can be certified. `holds` lowers

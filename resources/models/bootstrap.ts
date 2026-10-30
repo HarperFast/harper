@@ -74,6 +74,7 @@ interface ModelEntry {
 	baseUrl?: string;
 	organization?: string;
 	inputPrefixes?: OpenAIBackendConfig['inputPrefixes'];
+	truncation?: OpenAIBackendConfig['truncation'];
 	// bedrock
 	region?: string;
 	// generative decision adapter

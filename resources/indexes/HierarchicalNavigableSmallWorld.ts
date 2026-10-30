@@ -1015,15 +1015,21 @@ export class HierarchicalNavigableSmallWorld {
 					.update(Buffer.from(nativeVector.buffer, nativeVector.byteOffset, nativeVector.byteLength))
 					.digest('base64url')
 			: undefined;
-		if (
-			oldNodeId != null &&
-			signature &&
-			storedMapping.signature === signature &&
-			!pendingMapping &&
-			!storedMapping.pending
-		) {
-			this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
-			return;
+		if (oldNodeId != null && signature && storedMapping.signature === signature) {
+			if (!storedMapping.pending) {
+				if (storedMapping.version !== version) this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
+				return;
+			}
+			// Replacing would tombstone a node the plane does not re-link around. Only an in-memory pending
+			// mapping proves its node is in this plane; one read back from storage may predate a crash.
+			if (pendingMapping) {
+				if (pendingMapping.version !== version) {
+					const mapping = { id: oldNodeId, previousId: durableNodeId, signature, version, pending: true };
+					this.indexStore.putSync(safeKey, mapping);
+					this.pendingDerivedMappings.set(pendingKey, { ...mapping, primaryKey });
+				}
+				return;
+			}
 		}
 		let plane = vector ? this.getPlane(vector.length, true) : this.getPlane();
 		if (plane?.invalidated()) {
@@ -1124,12 +1130,13 @@ export class HierarchicalNavigableSmallWorld {
 			// if the new entry is closer to the entry point than the old one
 			oldNode = { ...this.safeGetSync(nodeId, options) };
 		} else {
-			// If this key already has a graph node — which happens
-			// when runIndexing re-feeds an already-indexed record after a crash/restart — load it
-			// and treat the call as an update rather than a fresh insert. Without this, the absent
-			// existingVector causes oldNode = {} → a new random level, connections overwritten,
-			// and old-connection cleanup skipped, leaving dangling reverse edges and wrong levels.
-			const storedNode = nodeId && vector ? this.safeGetSync(nodeId, options) : undefined;
+			// If this key already has a graph node — which happens when runIndexing re-feeds an
+			// already-indexed record after a crash/restart, or when the caller cannot know the old
+			// vector (a computed vector over a residency stub) — load it and treat the call as an
+			// update or removal of that node. Without this, the absent existingVector causes
+			// oldNode = {} → a new random level, connections overwritten, and old-connection cleanup
+			// skipped, leaving dangling reverse edges and wrong levels.
+			const storedNode = nodeId ? this.safeGetSync(nodeId, options) : undefined;
 			if (storedNode && storedNode.level !== undefined) {
 				// Treat as an update: carry forward the stored graph state so cleanup and level
 				// assignment below use the real existing connections instead of starting fresh.

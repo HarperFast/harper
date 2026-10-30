@@ -45,6 +45,8 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 				.send({ id, name: 'ttl', expiresAt })
 				.expect((r: any) => ok(r.status < 300, `seeding failed: ${r.status} ${r.text}`));
 		}
+		// fill the caching table while writes are allowed
+		for (const id of ['expired', 'live']) await client.reqRest(`/SessionRef/${id}`).expect(200);
 		await killHarper(ctx);
 		await startHarper(ctx, { config: { storage: { readOnly: true } }, env: {} });
 		client = createApiClient(ctx.harper);
@@ -85,6 +87,23 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 
 	test('reads of a table without a TTL still work', async () => {
 		strictEqual((await client.reqRest('/Plain/live').expect(200)).body.name, 'ttl');
+	});
+
+	test('an only-if-cached query of a caching table resolves a relationship to it as missing', async () => {
+		const response = await client
+			.reqRest('/SessionRef/?select(id,session{id,name})')
+			.set('Cache-Control', 'only-if-cached')
+			.expect(200);
+		const sessions = Object.fromEntries(response.body.map((row: any) => [row.id, row.session]));
+		deepStrictEqual(sessions.live, { id: 'live', name: 'ttl' });
+		ok(sessions.expired == null, JSON.stringify(response.body));
+	});
+
+	test('the 404 for it carries no Last-Modified, and a live record keeps its validators', async () => {
+		const missing = await client.reqRest('/Session/expired').expect(404);
+		strictEqual(missing.headers['last-modified'], undefined);
+		const live = await client.reqRest('/Session/live').expect(200);
+		ok(live.headers['last-modified'] && live.headers.etag, JSON.stringify(live.headers));
 	});
 
 	test('the record is still on disk after the reads', async () => {

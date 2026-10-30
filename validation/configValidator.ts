@@ -236,6 +236,7 @@ const providerEntrySchema = (kind) =>
 					kind,
 					openaiEntrySchema.keys({
 						inputPrefixes: kind === 'embedding' ? inputPrefixesSchema.optional() : Joi.forbidden(),
+						truncation: kind === 'embedding' ? string.valid('vllm').optional() : Joi.forbidden(),
 					})
 				),
 			},
@@ -597,6 +598,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			]),
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
+			maxLockClockSkew: Joi.alternatives([
+				number
+					.min(0)
+					.custom((value, helpers) =>
+						Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+					),
+				string.custom((value, helpers) =>
+					Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+				),
+			]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),

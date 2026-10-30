@@ -1,4 +1,5 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
+import { when } from '../utility/when.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP, ExtendedIterable } from '@harperfast/extended-iterable';
@@ -74,7 +75,8 @@ export function executeConditions(
 	context,
 	transformToEntries,
 	filtered,
-	recordAccess?
+	recordAccess?,
+	inUnion?: boolean
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -113,7 +115,7 @@ export function executeConditions(
 			// during the graph walk instead of post-filtering an under-filled candidate set (#1241). They
 			// also stay in the post-filter chain as a deterministic, harmless re-check.
 			const siblings = conditions.slice(1);
-			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count);
+			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count, inUnion);
 			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 			// The sibling conditions a secondary-index range scan answers exactly can seed an allow-set
 			// the index admits from, instead of loading and decoding a record at every visited node.
@@ -135,7 +137,7 @@ export function executeConditions(
 		// General path: execute the lead FIRST — a leading join populates `filtered`, which the sibling
 		// filters read as they are built — then apply the sibling filters plus any record guards.
 		const results = executeCondition(firstSearch);
-		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count);
+		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, inUnion);
 		const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 		return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
 	}
@@ -149,30 +151,44 @@ export function executeConditions(
 				request,
 				context,
 				transformToEntries,
-				filtered
-				// recordAccess intentionally omitted: guards run once, at the top level (see above).
+				filtered,
+				undefined, // recordAccess intentionally omitted: guards run once, at the top level (see above).
+				inUnion || operator === 'or'
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
+			holderTable: table,
+			holderReadTxn: txn,
+			disableSnapshot: request.snapshot === false,
+			leaseHost: filtered,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
 		});
 	}
-	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
+	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, inUnion: boolean) {
 		return conditions
 			.map((condition, index) => {
 				if (condition.conditions) {
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
-					const filters = mapConditionsToFilters(condition.conditions, !union, estimatedIncomingCount);
-					if (union) return (record, entry) => filters.some((filter) => filter(record, entry));
-					else return (record, entry) => filters.every((filter) => filter(record, entry));
+					const filters = mapConditionsToFilters(
+						condition.conditions,
+						!union,
+						estimatedIncomingCount,
+						inUnion || union
+					);
+					const groupFilter: any = union
+						? (record, entry) => filters.some((filter) => filter(record, entry))
+						: (record, entry) => filters.every((filter) => filter(record, entry));
+					if (filters.some((filter) => filter.maybeAsync))
+						groupFilter.maybeAsync = (record, entry) => matchesFilters(filters, record, entry, union);
+					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
-				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount);
+				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount, inUnion);
 				if (intersection && index < conditions.length - 1 && estimatedIncomingCount) {
 					estimatedIncomingCount = intersectionEstimate(
 						table.primaryStore,
@@ -436,58 +452,64 @@ interface CandidateKeyCollection {
  * encoding the common key shapes, and the stores encode -0 and 0 apart where Set membership does not.
  * The rest go by writeKeyId, the encoder the stores index by — flattenKey joins composite keys with
  * NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'] — kept apart from the values because an encoded
- * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. An index scan
- * decodes an int64 as the number it encodes as when that is exact, while a traversal may report the
- * BigInt, so the two are the same key.
+ * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'.
  */
 export class CandidateKeySet {
 	#byValue = new Set<Id>();
 	#encoded = new Set<unknown>();
 	#zero = false;
 	#negativeZero = false;
-	#holdsBigInt = false;
 	add(primaryKey: Id): void {
+		if (typeof primaryKey === 'object' || typeof primaryKey === 'bigint') primaryKey = storedSpelling(primaryKey);
 		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
 			this.#byValue.add(primaryKey);
 		else if (primaryKey === 0) {
 			if (Object.is(primaryKey, -0)) this.#negativeZero = true;
 			else this.#zero = true;
-		} else {
-			if (typeof primaryKey === 'bigint') this.#holdsBigInt = true;
-			this.#encoded.add(writeKeyId(primaryKey));
-		}
+		} else this.#encoded.add(writeKeyId(primaryKey));
 	}
 	has(primaryKey: Id): boolean {
-		if (typeof primaryKey === 'string') return this.#byValue.has(primaryKey);
-		if (typeof primaryKey === 'number') {
-			if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
-			return this.#byValue.has(primaryKey) || (this.#holdsBigInt && this.#encoded.has(writeKeyId(primaryKey)));
-		}
-		if (typeof primaryKey === 'bigint') {
-			const number = Number(primaryKey);
-			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return true;
-		}
-		return this.#encoded.has(writeKeyId(primaryKey));
+		if (typeof primaryKey === 'object' || typeof primaryKey === 'bigint') primaryKey = storedSpelling(primaryKey);
+		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
+			return this.#byValue.has(primaryKey);
+		if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
+		return this.#encoded.size > 0 && this.#encoded.has(writeKeyId(primaryKey));
 	}
 	addIfAbsent(primaryKey: Id): boolean {
-		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
-			if (this.has(primaryKey)) return false;
-			this.add(primaryKey);
-			return true;
-		}
-		if (typeof primaryKey === 'bigint') {
-			const number = Number(primaryKey);
-			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
-			this.#holdsBigInt = true;
-		}
-		const identity = writeKeyId(primaryKey);
-		if (this.#encoded.has(identity)) return false;
-		this.#encoded.add(identity);
-		return true;
+		const size = this.size;
+		this.add(primaryKey);
+		return this.size !== size;
 	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
+}
+
+/**
+ * The string or number a key is stored as, when the key spells it another way: a BigInt a double holds
+ * exactly encodes as that double (an index scan decodes it as the number, a traversal may report the
+ * BigInt), and a one-element tuple encodes as its element when that is a string, or a number already at
+ * the full width a tuple element takes (negative or fractional ones); other numbers encode shorter alone.
+ */
+function storedSpelling(primaryKey: Id): Id {
+	if (typeof primaryKey === 'bigint') {
+		const number = Number(primaryKey);
+		return BigInt(number) === primaryKey ? number : primaryKey;
+	}
+	let element: unknown = primaryKey;
+	while (Array.isArray(element) && element.length === 1) element = element[0];
+	if (typeof element === 'string') return element;
+	// NaN's payload bits stay in its encoding, which Set membership would not keep apart
+	if ((typeof element !== 'number' && typeof element !== 'bigint') || element !== element) return primaryKey;
+	const number = element as Id;
+	if (writeKeyId(number) !== writeKeyId(primaryKey)) return primaryKey;
+	return typeof element === 'bigint' ? storedSpelling(number) : number;
+}
+
+function primaryKeyEquals(value: Id): (primaryKey: Id) => boolean {
+	const keys = new CandidateKeySet();
+	keys.add(value);
+	return (primaryKey) => keys.has(primaryKey);
 }
 
 export function distinctKeys(entries: any): any {
@@ -550,36 +572,34 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	// The scan has to hold every key the record predicate admits, or results would depend on whether
 	// the plan was built. The index cannot supply a record lacking the attribute, a null one unless it
 	// indexes nulls, or one written as -0: ordered-binary encodes -0 past every number, and that entry's
-	// primary key decodes wrong. compareKeys ranks undefined below every scalar, so `rank < 100` admits
-	// a record with no rank at all; a condition admitting any of these is left to the predicate.
+	// primary key decodes wrong. A condition admitting any of these is left to the predicate.
 	const predicate = filterByType(condition, table, undefined, null);
 	if (predicate({}) || predicate({ [attributeName]: 0 }) || (!index.indexNulls && predicate({ [attributeName]: null })))
 		return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
 	const attributeType = findAttribute(table.attributes, attributeName)?.type;
+	const numericType =
+		attributeType === 'Int' || attributeType === 'Long' || attributeType === 'Float' || attributeType === 'BigInt';
+	// An untyped attribute can hold nested arrays, whose elements the predicate matches but no index holds, and
+	// BigInts, which share a Number's index key but not its order, so a range set over one can omit or over-admit.
+	if (comparator !== 'equals' && !numericType && attributeType !== 'String' && attributeType !== 'Date')
+		return undefined;
 	const predicateExact =
-		comparator !== 'equals' ||
-		value === null ||
-		typeof value === 'string' ||
-		typeof value === 'boolean' ||
-		attributeType === 'Int' ||
-		attributeType === 'Long' ||
-		attributeType === 'Float' ||
-		attributeType === 'BigInt';
+		comparator !== 'equals' || value === null || typeof value === 'string' || typeof value === 'boolean' || numericType;
 	let start;
 	let end;
 	let inclusiveEnd = false;
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// Inclusive null, where searchByIndex starts just above it: the record predicate's compareKeys
-			// admits indexed nulls, and an omission here is one the post-filter cannot undo.
 			start = null;
+			exclusiveStart = true;
 			end = value;
 			break;
 		case 'le':
 			start = null;
+			exclusiveStart = true;
 			end = value;
 			inclusiveEnd = true;
 			break;
@@ -617,24 +637,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	)
 		return undefined;
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
-	let estimatedCount = condition.estimated_count;
+	const estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which excludes the null
-	// block. Only lt/le scan from null, and that block is read FIRST and can dwarf the rest of the
-	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
-	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
-	// per-query cost this is here to avoid. The other comparators' own estimates already cover
-	// whatever they start at.
-	if (comparator === 'lt' || comparator === 'le') {
-		let nulls: number | undefined;
-		try {
-			nulls = index.estimateCount?.({ start: null, end: null, inclusiveEnd: true })?.count;
-		} catch {
-			return undefined;
-		}
-		if (!(nulls >= 0)) return undefined;
-		estimatedCount += nulls;
-	}
 	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
 		index,
@@ -869,6 +873,26 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 	return distinct as any;
 }
 
+const RELATED_LEASES = Symbol('relatedLeases');
+
+// The join scans another database's index after the request commits, so it leases that link's handle;
+// the leases live on the search's `filtered` object until `Table.search` releases them.
+function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, disableSnapshot, leaseHost) {
+	if (!holderReadTxn || !leaseHost || !context) return;
+	const holder = holderTable._txnForContext(context);
+	const link = relatedTable._txnForContext(context);
+	if (link === holder) return holderReadTxn;
+	const leases = (leaseHost[RELATED_LEASES] ??= new Map());
+	let lease = leases.get(link);
+	if (!lease) leases.set(link, (lease = link.leaseReadTxn(holder, disableSnapshot)));
+	return lease.readTxn;
+}
+
+export function releaseRelatedLeases(leaseHost) {
+	const leases = leaseHost[RELATED_LEASES];
+	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
 /**
  * Search for records or keys, based on the search condition, using an index if available. The four
  * leading parameters are required at every call site; everything optional is named, so a new
@@ -894,13 +918,31 @@ export function searchByIndex(
 		minResults?: number;
 		// Rows before this offset are needed for correct paging but do not need highlight metadata.
 		resultOffset?: number;
+		// What a join into another database needs to lease that database's read handle for the search
+		// (see leaseRelatedReadTxn); without them it reads that database's latest committed state.
+		holderTable?: any;
+		holderReadTxn?: any;
+		disableSnapshot?: boolean;
+		leaseHost?: any;
+		leaseContext?: any;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults, resultOffset } = options;
+	const {
+		allowFullScan,
+		filtered,
+		context,
+		minResults,
+		resultOffset,
+		holderTable,
+		holderReadTxn,
+		disableSnapshot,
+		leaseHost,
+	} = options;
+	const leaseContext = options.leaseContext ?? context;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -927,6 +969,10 @@ export function searchByIndex(
 				);
 			const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
 			const joined = new Map();
+			const relatedTxn =
+				relatedTable.primaryStore.path === Table.primaryStore.path
+					? transaction
+					: leaseRelatedReadTxn(relatedTable, leaseContext, holderTable, holderReadTxn, disableSnapshot, leaseHost);
 			// search the related table
 			let results = searchByIndex(
 				{
@@ -935,17 +981,17 @@ export function searchByIndex(
 					comparator,
 					negated: searchCondition.negated,
 				},
-				transaction,
+				relatedTxn,
 				reverse,
 				relatedTable,
-				{ allowFullScan, filtered: joined }
+				{ allowFullScan, filtered: joined, holderTable, holderReadTxn, disableSnapshot, leaseHost, leaseContext }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
 				filtered[attribute_name[0]] = joined;
 				// Use the joinTo to join the results of the related table to the current table (can be one-to-many or many-to-many)
 				const isManyToMany = Boolean(findAttribute(relatedTable.attributes, attribute.relationship.to)?.elements);
-				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined);
+				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined, relatedTxn);
 			}
 			if (attribute.relationship.from) {
 				const searchEntry = (relatedEntry) => {
@@ -961,7 +1007,7 @@ export function searchByIndex(
 				if (attribute.elements) {
 					filtered[attribute_name[0]] = joined;
 					// many-to-many relationship (forward), get all the ids first
-					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry);
+					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
 					results = (results as any).flatMap(searchEntry);
@@ -1028,6 +1074,12 @@ export function searchByIndex(
 				// start: [prefix, null], end: [prefix, MAXIMUM_KEY]
 				if (!Array.isArray(value)) value = [value, null];
 				else if (value[value.length - 1] != null) value = value.concat(null);
+				if (isPrimaryKey && value.length <= 1) {
+					// no prefix ([] or [null]): every key, from the primary store's floor above its metadata
+					start = openStart;
+					exclusiveStart = openStartExclusive;
+					break;
+				}
 				start = value;
 				end = value.slice(0);
 				end[end.length - 1] = MAXIMUM_KEY;
@@ -1391,60 +1443,183 @@ export function findAttribute(attributes, attribute_name) {
  * @param store
  * @param isManyToMany
  * @param joined
+ * @param transaction the read handle the right side was scanned with
  * @returns
  */
-function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>) {
-	return new rightIterable.constructor({
-		[Symbol.iterator]() {
-			let joinedIterator;
-			(joined as any).hasMappings = true;
+function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>, transaction) {
+	const rightProperty = attribute.relationship.to;
+	const addEntry = (key, entry) => {
+		let entriesForKey = joined.get(key);
+		if (entriesForKey) entriesForKey.push(entry);
+		else joined.set(key, (entriesForKey = [entry]));
+	};
+	const addRelated = (entry, record) => {
+		const leftKey = record?.[rightProperty];
+		if (leftKey == null) return;
+		if (isManyToMany) {
+			for (let i = 0; i < leftKey.length; i++) {
+				addEntry(leftKey[i], entry);
+			}
+		} else {
+			addEntry(leftKey, entry);
+		}
+	};
+	const results = new ExtendedIterable();
+	results.iterate = (options) => {
+		let joinedIterator;
+		(joined as any).hasMappings = true;
+		if (options?.async) {
+			const scan: JoinScan = { closed: false, transaction, checkActive: getReadTransactionGuard(transaction) };
+			let scanned: Promise<void>;
+			const readOptions = { transaction, async: true };
 			return {
 				next() {
-					if (!joinedIterator) {
-						const rightProperty = attribute.relationship.to;
-						const addEntry = (key, entry) => {
-							let entriesForKey = joined.get(key);
-							if (entriesForKey) entriesForKey.push(entry);
-							else joined.set(key, (entriesForKey = [entry]));
-						};
-						//let i = 0;
-						// get all the ids of the related records
-						for (const entry of rightIterable) {
-							const record = entry.value ?? store.getSync(entry.key ?? entry);
-							const leftKey = record?.[rightProperty];
-							if (leftKey == null) continue;
-							if ((joined as any).filters?.some((filter) => !filter(record))) continue;
-							if (isManyToMany) {
-								for (let i = 0; i < leftKey.length; i++) {
-									addEntry(leftKey[i], entry);
-								}
-							} else {
-								addEntry(leftKey, entry);
-							}
-							// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
-							/*
-							if (i++ > 100) {
-								// yield the event turn every 100 ids. See below for more explanation
-								await new Promise(setImmediate);
-								i = 0;
-							}*/
-						}
-						joinedIterator = joined.keys()[Symbol.iterator]();
-						return this.next();
-					}
-					const joinedEntry = joinedIterator.next();
-					if (joinedEntry.done) return joinedEntry;
-					return {
-						// if necessary, get the original key from the entries array
-						value: joinedEntry.value,
-					};
+					if (scanStopped(scan)) return { done: true, value: undefined };
+					if (joinedIterator) return joinedIterator.next();
+					scanned ??= scanRelated(
+						rightIterable,
+						(entry) => entry.value ?? when(store.getEntry(entry.key ?? entry, readOptions), entryValue),
+						joined,
+						addRelated,
+						scan
+					).then(() => {
+						joinedIterator = (scanStopped(scan) ? new Map() : joined).keys()[Symbol.iterator]();
+					});
+					return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : joinedIterator.next()));
 				},
 				return() {
-					if (joinedIterator?.return) return joinedIterator.return();
+					scan.closed = true;
+					return { done: true, value: undefined };
 				},
 			};
-		},
-	});
+		}
+		const readOptions = { transaction };
+		return {
+			next() {
+				if (!joinedIterator) {
+					//let i = 0;
+					// get all the ids of the related records
+					for (const entry of rightIterable) {
+						const record = entry.value ?? store.getSync(entry.key ?? entry, readOptions);
+						if (record != null && (joined as any).filters?.some((filter) => !filter(record))) continue;
+						addRelated(entry, record);
+						// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
+						/*
+						if (i++ > 100) {
+							// yield the event turn every 100 ids. See below for more explanation
+							await new Promise(setImmediate);
+							i = 0;
+						}*/
+					}
+					joinedIterator = joined.keys()[Symbol.iterator]();
+				}
+				return joinedIterator.next();
+			},
+			return() {
+				return { done: true, value: undefined };
+			},
+		};
+	};
+	return results;
+}
+const entryValue = (entry) => entry?.value;
+function ignoreReturnFailure() {}
+// when a later call throws, the earlier pending results are observed so their rejections are not reported unhandled
+function mapSettlingOnThrow(items: any[], map: (item: any) => any) {
+	const results = [];
+	try {
+		for (const item of items) results.push(map(item));
+	} catch (error) {
+		Promise.all(results).catch(ignoreReturnFailure);
+		throw error;
+	}
+	return results;
+}
+// see the sorted iterator's stopped() in Table.transformToOrderedSelect
+function scanStopped(scan: JoinScan) {
+	if (scan.closed) return true;
+	scan.checkActive?.();
+	return scan.transaction?.isDone;
+}
+type JoinScan = { closed: boolean; transaction: any; checkActive?: () => void };
+async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinScan) {
+	// a custom index search can return a plain array
+	const iterator = (rightIterable[Symbol.asyncIterator] ?? rightIterable[Symbol.iterator]).call(rightIterable);
+	let done = false;
+	try {
+		while (!scanStopped(scan)) {
+			let iteration = iterator.next();
+			if (iteration.then) {
+				iteration = await iteration;
+				if (scanStopped(scan)) return;
+			}
+			if (iteration.done) {
+				done = true;
+				return;
+			}
+			const entry = iteration.value;
+			let record = readRecord(entry);
+			if (record?.then) {
+				record = await record;
+				if (scanStopped(scan)) return;
+			}
+			const filters = (joined as any).filters;
+			if (filters) {
+				if (record == null) continue;
+				let matches = matchesFilters(filters, record, undefined, false);
+				if (matches?.then) {
+					matches = await matches;
+					if (scanStopped(scan)) return;
+				}
+				if (!matches) continue;
+			}
+			add(entry, record);
+		}
+	} finally {
+		// a close that throws (likeliest right after a snapshot is released) must not replace the scan's error
+		if (!done)
+			try {
+				iterator.return?.()?.catch?.(ignoreReturnFailure);
+			} catch {}
+	}
+}
+class RelationshipSelection {
+	filters: any[];
+	fromRecord: (record: any, sync?: boolean) => any;
+	constructor(filters: any[], fromRecord: (record: any, sync?: boolean) => any) {
+		this.filters = filters;
+		this.fromRecord = fromRecord;
+	}
+}
+// keys the join and selection maps keep for themselves, so a relationship of that name cannot be tracked in them
+const SELECTION_BOOKKEEPING = new Set(['filters', 'fromRecord', 'hasMappings']);
+// A query's `filtered` map holds, per relationship name, a leading join's Map or a selection with `fromRecord`.
+// Read it as an own property of that shape: a name can equal an inherited member or the maps' bookkeeping keys.
+export function relationshipRestriction(filtered, name: string) {
+	const restriction = filtered && Object.hasOwn(filtered, name) ? filtered[name] : undefined;
+	return restriction instanceof Map || typeof restriction?.fromRecord === 'function' ? restriction : undefined;
+}
+function someRelatedMatch(entries, match, start: number) {
+	for (let i = start; i < entries.length; i++) {
+		const value = entries[i]?.value;
+		if (value == null) continue;
+		const matches = match(value);
+		if (matches?.then) return matches.then((matches) => matches || someRelatedMatch(entries, match, i + 1));
+		if (matches) return true;
+	}
+	return false;
+}
+export function matchesFilters(filters, record, entry, any: boolean, start = 0) {
+	for (let i = start; i < filters.length; i++) {
+		const filter = filters[i];
+		const matches = (filter.maybeAsync ?? filter)(record, entry);
+		if (matches?.then)
+			return matches.then((matches) =>
+				(any ? matches : !matches) ? any : matchesFilters(filters, record, entry, any, i + 1)
+			);
+		if (any ? matches : !matches) return any;
+	}
+	return !any;
 }
 /**
  * This is used to join the results of a query where the right side is a set of ids and the left side is a set of records
@@ -1454,79 +1629,111 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
  * @param store
  * @param joined
  * @param searchEntry
+ * @param transaction the read handle the right side was scanned with
  * @returns
  */
-function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry) {
-	return new rightIterable.constructor({
-		[Symbol.iterator]() {
-			let idIterator;
-			let joinedIterator;
-			const seenIds = new Set();
-			return {
-				next() {
-					let joinedEntry;
-					if (joinedIterator) {
-						while (true) {
-							joinedEntry = joinedIterator.next();
-							if (joinedEntry.done) break; // and continue to find next
-							const id = joinedEntry.value;
-							if (seenIds.has(id)) continue;
-							seenIds.add(id);
-							return joinedEntry;
-						}
-					}
-					if (!idIterator) {
-						// get the ids of the related records as a Set so we can quickly check if it is in the set
-						// when are iterating through the results
-						const ids = new Set();
-						// Define the fromRecord function so that we can use it to filter the related records
-						// that are in the select(), to only those that are in this set of ids
-						(joined as any).fromRecord = (record) => {
-							// TODO: Sort based on order ids
-							return record[attribute.relationship.from]?.filter?.((id) => ids.has(id));
-						};
-						//let i = 0;
-						// get all the ids of the related records
-						for (const id of rightIterable) {
-							if ((joined as any).filters) {
-								// if additional filters are defined, we need to check them
-								const record = store.getSync(id);
-								if ((joined as any).filters.some((filter) => !filter(record))) continue;
-							}
-							ids.add(id);
-							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
-							/*
-							if (i++ > 100) {
-								// yield the event turn every 100 ids. We don't want to monopolize the
-								// event loop, give others a chance to run. However, we are much more aggressive
-								// about running here than in simple filter operations, because we are
-								// executing a very minimal range iteration and because this is consuming
-								// memory (so we want to get it over with) and the user isn't getting any
-								// results until we finish
-								await new Promise(setImmediate);
-								i = 0;
-							}*/
-						}
-						// and now start iterating through the ids
-						idIterator = ids[Symbol.iterator]();
-						return this.next();
-					}
-					do {
-						const idEntry = idIterator.next();
-						if (idEntry.done) return idEntry;
-						joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
-						return this.next();
-					} while (true);
-				},
-				return() {
-					return joinedIterator?.return?.();
-				},
-				throw() {
-					return joinedIterator?.throw?.();
-				},
+function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry, transaction) {
+	const results = new ExtendedIterable();
+	results.iterate = (options) => {
+		let idIterator;
+		let joinedIterator;
+		const seenIds = new Set();
+		// get the ids of the related records as a Set so we can quickly check if it is in the set
+		// when are iterating through the results
+		const ids = new Set();
+		// Define the fromRecord function so that we can use it to filter the related records
+		// that are in the select(), to only those that are in this set of ids
+		const defineFromRecord = () => {
+			(joined as any).fromRecord = (record) => {
+				// TODO: Sort based on order ids
+				return record[attribute.relationship.from]?.filter?.((id) => ids.has(id));
 			};
-		},
-	});
+		};
+		const nextJoined = () => {
+			while (true) {
+				if (joinedIterator) {
+					while (true) {
+						const joinedEntry = joinedIterator.next();
+						if (joinedEntry.done) break; // and continue to find next
+						const id = joinedEntry.value;
+						if (seenIds.has(id)) continue;
+						seenIds.add(id);
+						return joinedEntry;
+					}
+				}
+				const idEntry = idIterator.next();
+				if (idEntry.done) return idEntry;
+				joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
+			}
+		};
+		const scan: JoinScan = { closed: false, transaction, checkActive: getReadTransactionGuard(transaction) };
+		const iterator: any = {
+			return() {
+				scan.closed = true;
+				joinedIterator?.return?.();
+				return { done: true, value: undefined };
+			},
+			throw() {
+				scan.closed = true;
+				return joinedIterator?.throw?.();
+			},
+		};
+		if (options?.async) {
+			let scanned: Promise<void>;
+			const readOptions = { transaction, async: true };
+			iterator.next = () => {
+				if (scanStopped(scan)) return { done: true, value: undefined };
+				if (idIterator) return nextJoined();
+				if (!scanned) {
+					defineFromRecord();
+					scanned = scanRelated(
+						rightIterable,
+						(id) => ((joined as any).filters ? when(store.getEntry(id, readOptions), entryValue) : undefined),
+						joined,
+						(id) => ids.add(id),
+						scan
+					).then(() => {
+						idIterator = (scanStopped(scan) ? new Set() : ids)[Symbol.iterator]();
+					});
+				}
+				return scanned.then(() => (scanStopped(scan) ? { done: true, value: undefined } : nextJoined()));
+			};
+		} else {
+			const readOptions = { transaction };
+			iterator.next = () => {
+				if (!idIterator) {
+					defineFromRecord();
+					//let i = 0;
+					// get all the ids of the related records
+					for (const id of rightIterable) {
+						if ((joined as any).filters) {
+							// if additional filters are defined, we need to check them
+							const record = store.getSync(id, readOptions);
+							if ((joined as any).filters.some((filter) => !filter(record))) continue;
+						}
+						ids.add(id);
+						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
+						/*
+						if (i++ > 100) {
+							// yield the event turn every 100 ids. We don't want to monopolize the
+							// event loop, give others a chance to run. However, we are much more aggressive
+							// about running here than in simple filter operations, because we are
+							// executing a very minimal range iteration and because this is consuming
+							// memory (so we want to get it over with) and the user isn't getting any
+							// results until we finish
+							await new Promise(setImmediate);
+							i = 0;
+						}*/
+					}
+					// and now start iterating through the ids
+					idIterator = ids[Symbol.iterator]();
+				}
+				return nextJoined();
+			};
+		}
+		return iterator;
+	};
+	return results;
 }
 
 export const ALTERNATE_COMPARATOR_NAMES = {
@@ -1622,15 +1829,25 @@ export function getNestedValue(record: any, path: string | string[]): any {
  * @param {SearchObject} searchCondition
  * @returns {({}) => boolean}
  */
-export function filterByType(searchCondition, Table, context, filtered, isPrimaryKey?, estimatedIncomingCount?) {
+export function filterByType(
+	searchCondition,
+	Table,
+	context,
+	filtered,
+	isPrimaryKey?,
+	estimatedIncomingCount?,
+	inUnion?: boolean
+) {
 	const comparator = searchCondition.comparator;
 	const negated = searchCondition.negated;
 	let attribute = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
-		if (attribute.length === 1) attribute = attribute[0];
-		else if (attribute.length > 1) {
+		if (attribute.length === 1) {
+			attribute = attribute[0];
+			isPrimaryKey = attribute === Table?.primaryKey;
+		} else if (attribute.length > 1) {
 			const firstAttributeName = attribute[0];
 			// get the relationship attribute (may be undefined for plain JSON paths)
 			const firstAttribute = findAttribute(Table?.attributes, firstAttributeName);
@@ -1657,7 +1874,67 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			}
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
-			const filterMap = filtered?.[firstAttributeName];
+			const filterMap = relationshipRestriction(filtered, firstAttributeName);
+			const join: any = filterMap instanceof Map ? filterMap : undefined;
+			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			const loadEntries = resolver?.loadEntries;
+			const getSubObject = (record, entry) => {
+				let subObject, subEntry, subEntries;
+				if (resolver) {
+					if (resolver.returnDirect) {
+						// indicates that the resolver will direct return the value instead of an entry
+						subObject = resolver(record, context, entry);
+						subEntry = lastMetadata;
+					} else {
+						subEntry = resolver(record, context, entry, true);
+						if (Array.isArray(subEntry)) {
+							subEntries = subEntry.filter((related) => related?.value != null);
+							subObject = subEntries.map((related) => related.value);
+							subEntry = null;
+						} else {
+							subObject = subEntry?.value;
+						}
+					}
+				} else subObject = record[firstAttributeName];
+				return { subObject, subEntry, subEntries };
+			};
+			const relatedSelection = (filters: any[]) =>
+				new RelationshipSelection(filters, (record, sync?: boolean) => {
+					// this is called when selecting the fields to include in results
+					if (loadEntries && !sync) {
+						return when(loadEntries(record, context), (loaded) => {
+							if (!resolver.toMany || !loaded) return loaded?.value;
+							const matches = mapSettlingOnThrow(
+								loaded,
+								(entry) => entry?.value != null && matchesFilters(filters, entry.value, entry, false)
+							);
+							const matchingKeys = (matches) =>
+								loaded
+									.filter((_entry, i) => matches[i])
+									.map((entry) => entry.key ?? entry.value[relatedTable.primaryKey]);
+							return matches.some((matches) => matches?.then)
+								? Promise.all(matches).then(matchingKeys)
+								: matchingKeys(matches);
+						});
+					}
+					const { subObject, subEntries } = getSubObject(record, undefined);
+					if (!Array.isArray(subObject)) return subObject;
+					const keys = [];
+					for (let i = 0; i < subObject.length; i++) {
+						const value = subObject[i];
+						const entry = subEntries?.[i];
+						if (filters.every((filter) => filter(value, entry)))
+							keys.push(entry?.key ?? value[relatedTable.primaryKey]);
+					}
+					return keys;
+				});
+			// AND scope: registered when built, so no row sees a partial set; OR scope: lazily, first branch wins
+			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
+			let selection;
+			if (!join && restrictsSelect && !inUnion) {
+				if (filterMap instanceof RelationshipSelection) selection = filterMap;
+				else if (!Object.hasOwn(filtered, firstAttributeName)) selection = relatedSelection([]);
+			}
 			const nextFilter = filterByType(
 				{
 					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
@@ -1667,79 +1944,82 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				},
 				relatedTable,
 				context,
-				filterMap?.[firstAttributeName]?.joined,
+				join ?? selection,
 				attribute[1] === relatedTable.primaryKey,
-				estimatedIncomingCount
+				estimatedIncomingCount,
+				inUnion
 			);
 			if (!nextFilter) return;
-			if (filterMap) {
-				if (!filterMap.filters) filterMap.filters = [];
-				filterMap.filters.push(nextFilter);
+			if (join) {
+				if (!join.filters) join.filters = [];
+				join.filters.push(nextFilter);
 				return;
 			}
-			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			if (selection) {
+				filtered[firstAttributeName] = selection;
+				selection.filters.push(nextFilter);
+			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
-			const getSubObject = (record, entry) => {
-				let subObject, subEntry;
-				if (resolver) {
-					if (resolver.returnDirect) {
-						// indicates that the resolver will direct return the value instead of an entry
-						subObject = resolver(record, context, entry);
-						subEntry = lastMetadata;
-					} else {
-						subEntry = resolver(record, context, entry, true);
-						if (Array.isArray(subEntry)) {
-							// if any array, map the values
-							subObject = subEntry.map((subEntry) => subEntry.value);
-							subEntry = null;
-						} else {
-							subObject = subEntry?.value;
-						}
-					}
-				} else subObject = record[firstAttributeName];
-				return { subObject, subEntry };
+			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
+			const usesIdFilter = () => nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
+			const preserveForSelect = () => {
+				if (inUnion && restrictsSelect && !Object.hasOwn(filtered, firstAttributeName))
+					filtered[firstAttributeName] = relatedSelection([nextFilter]);
 			};
 			const recordFilter = (record, entry) => {
-				if (resolver) {
-					if (nextFilter.idFilter) {
-						// if we are filtering by id, we can use the idFilter to avoid loading the record
-						if (!subIdFilter) {
-							if (nextFilter.idFilter.idSet?.size === 1) {
-								// if there is a single id we are looking for, we can create a new search condition that the
-								// attribute comparator could eventually use to create a recursive id set
-								// TODO: Eventually we should be able to handle multiple ids by creating a union
-								searchCondition = {
-									attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-									value: nextFilter.idFilter.onlyId,
-								};
-								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
-								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
-							} else
-								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, false, true);
-						}
-						const matches = subIdFilter(record);
-						if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
-						return matches;
+				if (resolver && usesIdFilter()) {
+					// if we are filtering by id, we can use the idFilter to avoid loading the record
+					if (!subIdFilter) {
+						// an array of foreign keys is tested per element; a single key (which may be a composite array) whole
+						const allowObjectMatching = Boolean(resolver.to) || !resolver.toMany;
+						if (nextFilter.idFilter.idSet?.size === 1) {
+							// if there is a single id we are looking for, we can create a new search condition that the
+							// attribute comparator could eventually use to create a recursive id set
+							// TODO: Eventually we should be able to handle multiple ids by creating a union
+							searchCondition = {
+								attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+								value: nextFilter.idFilter.onlyId,
+							};
+							subIdFilter = attributeComparator(
+								resolver.from ?? Table.primaryKey,
+								nextFilter.idFilter,
+								true,
+								allowObjectMatching
+							);
+						} else
+							subIdFilter = attributeComparator(
+								resolver.from ?? Table.primaryKey,
+								nextFilter.idFilter,
+								false,
+								allowObjectMatching
+							);
 					}
+					const matches = subIdFilter(record);
+					if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
+					if (matches) preserveForSelect();
+					return matches;
 				}
-				const { subObject, subEntry } = getSubObject(record, entry);
+				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
-				const filterMap = filtered?.[firstAttributeName];
-				if (!filterMap && filtered) {
-					// establish a filtering that can preserve this filter for the select() results of these sub objects
-					filtered[firstAttributeName] = {
-						fromRecord(record) {
-							// this is called when selecting the fields to include in results
-							const value = getSubObject(record, undefined).subObject;
-							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
-							return value;
-						},
-					};
-				}
-				return subObject.some(nextFilter);
+				preserveForSelect();
+				return subObject.some((value, i) => nextFilter(value, subEntries?.[i]));
 			};
+			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
+			if (loadEntries) {
+				const matchLoaded = (loaded) => {
+					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
+					if (!loaded) return false;
+					preserveForSelect();
+					return someRelatedMatch(loaded, nextMatch, 0);
+				};
+				(recordFilter as any).maybeAsync = (record, entry) => {
+					if (usesIdFilter()) return recordFilter(record, entry);
+					const loaded = loadEntries(record, context);
+					return loaded?.then ? loaded.then(matchLoaded) : matchLoaded(loaded);
+				};
+			}
 			return recordFilter;
 		}
 	}
@@ -1749,7 +2029,11 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 		case SEARCH_TYPES.EQUALS:
 		case undefined:
-			baseFilter = attributeComparator(attribute, (recordValue) => recordValue === value, true);
+			baseFilter = attributeComparator(
+				attribute,
+				isPrimaryKey ? primaryKeyEquals(value) : (recordValue) => recordValue === value,
+				true
+			);
 			break;
 		case 'contains':
 			baseFilter = attributeComparator(attribute, (recordValue) => recordValue?.toString().includes(value));
@@ -1757,19 +2041,34 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'ends_with':
 			baseFilter = attributeComparator(attribute, (recordValue) => recordValue?.toString().endsWith(value));
 			break;
-		case 'starts_with':
-			baseFilter = attributeComparator(
-				attribute,
-				(recordValue) => typeof recordValue === 'string' && recordValue.startsWith(value),
-				true
-			);
-			break;
-		case 'prefix':
-			if (!Array.isArray(value)) value = [value];
-			else if (value[value.length - 1] == null) value = value.slice(0, -1);
+		case 'starts_with': {
+			const prefix = String(value);
+			const encodedPrefix = isPrimaryKey && prefix ? (writeKeyId(prefix) as string) : undefined;
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
+					if (typeof recordValue === 'string') return recordValue.startsWith(prefix);
+					if (!isPrimaryKey || !Array.isArray(recordValue)) return false;
+					if (encodedPrefix !== undefined) return (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
+					// a one-element tuple decodes as its element, so this is the test that element would get
+					let leading = recordValue[0];
+					while (Array.isArray(leading)) leading = leading[0];
+					return typeof leading === 'string';
+				},
+				true
+			);
+			break;
+		}
+		case 'prefix': {
+			if (!Array.isArray(value)) value = [value];
+			else if (value[value.length - 1] == null) value = value.slice(0, -1);
+			// the primary-store scan reads [...value, null] up to [...value, MAXIMUM_KEY]
+			const encodedPrefix = isPrimaryKey ? (value.length > 0 ? (writeKeyId(value) as string) + '\x00' : '') : undefined;
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => {
+					if (encodedPrefix !== undefined)
+						return recordValue != null && (writeKeyId(recordValue) as string).startsWith(encodedPrefix);
 					if (!Array.isArray(recordValue)) return false;
 					for (let i = 0, l = value.length; i < l; i++) {
 						if (recordValue[i] !== value[i]) return false;
@@ -1779,6 +2078,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				true
 			);
 			break;
+		}
 		case 'between':
 		case 'gele':
 		case 'gtlt':
@@ -1795,6 +2095,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
+					if (recordValue === undefined) return false;
 					const cmpStart = compareKeys(recordValue, value[0]);
 					const cmpEnd = compareKeys(recordValue, value[1]);
 					return (startInclusive ? cmpStart >= 0 : cmpStart > 0) && (endInclusive ? cmpEnd <= 0 : cmpEnd < 0);
@@ -1806,29 +2107,56 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'in': {
 			if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
 			// Cache the Set on the condition so multi-row evaluation reuses it.
-			let valueSet: Set<any> = (searchCondition as any).cachedSet;
+			let valueSet: Set<any> | CandidateKeySet = (searchCondition as any).cachedSet;
 			if (!valueSet) {
-				valueSet = new Set(value.map((v) => (v instanceof Date ? v.getTime() : v)));
+				const values = value.map((v) => (v instanceof Date ? v.getTime() : v));
+				if (isPrimaryKey) {
+					valueSet = new CandidateKeySet();
+					for (const key of values) valueSet.add(key);
+				} else valueSet = new Set(values);
 				(searchCondition as any).cachedSet = valueSet;
 			}
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
 			break;
 		}
+		// no index holds an entry for an omitted (undefined) value
 		case 'gt':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) > 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) > 0
+			);
 			break;
 		case 'ge':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) >= 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) >= 0
+			);
 			break;
 		case 'lt':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) < 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) < 0
+			);
 			break;
 		case 'le':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) <= 0);
+			baseFilter = attributeComparator(
+				attribute,
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) <= 0
+			);
 			break;
-		case 'ne':
-			baseFilter = attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) !== 0, false, true);
+		case 'ne': {
+			if (isPrimaryKey) {
+				const equals = primaryKeyEquals(value);
+				baseFilter = attributeComparator(attribute, (primaryKey) => !equals(primaryKey));
+			} else
+				baseFilter = attributeComparator(
+					attribute,
+					(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+					false,
+					true
+				);
 			break;
+		}
 		case 'sort':
 			return () => true;
 		default:
@@ -1849,6 +2177,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		allowObjectMatching?: boolean
 	) {
 		let thresholdRemainingMisses: number;
+		allowObjectMatching ||= isPrimaryKey;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
@@ -1905,6 +2234,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					(recordFilter.idFilter as any).idSet = idSet;
 					// the set holds encoded identities; the singleton relationship lookup needs the key itself
 					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
+					(recordFilter.idFilter as any).mappedTo = Boolean((recordFilter as any).to);
 				}
 			}
 			return matches;
@@ -1973,6 +2303,10 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 		case 'prefix': {
 			let start = Array.isArray(value) ? value : [value, null];
 			if (start[start.length - 1] != null) start = start.concat(null);
+			if (isPrimaryKey && start.length <= 1) {
+				range = { start: true };
+				break;
+			}
 			const end = start.slice(0);
 			end[end.length - 1] = MAXIMUM_KEY;
 			range = { start, end };
@@ -2407,9 +2741,6 @@ function parseBlock(query, expectedEnd) {
 						attribute = null;
 					}
 				} else {
-					if (value && entry.conditions.length) {
-						recordError('conditions/comparisons are not allowed in a property list');
-					}
 					query.push(entry);
 				}
 				if (queryString[lastIndex] === ',') {

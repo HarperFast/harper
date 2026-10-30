@@ -60,7 +60,8 @@ a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`
 `registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
 `list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
 principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
-`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A
+`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`** (and
+`isLocalPrincipal`, below). A
 user _created after minting_ with a colliding name is therefore inert at every current site; the
 residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
 
@@ -243,6 +244,16 @@ A role's `component_deploy` grant (harper#3046) reaches `deploy_component`, `dro
 
 `harper run` on an empty root evaluates these modules (and `installer.ts`) before `install()` writes the config, and `install()` creates the admin before the startup phase (`runStartup()`) runs, so no startup hook can fix the admin's hash: `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`. Validation uses the stored value. `password.hash` defaults to the configured function; `password.validate` defaults to SHA-256 whatever is configured, because the algorithm of a stored hash is not policy and the refresh-token check validates its SHA-256 hash with that default (a config-driven default returns a Promise there, and `!Promise` accepts a superseded token). Token lifetimes are read per mint, so they need no startup hook. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
 
+## Local trust is a principal, not a stored user (`security/user.ts`, `security/auth.ts`)
+
+A request trusted by its transport — `authentication.authorizeLocal` from 127.x/::1, the operations domain socket (`bypassLocalAuth`), a loopback MQTT connection, test mode's `bypassAuth()` — runs as `localPrincipal()`: a fixed super user named `local` that no stored record backs, so admitting it reads no record and works with no users at all.
+
+- **Recognized by its marker, never its name.** `isLocalPrincipal` checks `_localPrincipal: true`, which only trusted code sets: `userView` copies no such field from a record, and the token, bearer-validator, OIDC and impersonation paths build users from explicit fields. A string, not a symbol, because the Bun/uWS fallback forwards `request.user` as JSON and the MQTT will row stores it. `add_user` refuses the name; a stored `local` that predates that is an ordinary user.
+- **Never resolvable by name, so never portable.** Local trust belongs to the connection. A session row never names the principal (`session.update` drops it), and no token is minted for it: a credential-free `create_authentication_tokens` from it mints for the first active stored user whose role has the `super_user` flag (`getSuperUser`), or fails with 409. A by-name rehydration site checks `isLocalPrincipal` first: the MQTT will replay rebuilds the principal from the marker; live-subscription re-authorization and MCP list_changed skip it, since no record change can revoke it.
+- **Each call is a separate view**, as with `userView`: fresh user, `role` and `permission` objects; the shared system-table tree is frozen. The role is a default install's `super_user` role, id included, because applications authorize on `role.id` (the published redirector and early-hints templates do).
+
+Enforced by `unitTests/security/localPrincipal.test.js` and `integrationTests/security/local-principal-token-mint.test.ts`.
+
 ## Named component children are identified by lifetime (`security/jsLoader.ts`, `security/spawnPidFile.ts`)
 
 To prevent adopting or signaling recycled PIDs or reusing zombies ([#2968](https://github.com/HarperFast/harper/issues/2968)), a `pids/<name>.pid` record contains the positive PID, version (zero when omitted), and OS birth identity. Linux uses boot ID/PID/start ticks and excludes zombies and thread IDs; macOS uses PID/`ps lstart` in UTC/C locale (one-second resolution); Windows uses PID/`Win32_Process.CreationDate` ticks. Adoption, version replacement, wrapper kill and exit observation compare the recorded identity. A Linux record from a different boot is retired before probing its potentially inaccessible recycled PID. PID records publish through write-then-rename so readers only see a complete record; a crash before publication can still leave an unrecorded surviving child. Probe failure is unknown, never permission to retire a record or emit exit. Same-boot hidden PIDs under hidepid/ProtectProc and permission-denied probes can require operator verification/record repair or process departure; permission denial does not prove identity change. macOS/Windows wrapper probes are asynchronous and never overlap. Synchronous spawn/adoption probes run under the lock, adding serialized startup time per worker to keep the identity check fresh after lock waits. Polling is once per second on Linux/macOS and once per five seconds on Windows to bound recurring PowerShell cost; exit notification can lag by that interval plus probe time. A signal-zero fast path with infrequent birth checks was rejected because a reused live PID would keep an exited wrapper open until that longer check interval. Legacy records are retired without signaling their unverified PID, with a warning: a surviving legacy child may coexist with the replacement once during upgrade. Older builds ignore the third line, so mixed-version access does not gain this safety guarantee.
@@ -252,3 +263,32 @@ Synchronous spawning uses a filesystem bakery lock: contenders atomically publis
 Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
 
 Named-process probe and lock failures use `NamedProcessError`, a `ServerError` subtype with the original cause; native child-process argument errors retain their original class and code.
+
+## Application lockdown seals the intrinsics by default (`security/intrinsicsLockdown.ts`)
+
+`applications.lockdown` makes prototype-pollution exploits against apps harder; it is not a sandbox. The default
+`seal-after-load` (and eager `seal`) seals 21 intrinsic globals (constructors plus `Math`, `JSON`, `Reflect` and
+`Atomics`) and their prototypes, plus `Function` and `Function.prototype`, once components have loaded. After that point no property can be added to or deleted
+from them, which is what a polluting key (`__proto__.isAdmin`, `constructor.prototype.isAdmin`) needs.
+Overwriting an existing property is still allowed: it is mostly a denial of service, not an escalation.
+
+Never make prototype properties read-only in a seal mode, whether by `Object.freeze`, `writable: false` or
+getter/setter accessors. A read-only elements kind on `Object.prototype` or `Array.prototype` moves every store
+into an array hole off V8's fast path, process-wide (about 45× for `new Array(n)` fills, about 3× for msgpackr
+decode). Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
+shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
+accessors.
+
+The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible. When a component
+replaces one of these globals while it loads, sealing locks both the replacement and the realm's original, which
+literals and async functions keep using. Freezing locks only the current global, because freezing the original
+would skip its overridable accessors.
+
+`lockDownIntrinsics` matches mode names exactly: any other truthy value, including a typo or a non-string, freezes
+eagerly (fails closed). A falsy value skips lockdown, like `none` (`security/jsLoader.ts`). Only fresh installs get
+the default: the installer writes the whole default config into each instance's `harper-config.yaml`, so an
+upgraded instance keeps the `freeze-after-load` it was installed with.
+
+Enforced by `unitTests/security/intrinsicsLockdown.test.js`, which runs each mode in a fresh `Worker` because
+lockdown cannot be undone in a realm, and by `integrationTests/components/intrinsics-lockdown.test.ts`. The cost of
+each mode is measured by `benchmarks/lockdown/run.mts`.

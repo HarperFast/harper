@@ -26,7 +26,8 @@ analytics:
   aggregatePeriod: 60
   replicate: false
 applications:
-  lockdown: freeze-after-load
+  # Releases without the seal modes freeze eagerly on this value; set freeze-after-load before downgrading.
+  lockdown: seal-after-load
   moduleLoader: vm-current-context
   dependencyLoader: auto
   allowedSpawnCommands:
@@ -89,6 +90,7 @@ storage:
   path: null
   backupPath: null
   prefetchWrites: true
+  maxLockClockSkew: 5s
 tls:
   privateKey: null
   certificateWatchInterval: 300000

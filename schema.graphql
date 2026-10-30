@@ -320,3 +320,11 @@ directive @relationship(
 	"""
 	to: String
 ) on FIELD_DEFINITION
+
+"""
+Hash the primary key to a fixed slot, whose database map names a shard.
+slots is database-wide, optional, and 1..65536; omitted adopts the map count or defaults to 1024.
+by and slotFrom are not supported yet (harper-pro#1178).
+The policy cannot be changed or removed after activation.
+"""
+directive @sharded(slots: Int, by: String, slotFrom: String) on OBJECT

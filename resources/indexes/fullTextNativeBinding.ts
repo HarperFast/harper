@@ -119,8 +119,8 @@ export type NativeFullTextRuntimeInfo = {
 		maxCommitPayloadBytes: number;
 		maxRecordIdBytes: number;
 		maxRecordVersionBytes: number;
-		maxCandidateIds: number;
-		maxCandidateBytes: number;
+		maxCandidateIds?: number;
+		maxCandidateBytes?: number;
 		maxSearchWindow: number;
 		maxSearchPageSize: number;
 		maxAutocompleteResults: number;
@@ -142,8 +142,6 @@ export type NativeFullTextQueryRuntimeInfo = Pick<
 		| 'maxAutocompleteResults'
 		| 'maxRecordIdBytes'
 		| 'maxRecordVersionBytes'
-		| 'maxCandidateIds'
-		| 'maxCandidateBytes'
 		| 'maxSearchResponseBytes'
 		| 'maxSearchBudgetMilliseconds'
 		| 'maxTraceRecords'
@@ -324,10 +322,6 @@ export function validateFullTextQueryRuntimeInfo(info: unknown): NativeFullTextQ
 		runtime.limits.maxRecordIdBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxRecordVersionBytes) ||
 		runtime.limits.maxRecordVersionBytes <= 0 ||
-		!Number.isSafeInteger(runtime.limits.maxCandidateIds) ||
-		runtime.limits.maxCandidateIds <= 0 ||
-		!Number.isSafeInteger(runtime.limits.maxCandidateBytes) ||
-		runtime.limits.maxCandidateBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxSearchWindow) ||
 		runtime.limits.maxSearchWindow <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxSearchPageSize) ||

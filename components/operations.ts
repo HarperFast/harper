@@ -46,8 +46,14 @@ import {
 } from './Application.ts';
 import { deploymentOfLiveRelease } from './deploymentOperations.ts';
 const prepareApplication = _prepareApplication;
-import { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } from './componentPreparationLock.ts';
+import {
+	COMPONENT_PREPARATION_LOCK_DIR,
+	ComponentPreparationLockTimeoutError,
+	withComponentPreparationLock,
+} from './componentPreparationLock.ts';
 import { DEPLOYMENT_PROVENANCE_FILE } from './deploymentProvenance.ts';
+import { isReadOnlyMode } from '../resources/readOnlyMode.ts';
+import { pathPresent } from '../utility/durableFile.ts';
 import { compareInstallFingerprints, describeInstallDrift } from './installFingerprint.ts';
 import {
 	applyRootConfigEffect,
@@ -470,11 +476,11 @@ const BRANCH_STORAGE_RETAINED = {
 	keepBranches:
 		'. Its branched database storage was left in place (keepBranches); drop it again without keepBranches to discard that data',
 	loaded:
-		'. Any branched database storage this application owns was left in place, since workers still have it loaded; ' +
-		'drop it again once they restart to discard that data',
+		'. Any branched database storage this application owns was left in place, since workers may still have it ' +
+		'loaded; it is discarded once none does',
 	restart:
 		'. Any branched database storage this application owns was left in place, since the restart did not finish ' +
-		'replacing every worker; drop it again to discard that data',
+		'replacing every worker; it is discarded once none holds it',
 };
 
 /** Report a restart outcome the operation's own success message cannot convey. */
@@ -1834,92 +1840,223 @@ async function dropComponent(req?: any) {
  * A whole-component drop, on the main thread under the component's lock. A component this node does not have is
  * dropped by doing nothing, and nothing restarts. An isolated application's dedicated worker is stopped whatever
  * `restart` says, a leftover one included, and the shared workers restart only when asked and only when they may hold
- * it. Its branched databases go last, once nothing holds them. `answerEarly` answers a worker that asked for this
- * before a step that stops it; `null` in an answer means not known yet.
+ * it. Its branched databases go last, once nothing holds them, and are recorded as owed before anything is removed, so
+ * `retryPendingBranchRemovals` finishes a removal this drop could not. `answerEarly` answers a worker that asked for
+ * this before a step that stops it; `null` in an answer means not known yet.
  */
 async function dropApplication(request, requester?: any, answerEarly?: any) {
 	// the asker's own deadline, on its own clock: never sent to a peer
 	const { startBy, ...req } = request;
 	const { project } = req;
 	const componentPath = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), project);
-	const { applicationHasBranchStorage, removeBranchesForApplication } = branchDatabaseRuntimeModule;
+	const {
+		applicationHasBranchStorage,
+		clearPendingBranchRemoval,
+		recordPendingBranchRemoval,
+		removeBranchesForApplication,
+	} = branchDatabaseRuntimeModule;
 	let response;
-	await withComponentPreparationLock(
-		componentPath,
-		async () => {
-			// Past this, the worker that asked could give up before the drop finished, and report it not dropped.
-			if (startBy !== undefined && Date.now() > startBy) {
-				throw new ServerError(
-					`Did not drop ${project}: it waited for the component lock past the time it had to start`
-				);
-			}
-			await assertNotCertifying(componentPath, project);
-			// Each node compares its own live release, so a peer that already has a newer one keeps it.
-			if (
-				req.ifDeploymentId !== undefined &&
-				(await readDeploymentProvenance(componentPath, project)) !== req.ifDeploymentId
-			) {
-				response = {
-					...nodeOutcome(false),
-					message: `Did not drop ${project}: its live release is not deployment ${req.ifDeploymentId}`,
-				};
-				return;
-			}
-			const present = (await fs.pathExists(componentPath)) || hasRootConfigEntry(project);
-			// a worker left running by a drop that failed after it removed the entry still counts
-			const running = (await manageThreads.getRunningIsolatedApplications()).includes(project);
-			const isolated = configuredIsolated(project) || running;
-			const poolMayHold = manageThreads.poolMayHold(project);
-			const hadWorker = manageThreads.workersForApplication(project).length > 0;
-			if (present) await removeApplication(project, componentPath);
-			const restartsPool = present && req.restart === true && (!isolated || poolMayHold);
-			const outcome = nodeOutcome(present);
-			let message = present
-				? `Successfully dropped: ${project}${restartsPool ? ', restarting Harper' : ''}`
-				: `Successfully dropped: ${project}, which was not on this node`;
-			const branched = applicationHasBranchStorage(project);
-			let retained;
-			if (branched && req.keepBranches === true) retained = 'keepBranches';
-			else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
-			if (retained) message += BRANCH_STORAGE_RETAINED[retained];
-			const answerBeforeStop = (known?: any) =>
-				answerEarly?.({ ...response, branchesRemoved: branched && !retained ? null : false, ...known });
+	try {
+		await withComponentPreparationLock(
+			componentPath,
+			async () => {
+				// Past this, the worker that asked could give up before the drop finished, and report it not dropped.
+				if (startBy !== undefined && Date.now() > startBy) {
+					throw new ServerError(
+						`Did not drop ${project}: it waited for the component lock past the time it had to start`
+					);
+				}
+				await assertNotCertifying(componentPath, project);
+				// Each node compares its own live release, so a peer that already has a newer one keeps it.
+				if (
+					req.ifDeploymentId !== undefined &&
+					(await readDeploymentProvenance(componentPath, project)) !== req.ifDeploymentId
+				) {
+					response = {
+						...nodeOutcome(false),
+						message: `Did not drop ${project}: its live release is not deployment ${req.ifDeploymentId}`,
+					};
+					return;
+				}
+				const present = (await fs.pathExists(componentPath)) || hasRootConfigEntry(project);
+				// a worker left running by a drop that failed after it removed the entry still counts
+				const running = (await manageThreads.getRunningIsolatedApplications()).includes(project);
+				const isolated = configuredIsolated(project) || running;
+				const poolMayHold = manageThreads.poolMayHold(project);
+				const hadWorker = manageThreads.workersForApplication(project).length > 0;
+				const restartsPool = present && req.restart === true && (!isolated || poolMayHold);
+				const keep = req.keepBranches === true;
+				let branched = applicationHasBranchStorage(project);
+				if (keep) await clearPendingBranchRemoval(project);
+				else if (branched) recordPendingBranchRemoval(project);
+				if (present) await removeApplication(project, componentPath);
+				// a worker still loading it can have created one since
+				if (!branched && applicationHasBranchStorage(project)) {
+					branched = true;
+					if (!keep) {
+						try {
+							recordPendingBranchRemoval(project);
+						} catch (error) {
+							throw new Error(
+								`Dropped ${project}, but could not record the removal its branched database storage is owed: ` +
+									`${error.message}. Drop it again to retry.`
+							);
+						}
+					}
+				}
+				let retained;
+				if (branched && keep) retained = 'keepBranches';
+				else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
+				const outcome = nodeOutcome(present);
+				let message = present
+					? `Successfully dropped: ${project}${restartsPool ? ', restarting Harper' : ''}`
+					: `Successfully dropped: ${project}, which was not on this node`;
+				if (retained) message += BRANCH_STORAGE_RETAINED[retained];
+				const answerBeforeStop = (known?: any) =>
+					answerEarly?.({ ...response, branchesRemoved: branched && !retained ? null : false, ...known });
 
-			response = Object.assign(await replicateDrop(req), outcome, { message });
-			if (isolated && (present || running)) {
-				if (requester?.application === project) answerBeforeStop({ workerStopped: null });
-				await manageThreads.reconcileIsolatedApplication(project);
-				response.workerStopped = hadWorker && manageThreads.workersForApplication(project).length === 0;
-			}
-			let restart;
-			if (restartsPool) {
-				if (requester?.name === hdbTerms.THREAD_TYPES.HTTP && !requester.application) answerBeforeStop();
-				const { awaitRestart } = awaitRestartRuntimeModule;
-				restart = await awaitRestart((onProgress) =>
-					manageThreads.restartWorkers('http', undefined, undefined, onProgress, undefined)
-				);
-				logRestartOutcome(restart, `dropping ${project}`);
-			}
-			if (!branched || retained) return;
-			if (restart && (!restart.completed || restart.workersKeptOnOldCode)) {
-				log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
-				response.message += BRANCH_STORAGE_RETAINED.restart;
-				return;
-			}
-			try {
-				await removeBranchesForApplication(project);
-			} catch (error) {
-				log.error(`Branched database storage of ${project} could not be removed`, error);
-				throw new Error(
-					`Successfully dropped: ${project}, but its branched database storage could not be removed and was left ` +
-						`in place: ${error.message}. Drop it again to retry.`
-				);
-			}
-			response.branchesRemoved = true;
-		},
-		componentDropLockOptions(project)
-	);
+				response = Object.assign(await replicateDrop(req), outcome, { message });
+				if (isolated && (present || running)) {
+					if (requester?.application === project) answerBeforeStop({ workerStopped: null });
+					await manageThreads.reconcileIsolatedApplication(project);
+					response.workerStopped = hadWorker && manageThreads.workersForApplication(project).length === 0;
+				}
+				let restart;
+				if (restartsPool) {
+					if (requester?.name === hdbTerms.THREAD_TYPES.HTTP && !requester.application) answerBeforeStop();
+					const { awaitRestart } = awaitRestartRuntimeModule;
+					restart = await awaitRestart((onProgress) =>
+						manageThreads.restartWorkers('http', undefined, undefined, onProgress, undefined)
+					);
+					logRestartOutcome(restart, `dropping ${project}`);
+				}
+				if (!branched || retained) return;
+				if (restart && (!restart.completed || restart.workersKeptOnOldCode)) {
+					log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
+					response.message += BRANCH_STORAGE_RETAINED.restart;
+					return;
+				}
+				try {
+					await removeBranchesForApplication(project);
+				} catch (error) {
+					log.error(`Branched database storage of ${project} could not be removed`, error);
+					throw new Error(
+						`Successfully dropped: ${project}, but its branched database storage could not be removed and was left ` +
+							`in place: ${error.message}. Harper retries removing it until it succeeds.`
+					);
+				}
+				response.branchesRemoved = true;
+			},
+			componentDropLockOptions(project)
+		);
+	} finally {
+		void retryPendingBranchRemovals();
+	}
 	return response;
+}
+
+const BRANCH_REMOVAL_RETRY_FIRST_MS = 60_000;
+const BRANCH_REMOVAL_RETRY_MAX_MS = 60 * 60_000;
+let branchRemovalRetryFirstMs = BRANCH_REMOVAL_RETRY_FIRST_MS;
+let branchRemovalRetryDelayMs = BRANCH_REMOVAL_RETRY_FIRST_MS;
+let branchRemovalRetryTimer: NodeJS.Timeout | undefined;
+let branchRemovalPass: Promise<void> | undefined;
+let branchRemovalPassRunning = false;
+let branchRemovalPassRequested = false;
+
+/**
+ * Finish the branch removals drops on this node recorded as owed and could not complete: after every whole-component
+ * drop, once a start has settled its components and its workers have reported what they loaded, and on a backoff timer
+ * while one that a later pass can finish remains. One application at a time, under its component lock, which a pass
+ * does not wait for. A request during a pass runs one more, so a debt recorded after the listing is not missed.
+ */
+function retryPendingBranchRemovals(): Promise<void> {
+	branchRemovalPassRequested = true;
+	if (!branchRemovalPassRunning) {
+		branchRemovalPassRunning = true;
+		branchRemovalPass = runBranchRemovalPasses();
+	}
+	return branchRemovalPass;
+}
+
+async function runBranchRemovalPasses(): Promise<void> {
+	try {
+		let outstanding = false;
+		while (branchRemovalPassRequested) {
+			branchRemovalPassRequested = false;
+			outstanding = false;
+			if (isReadOnlyMode()) break;
+			try {
+				const { applications, complete } = branchDatabaseRuntimeModule.applicationsWithPendingBranchRemoval();
+				if (!complete) outstanding = true;
+				for (const project of applications) {
+					if (!(await retryBranchRemoval(project))) outstanding = true;
+				}
+			} catch (error) {
+				outstanding = true;
+				log.error('Could not retry the branched database removals drops left owed', error);
+			}
+		}
+		if (!outstanding) {
+			clearTimeout(branchRemovalRetryTimer);
+			branchRemovalRetryTimer = undefined;
+			branchRemovalRetryDelayMs = branchRemovalRetryFirstMs;
+		} else if (!branchRemovalRetryTimer) {
+			branchRemovalRetryTimer = setTimeout(() => {
+				branchRemovalRetryTimer = undefined;
+				void retryPendingBranchRemovals();
+			}, branchRemovalRetryDelayMs).unref();
+			branchRemovalRetryDelayMs = Math.min(branchRemovalRetryDelayMs * 2, BRANCH_REMOVAL_RETRY_MAX_MS);
+		}
+	} catch (error) {
+		// every caller discards this promise
+		log.error('Could not schedule a retry of the branched database removals drops left owed', error);
+	} finally {
+		// in the same turn as the last check of the request flag, so no request lands on a finished pass
+		branchRemovalPassRunning = false;
+	}
+}
+
+/**
+ * Whether the debt needs no timer: removed, cancelled by a later drop, or waiting on an application that is deployed
+ * again (or that a root config it cannot read might name), for that application's next drop. A worker that may still
+ * hold it, a lock another holds, a directory it cannot check, or a failed removal leave it to the next timed pass.
+ */
+async function retryBranchRemoval(project: string): Promise<boolean> {
+	const { hasPendingBranchRemoval, removeBranchesForApplication } = branchDatabaseRuntimeModule;
+	const componentPath = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), project);
+	try {
+		return await withComponentPreparationLock(
+			componentPath,
+			async () => {
+				if (!hasPendingBranchRemoval(project)) return true;
+				if (pathPresent(componentPath) || hasRootConfigEntry(project)) return true;
+				if (manageThreads.poolMayHold(project) || manageThreads.workersForApplication(project).length > 0) {
+					return false;
+				}
+				await removeBranchesForApplication(project);
+				log.info(`Removed the branched database storage a drop of ${project} left in place`);
+				return true;
+			},
+			{
+				timeoutMs: 0,
+				isOwnerAlive: componentDropLockOptions(project).isOwnerAlive,
+				purpose: `removing the branched database storage a drop of ${project} left in place`,
+			}
+		);
+	} catch (error) {
+		if (!(error instanceof ComponentPreparationLockTimeoutError)) {
+			log.warn(`Branched database storage of ${project} is still in place; a later pass retries it`, error);
+		}
+		return false;
+	}
+}
+
+/** @internal — testing only */
+function setBranchRemovalRetryDelayForTests(firstMs: number = BRANCH_REMOVAL_RETRY_FIRST_MS): void {
+	branchRemovalRetryFirstMs = branchRemovalRetryDelayMs = firstMs;
+	clearTimeout(branchRemovalRetryTimer);
+	branchRemovalRetryTimer = undefined;
 }
 
 /**
@@ -2045,3 +2182,5 @@ export { setEnvValue };
 export { deleteEnvValue };
 export { dropComponent };
 export { dropPeerResults };
+export { retryPendingBranchRemovals };
+export { setBranchRemovalRetryDelayForTests };

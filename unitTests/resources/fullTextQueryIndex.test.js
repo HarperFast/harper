@@ -1351,7 +1351,7 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(opens, 0);
 	});
 
-	it('retries native capability discovery after a transient failure', async () => {
+	it('retries native capability discovery without unused candidate limits after a transient failure', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'binding-retry';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1370,9 +1370,12 @@ describe('FullTextQueryIndex', () => {
 			binding: {
 				async runtimeInfo() {
 					if (++probes === 1) throw new Error('temporary capability probe failure');
+					const limits = queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 });
+					delete limits.maxCandidateIds;
+					delete limits.maxCandidateBytes;
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
+						limits,
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1403,9 +1406,12 @@ describe('FullTextQueryIndex', () => {
 			'maxAutocompleteResults',
 			'maxRecordIdBytes',
 			'maxRecordVersionBytes',
-			'maxCandidateIds',
-			'maxCandidateBytes',
+			'maxSearchWindow',
+			'maxSearchPageSize',
 			'maxSearchResponseBytes',
+			'maxSearchBudgetMilliseconds',
+			'maxTraceRecords',
+			'maxTraceSourceBytes',
 		]) {
 			const readinessId = `binding-capabilities-${missing}`;
 			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');

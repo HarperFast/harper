@@ -115,6 +115,14 @@ describe('estimateCondition range estimates', () => {
 		assert.deepStrictEqual(table.primaryStore.calls[0], { start: 100 });
 	});
 
+	it('estimates an empty primary-key prefix over every key, as it executes', () => {
+		for (const value of [[], [null]]) {
+			const table = makeTable({ primaryEstimate: { count: 900, confidence: 1 } });
+			assert.strictEqual(estimate(table, { attribute: 'id', comparator: 'prefix', value }), 900);
+			assert.deepStrictEqual(table.primaryStore.calls[0], { start: true });
+		}
+	});
+
 	it('keeps the fraction heuristics when the store cannot estimate', () => {
 		const table = makeTable();
 		assert.strictEqual(

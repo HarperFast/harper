@@ -865,7 +865,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 describe('contentTypes – JSON terminal metadata', () => {
 	for (const asynchronous of [false, true]) {
 		for (const property of ['replicationUnconfirmed', 'retryable']) {
-			it(`finishes valid JSON when ${property} throws in a ${asynchronous ? 'async' : 'sync'} iterator error`, async function () {
+			it(`writes the error element and fails the stream when ${property} throws in a ${asynchronous ? 'async' : 'sync'} iterator error`, async function () {
 				this.timeout(2000);
 				const failure = new Proxy(new Error('Iterator failed'), {
 					get(target, key, receiver) {
@@ -884,9 +884,11 @@ describe('contentTypes – JSON terminal metadata', () => {
 				const readable = contentTypes
 					.get('application/json')
 					.serializeStream(asynchronous ? asyncSource() : syncSource());
+				let text = '';
+				readable.on('data', (chunk) => (text += chunk));
 				try {
-					const result = JSON.parse(await streamToString(readable));
-					assert.deepStrictEqual(result, [{ id: 'first' }, { error: 'Error: Iterator failed' }]);
+					await assert.rejects(streamToString(readable), /Iterator failed/);
+					assert.strictEqual(text, '[{"id":"first"},{"error":"Error: Iterator failed"}');
 				} finally {
 					readable.destroy();
 				}

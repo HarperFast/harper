@@ -816,6 +816,11 @@ function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	return readable;
 }
 
+// transformIterable's return() opens and closes a source it never started, so destroying the stream closes it
+export function closesSourceOnDiscard(stream): boolean {
+	return Boolean(stream?.[streamStartup]);
+}
+
 export function discardSerializedStream(stream) {
 	if (typeof stream?.then === 'function') {
 		Promise.resolve(stream).then(discardSerializedStream, () => {});

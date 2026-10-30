@@ -637,9 +637,23 @@ jobs:
           # Pin the Node matrix. These inputs default to `all`, which is the
           # nightly-scale matrix (~43 jobs); a PR push runs a single version.
           # Unpinned, one push to a PR milestoned onto three release branches
-          # dispatches that matrix three times.
-          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
-          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
+          # dispatches that matrix three times. Integration tests must build the
+          # artifact version that the branch's non-matrixed Bun and uWS jobs
+          # download (falling back to the unit-test version when every artifact
+          # name is matrixed, as on v5.0).
+          UNIT_NODE=24
+          if git show "${BRANCH}:.github/workflows/unit-test.yml" | grep -qE "^[[:space:]]*- '26'[[:space:]]*$"; then
+            UNIT_NODE=26
+          fi
+          INTEGRATION_NODE=$(
+            git show "${BRANCH}:.github/workflows/integration-tests.yml" \
+              | sed -n 's/^[[:space:]]*name:[[:space:]]*harper-build-artifacts-node-\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
+              | sort -nu \
+              | tail -n 1 || true
+          )
+          : "${INTEGRATION_NODE:=$UNIT_NODE}"
+          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$INTEGRATION_NODE"
+          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version="$UNIT_NODE"
 
           # Locate the dispatched integration-tests run id (creation is async)
           RUN_ID=""

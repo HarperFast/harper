@@ -9,3 +9,5 @@ export class RawEntry extends Resource {
 		return { present: !!entry, hasValue: entry?.value != null, expiresAt: entry?.expiresAt ?? null };
 	}
 }
+
+databases.readonlyttl.SessionRef.sourcedFrom({ get: (id) => ({ id, sessionId: id }) });

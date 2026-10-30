@@ -1,4 +1,11 @@
-import { cloneUserView, getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
+import {
+	cloneUserView,
+	isCurrentUser,
+	isLocalPrincipal,
+	localPrincipal,
+	trackUserRecords,
+	userRecordVersions,
+} from './user.ts';
 import { server, getBearerValidators, type BearerValidatorEntry } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import {
@@ -96,10 +103,10 @@ onStartup(() => {
 		authorizationCache = new Map();
 	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
-let bypassUser: any;
+let authorizeAllAsLocal = false;
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
-	bypassUser = { username: 'bypass', role: { role: 'super_user', permission: { super_user: true } } };
+	authorizeAllAsLocal = true;
 }
 
 /**
@@ -410,13 +417,13 @@ export async function authentication(request, nextHandler) {
 				if (failureResponse) return applyResponseHeaders(failureResponse);
 			}
 		} else if (
-			(AUTHORIZE_LOCAL && bypassUser) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
+			(AUTHORIZE_LOCAL && authorizeAllAsLocal) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
 			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
 			(request?._nodeRequest?.socket?.server?._pipeName &&
 				request?._nodeRequest?.socket?.server?.bypassLocalAuth &&
 				request.ip === undefined) // allow operations API domain socket
 		) {
-			request.user = bypassUser ?? (await getSuperUser());
+			request.user = localPrincipal();
 		}
 		if (ENABLE_SESSIONS) {
 			request.session.update = function (updatedSession) {
@@ -474,6 +481,12 @@ export async function authentication(request, nextHandler) {
 					}
 				}
 				updatedSession.id = sessionId;
+				// trust in the transport must not become a cookie that works from anywhere else
+				if (
+					isLocalPrincipal(updatedSession.user) ||
+					(isLocalPrincipal(request.user) && updatedSession.user === request.user.username)
+				)
+					delete updatedSession.user;
 				return getSessionTable().put(updatedSession, {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 				});

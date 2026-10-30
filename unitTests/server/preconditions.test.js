@@ -5,6 +5,7 @@ const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { Resource, WRITE_CONDITION } = require('#src/resources/Resource');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { Resources } = require('#src/resources/Resources');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -695,12 +696,203 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
-	it('rejects custom statics and handlers that never consume the condition', async () => {
+	it('leaves preconditions to resources that define their own verb or are not tables', async () => {
+		const seen = [];
 		class CustomStatic extends Row {
-			static put() {
-				throw new Error('must not dispatch');
+			static put(target, data, context) {
+				seen.push(['CustomStatic', context.headers.get('if-match')]);
+				return { revised: true };
 			}
 		}
+		class OwnConcurrency extends Resource {
+			static put(target, data, context) {
+				seen.push(['OwnConcurrency', context.headers.get('if-match')]);
+				return { revised: true };
+			}
+			static post(target, data, context) {
+				seen.push(['OwnConcurrency', context.headers.get('if-none-match')]);
+				return { created: true };
+			}
+		}
+		const IntKeyed = table({
+			table: 'HttpOwnVerbIntKeys',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true, type: 'Int' }, { name: 'n' }],
+		});
+		class OwnIntVerb extends IntKeyed {
+			static put(target, data, context) {
+				seen.push(['OwnIntVerb', context.headers.get('if-match')]);
+				return { created: target.id };
+			}
+		}
+		resources.set('CustomStatic', CustomStatic, { rest: true });
+		resources.set('OwnConcurrency', OwnConcurrency, { rest: true });
+		resources.set('OwnIntVerb', OwnIntVerb, { rest: true });
+		for (const [method, path, headers] of [
+			['PUT', '/OwnIntVerb/new', { 'if-match': '"3"' }],
+			['PUT', '/CustomStatic/read', { 'if-match': '"3"' }],
+			['PUT', '/OwnConcurrency/x', { 'if-match': '"3"' }],
+			['POST', '/OwnConcurrency/', { 'if-none-match': '*' }],
+		]) {
+			const response = await request(method, path, { n: 2 }, headers);
+			assert.ok(response.status < 300, `${method} ${path}: ${response.status} ${await bodyOf(response)}`);
+		}
+		assert.deepStrictEqual(seen, [
+			['OwnIntVerb', '"3"'],
+			['CustomStatic', '"3"'],
+			['OwnConcurrency', '"3"'],
+			['OwnConcurrency', '*'],
+		]);
+		assert.strictEqual((await Row.get('read')).n, 1);
+	});
+
+	it("applies the condition when a table class's own verb delegates to the table", async () => {
+		class Delegating extends Row {
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		resources.set('Delegating', Delegating, { rest: true });
+		await Row.put('delegate', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('delegate').version);
+		assert.strictEqual((await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-match': '"1"' })).status, 412);
+		assert.strictEqual((await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-none-match': '*' })).status, 412);
+		assert.strictEqual((await Row.get('delegate')).n, 1);
+		const response = await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-match': etag });
+		assert.ok(response.status < 300, await bodyOf(response));
+		assert.strictEqual((await Row.get('delegate')).n, 2);
+	});
+
+	it("binds an own verb's condition to the request target, not to other records it touches", async () => {
+		class ReadsFirst extends Row {
+			static async put(target, data, context) {
+				await super.get('other', context);
+				const collection = new RequestTarget();
+				collection.isCollection = true;
+				for await (const record of await super.get(collection, context)) void record;
+				return super.put(target, data, context);
+			}
+		}
+		class WritesCompanion extends Row {
+			static async put(target, data, context) {
+				await super.put('companion', { n: 9 }, context);
+				return super.put(target, data, context);
+			}
+		}
+		class ThroughBase extends Row {
+			static put(target, data, context) {
+				return Row.put(target, data, context);
+			}
+		}
+		class ById extends Row {
+			static put(target, data, context) {
+				return super.put(target.id, data, context);
+			}
+		}
+		class ByIdThroughBase extends Row {
+			static put(target, data, context) {
+				return Row.put(target.id, data, context);
+			}
+		}
+		class BatchFirst extends Modern {
+			static async put(target, data, context) {
+				const collection = new RequestTarget();
+				collection.isCollection = true;
+				await super.put(collection, [{ id: 'audit', n: 1 }], context);
+				return super.put(target, data, context);
+			}
+		}
+		for (const [name, Class] of [
+			['ReadsFirst', ReadsFirst],
+			['WritesCompanion', WritesCompanion],
+			['ThroughBase', ThroughBase],
+			['ById', ById],
+			['ByIdThroughBase', ByIdThroughBase],
+			['BatchFirst', BatchFirst],
+		]) {
+			resources.set(name, Class, { rest: true });
+			await Row.put('bound', { n: 1 });
+			await Row.delete('companion');
+			const stale = await request('PUT', `/${name}/bound`, { n: 2 }, { 'if-match': '"1"' });
+			assert.strictEqual(stale.status, 412, `${name}: ${await bodyOf(stale)}`);
+			assert.strictEqual((await Row.get('bound')).n, 1, name);
+			assert.strictEqual(await Row.get('companion'), null, name);
+			const etag = versionToEtag(Row.primaryStore.getEntry('bound').version);
+			const current = await request('PUT', `/${name}/bound`, { n: 2 }, { 'if-match': etag });
+			assert.ok(current.status < 300, `${name}: ${current.status} ${await bodyOf(current)}`);
+			assert.strictEqual((await Row.get('bound')).n, 2, name);
+			if (Class === WritesCompanion) assert.strictEqual((await Row.get('companion')).n, 9);
+		}
+	});
+
+	it("binds an own verb's condition through a parsePath that reads request state", async () => {
+		class Tenanted extends Row {
+			static parsePath(path, context) {
+				return `${context.user.tenant}-${path}`;
+			}
+			static put(target, data, context) {
+				return super.put(target, data, context);
+			}
+		}
+		resources.set('Tenanted', Tenanted, { rest: true });
+		const user = { tenant: 'acme', role: { permission: { super_user: true } } };
+		await Row.put('acme-x', { n: 1 });
+		const stale = await request('PUT', '/Tenanted/x', { n: 2 }, { 'if-match': '"1"' }, user);
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		const etag = versionToEtag(Row.primaryStore.getEntry('acme-x').version);
+		const current = await request('PUT', '/Tenanted/x', { n: 2 }, { 'if-match': etag }, user);
+		assert.ok(current.status < 300, `${current.status} ${await bodyOf(current)}`);
+		assert.strictEqual((await Row.get('acme-x')).n, 2);
+	});
+
+	it('leaves the condition to a table class whose own verb the table cannot apply it to, or that opts out', async () => {
+		class DelegatingModern extends Modern {
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		class CustomRepresentation extends Row {
+			static get(...args) {
+				return super.get(...args);
+			}
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		const seen = [];
+		class SelfChecked extends Row {
+			static preconditions = false;
+			static put(target, data, context) {
+				seen.push(context.headers.get('if-match'));
+				return super.put(target, data, context);
+			}
+		}
+		resources.set('CustomRepresentation', CustomRepresentation, { rest: true });
+		resources.set('SelfChecked', SelfChecked, { rest: true });
+		await Row.put('declined', { n: 1 });
+		for (const [path, n] of [
+			['/CustomRepresentation/declined', 2],
+			['/SelfChecked/declined', 3],
+		]) {
+			const response = await request('PUT', path, { n }, { 'if-match': '"1"' });
+			assert.ok(response.status < 300, `${path}: ${response.status} ${await bodyOf(response)}`);
+			assert.strictEqual((await Row.get('declined')).n, n);
+		}
+		assert.deepStrictEqual(seen, ['"1"']);
+		const collection = await request('PUT', '/CustomRepresentation/', [{ id: 'declined', n: 4 }], {
+			'if-match': '"1"',
+		});
+		assert.ok(collection.status < 300, `${collection.status} ${await bodyOf(collection)}`);
+		assert.strictEqual((await Row.get('declined')).n, 4);
+		resources.set('DelegatingModern', DelegatingModern, { rest: true });
+		const arrayBody = await request('PUT', '/DelegatingModern/declined', [{ id: 'declined', n: 5 }], {
+			'if-match': '"1"',
+		});
+		assert.ok(arrayBody.status < 300, `${arrayBody.status} ${await bodyOf(arrayBody)}`);
+		assert.strictEqual((await Row.get('declined')).n, 5);
+	});
+
+	it('rejects table handlers that never consume the condition', async () => {
 		class Noop extends Row {
 			patch() {}
 		}
@@ -709,10 +901,9 @@ describe('REST preconditions with real table transactions', () => {
 				throw new Response('ok', { status: 200 });
 			}
 		}
-		resources.set('CustomStatic', CustomStatic, { rest: true });
 		resources.set('Noop', Noop, { rest: true });
 		resources.set('ThrownSuccess', ThrownSuccess, { rest: true });
-		assert.strictEqual((await request('PUT', '/CustomStatic/read', { n: 2 }, { 'if-match': '*' })).status, 501);
+		assert.strictEqual((await request('POST', '/Row/', { n: 2 }, { 'if-none-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/Noop/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/ThrownSuccess/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await Row.get('read')).n, 1);

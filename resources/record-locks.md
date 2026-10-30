@@ -12,11 +12,14 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 `table.lock(id, options?, context?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
 write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
-map keyed by `[Symbol.for('record-lock'), tableId, id]`. No write goes to the store or audit log for
-`lock()` or `unlock()`. The record's version and stored bytes are unchanged when a lock is acquired or
-released; only the native key is locked in memory. This design eliminates all durable lock state from
-the on-disk format: durable LOCK/UNLOCK writes would produce version bumps that peers interpret as
-out-of-order duplicates and discard.
+map keyed by `[Symbol.for('record-lock'), tableId, id]`. No lock record or audit entry is written for
+`lock()` or `unlock()`. A lock admitted above the local clock within `storage.maxLockClockSkew` may
+persist an issuance ceiling so a restart cannot reuse a key. Admission farther ahead fails with
+`LockUnavailableError`; the record remains unavailable until wall time catches up, so repair the source
+peer's clock or wait. The record's version and stored bytes are
+unchanged when a lock is acquired or released; only the native key is locked in memory. This design
+eliminates durable lock state from the on-disk format: durable LOCK/UNLOCK writes would produce version
+bumps that peers interpret as out-of-order duplicates and discard.
 
 **Phase 0 contract.** `lock()` is mutually exclusive only with other `lock()` calls on the same key.
 Plain writes (`put`, `patch`, `delete`, `create`, `invalidate`, `relocate`) are never gated, parked,
@@ -26,6 +29,14 @@ unpinned mixed explicit transaction. That transaction's later timestamp becomes 
 so the holder cannot lose its own subsequent writes; ordering against plain writes between acquisition
 and that transaction timestamp is best-effort. Use `lock()` when the caller needs to read-then-
 conditionally-write without another holder interleaving, not to serialize arbitrary writers.
+
+Admission above a caller-supplied transaction timestamp can raise that timestamp to the admitted
+version. When the version is within `storage.maxLockClockSkew`, the local issuance clock can also move
+ahead of wall time, affecting unrelated local writes until the clock catches up.
+
+If persisting the issuance ceiling for a holder-write stamp fails, that save rejects and its unsaved
+operation is detached from the transaction. The caller must unlock and acquire a fresh lock before
+retrying the change; the refused operation cannot be reused through the same record instance. All unsaved writes on that handle in the refusing transaction are void when refusal is observed; already saved writes retain their replay state. Unsaved writes in another transaction still fail at that transaction's own commit. Re-entering lock() without unlocking does not recover the handle; unlock first, then acquire a fresh lock.
 
 Consequences that shape the code:
 
@@ -168,7 +179,12 @@ the lock's acquisition time, which LWW then silently drops against a newer recor
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
 clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
 were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
-thrown for the mixed-write case). After a lock-backed record change commits, its transaction timestamp
+thrown for the mixed-write case). Either way the holder's writes commit at the transaction's version:
+`save()` stamps from the handle only a save that commits on its own handle (`saveCommits`, or
+`concurrentClosedWrite` — a write that reaches the transaction after it closed), so the conflict-retry
+and open-iterator-replay re-saves that `performCommit()` runs after closing the transaction keep each
+write's first-save version ([harper#3487](https://github.com/HarperFast/harper/issues/3487); pinned by
+`recordLock.test.js`). After a lock-backed record change commits, its transaction timestamp
 advances `handle.noteHolderVersion()`, so a surviving hold's later saves advance past that version
 rather than going backwards and being dropped by LWW. A skipped or rolled-back change never advances
 the floor. Consequently, a mixed transaction can
@@ -176,6 +192,54 @@ make later holder writes outrank a plain write whose timestamp falls between `ac
 transaction timestamp. A caller-supplied future `context.timestamp` likewise remains the handle's floor
 for the life of the lease; clamping it would put the next holder write behind the handle's own committed
 version and recreate the silent-drop bug.
+
+**Stamping above the admitted state (harper#2540).** Every fresh admission — after the cluster round's
+freshness wait, with the record read once under the lock and that same entry reloaded — raises the
+handle's floor one ulp (`timestampAbove`) above the stored version, a tombstone's included, and above
+the highest predecessor `lockRelease` / `lockBarrier` log position the round waited for
+(`admissionFloor`; the coordinator caches that maximum per delegation as `dependencyFloor`). A bound no
+valid timestamp exceeds fails the admission with a 409 and gives the key back. A valid floor beyond
+`storage.maxLockClockSkew` fails with `LockUnavailableError` (503) before the holder write is staged
+or a local issuance ceiling is reserved.
+
+A floor above the handle's `acquiredAt` is not used as is (`admissionStamp`): every holder admitted on
+state one transaction left would share it as their record version, so separate writes on one record
+could read as a re-delivery — a shared counter loses an increment. Each write's log key is reserved
+separately at save. A floor the clock has already passed takes the
+clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
+value falls back to it with a warning) is claimed as a unique local key
+(`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
+log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, admission
+fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
+version and a local write stamped with a future `context.timestamp` can therefore leave the record unavailable until wall time catches up (callers that stamp future versions on records they also `lock()` must keep the lead within `storage.maxLockClockSkew`). Rewriting or deleting
+at normal clock time does not resolve it because those writes still lose LWW; repair the source
+peer's clock, rewrite at or above that version, or wait. A key the
+ratchet issues ahead of the clock is covered by a ceiling flushed before use, including when another
+worker stored that ceiling. Coverage reserves one second of headroom; restart seeds above that whole
+reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the ratchet buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
+reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
+not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry and
+coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
+before changing modes and can claim a deferred floor.
+
+The floor reaches the write through the existing stamps. An explicit transaction's clock takes it — at
+admission or when a surviving hold saves in a later or mid-scope-rotated explicit transaction — while
+nothing else would move with it (no log key reserved yet and no unlocked write staged first via
+`hasUnlockedWrite`); a hold save whose floor exceeds a fixed transaction clock is refused with a 409. An
+`ImmediateTransaction` uses the handle's per-write stamp and reserves its log key separately. A deferred
+write takes its stamp at its own save. A holder write saved while the same context's previous commit
+is still in flight (awaiting a streamed blob) would join that commit's handle, whose log key is already
+reserved; the joined-commit policy refuses it with a 409 before staging when that key is below
+its stamp (harper#3238). This is a local admission policy, not a replica version clamp: applied writes
+preserve an explicit record version even when it exceeds the origin log key. The caller unlocks, then
+locks and retries once
+the earlier commit settles. A hold steps one ulp past its last version,
+which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
+ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
+issues. A step at or below the ratchet's next key is also claimed, even after clock catch-up, so it
+cannot repeat a key issued during the lead. Such a claim can advance a hold save beyond a later plain
+write rather than retain acquisition order; plain writes remain ungated. The Phase 0 ordering tradeoff
+is tracked in harper#3246.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after
@@ -193,7 +257,8 @@ parks a leader there and a coalesced follower behind it.
 > critical section, and successor freshness after a clean handoff while the key's home still holds
 > that handoff's dependency set. It adds no fencing generation and does not confirm locked writes to a
 > quorum, so **it changes nothing about how two conflicting writes resolve** and it does not promise
-> freshness once that dependency set is gone. Neither limitation is crash-only and both are reachable
+> freshness once that dependency set is gone. What it does do is stamp the holder's writes above every
+> predecessor write the admission could see (harper#2540; "Stamping above the admitted state" above). Neither limitation is crash-only and both are reachable
 > on a clean handoff.
 >
 > **§10 of the Phase 1 design below is the normative
@@ -204,8 +269,8 @@ parks a leader there and a coalesced follower behind it.
 > One consequence bears on the code here rather than on the API: **the Phase 0 contract's relationship
 > with ordinary writes is unchanged by Phase 1** — plain writes are still never gated and still
 > resolve by last-write-wins, with no field added to them — which is the main thing the fenced arm
-> would have given up. The fenced and quorum-confirmed alternatives are deferred, with their costs, to
-> harper#2540.
+> would have given up. The fenced and quorum-confirmed alternatives are not built; harper#2540 took
+> the stamp floor instead.
 
 Phase 1 keeps every Phase 0 mechanism and adds a cluster step on top of it. Nothing in core registers
 a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
@@ -492,10 +557,11 @@ home still holds that handoff's dependency set_ — a home restart, home-map cha
 the successor to the recovery barrier even after a clean release. It promises
 neither conflict-ordering fences nor quorum-confirmed settlement, so the exclusion invariant above
 ships narrower than it is written on two counts — the commit half holds only up to the
-pre-submission expiry fence, and a predecessor's write can still outrank its successor's under LWW.
-§10 states exactly what is and is not promised and is the normative wording; the two arms that would
-close the rest are deferred to harper#2540, not rejected. Where the sections below describe fenced or
-quorum-confirmed mode, they are describing that issue's scope, not this one's.
+pre-submission expiry fence, and a predecessor's write the successor could not see can still outrank
+its successor's under LWW. §10 states exactly what is and is not promised and is the normative wording.
+The two arms that would close the rest are not built: harper#2540 instead stamps a successor above
+every predecessor write its admission could see. Where the sections below describe fenced or
+quorum-confirmed mode, they describe arms that remain unbuilt.
 
 They are separate, and expiry establishes neither on its own. Phase 0 enforces part of the first:
 expiry is checked synchronously on every staged write and again immediately before the native commit
@@ -687,7 +753,8 @@ prove the older interval was safe. Transports without the optional hook retain t
 `homeMap()` fallback.
 
 That quarantine costs availability, and the cost is real: for keys a node homes, the first cluster
-lock after a cold start waits out the interval — per table, from each coordinator's own construction,
+lock after a cold start waits out the interval — per table, from each coordinator's own construction
+(or, where the transport supplies `coordinationStartedMono()`, from the database's ownership epoch, §4.5),
 so a table first locked an hour after the restart still pays it. It does not affect keys homed
 elsewhere — the node acquires those immediately — and it is bounded by the delegation lease, not by
 an operator's response time. A deployment that can prove a previous incarnation issued nothing (a
@@ -753,6 +820,251 @@ disagreement anyone can observe. The routing version therefore rides on the mutu
 `recordLocks` capability that already gates this protocol (§11), so nodes that would hash differently
 cannot both be enabled in one cluster.
 
+#### 4.5 Restart availability: planned, rolling and unplanned (harper#3768)
+
+§4.3's quarantine and the harper#3254 recall are each sound, and together they still leave lock
+failures on every restart, because they answer only half of what a restart raises. A restarting node
+is a **home** for its share of the ring _and_ a **delegate** for keys it locked elsewhere, and a
+restart is **planned** (a deploy, a component reload, a rolling worker restart, an upgrade) or
+**unplanned** (a crash, an OOM, `kill -9`, host loss). central-manager#603 is blocked on the result:
+on harper-pro 5.3.2, which predates the harper#3254 round, every deploy cost about 365 s of immediate
+503s on the restarted node's homed keys, re-armed by each table's first lock and by every
+coordinating-worker move. With the round in place, three gaps remain:
+
+- **G1 — the delegate side.** A home's grant to the restarted node outlives that node's incarnation.
+  A recall reaches the new incarnation, which holds no such token and confirms
+  (`onDelegationRecall`'s unknown-token branch), so the home waits for a release that never comes.
+  Every key the node locked in the last delegation lease, homed elsewhere, is then denied to every
+  other node for up to `DELEGATION_LEASE_MS + skew` — and to the node itself, since a confirmed recall
+  blocks renewal. A rolling worker restart pays this as much as a crash does.
+- **G2 — refusals that will end in seconds fail at once.** `quarantine`, an unreachable home and an
+  ownerless relay each fail the `lock()` immediately. While the round's first pass is in flight a
+  restarted home refuses every key it homes, and every caller fails — although the pass takes about a
+  round trip and the default lock wait is 30 s.
+- **G3 — a per-table clock.** Where the round cannot attest (during a rolling upgrade, a member on a
+  build without the operation), each table's horizon runs from its own coordinator's construction,
+  so a table first locked an hour after the restart still pays 365 s.
+
+**(1) A delegate retires its own dead epochs at its homes (G1).** The unit is a **delegate epoch**,
+per database: the value of the node's durable incarnation counter at the moment this database's
+coordination was last assigned on this node — at process start, or when this database's owner was
+handed off. It is deliberately not the node-wide `homeIncarnation`. A handoff of one database bumps
+that counter for the whole node while every other database's owner stays alive and keeps admitting
+under its delegations, so "below the current incarnation" would name live authority: a node whose
+worker W1 owned database X and died, while W2 still owns Y and holds a delegation for a key homed on
+B, would retire W2's grant at B, and B could grant the key to a third node while W2 still admits.
+
+A delegation request carries the requesting database's epoch (`DelegationRequest.delegateEpoch`,
+supplied per database by `ClusterLockTransport.delegateEpoch?()`); the home records it on the grant
+and refreshes it on renewal. When a database's coordination is assigned at epoch `e`, its harper#3254
+round also asks each member to **retire every grant for this database issued to this node below `e`**
+(`retireDelegateEpoch(database, delegate, below)`, on the member's coordinating thread). Each is
+expired with its lineage dropped, so the key's next holder takes §7.2's barrier: the dead epoch may
+have committed under it and released nothing. The member keeps the bound as a per-database floor for
+that requester: a later request tagged below it is refused, so a request a dead epoch left in flight
+cannot re-create a grant, and a notice at or below the floor is a no-op. The delegate is the
+authenticated principal of the call, never a payload field; a malformed epoch or bound is rejected,
+not read as an untagged legacy request.
+
+It is sound because the statement is the delegate's own, about one database, made only once that
+database's earlier epochs cannot admit. A process restart ended them all. A handoff assigns epoch `e`
+to a database only after its previous owner exited and every worker acknowledged fencing its relayed
+handles for that database (`recordLockOwnerFor` awaits both the bump and `broadcastOwnerlessAndWait`
+before `assignOwner`). That is the precondition the round's own local recall answer already relies
+on, including its open dependency: an exited thread's submitted native commit is not cancelled, and
+exclusion rests on it keeping its submission order (rocksdb-js#865), which this change neither
+strengthens nor claims to. A grant tagged `e` is the new epoch's own and is not below `e`; an
+untagged grant, from an older requester, is never retired, and a member's reply without `retired`
+is not counted as a retirement. The retire runs in the round's recall phase, after every member
+answered the probe: freeing a key while some member is unreachable only moves its failure to the
+recovery barrier, which asks every member.
+
+**(2) A refusal that will end soon is waited out (G2).** Every wait reuses `#acquire`'s existing
+deadline loop — one absolute deadline across every pass and handoff, the last-completed-reply
+classification, late-grant surrender — and only stops treating these outcomes as terminal:
+
+- **A home inside its quarantine** replies with what remains (`quarantineMs`), or `recovering: true`
+  while this incarnation's round is in flight (`ClusterLockTransport.restartRecovering?()`). The
+  requester waits when the home is `recovering` or `quarantineMs` fits its deadline, and otherwise
+  fails fast as today. A home whose incarnation is not yet known (harper-pro, while booting) answers
+  the same `recovering` refusal instead of today's `generation`, which the requester rightly treats as
+  a configuration mismatch.
+- **An unreachable home** and **this node's own withheld home map while it boots** are retried for at
+  most `HOME_RESTART_RIDE_THROUGH_MS` (10 s) of the deadline, each request also bounded by what that
+  window has left — today `#requestRemotely` races one blackholed request against the caller's whole
+  budget.
+- **harper-pro's owner relay** retries an ownerless database, and an acquire failed because its owner
+  departed (`failRelayAcquiresForDatabase`), against the same deadline instead of answering 503.
+
+Retries back off with jitter from `retryAfterMs` (at least 250 ms for these outcomes) rather than the
+contended loop's 25 ms, so a thousand callers parked on a restarting home cost a few thousand
+requests a second at most, not forty thousand. A wait that runs out ends 503 and never `contended`.
+The cached-delegation path, node-scoped locks and ordinary writes reach none of it.
+
+The ride-through is bounded by the **lease** as well as the timeout. `Table.lock()` takes the native
+key, and starts its lease, before the cluster step; a round that lands after that lease expired
+cannot join the handle (`joinClusterRound`) and fails 503 anyway. So core caps the cluster wait at
+what the handle's lease leaves, and the promise is narrowed accordingly: a restart window is ridden
+through only up to `min(timeout, lease)` — 30 s each by default. Holding the key across a longer wait
+would need an acquisition reservation that starts the protected lease at admission, a change to the
+Phase 0 handle this does not make.
+
+**(3) The quarantine runs from the database's ownership epoch, not from the table (G3).**
+`ClusterLockTransport.coordinationStartedMono()` supplies the monotonic instant the database's current
+delegate epoch began on this node: its assignment, or process start. harper-pro reads it on the main
+thread, where `performance.now()` shares one origin with every worker thread, and every earlier
+coordinator of that database on this node had stopped by then — the old process is gone, or the old
+owner exited before the assignment. A coordinator built later anchors both halves of its quarantine
+there instead of at its own construction. A live coordinator that observes a different incarnation, or
+loses and regains ownership, still re-arms from that moment, because core cannot see what coordinated
+in between. Without the hook, or if it throws, construction stays the anchor.
+
+**Planned restarts need no protocol of their own.** The obvious candidate is a shutdown drain that
+stops granting, surrenders and recalls everything, then persists a clean-shutdown marker that lets
+the next incarnation skip its quarantine. It buys nothing that (1)–(3) and the round leave on the
+table, because after a home restart **every** key it homes takes §7.2's recovery barrier
+(`#freshnessFor` answers `null` once `#trustVirginKeys` is lost), and every key the node released
+names it in its successor's lineage. harper-pro's transport asks each named origin — every other
+home-map member for a recovery — for a fresh barrier (`recordLockFreshness.ts`, `awaitBarrier`). So:
+
+- **Every member up:** the round attests in about a round trip, which (2) waits out; a marker saves
+  only that round trip.
+- **A member down:** a marker would end the quarantine, but every lock on the restarted home's keys
+  then fails at the barrier, which needs that member.
+- **Surrendering this node's delegations at shutdown** hands each key back with lineage naming this
+  node, so its successor still waits for this node to return; (1) frees the same grants a round
+  trip after it does.
+- **Recalling this node's grants at shutdown** only moves the round's drain from boot to shutdown,
+  holding the deploy open for any critical section a peer is inside.
+
+A rolling worker restart is therefore an ownership handoff, an incarnation bump, a round, and one
+recovery barrier per key on its next lock, with every refusal in between waited out by (2); a process
+restart adds the process's own downtime.
+
+**What stays unavoidable, and its bound:**
+
+- **A home's keys while the home is not running**: the downtime itself, seconds for a worker handoff
+  and the restart for a process. (2) hides it from a caller whose `min(timeout, lease)` outlasts it,
+  up to the 10 s an unreachable home is retried for.
+  Removing it needs a second arbiter for those keys during the restart — a deputy home — which is the
+  runtime re-homing §4.2 declines; an operator expecting a long outage can re-home through §4.3.
+- **Any key whose freshness needs a stopped member**: unavailable until that member returns. That is
+  every key a restarted home serves while some other member is down (its recovery barrier asks every
+  member), every key whose lineage names the stopped member, and every key a crashed delegate held,
+  once its grant has expired without a release. This bound dominates all the member-down cases below:
+  the quarantine and the delegation lease are not what decides them.
+- **A home restarted while a member is unreachable**: `DELEGATION_LEASE_MS + skew` (365 s) from the
+  database's epoch start, or until the member returns and the round completes. The member may be
+  partitioned and admitting under a delegation this home issued, and nothing tells that apart from
+  dead.
+- **A crashed delegate that has not restarted**: its grants hold their keys until they expire, 365 s
+  after grant or renewal at most, for the same reason. (1) frees them once it restarts.
+- **The first lock on each key after a home restart** pays §7.2's barrier: a round trip to each other
+  member plus its replication backlog.
+
+Shrinking the delegation (sizing it to the requested lease, with a persisted high-water mark bounding
+a restarted home's quarantine) would shorten the 365 s bounds, but under the barrier bound above it
+changes no member-down outcome. The lever for those is the barrier's strictness: §10 permits a
+reachable-member barrier, and harper-pro fails closed instead. That is a freshness decision and out
+of scope here.
+
+**Interactions.**
+
+- **Incarnations.** The delegate epoch draws its numbers from the same durable counter as
+  `homeIncarnation` but advances per database, only when that database's coordination moves; the
+  node-wide counter still orders fencing tokens and still re-arms every database's home-side
+  quarantine on any bump.
+- **Generations.** A retire is generation-agnostic: the epochs it names are dead under every generation. A §4.3 drain that marked a retired grant outstanding loses nothing, since the grant is
+  gone.
+- **Partitions.** The retire is a statement a node makes about its own authority, after the fact it
+  states holds locally, and the waits in (2) grant nothing. A partitioned node is not restarting, so
+  neither applies to it.
+- **Clock skew.** `quarantineMs` is a duration; the anchor in (3) is one process's monotonic clock.
+- **Mixed versions.** Every field is optional and additive. An older home ignores `delegateEpoch` and
+  an older member ignores the retire, so their grants keep their expiry; an older requester sends no tag,
+  so its grants are never retired; an older home's `quarantine` carries neither new field, so a newer
+  requester fails fast as before; and an older requester ignores both and fails fast. Routing and
+  arbitration are unchanged, so the capability level is too.
+
+**Considered, not taken.**
+
+- **A clean-shutdown drain and marker**, above: the barrier bound decides every case it targets.
+- **Hand the grant table and its lineage to the successor** — in memory across a worker handoff,
+  durably across a process restart — instead of recalling. It would spare every key its post-restart
+  barrier, and keep a restarted home's keys available while some other member is down whenever
+  their lineage does not name it. That is the one member-down case anything here could improve, and
+  it is real. The costs are a snapshot that must be exact and complete (a grant issued after it, or
+  missing from it, is a second holder), a release that lands before the successor loads it being
+  dropped (costing that key its lease), and, for a process restart, durable lock state on the
+  shutdown path. Deferred to the §10 measurements, as the planned-restart refinement of this design.
+- **Answer a recall for a token this node holds no state for with a release**, instead of tagging
+  grants. No state is not no authority: a delegation this node's own clock expired (`tick`) is gone
+  from its tables while a write it admitted can still sit in its commit hold (`retainForCommit`),
+  which is the interval the home's skew outwaits. A release there lets the home re-grant inside it.
+  The tag names the dead epoch, which is what the retire needs to know.
+- **Retire by restart notice alone**, without tagging grants: the notice cannot tell a grant to the
+  dead epoch from one the new epoch already took, so it either misses the dead one or clears the live
+  one.
+- **Retire below the node-wide incarnation**: a handoff of one database bumps it for all of them, so
+  it would retire grants other databases' live owners still admit under (the W1/W2 case in (1)).
+- **Delegate heartbeats.** A missed heartbeat cannot tell a crash from a partition, which is the one
+  thing that would let a home re-grant early, so it shortens nothing a lease does not already bound.
+
+**Request identity and the renewal drain (harper#2582, harper#3268), layered on the same messages.**
+
+- `DelegationRequest.requestId` is monotonic per requesting thread and echoed on the reply. The home
+  answers the request that minted its current grant, delivered again, with the _same_ token and the
+  remaining lease, so the delegate's token and the home's never diverge. A request that no longer
+  matches a grant is checked against a 1024-id sliding window per `(database, requester, delegate
+epoch)`: an id already seen, or older than the window, is `stale` — never a fresh grant nobody is
+  waiting for. `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
+  epoch's replay never retries) and ends 503. The requester discards a reply whose echo is not its
+  outstanding request, handing back anything it granted. The window lives on the owner thread like the
+  grants it protects; a replayed id from a _live_ epoch across a home's handoff is bounded by the
+  transport's at-most-once delivery and, failing that, by the recall-and-release path. A malformed
+  request id is refused like a malformed epoch. A same-node request tagged _below_ the grant's epoch
+  is refused (`retired`) rather than renewed: it is a dead epoch's delayed request, and renewing would
+  pull the grant's lifetime under its live holder's.
+- The home renews in place only for the node that holds the key, so a recall naming a token _newer_
+  than the one the delegate holds for that key is a recall of that delegation whose renewal reply is
+  still in flight, or never came. The delegate drains it and surrenders it under the _recalled_ token
+  — the one the home holds — and waits for the in-flight reply to be disposed of
+  (`PendingRequest.settled`, created only when a recall needs it and resolved at every exit of the
+  reply handling) before it confirms, so a recall never confirms ahead of the admissions a renewal
+  inherits, and a lost renewal reply no longer leaves the key held to expiry (§5.2's residue). A drain
+  (`quiesce`) clears `recallRetryAfterMono` before it recalls, so a drain inside a failed contention
+  recall's backoff still sends. Neither touches the epoch: a retire expires a grant whatever its token.
+- A recall carries the grant's `delegateEpoch`. The delegate's unknown-token branch _fails_ a recall
+  tagged below its own epoch — the token belongs to an exited epoch and was never held here — instead
+  of confirming it; the home's `RECALL_RETRY_MS` retry stays in force until the retire frees the key.
+  It is not a release (above, "Considered, not taken"): nothing is handed back, and the retire remains
+  the only thing that frees a dead epoch's grant.
+- A home whose map is withheld answers `generation` with `recovering: true` — it is still hearing from
+  its peers after its restart — and the requester waits that out like a booting home; a map the home
+  has already outgrown stays a terminal `generation`.
+- Every member's answer to the restart probe and recall echoes the _member's_ own delegate epoch. The
+  restarted home records each as that member's floor as the answers arrive, before its re-armed
+  quarantine can let it grant, so a home whose owner thread was replaced rebuilds the floors that
+  thread lost from the members themselves.
+
+**Verification.** The real-node cases below live in harper-pro, which owns the transport they exercise:
+`integrationTests/cluster/recordLockRestartAvailability.test.mjs` (rolling process and worker restarts,
+holders never overlapping under concurrent locked increments, `kill -9`, a member down, a duplicated
+request, a peer on the previous wire) and `recordLockRestart.test.mjs`. Unit, with independent clocks: retire frees a dead epoch's grant and leaves a
+renewed one; a database handed off on one worker does not retire another database's grants on a live
+worker; a request tagged below a retired floor is refused; repeated, reordered and lower notices are
+no-ops; an untagged grant is never retired, and a malformed tag is rejected; two successive restarts;
+a holder that outlives its home's restart stays the only holder until it releases; a peer down when
+the restarting node asks keeps the timer, anchored at the epoch; a table built late in an epoch is not
+re-quarantined; `recovering` is waited out and a long `quarantineMs` is not; an unreachable or
+blackholed home is retried for the ride-through and no longer; the wait stops at the lease; throwing
+or missing hooks keep today's behavior. Integration on two real nodes, RocksDB: requests already
+pending and issued during a rolling worker restart and a rolling process restart succeed when
+`min(timeout, lease)` outlasts the downtime, with changed PID and incarnation checked; `kill -9` of
+one node, timed until its keys grant again; a key the killed node held grants to its peer once it is
+back; holders never overlap and final committed values match a serial run; several databases, with
+HTTP and replication-pool owners; old/new mixed requesters, homes and round members.
+
 ### 5. Exclusion
 
 - **One arbiter.** Within a generation every node derives the same home from the same `homes[]`, and
@@ -792,13 +1104,12 @@ clock at receipt overlaps the next delegate.
 - Every message carries `(generation, homeIncarnation, delegationCounter, requestId)` and is bound to
   the authenticated replication origin. A reply that does not match the requester's current generation
   and its outstanding request is discarded; a validly authenticated node that the current generation
-  does not name can neither obtain a delegation nor clear one. **The `requestId` half is not
-  implemented** — the wire carries no request identity, correlation is the transport's per-call
-  promise, and the home therefore cannot tell a duplicate or delayed request from a genuine renewal.
-  Core closes the resulting two-holder path by refusing to hand back a grant while any delegation for
-  the key is held; the residue, and the protocol fix, are harper#2582. The generation half **is**
-  implemented: the map is re-read after the round and a grant minted under a superseded generation is
-  handed back rather than installed.
+  does not name can neither obtain a delegation nor clear one. The `requestId` half is §4.5's request
+  identity (harper#2582): the home answers a duplicate with the token it already issued and refuses a
+  replay through a per-requester window, and the requester discards a reply whose echo is not its
+  outstanding request. Core still refuses to hand back a grant while any delegation for the key is
+  held. The generation half: the map is re-read after the round and a grant minted under a superseded
+  generation is handed back rather than installed.
 - **Every local handle is bounded by `min(requested lease, delegation deadline)`** — including
   re-entrant acquisition and the `{hold: true}` upgrade. The branch's
   `upgradeToHold` already clamps to the granted round's deadline rather than extending it
@@ -944,8 +1255,9 @@ default.
 
 #### 7.3 The crashed writer: LWW is not enough, and fencing is not free
 
-> **Decided: (b) exclusion-only.** (a) and (c) are deferred to harper#2540. §10 carries the
-> normative contract and the reasoning; the analysis below is what those arms would have to build.
+> **Decided: (b) exclusion-only.** (a) and (c) are not built; harper#2540 stamps a successor above the
+> state it was admitted on rather than fencing. §10 carries the normative contract and the reasoning;
+> the analysis below is what those arms would have to build.
 
 The earlier claim — that a crashed holder's unreplicated write is stamped older and dropped by
 last-write-wins — does not hold. If `A`'s clock runs ahead, `A` writes under a valid delegation and
@@ -1100,8 +1412,9 @@ untouched.
 | **Fenced**            | `(generation, timestamp, origin)` | still narrowed                                                                                          | record-contract + stored-format change, reverses the Phase 0 contract, owes a tombstone-surviving rejection floor |
 | **Quorum-confirmed**  | either of the above               | closes the crashed/unreachable routes, not the late-settling one; §2 as written needs this _and_ fenced | latency on every locked write                                                                                     |
 
-**Exclusion-only is chosen.** The other two arms are deferred to harper#2540, which carries the
-limitations, the costs, and what closing them would take.
+**Exclusion-only is chosen.** The other two arms are not built. harper#2540 took a narrower step
+instead: a floor bump at admission, with no field, format or conflict-resolution change, which closes
+limitation (1) wherever the predecessor's write was visible to the successor's admission.
 
 Why the two arms were not taken now: fenced mode's cost is misplaced — it changes conflict resolution for _every_ write in the database,
 including in deployments that never call `lock()`, and it inverts a rule Phase 0 documented and
@@ -1126,20 +1439,23 @@ feature that has not yet been measured.
 >    on — so whatever the pair would have done to the record without a lock is what they do with one,
 >    silently and with no error raised. That is the whole of the limitation, and the contract must not
 >    restate the resolution rules: they live in `Table.ts` / `crdt.ts` and are not `lock()`'s to
->    promise. Two routes in, and they fail differently:
->    - **(1a) clock skew.** The predecessor's clock ran ahead of its successor's, and its write is
->      still in flight when the successor writes.
->    - **(1b) a timestamp pushed ahead on purpose, on a completely clean handoff.** A caller-supplied
->      future `context.timestamp`, or a mixed explicit transaction whose later timestamp becomes the
->      handle's floor — both documented as deliberate Phase 0 behavior ("Acquisition timestamp and mixed transactions" above). The
->      predecessor commits, replicates, drains and releases cleanly; the successor is admitted with
->      correct freshness, reads the current value, and writes at real wall-clock time — and its write
->      is the older one, silently, because the stored version is stamped in the future. What the
->      committed record then holds is whatever ordinary resolution produces from the pair — which for
->      overlapping plain fields is not the successor's value, and for disjoint patches or commutative
->      ops may still carry it. No crash, no skew, nothing in flight. **This is the case that
->      makes "exclusion-only" narrower than it sounds**, and the only defense available to a caller
->      today is not to stamp future timestamps under a lock.
+>    promise. What `lock()` does add (harper#2540) is a floor: an admitted holder's writes are stamped
+>    above the version it reloaded, a tombstone's included, and above the predecessor log positions its
+>    admission waited for. So a predecessor write that was committed and visible at admission — a
+>    clock-skewed peer's, or one stamped ahead on purpose by a caller's future `context.timestamp` —
+>    no longer outranks the holder's own writes. The routes that remain:
+>    - **(1a) clock skew, write in flight.** The predecessor's clock ran ahead of its successor's, and
+>      its write is still in flight when the successor writes, so no admission saw it.
+>    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
+>      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
+>      before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects admission; and
+>      a surviving hold saved in an explicit transaction whose clock is already fixed below the hold's
+>      floor is refused with a 409. When a scoped lock in an already-fixed explicit transaction writes
+>      at that clock on a clean handoff and the admitted state is stamped above it, the holder's write is
+>      the older one, silently. What the committed record then holds is whatever ordinary resolution
+>      produces from the pair — which for overlapping plain fields is not the holder's value, and for
+>      disjoint patches or commutative ops may still carry it. The defense is to take the lock first
+>      in its own transaction, or save the held record before unrelated writes.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and
@@ -1348,11 +1664,13 @@ cannot produce a barrier has no fence and fails closed.
   only final totals, and snapshot-free reload must still work after the applied-history fence
   (`#reloadLocked`). Under exclusion-only there is no fenced-mode suite to add here; the stale
   writes, patches and deletes against successor records and reclaimed tombstones belong to
-  harper#2540 if that arm is ever taken. What this suite **must** assert instead is the documented
+  the fenced arm if it is ever taken. What this suite **must** assert instead is the documented
   narrowing itself, as expected outcomes rather than test failures. Two schedules, and both must
   assert the observed value rather than only that no error was raised:
-  - **A predecessor's write outranking its successor's**, driven by a caller-supplied future
-    `context.timestamp` rather than a faked clock — so it runs over a _clean_ handoff with no skew.
+  - **A predecessor's write outranking its successor's**, over a _clean_ handoff with no skew: a
+    caller-supplied future `context.timestamp` on the predecessor, and a successor whose explicit
+    transaction clock was frozen before `lock()` (§10 (1b)). Without the frozen clock harper#2540's
+    floor makes the successor win, which is the other half to assert.
     Assert what `lock()` failed to prevent, not a storage disposition: that the committed record
     differs from what a serialized execution of the two critical sections would have produced, and
     that no error reached either caller. Choose a fixture where the two writes overlap on a plain
@@ -1382,8 +1700,8 @@ build supplies.
 
 Two things had to be settled before implementation, and one still is:
 
-1. **The guarantee decision — settled, exclusion-only** (§7.3 (b), §10). The deferred arms are
-   harper#2540.
+1. **The guarantee decision — settled, exclusion-only** (§7.3 (b), §10). harper#2540 added the
+   admission stamp floor instead of the fenced and quorum-confirmed arms.
 2. **The measurement gate of §10 comes before the protocol change, not after it.** Tracked as
    harper-pro#824.
 
@@ -1420,7 +1738,7 @@ but it is surprising, and the alternative — draining on the transaction rather
 costs bounded-time handoff. If revoke stands, harper#2547 must say so.
 
 **The documentation obligation is harper#2547, and it is not optional.** §10's rule that the two
-limitations may not be softened is the condition on which exclusion-only was chosen over harper#2540;
+limitations may not be softened is the condition on which exclusion-only was chosen over the fenced arm;
 if Phase 1 ships behind its gate and the public `lock()` page still describes exclusion without them,
 the tradeoff that justified the decision was never paid. It lands with or before enablement.
 

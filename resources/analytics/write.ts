@@ -132,10 +132,25 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
 	if (!checkAnalyticsEnabled()) return;
-	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
+	recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+}
+
+/** recordAction with the key built once, for a hot path that would otherwise concatenate and hash it per call */
+export function actionRecorder(metric: string, path?: string, method?: string, type?: string): (value: Value) => void {
+	const key = actionKey(metric, path, method, type);
+	return (value) => {
+		if (checkAnalyticsEnabled()) recordKeyedAction(key, value, metric, path, method, type);
+	};
+}
+
+function actionKey(metric: string, path?: string, method?: string, type?: string): string {
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
 	if (type !== undefined) key += '-' + type;
+	return key;
+}
+
+function recordKeyedAction(key: string, value: Value, metric: string, path?: string, method?: string, type?: string) {
 	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
