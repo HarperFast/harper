@@ -291,7 +291,9 @@ under the client's response key; the wire format and reference client are `utili
 
 - **No widening.** The inner body may not carry `hdb_user`, `impersonate`, `bypass_auth`/`bypassAuth` or dispatcher
   fields; its principal is assigned, and trusted bypass is the async-context state, never a body field. Both the
-  wrapper and the inner operation pass `verifyPerms`, so a role allowlist or scoped token must list both.
+  wrapper and the inner operation pass `verifyPerms`, so a role allowlist or scoped token must list both. Job
+  operations are refused: a job stores its request and result in `system.hdb_job`, where `get_job` reads them back
+  unsealed.
 - **Plaintext only before the nonce is reserved.** Admission failures answer with constant messages; everything
   after is sealed, and an unexpected failure there is still answered sealed. Fields mode verifies the visible text's
   hash before parsing it, and each sealed value is bound to its JSON Pointer by its AAD, so a relay can neither edit
@@ -304,9 +306,14 @@ under the client's response key; the wire format and reference client are `utili
 - **Replay is refused per process, not exactly-once.** The nonce is reserved before dispatch, never released, and kept
   until no `maxAge`, even one raised later, could admit its envelope: `ts` plus the 600 s ceiling. A restart forgets
   the store, and a backward wall-clock step longer than that retention re-opens an aged-out envelope
-  ([#3344](https://github.com/HarperFast/harper/issues/3344)). The store is bounded and answers 503 when full rather
-  than evict; past half full, each principal may hold only an equal share of that half, so one caller flooding
-  envelopes, even ones it may not run, cannot take every caller's capacity.
+  ([#3344](https://github.com/HarperFast/harper/issues/3344)). The custody key is cluster-wide but the store is per
+  node, so each node admits a captured envelope once ([#3816](https://github.com/HarperFast/harper/issues/3816)).
+- **Replay capacity is shared by principal.** The store is bounded and answers 503 when full rather than evict. Past
+  half full, a principal may hold at most half the store divided by the number of principals holding entries, so one
+  caller flooding envelopes, even ones it may not run, leaves the other half to everyone else. A relay that carries
+  many clients as one principal (the operations socket authenticates as the super user) is therefore limited to half
+  the store, about 83 sealed requests a second sustained per node
+  ([#3810](https://github.com/HarperFast/harper/issues/3810)).
 - **What ran is said.** A result that ran but could not be delivered (a stream, over `maxSize`, or one whose
   serialization or cursor fails mid-stream, which `streamAsJSON` ends with an error rather than a complete array)
   answers `executed: true`; a 5xx keeps the unknown outcome it has on a direct request

@@ -1383,7 +1383,10 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 			processLocalTransaction: serverUtilities.processLocalTransaction,
 		};
 		registeredOperations.setLocalOperationDispatch(dispatch);
-		require('#src/components/encryptedOperation').setEncryptedOperationDispatch(dispatch);
+		require('#src/components/encryptedOperation').setEncryptedOperationDispatch({
+			...dispatch,
+			isJobOperation: serverUtilities.isJobOperation,
+		});
 	});
 
 	it('fails if the call site stops redacting: neither the SSH key nor a global secret field reaches the log', async function () {

@@ -19,7 +19,6 @@ export function operationLogViewOf(body: unknown): OperationLogView | undefined 
 	return body !== null && typeof body === 'object' ? logViews.get(body) : undefined;
 }
 
-/** Whether `processLocalTransaction` writes operation bodies to the log at the current level. */
 export function isOperationLogEnabled(): boolean {
 	const level = harperLogger.logLevel;
 	return level === LOG_LEVELS.INFO || level === LOG_LEVELS.DEBUG || level === LOG_LEVELS.TRACE;

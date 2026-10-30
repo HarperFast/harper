@@ -95,6 +95,7 @@ const TEST_OPERATIONS = {
 			throw new Error('destroy failed');
 		},
 	}),
+	test_eo_sized: async (body) => 'x'.repeat(body.size),
 	test_eo_throwing_on: async () => ({
 		pipe() {},
 		on() {
@@ -217,6 +218,7 @@ describe('encrypted_operation', function () {
 		encryptedOperationModule.setEncryptedOperationDispatch({
 			chooseOperation: serverUtilities.chooseOperation,
 			processLocalTransaction: serverUtilities.processLocalTransaction,
+			isJobOperation: serverUtilities.isJobOperation,
 		});
 		for (const [name, handler] of Object.entries(TEST_OPERATIONS)) {
 			serverUtilities.OPERATION_FUNCTION_MAP.set(name, new OperationFunctionObject(handler));
@@ -345,6 +347,16 @@ describe('encrypted_operation', function () {
 				});
 			});
 		}
+
+		it('refuses an operation that runs as a stored job, before any job row is written', async () => {
+			for (const operation of ['csv_data_load', 'import_from_s3', 'restart_service']) {
+				const { result } = await roundTrip({ operation, database: 'dev', table: 'dog', data: 'id\n1' });
+				assert.deepStrictEqual(result, {
+					status: 400,
+					body: { error: `'${operation}' runs as a stored job; use a direct connection` },
+				});
+			}
+		});
 
 		it('refuses a caller with no principal outside a trusted dispatch', async () => {
 			await assert.rejects(
@@ -718,6 +730,19 @@ describe('encrypted_operation', function () {
 			}
 		});
 
+		it('refuses a sealed value that hides a prototype under constructor', async () => {
+			const { result } = await sealedAnswer(
+				fieldsRequest((sealValue) => ({
+					operation: 'test_eo_echo',
+					x: { constructor: sealValue({ prototype: {} }, '/x/constructor') },
+				}))
+			);
+			assert.deepStrictEqual(result, {
+				status: 400,
+				body: { error: 'The operation contains a forbidden property name' },
+			});
+		});
+
 		it('allows a constructor property that is ordinary data', async () => {
 			const op = { operation: 'test_eo_echo', records: [{ constructor: 'Ford' }] };
 			const { result } = await roundTrip(op, { mode: 'fields' });
@@ -756,6 +781,21 @@ describe('encrypted_operation', function () {
 					executed: true,
 				});
 				assert.strictEqual(writes.count, before + 1);
+			} finally {
+				restore();
+			}
+		});
+
+		it('keeps a successful sealed answer, wrapper included, within maxSize', async () => {
+			const restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXSIZE, 2048);
+			try {
+				// a string result is answered as { message }: '{"status":200,"body":{"message":"' + n x's + '"}}' is n + 36 bytes
+				const fits = await roundTrip({ operation: 'test_eo_sized', size: 2048 - 36 });
+				assert.strictEqual(fits.result.status, 200);
+				assert.strictEqual(Buffer.from(fits.reply.encrypted_response.ct, 'base64').length, 2048);
+				const over = await roundTrip({ operation: 'test_eo_sized', size: 2048 - 35 });
+				assert.strictEqual(over.result.status, 413);
+				assert.strictEqual(over.result.executed, true);
 			} finally {
 				restore();
 			}

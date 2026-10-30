@@ -76,6 +76,7 @@ const REFUSED_INNER_OPERATIONS: ReadonlySet<string> = new Set([
 interface OperationDispatch {
 	chooseOperation(body: any, bypassAuth?: boolean): Function;
 	processLocalTransaction(req: { body: any }, operationFunction: Function): Promise<any>;
+	isJobOperation(operation: string): boolean;
 }
 
 let dispatch: OperationDispatch | undefined;
@@ -310,6 +311,10 @@ async function runSealedOperation(
 			buildView = () => ({ operation: inner.operation, encrypted_operation: metadata });
 		}
 		checkInnerOperation(inner);
+		// A job stores its request and result in system.hdb_job, where get_job reads them back unsealed.
+		if (dispatch.isJobOperation(inner.operation)) {
+			throw new SealedRefusal(`'${inner.operation}' runs as a stored job; use a direct connection`);
+		}
 	} catch (error) {
 		if (!(error instanceof SealedRefusal)) throw error;
 		return sealedResult({ status: error.statusCode, body: { error: error.message } }, maxSize);
@@ -348,7 +353,7 @@ async function runSealedOperation(
 	}
 	let chunks: Buffer[] | undefined;
 	try {
-		chunks = await collectJSON(result, maxSize);
+		chunks = await collectJSON(result, maxSize - SUCCESS_PREFIX.length - SUCCESS_SUFFIX.length);
 	} catch {
 		return sealedResult(
 			{ status: 500, body: { error: 'The result could not be serialized' }, executed: true },
@@ -447,11 +452,13 @@ function visit(value: any, pointer: string, depth: number, context: WalkContext)
 		return visit(opened, pointer, depth, { ...context, sealable: false });
 	}
 	for (const key of Object.keys(value)) {
-		const child = value[key];
-		if (key === '__proto__' || (key === 'constructor' && isPlainObject(child) && Object.hasOwn(child, 'prototype'))) {
+		if (key === '__proto__') throw new SealedRefusal('The operation contains a forbidden property name');
+		// checked after visiting, so a sealed leaf cannot hide `prototype` from it
+		const child = visit(value[key], `${pointer}/${pointerToken(key)}`, depth + 1, context);
+		if (key === 'constructor' && isPlainObject(child) && Object.hasOwn(child, 'prototype')) {
 			throw new SealedRefusal('The operation contains a forbidden property name');
 		}
-		value[key] = visit(child, `${pointer}/${pointerToken(key)}`, depth + 1, context);
+		value[key] = child;
 	}
 	return value;
 }

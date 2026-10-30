@@ -258,6 +258,10 @@ const EXPORT_SEARCH_OPERATIONS = new Set<string>([
 	terms.OPERATIONS_ENUM.SQL,
 ]);
 
+export function isJobOperation(operation: string): boolean {
+	return OPERATION_FUNCTION_MAP.get(operation as any)?.job_operation_function !== undefined;
+}
+
 export function chooseOperation(json: OperationRequestBody, bypassAuth = false) {
 	let getOpResult: OperationFunctionObject;
 	try {
@@ -522,7 +526,7 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 // static import back into this module would be a cycle. encrypted_operation dispatches its inner
 // operation the same way, for the same reason.
 setLocalOperationDispatch({ chooseOperation, processLocalTransaction });
-encryptedOperation.setEncryptedOperationDispatch({ chooseOperation, processLocalTransaction });
+encryptedOperation.setEncryptedOperationDispatch({ chooseOperation, processLocalTransaction, isJobOperation });
 
 _assignPackageExport('operation', operation);
 /**
