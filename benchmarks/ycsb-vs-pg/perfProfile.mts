@@ -10,7 +10,7 @@
  */
 import { spawn, execFile } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { open, readFile, rm, writeFile } from 'node:fs/promises';
+import { open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
@@ -189,6 +189,55 @@ export function frameName(line: string): string {
 }
 
 /**
+ * A perf map with the newest entry kept wherever entries overlap. V8 appends a line per code object
+ * and never retracts one, so an address reused by newer code keeps the old name too, and perf picks
+ * between them arbitrarily (seen: a request handler resolved as Table's `commit`). The newest code at
+ * an address is what a steady-state window at the end of a run executed.
+ */
+export function dedupePerfMap(text: string): string {
+	const entries = text
+		.split('\n')
+		.filter((line) => line.length > 0)
+		.map((line, seq) => {
+			const [start, size] = line.split(' ', 2);
+			const from = parseInt(start, 16);
+			return { line, seq, from, to: from + parseInt(size, 16) };
+		})
+		.filter((e) => Number.isFinite(e.from) && e.to > e.from)
+		.sort((a, b) => a.from - b.from || a.seq - b.seq);
+	const dropped = new Set<number>();
+	for (let i = 0; i < entries.length; i++) {
+		for (let j = i + 1; j < entries.length && entries[j].from < entries[i].to; j++) {
+			dropped.add(entries[j].seq > entries[i].seq ? entries[i].seq : entries[j].seq);
+		}
+	}
+	return entries
+		.filter((e) => !dropped.has(e.seq))
+		.map((e) => e.line)
+		.join('\n')
+		.concat('\n');
+}
+
+/** Rewrites the perf maps of every process in `cgroups` (see dedupePerfMap). */
+async function dedupeMapsOf(cgroups: Record<string, string>): Promise<void> {
+	for (const scope of Object.values(cgroups)) {
+		const pids = (await readFile(join(scope, 'cgroup.procs'), 'utf8')).split('\n').filter(Boolean);
+		for (const pid of pids) {
+			const path = `/tmp/perf-${pid}.map`;
+			let text: string;
+			try {
+				text = await readFile(path, 'utf8');
+			} catch {
+				continue; // not a node process, or no map
+			}
+			// A new inode: V8 keeps appending to the one it holds open, which nothing reads any more.
+			await writeFile(`${path}.dedupe`, dedupePerfMap(text));
+			await rename(`${path}.dedupe`, path);
+		}
+	}
+}
+
+/**
  * Folds `perf script` output into "frame;frame;... count" lines per component, keeping only
  * samples whose cgroup belongs to the run. Returns the folded text and sample counts.
  */
@@ -197,6 +246,7 @@ export async function foldPerfScript(
 	cgroups: Record<string, string>,
 	outPrefix: string
 ): Promise<Record<string, number>> {
+	await dedupeMapsOf(cgroups);
 	const byName = new Map(Object.entries(cgroups).map(([component, scope]) => [`/${perfCgroupName(scope)}`, component]));
 	// --no-inline: resolving inlined frames runs addr2line per address over node's debug info (minutes).
 	const proc = spawn('perf', ['script', '--no-inline', '-i', perfData, '-F', 'comm,tid,cgroup,ip,sym,dso'], {

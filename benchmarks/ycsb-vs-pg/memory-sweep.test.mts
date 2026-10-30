@@ -8,7 +8,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from './memory-sweep.mts';
-import { parsePerfStat, frameName } from './perfProfile.mts';
+import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
 import { TARGETS, parseTargets, writeJsonAtomic, MEMORY_BUDGET_BYTES } from './run-compare.mts';
 import { SWEEP_STACK_MEMORY, WARM_STACK_MEMORY } from './pgStack.mts';
@@ -163,4 +163,18 @@ test('RocksDB event-log lines are placed in the sample phases', () => {
 		compactionOutputBytes: 1048576,
 	});
 	strictEqual(summarizeEvents(events, 0, 150).flushes, 1);
+});
+
+test('a perf map keeps the newest entry where code was reused', () => {
+	const map = [
+		'1000 100 JS:*old',
+		'2000 10 JS:*kept',
+		'1080 40 JS:*new',
+		'1000 20 JS:*newest-at-start',
+		'3000 8 JS:*x',
+	].join('\n');
+	strictEqual(
+		dedupePerfMap(map),
+		['1000 20 JS:*newest-at-start', '1080 40 JS:*new', '2000 10 JS:*kept', '3000 8 JS:*x'].join('\n') + '\n'
+	);
 });
