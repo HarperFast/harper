@@ -2905,7 +2905,7 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			);
 			session.disconnect(true);
 		} finally {
-			setOriginCaptureIntervalForTests(5000);
+			setOriginCaptureIntervalForTests();
 		}
 	});
 

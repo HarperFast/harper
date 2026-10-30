@@ -18,19 +18,19 @@ import { onMessageByType } from '../server/threads/manageThreads.ts';
 const SLOTS = 1024;
 // One bound word per 64-byte line: writers on neighbouring slots must not bounce a line between cores.
 const BOUND_STRIDE = 8;
-const WORD_PROPOSED = 0;
-const WORD_PUBLISHED = 1;
-const WORD_RATCHET = 2;
+export const WORD_PROPOSED = 0;
+export const WORD_PUBLISHED = 1;
+export const WORD_RATCHET = 2;
 // Non-zero once a key may have been issued from the ratchet rather than the native clock (the clock
 // was behind a recovered floor or a runtime claim); native keys then pass through it for the rest of
 // the process, since any later hand-back to load-only admission races a fallback still in flight.
-const WORD_STRICT = 3;
-const WORD_INITIAL_CEILING = 4;
+export const WORD_STRICT = 3;
+export const WORD_INITIAL_CEILING = 4;
 // One past the highest slot ever claimed: a bounds scan stops there. Raised when a slot is claimed, before
 // the claimer reads `proposed`; a sampler raises `proposed` before it loads this, so a claim the sampler's scan
 // misses admits only keys above the sampler's value.
-const WORD_SLOT_LIMIT = 5;
-const HEADER_WORDS = 8;
+export const WORD_SLOT_LIMIT = 5;
+export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
 const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;

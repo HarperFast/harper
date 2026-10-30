@@ -179,8 +179,8 @@ function newestCommittedKey(auditStore: any): number {
 }
 
 let originCaptureInterval = ORIGIN_FLOOR_TICK_MS;
-/** Test-only: how often the certified floors are captured for checkpoints. */
-export function setOriginCaptureIntervalForTests(ms: number) {
+/** Test-only: how often the certified floors are captured for checkpoints and held same-thread passes re-capture. */
+export function setOriginCaptureIntervalForTests(ms: number = ORIGIN_FLOOR_TICK_MS) {
 	originCaptureInterval = ms;
 }
 

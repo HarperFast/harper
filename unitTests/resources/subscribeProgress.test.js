@@ -194,7 +194,7 @@ describe('Certified subscription progress', function () {
 			});
 			subscription.end();
 		} finally {
-			setOriginCaptureIntervalForTests(5000);
+			setOriginCaptureIntervalForTests();
 		}
 	});
 
@@ -325,7 +325,7 @@ describe('Certified subscription progress', function () {
 				await held;
 				subscription?.end();
 				other?.end();
-				setOriginCaptureIntervalForTests(5000);
+				setOriginCaptureIntervalForTests();
 			}
 		});
 	}

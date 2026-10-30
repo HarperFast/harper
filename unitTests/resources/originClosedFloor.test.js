@@ -13,6 +13,13 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { Transaction, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
+	HEADER_WORDS,
+	WORD_INITIAL_CEILING,
+	WORD_PROPOSED,
+	WORD_PUBLISHED,
+	WORD_RATCHET,
+	WORD_SLOT_LIMIT,
+	WORD_STRICT,
 	certifyOriginFloor,
 	claimLocalKey,
 	freshLocalKey,
@@ -117,6 +124,24 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		Atomics.notify(gate, 0);
 	};
 	const startsAtOrBelow = (start, key) => ('atOrAbove' in start ? start.atOrAbove <= key : start.above < key);
+
+	it('keeps every header word distinct and below HEADER_WORDS', () => {
+		const headerWords = [
+			WORD_PROPOSED,
+			WORD_PUBLISHED,
+			WORD_RATCHET,
+			WORD_STRICT,
+			WORD_INITIAL_CEILING,
+			WORD_SLOT_LIMIT,
+		];
+		assert.strictEqual(new Set(headerWords).size, headerWords.length, 'header word indices must be distinct');
+		for (const word of headerWords) {
+			assert(
+				Number.isInteger(word) && word >= 0 && word < HEADER_WORDS,
+				`header word ${word} must be in [0, ${HEADER_WORDS})`
+			);
+		}
+	});
 
 	it('refuses a shared buffer of another layout rather than misreading its slots', () => {
 		const rootStore = {

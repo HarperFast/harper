@@ -8844,9 +8844,9 @@ export function makeTable(options): TableResourceClass {
 				subscription.progress = () => {
 					if (!isActive()) return;
 					if (!progressLive) return beforeLive();
-					const dispatched = certifiedThrough(subscription);
-					if (progressFloor === undefined) return dispatched;
-					return dispatched === undefined || dispatched < progressFloor ? progressFloor : dispatched;
+					const certified = certifiedThrough(subscription);
+					if (progressFloor === undefined) return certified;
+					return certified === undefined || certified < progressFloor ? progressFloor : certified;
 				};
 				goLive = () => {
 					progressFloor = beforeLive();
