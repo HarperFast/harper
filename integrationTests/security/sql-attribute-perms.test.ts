@@ -66,7 +66,18 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 							super_user: false,
 							data: {
 								tables: {
-									ColPermLeft: readOnly([attr('id', true), attr('label', true), attr('ssn', false)]),
+									// Writable, so UPDATE/DELETE predicates can be checked for read on their own.
+									ColPermLeft: {
+										read: true,
+										insert: false,
+										update: true,
+										delete: true,
+										attribute_permissions: [
+											attr('id', true),
+											{ attribute_name: 'label', read: true, insert: false, update: true },
+											attr('ssn', false),
+										],
+									},
 									ColPermRight: readOnly([
 										attr('id', false),
 										attr('label', true),
@@ -91,6 +102,7 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 						records: [
 							{ id: 'l1', label: 'shared', ssn: '111' },
 							{ id: 'l2', label: 'other', ssn: '222' },
+							{ id: 'l3', label: 'disposable', ssn: '333' },
 						],
 					})
 					.expect(200);
@@ -166,6 +178,46 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 					deepStrictEqual(using.body, on.body);
 					deepStrictEqual(using.body, [{ label: 'shared', rl: 'shared' }]);
 				}
+			});
+
+			async function adminRow(id: string) {
+				const r = await client
+					.req()
+					.send({ operation: 'sql', sql: `SELECT id, label FROM data.ColPermLeft WHERE id = '${id}'` });
+				strictEqual(r.status, 200, JSON.stringify(r.body));
+				return r.body[0];
+			}
+
+			test('UPDATE or DELETE that filters on a read-denied column is refused and changes nothing', async () => {
+				const update = `UPDATE data.ColPermLeft SET label = 'changed' WHERE ssn = '111'`;
+				assertRefused(await asReader(update), update);
+				const remove = `DELETE FROM data.ColPermLeft WHERE ssn = '222'`;
+				assertRefused(await asReader(remove), remove);
+				deepStrictEqual(await adminRow('l1'), { id: 'l1', label: 'shared' });
+				deepStrictEqual(await adminRow('l2'), { id: 'l2', label: 'other' });
+			});
+
+			test('UPDATE and DELETE on readable columns and the primary key still run', async () => {
+				for (const sql of [
+					`UPDATE data.ColPermLeft SET label = 'other' WHERE id = 'l2'`,
+					`UPDATE data.ColPermLeft SET label = 'other' WHERE label = 'other'`,
+					`DELETE FROM data.ColPermLeft WHERE id = 'l3'`,
+				]) {
+					const r = await asReader(sql);
+					strictEqual(r.status, 200, `${sql} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+				}
+				strictEqual(await adminRow('l3'), undefined);
+			});
+
+			test('a joined SELECT * expands to the FROM table columns the role may read', async () => {
+				const star = `SELECT * FROM data.ColPermLeft l JOIN data.ColPermRight r ON l.label = r.label WHERE l.id = 'l1'`;
+				const r = await asReader(star);
+				strictEqual(r.status, 200, `${star} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+				deepStrictEqual(r.body, [{ id: 'l1', label: 'shared' }]);
+				const joined = `SELECT r.* FROM data.ColPermLeft l JOIN data.ColPermRight r ON l.label = r.label WHERE l.id = 'l1'`;
+				const rStar = await asReader(joined);
+				strictEqual(rStar.status, 200, JSON.stringify(rStar.body));
+				deepStrictEqual(rStar.body, [{ label: 'shared', ssn: '111' }]);
 			});
 
 			test('super user is unaffected', async () => {

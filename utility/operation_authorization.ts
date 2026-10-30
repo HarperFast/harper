@@ -685,6 +685,19 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			}
 		});
 
+		const writeReads = isSuperUser ? undefined : parsedAst.getWriteStatementReads();
+		if (writeReads?.attributes.length) {
+			checkAttributePerms(
+				writeReads.attributes,
+				getAttributePermissions(userObject.role.permission, writeReads.schema, writeReads.table),
+				terms.VALID_SQL_OPS_ENUM.SELECT,
+				writeReads.table,
+				writeReads.schema,
+				permsResponse,
+				undefined
+			);
+		}
+
 		return permsResponse.getPermsResponse();
 	} catch (e) {
 		throw handleHDBError(e);
