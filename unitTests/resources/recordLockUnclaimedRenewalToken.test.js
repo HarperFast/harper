@@ -325,7 +325,6 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			assert.deepStrictEqual(t1, [1, 1, 1]);
 			alpha.release(key, r1.admissionId);
 
-			// Deliver Attempt 1 (older requestId) while alpha still holds T1 on gamma.
 			const staleReply = await gamma.onDelegationRequest(firstReq);
 			assert.deepStrictEqual(staleReply, {
 				granted: false,
@@ -452,14 +451,12 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 				return reply;
 			};
 
-			// A second caller asks gamma to renew, waiting only 40ms.
 			const secondAcquire = alpha.acquire(key, LEASE, 40);
 			secondAcquire.catch(() => {});
 			const renewalReply = await renewalGrantedPromise;
 			const t2 = renewalReply.token;
 			assert.deepStrictEqual(t2, [1, 1, 2]);
 
-			// The second caller gives up before the renewal's reply is returned.
 			await delayMs(60);
 			await assert.rejects(secondAcquire, (err) => err.statusCode === 423 || err.statusCode === 503);
 
@@ -475,7 +472,6 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			releaseRenewalReply();
 			await delayMs(20);
 
-			// Releasing r1 lets the recall surrender.
 			alpha.release(key, r1.admissionId);
 			await recallPromise;
 
@@ -618,14 +614,12 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			assert.deepStrictEqual(t1, [1, 1, 1]);
 			alpha3a.release(key1, rAlpha.admissionId);
 
-			// Contender beta acquires key1, recalling T1 from alpha and receiving T2 = [1, 1, 2].
 			const rBeta = await beta3a.acquire(key1, LEASE, 250);
 			const t2 = cluster3a.replies.at(-1).token;
 			assert.deepStrictEqual(t2, [1, 1, 2]);
 			beta3a.release(key1, rBeta.admissionId);
 			assert.strictEqual(cluster3a.recalls.length, 1);
 
-			// Deliver alpha's delayed Attempt 1 (older requestId) to gamma.
 			const lateReply3a = await gamma3a.onDelegationRequest(firstReq3a);
 			await delayMs(20);
 			const recallsAfter3a = cluster3a.recalls.length;
@@ -640,7 +634,6 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			await alpha3b.quiesce();
 			assert.strictEqual(gamma3b.coordinator.stats.granted, 0);
 
-			// Deliver delayed older Attempt 1 directly to gamma after alpha released its newer grant.
 			const lateReply3b = await gamma3b.onDelegationRequest(firstReqKey2);
 			let beta3bErr;
 			let rBetaKey2;
@@ -745,7 +738,7 @@ describe('recordLockCoordinator: unclaimed in-place renewals and out-of-order re
 			// grant and minted the renewed token afresh for alpha with another holder's lineage behind it.
 			alpha.mono += LEASE;
 			returnRenewalReply();
-			await recall;
+			await Promise.race([recall, delayMs(2_000).then(() => assert.fail('the recall did not drain'))]);
 			alpha.release(key, r1.admissionId);
 
 			const releases = alpha.written.filter((entry) => entry.type === 'lockRelease');
