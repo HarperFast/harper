@@ -226,6 +226,28 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		assert.match(again.message, /already enabled; nothing changed/);
 	});
 
+	it('does not count as a rival a row the exchange would not honor', async () => {
+		const { databases } = require('#src/resources/databases');
+		const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
+		const table = databases.system[SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME];
+		await enablePreviews(enableRequest('opsbroad'));
+		const { issuer, audience } = (await policiesOf('opsbroad'))[0];
+		await disablePreviews({ operation: 'disable_previews', app: 'opsbroad', hdb_user: SU });
+		await table.put('broad-row', {
+			id: 'broad-row',
+			issuer,
+			audience,
+			user: 'admin',
+			claims: { repository_id: '67890' },
+		});
+		try {
+			const response = await enablePreviews(enableRequest('opsbroad'));
+			assert.strictEqual(response.enabled, true, JSON.stringify(response.problems));
+		} finally {
+			await table.delete('broad-row');
+		}
+	});
+
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
 		const workflow = '.github/workflows/shared.yaml';
 		const outcomes = await Promise.allSettled([

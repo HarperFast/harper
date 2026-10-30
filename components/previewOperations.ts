@@ -199,6 +199,7 @@ function rivalPolicies(names: PreviewNames, policies: any[], wanted: DesiredPoli
 			(candidate) =>
 				!ours.has(candidate?.id) &&
 				candidate?.enabled !== false &&
+				candidate?.exchangeable !== false &&
 				policiesOverlap(candidate, policy) &&
 				!sameAuthority(candidate, policy)
 		);

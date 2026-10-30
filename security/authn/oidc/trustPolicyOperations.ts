@@ -129,9 +129,9 @@ function toRecord(row: any, problem?: string): OidcTrustPolicy & Record<string, 
 		// 'false' — one of the shapes the exchange refuses — as `enabled: true`, telling the operator
 		// a dead trust is live. Absent still means enabled, which is the documented default.
 		enabled: row.enabled === undefined ? true : row.enabled,
-		// Present only on a row the exchange will refuse, so a listing says why the trust is dead
-		// instead of leaving a per-attempt log line as the only signal. Shape problems are set here;
-		// listOidcTrust adds the ones that depend on state outside the row (a missing or inactive user).
+		// Present only on a row the exchange will refuse, for every run or the ones it conflicts over,
+		// so a listing says why instead of leaving a per-attempt log line as the only signal. Shape
+		// problems are set here; listOidcTrust adds the ones that depend on state outside the row.
 		...(problem ? { invalid_reason: problem } : {}),
 		description: row.description ?? null,
 		updated_by: row.updated_by ?? null,
