@@ -406,6 +406,7 @@ jobs:
 				'      - run: git fetch origin "$REF"\n        env:\n          REF: pull/42/head\n',
 				'      - run: git fetch origin ${{ github.event.pull_request.merge_commit_sha }}\n',
 				"      - run: git fetch origin ${{ format('refs/pull/{0}/head', github.event.number) }} && git checkout FETCH_HEAD\n",
+				'      - run: git -C $(cd .; pwd) fetch origin "${{ github.event.pull_request.head.sha }}"\n',
 				'      - run: git fetch origin "a;b" refs/pull/7/head\n',
 				'      - run: git fetch origin "a\\";b" refs/pull/7/head\n',
 				'      - run: git fetch origin a\\;b refs/pull/7/head\n',
