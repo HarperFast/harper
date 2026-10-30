@@ -1149,11 +1149,12 @@ function registerLiveSubscriptionForContext(
 ) {
 	const user: any = context?.user;
 	const username = user?.username;
-	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
-	if (!username) return subscription;
+	securityUser ??= userRuntimeModule;
+	// Internal watchers and replication have no user principal, and no record backs the local
+	// principal — nothing to re-authorize.
+	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	securityUser ??= userRuntimeModule;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
 	// A select written by authorization names no relationship, so the default allowRead's result still
 	// reads only the role's table permission; a caller's select can reach related tables' allowRead.

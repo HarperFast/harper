@@ -13,6 +13,7 @@ import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../r
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { isLocalPrincipal, localPrincipal } from '../security/user.ts';
 import {
 	ORIGIN_ID,
 	admitCheckpoint,
@@ -121,6 +122,9 @@ export async function replayLastWill(will: any): Promise<void> {
 		} else warn('Dropping will from an expired scoped token', data);
 	} else if (isPastBearerExpiry(message.user)) {
 		warn('Dropping will from an expired bearer token', data);
+	} else if (isLocalPrincipal(message.user)) {
+		message.user = localPrincipal();
+		await publishMessage(message, data, message);
 	} else {
 		const persistedUser = message.user;
 		if (persistedUser?.username) message.user = await (server as any).getUser(persistedUser.username);
@@ -220,7 +224,9 @@ export async function getSession({
 				}
 			: user?._bearerValidator
 				? { username: user.username, authExpiresAt: user.authExpiresAt }
-				: { username: user?.username };
+				: isLocalPrincipal(user)
+					? { username: user.username, _localPrincipal: true }
+					: { username: user?.username };
 		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
 		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
@@ -661,6 +667,7 @@ class SubscriptionsSession {
 					// A scoped will authorizes under its own embedded role, never the disconnecting
 					// session's user (which may be a later same-clientId reconnect).
 					if (will.user?._scopedToken) context.user = will.user;
+					else if (isLocalPrincipal(will.user)) context.user = localPrincipal();
 					await publishMessage(will, will.data, context);
 				}
 			}
