@@ -6,7 +6,13 @@ const { syncBuiltinESMExports } = require('node:module');
 const { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = fs;
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { fsyncDirectory, pathPresent, removeFileDurably, writeFileDurably } = require('#src/utility/durableFile');
+const {
+	fsyncDirectory,
+	mkdirDurably,
+	pathPresent,
+	removeFileDurably,
+	writeFileDurably,
+} = require('#src/utility/durableFile');
 
 describe('durableFile', function () {
 	let tempDir;
@@ -55,6 +61,16 @@ describe('durableFile', function () {
 
 			assert.throws(() => writeFileDurably(target, 'replacement', 'blocked.tmp'));
 			assert.strictEqual(readFileSync(target, 'utf8'), 'original');
+		});
+	});
+
+	describe('mkdirDurably', function () {
+		it('creates missing parents, and leaves a directory that exists alone', function () {
+			const directory = join(tempDir, 'a', 'b', 'c');
+			mkdirDurably(directory);
+			writeFileSync(join(directory, 'kept'), 'x');
+			mkdirDurably(directory);
+			assert.deepStrictEqual(readdirSync(directory), ['kept']);
 		});
 	});
 

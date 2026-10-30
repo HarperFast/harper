@@ -27,7 +27,7 @@ import {
 } from './databases.ts';
 import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
 import { stampDatabaseDirectory } from './auditStore.ts';
-import { pathPresent, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
+import { mkdirDurably, pathPresent, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Private per-application forks of a database, for running several variants of an application against
@@ -852,11 +852,20 @@ function marksPendingRemoval(directory: string): boolean {
 	return pathPresent(join(directory, REMOVAL_PENDING_MARKER)) || pathPresent(join(directory, REMOVAL_PENDING_PARTIAL));
 }
 
-/** Refused when a directory the removal would cover cannot be read, since no marker could cover it. */
+/**
+ * Refused when a directory the removal would cover cannot be read, since no marker could cover it. With none on disk
+ * yet, the default database's branches hold the marker: one marked directory stands for all of the application's, so
+ * it covers a first fork wherever that lands.
+ */
 export function recordPendingBranchRemoval(appName: string): void {
 	const { directories, failures } = branchDirectoriesFor(appName);
 	if (failures.length) {
 		throw new Error(`Could not record the owed removal of branch storage for '${appName}': ${failures.join('; ')}`);
+	}
+	if (!directories.length) {
+		const directory = join(resolveDatabaseStorageRoot(DEFAULT_DATABASE_NAME), BRANCH_ROOT_DIR, appName);
+		mkdirDurably(directory);
+		directories.push(directory);
 	}
 	for (const directory of directories) {
 		writeFileDurably(join(directory, REMOVAL_PENDING_MARKER), new Date().toISOString(), REMOVAL_PENDING_PARTIAL);
