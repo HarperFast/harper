@@ -49,6 +49,7 @@ export function recordsForRatio(ratio: number, budgetBytes: number, recordBytes:
 	if (!Number.isFinite(ratio) || ratio <= 0) throw new Error(`dataset ratio must be a positive number, got ${ratio}`);
 	const records = Math.floor((ratio * budgetBytes) / recordBytes);
 	if (records < 1) throw new Error(`ratio ${ratio} gives no records`);
+	if (!Number.isSafeInteger(records)) throw new Error(`ratio ${ratio} gives ${records} records`);
 	return records;
 }
 
@@ -72,7 +73,8 @@ export function warmupConverged(
 	const mean = throughputs.reduce((a, b) => a + b, 0) / window;
 	if (mean <= 0 || (Math.max(...throughputs) - Math.min(...throughputs)) / mean > throughputTolerance) return false;
 	const hitRates = last.map((c) => c.hitRate).filter((h): h is number => h !== undefined);
-	return hitRates.length < window || Math.max(...hitRates) - Math.min(...hitRates) <= hitRateTolerance;
+	if (hitRates.length === 0) return true;
+	return hitRates.length === window && Math.max(...hitRates) - Math.min(...hitRates) <= hitRateTolerance;
 }
 
 interface Snapshot {
@@ -105,6 +107,8 @@ interface SweepSample {
 	quiesceMs?: number;
 	/** False when the target was still busy when the quiesce wait ran out. */
 	quiet?: boolean;
+	/** Quiet before warmup and converged during it; an unsettled `ok` row is not a result to compare. */
+	settled?: boolean;
 	warmup?: WarmupChunk[];
 	converged?: boolean;
 	measured?: MeasuredWindow;
@@ -271,6 +275,7 @@ async function measureSweepSample(
 					phase = 'measure';
 					sample.measured = await measureWindow(session, running, driver, workload, 'zipfian', measureOps);
 					sample.status = 'ok';
+					sample.settled = converged && quiet;
 				} finally {
 					driver.close();
 				}
@@ -284,10 +289,11 @@ async function measureSweepSample(
 	}
 }
 
-function printSweep(points: PointResult[], samples: SweepSample[]): void {
+function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryBytes: number): void {
 	const out: string[] = ['', '='.repeat(150)];
 	out.push(
-		`Equal budget per target: 4 cores, ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB (hard caps, page cache included, swap off)`
+		`Budget per target: 4 cores, ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB (hard caps, page cache included, swap off)` +
+			(Number.isFinite(harperMemoryBytes) ? '' : ' — EXCEPT Harper, uncapped (--harper-memory=measured)')
 	);
 	out.push(
 		[
@@ -325,7 +331,7 @@ function printSweep(points: PointResult[], samples: SweepSample[]): void {
 					(lat ? lat.p99.toFixed(2) : '-').padStart(8),
 					(m ? m.cpuMicrosPerOp.toFixed(1) : '-').padStart(10),
 					(m?.redisHitRate === undefined ? '-' : (m.redisHitRate * 100).toFixed(2)).padStart(7),
-					(s.warmup ? `${s.warmup.length}${s.converged && s.quiet ? '' : '!'}` : '-').padStart(7),
+					(s.warmup ? `${s.warmup.length}${s.settled ? '' : '!'}` : '-').padStart(7),
 					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}`,
 				].join('')
 			);
@@ -452,7 +458,7 @@ async function main(): Promise<void> {
 	} finally {
 		await removeSnapshots().catch(() => {});
 	}
-	printSweep(points, samples);
+	printSweep(points, samples, session.harperMemoryBytes);
 	console.log(`\nResults written to ${file}`);
 }
 

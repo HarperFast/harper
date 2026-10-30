@@ -68,16 +68,18 @@ sample starts a fresh server and reloads the dataset.
   Affinity is set when each process is created (a `taskset` wrapper for Harper,
   `taskset -c` for Fastify, compose `cpuset` for containers) and every thread is
   checked before measuring; a sample with a thread outside its set fails.
-- **Equal memory budget, enforced.** 8 GiB per target. Every component runs in its
+- **Equal memory budget, enforced.** 8 GiB per target, every target. Every component runs in its
   own memory cgroup with a hard cap and swap off: Harper in a user systemd scope
   capped at 8 GiB, the Fastify cluster in one capped at 1 GiB, Postgres and Redis
   under compose `mem_limit` with `memswap_limit` equal to it. run-compare's stack
-  split is Fastify 1 GiB + Postgres 6 GiB (`shared_buffers=4GB`) + Redis 1 GiB
-  (`maxmemory 768mb`). Each cap, swap limit and ancestor limit is checked before a
+  splits are `pg-redis` = Fastify 1 GiB + Postgres 6 GiB (`shared_buffers=4GB`) +
+  Redis 1 GiB (`maxmemory 768mb`), and `pg-only` = Fastify 1 GiB + Postgres 7 GiB
+  (its idle Redis container is not charged). Each cap, swap limit and ancestor limit is checked before a
   sample runs. Harper sizes its RocksDB block cache and worker heaps from the
   cgroup limit, as it would in an 8 GiB container. (One cgroup spanning host
   processes and containers would need root; one per process does not.)
-  `--harper-memory=measured` lifts Harper's cap for comparison runs.
+  `--harper-memory=measured` lifts Harper's cap for comparison runs (its ancestor
+  cgroups must still allow 8 GiB); such results are not equal-memory.
 - **Memory is what the cgroup is charged**, the same way for every component:
   anonymous memory plus page cache (a file page is charged to the cgroup that first
   touches it) plus shared memory (`shared_buffers`). Each sample reports the 2 s

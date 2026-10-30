@@ -17,6 +17,7 @@ test('dataset ratios size the record count from the logical payload', () => {
 	strictEqual(recordsForRatio(8, MEMORY_BUDGET_BYTES, 1000), 68_719_476);
 	for (const bad of [0, -1, NaN, Infinity]) throws(() => recordsForRatio(bad, MEMORY_BUDGET_BYTES, 1000));
 	throws(() => recordsForRatio(1e-12, MEMORY_BUDGET_BYTES, 1000), /no records/);
+	throws(() => recordsForRatio(0.5, MEMORY_BUDGET_BYTES, 0), /records/);
 });
 
 test('warmup converges only when the whole window agrees', () => {
@@ -33,6 +34,8 @@ test('warmup also waits for the Redis hit rate to settle', () => {
 	strictEqual(warmupConverged(settled), true);
 	const climbing = [0.8, 0.803, 0.806].map((hitRate) => ({ throughput: 100, hitRate }));
 	strictEqual(warmupConverged(climbing), false);
+	const partial = [{ throughput: 100 }, { throughput: 100, hitRate: 0.8 }, { throughput: 100, hitRate: 0.8 }];
+	strictEqual(warmupConverged(partial), false, 'a window missing a hit rate is not settled');
 });
 
 test('targets carry their HTTP backend and cache sizing', () => {
@@ -53,12 +56,13 @@ test('targets carry their HTTP backend and cache sizing', () => {
 });
 
 test('every stack split sums to the memory budget', () => {
-	for (const memory of [WARM_STACK_MEMORY, SWEEP_STACK_MEMORY['pg-redis']]) {
-		strictEqual((memory.fastifyMiB + memory.postgresMiB + memory.redisMiB) * 1024 ** 2, MEMORY_BUDGET_BYTES);
+	for (const splits of [WARM_STACK_MEMORY, SWEEP_STACK_MEMORY]) {
+		const redis = splits['pg-redis'];
+		strictEqual((redis.fastifyMiB + redis.postgresMiB + redis.redisMiB) * 1024 ** 2, MEMORY_BUDGET_BYTES);
+		// pg-only's Redis container runs idle and is not charged.
+		const pgOnly = splits['pg-only'];
+		strictEqual((pgOnly.fastifyMiB + pgOnly.postgresMiB) * 1024 ** 2, MEMORY_BUDGET_BYTES);
 	}
-	// pg-only's Redis container runs idle and is not charged.
-	const pgOnly = SWEEP_STACK_MEMORY['pg-only'];
-	strictEqual((pgOnly.fastifyMiB + pgOnly.postgresMiB) * 1024 ** 2, MEMORY_BUDGET_BYTES);
 });
 
 test('results are replaced atomically, leaving no temp file', async () => {

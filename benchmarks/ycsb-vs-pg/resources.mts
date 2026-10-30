@@ -369,7 +369,7 @@ export async function readCgroupMemory(scope: string): Promise<CgroupMemory> {
 	};
 }
 
-export async function totalCpuSeconds(targets: ResourceTargets): Promise<number> {
+async function totalCpuSeconds(targets: ResourceTargets): Promise<number> {
 	let total = 0;
 	for (const root of Object.values(targets.processes)) total += await processCpuSeconds(root);
 	for (const scope of Object.values(targets.cgroups)) total += await cgroupCpuSeconds(scope);

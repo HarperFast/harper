@@ -43,19 +43,30 @@ export interface StackMemory {
 	redisMaxmemoryMiB: number;
 }
 
-/** run-compare's split: 1 + 6 + 1 = 8 GiB. */
-export const WARM_STACK_MEMORY: StackMemory = {
-	fastifyMiB: 1024,
-	postgresMiB: 6144,
-	sharedBuffersMiB: 4096,
-	effectiveCacheMiB: 6144,
-	redisMiB: 1024,
-	redisMaxmemoryMiB: 768,
+/** run-compare's splits; pg-redis keeps harper#3736's containers. */
+export const WARM_STACK_MEMORY: Record<'pg-redis' | 'pg-only', StackMemory> = {
+	'pg-redis': {
+		fastifyMiB: 1024,
+		postgresMiB: 6144,
+		sharedBuffersMiB: 4096,
+		effectiveCacheMiB: 6144,
+		redisMiB: 1024,
+		redisMaxmemoryMiB: 768,
+	},
+	'pg-only': {
+		fastifyMiB: 1024,
+		postgresMiB: 7168,
+		sharedBuffersMiB: 4096,
+		effectiveCacheMiB: 7168,
+		redisMiB: 256,
+		redisMaxmemoryMiB: 64,
+	},
 };
 
 /**
- * memory-sweep's splits, each summing to 8 GiB of charged memory. pg-only gives Postgres the share
- * pg-redis spends on Redis; its Redis container still runs (one compose file) but is never used or charged.
+ * memory-sweep's splits. In both tables every split sums to 8 GiB of charged memory: pg-only gives
+ * Postgres the share pg-redis spends on Redis, whose container still runs (one compose file) but is
+ * never used or charged.
  */
 export const SWEEP_STACK_MEMORY: Record<'pg-redis' | 'pg-only', StackMemory> = {
 	'pg-redis': {

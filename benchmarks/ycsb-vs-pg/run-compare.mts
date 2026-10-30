@@ -256,7 +256,8 @@ async function withHarper<T>(
 				// Long grace: RocksDB flushes its memtables on a clean shutdown.
 				await killHarper(started, { graceMs: 300_000 });
 				const { exitCode, signalCode } = started.harper.process;
-				if (exitCode !== 0 && signalCode !== 'SIGTERM') {
+				// Harper's SIGTERM handler exits 0; dying of the signal means it never ran.
+				if (exitCode !== 0) {
 					throw new Error(`Harper stopped with ${exitCode ?? signalCode}, not cleanly; snapshot not taken`);
 				}
 				await mkdir(dirname(dir), { recursive: true });
@@ -865,7 +866,11 @@ async function main(): Promise<void> {
 	const targets = parseTargets(argValue(argv, '--targets') ?? 'harper,pg-redis');
 	const cache = (argValue(argv, '--cache') ?? 'warm') as CacheMode;
 	if (cache !== 'warm' && cache !== 'cold') throw new Error(`--cache must be warm or cold, got ${cache}`);
-	const { session, meta } = await createSession(argv, { targets, cache, stackMemory: () => WARM_STACK_MEMORY });
+	const { session, meta } = await createSession(argv, {
+		targets,
+		cache,
+		stackMemory: (target) => WARM_STACK_MEMORY[target],
+	});
 	const { options } = session;
 	const file = join(RESULTS_DIR, `compare-${meta.timestamp}.json`);
 	const runMeta = { ...meta, targetOrderRule: 'forward on even reps, reversed on odd reps' };

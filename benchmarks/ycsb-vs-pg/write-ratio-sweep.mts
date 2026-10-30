@@ -155,7 +155,7 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 		fields: 10,
 		poolSize: 20,
 		serverCpus: SERVER_CPUS,
-		memory: WARM_STACK_MEMORY,
+		memory: WARM_STACK_MEMORY['pg-redis'],
 		fastifyUnit: `ycsb-ratio-sweep-${process.pid}-${ratio}`.replace('.', '_'),
 	});
 	try {
