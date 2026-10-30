@@ -773,6 +773,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.persist();
 		});
 	}
+	hasEnded() {
+		return this.terminated || this.sealed || this.discarded;
+	}
 	consumed(subscription) {
 		const state = this.topics.get(subscription.topic);
 		if (state?.subscription === subscription) state.consumed++;
@@ -781,6 +784,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.inOrder(() => this.subscribeTopic(subscription, needsAck));
 	}
 	async subscribeTopic(subscription, needsAck) {
+		if (this.hasEnded()) throw this.endedError();
 		const { topic } = subscription;
 		const durable = subscription.qos > 0;
 		const existing = this.topics.get(topic);
@@ -800,22 +804,36 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
 			if (durable || started) await this.saveExchanges();
+			if (this.hasEnded()) {
+				if (!started) throw this.endedError();
+				this.endSubscription(started);
+			}
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
 			// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
-			else this.dropFailedSubscription(topic, started, replaced);
+			else
+				this.dropFailedSubscription(
+					topic,
+					started,
+					replaced,
+					Boolean(existing) && (this.hasEnded() || error instanceof SessionEndedError)
+				);
 			throw error;
 		}
 		return subscription;
 	}
-	/** Replacing ends the old subscription before the new one can fail, so a failed SUBSCRIBE leaves its topic unsubscribed. */
-	dropFailedSubscription(topic, started, replaced) {
-		const index = started ? this.subscriptions.indexOf(started) : -1;
+	endSubscription(subscription) {
+		const index = subscription ? this.subscriptions.indexOf(subscription) : -1;
 		if (index > -1) {
-			started.end();
+			subscription.end();
 			this.subscriptions.splice(index, 1);
-		}
+		} else subscription?.end?.();
+	}
+	/** Replacing ends the old subscription before the new one can fail, so a failed SUBSCRIBE leaves its topic unsubscribed. */
+	dropFailedSubscription(topic, started, replaced, keepTopic = false) {
+		this.endSubscription(started);
+		if (keepTopic) return;
 		const owner = this.topics.get(topic)?.subscription;
 		if (owner && (owner === started || (owner === replaced && !this.subscriptions.includes(owner)))) {
 			this.topics.delete(topic);
@@ -824,6 +842,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	removeSubscription(topic) {
 		return this.inOrder(async () => {
+			if (this.hasEnded()) throw this.endedError();
 			const result = await super.removeSubscription(topic);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
