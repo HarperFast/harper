@@ -1013,6 +1013,11 @@ export function searchByIndex(
 					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
+					// A to-many relationship beyond this hop is joined inside `joined`; share it with the lead's siblings
+					if (attribute_name.length > 2 && filtered) {
+						const scopes = (filtered[SIBLING_FILTERS] ??= new Map());
+						if (!scopes.has(attribute_name[0])) scopes.set(attribute_name[0], { filters: [], scope: joined });
+					}
 					results = (results as any).flatMap(searchEntry);
 				}
 			}
@@ -1582,6 +1587,18 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 			} catch {}
 	}
 }
+interface SiblingFilters {
+	filters: any[];
+	selection?: RelationshipSelection;
+	// the map the next level of a multi-hop condition registers in
+	scope: any;
+	registered?: boolean;
+}
+const SIBLING_FILTERS = Symbol('siblingFilters');
+function everyFilter(filters, value, entry) {
+	for (let i = 0; i < filters.length; i++) if (!filters[i](value, entry)) return false;
+	return true;
+}
 class RelationshipSelection {
 	filters: any[];
 	fromRecord: (record: any, sync?: boolean) => any;
@@ -1960,12 +1977,21 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					}
 					return keys;
 				});
-			// registered when built, so no row sees a partial set
-			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
-			let selection;
-			if (!join && restrictsSelect) {
-				if (filterMap instanceof RelationshipSelection) selection = filterMap;
-				else if (!Object.hasOwn(filtered, firstAttributeName)) selection = relatedSelection([]);
+			// the filters of every condition on this relationship in this scope, held outside `filtered`'s string keys
+			let siblings: SiblingFilters;
+			if (!join && filtered) {
+				const scopes = (filtered[SIBLING_FILTERS] ??= new Map());
+				siblings = scopes.get(firstAttributeName);
+				if (!siblings) {
+					const selection =
+						firstAttribute.elements &&
+						!SELECTION_BOOKKEEPING.has(firstAttributeName) &&
+						!Object.hasOwn(filtered, firstAttributeName)
+							? relatedSelection([])
+							: undefined;
+					siblings = { filters: selection?.filters ?? [], selection, scope: selection ?? Object.create(null) };
+					scopes.set(firstAttributeName, siblings);
+				}
 			}
 			const nextFilter = filterByType(
 				{
@@ -1976,7 +2002,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				},
 				relatedTable,
 				context,
-				join ?? selection,
+				join ?? siblings?.scope,
 				attribute[1] === relatedTable.primaryKey,
 				estimatedIncomingCount
 			);
@@ -1986,24 +2012,22 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				join.filters.push(nextFilter);
 				return;
 			}
-			if (selection) {
+			if (siblings) {
 				// conditions on one relationship must be met by the same related record, as a leading join does,
-				// so the first registers the whole set and the rest only add to it
-				const registered = filtered[firstAttributeName] === selection;
-				selection.filters.push(nextFilter);
-				if (registered) return;
-				filtered[firstAttributeName] = selection;
+				// so the first checks the whole set and the rest only add to it
+				siblings.filters.push(nextFilter);
+				if (siblings.registered) return;
+				siblings.registered = true;
+				if (siblings.selection) filtered[firstAttributeName] = siblings.selection;
 			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
 			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
 			const usesIdFilter = () =>
 				nextFilter.idFilter &&
-				(!selection || selection.filters.length === 1) &&
+				(!siblings || siblings.filters.length === 1) &&
 				(!resolver.to || nextFilter.idFilter.mappedTo);
-			const matchesRelated = selection
-				? (value, entry) => selection.filters.every((filter) => filter(value, entry))
-				: nextFilter;
+			const matchesRelated = siblings ? (value, entry) => everyFilter(siblings.filters, value, entry) : nextFilter;
 			const recordFilter = (record, entry) => {
 				if (resolver && usesIdFilter()) {
 					// if we are filtering by id, we can use the idFilter to avoid loading the record
@@ -2041,8 +2065,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				if (!Array.isArray(subObject)) return matchesRelated(subObject, subEntry);
 				return subObject.some((value, i) => matchesRelated(value, subEntries?.[i]));
 			};
-			const nextMatch = selection
-				? (value, entry) => matchesFilters(selection.filters, value, entry, false)
+			const nextMatch = siblings
+				? (value, entry) => matchesFilters(siblings.filters, value, entry, false)
 				: (nextFilter.maybeAsync ?? nextFilter);
 			if (loadEntries) {
 				const matchLoaded = (loaded) => {
@@ -2393,17 +2417,6 @@ function relationshipScanRuns(table, attribute, condition): boolean {
 		negated: condition.negated,
 	});
 }
-export function leadsByRelationship(table, condition): boolean {
-	if (condition.conditions)
-		return (
-			condition.operator !== 'or' &&
-			condition.conditions.length > 0 &&
-			leadsByRelationship(table, condition.conditions[0])
-		);
-	const attribute = condition[0] ?? condition.attribute;
-	return Array.isArray(attribute) && attribute.length > 1 && relationshipScanRuns(table, attribute, condition);
-}
-
 // must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)
 export function conditionDrivesIndex(table, condition): boolean {
 	if (condition.negated) return false;
@@ -2416,6 +2429,7 @@ export function conditionDrivesIndex(table, condition): boolean {
 	const value = condition[1] ?? condition.value;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
 	if (Array.isArray(attributeName)) {
+		if (attributeName.length > 1) return relationshipScanRuns(table, attributeName, condition);
 		if (attributeName.length !== 1) return false;
 		attributeName = attributeName[0];
 	}

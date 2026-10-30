@@ -81,9 +81,23 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		};
 		const drives = (attribute) => conditionDrivesIndex(table, { attribute, comparator: 'equals', value: 'v' });
 
-		it('never drives by a related or nested attribute, so promotion cannot change which related record siblings meet', () => {
-			assert.strictEqual(drives(['owner', 'name']), false);
-			assert.strictEqual(drives(['items', 'name']), false);
+		it('drives by a related attribute only when every hop of its scan can run', () => {
+			assert.strictEqual(drives(['owner', 'name']), true);
+			assert.strictEqual(drives(['items', 'name']), true);
+			assert.strictEqual(drives(['owner', 'other']), false, 'the related attribute has no index');
+			assert.strictEqual(
+				conditionDrivesIndex({ ...table, indices: {} }, { attribute: ['owner', 'name'], value: 'v' }),
+				false,
+				'the local foreign key has no index'
+			);
+			assert.strictEqual(
+				conditionDrivesIndex(table, { attribute: ['items', 'name'], comparator: 'contains', value: 'v' }),
+				false,
+				'the related comparator would full-scan'
+			);
+		});
+
+		it('never drives by a plain nested path or an empty one', () => {
 			assert.strictEqual(drives(['json', 'k']), false);
 			assert.strictEqual(drives([]), false, 'an empty path is not the primary key');
 		});

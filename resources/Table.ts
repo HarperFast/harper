@@ -175,7 +175,6 @@ import {
 	findAttribute,
 	estimateCondition,
 	conditionDrivesIndex,
-	leadsByRelationship,
 	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
@@ -7541,9 +7540,10 @@ export function makeTable(options): TableResourceClass {
 					const streamsSort =
 						ordered[0] === syntheticOrderCondition ||
 						(ordered[0] === orderAlignedCondition && target.allowFullScan !== false);
-					if (!streamsSort && !leadsByRelationship(TableResource, ordered[0])) {
-						const lead = ordered.findIndex((condition) => conditionDrivesIndex(TableResource, condition));
-						if (lead > 0) ordered.unshift(ordered.splice(lead, 1)[0]);
+					if (!streamsSort) {
+						let lead = 0;
+						while (lead < ordered.length && !conditionDrivesIndex(TableResource, ordered[lead])) lead++;
+						if (lead > 0 && lead < ordered.length) ordered.unshift(ordered.splice(lead, 1)[0]);
 					}
 					return ordered;
 				} else return conditions;

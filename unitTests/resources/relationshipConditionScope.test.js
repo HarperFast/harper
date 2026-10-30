@@ -260,11 +260,19 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 describe('AND-joined conditions on one relationship meet one related record whichever condition leads', function () {
 	this.timeout(60000);
 	let Parent;
+	let Grand;
 
 	before(async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		const kids = { name: 'kids', elements: { type: 'SameChild', definition: {} }, relationship: { to: 'parentId' } };
+		// a relationship may share its name with the maps that track relationships during a query
+		const filters = {
+			name: 'filters',
+			elements: { type: 'SameChild', definition: {} },
+			relationship: { to: 'parentId' },
+		};
+		const owner = { name: 'owner', type: 'SameParent', definition: {}, relationship: { from: 'ownerId' } };
 		Parent = table({
 			table: 'SameParent',
 			database: 'test',
@@ -272,9 +280,22 @@ describe('AND-joined conditions on one relationship meet one related record whic
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'group', indexed: true },
 				{ name: 'text', indexed: true },
+				{ name: 'n', indexed: true },
 				kids,
+				filters,
 			],
 		});
+		Grand = table({
+			table: 'SameGrand',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'ownerId', indexed: true },
+				{ name: 'tag', indexed: true },
+				owner,
+			],
+		});
+		owner.definition.tableClass = Parent;
 		const Child = table({
 			table: 'SameChild',
 			database: 'test',
@@ -286,13 +307,17 @@ describe('AND-joined conditions on one relationship meet one related record whic
 			],
 		});
 		kids.elements.definition.tableClass = Child;
-		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'common', text: 'needle' });
+		filters.elements.definition.tableClass = Child;
+		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'common', text: 'needle', n: 0 });
 		// pw's children meet name=a and label=y separately; pm has one child that meets both
-		await Parent.put({ id: 'pw', group: 'rare', text: 'needle' });
-		await Parent.put({ id: 'pm', group: 'rare', text: 'needle' });
+		await Parent.put({ id: 'pw', group: 'rare', text: 'needle', n: 7 });
+		await Parent.put({ id: 'pm', group: 'rare', text: 'needle', n: 7 });
 		await Child.put({ id: 'w1', parentId: 'pw', name: 'a', label: 'x' });
 		await Child.put({ id: 'w2', parentId: 'pw', name: 'b', label: 'y' });
 		await Child.put({ id: 'm1', parentId: 'pm', name: 'a', label: 'y' });
+		for (let i = 0; i < 40; i++) await Grand.put({ id: `g${i}`, ownerId: `p${i}`, tag: 'common' });
+		await Grand.put({ id: 'gw', ownerId: 'pw', tag: 'rare' });
+		await Grand.put({ id: 'gm', ownerId: 'pm', tag: 'rare' });
 	});
 
 	const name = () => ({ attribute: ['kids', 'name'], value: 'a' });
@@ -393,5 +418,61 @@ describe('AND-joined conditions on one relationship meet one related record whic
 				order.map((condition) => condition.name).join()
 			);
 		}
+	});
+
+	it('applies the rule to a relationship named like the maps that track relationships', async () => {
+		const via = (attribute) => [
+			{ attribute: [attribute, 'name'], value: 'a' },
+			{ attribute: [attribute, 'label'], value: 'y' },
+			localGroup(),
+		];
+		const ids = async (conditions) => {
+			const found = [];
+			for await (const row of Parent.search({ conditions, select: ['id'], enforceExecutionOrder: true }))
+				found.push(row.id);
+			return found;
+		};
+		for (const conditions of [via('filters'), via('filters').reverse()])
+			assert.deepStrictEqual(await ids(conditions), ['pm']);
+	});
+
+	it('applies the rule through a to-one hop, whichever condition leads', async () => {
+		const tag = () => ({ attribute: 'tag', value: 'rare' });
+		const viaOwner = () => [
+			{ attribute: ['owner', 'kids', 'name'], value: 'a' },
+			{ attribute: ['owner', 'kids', 'label'], value: 'y' },
+		];
+		for (const conditions of [
+			[tag(), ...viaOwner()],
+			[viaOwner()[0], tag(), viaOwner()[1]],
+			[...viaOwner().reverse(), tag()],
+		]) {
+			const found = [];
+			for await (const row of Grand.search({ conditions, select: ['id'], enforceExecutionOrder: true }))
+				found.push(row.id);
+			assert.deepStrictEqual(found, ['gm'], JSON.stringify(conditions));
+		}
+	});
+
+	it('deletes only the parent whose one child meets both conditions', async () => {
+		await Parent.put({ id: 'dw', group: 'del', text: 'needle', n: 0 });
+		await Parent.put({ id: 'dm', group: 'del', text: 'needle', n: 0 });
+		const Child = Parent.attributes.find((attribute) => attribute.name === 'kids').elements.definition.tableClass;
+		await Child.put({ id: 'dw1', parentId: 'dw', name: 'a', label: 'x' });
+		await Child.put({ id: 'dw2', parentId: 'dw', name: 'b', label: 'y' });
+		await Child.put({ id: 'dm1', parentId: 'dm', name: 'a', label: 'y' });
+		const del = () => ({ operator: 'and', conditions: [{ attribute: 'group', value: 'del' }, needle()] });
+		await Parent.delete({ conditions: [name(), label(), del()] });
+		assert.strictEqual(await Parent.get('dw').then((record) => record?.id), 'dw', 'split children: not deleted');
+		assert.ok((await Parent.get('dm')) == null, 'one child meets both: deleted');
+	});
+
+	it('promotes a runnable relationship scan past an `in` that would full-scan, so allowFullScan: false still answers', async () => {
+		const conditions = [{ attribute: 'n', comparator: 'in', value: [7] }, name(), label()];
+		const planned = (await Parent.search({ conditions, explain: true, allowFullScan: false })).conditions;
+		assert.ok(Array.isArray(planned[0].attribute), 'a relationship scan leads');
+		const found = [];
+		for await (const row of Parent.search({ conditions, select: ['id'], allowFullScan: false })) found.push(row.id);
+		assert.deepStrictEqual(found, ['pm']);
 	});
 });
