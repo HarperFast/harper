@@ -991,7 +991,7 @@ export function searchByIndex(
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
-				filtered[attribute_name[0]] = joined;
+				restrictRelationship(filtered, attribute_name[0], joined);
 				// Use the joinTo to join the results of the related table to the current table (can be one-to-many or many-to-many)
 				const isManyToMany = Boolean(findAttribute(relatedTable.attributes, attribute.relationship.to)?.elements);
 				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined, relatedTxn);
@@ -1008,16 +1008,13 @@ export function searchByIndex(
 					);
 				};
 				if (attribute.elements) {
-					filtered[attribute_name[0]] = joined;
+					restrictRelationship(filtered, attribute_name[0], joined);
 					// many-to-many relationship (forward), get all the ids first
 					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
-					// A to-many relationship beyond this hop is joined inside `joined`; share it with the lead's siblings
-					if (attribute_name.length > 2 && filtered) {
-						const scopes = (filtered[SIBLING_FILTERS] ??= new Map());
-						if (!scopes.has(attribute_name[0])) scopes.set(attribute_name[0], { filters: [], scope: joined });
-					}
+					// a to-many relationship beyond this hop is joined inside `joined`, which the lead's siblings share
+					if (attribute_name.length > 2 && filtered) siblingFilters(filtered, attribute_name[0], joined);
 					results = (results as any).flatMap(searchEntry);
 				}
 			}
@@ -1590,8 +1587,7 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 interface SiblingFilters {
 	filters: any[];
 	selection?: RelationshipSelection;
-	// the map the next level of a multi-hop condition registers in
-	scope: any;
+	scope: any; // where the next level of a multi-hop condition registers
 	registered?: boolean;
 }
 const SIBLING_FILTERS = Symbol('siblingFilters');
@@ -1607,13 +1603,21 @@ class RelationshipSelection {
 		this.fromRecord = fromRecord;
 	}
 }
-// keys the join and selection maps keep for themselves, so a relationship of that name cannot be tracked in them
-const SELECTION_BOOKKEEPING = new Set(['filters', 'fromRecord', 'hasMappings']);
+const RESTRICTIONS = Symbol('relationshipRestrictions');
 // A query's `filtered` map holds, per relationship name, a leading join's Map or a selection with `fromRecord`.
-// Read it as an own property of that shape: a name can equal an inherited member or the maps' bookkeeping keys.
+// They are keyed by symbol because a relationship can be named like the maps' own members (`filters`, `get`).
 export function relationshipRestriction(filtered, name: string) {
-	const restriction = filtered && Object.hasOwn(filtered, name) ? filtered[name] : undefined;
-	return restriction instanceof Map || typeof restriction?.fromRecord === 'function' ? restriction : undefined;
+	return filtered?.[RESTRICTIONS]?.get(name);
+}
+function restrictRelationship(filtered, name: string, restriction: Map<any, any> | RelationshipSelection) {
+	(filtered[RESTRICTIONS] ??= new Map()).set(name, restriction);
+}
+// The filters of every condition on one relationship within one scope, which must be met by the same related record.
+function siblingFilters(filtered, name: string, scope?: any): SiblingFilters | undefined {
+	const scopes = (filtered[SIBLING_FILTERS] ??= new Map());
+	let siblings = scopes.get(name);
+	if (!siblings && scope) scopes.set(name, (siblings = { filters: [], scope }));
+	return siblings;
 }
 function someRelatedMatch(entries, match, start: number) {
 	for (let i = start; i < entries.length; i++) {
@@ -1977,20 +1981,13 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					}
 					return keys;
 				});
-			// the filters of every condition on this relationship in this scope, held outside `filtered`'s string keys
 			let siblings: SiblingFilters;
 			if (!join && filtered) {
-				const scopes = (filtered[SIBLING_FILTERS] ??= new Map());
-				siblings = scopes.get(firstAttributeName);
+				siblings = siblingFilters(filtered, firstAttributeName);
 				if (!siblings) {
-					const selection =
-						firstAttribute.elements &&
-						!SELECTION_BOOKKEEPING.has(firstAttributeName) &&
-						!Object.hasOwn(filtered, firstAttributeName)
-							? relatedSelection([])
-							: undefined;
-					siblings = { filters: selection?.filters ?? [], selection, scope: selection ?? Object.create(null) };
-					scopes.set(firstAttributeName, siblings);
+					const selection = firstAttribute.elements ? relatedSelection([]) : undefined;
+					siblings = siblingFilters(filtered, firstAttributeName, selection ?? Object.create(null));
+					if (selection) Object.assign(siblings, { filters: selection.filters, selection, scope: selection });
 				}
 			}
 			const nextFilter = filterByType(
@@ -2004,7 +2001,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				context,
 				join ?? siblings?.scope,
 				attribute[1] === relatedTable.primaryKey,
-				estimatedIncomingCount
+				siblings?.registered ? undefined : estimatedIncomingCount
 			);
 			if (!nextFilter) return;
 			if (join) {
@@ -2018,7 +2015,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				siblings.filters.push(nextFilter);
 				if (siblings.registered) return;
 				siblings.registered = true;
-				if (siblings.selection) filtered[firstAttributeName] = siblings.selection;
+				if (siblings.selection) restrictRelationship(filtered, firstAttributeName, siblings.selection);
 			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
@@ -2402,20 +2399,16 @@ function usableIndex(table, attributeName): any {
 	return index?.isIndexing ? undefined : index;
 }
 
-function relationshipScanRuns(table, attribute, condition): boolean {
-	const relationship = findAttribute(table.attributes, attribute[0]);
+// every hop's local join index and the related leaf scan must run, or the relationship cannot lead
+function relationshipScanRuns(table, path: any[], offset: number, comparator, value): boolean {
+	const relationship = findAttribute(table.attributes, path[offset]);
 	const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
 	if (!relationship?.relationship || !relatedTable) return false;
 	const from = relationship.relationship.from;
 	if (from && from !== table.primaryKey && !usableIndex(table, from)) return false;
-	const rest = attribute.slice(1);
-	if (rest.length > 1) return relationshipScanRuns(relatedTable, rest, condition);
-	return conditionDrivesIndex(relatedTable, {
-		attribute: rest[0],
-		comparator: condition.comparator,
-		value: condition[1] ?? condition.value,
-		negated: condition.negated,
-	});
+	return offset < path.length - 2
+		? relationshipScanRuns(relatedTable, path, offset + 1, comparator, value)
+		: scanDrivesIndex(relatedTable, path[offset + 1], comparator, value);
 }
 // must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)
 export function conditionDrivesIndex(table, condition): boolean {
@@ -2429,10 +2422,14 @@ export function conditionDrivesIndex(table, condition): boolean {
 	const value = condition[1] ?? condition.value;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
 	if (Array.isArray(attributeName)) {
-		if (attributeName.length > 1) return relationshipScanRuns(table, attributeName, condition);
+		if (attributeName.length > 1)
+			return !fullTextComparatorMode(comparator) && relationshipScanRuns(table, attributeName, 0, comparator, value);
 		if (attributeName.length !== 1) return false;
 		attributeName = attributeName[0];
 	}
+	return scanDrivesIndex(table, attributeName, comparator, value);
+}
+function scanDrivesIndex(table, attributeName, comparator, value): boolean {
 	if (fullTextComparatorMode(comparator))
 		return (
 			typeof attributeName === 'string' &&

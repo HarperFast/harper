@@ -261,6 +261,7 @@ describe('AND-joined conditions on one relationship meet one related record whic
 	this.timeout(60000);
 	let Parent;
 	let Grand;
+	let Leaf;
 
 	before(async () => {
 		setupTestDBPath();
@@ -272,6 +273,11 @@ describe('AND-joined conditions on one relationship meet one related record whic
 			elements: { type: 'SameChild', definition: {} },
 			relationship: { to: 'parentId' },
 		};
+		const named = ['fromRecord', 'hasMappings', 'get'].map((name) => ({
+			name,
+			elements: { type: 'SameChild', definition: {} },
+			relationship: { to: 'parentId' },
+		}));
 		const owner = { name: 'owner', type: 'SameParent', definition: {}, relationship: { from: 'ownerId' } };
 		Parent = table({
 			table: 'SameParent',
@@ -283,6 +289,7 @@ describe('AND-joined conditions on one relationship meet one related record whic
 				{ name: 'n', indexed: true },
 				kids,
 				filters,
+				...named,
 			],
 		});
 		Grand = table({
@@ -296,6 +303,7 @@ describe('AND-joined conditions on one relationship meet one related record whic
 			],
 		});
 		owner.definition.tableClass = Parent;
+		const leaves = { name: 'filters', elements: { type: 'SameLeaf', definition: {} }, relationship: { to: 'childId' } };
 		const Child = table({
 			table: 'SameChild',
 			database: 'test',
@@ -304,8 +312,21 @@ describe('AND-joined conditions on one relationship meet one related record whic
 				{ name: 'name', indexed: true },
 				{ name: 'label', indexed: true },
 				{ name: 'parentId', indexed: true },
+				leaves,
 			],
 		});
+		Leaf = table({
+			table: 'SameLeaf',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'code', indexed: true },
+				{ name: 'tag' },
+				{ name: 'childId', indexed: true },
+			],
+		});
+		leaves.elements.definition.tableClass = Leaf;
+		for (const relationship of named) relationship.elements.definition.tableClass = Child;
 		kids.elements.definition.tableClass = Child;
 		filters.elements.definition.tableClass = Child;
 		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'common', text: 'needle', n: 0 });
@@ -315,6 +336,10 @@ describe('AND-joined conditions on one relationship meet one related record whic
 		await Child.put({ id: 'w1', parentId: 'pw', name: 'a', label: 'x' });
 		await Child.put({ id: 'w2', parentId: 'pw', name: 'b', label: 'y' });
 		await Child.put({ id: 'm1', parentId: 'pm', name: 'a', label: 'y' });
+		// pw's two leaves meet code and tag separately; pm's one leaf meets both
+		await Leaf.put({ id: 'lw1', childId: 'w1', code: 'on', tag: 'x' });
+		await Leaf.put({ id: 'lw2', childId: 'w1', code: 'off', tag: 'wanted' });
+		await Leaf.put({ id: 'lm1', childId: 'm1', code: 'on', tag: 'wanted' });
 		for (let i = 0; i < 40; i++) await Grand.put({ id: `g${i}`, ownerId: `p${i}`, tag: 'common' });
 		await Grand.put({ id: 'gw', ownerId: 'pw', tag: 'rare' });
 		await Grand.put({ id: 'gm', ownerId: 'pm', tag: 'rare' });
@@ -421,19 +446,58 @@ describe('AND-joined conditions on one relationship meet one related record whic
 	});
 
 	it('applies the rule to a relationship named like the maps that track relationships', async () => {
-		const via = (attribute) => [
-			{ attribute: [attribute, 'name'], value: 'a' },
-			{ attribute: [attribute, 'label'], value: 'y' },
-			localGroup(),
-		];
 		const ids = async (conditions) => {
 			const found = [];
 			for await (const row of Parent.search({ conditions, select: ['id'], enforceExecutionOrder: true }))
 				found.push(row.id);
 			return found;
 		};
-		for (const conditions of [via('filters'), via('filters').reverse()])
-			assert.deepStrictEqual(await ids(conditions), ['pm']);
+		for (const attribute of ['filters', 'fromRecord', 'hasMappings', 'get']) {
+			const via = [
+				{ attribute: [attribute, 'name'], value: 'a' },
+				{ attribute: [attribute, 'label'], value: 'y' },
+				localGroup(),
+			];
+			for (const conditions of [via, [...via].reverse()])
+				assert.deepStrictEqual(await ids(conditions), ['pm'], attribute);
+		}
+	});
+
+	it('applies the rule two hops deep through relationships named like the maps that track them', async () => {
+		const code = () => ({ attribute: ['kids', 'filters', 'code'], value: 'on' });
+		const tag = () => ({ attribute: ['kids', 'filters', 'tag'], value: 'wanted' });
+		const inSeven = () => ({ attribute: 'n', comparator: 'in', value: [7] });
+		const kidLabel = () => ({ attribute: ['kids', 'label'], value: 'y' });
+		for (const order of [
+			[code, kidLabel],
+			[kidLabel, code],
+			[code, tag, kidLabel],
+		]) {
+			const found = [];
+			const conditions = order.map((condition) => condition());
+			for await (const row of Parent.search({ conditions, select: ['id'], enforceExecutionOrder: true }))
+				found.push(row.id);
+			assert.deepStrictEqual(found, ['pm'], JSON.stringify(conditions));
+		}
+		for (const order of [
+			[code, tag],
+			[tag, code],
+			[inSeven, code, tag],
+			[code, tag, inSeven],
+		]) {
+			for (const enforceExecutionOrder of [true, false]) {
+				const found = [];
+				const conditions = order.map((condition) => condition());
+				for await (const row of Parent.search({
+					conditions,
+					select: ['id'],
+					enforceExecutionOrder,
+					allowFullScan: true,
+				}))
+					found.push(row.id);
+				assert.deepStrictEqual(found, ['pm'], JSON.stringify({ conditions, enforceExecutionOrder }));
+			}
+		}
 	});
 
 	it('applies the rule through a to-one hop, whichever condition leads', async () => {

@@ -7543,7 +7543,11 @@ export function makeTable(options): TableResourceClass {
 					if (!streamsSort) {
 						let lead = 0;
 						while (lead < ordered.length && !conditionDrivesIndex(TableResource, ordered[lead])) lead++;
-						if (lead > 0 && lead < ordered.length) ordered.unshift(ordered.splice(lead, 1)[0]);
+						if (lead > 0 && lead < ordered.length) {
+							const driving = ordered[lead];
+							for (let i = lead; i > 0; i--) ordered[i] = ordered[i - 1];
+							ordered[0] = driving;
+						}
 					}
 					return ordered;
 				} else return conditions;
