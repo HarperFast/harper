@@ -277,7 +277,9 @@ export function flameGraphSvg(stacks: { stack: string[]; count: number }[], titl
 	for (const { stack, count } of stacks) {
 		root.value += count;
 		let node = root;
-		for (const frame of stack) {
+		for (const [i, frame] of stack.entries()) {
+			// Kernel frames are unresolved here (kptr_restrict), so a run of them says no more than one.
+			if (frame === '[kernel]' && stack[i - 1] === '[kernel]') continue;
 			let child = node.children.get(frame);
 			if (!child) node.children.set(frame, (child = { name: frame, value: 0, children: new Map() }));
 			child.value += count;
@@ -314,7 +316,7 @@ export function flameGraphSvg(stacks: { stack: string[]; count: number }[], titl
 	const legend = Object.entries(BUCKET_COLORS)
 		.map(
 			([bucket, color], i) =>
-				`<rect x="${10 + i * 98}" y="${height - 22}" width="10" height="10" fill="${color}"/><text x="${23 + i * 98}" y="${height - 13}">${bucket}</text>`
+				`<rect x="${10 + i * 99}" y="${height - 22}" width="10" height="10" fill="${color}"/><text x="${23 + i * 99}" y="${height - 13}" font-size="10">${bucket}</text>`
 		)
 		.join('');
 	return (
