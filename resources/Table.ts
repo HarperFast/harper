@@ -5953,7 +5953,10 @@ export function makeTable(options): TableResourceClass {
 					// Ahead of the version comparison, which an LMDB merge's older stored version (#3388) can invert. Why
 					// only the committed list counts, and only with no earlier staged body: resources/DESIGN.md.
 					if (!audit && !fullUpdate && !priorChange) {
-						const committedRefs = identityBase(write, existingEntry, committedBy)?.receivedIdentityRefs;
+						// A first attempt has staged nothing but unchanged publishes, whose list is the committed one
+						const committedRefs = (
+							retry ? identityBase(write, existingEntry, committedBy) : (priorStaged ?? existingEntry)
+						)?.receivedIdentityRefs;
 						if (committedRefs && auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0) {
 							write.skipped = true;
 							return writeCommit(false);

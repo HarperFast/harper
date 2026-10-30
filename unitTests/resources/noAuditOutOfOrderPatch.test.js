@@ -664,4 +664,29 @@ describe('out-of-order patch on an audit:false table', () => {
 		await NoAudit.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		assert.strictEqual((await NoAudit.get(id)).count, 15, 'the retried write dropped the merged identity');
 	});
+
+	it('two saved same-key increments are not applied again when another key forces a recommit', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const { id, now } = await seedNewerRecord();
+		await NoAudit.put('noaudit-other', { count: 0 });
+		const nodeId = getIdOfRemoteNode('origin-recommit', NoAudit.auditStore);
+		const version = now + 50;
+		const context = { source: {}, sourceApply: true, timestamp: version };
+		const options = { isNotification: true, nodeId, version };
+		let native;
+		await transaction(context, async () => {
+			for (const value of [3, 4]) {
+				const resource = await NoAudit.getResource(id, context);
+				await resource._writeUpdate(id, { count: { __op__: 'add', value } }, false, options);
+				await context.transaction.save(context.transaction.writes.filter((write) => write.key === id).at(-1));
+			}
+			const other = await NoAudit.getResource('noaudit-other', context);
+			await other._writeUpdate('noaudit-other', { count: 1 }, false, options);
+			await context.transaction.save(context.transaction.writes.find((write) => write.key === 'noaudit-other'));
+			native = context.transaction.transaction;
+			await transaction({}, () => NoAudit.put('noaudit-other', { count: 2 }));
+		});
+		assert.ok(native.retries > 0, 'the other key must cause a real native conflict');
+		assert.strictEqual((await NoAudit.get(id)).count, 19);
+	});
 });
