@@ -9,6 +9,7 @@ import {
 	type BootVerdictOutcome,
 } from '../../components/componentLoader.ts';
 import { liveDeploymentId } from '../../components/releaseCertification.ts';
+import { admitWorkerPools, poolUnsupportedTablesHere } from './workerPools.ts';
 
 export type HeldStartRequest = { component: string; deploymentId: string };
 
@@ -65,6 +66,7 @@ export async function awaitAdmission(
 		const onMessage = (message: any) => {
 			if (message?.type !== ITC_EVENT_TYPES.CHILD_ADMITTED) return;
 			parentPort.off('message', onMessage);
+			admitWorkerPools(message.workerPools);
 			resolve();
 		};
 		parentPort.on('message', onMessage);
@@ -72,6 +74,7 @@ export async function awaitAdmission(
 			type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
 			components,
 			applications: applicationsPlacedOnThisThread(),
+			poolUnsupportedTables: poolUnsupportedTablesHere(),
 		});
 		onReported?.();
 	});

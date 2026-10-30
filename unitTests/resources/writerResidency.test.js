@@ -355,96 +355,80 @@ describe('Writer residency (harper#2257)', () => {
 		assert.equal(Records.primaryStore.getEntry('by-id')?.value, undefined, 'nor after a patch');
 	});
 
-	describe('when replication worker pool is active', () => {
-		const { setActiveWorkerPools } = require('#src/server/threads/workerPools');
+	describe('deprecated hooks that replication pool workers cannot run', () => {
+		const { poolUnsupportedTablesHere } = require('#src/server/threads/workerPools');
 		const harperLogger = require('#js/utility/logging/harper_logger');
 
-		function capturingErrors(run) {
-			const errors = [];
-			const originalError = harperLogger.error;
-			harperLogger.error = (...args) => {
-				errors.push(args.map(String).join(' '));
+		function capturingWarnings(run) {
+			const warnings = [];
+			const originalWarn = harperLogger.warn;
+			harperLogger.warn = (...args) => {
+				warnings.push(args.map(String).join(' '));
 			};
 			try {
 				run();
 			} finally {
-				harperLogger.error = originalError;
+				harperLogger.warn = originalWarn;
 			}
-			return errors;
+			return warnings;
 		}
 
-		afterEach(() => {
-			setActiveWorkerPools([]);
-		});
-
-		it('does not log when the replication pool is not active', () => {
-			setActiveWorkerPools([]);
-			const FreshTable = table({
-				table: 'WriterResidencyNoPool',
-				database: 'test',
-				attributes: [{ name: 'id', isPrimaryKey: true }],
-			});
-			const errors = capturingErrors(() => {
-				FreshTable.setResidency(() => [PEER]);
-			});
-			FreshTable.setResidency(undefined);
-			assert.strictEqual(errors.length, 0);
-		});
-
-		it('logs an error once per table on setResidency / setResidencyById and ignores clearing', () => {
-			setActiveWorkerPools(['replication']);
-			const PoolTable = table({
-				table: 'WriterResidencyPoolActive',
+		it('warns once per table on setResidency / setResidencyById, records the table, and ignores clearing', () => {
+			const ResidencyTable = table({
+				table: 'WriterResidencyDeprecated',
 				database: 'test',
 				attributes: [{ name: 'id', isPrimaryKey: true }],
 			});
 			const fn = () => [PEER];
 			assert.deepStrictEqual(
-				capturingErrors(() => {
-					PoolTable.setResidency(undefined);
-					PoolTable.setResidencyById(undefined);
+				capturingWarnings(() => {
+					ResidencyTable.setResidency(undefined);
+					ResidencyTable.setResidencyById(undefined);
 				}),
 				[]
 			);
-			const firstErrors = capturingErrors(() => {
-				PoolTable.setResidency(fn);
+			assert.ok(!poolUnsupportedTablesHere().includes('test.WriterResidencyDeprecated'));
+			const firstWarnings = capturingWarnings(() => {
+				ResidencyTable.setResidency(fn);
 			});
-			assert.strictEqual(firstErrors.length, 1);
-			assert.match(firstErrors[0], /WriterResidencyPoolActive/);
-			assert.match(firstErrors[0], /setResidency/);
-			assert.match(firstErrors[0], /default residency placement/);
-			assert.match(firstErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
+			assert.strictEqual(firstWarnings.length, 1);
+			assert.match(firstWarnings[0], /Table 'test\.WriterResidencyDeprecated' registered setResidency,/);
+			assert.match(firstWarnings[0], /deprecated as of Harper 5\.4/);
+			assert.match(firstWarnings[0], /default residency placement/);
+			assert.match(firstWarnings[0], /@sharded/);
+			assert.match(firstWarnings[0], /set replication\.threads: 0 in harper-config\.yaml/);
+			assert.ok(poolUnsupportedTablesHere().includes('test.WriterResidencyDeprecated'));
 
 			assert.deepStrictEqual(
-				capturingErrors(() => {
-					PoolTable.setResidency(fn);
-					PoolTable.setResidencyById(fn);
+				capturingWarnings(() => {
+					ResidencyTable.setResidency(fn);
+					ResidencyTable.setResidencyById(fn);
 				}),
 				[]
 			);
-			PoolTable.setResidency(undefined);
-			PoolTable.setResidencyById(undefined);
+			ResidencyTable.setResidency(undefined);
+			ResidencyTable.setResidencyById(undefined);
 
-			const SecondPoolTable = table({
-				table: 'WriterResidencyPoolActiveById',
+			const ByIdTable = table({
+				table: 'WriterResidencyDeprecatedById',
 				database: 'test',
 				attributes: [{ name: 'id', isPrimaryKey: true }],
 			});
-			const byIdErrors = capturingErrors(() => {
-				SecondPoolTable.setResidencyById(fn);
+			const byIdWarnings = capturingWarnings(() => {
+				ByIdTable.setResidencyById(fn);
 			});
-			assert.strictEqual(byIdErrors.length, 1);
-			assert.match(byIdErrors[0], /WriterResidencyPoolActiveById/);
-			assert.match(byIdErrors[0], /setResidencyById/);
-			assert.match(byIdErrors[0], /invalidation entries \(residency partials\)/);
-			assert.match(byIdErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
-			SecondPoolTable.setResidencyById(undefined);
+			assert.strictEqual(byIdWarnings.length, 1);
+			assert.match(byIdWarnings[0], /Table 'test\.WriterResidencyDeprecatedById' registered setResidencyById,/);
+			assert.match(byIdWarnings[0], /invalidation entries \(residency partials\)/);
+			assert.match(byIdWarnings[0], /@sharded/);
+			assert.match(byIdWarnings[0], /set replication\.threads: 0 in harper-config\.yaml/);
+			assert.ok(poolUnsupportedTablesHere().includes('test.WriterResidencyDeprecatedById'));
+			ByIdTable.setResidencyById(undefined);
 		});
 
-		it('logs an error once per table when setComputedAttribute registers an indexed JS resolver', () => {
-			setActiveWorkerPools(['replication']);
-			const ComputedPoolTable = table({
-				table: 'ComputedIndexPoolActive',
+		it('warns once per table when setComputedAttribute assigns an indexed resolver, not for unindexed or expressions', () => {
+			const ComputedTable = table({
+				table: 'ComputedIndexDeprecated',
 				database: 'test',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
@@ -454,22 +438,26 @@ describe('Writer residency (harper#2257)', () => {
 				],
 			});
 			assert.deepStrictEqual(
-				capturingErrors(() => {
-					ComputedPoolTable.setComputedAttribute('unindexedScore', (rec) => rec.id);
+				capturingWarnings(() => {
+					ComputedTable.setComputedAttribute('unindexedScore', (rec) => rec.id);
+					ComputedTable.setComputedAttribute('exprScore', (rec) => rec.id);
 				}),
 				[]
 			);
-			const errors = capturingErrors(() => {
-				ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+			assert.ok(!poolUnsupportedTablesHere().includes('test.ComputedIndexDeprecated'));
+			const warnings = capturingWarnings(() => {
+				ComputedTable.setComputedAttribute('indexedScore', (rec) => rec.id);
 			});
-			assert.strictEqual(errors.length, 1);
-			assert.match(errors[0], /ComputedIndexPoolActive/);
-			assert.match(errors[0], /setComputedAttribute \(e\.g\. 'indexedScore'\)/);
-			assert.match(errors[0], /unresolvedComputedIndexes\(\)/);
-			assert.match(errors[0], /replication\.threads: 0 in harper-config\.yaml/);
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /Table 'test\.ComputedIndexDeprecated' assigned setComputedAttribute/);
+			assert.match(warnings[0], /indexed @computed attribute 'indexedScore'/);
+			assert.match(warnings[0], /deprecated as of Harper 5\.4/);
+			assert.match(warnings[0], /@computed\(from:/);
+			assert.match(warnings[0], /set replication\.threads: 0 in harper-config\.yaml/);
+			assert.ok(poolUnsupportedTablesHere().includes('test.ComputedIndexDeprecated'));
 			assert.deepStrictEqual(
-				capturingErrors(() => {
-					ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+				capturingWarnings(() => {
+					ComputedTable.setComputedAttribute('indexedScore', (rec) => rec.id);
 				}),
 				[]
 			);

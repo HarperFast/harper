@@ -17,7 +17,13 @@ import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { confirmWindowsProcessTreeGone, ROOT_SPAWN_ALLOWANCE_MS } from './windowsProcessTree.ts';
-import { activeWorkerPools } from './workerPools.ts';
+import {
+	activeWorkerPools,
+	decideWorkerPools,
+	isWorkerPoolPending,
+	pendingWorkerPools,
+	workerPoolDecision,
+} from './workerPools.ts';
 import { join, isAbsolute, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { server } from '../Server.ts';
@@ -958,7 +964,7 @@ function settleHeldStart(held) {
 	Promise.resolve()
 		.then(() => held.admission?.())
 		.then(
-			() => held.worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED }),
+			() => admitWorker(held.worker),
 			(error) => {
 				harperLogger.error(`Could not admit worker ${held.worker.threadId}`, error);
 				return stopHeldStart(held);
@@ -993,7 +999,7 @@ function admitOnReport(worker, startOptions) {
 		recordLoadedApplications(worker, message);
 		const refusal = loadedAcrossRelease(worker);
 		if (!refusal) {
-			worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED });
+			admitWorker(worker);
 			return;
 		}
 		harperLogger.warn(`Not admitting worker ${worker.threadId}: ${refusal}`);
@@ -1428,7 +1434,8 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 			workerCount: options.threadCount,
 			name: options.name,
 			isolatedApplication: options.application,
-			workerPools: activeWorkerPools(),
+			workerPools: activeWorkerPools().filter((type) => !isWorkerPoolPending(type)),
+			pendingWorkerPools: pendingWorkerPools(),
 			poolIndex: options.poolIndex,
 			restartNumber: restartNumber,
 			processIncarnation: processIncarnation,
@@ -1580,7 +1587,19 @@ function withPoolFor(application?: string) {
 	return true;
 }
 
+/** Admitted only once any pending pool is decided, and told the decision, which it applies before it binds. */
+function admitWorker(worker) {
+	const admit = () =>
+		worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED, workerPools: activeWorkerPools() });
+	const decision = workerPoolDecision();
+	if (decision) void decision.then(admit);
+	else admit();
+}
+
 function recordLoadedApplications(worker: any, message: any) {
+	// An isolated worker's tables are never replicated from its thread, pool or not.
+	if (worker.name === hdbTerms.THREAD_TYPES.HTTP && worker.application === undefined)
+		decideWorkerPools(message.poolUnsupportedTables);
 	if (!Array.isArray(message.applications)) return;
 	worker.loadedApplications = new Set(message.applications);
 	notifyWorkerRelease();
