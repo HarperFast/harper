@@ -2010,8 +2010,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				return;
 			}
 			if (siblings) {
-				// conditions on one relationship must be met by the same related record, as a leading join does,
-				// so the first checks the whole set and the rest only add to it
+				// the first checks the whole set so the conditions meet one related record, as a leading join does
 				siblings.filters.push(nextFilter);
 				if (siblings.registered) return;
 				siblings.registered = true;
@@ -2399,7 +2398,6 @@ function usableIndex(table, attributeName): any {
 	return index?.isIndexing ? undefined : index;
 }
 
-// every hop's local join index and the related leaf scan must run, or the relationship cannot lead
 function relationshipScanRuns(table, path: any[], offset: number, comparator, value): boolean {
 	const relationship = findAttribute(table.attributes, path[offset]);
 	const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
@@ -2414,9 +2412,11 @@ function relationshipScanRuns(table, path: any[], offset: number, comparator, va
 export function conditionDrivesIndex(table, condition): boolean {
 	if (condition.negated) return false;
 	if (condition.conditions) {
-		return condition.operator === 'or'
-			? condition.conditions.length > 0 && condition.conditions.every((branch) => conditionDrivesIndex(table, branch))
-			: condition.conditions.length > 0 && conditionDrivesIndex(table, condition.conditions[0]);
+		const branches = condition.conditions;
+		if (branches.length === 0) return false;
+		if (condition.operator !== 'or') return conditionDrivesIndex(table, branches[0]);
+		for (let i = 0; i < branches.length; i++) if (!conditionDrivesIndex(table, branches[i])) return false;
+		return true;
 	}
 	let attributeName = condition[0] ?? condition.attribute;
 	const value = condition[1] ?? condition.value;
