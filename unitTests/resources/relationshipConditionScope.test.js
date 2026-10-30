@@ -152,7 +152,12 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		const Parent = table({
 			table: 'LeadParent',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'group', indexed: true }, kids],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'b', indexed: true },
+				kids,
+			],
 		});
 		const Child = table({
 			table: 'LeadChild',
@@ -165,7 +170,7 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 			],
 		});
 		kids.elements.definition.tableClass = Child;
-		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'g1' });
+		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'g1', b: i === 1 ? 3 : 0 });
 		await Child.put({ id: 'c1', parentId: 'p1', name: 'a', label: 'x' });
 		await Child.put({ id: 'c2', parentId: 'p1', name: 'b', label: 'y' });
 		const conditions = [
@@ -175,5 +180,13 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		];
 		const { conditions: planned } = await Parent.search({ conditions, explain: true, allowFullScan: true });
 		assert.deepStrictEqual(planned[0].attribute, ['kids', 'name']);
+		// a group that leads with a local condition is not a relationship lead
+		const grouped = [
+			{ attribute: 'group', value: 'g1' },
+			{ operator: 'and', conditions: [{ attribute: 'b', comparator: 'in', value: [3] }, conditions[1]] },
+		];
+		const rows = [];
+		for await (const row of Parent.search({ conditions: grouped, allowFullScan: false })) rows.push(row.id);
+		assert.deepStrictEqual(rows, ['p1']);
 	});
 });

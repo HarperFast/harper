@@ -2373,9 +2373,12 @@ function usableIndex(table, attributeName): any {
 	return index?.isIndexing ? undefined : index;
 }
 
-// A relationship condition that leads decides which related record its siblings must meet, so promotion leaves it alone
+// An OR runs every branch, an AND runs its first (already ordered) condition first
 export function leadsByRelationship(table, condition): boolean {
-	if (condition.conditions) return condition.conditions.some((leg) => leadsByRelationship(table, leg));
+	if (condition.conditions)
+		return condition.operator === 'or'
+			? condition.conditions.some((branch) => leadsByRelationship(table, branch))
+			: condition.conditions.length > 0 && leadsByRelationship(table, condition.conditions[0]);
 	const attribute = condition[0] ?? condition.attribute;
 	return (
 		Array.isArray(attribute) &&
@@ -2396,8 +2399,7 @@ export function conditionDrivesIndex(table, condition): boolean {
 	const value = condition[1] ?? condition.value;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
 	if (Array.isArray(attributeName)) {
-		// a relationship condition leading would change which related record a sibling on it must meet
-		if (attributeName.length > 1) return false;
+		if (attributeName.length !== 1) return false;
 		attributeName = attributeName[0];
 	}
 	if (fullTextComparatorMode(comparator))
