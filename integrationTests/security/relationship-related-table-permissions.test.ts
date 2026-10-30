@@ -181,6 +181,16 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			deepStrictEqual(response.body, [{ id: EMP.id, dept: { id: DEPT.id, name: DEPT.name } }]);
 		});
 
+		test('a related * sub-select narrows to the readable attributes', async () => {
+			const response = await byConditions(
+				'restricted',
+				[{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }],
+				{ get_attributes: ['id', { name: 'dept', select: ['*'] }] }
+			);
+			strictEqual(response.status, 200, JSON.stringify(response.body));
+			deepStrictEqual(response.body, [{ id: EMP.id, dept: { id: DEPT.id, name: DEPT.name } }]);
+		});
+
 		test('a sub-select naming an unreadable related attribute is refused', async () => {
 			assertRefused(
 				await byConditions('restricted', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {

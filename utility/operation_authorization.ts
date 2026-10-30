@@ -1165,7 +1165,8 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 			checkSortPaths(state, property?.sort, path);
 			continue;
 		}
-		if (prefix) checkRelationshipPath(state, [...prefix, name]);
+		// a related '*' is narrowed to the readable attributes after admission, like a root '*'
+		if (prefix && name !== '*') checkRelationshipPath(state, [...prefix, name]);
 	}
 }
 
