@@ -809,10 +809,13 @@ function cborStream(data) {
 
 function msgpackStream(data) {
 	if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-		const packr = new Packr(PUBLIC_ENCODE_OPTIONS);
+		let packr: Packr;
 		return Readable.from(
 			openOnFirstStep(
-				() => data,
+				() => {
+					packr = new Packr(PUBLIC_ENCODE_OPTIONS);
+					return data;
+				},
 				Boolean(data[Symbol.asyncIterator]),
 				(value) => packr.pack(value)
 			)
@@ -854,7 +857,10 @@ function openOnFirstStep(
 			if (step.done) return step;
 			const { value } = step;
 			return {
-				value: !async && typeof value?.then === 'function' ? value.then(mapValue) : mapValue(value),
+				value:
+					!async && typeof value?.then === 'function'
+						? value.then((settled) => (closed ? settled : mapValue(settled)))
+						: mapValue(value),
 				done: false,
 			};
 		});
