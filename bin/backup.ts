@@ -48,10 +48,18 @@ export async function runBackupCommand(command: string): Promise<void> {
 	const request = buildRequest();
 	// the parser drops a bare word after the command, which would silently turn `restore_backup x.tar.gz`
 	// into a restore of the latest backup
-	const [stray] = process.argv
-		.slice(2)
-		.filter((arg) => !arg.includes('=') && !arg.startsWith('-'))
-		.slice(1);
+	const words: string[] = [];
+	const argv = process.argv.slice(2);
+	for (let i = 0; i < argv.length; i++) {
+		if (argv[i].startsWith('-')) {
+			// a `--KEY value` flag carries its value as the next argument
+			if (!argv[i].includes('=') && i + 1 < argv.length && !argv[i + 1].startsWith('-') && !argv[i + 1].includes('='))
+				i++;
+			continue;
+		}
+		if (!argv[i].includes('=')) words.push(argv[i]);
+	}
+	const stray = words[1];
 	if (stray !== undefined) {
 		throw new ClientError(
 			`harper ${command} takes key=value arguments, and '${stray}' is not one` +

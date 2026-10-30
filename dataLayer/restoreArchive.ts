@@ -188,6 +188,7 @@ async function spoolUpload(databaseName: string, payload: Readable, declaredSize
 	const stagingRoot = join(backupDirForDatabase(databaseName), IMPORT_STAGING_DIR);
 	if (!existsSync(stagingRoot)) {
 		mkdirSync(stagingRoot, { recursive: true });
+		fsyncDirectory(join(stagingRoot, '..', '..'));
 		fsyncDirectory(join(stagingRoot, '..'));
 	}
 	if (declaredSize !== undefined) {

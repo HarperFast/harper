@@ -216,7 +216,8 @@ export async function assertInstallFits(
 	needs.push({
 		destination: databasePath,
 		bytes: plan.otherEngine.bytes + plan.otherEngine.directoryBytes + (engineLinks ? 0 : plan.immutableEngine.bytes),
-		files: plan.otherEngine.files + plan.otherEngine.directories + plan.immutableEngine.files,
+		// a hard link takes no inode of its own
+		files: plan.otherEngine.files + plan.otherEngine.directories + (engineLinks ? 0 : plan.immutableEngine.files),
 		credit: reclaimableBytes(databasePath),
 	});
 	if (installBlobs) {
@@ -229,7 +230,7 @@ export async function assertInstallFits(
 			needs.push({
 				destination,
 				bytes: root.directoryBytes + (links ? 0 : root.bytes),
-				files: root.files + root.directories,
+				files: root.directories + (links ? 0 : root.files),
 				credit: reclaimableBytes(destination),
 			});
 		}

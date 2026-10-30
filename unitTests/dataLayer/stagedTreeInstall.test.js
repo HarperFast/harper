@@ -307,9 +307,7 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			}
 			const entry = plan.blobRoots.get(0);
 			assert.ok(
-				reserved.some(
-					({ bytes, inodes }) => bytes >= entry.directoryBytes && inodes === entry.files + entry.directories
-				),
+				reserved.some(({ bytes, inodes }) => bytes >= entry.directoryBytes && inodes >= entry.directories),
 				`a blob root reservation covers its directories: ${JSON.stringify(reserved)}`
 			);
 		});

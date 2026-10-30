@@ -297,6 +297,15 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 		});
 	}
 
+	it('does not mistake the value of a --KEY value flag for a stray word', async () => {
+		cliCredentialsModule.loadCredentials = () => null;
+		processMgmtModule.getHdbPid = () => null;
+		const calls = trackRouting();
+		process.argv = ['node', 'harper', 'restore_backup', '--ROOTPATH', '/data/hdb', 'backup_id=3'];
+		await runBackupCommand('restore_backup');
+		assert.deepStrictEqual(calls, { offline: true, api: false });
+	});
+
 	for (const field of [
 		'url=https://example.com/a.tar.gz',
 		'cancel=true',

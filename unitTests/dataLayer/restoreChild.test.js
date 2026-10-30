@@ -454,4 +454,11 @@ describe('restore child exec arguments', function () {
 			['--conditions=typestrip', '--enable-source-maps']
 		);
 	});
+
+	it('drops the value of a space-separated heap size or inspector port with its flag', function () {
+		assert.deepStrictEqual(
+			childExecArgv(['--max-old-space-size', '4096', '--inspect-port', '9230', '--enable-source-maps']),
+			['--enable-source-maps']
+		);
+	});
 });

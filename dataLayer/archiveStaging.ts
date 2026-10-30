@@ -222,10 +222,12 @@ async function writeInventory(treeDir: string, inventoryPath: string): Promise<v
  */
 export async function stageArchive(args: StageArchiveArgs) {
 	const { databaseName, stagingDir } = args;
+	// every new level durable, up to the backups root: a receipt will name this area as its only source
 	const stagingRoot = join(stagingDir, '..');
-	mkdirSync(stagingRoot, { recursive: true });
-	fsyncDirectory(join(stagingRoot, '..'));
+	const databaseBackupDir = join(stagingRoot, '..');
 	mkdirSync(stagingDir, { recursive: true });
+	fsyncDirectory(join(databaseBackupDir, '..'));
+	fsyncDirectory(databaseBackupDir);
 	fsyncDirectory(stagingRoot);
 	const ledger = new DiskLedger();
 	let archivePath: string;
@@ -281,7 +283,7 @@ export async function stageArchive(args: StageArchiveArgs) {
 	);
 	// refuse an archive the staging device cannot hold before writing any of it; extraction then debits
 	// the same bytes as it lands
-	(await ledger.reserve(stagingDir, tally.bytes, tally.inodes)).release(0);
+	(await ledger.reserve(stagingDir, tally.bytes, tally.inodes)).release(0, 0);
 	mkdirSync(treeDir);
 	{
 		const extracted = await extractArchive(archivePath, treeDir, {

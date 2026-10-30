@@ -94,6 +94,8 @@ export function childExecArgv(parentExecArgv: string[]): string[] {
 			continue;
 		}
 		if (/^(--eval|--print)=/.test(arg) || arg.startsWith('--max-old-space-size') || arg.startsWith('--inspect')) {
+			// the space-separated form carries its value as the next argument, which must go too
+			if ((arg === '--max-old-space-size' || arg === '--inspect-port') && i + 1 < parentExecArgv.length) i++;
 			continue;
 		}
 		kept.push(arg);

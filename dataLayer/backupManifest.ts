@@ -44,15 +44,11 @@ export type BackupManifest = {
 	 * differ from the checkpoint, and the backup's own catalogue is what the restore proves against.
 	 */
 	tables?: string[];
-	/** Set on a backup an import produced, naming where the archive came from (redacted). */
-	imported_from?: string;
-	/** sha256 of an imported archive. */
-	digest?: string;
 	/** The restart restore whose pre-restore copy this is, so a retry adopts it instead of taking another. */
 	pre_restore_for?: string;
 };
 
-export type BackupManifestDetails = Pick<BackupManifest, 'tables' | 'imported_from' | 'digest' | 'pre_restore_for'>;
+export type BackupManifestDetails = Pick<BackupManifest, 'tables' | 'pre_restore_for'>;
 
 function manifestDir(backupDir: string): string {
 	return join(backupDir, MANIFEST_DIR);
