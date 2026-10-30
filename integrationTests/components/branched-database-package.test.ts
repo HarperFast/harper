@@ -383,7 +383,7 @@ for (const isolated of [false, true]) {
 					const logFile = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
 					const removals = async () =>
 						(await readFile(logFile, 'utf8')).split(
-							`Removed the branched database storage a drop of ${project} left in place`
+							`Finished the branched database removal a drop of ${project} left owed`
 						).length;
 					const before = await removals();
 					const dropped = await operation({ operation: 'drop_component', project });
