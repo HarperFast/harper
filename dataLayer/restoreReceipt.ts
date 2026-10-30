@@ -121,7 +121,6 @@ export function rollbackDirOf(receipt: RestoreReceipt): string {
 	return receipt.rollback_dir ?? receipt.backup_dir;
 }
 
-/** What a restore restored, for messages: the archive it came from, or the managed backup's id. */
 export function describeRestoreSource(receipt: Pick<RestoreReceipt, 'restored_from' | 'backup_id'>): string {
 	return receipt.restored_from ?? `backup ${receipt.backup_id}`;
 }

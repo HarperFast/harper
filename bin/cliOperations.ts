@@ -202,7 +202,6 @@ async function* wrapPackagingStream(stream: Readable, projectPath: string): Asyn
  */
 const OPERATIONS_TAKING_A_TOKEN = new Set(['exchange_oidc_token']);
 
-/** A multipart body carrying `req._uploadFile` as the `payload` part, with the operation fields before it. */
 function uploadFileBody(req: any, options: any): Readable {
 	const multipart = buildMultipartBody(operationFields(req), {
 		name: 'payload',

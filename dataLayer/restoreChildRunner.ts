@@ -208,11 +208,14 @@ export function runRestoreChild<T = any>(
 			} else if (message?.type === 'refused') {
 				outcome = message;
 				settle(
-					new ClientError(
-						message.reason === 'busy'
-							? 'Another restore, import or backup verification is running on this instance; retry once it finishes'
-							: 'A restore process for this database is still running; retry once it exits',
-						409
+					Object.assign(
+						new ClientError(
+							message.reason === 'busy'
+								? 'Another restore or backup verification is running on this instance; retry once it finishes'
+								: 'A restore process for this database is still running; retry once it exits',
+							409
+						),
+						{ refused: message.reason }
 					)
 				);
 			} else if (message?.type === 'result' || message?.type === 'error') {

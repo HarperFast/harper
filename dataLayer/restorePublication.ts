@@ -137,7 +137,7 @@ export async function settleRestoreJob(receipt: RestoreReceipt, status: string, 
 	});
 }
 
-export function restoreResult(receipt: RestoreReceipt): Record<string, unknown> {
+function restoreResult(receipt: RestoreReceipt): Record<string, unknown> {
 	const evidence = (receipt.evidence ?? {}) as Partial<RestoreEvidence> & { compatibility_waived?: string[] };
 	return {
 		database: receipt.database,

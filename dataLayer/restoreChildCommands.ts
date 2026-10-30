@@ -113,7 +113,7 @@ function announceDestruction(): Promise<void> {
 	});
 }
 
-export async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
+async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 	if (args.sourceKind === 'staged_tree') return applyStagedTreeAndProve(args);
 	await inPhase('verify', () =>
 		assertBackupReadable(
@@ -171,27 +171,19 @@ async function prove(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 		}
 		const replay = (await replayLogs(generation.rootStore, generation.tables, { policy: 'restore' })) as ReplaySummary;
 		let blobs: RestoreEvidence['blobs'];
-		if (args.acceptUnverifiedBlobs) {
-			blobs = {
-				blob_integrity: 'unverified',
-				waived: true,
-				recordsScanned: {},
-				references: 0,
-				markers: 0,
-				failures: [],
-			};
-		} else {
-			const { blobIntegrity, ...assessment } = await assessBlobReferences(generation.tables);
-			if (blobIntegrity === 'failed') {
-				throw new ClientError(
-					`The restored ${args.databaseName} database references blob files the backup does not contain (${assessment.failures
-						.map((failure) => `${failure.table} ${JSON.stringify(failure.id)}: ${failure.state}`)
-						.join('; ')}); rerun with accept_unverified_blobs=true to publish it anyway`,
-					409
-				);
-			}
-			blobs = { blob_integrity: blobIntegrity, ...assessment };
+		// the scan is also the strict read of every record, so the waiver relaxes only the blob verdict
+		const { blobIntegrity, ...assessment } = await assessBlobReferences(generation.tables);
+		if (blobIntegrity === 'failed' && !args.acceptUnverifiedBlobs) {
+			throw new ClientError(
+				`The restored ${args.databaseName} database references blob files the backup does not contain (${assessment.failures
+					.map((failure) => `${failure.table} ${JSON.stringify(failure.id)}: ${failure.state}`)
+					.join('; ')}); rerun with accept_unverified_blobs=true to publish it anyway`,
+				409
+			);
 		}
+		blobs = args.acceptUnverifiedBlobs
+			? { blob_integrity: blobIntegrity === 'failed' ? 'unverified' : blobIntegrity, waived: true, ...assessment }
+			: { blob_integrity: blobIntegrity, ...assessment };
 		await (generation.rootStore as any).flush?.();
 		evidence = {
 			tables: Object.keys(generation.tables),

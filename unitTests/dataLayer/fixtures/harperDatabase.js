@@ -115,6 +115,7 @@ module.exports = {
 	clearRestoreDebris,
 	declareIndexWithoutFamily,
 	readRecord,
+	recordsTable,
 	restoreDebris,
 	writeBlobRecord,
 	writeRecords,

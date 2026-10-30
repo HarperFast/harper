@@ -58,6 +58,33 @@ describeUnlessLmdb('offline restore_backup in a fresh CLI process', function () 
 			`);
 	}
 
+	/** `seed` with an archive of the database, as get_backup streams it, instead of a managed backup. */
+	function seedArchive(archivePath) {
+		return install.runToReport(`
+			const m = { databases: require(paths.databases), fixture: require(paths.fixture) };
+			await require(paths.mountHdb).default(require(paths.env).getHdbBasePath());
+			await m.fixture.writeRecords(${JSON.stringify(NAME)}, [['alpha', { n: 1 }]]);
+			const { createWriteStream } = require('node:fs');
+			const { pipeline } = require('node:stream/promises');
+			const Records = m.fixture.recordsTable(${JSON.stringify(NAME)});
+			await Records.primaryStore.rootStore.flush();
+			// a role the archive records, which the restore would look up in the system database if it were allowed to scan
+			await require(paths.databases).databases.system.hdb_role.put({
+				id: 'archive-role',
+				role: 'archive-role',
+				permission: { super_user: true },
+			});
+			await pipeline(
+				require(paths.rocksdbBackup).createBackupStream(Records.primaryStore.rootStore, ${JSON.stringify(NAME)}, false),
+				createWriteStream(${JSON.stringify(archivePath)})
+			);
+			await m.fixture.writeRecords(${JSON.stringify(NAME)}, [['after-backup', { kept: true }]]);
+			await m.databases.closeLoadedDatabases();
+			await m.databases.closeDatabase('system');
+			report({});
+		`);
+	}
+
 	/** The target as the next process to open the install finds it. */
 	function inspect() {
 		return install.runToReport(`
@@ -83,6 +110,25 @@ describeUnlessLmdb('offline restore_backup in a fresh CLI process', function () 
 		assert.strictEqual(outcome.error, undefined, `the restore failed: ${outcome.error}`);
 		assert.strictEqual(outcome.result.backup_id, backupId);
 		assert.strictEqual(outcome.scanned, false, 'the offline CLI never scans, so never opens, the databases');
+		assert.deepStrictEqual(await inspect(), restored);
+	});
+
+	it('restores from an archive file without scanning the databases', async function () {
+		const archive = join(install.root, 'archive.tar');
+		await seedArchive(archive);
+		const outcome = await install.runToReport(`
+			const { databasesLoaded } = require(paths.databases);
+			try {
+				const result = await require(paths.rocksdbBackup).restoreBackupOffline(
+					${JSON.stringify(NAME)}, undefined, undefined, undefined, undefined, undefined, undefined, ${JSON.stringify(archive)}
+				);
+				report({ restored: result !== undefined, scanned: databasesLoaded() === true });
+			} catch (error) {
+				report({ error: error.message, statusCode: error.statusCode, scanned: databasesLoaded() === true });
+			}
+		`);
+		assert.strictEqual(outcome.error, undefined, `the restore failed: ${outcome.error}`);
+		assert.strictEqual(outcome.scanned, false, 'an archive restore opens no database before its child does');
 		assert.deepStrictEqual(await inspect(), restored);
 	});
 

@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { randomBytes } = require('node:crypto');
-const { statSync, truncateSync, unlinkSync, writeFileSync } = require('node:fs');
+const { copyFileSync, statSync, truncateSync, unlinkSync, writeFileSync } = require('node:fs');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -76,6 +76,27 @@ describe('restored blob assessment', function () {
 			assert.strictEqual(await classifyRestoredBlobFile(path), 'complete');
 			truncateSync(path, statSync(path).size - 5);
 			assert.strictEqual(await classifyRestoredBlobFile(path), 'incomplete');
+		});
+	});
+
+	describe('classifyRestoredBlobFile against the descriptor size', function () {
+		it('checks a self-consistent file against the size the record declares', async function () {
+			const { Table } = newTable();
+			const path = await putBlob(Table, 1, randomBytes(20000));
+			assert.strictEqual(await classifyRestoredBlobFile(path), 'complete');
+			assert.strictEqual(await classifyRestoredBlobFile(path, 20000), 'complete');
+			assert.strictEqual(await classifyRestoredBlobFile(path, 20100), 'incomplete');
+		});
+
+		it('fails a record whose blob file is whole but is not the size the record declares', async function () {
+			const { name, Table } = newTable();
+			const path = await putBlob(Table, 'swapped', randomBytes(20000));
+			const shorter = await putBlob(Table, 'other', randomBytes(12000));
+			copyFileSync(shorter, path);
+			assert.strictEqual(await classifyRestoredBlobFile(path), 'complete', 'precondition: the file is self-consistent');
+			const assessment = await assessBlobReferences({ [name]: Table });
+			assert.strictEqual(assessment.blobIntegrity, 'failed');
+			assert.deepStrictEqual(assessment.failures, [{ table: name, id: 'swapped', state: 'incomplete' }]);
 		});
 	});
 

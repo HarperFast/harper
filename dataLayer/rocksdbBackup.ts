@@ -216,7 +216,8 @@ function requireBackupRepositoryAccess(databaseName: string, operation: string):
 
 function requireBackupRepositoryDirectory(databaseName: string): string {
 	const backupDir = backupDirForDatabase(databaseName);
-	if (!existsSync(backupDir)) {
+	// the engine's own directory, not the folder: an archive restore's staging creates the folder alone
+	if (!existsSync(join(backupDir, 'meta'))) {
 		throw new BackupNotFoundError(
 			`Database '${databaseName}' is not loaded and has no backup repository at ${backupDir}`
 		);
@@ -627,6 +628,14 @@ export async function validateRestoreBackup(request: any) {
 	const { hasArchiveSource, validateArchiveSource } = await import('./restoreArchive.ts');
 	const fromArchive = hasArchiveSource(request);
 	if (fromArchive) validateArchiveSource(request);
+	else {
+		const archiveOnly = ['sha256', 'declared_size', 'upload_digest'].filter((field) => request[field] !== undefined);
+		if (archiveOnly.length > 0) {
+			throw new ClientError(
+				`${archiveOnly.map((field) => `'${field}'`).join(', ')} describe an archive, but no archive was sent; pass file=<path> (or url= or s3=)`
+			);
+		}
+	}
 	if (resume || cancel) return;
 	if (!fromArchive) {
 		const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
@@ -852,7 +861,7 @@ export function warnImmutableSource(databaseName: string, backupDir: string): vo
  * can overlap, so a worker releases the fence only for the token that established it -- see
  * `resumeBlobSavesForRestore`.
  */
-export function restoreSchemaEvent(
+function restoreSchemaEvent(
 	databaseName: string,
 	databaseDir: string,
 	restorePhase: 'close' | 'reload',
@@ -1493,8 +1502,9 @@ export async function verifyBackupFiles(
  * refuses a marked directory too and the marker keeps the pin live. A marker that records its source
  * proves ownership only by matching this repository; one written before sources were recorded falls
  * back to this repository's pin on the target, which a pin stranded past its own marker can still
- * vouch for. A rerun from a newly staged archive matches neither, so a marker that the target's own
- * restore record also names proves the directory is that restore's debris. Restoring a database in
+ * vouch for. A rerun from a newly staged archive matches neither, so a restore record on the target
+ * proves it too: only an admitted claim writes one, and a takeover writes its own before it republishes
+ * the marker, so the two can briefly name different sources. Restoring a database in
  * place is not a claim on someone else's directory.
  */
 export function assertTargetClaimable(
@@ -1509,8 +1519,7 @@ export function assertTargetClaimable(
 		const ours =
 			markerSource === undefined
 				? readBackupPins(backupDir).some((pin) => pin.pin_id === restorePinId(target.databaseDir))
-				: markerSource === restoreSourceId(backupDir) ||
-					(recorded.kind === 'valid' && markerSource === restoreSourceId(recorded.receipt.backup_dir));
+				: markerSource === restoreSourceId(backupDir) || recorded.kind === 'valid';
 		if (ours) return;
 	}
 	if (isMissingOrEmptyDir(target.databaseDir)) return;

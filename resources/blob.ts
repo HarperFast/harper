@@ -3986,17 +3986,32 @@ export function openStoredBlobBody(blob: Blob): StoredBlobBody | undefined {
 
 export type RestoredBlobFileState = 'complete' | 'marker' | 'missing' | 'incomplete';
 
-/** What a restored blob file is: whole, a capture marker the backup recorded in its place, or neither. */
-export async function classifyRestoredBlobFile(filePath: string): Promise<RestoredBlobFileState> {
+/**
+ * What a restored blob file is: whole, a capture marker the backup recorded in its place, or neither.
+ * `expectedSize` is the record descriptor's size, the authority a self-consistent truncated header is
+ * checked against, as a full read checks it (#1424).
+ */
+export async function classifyRestoredBlobFile(
+	filePath: string,
+	expectedSize?: number
+): Promise<RestoredBlobFileState> {
 	const read = await readBlobFileHeader(filePath);
 	if (!read) return 'missing';
 	if (blobHeaderIsAbortMarker(read.header)) return 'marker';
 	if (blobHeaderIndicatesIncomplete(read.header, read.fileSize)) return 'incomplete';
-	if (read.header[1] !== DEFLATE_TYPE) return 'complete';
-	const uncompressedSize = Number(
+	const declaredSize = Number(
 		new DataView(read.header.buffer, read.header.byteOffset, HEADER_SIZE).getBigUint64(0) & 0xffffffffffffn
 	);
-	return (await inflatesToExactly(filePath, uncompressedSize)) ? 'complete' : 'incomplete';
+	if (
+		expectedSize != null &&
+		expectedSize < UNKNOWN_SIZE &&
+		declaredSize < UNKNOWN_SIZE &&
+		declaredSize !== expectedSize
+	) {
+		return 'incomplete';
+	}
+	if (read.header[1] !== DEFLATE_TYPE) return 'complete';
+	return (await inflatesToExactly(filePath, declaredSize)) ? 'complete' : 'incomplete';
 }
 
 export interface BlobReferenceAssessment {
@@ -4042,16 +4057,16 @@ export async function assessBlobReferences(database: Record<string, any>): Promi
 				scanned++;
 				const value = entry.value;
 				if (entry.metadataFlags & HAS_BLOBS && value) {
-					const paths: string[] = [];
+					const references: { path: string; size?: number }[] = [];
 					findBlobsInObject(value, (blob) => {
 						if (blob instanceof FileBackedBlob) {
 							const storageInfo = storageInfoForBlob.get(blob);
-							if (storageInfo?.fileId != null) paths.push(getFilePath(storageInfo));
+							if (storageInfo?.fileId != null) references.push({ path: getFilePath(storageInfo), size: blob.size });
 						}
 					});
-					for (const path of paths) {
+					for (const { path, size } of references) {
 						assessment.references++;
-						const state = await classifyRestoredBlobFile(path);
+						const state = await classifyRestoredBlobFile(path, size);
 						if (state === 'marker') assessment.markers++;
 						else if (state !== 'complete') {
 							failed = true;

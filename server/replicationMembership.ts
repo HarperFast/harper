@@ -25,10 +25,20 @@ function membershipLockPath(): string {
 	return join(getHdbBasePath(), MEMBERSHIP_LOCK_FILE);
 }
 
-export function changesReplicationMembership(body: { operation?: string; [key: string]: any }): boolean {
+function changesReplicationMembership(body: { operation?: string; [key: string]: any }): boolean {
 	if (MEMBERSHIP_OPERATIONS.has(body.operation)) return true;
 	if (body.operation !== 'set_configuration') return false;
-	return body.replication_routes !== undefined || body.replication?.routes !== undefined;
+	// matched as set_configuration resolves names: case-insensitively, flat or nested
+	for (const [key, value] of Object.entries(body)) {
+		const name = key.toLowerCase();
+		if (name === 'replication_routes' && value !== undefined) return true;
+		if (name === 'replication' && value && typeof value === 'object') {
+			if (Object.entries(value).some(([nested, routes]) => nested.toLowerCase() === 'routes' && routes !== undefined)) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 /**

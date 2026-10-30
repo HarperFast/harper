@@ -61,7 +61,7 @@ export function importStagingDir(databaseName: string, importId: string): string
 }
 
 /** Where an archive restore came from, redacted for logs, job rows and results. */
-export function describeArchiveSource(request: any): string {
+function describeArchiveSource(request: any): string {
 	if (request.server_path !== undefined) return request.server_path;
 	if (request.url !== undefined) return redactUrl(request.url);
 	if (request.s3 !== undefined) return `s3://${request.s3.bucket}/${request.s3.key}`;
@@ -77,9 +77,11 @@ function countArchiveSources(request: any): number {
 	return fields + (isUpload(request.payload) ? 1 : 0);
 }
 
-/** Whether a restore names an archive rather than a managed backup. */
 export function hasArchiveSource(request: any): boolean {
-	return countArchiveSources(request) > 0 || request.server_path_identity !== undefined;
+	// any payload counts, so one that is not an upload is refused rather than read as "no archive"
+	return (
+		countArchiveSources(request) > 0 || request.server_path_identity !== undefined || request.payload !== undefined
+	);
 }
 
 /**
@@ -90,6 +92,9 @@ export function validateArchiveSource(request: any): void {
 	const refuse = (message: string) => {
 		throw new ClientError(message);
 	};
+	if (request.payload !== undefined && !isUpload(request.payload)) {
+		refuse(`'payload' must be the archive as a multipart upload; from the CLI, pass file=<path>`);
+	}
 	if (countArchiveSources(request) > 1) {
 		refuse(`restore_backup takes one archive: file=<path> from the CLI (or a multipart 'payload' upload), url, or s3`);
 	}
@@ -313,8 +318,10 @@ if (isMainThread) {
 async function rolesMissingLocally(roles: unknown): Promise<string[]> {
 	if (!Array.isArray(roles) || roles.length === 0) return [];
 	try {
-		const { getDatabases } = await import('../resources/databases.ts');
-		const roleTable: any = getDatabases().system?.[hdbTerms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME];
+		const { databases, databasesLoaded } = await import('../resources/databases.ts');
+		// never scan: an offline CLI has opened nothing, and a scan would open the target it is restoring
+		if (!databasesLoaded()) return [];
+		const roleTable: any = (databases as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME];
 		if (!roleTable) return [];
 		const existing = new Set<string>();
 		for await (const role of roleTable.search([])) existing.add(role.role ?? role.id);
@@ -325,7 +332,6 @@ async function rolesMissingLocally(roles: unknown): Promise<string[]> {
 	}
 }
 
-/** A staged archive, ready to restore from like any managed backup. */
 export interface StagedArchive {
 	stagingDir: string;
 	backupDir: string;
@@ -387,8 +393,11 @@ export async function stageArchiveForRestore(request: any, databaseName: string)
 			compatibilityWaived: staged.compatibility_waived ?? [],
 			missingRoles: await rolesMissingLocally(staged.roles),
 		};
-	} catch (error) {
+	} catch (error: any) {
 		rmSync(stagingDir, { recursive: true, force: true });
+		if (error?.refused && request.staging_id !== undefined) {
+			throw new ClientError(`${error.message}; the uploaded archive was not kept, so send it again`, 409);
+		}
 		throw error;
 	}
 }

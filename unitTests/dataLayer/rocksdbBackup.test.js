@@ -46,6 +46,7 @@ const {
 	validateVerifyBackup,
 	verifyBackup,
 	assertBackupStillPresent,
+	assertTargetClaimable,
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
@@ -60,11 +61,14 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const {
 	abandonRestore,
+	acquireRestoreLock,
 	beginRestore,
 	completeRestore,
 	checkRestoreState,
 	readRestoringMarkerSource,
 	restoreLockHeldExclusively,
+	markRestoreDestructive,
+	releaseRestoreLock,
 	restoreMarkerPresent,
 	restoreSourceId,
 } = require('#src/dataLayer/restoreMarker');
@@ -803,8 +807,7 @@ describe('rocksdbBackup', function () {
 					try {
 						await assert.rejects(
 							restore(backupId),
-							(error) =>
-								error.statusCode === 409 && /Another restore, import or backup verification/.test(error.message)
+							(error) => error.statusCode === 409 && /Another restore or backup verification/.test(error.message)
 						);
 					} finally {
 						signalling.signalSchemaChange = realSignal;
@@ -1459,6 +1462,22 @@ describe('rocksdbBackup', function () {
 			);
 		});
 
+		it('404s for a repository folder holding only archive staging, and lists once a backup exists', async function () {
+			this.timeout(30000);
+			const folder = backupDirForDatabase(ORPHAN);
+			mkdirSync(join(folder, '.staging'), { recursive: true });
+			writeFileSync(join(folder, '.staging', 'x'), 'a staged archive');
+			await assert.rejects(
+				listBackups({ ...SU, database: ORPHAN }),
+				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
+			);
+			const created = await seedOrphanRepository();
+			assert.deepStrictEqual(
+				(await listBackups({ ...SU, database: ORPHAN })).map((backup) => backup.backup_id),
+				[created.backup_id]
+			);
+		});
+
 		it('does not create a repository when offline delete or purge targets a missing one', async function () {
 			for (const [suffix, operation] of [
 				['delete', (name) => deleteBackupOffline(name, 1)],
@@ -1474,6 +1493,42 @@ describe('rocksdbBackup', function () {
 				listBackups({ ...SU, database: `${MISSING}-delete` }),
 				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
 			);
+		});
+	});
+
+	describe('assertTargetClaimable', function () {
+		it('admits a target whose restore record outlives a marker naming another source', function () {
+			const target = mkdtempSync(join(storageDir, 'claimable-'));
+			const [sourceA, sourceB, sourceC] = ['a', 'b', 'c'].map((name) => join(storageDir, `claim-source-${name}`));
+			writeFileSync(join(target, 'debris'), 'left by an interrupted restore');
+			const lock = acquireRestoreLock(target);
+			try {
+				lock.source = restoreSourceId(sourceA);
+				markRestoreDestructive(lock);
+				const request = { databaseDir: target, databaseName: 'claimable', inPlace: false };
+				assert.throws(
+					() => assertTargetClaimable(request, sourceC, true),
+					(error) => error.statusCode === 400 && /already exists/.test(error.message),
+					"precondition: a marked target with no restore record is another source's"
+				);
+				writeRestoreReceipt(
+					lock,
+					newRestoreReceipt({
+						route: 'online',
+						state: 'applying',
+						database: 'claimable',
+						database_path: target,
+						source_database: 'claim-source',
+						backup_dir: sourceB,
+						backup_id: 1,
+						options: {},
+					})
+				);
+				assertTargetClaimable(request, sourceC, true);
+			} finally {
+				releaseRestoreLock(lock);
+				rmSync(target, { recursive: true, force: true });
+			}
 		});
 	});
 

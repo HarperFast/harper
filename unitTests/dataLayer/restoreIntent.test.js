@@ -879,6 +879,29 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 		});
 
+		it('keeps the source pinned when the receipt cannot be removed, so a pending restore never loses its source', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true });
+			const before = pinsOf(fixture);
+			assert.strictEqual(before.length, 1, 'precondition: the source is pinned');
+			await closeDatabase(fixture.name);
+
+			const restoreRemoval = replaceExport(restoreReceiptModule, 'removeRestoreReceipt', () => {
+				throw new Error('the restore metadata directory is unavailable');
+			});
+			try {
+				await assert.rejects(
+					restoreBackup({ ...SU, database: fixture.name, cancel: true }),
+					/restore metadata directory is unavailable/
+				);
+			} finally {
+				restoreRemoval();
+			}
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'valid', 'the receipt is still there');
+			assert.deepStrictEqual(pinsOf(fixture), before, 'and so is the pin that protects its source');
+		});
+
 		it('from applying before the purge: removes the receipt and unblocks the untouched database', async function () {
 			const fixture = await seededDatabase();
 			const [backupId] = fixture.backupIds;

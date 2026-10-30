@@ -8,7 +8,7 @@
  */
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
@@ -68,7 +68,6 @@ export interface ScannedReceipt {
 	read: RestoreReceiptRead;
 }
 
-/** Every restore receipt under every database root, read from the files alone. */
 export function scanRestoreReceipts(roots: string[] = databaseRoots()): ScannedReceipt[] {
 	const scanned: ScannedReceipt[] = [];
 	for (const root of roots) {
@@ -97,9 +96,20 @@ function directorySize(path: string): number {
 	return total;
 }
 
+function deviceOf(path: string): number {
+	let existing = path;
+	while (!existsSync(existing)) existing = dirname(existing);
+	return statSync(existing).dev;
+}
+
 async function assertRoomForPreRestoreBackup(databaseName: string, databaseDir: string, backupDir: string) {
 	if (!existsSync(databaseDir)) return;
-	const needed = Math.ceil(directorySize(databaseDir) * PRE_RESTORE_SPACE_MARGIN);
+	// the blob snapshot hard-links on the repository's device and copies everywhere else
+	const repositoryDevice = deviceOf(backupDir);
+	const copiedBlobs = getBlobPathsForDatabaseName(databaseName)
+		.filter((root) => existsSync(root) && deviceOf(root) !== repositoryDevice)
+		.reduce((total, root) => total + directorySize(root), 0);
+	const needed = Math.ceil((directorySize(databaseDir) + copiedBlobs) * PRE_RESTORE_SPACE_MARGIN);
 	const { available } = await getStorageSpaceStats(existsSync(backupDir) ? backupDir : databaseDir);
 	if (available < needed) {
 		throw new ClientError(
@@ -327,8 +337,10 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 			cancelled = read.receipt;
 			// a target this restore began replacing stays blocked by its marker, and its source and its
 			// rollback copy stay pinned with it: the pins name the database, so they lapse with the marker
-			if (!restoreMarkerPresent(databaseDir)) releaseReceiptPins(cancelled);
+			const releasePins = !restoreMarkerPresent(databaseDir);
+			// the receipt first: an unpinned source under a receipt that still schedules a restore can be purged
 			removeRestoreReceipt(lock, cancelled.operation_id);
+			if (releasePins) releaseReceiptPins(cancelled);
 		}
 	} finally {
 		releaseRestoreLock(lock);

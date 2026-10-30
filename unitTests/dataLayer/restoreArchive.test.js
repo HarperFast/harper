@@ -1028,10 +1028,20 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 					sha256: SHA,
 				});
 
-			for (const [room, maxBytes] of [
-				[123_456_789, 123_456_789],
-				[-4096, 0],
-			]) {
+			it('refuses with 507 before fetching when the staging device has no room', async function () {
+				replace(DiskLedger.prototype, 'remaining', async () => ({ bytes: -4096, inodes: 1000, basis: 'quota' }));
+				const fetch = replace(
+					safeFetch,
+					'safeFetchToFile',
+					recordingCalls(async () => {
+						throw new Error('no network in a unit test');
+					})
+				);
+				await assert.rejects(pull(), (error) => error.statusCode === 507 && /Insufficient storage/.test(error.message));
+				assert.strictEqual(fetch.calls.length, 0);
+			});
+
+			for (const [room, maxBytes] of [[123_456_789, 123_456_789]]) {
 				it(`passes maxBytes ${maxBytes} when the staging device has ${room} bytes of room`, async function () {
 					replace(DiskLedger.prototype, 'remaining', async () => ({ bytes: room, inodes: 1000, basis: 'quota' }));
 					const fetch = replace(
@@ -1662,6 +1672,10 @@ describe('restore_backup archive validation', function () {
 		['a non-boolean accept_incompatible_backup', { ...filler, accept_incompatible_backup: 'true' }, /boolean/],
 		['a database that escapes the backups root', { ...filler, database: '../system' }, /database/i],
 		['a staging_id that is a path', { staging_id: '../../elsewhere' }, /staging_id/],
+		['a payload that is not an upload', { payload: 'aGVsbG8=' }, /'payload' must be the archive as a multipart upload/],
+		['a base64 payload beside a server_path', { ...filler, payload: 'aGVsbG8=' }, /'payload' must be the archive/],
+		['a sha256 with no archive', { sha256: 'a'.repeat(64) }, /describe an archive/],
+		['a declared_size with no archive', { declared_size: 10 }, /describe an archive/],
 	];
 	for (const [label, fields, pattern] of refused) {
 		it(`refuses ${label} with a 400`, async function () {
@@ -1698,6 +1712,46 @@ describe('restore_backup archive validation', function () {
 			);
 		});
 	}
+});
+
+describe('stageArchiveForRestore for an upload whose stage child is refused', function () {
+	const restoreChildRunner = require('#src/dataLayer/restoreChildRunner');
+	const { ClientError } = require('#src/utility/errors/hdbError');
+	const busy = () =>
+		Object.assign(
+			new ClientError(
+				'Another restore or backup verification is running on this instance; retry once it finishes',
+				409
+			),
+			{ refused: 'busy' }
+		);
+
+	async function stage(request) {
+		const restore = replaceProperty(restoreChildRunner, 'runRestoreChild', async () => {
+			throw busy();
+		});
+		try {
+			return await restoreArchive.stageArchiveForRestore({ ...SU, database: IMPORTED, ...request }, IMPORTED);
+		} finally {
+			restore();
+		}
+	}
+
+	it('tells the client to send the upload again, as a 409', async function () {
+		const stagingId = randomUUID();
+		await assert.rejects(
+			stage({ staging_id: stagingId, upload_digest: 'a'.repeat(64) }),
+			(error) => error.statusCode === 409 && /retry once it finishes; .*send it again/.test(error.message)
+		);
+		assert.ok(!existsSync(importStagingDir(IMPORTED, stagingId)), 'the upload is not kept');
+	});
+
+	it('leaves the refusal alone for an archive the job can pull again', async function () {
+		await assert.rejects(
+			stage({ url: 'https://example.com/a.tar' }),
+			(error) => error.statusCode === 409 && !/send it again/.test(error.message)
+		);
+	});
 });
 
 describe('restore_backup operation logging', function () {

@@ -3526,7 +3526,7 @@ export function databaseDropPreparationTargets(databaseName: string): {
 }
 
 /** Every name this thread has loaded over one of `rootPaths`, whichever alias it was loaded under. */
-export function loadedDatabaseNamesAt(rootPaths: Iterable<string>): string[] {
+function loadedDatabaseNamesAt(rootPaths: Iterable<string>): string[] {
 	const resolvedPaths = new Set([...rootPaths].map((path) => resolve(path)));
 	const atPath = (rootStore: any) => rootStore?.path !== undefined && resolvedPaths.has(resolve(rootStore.path));
 	return Object.keys(databases).filter(

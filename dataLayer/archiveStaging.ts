@@ -239,6 +239,9 @@ export async function stageArchive(args: StageArchiveArgs) {
 			// bounded by what the staging device can take, so a pull cannot fill the databases' device, and
 			// charged as it lands, since the room sampled at the start goes stale over a long transfer
 			const { bytes: room } = await ledger.remaining(stagingDir);
+			if (room <= 0) {
+				throw new ClientError(`Insufficient storage on the volume holding ${stagingDir} to download the archive`, 507);
+			}
 			const refused = new AbortController();
 			let uncharged = 0;
 			let charging = Promise.resolve();

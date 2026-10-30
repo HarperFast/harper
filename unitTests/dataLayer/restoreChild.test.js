@@ -6,7 +6,7 @@ const { execFileSync, fork } = require('node:child_process');
 const { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { fileLockRelease, tryFileLock } = require('@harperfast/rocksdb-js');
+const { fileLockRelease, RocksDatabase, tryFileLock } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 const { writeUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
@@ -221,7 +221,7 @@ describeUnlessLmdb('restore child', function () {
 			const first = await startHeldChild({ slotLockPath: restoreChildSlotLockPath() });
 			await assert.rejects(
 				runRestoreChild('verify', verifyArgs()),
-				(error) => error.statusCode === 409 && /Another restore, import or backup verification/.test(error.message)
+				(error) => error.statusCode === 409 && /Another restore or backup verification/.test(error.message)
 			);
 			first.kill('SIGKILL');
 			await first.exited;
@@ -288,6 +288,56 @@ describeUnlessLmdb('restore child', function () {
 			assert.strictEqual(evidence.blobs.blob_integrity, 'verified');
 			assert.deepStrictEqual(evidence.blobs.recordsScanned, { Items: 200 });
 			assert.ok(!readdirSync(target).includes('sentinel'), 'the restore replaced the target');
+		});
+	});
+
+	describe('accept_unverified_blobs', function () {
+		function run(args, target) {
+			const receipt = writeReceipt(target);
+			return runRestoreChild('apply-and-prove', args, {
+				databasePath: target,
+				receipt: { databasePath: target, operationId: receipt.operation_id, attempt: 1 },
+			});
+		}
+
+		it('still scans every record, so a waived restore of an undecodable record is refused', async function () {
+			const name = `${SOURCE}undecodable`;
+			const Rows = table({ table: 'Rows', database: name, attributes: [{ name: 'id', isPrimaryKey: true }] });
+			for (const id of [1, 3]) await Rows.put({ id });
+			await Rows.primaryStore.rootStore.flush();
+			// the same column family, without Harper's record encoding, to store bytes no record decodes from
+			const raw = RocksDatabase.open(Rows.primaryStore.rootStore.path, {
+				name: Rows.primaryStore.name,
+				encoding: 'binary',
+			});
+			try {
+				raw.putSync(2, Buffer.from([0xc1, 0xc1, 0xc1]));
+			} finally {
+				raw.close();
+			}
+			await closeDatabase(name);
+			const undecodableDir = backupDirForDatabase(name);
+			try {
+				const { backup_id: id } = await createBackupOffline(name);
+				const args = {
+					...applyArgs(targetWithSentinel('undecodable-target')),
+					sourceDatabase: name,
+					backupDir: undecodableDir,
+					backupId: id,
+					manifest: await readBackupManifest(undecodableDir, id),
+					acceptUnverifiedBlobs: true,
+				};
+				await assert.rejects(run(args, args.databasePath), /Could not read record 2 of table Rows/);
+			} finally {
+				rmSync(undecodableDir, { recursive: true, force: true });
+			}
+		});
+
+		it('records the waiver and the scan together for a backup that decodes', async function () {
+			const target = targetWithSentinel('waived-target');
+			const evidence = await run({ ...applyArgs(target), acceptUnverifiedBlobs: true }, target);
+			assert.strictEqual(evidence.blobs.waived, true);
+			assert.deepStrictEqual(evidence.blobs.recordsScanned, { Items: 200 });
 		});
 	});
 
