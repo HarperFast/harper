@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793370446565,
+  "lastUpdate": 1793370464929,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -31734,6 +31734,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1471.5,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9c43c77905fb5b4638123e094bacf906a2723ff2",
+          "message": "Bring DESIGN.md and resources/DESIGN.md back under their line budgets (#3792)\n\n* Bring DESIGN.md and resources/DESIGN.md back under their line budgets\n\nLint Source Code went red on main at 8037408e5 (#3655), when resources/DESIGN.md\npassed 1000 lines; 753dbb2e4 (#3574) then pushed the root index to 251. Merges the\ntwo drop_attribute notes (primary-key guard and row strip) into one section placed\nwith the schema notes, shares its index line with the cluster-origin note, and\nfolds the remediation paragraph into its section.\n\nDispatch-Task: main-red-kriszyp_harper_753dbb2e4_5684deb1\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Keep the pre-#3574 framing on the primary-key drop history\n\nDispatch-Task: main-red-kriszyp_harper_753dbb2e4_5684deb1\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-30T14:11:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/9c43c77905fb5b4638123e094bacf906a2723ff2"
+        },
+        "date": 1793370463820,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3121.14,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3121.14,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 237,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 508.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 704.9,
             "unit": "ms"
           }
         ]
