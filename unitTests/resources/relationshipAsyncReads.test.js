@@ -460,7 +460,7 @@ describe('Queries read related records asynchronously', () => {
 			]);
 		});
 
-		it('select of a filtered relationship on a row whose foreign key is null', async function () {
+		it('select of a relationship a condition inside an OR constrains, on a row whose foreign key is null', async function () {
 			const results = await collect(
 				ColdParent.search({
 					conditions: [
@@ -476,7 +476,11 @@ describe('Queries read related records asynchronously', () => {
 					select: ['id', { name: 'children', select: ['name'] }],
 				})
 			);
-			assert.deepEqual(results, [{ id: 'parent-1', children: [{ name: 'child 9' }] }, { id: 'parent-null' }]);
+			// a condition inside an OR decides which parents match, not which related records they select
+			assert.deepEqual(results, [
+				{ id: 'parent-1', children: [{ name: 'child 5' }, { name: 'child 9' }] },
+				{ id: 'parent-null', children: null },
+			]);
 			assert.equal(childReads.sync, 0);
 		});
 

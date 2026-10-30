@@ -157,7 +157,8 @@ export function executeConditions(
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
-			filtered,
+			// a join inside an OR decides rows only: it stays out of the AND scope's selection
+			filtered: inUnion || operator === 'or' ? Object.create(null) : filtered,
 			context,
 			holderTable: table,
 			holderReadTxn: txn,
@@ -1908,7 +1909,8 @@ export function filterByType(
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
 			const filterMap = relationshipRestriction(filtered, firstAttributeName);
-			const join: any = filterMap instanceof Map ? filterMap : undefined;
+			// a condition inside an OR decides rows only: it neither joins into nor selects the related records
+			const join: any = !inUnion && filterMap instanceof Map ? filterMap : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
 			const loadEntries = resolver?.loadEntries;
 			const getSubObject = (record, entry) => {
@@ -1961,7 +1963,7 @@ export function filterByType(
 					}
 					return keys;
 				});
-			// AND scope: registered when built, so no row sees a partial set; OR scope: lazily, first branch wins
+			// AND scope: registered when built, so no row sees a partial set
 			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
 			let selection;
 			if (!join && restrictsSelect && !inUnion) {
@@ -1996,10 +1998,6 @@ export function filterByType(
 			let subIdFilter;
 			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
 			const usesIdFilter = () => nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
-			const preserveForSelect = () => {
-				if (inUnion && restrictsSelect && !Object.hasOwn(filtered, firstAttributeName))
-					filtered[firstAttributeName] = relatedSelection([nextFilter]);
-			};
 			const recordFilter = (record, entry) => {
 				if (resolver && usesIdFilter()) {
 					// if we are filtering by id, we can use the idFilter to avoid loading the record
@@ -2030,13 +2028,11 @@ export function filterByType(
 					}
 					const matches = subIdFilter(record);
 					if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
-					if (matches) preserveForSelect();
 					return matches;
 				}
 				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
-				preserveForSelect();
 				return subObject.some((value, i) => nextFilter(value, subEntries?.[i]));
 			};
 			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
@@ -2044,7 +2040,6 @@ export function filterByType(
 				const matchLoaded = (loaded) => {
 					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
 					if (!loaded) return false;
-					preserveForSelect();
 					return someRelatedMatch(loaded, nextMatch, 0);
 				};
 				(recordFilter as any).maybeAsync = (record, entry) => {

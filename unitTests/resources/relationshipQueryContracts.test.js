@@ -336,7 +336,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			assert.deepStrictEqual(rows, [{ id: 'parent-3', children: [] }]);
 		});
 
-		it('branches of an OR group never narrow each other, whichever row is evaluated first', async function () {
+		it('a condition inside an OR group decides rows and never narrows the selected children', async function () {
 			const rows = await collect(
 				Parent.search({
 					conditions: [
@@ -357,10 +357,11 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 				rows.map((row) => row.id),
 				['or-a', 'or-b']
 			);
-			assert.deepStrictEqual(rows[1].children, [{ id: 'c8' }]);
+			assert.deepStrictEqual(rows[0].children, [{ id: 'c7' }]);
+			assert.deepStrictEqual(rows[1].children, [{ id: 'c8' }, { id: 'c9' }]);
 		});
 
-		it('a nested selection with a limit sees an OR-scope restriction registered while rows are filtered', async function () {
+		it('a nested selection with a limit is not narrowed by a condition inside an OR group', async function () {
 			const rows = await collect(
 				Parent.search({
 					conditions: [
@@ -377,7 +378,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'children', limit: 10, select: ['id'] }],
 				})
 			);
-			assert.deepStrictEqual(rows[1], { id: 'or-b', children: [{ id: 'c8' }] });
+			assert.deepStrictEqual(rows[1], { id: 'or-b', children: [{ id: 'c8' }, { id: 'c9' }] });
 		});
 
 		it('a related table without a primary-key field selects matched records by their entry key', async function () {

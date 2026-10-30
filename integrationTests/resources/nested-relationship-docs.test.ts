@@ -77,6 +77,15 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 			[[], [], []]
 		);
 	});
+	const productIds = (rows: { id: number; products: string[] | null }[]) =>
+		rows.map((row) => [row.id, [...(row.products ?? [])].sort()]).sort((a, b) => (a[0] as number) - (b[0] as number));
+	test('a products condition inside an OR picks brands but not which products they select', async () => {
+		for (const query of ['(products.name=Cable|id=44)', '(id=44|products.name=Cable)'])
+			assert.deepStrictEqual(productIds(await get(`/Brand/?${query}&select(id,products[select(id)])`)), [
+				[42, ['p1', 'p2', 'p3']],
+				[44, ['p5', 'p6']],
+			]);
+	});
 	test('both exact programmatic snippets produce their documented responses', async () => {
 		assert.deepStrictEqual(await get('/DocumentedQueries/'), {
 			single: examples.single,
