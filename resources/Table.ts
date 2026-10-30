@@ -2253,6 +2253,8 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _copyUnlistedAttributes(record: any, selected: any): void {
 			for (const key of Object.keys(record)) {
+				// a tracked instance's view carries its resolved relationships; the select lists the ones returned
+				if (propertyResolvers[key]?.definition?.tableClass) continue;
 				// a source-loaded record can carry an own '__proto__'; assignment would run the inherited setter
 				if (key === '__proto__')
 					Object.defineProperty(selected, key, {
@@ -2299,8 +2301,6 @@ export function makeTable(options): TableResourceClass {
 				const path = Array.isArray(sort.attribute) ? sort.attribute : [sort.attribute];
 				if (relatedTable._readDenial(path, user, property)) return false;
 			}
-			// Invoke the related table's allowRead on a properly-bound instance rather than
-			// `.call(null, ...)` so `this` is a valid resource of the related type.
 			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;
 			return property.select || hasNestedQueryOptions(property) ? property : property.name;
 		}

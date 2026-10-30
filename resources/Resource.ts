@@ -1377,7 +1377,7 @@ export function transformForSelect(select, resource) {
 			for (const property of select) {
 				if (property === '*') {
 					if (select[RELATIONSHIPS_LISTED] && resource?._copyUnlistedAttributes)
-						resource._copyUnlistedAttributes(object, selectedData);
+						resource._copyUnlistedAttributes(wildcardSource || object, selectedData);
 					else if (wildcardSource)
 						for (const key in wildcardSource) {
 							const value = wildcardSource[key];

@@ -592,6 +592,25 @@ describe('Default reads authorize @enumerable relationships against the related 
 		assert.deepStrictEqual(await search(byBudget(0)), [null]);
 	});
 
+	it('narrows a default read of a mutable instance without losing its fields', async () => {
+		const loadAsInstance = EnumEmp.loadAsInstance;
+		EnumEmp.loadAsInstance = true;
+		EnumEmp.getReturnMutable = true;
+		try {
+			const own = { id: 'e1', name: 'Ann', deptId: 'd1', extra: 'x' };
+			const restricted = roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'name') });
+			assert.deepStrictEqual(await getAs(EnumEmp, roleWith({ EnumEmp: READ }), 'e1'), own);
+			assert.deepStrictEqual(await getAs(EnumEmp, roleWith({ EnumEmp: READ }), 'e1', ['*']), own);
+			assert.deepStrictEqual(await getAs(EnumEmp, restricted, 'e1', ['*']), {
+				...own,
+				dept: { id: 'd1', name: 'Eng' },
+			});
+		} finally {
+			EnumEmp.getReturnMutable = false;
+			EnumEmp.loadAsInstance = loadAsInstance;
+		}
+	});
+
 	it('expands * only in a select written by authorization', async () => {
 		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ, EnumPublisher: READ });
 		const superUser = { role: { permission: { super_user: true } } };
