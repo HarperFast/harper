@@ -285,7 +285,7 @@ export function flameGraphSvg(stacks: { stack: string[]; count: number }[], titl
 		}
 	}
 	const rowHeight = 16;
-	const minWidth = 0.3;
+	const minWidth = 1;
 	const rects: string[] = [];
 	let maxDepth = 0;
 	const scale = (width - 20) / Math.max(1, root.value);
