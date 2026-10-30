@@ -126,12 +126,7 @@ entry's key in the per-origin transaction log: write identity, the record→log 
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and
 `#2409`'s `recordVersion` alias is now absorbed back into `version`.
 
-They hold the same value for every write whose record version is its own commit timestamp, which is
-every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
-(`getFromSource`, core #2065): the record is stored at the source-reported version while its log
-entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
-when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that
-compatibility pointer with a dedicated log-key word.
+They match for every ordinary local write (its record version is its own commit timestamp), so confusing them stays invisible until a **source fill** (`getFromSource`, core #2065) stores the record at the source-reported version and keys its log entry at the fill's commit. A RocksDB record keeps its version in the existing word and, when the clocks diverge, its audit head in `additionalAuditRefs`; stage 2 can replace that pointer with a dedicated log-key word.
 
 Consequences worth knowing:
 
@@ -164,9 +159,7 @@ Consequences worth knowing:
   replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
   commit. Other consumers still treat a second commit at one key as a duplicate
   (`resumePastExactStart`, the derived-index runtime, subscription delivery).
-- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
-  history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
-  no on-disk or on-wire identifier changes in this stage.
+- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription, history, and pro-to-core replication event shapes predate this internal name and stay unchanged.
 
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 
@@ -300,6 +293,7 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 Records stored in tables are plain objects given a `RecordObject` prototype, which provides `getExpiresAt()` and `getUpdatedTime()`. These methods read from `entryMap` (a `WeakMap` in `RecordEncoder.ts`), which maps each record object to its storage entry.
 
 - `RecordObject` is a shared runtime base class; every encoder creates an isolated `StoreRecordObject` subclass for its `structPrototype`, so table-specific computed getters do not leak across tables. Structon records inherit that prototype during decode. Classic msgpackr records decode as plain objects and are promoted by the store read wrappers before Harper exposes them.
+- On LMDB the promotion runs before lmdb-js caches the value (`handleLocalTimeForGets` wraps `store.cache.setValue`): a cache entry is a WeakRef that readers such as the search transform `deref()`, and its target cannot change once created, so it must already be the promoted record (`unitTests/resources/lmdbPrefetchComputed.test.js`).
 - Use `record instanceof RecordObject` when behavior must apply to either exposed representation. Do not use `entryMap.has(record)` as a record-type test: `entryMap` exists for storage metadata, and some range-read paths can prototype-promote a record without registering that mapping.
 - Point reads and other paths that need storage metadata call `entryMap.set(record, entry)` when exposing a record.
 - To give a plain JS object the RecordObject prototype without copying it (preserving mutability), use `Object.setPrototypeOf(obj, primaryStore.encoder.structPrototype)` then `entryMap.set(obj, entry)`.
@@ -412,7 +406,7 @@ RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them wh
 
 ## A read reference belongs to the handle acquisition it was taken on (`DatabaseTransaction.useReadTxn`/`doneReadTxn`, harper#3308)
 
-`readTxnsUsed` is never positive without a read handle, and `doneReadTxn(generation)` ignores a return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot). Enforced by `unitTests/resources/detachedReadRefs.test.js`.
+`readTxnsUsed` and `readTxnRefCount` are never non-zero without a read handle, and neither carries across handle acquisitions. `doneReadTxn(generation)` ignores an iterator return from an earlier acquisition (`readTxnGeneration`, bumped per acquisition, because lmdb-js renews the same `Txn` object for a new snapshot); point-read `disregardReadTxn()` is not generation-stamped, so a cache miss that took no reference or whose acquisition was released can still decrement a later acquisition's count and release its snapshot under another live reader. Enforced by `unitTests/resources/detachedReadRefs.test.js`.
 
 ## Replicated apply failure listeners (`resources/replicatedApplyFailure.ts`)
 

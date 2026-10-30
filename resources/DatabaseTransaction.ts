@@ -975,9 +975,9 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
-		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.renewReadTimeout();
 		if (this.transaction) {
+			this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
 		}
@@ -994,6 +994,7 @@ export class DatabaseTransaction implements Transaction {
 				disableSnapshot: disableSnapshot || this.snapshotFree,
 			})
 		);
+		this.readTxnRefCount = 1;
 		if (disableSnapshot || this.snapshotFree) (this.transaction as any).snapshotDisabled = true;
 
 		if (this.timestamp) {
@@ -1060,6 +1061,7 @@ export class DatabaseTransaction implements Transaction {
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
+		this.baseReadRefConsumed = true;
 		this.handleOpenedAt = 0;
 		return transaction;
 	}
@@ -1183,9 +1185,9 @@ export class DatabaseTransaction implements Transaction {
 
 	disregardReadTxn(): void {
 		// Never release a handle carrying staged writes: commit() skips re-staging a write it has marked
-		// saved, so aborting the handle here drops it. The count is clamped because every getReadTxn()
-		// increments it but only this releases, so an unpaired call would drive it negative and cancel
-		// out a later handle's references.
+		// saved, so aborting the handle here drops it. The count is clamped because a getReadTxn() on a
+		// transaction that is not OPEN and holds no handle takes no reference while its caller still
+		// disregards on a miss, so an unpaired call would otherwise drive it negative and cancel a reader's reference.
 		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
 			if (this.writes.length > 0) return;
 			this.doneReadTxn();
@@ -1944,14 +1946,18 @@ export class DatabaseTransaction implements Transaction {
 			this.detachWrite(operation);
 			throw lockNotHeldError(lockHandle);
 		}
+		const concurrentClosedWrite =
+			Boolean((transaction as RocksTransactionWithRetry | undefined)?.immediateCommit) ||
+			(!transaction && this.open !== TRANSACTION_STATE.OPEN && !this.saveCommits);
 		// Lock-write timestamp rules.
 		if (lockHandle) {
 			this.hasLeaseProtectedWrite = true;
-			if (this.open === TRANSACTION_STATE.CLOSED || this.saveCommits) {
-				// CLOSED path (second+ write per ImmediateTransaction cycle) OR the first write in
-				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
-				// signals the per-write-commit semantics):  stamp with nextHolderVersion() so that
-				// each sequential save() gets its own monotonically increasing stamp — scoped or hold.
+			if (concurrentClosedWrite || this.saveCommits) {
+				// A save that commits on its own handle — any ImmediateTransaction save, or a write reaching
+				// an explicit transaction after it closed — takes a holder version, so sequential saves get
+				// distinct, increasing stamps. A conflict-retry or open-iterator re-save also runs after
+				// commit() closed the transaction, but must keep the version its first save chose, so it never
+				// takes a first stamp here (harper#3487).
 				// The stamp stays on the operation and is consumed below rather than assigned to
 				// this.timestamp: pinning the link's clock would stamp every OTHER write staged on
 				// the same context before the commit resets it — a concurrent write in the caller's
@@ -1960,9 +1966,6 @@ export class DatabaseTransaction implements Transaction {
 				if (!operation.lockStamp) operation.lockStamp = lockHandle.holderVersionCandidate();
 			}
 		}
-		const concurrentClosedWrite =
-			Boolean((transaction as RocksTransactionWithRetry | undefined)?.immediateCommit) ||
-			(!transaction && this.open !== TRANSACTION_STATE.OPEN && !this.saveCommits);
 		let txnTime =
 			operation.lockStamp ?? this.getHandleStagedTxnTime(transaction) ?? (concurrentClosedWrite ? 0 : this.timestamp);
 		const mintedTimestamp = !txnTime;
@@ -2527,7 +2530,7 @@ export class DatabaseTransaction implements Transaction {
 				// recursions, immediate-commit re-entries, and a second top-level commit() (wrapper
 				// commit after an explicit in-handler commit) must not steal a reference owned by an
 				// outstanding iterator (doneReadTxn() would then never release the native handle).
-				if (!isImmediateCommit && !this.baseReadRefConsumed) {
+				if (!isImmediateCommit && this.transaction && !this.baseReadRefConsumed) {
 					this.baseReadRefConsumed = true;
 					this.readTxnsUsed--;
 				}

@@ -77,6 +77,14 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 > is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
 > than the publisher's, the record is decoded from the transaction log and `data` is a plain `Uint8Array`,
 > which mqtt-packet cannot encode. Pinned by `integrationTests/mqtt/opaque-payload-across-workers.test.ts`.
+>
+> **Only text or bytes make an envelope.** A table may declare attributes named `contentType` and `data`,
+> so the shape alone proves nothing: `isPassThroughEnvelope` (`serverHelpers/contentTypes.ts`) requires a
+> string `contentType` and string or ArrayBuffer-view `data`, and every other record goes through the
+> negotiated serializer. Delivered raw, object or number `data` made mqtt-packet throw, and a durable
+> session replayed the delivery on every reconnect. `isHttpPassThroughEnvelope` also accepts a `Blob`, streams
+> and other async iterables, and generators, which the HTTP body writer sends and a record cannot hold; arrays
+> and objects stay records. Pinned by `integrationTests/mqtt/passthrough-envelope-shape.test.ts`.
 
 ### Threads
 
@@ -285,15 +293,16 @@ Any layer that establishes Harper owns the route then settles the deferred state
 | `static.ts`                             | after a static file entry matches                                                                                                                                          |
 | `mqtt.ts` WebSocket handler             | once the pending HTTP chain settles, before the first packet                                                                                                               |
 | `components/mcp/adapters/harperHttp.ts` | after the WebSocket hand-off, before the body is read                                                                                                                      |
+| `security/fastifyAuth.ts → authorize()` | when a legacy Fastify route runs `hdbCore.preValidation` (not under uWS or Bun: `injectToFastify()` carries no base request)                                               |
 
 **Every Harper-owned handler registered `after: 'authentication'` owes this settlement**, because
 declining to call `nextHandler` is precisely the moment ownership is settled. A handler that skips
 it serves an unrecognized credential as anonymous — the MCP application mount did exactly that, and
 returned 200 for an `initialize` the base revision answered with 401.
 
-Settlement goes through `settleDeferredCredentialRejection()`, which returns the response descriptor
-`security/auth.ts` used to return in line: status 401 and `serializeMessage({error: message}, request)`
-in the request's negotiated content type. That matters because an owner's own error mapping is not
+Settlement goes through `settleDeferredCredentialRejection()`, which returns the descriptor an in-place
+rejection gets (`credentialRejectionResponse()`): status 401, `serializeMessage({error: message}, request)`
+in the negotiated content type, and the challenge described below. That matters because an owner's own error mapping is not
 that contract — REST renders a thrown error as an RFC 9457 Problem Details document and GraphQL as
 `{errors:[{message}]}` — and a rejected credential never reached either before deferral existed.
 `assertNoDeferredCredentialRejection()` is the throwing form, for a WebSocket upgrade that has no
@@ -310,14 +319,13 @@ have received, and can never reach an application catch-all. Only a URL that rea
 The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
 header, no credential rename, and no pre-auth stripping shim.
 
-**Authentication does not re-decorate a 401 it did not raise.** `security/auth.ts` post-processes any
-401 coming back up the chain — overwriting `WWW-Authenticate` with `Basic`, or rewriting the status to
-a 302 at `resources.loginPath` for a browser. The in-line rejection deferral replaced returned before
-that code, so a settled rejection must skip it to stay wire-identical; and a 401 an application
-catch-all raised for its own scheme (a WooCommerce or Bearer challenge) is that application's to make.
-Both cases are keyed on the deferred state, so a request that deferred nothing keeps the existing
-behavior exactly. The #1565 identity floor still applies either way — it is stamped in
-`applyResponseHeaders`, not in the challenge rewriting.
+**Every authentication 401 Harper renders is challenged; an app's own 401 under a deferral is not re-decorated.**
+`credentialRejectionResponse()` builds in-place and settled 401s: a negotiated `Content-Type` and, off the operations
+API, `Bearer realm="Harper"` for a Bearer credential (`error="invalid_token"` only for a rejected token; browsers raise
+a dialog for Basic), else `Basic realm="Harper"`. `auth.ts` challenges or login-redirects a downstream 401 only when
+nothing was deferred: a settled 401 is already challenged, and a redirect would loop (`static.ts` settles the login
+page). The legacy Fastify error handler adds a missing challenge from the error (its deferred strategy, or
+`bearerTokenRejection()`), else from the presented scheme. The #1565 identity floor is stamped in `applyResponseHeaders`.
 
 **The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a
 deferred credential is credential-dependent (#1565), so `authentication` stamps
