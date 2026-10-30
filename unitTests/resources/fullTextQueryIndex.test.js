@@ -125,6 +125,8 @@ function definition() {
 function queryLimits(overrides = {}) {
 	const maxSearchWindow = overrides.maxSearchWindow ?? 10_000;
 	return {
+		maxConfiguredQueryTerms: 1024,
+		maxConfiguredQueryClauses: 4096,
 		maxRecordIdBytes: 4_096,
 		maxRecordVersionBytes: 4_096,
 		maxCandidateIds: 1_024,
@@ -1556,7 +1558,10 @@ describe('FullTextQueryIndex', () => {
 		const query = { attribute: 'query-errors', comparator: 'matches_prefix', value: 's' };
 		await assert.rejects(
 			index.search(query, {}),
-			(error) => error.statusCode === 400 && error.message === "Full-text query on 'catalogSearch' is invalid"
+			(error) =>
+				error.statusCode === 400 &&
+				error.message ===
+					"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
 		);
 		await assert.rejects(
 			index.search(query, {}),

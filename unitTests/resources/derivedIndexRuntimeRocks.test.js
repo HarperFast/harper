@@ -805,11 +805,11 @@ class FakeNativeFullTextModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 9,
+			nativeAbiVersion: 13,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 4,
+			queryApiVersion: 7,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
@@ -817,6 +817,8 @@ class FakeNativeFullTextModule {
 				maxRecordVersionBytes: 4_096,
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
+				maxConfiguredQueryTerms: 1024,
+				maxConfiguredQueryClauses: 4096,
 				maxSearchWindow: 10_000,
 				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,

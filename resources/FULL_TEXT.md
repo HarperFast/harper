@@ -88,7 +88,11 @@ Weight and highlighting changes preserve the physical index and refresh query re
 
 ## Native package and limits
 
-Harper pins `@harperfast/fulltext` to **0.7.0**, embedding **Tantivy 0.27.0**, and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
+Harper pins `@harperfast/fulltext` to **0.8.0**, embedding **Tantivy 0.27.0**, and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
+
+### Upgrading from fulltext 0.7.0
+
+Existing Harper 0.7.0 indexes contain text fields only and remain reusable with 0.8.0. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. Remove new `storage.fullText.query` settings before returning to an older Harper version that does not recognize them. The genuine 0.7 checkpoint test covers bounded reuse and reopen, not an operator rollback qualification.
 
 ### Upgrading an existing native index
 
@@ -98,17 +102,17 @@ Drain a node's full-text traffic and stop its old Harper processes before starti
 
 Prerelease installations using fulltext 0.6 also require a full rebuild.
 
-**Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting a 0.7 identity, leaving full-text search unavailable. If a downgrade has already happened, keep search traffic drained and restore the 0.7.0-based Harper version. Harper does not yet provide a supported rollback procedure for full-text indexes; see [Implement full-text generation lifecycle, rebuild, eviction, backup, and status](https://github.com/HarperFast/harper/issues/2510). Do not edit, move or delete files in full-text index directories by hand.
+**Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting a 0.8 identity, leaving full-text search unavailable. If a downgrade has already happened, keep search traffic drained and restore the 0.8.0-based Harper version. Harper does not yet provide a supported rollback procedure for full-text indexes; see [Implement full-text generation lifecycle, rebuild, eviction, backup, and status](https://github.com/HarperFast/harper/issues/2510). Do not edit, move or delete files in full-text index directories by hand.
 
 ### Upgrade and recovery checklist
 
 1. Drain the node's full-text requests and stop every old Harper process that shares its storage, including background workers. Do not mix engine versions against one local index.
 2. Confirm authoritative records and their recovery backups are available. Reserve disk and time for a complete rebuild of every local full-text index; the tests do not establish a universal capacity or duration estimate.
-3. Start the 0.7.0-based Harper version. Use `describe_table` for each affected table and check every `full_text_indexes[].readiness.state`. Keep full-text traffic drained while any index is not `ready`.
+3. Start the 0.8.0-based Harper version. Use `describe_table` for each affected table and check every `full_text_indexes[].readiness.state`. Keep full-text traffic drained while any index is not `ready`.
 4. Verify representative searches with `maxIndexLagMilliseconds: 0` and `waitForIndexMilliseconds: 30000`, so they wait for the writes committed before each search. Check the response body for stream errors as well as its HTTP status. Watch write-503 responses and retry with bounded backoff while replay catches up.
 5. Restore full-text traffic only after all required indexes and current-coverage searches succeed. Readiness does not establish catalog-scale latency, spare disk capacity or coverage of writes committed after a search began.
 
-If startup or rebuilding fails, keep the node's full-text traffic drained, preserve its source data and logs, and correct the reported package, storage or coordination failure before restarting the same 0.7.0-based version. An interrupted rebuild is recovered from authoritative records; do not force readiness or reset a live directory. After an accidental downgrade refusal, stop the older processes and restore the 0.7.0-based version before checking readiness and catch-up again. If that version also fails, stop and investigate rather than deleting index files. This is current-version recovery; an operator downgrade procedure remains unqualified.
+If startup or rebuilding fails, keep the node's full-text traffic drained, preserve its source data and logs, and correct the reported package, storage or coordination failure before restarting the same 0.8.0-based version. An interrupted rebuild is recovered from authoritative records; do not force readiness or reset a live directory. After an accidental downgrade refusal, stop the older processes and restore the 0.8.0-based version before checking readiness and catch-up again. If that version also fails, stop and investigate rather than deleting index files. This is current-version recovery; an operator downgrade procedure remains unqualified.
 
 The upgrade and recovery checks cover bounded fixture workloads. Multi-node deployment, sustained-write rejection windows and workload capacity still require the qualification in [Implement full-text generation lifecycle, rebuild, eviction, backup, and status](https://github.com/HarperFast/harper/issues/2510) and [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
 
@@ -169,6 +173,23 @@ These limits apply together. For example, two indexing threads and 64 MiB of wri
 
 Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails with `FullTextWorkerInitializationError` (500, non-retryable); recreate it after Harper initializes. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
 
-Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.7.0 also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those limits. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.7.0/docs/limits.md) for the full list and recovery guidance. Configuration of those query limits is tracked in [Make query term and clause limits configurable with bounded resource policy](https://github.com/HarperFast/fulltext/issues/63).
+Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.8.0 defaults to 64 analyzed terms per text leaf and 256 compiled clauses per query. Configure host reader policy separately from request work budgets:
+
+```yaml
+storage:
+  fullText:
+    query:
+      maxQueryTerms: 64
+      maxQueryClauses: 256
+      maxFuzzyDistance: 1
+```
+
+The policy is captured for the whole process and inherited by HTTP and application workers. Restart the full Harper process to change it; restarting only workers does not change the captured values. It applies to readers, including reopened readers, and does not change writer limits or index identity. Requests cannot raise it. Terms must be 1–1,024 and clauses 1–4,096, also within the loaded native runtime's advertised ceilings. Clause cost includes Boolean structure, NOT and field expansion, so a query below its term limit can still fail its clause limit. Overflow returns an explicit 400; queries are never truncated. Other depth, byte, phrase/fuzzy construction, queue, response and deadline guards still apply. Deadlines are cooperative and do not guarantee interruption during every native construction step. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.8.0/docs/limits.md).
+
+On structured full-text conditions, `fuzzyDistance` accepts integer 0–2 (default 1), and `fuzzyTranspositions` accepts a boolean (default true). They are valid only with `matches_fuzzy` or `matches_fuzzy_prefix`. Distance zero uses native exact matching; disabling transpositions makes adjacent swaps cost two edits. Both controls reach retrieval, traversal and highlights through Table.search and operations `search_by_conditions`; REST FIQL comparators retain their defaults. String values such as `"2"` and `"false"` are rejected.
+
+Distance two remains preview and requires operator opt-in with `storage.fullText.query.maxFuzzyDistance: 2`. The host maximum accepts 0–2; zero disables edit-tolerant fuzzy requests unless the condition explicitly requests distance zero. Qualify the actual corpus and concurrency before enabling two: admission and deadlines do not provide a hard process-memory bound. Fuzzy-prefix remains preview. Phrase slop remains deferred; no unreleased Tantivy patch is included.
+
+Metadata sorting, native structured-filter pushdown, candidate-ID pushdown and facets/nested aggregations are not enabled by this package upgrade. Their schema, authorization, consistency and workload qualification remain in [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
 
 For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); compiler and generation rules live in [fullTextSchema.ts](fullTextSchema.ts).

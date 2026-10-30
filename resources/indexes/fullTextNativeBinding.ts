@@ -1,14 +1,18 @@
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
-import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import {
+	resolveFullTextQueryLimits,
+	resolveFullTextSearchLimits,
+	type FullTextQueryLimits,
+} from './fullTextSearchLimits.ts';
 import { getFullTextRuntimeConfiguration, FullTextWorkerInitializationError } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
-const FULLTEXT_NATIVE_ABI_VERSION = 9;
+const FULLTEXT_NATIVE_ABI_VERSION = 13;
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
-const FULLTEXT_QUERY_API_VERSION = 4;
+const FULLTEXT_QUERY_API_VERSION = 7;
 const logger = loggerWithTag('fulltext-derived-index');
 
 export interface NativeFullTextRuntimeBudget {
@@ -28,6 +32,8 @@ export interface NativeFullTextIndexConfiguration {
 	surfaceTerms?: boolean;
 	synonyms?: NativeFullTextSynonymRule[];
 	limits: {
+		maxQueryTerms?: number;
+		maxQueryClauses?: number;
 		indexingThreads: number;
 		searchThreads: number;
 		writerMemoryBytes: number;
@@ -41,12 +47,19 @@ export type NativeFullTextSynonymRule = { source: string; replacements: string[]
 
 export type NativeFullTextSearchMode = 'any' | 'all' | 'phrase' | 'prefix' | 'fuzzy' | 'fuzzy-prefix';
 
+export type NativeFullTextFuzzyOptions = { fuzzyDistance?: number; fuzzyTranspositions?: boolean };
+
 export type NativeFullTextSearchExpression =
-	| { text: string; mode?: NativeFullTextSearchMode; operator?: 'any' | 'all'; fields?: string[] }
+	| (NativeFullTextFuzzyOptions & {
+			text: string;
+			mode?: NativeFullTextSearchMode;
+			operator?: 'any' | 'all';
+			fields?: string[];
+	  })
 	| { operator: 'and' | 'or'; clauses: NativeFullTextSearchExpression[] }
 	| { operator: 'not'; clause: NativeFullTextSearchExpression };
 
-export type NativeFullTextSearchRequest = {
+export type NativeFullTextSearchRequest = NativeFullTextFuzzyOptions & {
 	text?: string;
 	query?: NativeFullTextSearchExpression;
 	mode?: NativeFullTextSearchMode;
@@ -116,6 +129,8 @@ export type NativeFullTextRuntimeInfo = {
 	queryApiVersion: number;
 	storageBackends: ReadonlyArray<'native'>;
 	limits: {
+		maxConfiguredQueryTerms: number;
+		maxConfiguredQueryClauses: number;
 		maxCommitPayloadBytes: number;
 		maxRecordIdBytes: number;
 		maxRecordVersionBytes: number;
@@ -137,6 +152,8 @@ export type NativeFullTextQueryRuntimeInfo = Pick<
 > & {
 	limits: Pick<
 		NativeFullTextRuntimeInfo['limits'],
+		| 'maxConfiguredQueryTerms'
+		| 'maxConfiguredQueryClauses'
 		| 'maxSearchWindow'
 		| 'maxSearchPageSize'
 		| 'maxAutocompleteResults'
@@ -211,6 +228,10 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 			const runtime = resolveFullTextSearchLimits(getFullTextRuntimeConfiguration()).runtime;
 			binding.configureNativeFullTextRuntime(runtime);
 			try {
+				const currentQuery = resolveFullTextQueryLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_QUERY));
+				const capturedQuery = resolveFullTextQueryLimits(getFullTextRuntimeConfiguration().query);
+				if (Object.keys(capturedQuery).some((name) => capturedQuery[name] !== currentQuery[name]))
+					logger.warn?.('storage.fullText.query changed; restart the Harper process to apply its query policy');
 				const requested = resolveFullTextSearchLimits({
 					runtime: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME),
 				}).runtime;
@@ -318,6 +339,10 @@ export function validateFullTextQueryRuntimeInfo(info: unknown): NativeFullTextQ
 		!Number.isSafeInteger(runtime.queryClassIsolationMinimumSearchThreads) ||
 		runtime.queryClassIsolationMinimumSearchThreads <= 0 ||
 		!runtime.limits ||
+		!Number.isSafeInteger(runtime.limits.maxConfiguredQueryTerms) ||
+		runtime.limits.maxConfiguredQueryTerms <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxConfiguredQueryClauses) ||
+		runtime.limits.maxConfiguredQueryClauses <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxRecordIdBytes) ||
 		runtime.limits.maxRecordIdBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxRecordVersionBytes) ||
@@ -340,4 +365,15 @@ export function validateFullTextQueryRuntimeInfo(info: unknown): NativeFullTextQ
 	)
 		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
 	return runtime;
+}
+
+export function nativeFullTextQueryLimits(info: NativeFullTextQueryRuntimeInfo, value: unknown): FullTextQueryLimits {
+	const policy = resolveFullTextQueryLimits(value);
+	for (const [name, ceiling] of [
+		['maxQueryTerms', info.limits.maxConfiguredQueryTerms],
+		['maxQueryClauses', info.limits.maxConfiguredQueryClauses],
+	] as const)
+		if (policy[name] > ceiling)
+			throw new TypeError(`storage.fullText.query.${name} exceeds the native runtime ceiling ${ceiling}`);
+	return policy;
 }

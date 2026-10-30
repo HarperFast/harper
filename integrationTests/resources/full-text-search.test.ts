@@ -17,7 +17,13 @@ import { previousFullTextProcess } from '../../unitTests/resources/fixtures/full
 const { runtimeInfo } = native;
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'full-text-search');
-const OPTIONS = { config: { threads: { count: 2 } }, env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' } };
+const OPTIONS = {
+	config: {
+		threads: { count: 2 },
+		storage: { fullText: { query: { maxQueryTerms: 128, maxQueryClauses: 512, maxFuzzyDistance: 2 } } },
+	},
+	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
+};
 const READER = { username: 'fulltext_reader', password: 'Fulltext-reader-2855!' };
 const READER_AUTH = `Basic ${Buffer.from(`${READER.username}:${READER.password}`).toString('base64')}`;
 const PAGE_IDS = Array.from({ length: 300 }, (_, index) => `page-${String(index).padStart(3, '0')}`);
@@ -147,12 +153,85 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await teardownHarper(ctx);
 	});
 
+	test('adopts host query capacity and fuzzy controls through two-worker HTTP and operations search', async () => {
+		await operation({
+			operation: 'insert',
+			schema: 'data',
+			table: 'Product',
+			records: [
+				{ id: 'capacity-late', title: 'qword064' },
+				...Array.from({ length: 135 }, (_, i) => ({
+					id: `fuzzy-control-${String(i).padStart(3, '0')}`,
+					title: 'catalog',
+				})),
+			],
+		});
+		const late = await request('/SearchProduct/', {
+			method: 'POST',
+			body: JSON.stringify(
+				query(Array.from({ length: 65 }, (_, i) => `qword${String(i).padStart(3, '0')}`).join(' '), {
+					fields: ['title'],
+				})
+			),
+		});
+		assert.deepStrictEqual(ids(late), ['capacity-late']);
+		const result = await operation({
+			operation: 'search_by_conditions',
+			schema: 'data',
+			table: 'Product',
+			...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] }, { limit: 140 }),
+		});
+		assert.strictEqual(result.length, 135);
+		const misses = await operation({
+			operation: 'search_by_conditions',
+			schema: 'data',
+			table: 'Product',
+			...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
+		});
+		assert.deepStrictEqual(misses, []);
+		const traversed = await request('/SearchProduct/', {
+			method: 'POST',
+			body: JSON.stringify(
+				query(
+					'catxxog',
+					{ comparator: 'matches_fuzzy_prefix', fuzzyDistance: 2, fields: ['title'], includeHighlights: true },
+					{ limit: 130, offset: 2 }
+				)
+			),
+		});
+		assert.strictEqual(traversed.length, 130);
+		assert(
+			traversed.every((record) => record.id.startsWith('fuzzy-control-') && record.$highlights?.title?.length > 0)
+		);
+		for (const controls of [{ fuzzyDistance: '2' }, { fuzzyTranspositions: 'false' }]) {
+			const response = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					operation: 'search_by_conditions',
+					schema: 'data',
+					table: 'Product',
+					...query('catalog', { comparator: 'matches_fuzzy', ...controls }),
+				}),
+				signal: AbortSignal.timeout(45000),
+			});
+			assert.strictEqual(response.status, 400, await response.text());
+		}
+		await operation({
+			operation: 'delete',
+			schema: 'data',
+			table: 'Product',
+			ids: ['capacity-late', ...Array.from({ length: 135 }, (_, i) => `fuzzy-control-${String(i).padStart(3, '0')}`)],
+		});
+	});
+
 	test('loads the pinned native package and exposes a ready index without a stored virtual attribute', async () => {
 		const info = await runtimeInfo();
 		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
 		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
 		assert.strictEqual(info.mutationBatchApiVersion, 5);
-		assert.strictEqual(info.queryApiVersion, 4);
+		assert.strictEqual(info.nativeAbiVersion, 13);
+		assert.strictEqual(info.queryApiVersion, 7);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');

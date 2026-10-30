@@ -113,9 +113,9 @@ describe('full-text search resource limits', () => {
 		assert.strictEqual(policy.additionalProperties, false);
 		assert.strictEqual(policy.properties.runtime.additionalProperties, false);
 		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS)) {
-			if (name === 'runtime') {
+			if (name === 'runtime' || name === 'query') {
 				for (const [key, limit] of Object.entries(value))
-					assert.strictEqual(policy.properties.runtime.properties[key].default, limit);
+					assert.strictEqual(policy.properties[name].properties[key].default, limit);
 			} else assert.strictEqual(policy.properties[name].default, value);
 		}
 	});
@@ -132,7 +132,8 @@ describe('full-text search resource limits', () => {
 				assert.strictEqual(CONFIG_PARAM_MAP[parameter.toLowerCase()], parameter);
 				assert.strictEqual(flattened[parameter.toLowerCase()], expected);
 			};
-			if (name === 'runtime') for (const [key, limit] of Object.entries(value)) check(`runtime_${key}`, limit);
+			if (name === 'runtime' || name === 'query')
+				for (const [key, limit] of Object.entries(value)) check(`${name}_${key}`, limit);
 			else check(name, value);
 		}
 	});
@@ -153,5 +154,91 @@ describe('full-text search resource limits', () => {
 		assert.throws(() => resolveFullTextSearchLimits({ runtime: { threads: 4 } }), /Unknown/);
 		assert.throws(() => resolveFullTextSearchLimits({ constructor: 4 }), /Unknown/);
 		assert.throws(() => resolveFullTextSearchLimits({ runtime: { maxResidentIndexes: 0x100000000 } }), /u32/);
+	});
+});
+
+describe('full-text host query policy', () => {
+	const {
+		resolveFullTextQueryLimits,
+		DEFAULT_FULL_TEXT_QUERY_LIMITS,
+	} = require('#src/resources/indexes/fullTextSearchLimits');
+	const {
+		nativeFullTextQueryLimits,
+		validateFullTextQueryRuntimeInfo,
+	} = require('#src/resources/indexes/fullTextNativeBinding');
+	it('captures reader policy across application workers and applies it to published native readers without changing writers', async function () {
+		this.timeout(60000);
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { execFileSync } = require('node:child_process');
+		const { mkdtempSync, rmSync } = require('node:fs');
+		const { join } = require('node:path');
+		const { setupTestDBPath } = require('../testUtils');
+		for (const policy of [
+			{ maxQueryTerms: 1, maxQueryClauses: 1, maxFuzzyDistance: 0 },
+			{ maxQueryTerms: 128, maxQueryClauses: 512, maxFuzzyDistance: 2 },
+		]) {
+			const root = mkdtempSync(join(setupTestDBPath(), 'native-policy-'));
+			try {
+				const output = execFileSync(
+					process.execPath,
+					[
+						require.resolve('./fixtures/fullTextRuntimeConfigurationProcess.cjs'),
+						'256',
+						'policy',
+						JSON.stringify(policy),
+						root,
+					],
+					{ encoding: 'utf8', timeout: 30000 }
+				);
+				const result = JSON.parse(output.trim().split('\n').at(-1));
+				assert.deepStrictEqual(result.policy, policy);
+				assert.deepStrictEqual(result.inherited, policy);
+				assert.strictEqual(result.overCode, 'E_INVALID_ARGUMENT');
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
+	});
+	it('preserves defaults and strictly bounds independent host settings', () => {
+		assert.deepStrictEqual(resolveFullTextQueryLimits(undefined), {
+			maxQueryTerms: 64,
+			maxQueryClauses: 256,
+			maxFuzzyDistance: 1,
+		});
+		assert(Object.isFrozen(DEFAULT_FULL_TEXT_QUERY_LIMITS));
+		assert.deepStrictEqual(
+			resolveFullTextQueryLimits({ maxQueryTerms: '1024', maxQueryClauses: '4096', maxFuzzyDistance: '0' }),
+			{ maxQueryTerms: 1024, maxQueryClauses: 4096, maxFuzzyDistance: 0 }
+		);
+		for (const [name, ceiling] of [
+			['maxQueryTerms', 1024],
+			['maxQueryClauses', 4096],
+			['maxFuzzyDistance', 2],
+		]) {
+			for (const value of [null, -1, 1.5, NaN, Infinity, true, '', ceiling + 1])
+				assert.throws(() => resolveFullTextQueryLimits({ [name]: value }), name + ':' + value);
+		}
+		assert.throws(() => resolveFullTextQueryLimits({ maxQueryTerms: 0 }));
+		assert.throws(() => resolveFullTextQueryLimits({ unknown: 1 }), /Unknown/);
+	});
+	it('uses advertised native ceilings rather than accepting configured values blindly', async () => {
+		const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
+		const info = await new FullTextNativeTestBinding().runtimeInfo();
+		assert.strictEqual(nativeFullTextQueryLimits(info, { maxQueryTerms: 128 }).maxQueryTerms, 128);
+		assert.throws(
+			() =>
+				nativeFullTextQueryLimits(
+					{ ...info, limits: { ...info.limits, maxConfiguredQueryTerms: 127 } },
+					{ maxQueryTerms: 128 }
+				),
+			/native runtime ceiling/
+		);
+		for (const name of ['maxConfiguredQueryTerms', 'maxConfiguredQueryClauses'])
+			for (const value of [undefined, 0, -1, 1.5, NaN, Infinity, '1024'])
+				assert.throws(
+					() => validateFullTextQueryRuntimeInfo({ ...info, limits: { ...info.limits, [name]: value } }),
+					/incompatible runtime capabilities/
+				);
 	});
 });

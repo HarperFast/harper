@@ -102,6 +102,52 @@ describe('published native full-text Table.search integration', () => {
 		assert.deepStrictEqual(await collect(Filtered.search({ ...query, offset: 1 })), []);
 	});
 
+	it('preserves fuzzy defaults, exact matching, transposition controls and preview admission', async () => {
+		const searchDefinition = definition('catalogSearch', [{ name: 'title', weight: 1, highlight: true }]);
+		searchDefinition.highlighting = { maxFragments: 2, fragmentLength: 80 };
+		Product = table({
+			database: `fulltext-fuzzy-controls-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [searchDefinition],
+		});
+		await Product.put('catalog', { title: 'catalog' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const condition = {
+			attribute: 'catalogSearch',
+			comparator: 'matches_fuzzy',
+			value: 'catlaog',
+			maxIndexLagMilliseconds: 0,
+			waitForIndexMilliseconds: 30000,
+		};
+		const search = (options = {}) => collect(Product.search({ conditions: [{ ...condition, ...options }] }));
+		assert.deepStrictEqual(ids(await search()), ['catalog']);
+		assert.deepStrictEqual(await search({ fuzzyTranspositions: false }), []);
+		assert.deepStrictEqual(await search({ fuzzyDistance: 0 }), []);
+		const exact = await search({ value: 'catalog', fuzzyDistance: 0, includeHighlights: true });
+		assert.deepStrictEqual(ids(exact), ['catalog']);
+		assert(exact[0].$highlights.title.length > 0);
+		await assert.rejects(
+			search({ value: 'catxxog', fuzzyDistance: 2 }),
+			(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
+		);
+		for (const options of [
+			{ fuzzyDistance: '1' },
+			{ fuzzyDistance: 1.5 },
+			{ fuzzyDistance: -1 },
+			{ fuzzyTranspositions: 'false' },
+			{ comparator: 'matches', fuzzyDistance: 1 },
+		])
+			await assert.rejects(
+				async () => search(options),
+				(error) => error.statusCode === 400
+			);
+	});
+
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {
 		const searchDefinition = definition('catalogSearch', [
 			{ name: 'title', weight: 2, highlight: true },

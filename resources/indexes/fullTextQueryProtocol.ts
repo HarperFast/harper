@@ -1,5 +1,6 @@
 import { ServerError } from '../../utility/errors/hdbError.ts';
-import type { NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
+import { ClientError } from '../../utility/errors/hdbError.ts';
+import type { NativeFullTextFuzzyOptions, NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
 export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
@@ -73,4 +74,30 @@ export function replayFullTextPrefix(
 	if (remaining > 0 && !page.continuation)
 		throw new ServerError('Full-text traversal ended before its previously read hits', 500);
 	return { skipped, remaining, hits: skipped > 0 ? page.hits.slice(skipped) : page.hits };
+}
+
+export function fullTextFuzzyOptions(condition: NativeFullTextFuzzyOptions): NativeFullTextFuzzyOptions {
+	return {
+		...(condition.fuzzyDistance === undefined ? null : { fuzzyDistance: condition.fuzzyDistance }),
+		...(condition.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: condition.fuzzyTranspositions }),
+	};
+}
+
+export function validateFullTextFuzzyOptions(
+	condition: NativeFullTextFuzzyOptions,
+	mode?: NativeFullTextSearchMode
+): void {
+	if (condition.fuzzyDistance === undefined && condition.fuzzyTranspositions === undefined) return;
+	if (mode !== 'fuzzy' && mode !== 'fuzzy-prefix')
+		throw new ClientError('Fuzzy controls require matches_fuzzy or matches_fuzzy_prefix', 400);
+	if (
+		condition.fuzzyDistance !== undefined &&
+		(typeof condition.fuzzyDistance !== 'number' ||
+			!Number.isInteger(condition.fuzzyDistance) ||
+			condition.fuzzyDistance < 0 ||
+			condition.fuzzyDistance > 2)
+	)
+		throw new ClientError('fuzzyDistance must be an integer between 0 and 2', 400);
+	if (condition.fuzzyTranspositions !== undefined && typeof condition.fuzzyTranspositions !== 'boolean')
+		throw new ClientError('fuzzyTranspositions must be a boolean', 400);
 }
