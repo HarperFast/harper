@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793344688658,
+  "lastUpdate": 1793344691896,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20018,6 +20018,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 193.07,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7ac95e66614ae5f85d1b53dedfedd6281ba66274",
+          "message": "Tracked updates no longer write fields that were only read, and addTo composes within a transaction (#3586)\n\n* Compose repeated addTo/subtractFrom in one transaction, and accept BigInt in subtractFrom\n\naddTo replaced whatever the transaction had already set for the property, so an\nassignment followed by addTo, or two addTo calls, lost the earlier change. It now\nfolds into a pending addition or adds to an assigned value. subtractFrom accepts\na bigint delta, and the full-update branch adds through crdt.addValues instead of\na unary + that throws on a bigint.\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Make collapseData and hasChanges array-aware and count own properties as changes\n\ncollapseData object-spread a tracked array into a plain object, kept popped\nelements, and returned the old array once emptied; it now returns a plain array.\nhasChanges reported a change for any primitive array element, so reading\nrec.tags[0] caused a write; equal elements (NaN included) are now unchanged.\nhasChanges also ignored own properties, which updateAndFreeze and collapseData\nstore, so an undeclared property assigned alone never wrote.\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Commit a tracked instance's patch with only what changed, as plain data\n\nReading a sub-object or array through a tracked instance stores its tracked\nwrapper in the instance's changes. _writeUpdate used those changes raw as the\npatch, so source.patch received live wrappers, and the audit entry recorded\nproperties that were only read, which made rebuildUpdateBefore drop them from an\nolder out-of-order patch. validate now replaces the changes with\ncollapseChanges(): unchanged wrappers removed, changed ones collapsed, own\nproperties included. The commit no longer re-merges own properties on top of it,\na held lock saves an own property set alone, and nested computed-property\nvalidation uses Object.hasOwn since the patch may have no prototype.\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Record the tracked-instance patch invariant in resources/DESIGN.md\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Compose addTo with an undeclared property assigned on the instance\n\nAn undeclared property assigned on a Table instance is an own property, which\noverrides the instance's changes when the patch is collapsed, so an addTo after\nit was lost. addToChanges now adds to the own property in that case.\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Stop caching untracked reads, and let an own property decide its key\n\nReading a Date, Bytes or Blob field cached the raw value in the instance's\nchanges, so the read was committed as a write; only tracked wrappers are cached\nnow. An own property overrides a pending change to the same key in\ncollapseChanges and hasChanges, as updateAndFreeze already did. collapseChanges\nallocates its copy only when a key diverges and walks a changed array once.\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Treat a cached wrapper as no prior value in addTo, and apply own overrides on a new record\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Limit addTo's read-only wrapper case to wrappers that are unchanged\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Compose a full-update addTo with an undeclared own property\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Move an own value into the changes when a full update adds to it\n\nDispatch-Task: harper-tracked-update-collapse-addto\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Fit the tracked-update design note within the DESIGN.md budgets\n\nShare the index line with the related repeat-writes note and fold the\nsection's bullets into one paragraph.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Keep an own value when a full-update addTo throws, and require a callable getRecord\n\naddTo on a full update computed the sum after deleting the own value, so a\ncaught RangeError lost the base. addToChanges treated any truthy getRecord as\na tracked wrapper. Also corrects a stale comment on own properties.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Stage a full-update addTo before removing the own value, and assert the folded value\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Keep Date/Bytes edits out of the commit base, pre-commit a tracked write's final blobs, and leave unchanged class fields out of the patch\n\n- A Date or Bytes value read through a tracked instance (getter, proxy,\n  getProperty, or array element) is a copy, so an in-place edit cannot reach\n  the stored record without being in the patch; reassigning saves it.\n- A tracked write scans the validated patch for blobs once, in validate, so own\n  blob properties and blobs assigned after staging are saved before commit.\n- An own property still at the value the framework constructed the instance\n  with (a subclass class field) is not a change; the put-only source fallback\n  is built from the normalized patch.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Baseline only primitive class fields, release them once written, and let addTo add to an untouched field\n\nAn object class field can change in place, so it is not baselined; a field\nwritten once is compared with the record from then on; addTo on a field still\nat its baseline composes an Addition. Skip the baseline for the generated\nTable class. Blob tests wait on the save starting and are time-bounded.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Compare object class fields by content, release a baseline at commit, and latch captured changes only once they exist\n\n- An object class field is baselined as a structuredClone copy and compared\n  with isDeepStrictEqual; a value that does not clone to the same content stays\n  part of the patch.\n- The baseline of a written field is released in commit, not validate, so an\n  aborted write keeps it.\n- captureChanges latches only once the instance has a changes object, so an\n  own-property-only held save does not bind the write to no changes.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Release a class-field baseline only for an own value that was written, and compare non-data fields by identity\n\nA commit that wrote a field through its pending changes (addTo, set) keeps the\nown field's baseline, so a later save does not write the untouched initial\nvalue. A class field that is not plain data (a helper instance, a Buffer) is\ncompared by identity rather than always counting as a change.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Commit an own plain object as a copy and compare own values with the record by content\n\nAn untracked own object was stored by reference, so a later in-place edit also\nchanged the stored record and never reached the patch.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Copy an own object only when the copy keeps its content, copy own Dates and Bytes, and baseline function class fields\n\nstructuredClone turns a nested Harper Blob into an empty native Blob, so such a\nvalue is stored as it is. A top-level own Date or Bytes is copied and compared\nby value. A function class field is compared by identity.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Keep captureChanges latching an explicitly saved empty generation\n\nLatching only once a changes object exists bound a later generation's changes\nto an earlier explicit save of nothing, applying them twice on LMDB\n(sameKeySaveOrder \"does not rebind an explicitly saved empty generation\").\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\n\n* Treat only a callable getRecord as a tracked wrapper, and fold addTo deltas in the stored value's type\n\nA data member named getRecord ({ getRecord: 1 }) made collapseData, hasChanges and\nupdateAndFreeze call it and throw. Two folded addTo deltas took the first delta's\nnumeric type, losing bigint precision or throwing on a fractional delta to a number field.\n\nDispatch-Task: late-review-kriszyp_harper_3586-903ed8b059bf-24db14d9\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Copy an own object with a constructor data member or a null prototype\n\nPlain data is now recognized by prototype rather than by its constructor\nproperty, so an own object such as { constructor: 'metadata' } or\nObject.create(null) is committed as a copy and compared by content. A\nnull-prototype class field is baselined by content, so an in-place edit of\nit is written.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: late-review-kriszyp_harper_3586-389a8e1a94a6-82e44a8d\n\n* Describe the class-field baseline as content-compared for what structuredClone reproduces\n\nThe baseline compares by content any value structuredClone copies exactly,\na Date included, not only plain objects and arrays; the design note and\nJSDoc now say so.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: late-review-kriszyp_harper_3586-389a8e1a94a6-82e44a8d\n\n* Release class-field baselines only after the write is staged\n\nThe commit handler released a written field's baseline before residency\nand index staging, which can throw. A held subclass record that failed\nthere and then set the field back to its initial value wrote that value\nover the stored one on its next save. The release now follows\nwriteCommit, so a failed commit keeps the baselines.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: late-review-kriszyp_harper_3586-389a8e1a94a6-82e44a8d\n\n* Recapture a tracked write's changes when its save fails before staging\n\nA write staged by update(id) latches the instance's changes at its first\nsave. When that save failed validation (an own property a sealed table\nrejects, with no declared change yet), the write went back to the instance\nstill latched to the empty changes, so the corrected retry, and the commit\nat transaction end, wrote nothing. The failed save now releases the latch.\n\nDispatch-Task: late-review-kriszyp_harper_3586-ec8fa1a80fe3-4d9ceab3\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Release a tracked write's capture wherever its validation fails\n\nThe previous commit released the latch only in the saving instance's\nsave(). A predecessor write validated while its successor saved kept its\nlatch, so its correction was lost. validateWrite, which runs every\nwrite's validation (direct save, predecessor drain, LMDB commit), now\nreleases it on failure.\n\nDispatch-Task: late-review-kriszyp_harper_3586-ec8fa1a80fe3-4d9ceab3\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Describe which own values plainCopy copies\n\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(resources): keep DESIGN.md within 1000-line budget after rebase\n\nJoin the two paragraphs of the collapseChanges design note and unwrap the\nadjacent ImmediateTransaction.save() innerCommit paragraph so resources/DESIGN.md\nstays under the 1000-line check-design-docs budget on current main.\n\nDispatch-Task: pr-maint-b9eed7bcee825007564413a9bb161286\nCo-Authored-By: Gemini <noreply@google.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: Gemini <noreply@google.com>",
+          "timestamp": "2026-10-30T03:10:41Z",
+          "url": "https://github.com/HarperFast/harper/commit/7ac95e66614ae5f85d1b53dedfedd6281ba66274"
+        },
+        "date": 1793344691094,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 11.79,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 12.18,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 16.36,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 20.83,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 13.59,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 13.53,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 28.12,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 11.54,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 15.62,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 41.84,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 133.91,
             "unit": "ms"
           }
         ]
