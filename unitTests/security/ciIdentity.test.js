@@ -70,6 +70,21 @@ describe('ciIdentity', () => {
 		assert.match(plan.conflicts[0], /Trust policy "p2" already exists and claim environment is "x".*drop p2$/);
 	});
 
+	describe('sameAuthority', () => {
+		const { sameAuthority, policyDifferences } = require('#src/security/ciIdentity');
+		it('compares the user, and the operations as a set, with no scope apart from every scope', () => {
+			assert.ok(sameAuthority({ user: 'a', operations: ['x', 'y'] }, { user: 'a', operations: ['y', 'x', 'y'] }));
+			assert.ok(sameAuthority({ user: 'a' }, { user: 'a', operations: null }));
+			assert.ok(!sameAuthority({ user: 'a' }, { user: 'a', operations: [] }));
+			assert.ok(!sameAuthority({ user: 'a', operations: ['x'] }, { user: 'a', operations: ['x', 'y'] }));
+			assert.ok(!sameAuthority({ user: 'a', operations: ['x'] }, { user: 'b', operations: ['x'] }));
+		});
+		it('lets policyDifferences read reordered or repeated operations as the same', () => {
+			const policy = { issuer: 'i', audience: 'a', user: 'u', claims: {}, operations: ['x', 'y'] };
+			assert.deepStrictEqual(policyDifferences({ ...policy, operations: ['y', 'x', 'x'] }, policy), []);
+		});
+	});
+
 	describe('policiesOverlap', () => {
 		it('holds when every claim both constrain accepts a common value, scalar or list', () => {
 			assert.ok(policiesOverlap(policy('a', 'preview'), policy('b', 'preview')));
