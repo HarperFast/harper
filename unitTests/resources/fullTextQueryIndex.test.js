@@ -1553,6 +1553,7 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, 'query-errors', 'ready');
 		const errors = [
 			Object.assign(new Error('expanded secret details'), { code: 'E_PREFIX_TOO_BROAD' }),
+			Object.assign(new Error('invalid native details'), { code: 'E_INVALID_ARGUMENT' }),
 			new Error('storage path and internal details'),
 		];
 		const index = new FullTextQueryIndex({
@@ -1586,6 +1587,12 @@ describe('FullTextQueryIndex', () => {
 		});
 		attachCurrentCoverage(index, auditStore, 'query-errors');
 		const query = { attribute: 'query-errors', comparator: 'matches_prefix', value: 's' };
+		await assert.rejects(
+			index.search(query, {}),
+			(error) =>
+				error.statusCode === 400 &&
+				error.message === "Full-text prefix on 'catalogSearch' is too broad; use a longer prefix"
+		);
 		await assert.rejects(
 			index.search(query, {}),
 			(error) =>

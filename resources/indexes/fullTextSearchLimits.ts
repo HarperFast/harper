@@ -79,10 +79,7 @@ export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimit
 			throw new TypeError(`Unknown storage.fullText.runtime option '${name}'`);
 	for (const name of ['maxResidentIndexes', 'maxIndexingThreads', 'maxSearchThreads', 'maxExpensiveSearches'])
 		if (budget[name] > 0xffffffff) throw new TypeError(`storage.fullText.runtime.${name} must fit a u32`);
-	return Object.freeze({
-		...limits,
-		runtime: Object.freeze(budget),
-	}) as FullTextSearchLimits;
+	return Object.freeze({ ...limits, runtime: Object.freeze(budget) }) as FullTextSearchLimits;
 }
 
 function object(value: unknown, name: string): Record<string, unknown> {

@@ -148,6 +148,129 @@ describe('published native full-text Table.search integration', () => {
 			);
 	});
 
+	it('rejects fuzzy controls on ordinary, full-text and mixed condition groups', async () => {
+		Product = table({
+			database: `fulltext-group-controls-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		await Product.put('catalog', { title: 'catalog' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const ordinary = { attribute: 'id', comparator: 'equals', value: 'catalog' };
+		const native = {
+			attribute: 'catalogSearch',
+			comparator: 'matches_fuzzy',
+			value: 'catalog',
+			maxIndexLagMilliseconds: 0,
+			waitForIndexMilliseconds: 30000,
+		};
+		for (const conditions of [[ordinary], [native], [ordinary, native]]) {
+			for (const controls of [{ fuzzyDistance: 1 }, { fuzzyTranspositions: false }]) {
+				const group = { operator: 'and', conditions, ...controls };
+				await assert.rejects(
+					async () => collect(Product.search({ conditions: [group] })),
+					(error) => error.statusCode === 400,
+					`group with ${conditions.length} conditions and ${Object.keys(controls)[0]}`
+				);
+			}
+		}
+	});
+
+	it('preserves per-leaf fuzzy controls and exact highlights through nested Boolean queries', async () => {
+		const searchDefinition = definition('catalogSearch', [{ name: 'title', weight: 1, highlight: true }]);
+		searchDefinition.highlighting = { maxFragments: 2, fragmentLength: 80 };
+		Product = table({
+			database: `fulltext-nested-fuzzy-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [searchDefinition],
+		});
+		await Product.put([
+			{ id: 'amber', title: 'catalog amber' },
+			{ id: 'violet', title: 'catalog violet' },
+			{ id: 'literal', title: 'catlaog amber' },
+			{ id: 'blocked', title: 'catalog blocked' },
+		]);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const leaf = (value, options = {}) => ({
+			attribute: 'catalogSearch',
+			comparator: 'matches_fuzzy',
+			value,
+			includeHighlights: true,
+			maxIndexLagMilliseconds: 0,
+			waitForIndexMilliseconds: 30000,
+			...options,
+		});
+		const excluded = leaf('blokced', { comparator: 'not_matches_fuzzy', fuzzyTranspositions: true });
+		const cases = [
+			{
+				conditions: [
+					leaf('catalog', { fuzzyDistance: 0 }),
+					{ operator: 'or', conditions: [leaf('catlaog', { fuzzyTranspositions: true }), leaf('absent')] },
+					excluded,
+				],
+				expected: ['amber', 'violet'],
+			},
+			{
+				conditions: [
+					{
+						operator: 'or',
+						conditions: [
+							{ operator: 'and', conditions: [leaf('catalog', { fuzzyDistance: 0 }), leaf('absent')] },
+							leaf('catlaog', { fuzzyDistance: 1, fuzzyTranspositions: false }),
+						],
+					},
+					excluded,
+				],
+				expected: ['literal'],
+			},
+			{
+				conditions: [
+					leaf('catalog', { fuzzyDistance: 0 }),
+					{
+						operator: 'and',
+						conditions: [
+							excluded,
+							leaf('vioelt', { comparator: 'not_matches_fuzzy', fuzzyDistance: 1, fuzzyTranspositions: false }),
+						],
+					},
+				],
+				expected: ['amber', 'violet'],
+			},
+		];
+		for (const { conditions, expected } of cases) {
+			const records = await collect(Product.search({ operator: 'and', conditions }));
+			assert.deepStrictEqual(ids(records), expected);
+			for (const record of records) {
+				assert.deepStrictEqual(record.$highlights.title[0].spans, [{ start: 0, end: 7 }]);
+			}
+		}
+		await assert.rejects(
+			() =>
+				collect(
+					Product.search({
+						conditions: [
+							leaf('catalog'),
+							{
+								operator: 'or',
+								conditions: [leaf('absent'), leaf('catxxog', { comparator: 'not_matches_fuzzy', fuzzyDistance: 2 })],
+							},
+						],
+					})
+				),
+			(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
+		);
+	});
+
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {
 		const searchDefinition = definition('catalogSearch', [
 			{ name: 'title', weight: 2, highlight: true },

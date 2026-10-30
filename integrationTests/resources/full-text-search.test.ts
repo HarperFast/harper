@@ -1,5 +1,6 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
+import { request as httpRequest } from 'node:http';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -48,6 +49,51 @@ function query(value: string, condition: Record<string, unknown> = {}, options: 
 	};
 }
 
+async function assertOperationsQueryRejection(
+	operationsAPIURL: string,
+	authorization: string,
+	target: ReturnType<typeof query>,
+	message: string
+) {
+	const capture = await new Promise<{ status: number; complete: boolean; body: string }>((resolve, reject) => {
+		const request = httpRequest(
+			operationsAPIURL,
+			{
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				signal: AbortSignal.timeout(45_000),
+			},
+			(response) => {
+				const chunks: Buffer[] = [];
+				response.on('data', (chunk: Buffer) => chunks.push(chunk));
+				response.on('error', (error: NodeJS.ErrnoException) => {
+					if (error.code !== 'ECONNRESET') reject(error);
+				});
+				response.on('close', () =>
+					resolve({
+						status: response.statusCode,
+						complete: response.complete,
+						body: Buffer.concat(chunks).toString('utf8'),
+					})
+				);
+			}
+		);
+		request.on('error', reject);
+		request.end(JSON.stringify({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target }));
+	});
+	if (capture.status === 400) {
+		assert.strictEqual(capture.complete, true);
+		assert.ok(capture.body.includes(message), capture.body);
+		assert.ok(!Array.isArray(JSON.parse(capture.body)), capture.body);
+	} else {
+		// The pre-first-yield JSON-array contract aborts after its diagnostic (stream-error-contract.test.ts).
+		assert.strictEqual(capture.status, 200, capture.body);
+		assert.strictEqual(capture.complete, false, capture.body);
+		assert.strictEqual(capture.body, `[${JSON.stringify({ error: `ClientError: ${message}` })}`);
+		assert.throws(() => JSON.parse(capture.body), SyntaxError);
+	}
+}
+
 suite('deployed full-text fields and native search', (ctx: ContextWithHarper) => {
 	let authorization: string;
 
@@ -62,7 +108,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		return text ? JSON.parse(text) : undefined;
 	}
 
-	async function operation(body: Record<string, unknown>) {
+	async function operation(body: Record<string, unknown>, expectedStatus = 200) {
 		const response = await fetch(ctx.harper.operationsAPIURL, {
 			method: 'POST',
 			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
@@ -70,7 +116,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			signal: AbortSignal.timeout(45_000),
 		});
 		const text = await response.text();
-		assert.strictEqual(response.status, 200, `operation ${body.operation}: ${text}`);
+		assert.strictEqual(response.status, expectedStatus, `operation ${body.operation}: ${text}`);
 		return JSON.parse(text);
 	}
 
@@ -154,75 +200,127 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 	});
 
 	test('adopts host query capacity and fuzzy controls through two-worker HTTP and operations search', async () => {
-		await operation({
-			operation: 'insert',
-			schema: 'data',
-			table: 'Product',
-			records: [
-				{ id: 'capacity-late', title: 'qword064' },
-				...Array.from({ length: 135 }, (_, i) => ({
-					id: `fuzzy-control-${String(i).padStart(3, '0')}`,
-					title: 'catalog',
-				})),
-			],
-		});
-		const late = await request('/SearchProduct/', {
-			method: 'POST',
-			body: JSON.stringify(
-				query(Array.from({ length: 65 }, (_, i) => `qword${String(i).padStart(3, '0')}`).join(' '), {
-					fields: ['title'],
-				})
-			),
-		});
-		assert.deepStrictEqual(ids(late), ['capacity-late']);
-		const result = await operation({
-			operation: 'search_by_conditions',
-			schema: 'data',
-			table: 'Product',
-			...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] }, { limit: 140 }),
-		});
-		assert.strictEqual(result.length, 135);
-		const misses = await operation({
-			operation: 'search_by_conditions',
-			schema: 'data',
-			table: 'Product',
-			...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
-		});
-		assert.deepStrictEqual(misses, []);
-		const traversed = await request('/SearchProduct/', {
-			method: 'POST',
-			body: JSON.stringify(
-				query(
-					'catxxog',
-					{ comparator: 'matches_fuzzy_prefix', fuzzyDistance: 2, fields: ['title'], includeHighlights: true },
-					{ limit: 130, offset: 2 }
-				)
-			),
-		});
-		assert.strictEqual(traversed.length, 130);
-		assert(
-			traversed.every((record) => record.id.startsWith('fuzzy-control-') && record.$highlights?.title?.length > 0)
-		);
-		for (const controls of [{ fuzzyDistance: '2' }, { fuzzyTranspositions: 'false' }]) {
-			const response = await fetch(ctx.harper.operationsAPIURL, {
-				method: 'POST',
-				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					operation: 'search_by_conditions',
-					schema: 'data',
-					table: 'Product',
-					...query('catalog', { comparator: 'matches_fuzzy', ...controls }),
-				}),
-				signal: AbortSignal.timeout(45000),
+		const fixtureIds = [
+			'capacity-late',
+			...Array.from({ length: 135 }, (_, i) => `fuzzy-control-${String(i).padStart(3, '0')}`),
+		];
+		try {
+			await operation({
+				operation: 'insert',
+				schema: 'data',
+				table: 'Product',
+				records: [
+					{ id: 'capacity-late', title: 'qword064' },
+					...Array.from({ length: 135 }, (_, i) => ({
+						id: `fuzzy-control-${String(i).padStart(3, '0')}`,
+						title: 'catalog',
+					})),
+				],
 			});
-			assert.strictEqual(response.status, 400, await response.text());
+			const late = await request('/SearchProduct/', {
+				method: 'POST',
+				body: JSON.stringify(
+					query(Array.from({ length: 65 }, (_, i) => `qword${String(i).padStart(3, '0')}`).join(' '), {
+						fields: ['title'],
+					})
+				),
+			});
+			assert.deepStrictEqual(ids(late), ['capacity-late']);
+			const result = await operation({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] }, { limit: 140 }),
+			});
+			assert.strictEqual(result.length, 135);
+			const misses = await operation({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
+			});
+			assert.deepStrictEqual(misses, []);
+			const traversed = await request('/SearchProduct/', {
+				method: 'POST',
+				body: JSON.stringify(
+					query(
+						'catxxog',
+						{ comparator: 'matches_fuzzy_prefix', fuzzyDistance: 2, fields: ['title'], includeHighlights: true },
+						{ limit: 130, offset: 2 }
+					)
+				),
+			});
+			assert.strictEqual(traversed.length, 130);
+			assert(
+				traversed.every((record) => record.id.startsWith('fuzzy-control-') && record.$highlights?.title?.length > 0)
+			);
+			for (const controls of [{ fuzzyDistance: '2' }, { fuzzyTranspositions: 'false' }]) {
+				const response = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						operation: 'search_by_conditions',
+						schema: 'data',
+						table: 'Product',
+						...query('catalog', { comparator: 'matches_fuzzy', ...controls }),
+					}),
+					signal: AbortSignal.timeout(45000),
+				});
+				assert.strictEqual(response.status, 400, await response.text());
+			}
+		} finally {
+			await operation({
+				operation: 'delete',
+				schema: 'data',
+				table: 'Product',
+				ids: fixtureIds,
+			});
 		}
-		await operation({
-			operation: 'delete',
-			schema: 'data',
-			table: 'Product',
-			ids: ['capacity-late', ...Array.from({ length: 135 }, (_, i) => `fuzzy-control-${String(i).padStart(3, '0')}`)],
+	});
+
+	test('enforces compiled clause capacity independently of per-leaf analyzed terms through both public paths', async () => {
+		const target = (count: number) => ({
+			operator: 'or',
+			conditions: Array.from({ length: count }, () => query('waterproof', { fields: ['title'] }).conditions[0]),
 		});
+		// Native accounting charges each OR child plus its single-field term: 256 * 2 = 512.
+		for (const count of [129, 256, 257]) {
+			const clauses = count * 2;
+			const expectedStatus = clauses <= 512 ? 200 : 400;
+			const targetQuery = target(count);
+			await assert.doesNotReject(async () => {
+				const records = await search(targetQuery, authorization, expectedStatus);
+				if (expectedStatus === 200) assert.deepStrictEqual(ids(records), ['one', 'two']);
+			}, `HTTP compiled-clause boundary: ${clauses} clauses, expected ${expectedStatus}`);
+			await assert.doesNotReject(
+				async () => {
+					if (expectedStatus === 400)
+						await assertOperationsQueryRejection(
+							ctx.harper.operationsAPIURL,
+							authorization,
+							targetQuery,
+							"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
+						);
+					else {
+						const records = await operation({
+							operation: 'search_by_conditions',
+							schema: 'data',
+							table: 'Product',
+							...targetQuery,
+						});
+						assert.deepStrictEqual(ids(records), ['one', 'two']);
+					}
+				},
+				`Operations compiled-clause boundary: ${clauses} clauses, expected rejection: ${expectedStatus === 400}`
+			);
+		}
+		assert.deepStrictEqual(ids(await search(query('waterproof'))), ['one', 'two']);
+		assert.deepStrictEqual(
+			ids(
+				await operation({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...query('waterproof') })
+			),
+			['one', 'two']
+		);
 	});
 
 	test('loads the pinned native package and exposes a ready index without a stored virtual attribute', async () => {
@@ -928,4 +1026,79 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			}
 		}
 	);
+});
+
+suite('deployed full-text default query policy', (ctx: ContextWithHarper) => {
+	let authorization: string;
+
+	async function search(target: ReturnType<typeof query>, operations: boolean, expectedStatus = 200) {
+		const response = await fetch(operations ? ctx.harper.operationsAPIURL : `${ctx.harper.httpURL}/SearchProduct/`, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify(
+				operations ? { operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target } : target
+			),
+			signal: AbortSignal.timeout(45_000),
+		});
+		const text = await response.text();
+		assert.strictEqual(response.status, expectedStatus, text);
+		return JSON.parse(text);
+	}
+
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { threads: { count: 2 } }, env: OPTIONS.env });
+		authorization = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
+		const response = await fetch(`${ctx.harper.httpURL}/Product/default-policy`, {
+			method: 'PUT',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: 'Waterproof shoes' }),
+			signal: AbortSignal.timeout(45_000),
+		});
+		assert.strictEqual(response.status, 204, await response.text());
+		const deadline = Date.now() + 30_000;
+		let state: string;
+		do {
+			const description = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ operation: 'describe_table', schema: 'data', table: 'Product' }),
+				signal: AbortSignal.timeout(45_000),
+			});
+			const body = await description.text();
+			assert.strictEqual(description.status, 200, body);
+			state = JSON.parse(body).full_text_indexes[0].readiness.state;
+			if (state === 'ready') return;
+			assert.notStrictEqual(state, 'unavailable', 'Product full-text index is unavailable');
+			await delay(50);
+		} while (Date.now() < deadline);
+		assert.strictEqual(state, 'ready', 'Product full-text index did not become ready');
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('rejects distance two by default and recovers with valid fuzzy and ordinary searches', async () => {
+		for (const operations of [false, true]) {
+			const rejected = query('waterprof', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] });
+			if (operations)
+				await assertOperationsQueryRejection(
+					ctx.harper.operationsAPIURL,
+					authorization,
+					rejected,
+					'Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance'
+				);
+			else await search(rejected, false, 400);
+			assert.deepStrictEqual(
+				ids(
+					await search(
+						query('waterprof', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
+						operations
+					)
+				),
+				['default-policy']
+			);
+			assert.deepStrictEqual(ids(await search(query('waterproof'), operations)), ['default-policy']);
+		}
+	});
 });

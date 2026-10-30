@@ -1,10 +1,6 @@
 # server/ — Navigation Guide
 
-This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer.
-
-**Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior.
-
-> **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
+This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer. **Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior. **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
 
 ---
 

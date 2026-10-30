@@ -270,7 +270,7 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 	}
 	if (!indexName) return conditions;
 	if (operator === 'or' && remaining.length > 0)
-		throw new ClientError('A full-text OR group can only contain conditions on the same full-text index', 400);
+		throw new ClientError('A full-text OR group cannot mix full-text and record conditions', 400);
 	if (!positive) throw new ClientError('A full-text query requires at least one non-negated condition', 400);
 	const expression =
 		expressions.length === 1 ? expressions[0] : { operator: operator === 'or' ? 'or' : 'and', clauses: expressions };

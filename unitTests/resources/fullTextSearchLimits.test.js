@@ -114,18 +114,14 @@ describe('full-text search resource limits', () => {
 		assert.deepStrictEqual(requestLimits, DEFAULT_FULL_TEXT_SEARCH_LIMITS);
 		const { DEFAULT_FULL_TEXT_QUERY_LIMITS } = require('#src/resources/indexes/fullTextSearchLimits');
 		assert.deepStrictEqual(query, DEFAULT_FULL_TEXT_QUERY_LIMITS);
-		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_QUERY_LIMITS))
-			assert.strictEqual(schemaQueryDefault(name), value);
-		function schemaQueryDefault(name) {
-			return JSON.parse(readFileSync(resolve(root, 'config-root.schema.json'), 'utf8')).properties.storage.properties
-				.fullText.properties.query.properties[name].default;
-		}
 		const schema = JSON.parse(readFileSync(resolve(root, 'config-root.schema.json'), 'utf8'));
 		const policy = schema.properties.storage.properties.fullText;
+		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_QUERY_LIMITS))
+			assert.strictEqual(policy.properties.query.properties[name].default, value);
 		assert.strictEqual(policy.additionalProperties, false);
 		assert.strictEqual(policy.properties.runtime.additionalProperties, false);
 		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS)) {
-			if (name === 'runtime' || name === 'query') {
+			if (name === 'runtime') {
 				for (const [key, limit] of Object.entries(value))
 					assert.strictEqual(policy.properties[name].properties[key].default, limit);
 			} else assert.strictEqual(policy.properties[name].default, value);
@@ -160,8 +156,7 @@ describe('full-text search resource limits', () => {
 				assert.strictEqual(CONFIG_PARAM_MAP[parameter.toLowerCase()], parameter);
 				assert.strictEqual(flattened[parameter.toLowerCase()], expected);
 			};
-			if (name === 'runtime' || name === 'query')
-				for (const [key, limit] of Object.entries(value)) check(`${name}_${key}`, limit);
+			if (name === 'runtime') for (const [key, limit] of Object.entries(value)) check(`${name}_${key}`, limit);
 			else check(name, value);
 		}
 	});

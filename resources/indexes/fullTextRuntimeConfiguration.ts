@@ -2,12 +2,10 @@ import { getEnvironmentData, isMainThread, setEnvironmentData, workerData } from
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
-
 import { resolveFullTextQueryLimits, type FullTextQueryLimits } from './fullTextSearchLimits.ts';
 
-let queryPolicy: FullTextQueryLimits | undefined;
-
 const configurationKey = 'harper.fullTextRuntimeConfiguration';
+let queryPolicy: FullTextQueryLimits | undefined;
 let snapshot: { runtime: unknown; query?: unknown } | undefined =
 	workerData?.fullTextRuntimeConfiguration ?? getEnvironmentData(configurationKey);
 

@@ -1,5 +1,4 @@
-import { ServerError } from '../../utility/errors/hdbError.ts';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type { NativeFullTextFuzzyOptions, NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';

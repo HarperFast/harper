@@ -8121,6 +8121,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				for (const condition of conditions) {
 					if (condition.conditions) {
+						validateFullTextFuzzyOptions(condition);
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
 						continue;
 					}

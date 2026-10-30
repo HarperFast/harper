@@ -1,5 +1,5 @@
-import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import { createHash } from 'node:crypto';
+import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
@@ -243,7 +243,7 @@ export class FullTextQueryIndex {
 		let coverage: DerivedIndexCoverage | undefined;
 		const execute = async () => {
 			assertFuzzyPolicy(
-				condition.fullTextQuery ?? leafExpression(condition),
+				condition.fullTextQuery ?? leafDescriptor(condition),
 				getFullTextQueryPolicy().maxFuzzyDistance
 			);
 			assertReady(
@@ -451,7 +451,7 @@ export class FullTextQueryIndex {
 			const rawHitLimit = policy.maxRawHitsPerRequest;
 			let rawHitsFetched = 0;
 			const maxSearchWindow = this.#maxSearchWindow!;
-			const query = condition.fullTextQuery ?? leafExpression(condition);
+			const query = condition.fullTextQuery ?? leafDescriptor(condition);
 			const autocomplete = expressionUsesAutocomplete(query);
 			const searchWindow = maxSearchWindow;
 			const bounded = options.minResults !== undefined;
@@ -1239,10 +1239,6 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 		);
 }
 
-function leafExpression(condition: FullTextCondition): NativeFullTextSearchExpression {
-	return leafDescriptor(condition);
-}
-
 function expressionUsesAutocomplete(expression: NativeFullTextSearchExpression): boolean {
 	if ('text' in expression) return expression.mode === 'prefix' || expression.mode === 'fuzzy-prefix';
 	if (expression.operator === 'not') return expressionUsesAutocomplete(expression.clause);
@@ -1399,7 +1395,9 @@ function publicSearchError(error: unknown, name: string): Error {
 		return new IndexRebuildingError(`Full-text index '${name}' is not ready`);
 	if (code === 'E_QUEUE_FULL' || code === 'E_TIMEOUT' || code === 'E_RESOURCE_LIMIT')
 		return new ServerError(`Full-text index '${name}' is busy`, 503);
-	if (code === 'E_INVALID_ARGUMENT' || code === 'E_PREFIX_TOO_BROAD')
+	if (code === 'E_PREFIX_TOO_BROAD')
+		return new ClientError(`Full-text prefix on '${name}' is too broad; use a longer prefix`, 400);
+	if (code === 'E_INVALID_ARGUMENT')
 		return new ClientError(
 			`Full-text query on '${name}' is invalid; check its syntax and storage.fullText.query limits`,
 			400
