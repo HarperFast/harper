@@ -33,6 +33,54 @@ export class StreamedArray extends Resource {
 	}
 }
 
+const rowCounts = { opened: 0, stepped: 0, returned: 0 };
+
+class CountedIterable {
+	constructor(delay) {
+		this.delay = delay;
+	}
+	[Symbol.asyncIterator]() {
+		rowCounts.opened++;
+		const delay = this.delay;
+		let n = 0;
+		return {
+			async next() {
+				if (n >= 200) return { value: undefined, done: true };
+				rowCounts.stepped++;
+				if (delay) await new Promise((r) => setTimeout(r, delay));
+				return { value: { n, label: `record number ${n++}` }, done: false };
+			},
+			async return(value) {
+				rowCounts.returned++;
+				return { value, done: true };
+			},
+		};
+	}
+}
+
+export class CountedRows extends Resource {
+	static loadAsInstance = false;
+	get() {
+		return new CountedIterable(0);
+	}
+}
+
+export class SlowCountedRows extends Resource {
+	static loadAsInstance = false;
+	get() {
+		return new CountedIterable(20);
+	}
+}
+
+export class RowCounts extends Resource {
+	static loadAsInstance = false;
+	get() {
+		const counts = { ...rowCounts };
+		rowCounts.opened = rowCounts.stepped = rowCounts.returned = 0;
+		return counts;
+	}
+}
+
 export class Health extends Resource {
 	static loadAsInstance = false;
 	get() {
