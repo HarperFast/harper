@@ -729,6 +729,9 @@ export type TransactionWrite = {
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
+	// a tracked write that fails before it is staged stays with its instance, so its retry captures the
+	// instance's changes again
+	releaseChanges?: () => void;
 	fullUpdate?: boolean;
 	dropped?: boolean;
 	// The origin record version carried by an applied or replayed write. Bound it by the origin's
@@ -831,6 +834,9 @@ export function validateWrite(operation: TransactionWrite, txnTime: number, tran
 	if (generation) generation.internalWrites++;
 	try {
 		return operation.validate?.(txnTime, transaction);
+	} catch (error) {
+		operation.releaseChanges?.();
+		throw error;
 	} finally {
 		if (generation) generation.internalWrites--;
 	}

@@ -185,8 +185,12 @@ import {
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
-	Addition,
+	addToChanges,
 	assignTrackedAccessors,
+	collapseChanges,
+	recordOwnBaseline,
+	hasOwnChange,
+	releaseOwnBaseline,
 	updateAndFreeze,
 	hasChanges,
 	GenericTrackedObject,
@@ -266,7 +270,13 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
-import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
+import {
+	addValues,
+	commutativeOpsOf,
+	operations as crdtOperations,
+	rebuildUpdateBefore,
+	remainingAgainstRecord,
+} from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -1804,7 +1814,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		addTo(property: string, value: number | bigint) {
 			if (typeof value === 'number' || typeof value === 'bigint') {
-				this.set(property, new Addition(value));
+				addToChanges(this, property, value);
 			} else {
 				throw new Error('Can not add or subtract a non-numeric value');
 			}
@@ -3036,6 +3046,7 @@ export function makeTable(options): TableResourceClass {
 				if (reason) throw new DatabaseShardingHeldError(databaseName, reason);
 			}
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
+			if (this !== TableResource) recordOwnBaseline(resource); // only a subclass can declare fields
 			const condition = request?.[WRITE_CONDITION];
 			if (
 				condition &&
@@ -4297,7 +4308,7 @@ export function makeTable(options): TableResourceClass {
 					throw lockNotHeldError(saveHandle);
 				}
 				const changes = this.#changes;
-				if (changes && Object.keys(changes).length > 0) {
+				if ((changes && Object.keys(changes).length > 0) || Object.keys(this).length > 0) {
 					this.#savingOperation = null;
 					return when(this._writeUpdate(this.getId(), changes, false), () => {
 						const op = this.#savingOperation;
@@ -4345,7 +4356,10 @@ export function makeTable(options): TableResourceClass {
 				try {
 					result = this.#saveOperation(operation);
 				} catch (error) {
-					if (!operation.saved && !operation.dropped) this.#savingOperation = operation;
+					if (!operation.saved && !operation.dropped) {
+						operation.releaseChanges?.();
+						this.#savingOperation = operation;
+					}
 					throw error;
 				}
 				const innerCommit = operation.innerCommit;
@@ -4396,18 +4410,22 @@ export function makeTable(options): TableResourceClass {
 		addTo(property: any, value: any) {
 			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
-				if (this.#savingOperation?.fullUpdate)
-					(this as any).set(property, (+this.getProperty(property) || 0) + (value as any));
-				else {
+				if (this.#savingOperation?.fullUpdate) {
+					// a full update stores its changes, not own properties, so an own value moves into them
+					const own = hasOwnChange(this, property);
+					const sum = addValues(own ? this[property] : this.getProperty(property), value);
+					(this as any).set(property, sum);
+					if (own) delete this[property];
+				} else {
 					if (!this.#savingOperation) (this as any).update();
-					(this as any).set(property, new Addition(value));
+					addToChanges(this, property, value);
 				}
 			} else {
 				throw new Error('Can not add a non-numeric value');
 			}
 		}
 		subtractFrom(property: any, value: any) {
-			if (typeof value === 'number') {
+			if (typeof value === 'number' || typeof value === 'bigint') {
 				return this.addTo(property, -value);
 			} else {
 				throw new Error('Can not subtract a non-numeric value');
@@ -5252,6 +5270,7 @@ export function makeTable(options): TableResourceClass {
 			if (writeKeyId(id) !== writeKeyId(this.getId())) {
 				// lock(target) where target differs from this record: return a separate instance.
 				const fresh = new (this.constructor as any)(id, this.getContext());
+				if (this.constructor !== TableResource) recordOwnBaseline(fresh);
 				TableResource._updateResource(fresh, entryForReload);
 				if (holdHandle != null) {
 					fresh.#lockHandle = holdHandle;
@@ -5501,14 +5520,22 @@ export function makeTable(options): TableResourceClass {
 				}
 				return;
 			}
-			let captureChanges;
+			// validate derives the committed patch from these each time it runs, so a correction after a failed
+			// validation is picked up
+			const tracksInstance = !fullUpdate && (recordUpdate === undefined || recordUpdate === this.#changes);
+			let instanceChanges = tracksInstance ? recordUpdate : undefined;
+			let captureChanges, releaseChanges;
 			if (recordUpdate === undefined) {
 				let captured = false;
 				captureChanges = () => {
 					if (!captured) {
 						captured = true;
 						recordUpdate = this.#changes;
+						if (tracksInstance) instanceChanges = recordUpdate;
 					}
+				};
+				releaseChanges = () => {
+					captured = false;
 				};
 			}
 			const reloadsCommitBase = options?.isCopyApply !== true;
@@ -5528,7 +5555,8 @@ export function makeTable(options): TableResourceClass {
 						return () => (this.constructor as any).source.patch(id, recordUpdate, context);
 					} else if ((this.constructor as any).source.put) {
 						// if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-						return () => (this.constructor as any).source.put(id, updateAndFreeze(this), context);
+						return () =>
+							(this.constructor as any).source.put(id, updateAndFreeze(this, recordUpdate, !tracksInstance), context);
 					}
 				}
 			};
@@ -5561,10 +5589,17 @@ export function makeTable(options): TableResourceClass {
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				captureChanges,
+				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
+					if (tracksInstance) {
+						recordUpdate = collapseChanges(this, instanceChanges);
+						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
+						// blobs are found here; before/beforeIntermediate run after validate
+						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
+					}
 					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
-					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
+					if (fullUpdate || (tracksInstance ? recordUpdate !== undefined : recordUpdate && hasChanges(recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
 							// A record must be a plain object. Reject primitive, string/number, bare-binary,
@@ -6568,7 +6603,9 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(existingRecord, incrementalUpdateToApply ?? recordUpdate);
 						else {
 							this.#record = existingRecord;
-							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate);
+							// collapseChanges already took this instance's own properties into the patch; merging them again
+							// would overwrite a newer base's values for the ones it left out as unchanged
+							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
 					this.#record = recordToStore;
@@ -6763,6 +6800,8 @@ export function makeTable(options): TableResourceClass {
 					)
 						(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 					writeCommit(true);
+					// not before: a throw while staging (residency, indexes) leaves a retry comparing against the baselines
+					if (tracksInstance) releaseOwnBaseline(this, recordUpdate);
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
 						scheduleCleanup(); // arm for replicated writes too, not just local-context writes
@@ -6895,13 +6934,14 @@ export function makeTable(options): TableResourceClass {
 				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
-				write.beforeIntermediate = preCommitBlobsForRecordBefore(
-					write,
-					recordUpdate,
-					undefined,
-					undefined,
-					options?.isNotification
-				);
+				if (!tracksInstance)
+					write.beforeIntermediate = preCommitBlobsForRecordBefore(
+						write,
+						recordUpdate,
+						undefined,
+						undefined,
+						options?.isNotification
+					);
 				const result = transaction.addWrite(write as any);
 				if (condition) condition.consumed = true;
 				return result;
@@ -8406,6 +8446,7 @@ export function makeTable(options): TableResourceClass {
 						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
 						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
 						const swrResource = new resourceClass(entry.key ?? entry, context);
+						if (resourceClass !== TableResource) recordOwnBaseline(swrResource);
 						resourceClass._updateResource(swrResource, entry);
 						swrResource.setRecord(record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
@@ -13591,7 +13632,7 @@ export function makeTable(options): TableResourceClass {
 		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord, trackPersistedBlobs);
 		if (preCommit) {
 			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
-			write.savedBlobs = preCommit.blobs;
+			write.savedBlobs = write.savedBlobs ? [...new Set([...write.savedBlobs, ...preCommit.blobs])] : preCommit.blobs;
 			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
 			// them to finish and we return a new callback for the before phase of the commit
 			const callSources = before;
