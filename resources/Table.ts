@@ -12201,41 +12201,47 @@ export function makeTable(options): TableResourceClass {
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
-		const filtersLength = filters?.length;
+		const filtersLength = filters?.length ?? 0;
 		const loadOptions = {
 			transaction: readTxn,
 			lazy: filtersLength > 0 || typeof select === 'string' || select?.length < 4,
 			alwaysPrefetch: true,
 		};
-		let idFiltersApplied;
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 		const matchers = filters?.some((filter) => filter.maybeAsync)
 			? filters.map((filter) => filter.maybeAsync ?? filter)
 			: undefined;
+		// an id filter compares the whole key, where a record filter tests each element of an array key
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
-			// apply the record-level filters
+			if (!record && !(entry?.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+			const key = id === undefined ? entry.key : id;
 			for (let i = 0; i < filtersLength; i++) {
-				if (idFiltersApplied?.includes(i)) continue; // already applied
-				if (!filters[i](record, entry)) return SKIP; // didn't match filters
+				const filter = filters[i];
+				const idFilter = filter.idFilter;
+				if (idFilter ? !idFilter(key) : !record || !filter(record, entry)) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
 			return entry;
 		}
 		function processEntryMaybeAsync(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
-			return applyFilters(record, entry, id, idFiltersApplied, 0);
+			if (!record && !(entry?.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+			return applyFilters(record, entry, id, id === undefined ? entry.key : id, 0);
 		}
-		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
+		function applyFilters(record, entry: Entry, id, key, start: number) {
 			for (let i = start; i < filtersLength; i++) {
-				if (applied?.includes(i)) continue;
+				const idFilter = filters[i].idFilter;
+				if (idFilter) {
+					if (!idFilter(key)) return SKIP;
+					continue;
+				}
+				if (!record) return SKIP;
 				const matches = matchers[i](record, entry);
 				if (matches?.then)
-					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
+					return matches.then((matches) => (matches ? applyFilters(record, entry, id, key, i + 1) : SKIP));
 				if (!matches) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
@@ -12243,22 +12249,17 @@ export function makeTable(options): TableResourceClass {
 		}
 		if (filtersLength > 0 || !ids.hasEntries) {
 			let results = ids.map(function (this: any, idOrEntry) {
-				idFiltersApplied = null;
 				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
 					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {
 					return SKIP;
 				}
-				// it is an id, so we can try to use id any filters that are available (note that these can come into existence later, during the query)
+				// it is an id, so any id filters that are available can rule it out before loading the record (note that
+				// these can come into existence later, during the query)
 				for (let i = 0; i < filtersLength; i++) {
-					const filter = filters[i];
-					const idFilter = filter.idFilter;
-					if (idFilter) {
-						if (!idFilter(idOrEntry)) return SKIP; // didn't match filters
-						if (!idFiltersApplied) idFiltersApplied = [];
-						idFiltersApplied.push(i);
-					}
+					const idFilter = filters[i].idFilter;
+					if (idFilter && !idFilter(idOrEntry)) return SKIP; // didn't match filters
 				}
 				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
 			});
