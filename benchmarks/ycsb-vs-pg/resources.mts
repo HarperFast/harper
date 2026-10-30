@@ -422,6 +422,8 @@ export function startHostLoad(targets?: ResourceTargets): { stop(): Promise<Host
 	const own = async () =>
 		(targets ? await totalCpuSeconds(targets) : 0) + (await cgroupCpuSeconds(processCgroup(process.pid)));
 	const begin = Promise.all([hostBusyCpuSeconds(), own(), Date.now()]);
+	// Observed by stop(); until then a failed read must not be an unhandled rejection.
+	begin.catch(() => {});
 	return {
 		async stop() {
 			const [hostBefore, ownBefore, startMs] = await begin;

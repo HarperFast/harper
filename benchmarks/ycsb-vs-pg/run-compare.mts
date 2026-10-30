@@ -440,17 +440,19 @@ async function profileWindow(
 ): Promise<ProfiledWindow> {
 	const { dir, ops } = session.profile!;
 	const prefix = join(dir, label);
-	const steadyBefore = await sampleResources(running.targets);
+	// CPU is read inside each perf window, so perf's own start and stop are not charged to the ops.
 	const counters = await startCounters(running.targets.cgroups, RESULTS_DIR);
 	let steadyResult: PhaseResult;
 	let byComponent: Record<string, Counters>;
+	let steadyDelta: ResourceDelta;
 	try {
+		const steadyBefore = await sampleResources(running.targets);
 		steadyResult = await driver.runWorkload(workload, distribution, ops);
+		steadyDelta = diffResources(steadyBefore, await sampleResources(running.targets));
 	} finally {
 		byComponent = await counters.stop();
 	}
 	assertNoErrors(`steady ${workload}`, steadyResult);
-	const steadyDelta = diffResources(steadyBefore, await sampleResources(running.targets));
 	const steady = {
 		ops: steadyResult.ops,
 		throughput: steadyResult.throughput,
@@ -463,17 +465,19 @@ async function profileWindow(
 			`${((t.instructionsUser + t.instructionsKernel) / steady.ops / 1000).toFixed(1)}k instructions/op, ` +
 			`IPC ${((t.instructionsUser + t.instructionsKernel) / (t.cyclesUser + t.cyclesKernel)).toFixed(2)}`
 	);
-	const before = await sampleResources(running.targets);
 	const recorder = await startRecord(session.serverCpus, `${prefix}.perf.data`);
-	const hostLoad = startHostLoad(running.targets);
 	let result: PhaseResult;
+	let delta: ResourceDelta;
+	let host: HostLoad;
 	try {
+		const before = await sampleResources(running.targets);
+		const hostLoad = startHostLoad(running.targets);
 		result = await driver.runWorkload(workload, distribution, ops);
+		host = await hostLoad.stop();
+		delta = diffResources(before, await sampleResources(running.targets));
 	} finally {
 		await recorder.stop();
 	}
-	const host = await hostLoad.stop();
-	const delta = diffResources(before, await sampleResources(running.targets));
 	assertNoErrors(`profiled ${workload}`, result);
 	// Folded while the target still runs: symbols come from its live JIT maps and container roots.
 	const samples = await foldPerfScript(`${prefix}.perf.data`, running.targets.cgroups, prefix);
@@ -527,6 +531,7 @@ export async function measureWindow(
 	let generatorCpuSeconds: number;
 	let peaks: Awaited<ReturnType<MemoryPeakSampler['stop']>>;
 	let perf: MeasuredWindow['perf'];
+	let countersStopped = false;
 	try {
 		try {
 			result = await driver.runWorkload(workload, distribution, ops);
@@ -538,10 +543,13 @@ export async function measureWindow(
 		after = await sampleResources(running.targets);
 		generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
 		if (counters) {
+			countersStopped = true;
 			const byComponent = await counters.stop();
 			perf = { byComponent, total: sumCounters(byComponent) };
 		}
 	} finally {
+		// A failed window must not leave a system-wide perf running into the next sample.
+		if (counters && !countersStopped) await counters.stop().catch(() => {});
 		peaks = await memory.stop();
 	}
 	const window = { startMs, endMs: Date.now() };
@@ -974,7 +982,8 @@ export async function createSession(
 	if (profileDir) {
 		const ops = Number(argValue(argv, '--profile-ops') ?? 1_000_000);
 		if (!Number.isInteger(ops) || ops < 1) throw new Error(`--profile-ops must be a positive integer, got ${ops}`);
-		profile = { dir: resolve(profileDir), ops };
+		// One subdirectory per session: results files reference these artifacts by path.
+		profile = { dir: join(resolve(profileDir), new Date().toISOString().replace(/[:.]/g, '-')), ops };
 		await mkdir(profile.dir, { recursive: true });
 		// The profiler flags also make V8 write isolate-*-v8.log files into each target's working
 		// directory, which it inherits from here; every path this harness uses is absolute.
@@ -1041,6 +1050,8 @@ export async function createSession(
 		config: { ...options.config, threads: options.threads, engine: options.engine },
 		perfCounters,
 		profile: profile && { ...profile, nodeOptions: PERF_NODE_OPTIONS },
+		// A test knob composeEnv honors over every split; recorded so a result says which applied.
+		redisMaxmemoryOverride: process.env.YCSB_REDIS_MAXMEMORY,
 	};
 	return { session, meta };
 }

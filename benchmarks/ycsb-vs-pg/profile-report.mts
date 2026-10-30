@@ -295,7 +295,12 @@ export function flameGraphSvg(stacks: { stack: string[]; count: number }[], titl
 		const w = node.value * scale;
 		if (w < minWidth) return;
 		maxDepth = Math.max(maxDepth, depth);
-		const own = node === root ? 'other' : (frameBucket(node.name) ?? (GC.test(node.name) ? 'gc' : inherited));
+		const own: Bucket =
+			node === root
+				? 'other'
+				: depth === 1 && (node.name === 'redis' || node.name === 'postgres')
+					? `${node.name}-server`
+					: (frameBucket(node.name) ?? (GC.test(node.name) ? 'gc' : JIT.test(node.name) ? 'jit' : inherited));
 		rects.push(
 			`<g><title>${escapeXml(shortFrame(node.name))} (${((100 * node.value) / root.value).toFixed(2)}%)</title>` +
 				`<rect x="${(10 + x).toFixed(1)}" y="D${depth}" width="${w.toFixed(1)}" height="${rowHeight - 1}" fill="${BUCKET_COLORS[own]}"/>` +

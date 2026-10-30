@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from './memory-sweep.mts';
 import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
+import { classify, rocksdbPart } from './profile-report.mts';
 import { TARGETS, parseTargets, writeJsonAtomic, MEMORY_BUDGET_BYTES } from './run-compare.mts';
 import { SWEEP_STACK_MEMORY, WARM_STACK_MEMORY } from './pgStack.mts';
 
@@ -38,6 +39,9 @@ test('warmup also waits for the Redis hit rate to settle', () => {
 	strictEqual(warmupConverged(climbing), false);
 	const partial = [{ throughput: 100 }, { throughput: 100, hitRate: 0.8 }, { throughput: 100, hitRate: 0.8 }];
 	strictEqual(warmupConverged(partial), false, 'a window missing a hit rate is not settled');
+	const rateless = [{ throughput: 100 }, { throughput: 100 }, { throughput: 100 }];
+	strictEqual(warmupConverged(rateless, { requireHitRate: true }), false, 'a Redis target needs hit rates');
+	strictEqual(warmupConverged(rateless), true);
 });
 
 test('targets carry their HTTP backend and cache sizing', () => {
@@ -177,4 +181,31 @@ test('a perf map keeps the newest entry where code was reused', () => {
 		dedupePerfMap(map),
 		['1000 20 JS:*newest-at-start', '1080 40 JS:*new', '2000 10 JS:*kept', '3000 8 JS:*x'].join('\n') + '\n'
 	);
+});
+
+test('profile stacks go to their innermost recognized frame, GC and JIT to themselves', () => {
+	const js = (name: string, path: string) => `*${name} /w/dist/${path}:10:3`;
+	const request = ['http', '[uws_linux_x64_147.node]', js('onRequest', 'server/serverHelpers/uwsServer.js')];
+	strictEqual(classify([...request, js('authentication', 'security/auth.js'), 'malloc (libc.so.6)'], 'harper'), 'auth');
+	strictEqual(classify([...request, 'send (libc.so.6)', '[kernel]'], 'harper'), 'http');
+	const get = [
+		...request,
+		js('getEntry', 'resources/PrimaryRocksDatabase.js'),
+		'rocksdb_js::Database::GetSync(napi_env__*) (rocksdb-js.node)',
+	];
+	strictEqual(classify([...get, 'rocksdb::MemTable::Get() (rocksdb-js.node)'], 'harper'), 'rocksdb');
+	strictEqual(rocksdbPart([...get, 'rocksdb::MemTable::Get() (rocksdb-js.node)']), 'memtable');
+	strictEqual(
+		classify([...get, 'std::mutex::lock() (rocksdb-js.node)'], 'harper'),
+		'rocksdb',
+		'plumbing defers to its caller'
+	);
+	strictEqual(classify([...get, 'v8::internal::Scavenger::Process() (node)'], 'harper'), 'gc');
+	strictEqual(classify(['redis-server', '[kernel]'], 'redis'), 'redis-server');
+	// A socket write under ioredis is the client's; a handler resumed under ioredis's callback writing its response is HTTP's.
+	const write = ['node:internal/stream_base_commons writeGeneric', 'uv__write (node)'];
+	const ioredis = '*sendCommand /w/pg-app/node_modules/ioredis/built/Redis.js:338:16';
+	const reply = '*Reply.send /w/pg-app/node_modules/fastify/lib/reply.js:156:33';
+	strictEqual(classify(['node', ioredis, ...write], 'fastify'), 'cache-client');
+	strictEqual(classify(['node', ioredis, reply, ...write], 'fastify'), 'http');
 });

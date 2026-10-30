@@ -10,7 +10,8 @@
  */
 import { spawn, execFile } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
@@ -67,12 +68,19 @@ async function startEnabled(args: string[], dir: string): Promise<{ stop(): Prom
 	});
 	let err = '';
 	proc.stderr.on('data', (d) => (err += d));
-	const exited = new Promise<void>((resolve) => proc.once('close', () => resolve()));
+	const exited = new Promise<void>((resolve) => {
+		proc.once('error', (error) => {
+			err += String(error);
+			resolve();
+		});
+		proc.once('close', () => resolve());
+	});
 	const cleanup = () => Promise.all([rm(ctl, { force: true }), rm(ack, { force: true })]);
+	// perf opens both FIFOs at startup; until it does, these opens block on the thread pool.
+	const opening = [open(ctl, 'w'), open(ack, 'r')];
 	try {
-		// perf opens both FIFOs at startup; until it does, these opens block (on the thread pool).
 		const [ctlHandle, ackHandle] = await Promise.race([
-			Promise.all([open(ctl, 'w'), open(ack, 'r')]),
+			Promise.all(opening),
 			exited.then(() => Promise.reject(new Error(`perf ${command} exited at startup: ${err.slice(0, 400)}`))),
 		]);
 		try {
@@ -86,6 +94,12 @@ async function startEnabled(args: string[], dir: string): Promise<{ stop(): Prom
 		}
 	} catch (error) {
 		proc.kill('SIGKILL');
+		// An open blocked on a FIFO perf never opened waits forever, holding a pool thread; opening
+		// each end read-write (which never blocks on Linux) completes it.
+		const releasers = await Promise.allSettled([open(ctl, 'r+'), open(ack, 'r+')]);
+		for (const settled of [...(await Promise.allSettled(opening)), ...releasers]) {
+			if (settled.status === 'fulfilled') await settled.value.close();
+		}
 		await cleanup();
 		throw error;
 	}
@@ -218,20 +232,25 @@ export function dedupePerfMap(text: string): string {
 		.concat('\n');
 }
 
-/** Rewrites the perf maps of every process in `cgroups` (see dedupePerfMap). */
+/**
+ * Rewrites the perf maps of every process in `cgroups` (see dedupePerfMap). V8 keeps appending to
+ * the file it opened, so that inode is first kept under a second name, `perf-<pid>.v8.map`, and
+ * every fold rebuilds the deduplicated map perf reads from it.
+ */
 async function dedupeMapsOf(cgroups: Record<string, string>): Promise<void> {
 	for (const scope of Object.values(cgroups)) {
 		const pids = (await readFile(join(scope, 'cgroup.procs'), 'utf8')).split('\n').filter(Boolean);
 		for (const pid of pids) {
 			const path = `/tmp/perf-${pid}.map`;
-			let text: string;
+			const live = `/tmp/perf-${pid}.v8.map`;
 			try {
-				text = await readFile(path, 'utf8');
-			} catch {
-				continue; // not a node process, or no map
+				await link(path, live);
+			} catch (error) {
+				// EEXIST: an earlier fold already kept it; ENOENT: not a node process, or no map
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 			}
-			// A new inode: V8 keeps appending to the one it holds open, which nothing reads any more.
-			await writeFile(`${path}.dedupe`, dedupePerfMap(text));
+			await writeFile(`${path}.dedupe`, dedupePerfMap(await readFile(live, 'utf8')));
 			await rename(`${path}.dedupe`, path);
 		}
 	}
@@ -250,8 +269,11 @@ export async function foldPerfScript(
 	const byName = new Map(Object.entries(cgroups).map(([component, scope]) => [`/${perfCgroupName(scope)}`, component]));
 	// --no-inline: resolving inlined frames runs addr2line per address over node's debug info (minutes).
 	const proc = spawn('perf', ['script', '--no-inline', '-i', perfData, '-F', 'comm,tid,cgroup,ip,sym,dso'], {
-		stdio: ['ignore', 'pipe', 'ignore'],
+		stdio: ['ignore', 'pipe', 'pipe'],
 	});
+	let err = '';
+	proc.stderr!.on('data', (d) => (err += d));
+	const closed = once(proc, 'close') as Promise<[number | null, NodeJS.Signals | null]>;
 	const stacks: Record<string, Map<string, number>> = Object.fromEntries(
 		Object.keys(cgroups).map((c) => [c, new Map<string, number>()])
 	);
@@ -285,7 +307,8 @@ export async function foldPerfScript(
 		}
 	}
 	flush();
-	await new Promise((resolve) => proc.once('close', resolve));
+	const [code, signal] = await closed;
+	if (code !== 0) throw new Error(`perf script exited with ${code ?? signal}: ${err.slice(-400)}`);
 	const counts: Record<string, number> = {};
 	for (const [name, folded] of Object.entries(stacks)) {
 		let total = 0;

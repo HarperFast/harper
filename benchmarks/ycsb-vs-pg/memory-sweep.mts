@@ -67,7 +67,7 @@ export interface WarmupChunk {
  */
 export function warmupConverged(
 	chunks: WarmupChunk[],
-	{ window = 3, throughputTolerance = 0.05, hitRateTolerance = 0.005 } = {}
+	{ window = 3, throughputTolerance = 0.05, hitRateTolerance = 0.005, requireHitRate = false } = {}
 ): boolean {
 	if (chunks.length < window) return false;
 	const last = chunks.slice(-window);
@@ -75,7 +75,7 @@ export function warmupConverged(
 	const mean = throughputs.reduce((a, b) => a + b, 0) / window;
 	if (mean <= 0 || (Math.max(...throughputs) - Math.min(...throughputs)) / mean > throughputTolerance) return false;
 	const hitRates = last.map((c) => c.hitRate).filter((h): h is number => h !== undefined);
-	if (hitRates.length === 0) return true;
+	if (hitRates.length === 0) return !requireHitRate;
 	return hitRates.length === window && Math.max(...hitRates) - Math.min(...hitRates) <= hitRateTolerance;
 }
 
@@ -254,7 +254,9 @@ async function warmUp(
 			`  [warmup ${chunks.length}] ${chunk.throughput.toFixed(0)} ops/sec` +
 				(chunk.hitRate !== undefined ? `, cache-hit ${(chunk.hitRate * 100).toFixed(2)}%` : '')
 		);
-		if (warmupConverged(chunks)) return { chunks, converged: true };
+		if (warmupConverged(chunks, { requireHitRate: Boolean(running.targets.redisExec) })) {
+			return { chunks, converged: true };
+		}
 	}
 	return { chunks, converged: false };
 }
@@ -327,6 +329,7 @@ async function measureSweepSample(
 					sample.warmup = chunks;
 					sample.converged = converged;
 					phase = 'measure';
+					const firstMeasureStart = Date.now();
 					// Other agents' load comes in bursts the pre-sample gate cannot foresee; the target is warm, so
 					// a run spoiled by one is measured again rather than kept.
 					for (let attempt = 0; ; attempt++) {
@@ -352,7 +355,7 @@ async function measureSweepSample(
 						const events = await readRocksdbEvents(running.dataRoot, startedAt, Date.now());
 						sample.rocksdb = {
 							events,
-							warmup: summarizeEvents(events, warmupStart, startMs),
+							warmup: summarizeEvents(events, warmupStart, firstMeasureStart),
 							measured: summarizeEvents(events, startMs, endMs),
 						};
 						const m = sample.rocksdb.measured;
@@ -441,13 +444,15 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 		cells.set(key, [...(cells.get(key) ?? []), s]);
 	}
 	if ([...cells.values()].some((reps) => reps.length > 1)) {
-		out.push('', 'per cell: median ops/s [min-max], reps settled');
+		out.push('', 'per cell, over reps that settled with the host quiet (all reps if none did): median ops/s [min-max]');
 		for (const [key, reps] of cells) {
-			const values = reps.map((s) => s.measured!.result.throughput).sort((a, b) => a - b);
+			const clean = reps.filter((s) => s.settled && s.hostQuiet !== false);
+			const values = (clean.length > 0 ? clean : reps).map((s) => s.measured!.result.throughput).sort((a, b) => a - b);
+			const mid = values.length >> 1;
+			const median = values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
 			out.push(
-				`  ${key.padEnd(32)} ${values[Math.floor((values.length - 1) / 2)].toFixed(0).padStart(8)} ` +
-					`[${values[0].toFixed(0)}-${values[values.length - 1].toFixed(0)}]  ` +
-					`${reps.filter((s) => s.settled).length}/${reps.length}`
+				`  ${key.padEnd(32)} ${median.toFixed(0).padStart(8)} ` +
+					`[${values[0].toFixed(0)}-${values[values.length - 1].toFixed(0)}]  ${clean.length}/${reps.length} clean`
 			);
 		}
 	}
