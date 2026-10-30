@@ -245,14 +245,17 @@ function worstNaming(namings: Naming[]): Naming {
 	return namings.includes('head') ? 'head' : namings.includes('unknown') ? 'unknown' : 'base';
 }
 
-/** A script split at newlines and `;`, `&` and `|`, none of which separates inside quotes or `${{ }}`. */
+/** A script split at newlines and `;`, `&` and `|`, none of which separates escaped, quoted or inside `${{ }}`. */
 function shellCommands(script: string): string[] {
 	const commands: string[] = [];
 	let command = '';
 	let quote: string | undefined;
 	for (let index = 0; index < script.length; index++) {
 		const character = script[index];
-		if (script.startsWith('${{', index)) {
+		if (character === '\\' && quote !== "'") {
+			command += script.slice(index, index + 2);
+			index++;
+		} else if (script.startsWith('${{', index)) {
 			const end = script.indexOf('}}', index);
 			const stop = end < 0 ? script.length : end + 2;
 			command += script.slice(index, stop);
