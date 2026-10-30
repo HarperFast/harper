@@ -1,3 +1,13 @@
+import { threadId } from 'node:worker_threads';
+
+/** Test-only endpoint used to pin HTTP requests to distinct keep-alive worker connections. */
+export class WorkerIdentity extends Resource {
+	static loadAsInstance = false;
+	get() {
+		return { threadId };
+	}
+}
+
 // WorkItem: async write-then-patch pattern (CDI RT enqueueing + AI inference result attachment)
 export class WorkItem extends tables.WorkItem {
 	// Author-opt-in custom MCP surface declared on a subclass of an exported @table (#1448).
