@@ -856,11 +856,18 @@ async function dispatchPromptsGet(
 			profile: request.profile,
 			sessionId: session.id,
 		});
+		if (!Array.isArray(rendered?.messages)) {
+			harperLogger.warn(`MCP prompts/get ${name}: render must return { messages: [...] }, got ${typeName(rendered)}`);
+			return jsonResponse(
+				200,
+				buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'prompt render failed: expected { messages: [...] }')
+			);
+		}
 		return jsonResponse(
 			200,
 			buildSuccess(messageId, {
 				...(rendered.description ? { description: rendered.description } : {}),
-				messages: rendered.messages ?? [],
+				messages: rendered.messages,
 			})
 		);
 	} catch (err) {
@@ -868,6 +875,12 @@ async function dispatchPromptsGet(
 		harperLogger.warn(`MCP prompts/get ${name} threw: ${(err as Error).stack ?? errMsg}`);
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `prompt render failed: ${errMsg}`));
 	}
+}
+
+function typeName(value: unknown): string {
+	if (Array.isArray(value)) return 'an array';
+	if (value === null) return 'null';
+	return typeof value === 'object' ? `an object without a messages array` : typeof value;
 }
 
 function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {

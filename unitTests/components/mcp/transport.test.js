@@ -893,6 +893,25 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.result.messages[0].content.text, 'Hello, Ada!');
 			});
 
+			it('prompts/get errors (instead of an empty prompt) when render returns the wrong shape', async () => {
+				const shapes = {
+					bare_array: () => [{ role: 'user', content: { type: 'text', text: 'x' } }],
+					no_result: () => {},
+				};
+				for (const [name, render] of Object.entries(shapes)) addPrompt({ name, profile: 'application', render });
+				for (const name of Object.keys(shapes)) {
+					const res = await handleMcpRequest(
+						makeReq({
+							body: jsonRpc(56, 'prompts/get', { name }),
+							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						})
+					);
+					assert.equal(res.jsonBody.result, undefined, name);
+					assert.equal(res.jsonBody.error.code, -32603, name);
+					assert.match(res.jsonBody.error.message, /expected \{ messages/, name);
+				}
+			});
+
 			it('prompts/get returns -32602 for an unknown prompt', async () => {
 				const res = await handleMcpRequest(
 					makeReq({
