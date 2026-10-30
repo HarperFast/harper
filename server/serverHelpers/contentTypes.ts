@@ -425,6 +425,38 @@ const BROTLI_GENERIC_OPTIONS = brotliParams(constants.BROTLI_MODE_GENERIC);
 export function brotliOptions(contentType: string) {
 	return contentType.includes('json') || contentType.includes('text') ? BROTLI_TEXT_OPTIONS : BROTLI_GENERIC_OPTIONS;
 }
+
+function isTextOrBytes(data: unknown): data is string | ArrayBufferView {
+	return typeof data === 'string' || ArrayBuffer.isView(data);
+}
+
+/**
+ * Whether a message is a `{ contentType, data }` envelope delivered as its `data`, verbatim. Stored
+ * non-JSON payloads have this shape, but so can a table's own records, so `data` must be something a
+ * protocol encoder accepts; any other shape is an ordinary record for the negotiated serializer.
+ */
+export function isPassThroughEnvelope(value: any): value is { contentType: string; data: string | ArrayBufferView } {
+	return typeof value?.contentType === 'string' && isTextOrBytes(value.data);
+}
+
+/**
+ * {@link isPassThroughEnvelope} for an HTTP response, whose body writer also sends a Blob, a stream or other
+ * async iterable, and a generator. A table record can hold none of the last three, and an array- or
+ * object-valued `data` attribute must stay a record.
+ */
+export function isHttpPassThroughEnvelope(value: any): boolean {
+	if (typeof value?.contentType !== 'string') return false;
+	const data = value.data;
+	if (typeof data === 'string') return true;
+	if (data === null || typeof data !== 'object') return false;
+	return (
+		ArrayBuffer.isView(data) ||
+		data instanceof Blob ||
+		typeof data[Symbol.asyncIterator] === 'function' ||
+		typeof data.next === 'function'
+	);
+}
+
 /**
  * Serialize a response
  * @param responseData
@@ -438,7 +470,7 @@ export function serialize(responseData, request, responseObject) {
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
 	let contentType: string;
-	if (responseData?.contentType != null && responseData.data != null) {
+	if (isHttpPassThroughEnvelope(responseData)) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
 		contentType = responseData.contentType;
 		responseObject.headers.set('Content-Type', contentType);
@@ -536,7 +568,7 @@ export function serializeMessage(
 	request?: Request,
 	inAsyncContinuation?: boolean
 ): Buffer | string | Promise<Buffer | string> {
-	if (message?.contentType != null && message.data != null) {
+	if (isPassThroughEnvelope(message)) {
 		const data = message.data;
 		// a record read on another thread decodes binary as a plain Uint8Array view, which protocol
 		// encoders (mqtt-packet) reject; wrap the same bytes rather than copy them
@@ -571,8 +603,12 @@ export function hasAsyncSerialization() {
 	return !!asyncSerializations;
 }
 
+export function getMaxRequestBodySize(): number {
+	return envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+}
+
 function streamToBuffer(stream: Readable): Promise<Buffer> {
-	const MAX_REQUEST_BODY_SIZE = envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+	const MAX_REQUEST_BODY_SIZE = getMaxRequestBodySize();
 	return new Promise((resolve, reject) => {
 		const buffers = [];
 		let size = 0;

@@ -886,8 +886,11 @@ to `HnswDerivedIndexBackend`:
 
 - `deliver()` enqueues and returns `accepted` (or `deferred` at 64 MiB queued); an applier drains
   in 5 ms `setImmediate` slices. Each `records` entry (last-write-wins per key) becomes one
-  `applyDerivedValue(pk, vector | undefined, version)`: the stored mapping's signature short-circuits
-  an unchanged vector, an older observation is discarded, otherwise the old node is removed and the
+  `applyDerivedValue(pk, vector | undefined, version)`: the mapping's signature short-circuits an
+  unchanged vector — published, or still pending from this process, since a rebuild's scan overlaps
+  its log replay and the plane tombstones a removed node without re-linking its neighbours (only a
+  pending mapping read back from storage is re-inserted, as its node may not have survived a crash) —
+  an older observation is discarded, otherwise the old node is removed and the
   new vector inserted — with the primary key in its slot, so it is searchable at once — and the
   `pk -> node` mapping written **pending**. The store holds no `node -> pk` entries: hits and
   predicate candidates carry their keys out of the plane, and a query deduplicates by key for the
