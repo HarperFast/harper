@@ -378,6 +378,17 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		return reply.json;
 	};
 
+	// the session row is written after the response that set the cookie
+	const sessionRowFor = async (id: string, ready: (row: any) => boolean = () => true) => {
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const row = (await sessionRows()).find((candidate: any) => candidate.id === id);
+			if (row && ready(row)) return row;
+			ok(Date.now() < deadline, `the session row for ${id} never appeared`);
+			await sleep(100);
+		}
+	};
+
 	before(async () => {
 		await start();
 	});
@@ -575,10 +586,8 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 			sessionIds[name] = reply.json.sessionId;
 			strictEqual(reply.json.userKeySurvived, false, `${name}: user key was kept in the session update`);
 
-			const rows = await sessionRows();
-			const row = rows.find((candidate: any) => candidate.id === reply.json.sessionId);
+			const row = await sessionRowFor(reply.json.sessionId);
 			note(`arm5 ${name} hdb_session row has a user field`, row && 'user' in row);
-			ok(row, `${name}: the session row was not stored`);
 			strictEqual('user' in row, false, `${name}: row has a user field`);
 		}
 		const all = await sessionRows();
@@ -616,12 +625,7 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		strictEqual(login.status, 200, login.text);
 		const loginId = sessionIdOf(login);
 		ok(loginId, 'login set no cookie');
-		// the session row is written after the login response, so wait for it before replaying the cookie
-		const rowDeadline = Date.now() + 10_000;
-		while (!(await sessionRows()).some((candidate: any) => candidate.id === loginId && candidate.user === username)) {
-			ok(Date.now() < rowDeadline, 'the login session row never appeared');
-			await sleep(100);
-		}
+		await sessionRowFor(loginId, (row) => row.user === username);
 		for (const reply of await repeated(REPEAT, async () => ({
 			whoAmI: await rest('remote', '/WhoAmI/', { Cookie: cookieFor(loginId!, ports.http) }),
 			info: await ops('remote', { operation: 'user_info' }, { Cookie: cookieFor(loginId!, ports.ops) }),
