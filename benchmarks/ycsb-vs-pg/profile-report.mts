@@ -94,6 +94,13 @@ export function frameBucket(frame: string): Bucket | undefined {
 		for (const [pattern, bucket] of JS_FILE_RULES) if (pattern.test(js[1])) return bucket;
 		return undefined;
 	}
+	// Library plumbing inside a native module (locks, allocation, napi glue) belongs to its caller.
+	if (
+		/^(std::|operator (new|delete)|__gnu_cxx::|napi_|v8impl::|\[)/.test(frame) &&
+		!/^\[(uws_|rocksdb-js|node\.napi)/.test(frame)
+	) {
+		return undefined;
+	}
 	for (const [pattern, bucket] of NATIVE_RULES) if (pattern.test(frame)) return bucket;
 	return undefined;
 }
@@ -164,6 +171,8 @@ interface ProfileRow {
 	kernelMicrosPerOp: Record<string, number>;
 	rocksdbParts: Record<string, number>;
 	topSelf: Record<string, [string, number][]>;
+	/** Harper's own JS frames by inclusive µs/op: the request pipeline's stages. */
+	topInclusive: [string, number][];
 }
 
 const shortFrame = (f: string) =>
@@ -178,6 +187,7 @@ async function analyze(
 	const kernelMicrosPerOp: Record<string, number> = {};
 	const rocksdbParts: Record<string, number> = {};
 	const topSelf: Record<string, Map<string, number>> = {};
+	const inclusive = new Map<string, number>();
 	for (const [component, samples] of Object.entries(profile.samples)) {
 		if (samples === 0) continue;
 		const componentMicrosPerOp = ((profile.byComponentCpuSeconds[component] ?? 0) * 1e6) / profile.ops;
@@ -197,12 +207,22 @@ async function analyze(
 			const map = (topSelf[bucket] ??= new Map());
 			const name = shortFrame(stack[leaf]);
 			map.set(name, (map.get(name) ?? 0) + us);
+			// Tier markers dropped, so a function's optimized and baseline frames add up; once per stack.
+			const seen = new Set<string>();
+			for (const frame of stack) {
+				if (!/\/dist\/|\/node_modules\/(msgpackr|@harperfast)/.test(frame) || !isJsFrame(frame)) continue;
+				const fn = shortFrame(frame).replace(/^[*~^+']+/, '');
+				if (seen.has(fn)) continue;
+				seen.add(fn);
+				inclusive.set(fn, (inclusive.get(fn) ?? 0) + us);
+			}
 		}
 	}
 	return {
 		microsPerOp,
 		kernelMicrosPerOp,
 		rocksdbParts,
+		topInclusive: [...inclusive].sort((a, b) => b[1] - a[1]).slice(0, 40),
 		topSelf: Object.fromEntries(
 			Object.entries(topSelf).map(([bucket, map]) => [bucket, [...map].sort((a, b) => b[1] - a[1]).slice(0, 8)])
 		),
@@ -386,6 +406,11 @@ async function main(): Promise<void> {
 			for (const [component, counters] of Object.entries(r.profile.steady.perf.byComponent)) {
 				out.push(`- ${component}: ${counterLine(counters, r.profile.steady.ops)}`);
 			}
+		}
+		if (r.topInclusive.length > 0) {
+			out.push('<details><summary>Harper JS frames by inclusive µs/op</summary>', '');
+			for (const [fn, us] of r.topInclusive) out.push(`- ${us.toFixed(1)} ${fn}`);
+			out.push('', '</details>');
 		}
 		const parts = Object.entries(r.rocksdbParts).sort((a, b) => b[1] - a[1]);
 		if (parts.length > 0) out.push(`RocksDB read: ${parts.map(([p, us]) => `${p} ${us.toFixed(1)}`).join(', ')} µs/op`);
