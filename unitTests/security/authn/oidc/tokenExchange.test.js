@@ -533,6 +533,22 @@ describe('exchangeOidcToken', () => {
 			);
 		});
 
+		it('says why the exchange would ignore a policy that is too broad', async () => {
+			await addPolicy({ id: 'alpha' });
+			trustTable.mock.rows.set('broad', {
+				...trustTable.mock.rows.get('alpha'),
+				id: 'broad',
+				claims: { repository_id: '67890' },
+			});
+			const { policies } = await listOidcTrust({
+				operation: 'list_oidc_trust',
+				hdb_user: { username: 'admin', role: { permission: { super_user: true } } },
+			});
+			const broad = policies.find((policy) => policy.id === 'broad');
+			assert.strictEqual(broad.exchangeable, false);
+			assert.ok(broad.invalid_reason, 'an operator can see why');
+		});
+
 		it('refuses a token with two audiences that two policies each name', async () => {
 			const otherAudience = 'https://other.harperdb.io:9925/';
 			await addPolicy({ id: 'alpha' });
