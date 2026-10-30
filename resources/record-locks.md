@@ -1017,7 +1017,10 @@ of scope here.
   remaining lease, so the delegate's token and the home's never diverge. A request that no longer
   matches a grant is checked against a 1024-id sliding window per `(database, requester, delegate
 epoch)`: an id already seen, or older than the window, is `stale` — never a fresh grant nobody is
-  waiting for. `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
+  waiting for. The window admits an older unseen id, since ids are per thread and requests for
+  different keys reorder freely, but not one older than the newest it admitted for the _same_ key:
+  the requester waits only on its latest request for a key, so that one is `stale` whether the grant
+  it produced is still held, recalled to a contender, or released (harper#3788). `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
   epoch's replay never retries) and ends 503. The requester discards a reply whose echo is not its
   outstanding request, handing back anything it granted. The window lives on the owner thread like the
   grants it protects; a replayed id from a _live_ epoch across a home's handoff is bounded by the
@@ -1034,6 +1037,17 @@ epoch)`: an id already seen, or older than the window, is `stale` — never a fr
   inherits, and a lost renewal reply no longer leaves the key held to expiry (§5.2's residue). A drain
   (`quiesce`) clears `recallRetryAfterMono` before it recalls, so a drain inside a failed contention
   recall's backoff still sends. Neither touches the epoch: a retire expires a grant whatever its token.
+- A reply the delegate stopped waiting on (`#releaseUnclaimedGrant`) that names a newer token than a
+  delegation it holds for the key, in the same generation, is the home's in-place renewal of that
+  delegation: the delegate's deadline never outlasts the home's, so the home's grant to it has been
+  continuous. A live delegation takes the token over and is marked `releaseOnExpiry`, because the
+  home started that renewal's lease after the delegation's deadline was anchored at its own send: on
+  local expiry it surrenders (fence, then release with its lineage) instead of dropping silently,
+  which would leave a later recall confirming with nothing released and the key refused until the
+  home lease. A live delegation draining a recall records it as the token its surrender names. One
+  already past its local deadline, recalled or not, proves no continuity (the token may be a fresh grant carrying another
+  node's lineage), so it is collected as `tick` would and the token handed back with no lineage. An
+  in-place renewal installed through `#acquire` clears the mark: its deadline is anchored afresh.
 - A recall carries the grant's `delegateEpoch`. The delegate's unknown-token branch _fails_ a recall
   tagged below its own epoch — the token belongs to an exited epoch and was never held here — instead
   of confirming it; the home's `RECALL_RETRY_MS` retry stays in force until the retire frees the key.
@@ -1107,9 +1121,9 @@ clock at receipt overlaps the next delegate.
   does not name can neither obtain a delegation nor clear one. The `requestId` half is §4.5's request
   identity (harper#2582): the home answers a duplicate with the token it already issued and refuses a
   replay through a per-requester window, and the requester discards a reply whose echo is not its
-  outstanding request. Core still refuses to hand back a grant while any delegation for the key is
-  held. The generation half: the map is re-read after the round and a grant minted under a superseded
-  generation is handed back rather than installed.
+  outstanding request. Core never hands back a grant while a live delegation for the key is
+  held; a newer token for it is taken over instead (§4.5). The generation half: the map is re-read
+  after the round and a grant minted under a superseded generation is handed back rather than installed.
 - **Every local handle is bounded by `min(requested lease, delegation deadline)`** — including
   re-entrant acquisition and the `{hold: true}` upgrade. The branch's
   `upgradeToHold` already clamps to the granted round's deadline rather than extending it
