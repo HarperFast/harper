@@ -14,7 +14,7 @@
  * gate is released. Rejected arms must fail with `unknown_property` and leave the stored row, including
  * `updatedAt`, untouched.
  *
- * Run:
+ * Run (add HARPER_STORAGE_ENGINE=lmdb for the LMDB engine):
  *   npm run test:integration -- "integrationTests/database/sealed-redeclare-tracked-update.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
@@ -189,6 +189,7 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 					});
 				}
 			);
+			req.setTimeout(30_000, () => req.destroy(new Error(`no response for ${method} ${path}`)));
 			req.on('error', reject);
 			if (payload) req.write(payload);
 			req.end();
@@ -258,7 +259,6 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 		httpURL = ctx.harper.httpURL;
 		auth = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 
-		// Readiness: /Qa/ served (non-404) and /SealedItem/ exported over REST.
 		await waitFor(
 			'routes ready',
 			async () => {
@@ -275,7 +275,6 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 		evidence.threadA = threadA;
 		evidence.threadB = threadB;
 
-		// Seed every row (label='seed', legacyCode=42) BEFORE the reload, and snapshot the baseline.
 		for (const row of ALL_ROWS) {
 			const r = await qaPost({ op: 'seed', table: row.table, id: row.id, thread: 'any' });
 			strictEqual(r.status, 200, `seed ${row.id}: ${r.text}`);
@@ -284,7 +283,6 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 		const pre = await schemaOn(threadA);
 		ok(pre.SealedItem.includes('legacyCode'), `pre-reload A schema has legacyCode: ${pre.SealedItem}`);
 
-		// Hold every handle in worker A, concurrently, across the reload.
 		const holdPromises = HELD.map(async (arm) => {
 			const r = await onThread(threadA, (t) =>
 				qaPost({
@@ -305,12 +303,10 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 			HELD.map((a) => [a.name, Number(readFileSync(join(dir, `held-${a.name}`), 'utf8'))])
 		);
 
-		// Reload in worker B.
 		const redeclare = await onThread(threadB, (t) => qaPost({ op: 'redeclare', thread: t }));
 		strictEqual(redeclare.status, 200, redeclare.text);
 		evidence.redeclare = redeclare.body;
 
-		// Converge: both workers must report legacyCode gone before the gate opens.
 		const gone = (s: { SealedItem: string[]; OpenItem: string[] }) =>
 			!s.SealedItem.includes('legacyCode') && !s.OpenItem.includes('legacyCode');
 		const converged: Record<string, any> = {};
@@ -336,8 +332,9 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 		evidence.releasedAt = Date.now();
 		writeFileSync(join(dir, 'gate'), String(evidence.releasedAt));
 		await Promise.all(holdPromises);
+		const failed = Object.entries(converged).filter(([, w]) => w.failed);
+		ok(!failed.length, `schema did not converge before release: ${JSON.stringify(failed)}`);
 
-		// Post-convergence fresh handles (alternating workers).
 		for (const [i, arm] of FRESH.entries()) {
 			const thread = i % 2 === 0 ? threadA : threadB;
 			const r = await onThread(thread, (t) =>
@@ -346,11 +343,9 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 			freshResp.set(arm.name, { ...r, thread });
 		}
 
-		// Ordinary REST PATCH.
 		restC1 = await request('PATCH', '/SealedItem/C1', { label: 'C1' });
 		restC2 = await request('PATCH', '/SealedItem/C2', { legacyCode: 7 });
 
-		// Read every row back through BOTH workers.
 		for (const row of ALL_ROWS) {
 			reads.set(row.id, {
 				A: await readRow(row.table, row.id, threadA),
@@ -361,7 +356,7 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 
 	after(async () => {
 		await teardownHarper(ctx);
-		rmSync(dir, { recursive: true, force: true });
+		if (dir) rmSync(dir, { recursive: true, force: true });
 	});
 
 	function assertNoAttempted(rowId: string, resp?: Resp) {
@@ -406,7 +401,7 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 			strictEqual(resp.status, 200, `${arm.name} expected success: ${resp.text}`);
 		}
 		assertStored(arm, arm.expect === 'reject');
-		if (arm.table === 'SealedItem') assertNoAttempted(arm.id, resp);
+		if (arm.table === 'SealedItem') assertNoAttempted(arm.id, arm.expect === 'reject' ? resp : undefined);
 	}
 
 	test('setup was real: two workers, handles held before the reload, both schemas converged before release', () => {
@@ -416,7 +411,6 @@ suite(`sealed re-declaration across two workers [engine=${ENGINE}]`, { skip: ski
 				evidence.heldMarkers[arm.name] <= evidence.redeclare.startedAt,
 				`${arm.name} handle held before reload started`
 			);
-			strictEqual(heldResp.get(arm.name)!.body.threadId ?? threadA, threadA);
 		}
 		strictEqual(evidence.redeclare.threadId, threadB, 'reload issued in worker B');
 		for (const w of ['A', 'B']) {

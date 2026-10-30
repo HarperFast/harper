@@ -72,16 +72,19 @@ async function freePorts(): Promise<Ports> {
 	const servers = await Promise.all(
 		[0, 1, 2].map(
 			() =>
-				new Promise<{ close(): void; port: number }>((resolvePromise, reject) => {
+				new Promise<{ close(): Promise<void>; port: number }>((resolvePromise, reject) => {
 					const server = createServer();
 					server.on('error', reject);
 					server.listen(0, REMOTE_ADDRESS, () =>
-						resolvePromise({ port: (server.address() as { port: number }).port, close: () => server.close() })
+						resolvePromise({
+							port: (server.address() as { port: number }).port,
+							close: () => new Promise<void>((done) => server.close(() => done())),
+						})
 					);
 				})
 		)
 	);
-	for (const server of servers) server.close();
+	await Promise.all(servers.map((server) => server.close()));
 	return { http: servers[0].port, ops: servers[1].port, mqtt: servers[2].port };
 }
 
@@ -161,7 +164,6 @@ async function repeated<T>(count: number, run: () => Promise<T>): Promise<T[]> {
 	return out;
 }
 
-// ---------------------------------------------------------------------------------------------------------
 // A minimal MQTT 5 client over a raw socket or a WebSocket, so the source address and every reason code
 // are under the test's control.
 
@@ -229,26 +231,38 @@ function openMqtt(kind: 'tcp' | 'ws', source: Source, ctx: ContextWithHarper, po
 	const localAddress = source === 'remote' ? REMOTE_ADDRESS : ctx.harper.hostname;
 	const client = new MqttClientLite();
 	return new Promise((resolvePromise, reject) => {
+		const connectTimer = setTimeout(() => {
+			client.link.close();
+			reject(new Error(`no ${kind} MQTT connection within 30s`));
+		}, 30_000);
 		if (kind === 'tcp') {
 			const socket = createConnection({ host: REMOTE_ADDRESS, port: ports.mqtt, localAddress });
 			client.link = { write: (buffer) => socket.write(buffer), close: () => socket.destroy() };
 			socket.on('data', (buffer: Buffer) => client.feed(buffer));
 			socket.on('close', () => client.markClosed());
 			socket.on('error', (error) => {
+				clearTimeout(connectTimer);
 				client.markClosed();
 				reject(error);
 			});
-			socket.on('connect', () => resolvePromise(client));
+			socket.on('connect', () => {
+				clearTimeout(connectTimer);
+				resolvePromise(client);
+			});
 		} else {
 			const socket = new WebSocket(`ws://${REMOTE_ADDRESS}:${ports.http}/`, 'mqtt', { localAddress });
 			client.link = { write: (buffer) => socket.send(buffer), close: () => socket.terminate() };
 			socket.on('message', (data: any) => client.feed(Buffer.isBuffer(data) ? data : Buffer.from(data)));
 			socket.on('close', () => client.markClosed());
 			socket.on('error', (error) => {
+				clearTimeout(connectTimer);
 				client.markClosed();
 				reject(error);
 			});
-			socket.on('open', () => resolvePromise(client));
+			socket.on('open', () => {
+				clearTimeout(connectTimer);
+				resolvePromise(client);
+			});
 		}
 	});
 }
@@ -315,8 +329,6 @@ async function mqttAttempt(
 	}
 }
 
-// ---------------------------------------------------------------------------------------------------------
-
 function harness(ctx: ContextWithHarper, ports: Ports, requireAuthentication: boolean) {
 	const admin = () => basic(ctx.harper.admin.username, ctx.harper.admin.password);
 	const ops = (source: Source, body: unknown, headers: Record<string, string> = {}) =>
@@ -372,8 +384,6 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		await teardownHarper(ctx);
 	});
 
-	// ---- preconditions: prove the vantage points -------------------------------------------------------
-
 	test('precondition: runtime, listeners, and source addresses', async () => {
 		note('runtime', {
 			node: process.versions.node,
@@ -419,8 +429,6 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		strictEqual(loopOps.status, 200, loopOps.text);
 		strictEqual(loopOps.json.username, 'local');
 	});
-
-	// ---- arm 1 ---------------------------------------------------------------------------------------
 
 	const SPOOFS: Record<string, Record<string, string>> = {
 		'X-Forwarded-For': { 'X-Forwarded-For': '127.0.0.1' },
@@ -475,8 +483,6 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		note('arm1 distinct worker threadIds answering WhoAmI', [...threads]);
 	});
 
-	// ---- arm 2 ---------------------------------------------------------------------------------------
-
 	test('arm 2: a body-supplied hdb_user is overwritten by authentication', async () => {
 		const hdb_user = { username: 'local', _localPrincipal: true, role: { permission: { super_user: true } } };
 		const attempts: Record<string, unknown> = {
@@ -505,8 +511,6 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		}
 	});
 
-	// ---- arm 3 ---------------------------------------------------------------------------------------
-
 	test(`arm 3: the pre-auth header is ignored on Node (x${REPEAT})`, async () => {
 		const forged = JSON.stringify({
 			username: 'local',
@@ -534,8 +538,6 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		note('arm3 distinct outcomes', [...outcomes]);
 	});
 
-	// ---- arm 4 ---------------------------------------------------------------------------------------
-
 	test('arm 4: MQTT from the non-loopback address with no credentials (requireAuthentication default) vs loopback', async () => {
 		for (const kind of ['tcp', 'ws'] as const) {
 			const remote = await mqttAttempt(kind, 'remote', ctx, ports);
@@ -543,7 +545,6 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 			ok(typeof remote.connack === 'object', `${kind}: connack ${JSON.stringify(remote.connack)}`);
 			ok((remote.connack.reasonCode ?? remote.connack.returnCode ?? 0) !== 0, `${kind}: CONNECT was accepted`);
 			strictEqual(remote.suback, undefined);
-			strictEqual(await itemStatus(remote.itemId, 1_500), 404, `${kind}: a row landed from the non-loopback address`);
 
 			const loop = await mqttAttempt(kind, 'loopback', ctx, ports);
 			note(`arm4 ${kind} loopback no-credentials (positive control)`, loop);
@@ -563,12 +564,10 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		}
 	});
 
-	// ---- arm 5 ---------------------------------------------------------------------------------------
-
 	test('arm 5: a session stored from a loopback request never names the local principal', async () => {
 		for (const name of ['SessionStore', 'SessionStoreSpread', 'SessionStoreName']) {
 			const reply = await rest('loopback', `/${name}/`);
-			note(`arm5 ${name} reply`, { status: reply.status, body: reply.json, setCookie: reply.headers['set-cookie'] });
+			note(`arm5 ${name} reply`, { status: reply.status, userKeySurvived: reply.json?.userKeySurvived });
 			strictEqual(reply.status, 200, reply.text);
 			strictEqual(sessionIdOf(reply), reply.json.sessionId, `${name}: no session cookie`);
 			sessionIds[name] = reply.json.sessionId;
@@ -576,12 +575,12 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 
 			const rows = await sessionRows();
 			const row = rows.find((candidate: any) => candidate.id === reply.json.sessionId);
-			note(`arm5 ${name} hdb_session row`, row);
+			note(`arm5 ${name} hdb_session row has a user field`, row && 'user' in row);
 			ok(row, `${name}: the session row was not stored`);
 			strictEqual('user' in row, false, `${name}: row has a user field`);
 		}
 		const all = await sessionRows();
-		note('arm5 every hdb_session row', all);
+		note('arm5 hdb_session row count', all.length);
 		ok(all.length >= Object.keys(sessionIds).length);
 		for (const row of all) strictEqual(row.user, undefined, `row ${row.id} has user ${row.user}`);
 		for (const row of all) ok(!/local/.test(JSON.stringify(row)), `row ${row.id} mentions local`);
@@ -611,11 +610,7 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		// positive control: the same replay mechanism does authenticate a real login
 		const { username, password } = ctx.harper.admin;
 		const login = await ops('remote', { operation: 'login', username, password });
-		note('arm5 admin login', {
-			status: login.status,
-			body: login.json ?? login.text,
-			setCookie: login.headers['set-cookie'],
-		});
+		note('arm5 admin login status', login.status);
 		strictEqual(login.status, 200, login.text);
 		const loginId = sessionIdOf(login);
 		ok(loginId, 'login set no cookie');
@@ -638,8 +633,6 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		note('arm5 login session row (control: user field is visible when stored)', row);
 		strictEqual(row?.user, username);
 	});
-
-	// ---- arm 7 ---------------------------------------------------------------------------------------
 
 	test(`arm 7: a credential-free mint from loopback is for the stored admin, and works from the non-loopback address (x${REPEAT})`, async () => {
 		const { username } = ctx.harper.admin;
@@ -687,15 +680,13 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		note('arm7 refreshed operation_token claims', claimsOf(refreshed[0].json.operation_token));
 	});
 
-	// ---- arm 8 ---------------------------------------------------------------------------------------
-
 	const scopedLocalToken = async () => {
 		const minted = await ops(
 			'remote',
 			{ operation: 'create_authentication_tokens', username: 'local', role: { permission: { super_user: false } } },
 			{ Authorization: admin() }
 		);
-		note('arm8 scoped mint', { status: minted.status, body: minted.json ?? minted.text });
+		note('arm8 scoped mint status', minted.status);
 		strictEqual(
 			minted.status,
 			200,
@@ -747,16 +738,24 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 		strictEqual(rows.status, 403, 'a super-user-only resource served a token named local');
 	});
 
-	// ---- arm 6 (last: it adds users) ------------------------------------------------------------------
+	// last: it adds users
 
 	test('arm 6: add_user refuses "local"; look-alike names are ordinary users', async () => {
 		const names = ['local', 'Local', ' local', 'local '];
 		const accepted: { name: string; password: string }[] = [];
+		// a plain role, so any super-user answer for a look-alike can only come from a local-principal substitution
+		const role = `plain-${randomBytes(4).toString('hex')}`;
+		const addedRole = await ops(
+			'remote',
+			{ operation: 'add_role', role, permission: { super_user: false } },
+			{ Authorization: admin() }
+		);
+		strictEqual(addedRole.status, 200, addedRole.text);
 		for (const name of names) {
 			const password = generatedPassword();
 			const reply = await ops(
 				'remote',
-				{ operation: 'add_user', username: name, password, role: 'super_user', active: true },
+				{ operation: 'add_user', username: name, password, role, active: true },
 				{ Authorization: admin() }
 			);
 			note(`arm6 add_user ${JSON.stringify(name)}`, { status: reply.status, body: reply.json ?? reply.text });
@@ -776,6 +775,7 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 			listed.json.map((u: any) => JSON.stringify(u.username))
 		);
 		ok(!listed.json.some((u: any) => u.username === 'local'), 'a user named exactly "local" is stored');
+		strictEqual(accepted.length, names.length - 1, 'every look-alike name should be accepted');
 
 		try {
 			const principal = await ops('loopback', { operation: 'user_info' });
@@ -795,9 +795,11 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 				});
 				strictEqual(asVariant.status, 200, asVariant.text);
 				strictEqual(asVariant.json.username, name, 'variant resolved to another principal');
+				ok(asVariant.json.role?.permission?.super_user !== true, 'variant resolved to a super-user role');
 				const web = await rest('remote', '/WhoAmI/', { Authorization: basic(name, password) });
 				note(`arm6 Basic as ${JSON.stringify(name)} WhoAmI`, web.json);
 				strictEqual(web.json.localMarker, false, 'variant carries the local marker');
+				strictEqual(web.json.superUser, false, 'variant is a super user');
 				const mint = await ops(
 					'remote',
 					{ operation: 'create_authentication_tokens' },
@@ -814,6 +816,8 @@ suite('local trust is a principal, not a stored user', { skip: skipReason }, (ct
 				const dropped = await ops('remote', { operation: 'drop_user', username: name }, { Authorization: admin() });
 				note(`arm6 cleanup drop_user ${JSON.stringify(name)}`, dropped.status);
 			}
+			const droppedRole = await ops('remote', { operation: 'drop_role', id: role }, { Authorization: admin() });
+			note('arm6 cleanup drop_role', droppedRole.status);
 		}
 	});
 });

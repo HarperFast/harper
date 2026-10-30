@@ -1,3 +1,4 @@
+import { Resource, databases } from 'harper';
 import { threadId } from 'node:worker_threads';
 
 class Open extends Resource {
