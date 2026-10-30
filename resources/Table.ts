@@ -5952,7 +5952,7 @@ export function makeTable(options): TableResourceClass {
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 					// Ahead of the version comparison, which an LMDB merge's older stored version (#3388) can invert. Why
 					// only the committed list counts, and only with no earlier staged body: resources/DESIGN.md.
-					if (!audit && !fullUpdate && !priorStaged) {
+					if (!audit && !fullUpdate && !priorChange) {
 						const committedRefs = identityBase(write, existingEntry, committedBy)?.receivedIdentityRefs;
 						if (committedRefs && auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0) {
 							write.skipped = true;
@@ -9874,7 +9874,7 @@ export function makeTable(options): TableResourceClass {
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
 								appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
-							receivedIdentityRefs: audit ? undefined : existingEntry?.receivedIdentityRefs,
+							receivedIdentityRefs: audit ? undefined : base?.receivedIdentityRefs,
 						},
 						'message',
 						false,
@@ -9895,6 +9895,7 @@ export function makeTable(options): TableResourceClass {
 							nodeId: removal?.nodeId,
 							additionalAuditRefs: removal?.additionalAuditRefs,
 							unchanged: !priorStagedOp || priorStagedOp.stagedEntry.unchanged === true,
+							receivedIdentityRefs: audit ? undefined : base?.receivedIdentityRefs,
 						};
 						write.completeResidencyRecord = priorStagedOp?.completeResidencyRecord;
 						write.blobsAuditReferenced = true;
