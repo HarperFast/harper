@@ -231,8 +231,12 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 		if (existsSync(checkout.path)) {
 			throw usageError(`${workflow} appeared while setup ran; run setup again to check it. Nothing was changed.`);
 		}
-		mkdirSync(dirname(checkout.path), { recursive: true });
-		accessSync(dirname(checkout.path), constants.W_OK);
+		try {
+			mkdirSync(dirname(checkout.path), { recursive: true });
+			accessSync(dirname(checkout.path), constants.W_OK);
+		} catch (error) {
+			throw usageError(`Cannot write ${workflow}: ${(error as Error).message}. Nothing was changed.`);
+		}
 	}
 
 	const enabled: any = await cliOperations(

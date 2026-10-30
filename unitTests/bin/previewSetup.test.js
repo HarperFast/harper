@@ -130,6 +130,12 @@ describe('harper preview setup, before it enables anything (harper#3609)', () =>
 		assert.strictEqual(await workflowPresent(), false);
 	});
 
+	it('stops before it enables anything when it cannot write the workflow', async () => {
+		await fs.writeFile(path.join(directory, '.github'), 'a file where the directory should be');
+		await assert.rejects(setup(), /Cannot write \.github\/workflows\/preview\.yaml: .*Nothing was changed/);
+		assert.strictEqual(enabled(), false);
+	});
+
 	it('stops before it enables anything when the workflow file appeared while it asked', async () => {
 		prompts.password = async () => {
 			await fs.mkdir(path.dirname(path.join(directory, WORKFLOW)), { recursive: true });
