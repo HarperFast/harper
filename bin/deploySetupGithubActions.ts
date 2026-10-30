@@ -17,7 +17,9 @@ import { GITHUB_ACTIONS_ISSUER, buildWorkflowRef, canonicalWorkflowPath } from '
 import {
 	planIdentityReconcile,
 	policyDifferences,
+	policiesOverlap,
 	roleDifference,
+	sameAuthority,
 	userDifference,
 	type DesiredPolicy,
 	type DesiredRole,
@@ -374,6 +376,21 @@ export function planReconcile(
 		{ role: desired.role, user: desired.user, policies: [desired.policy] },
 		(id) => `If it should be replaced, drop it with \`harper drop_oidc_trust id=${id}\` and run setup again.`
 	);
+	const rival = existing.policies.find(
+		(policy) =>
+			policy?.id !== desired.policy.id &&
+			policy?.enabled !== false &&
+			policy?.exchangeable !== false &&
+			policiesOverlap(policy, desired.policy) &&
+			!sameAuthority(policy, desired.policy)
+	);
+	if (rival) {
+		plan.conflicts.push(
+			`Trust policy "${rival.id}" can match the same runs as user "${rival.user}", and the exchange refuses a run two ` +
+				'policies give different users or operations. Give this component its own workflow (workflow=) or ' +
+				'environment (environment=), or drop that policy if this identity should deploy from those runs instead.'
+		);
+	}
 	return { role: plan.role, user: plan.user, policy: plan.policies[0], conflicts: plan.conflicts };
 }
 

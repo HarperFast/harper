@@ -495,6 +495,26 @@ jobs:
 			});
 		});
 
+		it("refuses, before writing, a policy another component's policy would make the exchange refuse", () => {
+			const api = { ...matchingPolicy(), id: 'github-actions-api', user: 'api-ci-deploy' };
+			const plan = planReconcile({ roles: [], users: [], policies: [api] }, desired());
+			assert.match(
+				plan.conflicts.join(),
+				/Trust policy "github-actions-api" can match the same runs as user "api-ci-deploy"/
+			);
+			for (const skipped of [{ enabled: false }, { exchangeable: false }]) {
+				const plan = planReconcile({ roles: [], users: [], policies: [{ ...api, ...skipped }] }, desired());
+				assert.deepStrictEqual(plan.conflicts, [], 'the exchange would not count this policy');
+			}
+			const deleted = {
+				...api,
+				exchangeable: true,
+				invalid_reason: "names user 'api-ci-deploy', which does not exist",
+			};
+			const counted = planReconcile({ roles: [], users: [], policies: [deleted] }, desired());
+			assert.strictEqual(counted.conflicts.length, 1, 'the exchange refuses before it resolves the user');
+		});
+
 		it('leaves records that already match, so a rerun changes nothing', () => {
 			const plan = planReconcile(
 				{ roles: [matchingRole()], users: [matchingUser()], policies: [matchingPolicy()] },

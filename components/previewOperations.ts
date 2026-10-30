@@ -199,8 +199,8 @@ function rivalPolicies(names: PreviewNames, policies: any[], wanted: DesiredPoli
 		);
 		return rival
 			? [
-					`Trust policy "${rival.id}" would also match the runs "${policy.id}" is for, and the exchange takes ` +
-						`whichever comes first by id. Give this application its own workflow file (workflow=).`,
+					`Trust policy "${rival.id}" would also match the runs "${policy.id}" is for, and the exchange refuses a ` +
+						`token two policies give different users or operations. Give this application its own workflow file (workflow=).`,
 				]
 			: [];
 	});
@@ -264,8 +264,8 @@ export async function enablePreviews(req: any) {
 		for (const [index, wanted] of desired.policies.entries()) {
 			if (plan.policies[index] !== 'create') continue;
 			// add_oidc_trust replaces, so a policy written since the listing (by hand, or from another node) would be
-			// overwritten, and one that matches the same runs would leave which identity a run gets to the ids. Reading
-			// again narrows both to the time between this read and the write.
+			// overwritten, and one that matches the same runs would make the exchange refuse them. Reading again narrows
+			// both to the time between this read and the write.
 			const now = await listPolicies(req);
 			const raced = [
 				...(now.some((policy) => policy?.id === wanted.id)
