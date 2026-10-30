@@ -50,6 +50,9 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs |
 | `--shards`                     | `4`               | Load-generator processes                             |
 | `--reps`                       | `1`               | Independent samples per target × workload            |
+| `--perf-counters`              | off               | `perf stat` per component over each measured run     |
+| `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)      |
+| `--profile-ops`                | `1000000`         | Ops in each of the two profile windows               |
 
 `--threads` (Harper's worker threads and the Fastify cluster size) defaults to K.
 Results land in `benchmarks/ycsb-vs-pg/results/`, written after every sample, with
@@ -188,3 +191,28 @@ dataset sized as a multiple of the budget (`--ratios`, logical payload of the
 - **A failed sample** (errors, OOM kill, crash) is recorded with its phase and the
   session continues — unless its scopes or containers are still running, in which
   case the session stops. `--sized-ratios` limits the sized targets to some sizes.
+- **Harper is always capped here.** `--harper-memory=measured` is refused unless
+  `--allow-uncapped` is also given, and then every row carries `allowUncapped`.
+  A restored target still busy when the 10-minute quiesce wait ends is measured but
+  marked `status: quiesce-timeout` and `settled: false`.
+- **Reruns and a shared host.** `--cells=0.5:B:harper-uws,8:B:pg-redis` runs exactly
+  those samples, `--reps` times each. Before every sample the run waits (up to
+  `--host-quiet-max-min`, 20) until the rest of the host has used under
+  `--host-quiet-cores` (1) over 30 s: host busy time from `/proc/stat` minus this
+  run's own cgroup and the target's. Load that arrives mid-run is caught after it:
+  a measured run with the rest of the host over the threshold is measured again on
+  the warm target, up to `--noisy-retries` (2) times, and the discarded runs stay in
+  the row (`noisyWindows`, `hostQuiet`). Harper rows also record RocksDB flushes and
+  compactions per phase, from the info LOG.
+
+## Profiling (`--profile`)
+
+`--profile=<dir>` starts every target with V8's perf-map flags and, after each
+measured run, runs `--profile-ops` more under `perf stat` alone (steady-state counters:
+the measured run can still carry JIT warmup) and then `--profile-ops` more under
+`perf record` on the target cores, folded per component into `<dir>`.
+`profile-report.mts <results.json> --svg-dir=<dir>` turns those into CPU µs/op per
+bucket (HTTP, routing, auth, transactions, record cache, RocksDB, decode, JSON, the
+stack's Redis and Postgres, event loop, GC, JIT), RocksDB sub-parts, Harper's
+pipeline by inclusive cost, counters, and flame graphs. Needs
+`kernel.perf_event_paranoid <= 0`. [PROFILE.md](PROFILE.md) holds the results.
