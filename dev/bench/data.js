@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793344691896,
+  "lastUpdate": 1793370446565,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -26181,6 +26181,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 338908,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9c43c77905fb5b4638123e094bacf906a2723ff2",
+          "message": "Bring DESIGN.md and resources/DESIGN.md back under their line budgets (#3792)\n\n* Bring DESIGN.md and resources/DESIGN.md back under their line budgets\n\nLint Source Code went red on main at 8037408e5 (#3655), when resources/DESIGN.md\npassed 1000 lines; 753dbb2e4 (#3574) then pushed the root index to 251. Merges the\ntwo drop_attribute notes (primary-key guard and row strip) into one section placed\nwith the schema notes, shares its index line with the cluster-origin note, and\nfolds the remediation paragraph into its section.\n\nDispatch-Task: main-red-kriszyp_harper_753dbb2e4_5684deb1\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Keep the pre-#3574 framing on the primary-key drop history\n\nDispatch-Task: main-red-kriszyp_harper_753dbb2e4_5684deb1\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-30T14:11:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/9c43c77905fb5b4638123e094bacf906a2723ff2"
+        },
+        "date": 1793370442593,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 14878,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 8943,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 6823,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 14845824,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 7761,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1609,
             "unit": "ops"
           }
         ]
