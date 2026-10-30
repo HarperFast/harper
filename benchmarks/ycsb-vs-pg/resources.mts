@@ -13,7 +13,7 @@
  * because Postgres backends fork per connection and would otherwise be missed.
  */
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { readFileSync, readdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -27,7 +27,7 @@ export interface ResourceSample {
 	/** Server-side CPU seconds consumed, by component. Excludes the load generator. */
 	cpuSeconds: Record<string, number>;
 	/** Redis hit/miss counters, when a Redis is part of the target. */
-	redis?: { hits: number; misses: number; evictions: number };
+	redis?: { hits: number; misses: number; evictions: number; usedMemoryBytes: number; keys: number };
 	/** Resident bytes by component. Proportional set size, so shared pages are counted once. */
 	memoryBytes: Record<string, number>;
 }
@@ -215,13 +215,172 @@ export function assertDisjointCores(topology: CpuTopology[], server: number[], d
  * Writes a runtime wrapper that execs node under `taskset`, so Harper's main thread and every
  * worker thread it creates start on `cpus`. @harperfast/integration-testing spawns
  * `HARPER_RUNTIME` (read when it is first imported) in place of `node`.
+ *
+ * Per launch, through the environment Harper is started with:
+ * - `YCSB_SCOPE_UNIT` runs it in its own user systemd scope, capped at `YCSB_MEMORY_MAX` (bytes or
+ *   `infinity`) with swap off. The scope exists before node does, so nothing is ever charged elsewhere.
+ * - `YCSB_RESTORE_FROM` / `YCSB_RESTORE_TO` copy a dataset snapshot into the install directory first,
+ *   inside that scope: the restored files' page cache is charged to the Harper that reads them.
  */
 export async function writePinnedRuntime(dir: string, cpus: number[]): Promise<string> {
 	const path = join(dir, '.pinned-node.sh');
+	const inner = join(dir, '.pinned-node-inner.sh');
 	await mkdir(dir, { recursive: true });
-	await writeFile(path, `#!/bin/sh\nexec taskset -c ${cpus.join(',')} ${JSON.stringify(process.execPath)} "$@"\n`);
+	await writeFile(
+		inner,
+		'#!/bin/sh\nset -e\n' +
+			'if [ -n "$YCSB_RESTORE_FROM" ]; then cp -a "$YCSB_RESTORE_FROM/." "$YCSB_RESTORE_TO/"; fi\n' +
+			`exec taskset -c ${cpus.join(',')} ${JSON.stringify(process.execPath)} "$@"\n`
+	);
+	await writeFile(
+		path,
+		'#!/bin/sh\n' +
+			'if [ -n "$YCSB_SCOPE_UNIT" ]; then\n' +
+			'\texec systemd-run --user --scope --quiet --collect --expand-environment=no --unit="$YCSB_SCOPE_UNIT" ' +
+			`-p MemoryMax="\${YCSB_MEMORY_MAX:-infinity}" -p MemorySwapMax=0 -- ${JSON.stringify(inner)} "$@"\n` +
+			'fi\n' +
+			`exec ${JSON.stringify(inner)} "$@"\n`
+	);
+	await chmod(inner, 0o755);
 	await chmod(path, 0o755);
 	return path;
+}
+
+/** Argv prefix that runs a command in its own capped, swap-off user scope (`exec`s, so the PID is kept). */
+export function scopedCommand(unit: string, memoryMaxBytes: number): string[] {
+	return [
+		'systemd-run',
+		'--user',
+		'--scope',
+		'--quiet',
+		'--collect',
+		'--expand-environment=no',
+		`--unit=${unit}`,
+		'-p',
+		`MemoryMax=${Number.isFinite(memoryMaxBytes) ? memoryMaxBytes : 'infinity'}`,
+		'-p',
+		'MemorySwapMax=0',
+		'--',
+	];
+}
+
+/**
+ * Stops a user scope (killing anything left in it) and fails unless it is gone. A sample must not
+ * start while a previous one's workers still hold its cores, memory or ports.
+ */
+export async function stopScope(unit: string): Promise<void> {
+	await exec('systemctl', ['--user', 'stop', `${unit}.scope`], { timeout: 60_000 }).catch(() => {});
+	const { stdout } = await exec('systemctl', ['--user', 'show', '-P', 'ActiveState', `${unit}.scope`], {
+		timeout: 30_000,
+	});
+	if (!['inactive', 'failed', ''].includes(stdout.trim())) {
+		throw new Error(`scope ${unit} is still ${stdout.trim()} after stop`);
+	}
+}
+
+/** The cgroup v2 directory `pid` runs in. */
+export function processCgroup(pid: number): string {
+	const line = readFileSync(`/proc/${pid}/cgroup`, 'utf8')
+		.split('\n')
+		.find((l) => l.startsWith('0::'));
+	if (!line) throw new Error(`pid ${pid} has no cgroup v2 membership`);
+	return `/sys/fs/cgroup${line.slice(3)}`;
+}
+
+function readLimit(path: string): number {
+	const value = readFileSync(path, 'utf8').trim();
+	return value === 'max' ? Infinity : Number(value);
+}
+
+export interface MemoryLimit {
+	memoryMaxBytes: number;
+	swapMaxBytes: number;
+	/** Tightest memory.max on any ancestor; a cap there would silently shrink the budget. */
+	ancestorMaxBytes: number;
+}
+
+/** Fails unless `scope` is capped at exactly `expectedBytes`, swap is off, and no ancestor caps it tighter. */
+export function verifyMemoryLimit(component: string, scope: string, expectedBytes: number): MemoryLimit {
+	const memoryMaxBytes = readLimit(`${scope}/memory.max`);
+	const swapMaxBytes = readLimit(`${scope}/memory.swap.max`);
+	if (memoryMaxBytes !== expectedBytes) {
+		throw new Error(`${component}: memory.max is ${memoryMaxBytes}, expected ${expectedBytes}`);
+	}
+	if (swapMaxBytes !== 0) throw new Error(`${component}: memory.swap.max is ${swapMaxBytes}, expected 0`);
+	let ancestorMaxBytes = Infinity;
+	for (let dir = dirname(scope); dir.startsWith('/sys/fs/cgroup/'); dir = dirname(dir)) {
+		try {
+			ancestorMaxBytes = Math.min(ancestorMaxBytes, readLimit(`${dir}/memory.max`));
+		} catch {
+			// the root cgroup has no memory.max
+		}
+	}
+	if (ancestorMaxBytes < expectedBytes) {
+		throw new Error(`${component}: an ancestor cgroup caps memory at ${ancestorMaxBytes}, below ${expectedBytes}`);
+	}
+	return { memoryMaxBytes, swapMaxBytes, ancestorMaxBytes };
+}
+
+export interface CgroupMemory {
+	currentBytes: number;
+	anonBytes: number;
+	/** Page cache charged to the cgroup, shared memory (Postgres shared_buffers) included. */
+	fileBytes: number;
+	shmemBytes: number;
+	/** Lifetime high-water mark, load and restore included. */
+	peakBytes: number;
+	/** memory.events counters: low, high, max, oom, oom_kill, oom_group_kill. */
+	events: Record<string, number>;
+}
+
+function keyedCounters(text: string): Record<string, number> {
+	const out: Record<string, number> = {};
+	for (const line of text.trim().split('\n')) {
+		const [key, value] = line.split(' ');
+		out[key] = Number(value);
+	}
+	return out;
+}
+
+export async function readCgroupMemory(scope: string): Promise<CgroupMemory> {
+	const stat = keyedCounters(await readFile(`${scope}/memory.stat`, 'utf8'));
+	return {
+		currentBytes: Number(await readFile(`${scope}/memory.current`, 'utf8')),
+		anonBytes: stat.anon,
+		fileBytes: stat.file,
+		shmemBytes: stat.shmem,
+		peakBytes: Number(await readFile(`${scope}/memory.peak`, 'utf8')),
+		events: keyedCounters(await readFile(`${scope}/memory.events`, 'utf8')),
+	};
+}
+
+/** Server CPU-seconds consumed so far across every component of a target. */
+export async function totalCpuSeconds(targets: ResourceTargets): Promise<number> {
+	let total = 0;
+	for (const root of Object.values(targets.processes)) total += await processCpuSeconds(root);
+	for (const scope of Object.values(targets.cgroups)) total += await cgroupCpuSeconds(scope);
+	return total;
+}
+
+/**
+ * Waits until the target uses less than `cores` of CPU over a `windowMs` window: compaction after a
+ * bulk load, or a checkpoint, must not land in a measured run. Returns how long it waited, and
+ * whether it got quiet before `maxMs`.
+ */
+export async function waitForQuiet(
+	targets: ResourceTargets,
+	{ cores = 0.1, windowMs = 5000, maxMs = 30 * 60_000 } = {}
+): Promise<{ waitedMs: number; quiet: boolean }> {
+	const start = Date.now();
+	let previous = await totalCpuSeconds(targets);
+	while (Date.now() - start < maxMs) {
+		await new Promise((r) => setTimeout(r, windowMs));
+		const now = await totalCpuSeconds(targets);
+		const used = (now - previous) / (windowMs / 1000);
+		previous = now;
+		if (used < cores) return { waitedMs: Date.now() - start, quiet: true };
+	}
+	return { waitedMs: Date.now() - start, quiet: false };
 }
 
 /** Pins every thread of `pid` (and threads it creates later) to `cpus`. */
@@ -279,6 +438,8 @@ export async function sampleMemory(targets: ResourceTargets): Promise<Record<str
 export class MemoryPeakSampler {
 	private peak: Record<string, number> = {};
 	private peakTotal = 0;
+	private sum: Record<string, number> = {};
+	private samples = 0;
 	private running?: Promise<void>;
 	private stopped = false;
 	private wake?: () => void;
@@ -300,8 +461,10 @@ export class MemoryPeakSampler {
 				let total = 0;
 				for (const [name, bytes] of Object.entries(sample)) {
 					this.peak[name] = Math.max(this.peak[name] ?? 0, bytes);
+					this.sum[name] = (this.sum[name] ?? 0) + bytes;
 					total += bytes;
 				}
+				this.samples++;
 				this.peakTotal = Math.max(this.peakTotal, total);
 				await new Promise<void>((resolve) => {
 					this.wake = resolve;
@@ -314,12 +477,19 @@ export class MemoryPeakSampler {
 		});
 	}
 
-	async stop(): Promise<{ peakBytes: Record<string, number>; peakTotalBytes: number }> {
+	/** `meanBytes` is the steady level: the mean of the window's samples, per component. */
+	async stop(): Promise<{
+		peakBytes: Record<string, number>;
+		peakTotalBytes: number;
+		meanBytes: Record<string, number>;
+	}> {
 		this.stopped = true;
 		this.wake?.();
 		await this.running;
 		if (this.error) throw this.error;
-		return { peakBytes: this.peak, peakTotalBytes: this.peakTotal };
+		const meanBytes: Record<string, number> = {};
+		for (const [name, sum] of Object.entries(this.sum)) meanBytes[name] = sum / this.samples;
+		return { peakBytes: this.peak, peakTotalBytes: this.peakTotal, meanBytes };
 	}
 }
 
@@ -335,13 +505,19 @@ export async function sampleResources(targets: ResourceTargets): Promise<Resourc
 	let redis: ResourceSample['redis'];
 	if (targets.redisExec) {
 		// Fail closed: a missing snapshot would make the hit-rate delta include setup traffic.
-		const { stdout } = await exec(targets.redisExec[0], targets.redisExec.slice(1));
+		const { stdout } = await exec(targets.redisExec[0], targets.redisExec.slice(1), { timeout: 60_000 });
 		const field = (name: string): number => {
 			const match = new RegExp(`^${name}:(\\d+)`, 'm').exec(stdout);
 			if (!match) throw new Error(`redis INFO has no ${name}`);
 			return Number(match[1]);
 		};
-		redis = { hits: field('keyspace_hits'), misses: field('keyspace_misses'), evictions: field('evicted_keys') };
+		redis = {
+			hits: field('keyspace_hits'),
+			misses: field('keyspace_misses'),
+			evictions: field('evicted_keys'),
+			usedMemoryBytes: field('used_memory'),
+			keys: Number(/^db0:keys=(\d+)/m.exec(stdout)?.[1] ?? 0),
+		};
 	}
 	return { cpuSeconds, redis, memoryBytes: await sampleMemory(targets) };
 }

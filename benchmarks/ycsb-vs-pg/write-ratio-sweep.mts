@@ -16,7 +16,7 @@ import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startDriver } from './shardedDriver.mts';
-import { startPgStack, dataDir } from './pgStack.mts';
+import { startPgStack, dataDir, WARM_STACK_MEMORY } from './pgStack.mts';
 import {
 	sampleResources,
 	diffResources,
@@ -155,12 +155,14 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 		fields: 10,
 		poolSize: 20,
 		serverCpus: SERVER_CPUS,
+		memory: WARM_STACK_MEMORY,
+		fastifyUnit: `ycsb-ratio-sweep-${process.pid}-${ratio}`.replace('.', '_'),
 	});
 	try {
 		await waitForRoute(`${stack.baseUrl}/usertable/`, 30_000);
 		return await run(stack.baseUrl, {
 			processes: { fastify: stack.appPid },
-			cgroups: stack.cgroups,
+			cgroups: { postgres: stack.cgroups.postgres, redis: stack.cgroups.redis },
 			redisExec: stack.redisExec,
 		});
 	} finally {

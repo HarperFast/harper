@@ -31,6 +31,8 @@ export interface DriverConfig {
 	shape: RecordShape;
 	keyWidth: number;
 	maxScanLength: number;
+	/** false attaches to an already-loaded dataset (a restored snapshot) instead of inserting it. */
+	load?: boolean;
 }
 
 class ShardPool {
@@ -175,7 +177,10 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 			return { ...base, phase, concurrency: split(config.concurrency, config.shards)[i], from, to: cursor };
 		});
 	};
-	const load = mergeShardResults(await pool.dispatch(rangeCommands('load')));
+	const load =
+		config.load === false
+			? { ops: 0, errors: 0, elapsedMs: 0, throughput: 0, latency: {} }
+			: mergeShardResults(await pool.dispatch(rangeCommands('load')));
 
 	// Inserting workloads can't be split without cross-shard key coordination.
 	const shardsFor = (name: string) => (WORKLOADS[name].mix.insert ? 1 : config.shards);

@@ -2,13 +2,22 @@
 
 A rough head-to-head: the same YCSB-style REST workload driven against
 
-| Target         | What answers the request                                                                              |
-| -------------- | ----------------------------------------------------------------------------------------------------- |
-| `harper`       | Harper core (this checkout's `dist/`), `usertable` over REST — database, cache and app in one process |
-| `harper-sized` | Same, with `HARPER_RECORD_CACHE_SIZE` raised to the next power of two ≥ the record count              |
-| `harper-base`  | Another Harper build (`--base-harper=<dist/bin/harper.js>`), driven by this harness                   |
-| `pg-redis`     | Fastify → Redis look-aside cache → Postgres                                                           |
-| `pg-only`      | Fastify → Postgres (no cache), to isolate what the cache is buying                                    |
+| Target             | What answers the request                                                                              |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `harper`           | Harper core (this checkout's `dist/`), `usertable` over REST — database, cache and app in one process |
+| `harper-sized`     | Same, with `HARPER_RECORD_CACHE_SIZE` raised to the next power of two ≥ the record count              |
+| `harper-uws`       | `harper` with its plaintext HTTP port on uWebSockets.js (`HARPER_UWS_HTTP=1`) instead of Node's HTTP  |
+| `harper-uws-sized` | `harper-uws` with the sized record cache                                                              |
+| `harper-base`      | Another Harper build (`--base-harper=<dist/bin/harper.js>`), driven by this harness                   |
+| `pg-redis`         | Fastify → Redis look-aside cache → Postgres                                                           |
+| `pg-only`          | Fastify → Postgres (no cache), to isolate what the cache is buying                                    |
+
+**Which change moved Harper's read numbers in September 2026.** The read-only gain
+then (workload C 30.5k → 42k ops/s; Harper CPU-seconds 58 → 42) came from the HTTP
+layer, not the record cache: Fastify's HTTP layer alone was 40.3 of the stack's 60.8
+CPU-seconds on C, and serving Harper over uWebSockets.js moved C from 1.03x to 1.41x
+of `pg-redis`. Sizing the record cache on top of uWS added about 12% (42.1k → 46.8k).
+The `harper-uws*` targets keep that comparison in every run.
 
 It reuses `benchmarks/ycsb` **unchanged** — same load generator, same key
 distributions, same workload mixes, same 10 × 100 B record shape. The only
@@ -23,13 +32,18 @@ npm ci --prefix benchmarks/ycsb-vs-pg/pg-app   # Fastify, pg, ioredis for the co
 docker --version                  # postgres + redis run via docker compose
 node benchmarks/ycsb-vs-pg/run-compare.mts --scale=standard
 node benchmarks/ycsb-vs-pg/run-compare.mts --scale=quick --workloads=C,A --targets=harper,pg-redis
+node benchmarks/ycsb-vs-pg/memory-sweep.mts --ratios=0.5,2,8   # dataset larger than memory, below
 ```
+
+User systemd (`systemd-run --user`, memory controller delegated to the user manager)
+is required: every host process runs in its own capped scope.
 
 All `benchmarks/ycsb` flags apply, plus:
 
 | Flag                           | Default           | Meaning                                              |
 | ------------------------------ | ----------------- | ---------------------------------------------------- |
 | `--targets`                    | `harper,pg-redis` | Targets to compare (table above)                     |
+| `--harper-memory`              | `capped`          | `capped` (8 GiB cgroup) or `measured` (no cap)       |
 | `--target-cpus=K`              | `4`               | Size of the CPU set every target runs on             |
 | `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`        |
 | `--cache`                      | `warm`            | `warm` or `cold` (below)                             |
@@ -54,11 +68,22 @@ sample starts a fresh server and reloads the dataset.
   Affinity is set when each process is created (a `taskset` wrapper for Harper,
   `taskset -c` for Fastify, compose `cpuset` for containers) and every thread is
   checked before measuring; a sample with a thread outside its set fails.
-- **Memory budget.** 8 GiB per target, recorded with the results. The pg stack
-  splits it as postgres `mem_limit` 6g (`shared_buffers=4GB`), redis 1g
-  (`maxmemory 768mb`) and the Fastify cluster the remainder. Host processes
-  (Harper, Fastify) are measured, not limited: one cgroup spanning host
-  processes and docker containers needs root. Peak memory is sampled every 2 s.
+- **Equal memory budget, enforced.** 8 GiB per target. Every component runs in its
+  own memory cgroup with a hard cap and swap off: Harper in a user systemd scope
+  capped at 8 GiB, the Fastify cluster in one capped at 1 GiB, Postgres and Redis
+  under compose `mem_limit` with `memswap_limit` equal to it. run-compare's stack
+  split is Fastify 1 GiB + Postgres 6 GiB (`shared_buffers=4GB`) + Redis 1 GiB
+  (`maxmemory 768mb`). Each cap, swap limit and ancestor limit is checked before a
+  sample runs. Harper sizes its RocksDB block cache and worker heaps from the
+  cgroup limit, as it would in an 8 GiB container. (One cgroup spanning host
+  processes and containers would need root; one per process does not.)
+  `--harper-memory=measured` lifts Harper's cap for comparison runs.
+- **Memory is what the cgroup is charged**, the same way for every component:
+  anonymous memory plus page cache (a file page is charged to the cgroup that first
+  touches it) plus shared memory (`shared_buffers`). Each sample reports the 2 s
+  peak and mean over the measured window, the anon/file split at its end, the
+  lifetime peak, and OOM-kill events; an OOM kill invalidates the sample. Results
+  before methodology v2 summed PSS for host processes, which omits page cache.
 - **Headline is throughput at equal cores.** CPU µs/op (server CPU only), peak
   memory, Redis hit rate and p50/p99 of the primary operation sit beside it.
 - **Cache state is set, not inherited.** After the load, a pass reads every key
@@ -102,9 +127,10 @@ sample starts a fresh server and reloads the dataset.
   real RocksDB compaction, quietly tilting every write-bearing workload.
 - **Same durability setting.** Postgres keeps `fsync=on` /
   `synchronous_commit=on`, matching Harper's default `storage.writeAsync=false`.
-- **Postgres is tuned, Harper is not.** `shared_buffers=4GB`,
-  `effective_cache_size=6GB` — the stock 128 MB would make it a page-fault
-  benchmark. Harper runs stock apart from `threads.count` and log level.
+- **Postgres is tuned, Harper is not.** `shared_buffers` and
+  `effective_cache_size` are sized to the container's share — the stock 128 MB
+  would make it a page-fault benchmark. Harper runs stock apart from
+  `threads.count` and log level.
 - **Identical response bodies.** The Fastify handler selects `id` alongside the
   fields so both targets return the same JSON keys and roughly the same bytes.
 - **Every sample gets its own freshly started server, dataset and read-all pass.**
@@ -130,3 +156,33 @@ sample starts a fresh server and reloads the dataset.
   for workload C (all shards) and E (one shard, since it inserts). Every route
   returns one ~1 KB record, so it bounds the generator's request rate, not the
   cost of receiving E's multi-record scan bodies.
+
+## Dataset larger than memory (`memory-sweep.mts`)
+
+A Redis holding the whole dataset is the cache-aside stack's upper bound. The sweep
+lets the hit rate come out of memory instead: same 4 cores and 8 GiB per target,
+dataset sized as a multiple of the budget (`--ratios`, logical payload of the
+10 × 100 B records), zipfian reads, workloads C and B.
+
+- **Stack split, chosen once:** `pg-redis` = Fastify 1 GiB + Redis 3.5 GiB
+  (`maxmemory 3gb`) + Postgres 3.5 GiB (`shared_buffers=1GB`); `pg-only` = Fastify
+  1 GiB + Postgres 7 GiB (`shared_buffers=2GB`). Harper: one 8 GiB cgroup.
+- **One load per engine and size, restored per sample.** A capped `harper` and a
+  `pg-only` each load the dataset over REST, then quiesce (CPU under 0.1 core for
+  5 s), shut down cleanly and keep the data directory as a snapshot. Every
+  (target, workload) sample copies that snapshot into a fresh data directory
+  from inside its own cgroup, before the server starts — in Harper's launch
+  wrapper, in Postgres' container entrypoint — so the copy's page cache is
+  charged to the sample, not to a copier outside the budget. All targets of a
+  size read byte-identical, compacted data. Redis starts empty.
+- **Warmup to a plateau, then one measured run.** 1M-op chunks of the workload's
+  own zipfian mix until the last three agree (throughput within 5%, and for
+  `pg-redis` the Redis hit rate within 0.5 points), up to `--warmup-max-chunks`.
+  A sample that hits the ceiling is reported with `!` and is not a settled
+  result. B's measured run is bounded (1M ops), not a write steady state;
+  Postgres checkpoints in the window are recorded.
+- **No hit-rate gate.** The Redis hit rate per sample is the output. Harper's
+  record-cache hit rate is not observable without core changes.
+- **A failed sample** (errors, OOM kill, crash) is recorded with its phase and the
+  session continues — unless its scopes or containers are still running, in which
+  case the session stops. `--sized-ratios` limits the sized targets to some sizes.
