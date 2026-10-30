@@ -99,15 +99,16 @@ export async function probePreview(url: string, fetchImpl: Fetch = fetch as Fetc
 				'not route preview hosts to isolated applications (on Fabric, an nginx-mode host), or the worker is still starting.',
 		};
 	}
-	// Harper sends no Server header, but a proxy in front of it may replace the application's own. So only a gateway
-	// error, or a 503 a proxy names itself as sending, says the request never reached the preview.
+	// Harper sends no Server header, but a proxy in front of it may replace the application's own. A gateway error, or a
+	// 503 a proxy names itself as sending, may be that proxy's or one it passed on from the preview; nothing here says
+	// which, and either can clear while a worker starts.
 	const server = response.headers.get('server') ?? '';
 	const fromProxy = PROXY_SERVERS.test(server);
 	if (response.status === 502 || response.status === 504 || (response.status === 503 && fromProxy)) {
 		return {
 			reachable: false,
 			retry: true,
-			reason: `${host} answered ${response.status}${server ? ` from ${server}` : ''}, not from the preview: whatever terminates TLS for it does not route it to the cluster's preview.`,
+			reason: `${host} answered ${response.status}${server ? ` from ${server}` : ''}: either the preview answered that itself, or whatever terminates TLS for it does not route it to the cluster's preview.`,
 		};
 	}
 	if (fromProxy && (response.status === 404 || response.status === 421)) {
