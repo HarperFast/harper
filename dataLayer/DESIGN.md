@@ -298,7 +298,7 @@ protocol, because "the files were copied" was never proof that the restored gene
   repository except its own rollback copy, and until the restore publishes, its staged source stays
   whole. The child extracts the archive to `<backupsRoot>/<db>/.staging/<id>/tree`, proves its logs and
   catalogue, reads every record and index entry (RocksDB checks each block's checksum on read — the
-  tree has no backup checksums), and records every file's sha256 in `inventory.json`; `staged.json`,
+  tree has no backup checksums), and records every file's sha256 in `inventory.ndjson`; `staged.json`,
   written last, makes the area a source (`source_kind: staged_tree`, `backup_dir` = the area). The
   receipt's `rollback_dir` (the real repository) is where the rollback copy goes.
 - **Install, not engine restore.** `apply-and-prove` re-hashes every staged file against the inventory

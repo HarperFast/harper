@@ -272,7 +272,7 @@ export function acquireRestoreLock(dbPath: string): RestoreLock {
 	return { token, dbPath, preexisting: false };
 }
 
-export const RESTORE_CHILD_LOCK_SUFFIX = '.child.lock';
+const RESTORE_CHILD_LOCK_SUFFIX = '.child.lock';
 
 /**
  * A restore child takes this lock for its whole life, and the OS drops it only when the child is gone.

@@ -10,7 +10,7 @@ export const RESTORE_RECEIPT_SUFFIX = '.intent';
 // receipt: databases under one root share the metadata directory but not a lock.
 const RESTORE_RECEIPT_TEMP_SUFFIX = '.intent-tmp';
 export const RESTORE_RECEIPT_VERSION = 1;
-export const DEFAULT_RESTORE_MAX_ATTEMPTS = 3;
+const DEFAULT_RESTORE_MAX_ATTEMPTS = 3;
 
 export type RestoreRoute = 'online' | 'offline' | 'on_restart';
 export type RestoreReceiptState = 'pending' | 'applying' | 'committed' | 'terminal';

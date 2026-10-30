@@ -40,7 +40,7 @@ import { redactUrl } from '../utility/safeFetch.ts';
 import { fileIdentity, isFileIdentity, sameFileIdentity, type FileIdentity } from '../utility/fileIdentity.ts';
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { hasLivePin } from './backupRepository.ts';
+import { hasLivePin, readBackupPins } from './backupRepository.ts';
 import { readStagedSource, STAGED_TREE_BACKUP_ID } from './archiveStaging.ts';
 import type { BackupManifest } from './backupManifest.ts';
 import type { RestoreSourceKind } from './restoreReceipt.ts';
@@ -462,6 +462,24 @@ export function releaseArchiveStaging(source: { backup_dir: string; source_kind?
 	// only the kind decides: a backups root that happens to end in `.staging` is still a real repository
 	if (source.source_kind === 'staged_tree' && basename(join(source.backup_dir, '..')) === IMPORT_STAGING_DIR) {
 		releaseStagingIfUnowned(source.backup_dir);
+	}
+}
+
+/**
+ * Every staging area of a database that some restore pinned and nothing holds any longer: a chain of
+ * failed attempts at one target leaves one per attempt, and a rerun takes over only the latest. An area
+ * no restore ever pinned is still being staged, so it is left alone.
+ */
+export function releaseLapsedStaging(databaseName: string): void {
+	const stagingRoot = join(backupDirForDatabase(databaseName), IMPORT_STAGING_DIR);
+	if (!existsSync(stagingRoot)) return;
+	for (const id of readdirSync(stagingRoot)) {
+		const stagingDir = join(stagingRoot, id);
+		try {
+			if (readBackupPins(stagingDir).length > 0) releaseStagingIfUnowned(stagingDir);
+		} catch (error) {
+			logger.warn(`Could not check the restore staging area ${stagingDir}; the next sweep retries`, error);
+		}
 	}
 }
 

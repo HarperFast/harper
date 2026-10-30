@@ -7,8 +7,8 @@ import { getStorageSpaceStats, type StorageSpaceStats } from '../server/storageR
 
 const GIB = 1024 ** 3;
 
-export const DEFAULT_RESAMPLE_BYTES = 256 * 1024 * 1024;
-export const DEFAULT_RESAMPLE_INTERVAL_MS = 10_000;
+const DEFAULT_RESAMPLE_BYTES = 256 * 1024 * 1024;
+const DEFAULT_RESAMPLE_INTERVAL_MS = 10_000;
 
 export function defaultReserve({ size }: StorageSpaceStats): number {
 	return Math.max(GIB, Math.ceil(size * 0.05));

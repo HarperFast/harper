@@ -33,7 +33,7 @@ import {
 	type RestoreSourceKind,
 } from './restoreReceipt.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { releaseArchiveStaging, resolveRestoreSource } from './restoreArchive.ts';
+import { releaseArchiveStaging, releaseLapsedStaging, resolveRestoreSource } from './restoreArchive.ts';
 import type { RestoreEvidence } from './restoreChildCommands.ts';
 import {
 	assertTargetClaimable,
@@ -83,7 +83,7 @@ export interface PublishRestoreRequest {
 	online?: OnlineRestoreHooks;
 }
 
-export const PRE_RESTORE_PIN_PREFIX = 'pre-restore-';
+const PRE_RESTORE_PIN_PREFIX = 'pre-restore-';
 
 export function preRestorePinId(operationId: string): string {
 	return `${PRE_RESTORE_PIN_PREFIX}${operationId}`;
@@ -320,7 +320,9 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 		releaseRestoreLock(lock);
 	}
 	// a staged archive an earlier failed attempt kept for this rerun is no longer anyone's source
-	if (takenOver && takenOver.backup_dir !== backupDir) releaseArchiveStaging(takenOver);
+	if (takenOver?.source_kind === 'staged_tree' || request.sourceKind === 'staged_tree') {
+		releaseLapsedStaging(sourceDatabase);
+	}
 	try {
 		await request.online?.publish();
 	} catch (error) {

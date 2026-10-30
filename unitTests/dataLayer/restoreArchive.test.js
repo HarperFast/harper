@@ -622,6 +622,34 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 				assert.strictEqual(readRestoreReceipt(dir).kind, 'absent');
 				assert.strictEqual(restoreMarkerPresent(dir), false);
 			});
+
+			it('releases every staging area a chain of failed attempts left once a rerun publishes', async function () {
+				const name = freshName();
+				await seedTarget(name);
+				const dir = resolveDatabasePath(name);
+				const realRun = restoreChildRunner.runRestoreChild;
+				const restoreRunner = replaceProperty(restoreChildRunner, 'runRestoreChild', (command, args, options) => {
+					if (command !== 'apply-and-prove') return realRun(command, args, options);
+					options.beforeDestruction();
+					return Promise.reject(new Error('apply failed after the purge'));
+				});
+				try {
+					for (let attempt = 0; attempt < 2; attempt++) {
+						await assert.rejects(
+							restoreBackup({ ...SU, database: name, ...serverFile(gzArchive) }),
+							/apply failed after the purge/
+						);
+					}
+				} finally {
+					restoreRunner();
+				}
+				assert.strictEqual(stagingEntries(name).length, 2, 'each failed attempt kept its own source');
+
+				await restoreBackup({ ...SU, database: name, ...serverFile(gzArchive) });
+				await assertRestored(name);
+				assert.deepStrictEqual(stagingEntries(name), [], 'no attempt of the chain is stranded');
+				assert.strictEqual(restoreMarkerPresent(dir), false);
+			});
 		});
 
 		describe('on_restart', function () {

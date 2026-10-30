@@ -59,7 +59,7 @@ import {
 } from './restorePublication.ts';
 import { listBackupsInDir, restorePinId } from './rocksdbBackup.ts';
 
-export const RESTORE_INTENT_OWNER = 'restore-intent';
+const RESTORE_INTENT_OWNER = 'restore-intent';
 // room beyond the live size, since a backup also writes its transaction logs and blob snapshot
 const PRE_RESTORE_SPACE_MARGIN = 1.1;
 
