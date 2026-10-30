@@ -3,6 +3,7 @@
 import fs from 'fs-extra';
 import Joi from 'joi';
 import { resolveFullTextSearchLimits } from '../resources/indexes/fullTextSearchLimits.ts';
+import { validateHeaderValue } from 'node:http';
 import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -308,6 +309,30 @@ const healthThresholds = (warningDefault: number, errorDefault: number) =>
 			(value.warning ?? warningDefault) <= (value.error ?? errorDefault) ? value : helpers.error('any.invalid')
 		);
 
+const corsAllowHeadersConstraints = Joi.custom((value, helpers) => {
+	try {
+		for (const header of Array.isArray(value) ? value : [value])
+			validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
+		return value;
+	} catch {
+		return helpers.error('any.invalid');
+	}
+})
+	.allow(null)
+	.optional();
+const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
+	.prefs({ convert: false })
+	.optional();
+
+export function effectiveHttpConfigValidator(flatConfig) {
+	return Joi.object({
+		http_readrequestqueuelimit: readRequestQueueLimitConstraints,
+		http_corsaccesscontrolallowheaders: corsAllowHeadersConstraints,
+	}).validate({
+		http_readrequestqueuelimit: flatConfig.http_readrequestqueuelimit,
+		http_corsaccesscontrolallowheaders: flatConfig.http_corsaccesscontrolallowheaders,
+	});
+}
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
 	hdbRoot = configJson.rootPath;
@@ -497,6 +522,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
+			corsAccessControlAllowHeaders: corsAllowHeadersConstraints,
+			readRequestQueueLimit: readRequestQueueLimitConstraints,
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
