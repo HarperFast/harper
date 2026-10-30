@@ -2040,7 +2040,8 @@ let workerReleasesWatched = false;
  * drop, once a start has settled its components and its workers have reported what they loaded, and while one that a
  * later pass can finish remains, on a backoff timer and whenever a worker exits or reports what it loaded. One
  * application at a time, under its component lock, which a pass does not wait for. A request during a pass runs one
- * more, so a debt recorded after the listing is not missed.
+ * more, so a debt recorded after the listing is not missed. A worker's exit or report wakes a pass only while the timer
+ * is armed or a pass is running, so a debt that one could unblock has to leave the timer armed.
  */
 function retryPendingBranchRemovals(): Promise<void> {
 	if (!workerReleasesWatched) {
