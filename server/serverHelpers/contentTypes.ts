@@ -1,5 +1,5 @@
 import { streamAsJSON, stringify, parse } from './JSONStream.ts';
-import { pack, unpack, encodeIter } from 'msgpackr';
+import { pack, unpack, Packr } from 'msgpackr';
 import { decode, Encoder } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
 import { ClientError, ReadSnapshotExpiredError } from '../../utility/errors/hdbError.ts';
@@ -809,7 +809,14 @@ function cborStream(data) {
 
 function msgpackStream(data) {
 	if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-		return Readable.from(encodeIter(asyncPreferred(data), PUBLIC_ENCODE_OPTIONS) as any);
+		const packr = new Packr(PUBLIC_ENCODE_OPTIONS);
+		return Readable.from(
+			openOnFirstStep(
+				() => data,
+				Boolean(data[Symbol.asyncIterator]),
+				(value) => packr.pack(value)
+			)
+		);
 	}
 	return pack(data);
 }
@@ -824,33 +831,42 @@ class AsyncIterableView {
 	}
 }
 
-// The encoders prefer Symbol.iterator, whose iteration of search results yields Promises for rows not yet loaded, and
-// cbor-x encodes a plain-object async iterable as a map.
+// cbor-x prefers Symbol.iterator, whose iteration of search results yields Promises for rows not yet loaded, and
+// encodes a plain-object async iterable as a map.
 function asyncPreferred(data) {
 	return data?.[Symbol.asyncIterator] ? new AsyncIterableView(data) : data;
 }
 
 // Readable.from() takes its source's iterator at construction; this one opens the source on the first next(). A sync
-// source keeps the sync protocol, under which Readable.from() awaits a row that is a Promise.
-function openOnFirstStep(open: () => any, async: boolean): Iterable<any> | AsyncIterable<any> {
+// source keeps the sync protocol, under which Readable.from() awaits a row that is a Promise. mapValue applies to each
+// step as it comes, so an async source's steps that are already settled are not wrapped in a Promise.
+function openOnFirstStep(
+	open: () => any,
+	async: boolean,
+	mapValue?: (value: any) => any
+): Iterable<any> | AsyncIterable<any> {
 	let iterator;
 	let closed = false;
+	const mapStep = mapValue && ((step) => (step.done ? step : { value: mapValue(step.value), done: false }));
 	const deferred: any = {
 		[async ? Symbol.asyncIterator : Symbol.iterator]() {
 			return this;
 		},
 		next() {
+			if (closed) return { value: undefined, done: true };
 			if (!iterator) {
-				if (closed) return { value: undefined, done: true };
 				const source = open();
 				iterator = async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
 				if (closed) {
 					const closing = iterator.return?.();
-					const done = { value: undefined, done: true };
-					return typeof closing?.then === 'function' ? closing.then(() => done) : done;
+					if (typeof closing?.then === 'function')
+						closing.then(null, (error) => logger.warn?.('Error closing a discarded stream source', error));
+					return { value: undefined, done: true };
 				}
 			}
-			return iterator.next();
+			const step = iterator.next();
+			if (!mapStep) return step;
+			return typeof step.then === 'function' ? step.then(mapStep) : mapStep(step);
 		},
 		return(value) {
 			closed = true;
@@ -861,15 +877,14 @@ function openOnFirstStep(open: () => any, async: boolean): Iterable<any> | Async
 }
 
 // pipe() reads the source on the next tick, past a discard in this one, and pipeline() destroys the source only on a
-// later tick. So connect on the first read, and destroy the source synchronously with the transform.
+// later tick. So connect on the first read, destroy the source synchronously with the transform, and until then
+// handle errors as pipeline() would: a source error fails the transform, which is what the HTTP layer reports.
 function pipelineOnRead(source: Readable, transform: Transform): Transform {
-	// pipeline() would listen for errors on both streams from here on
 	source.once('error', (error) => transform.destroy(error));
 	transform.on('error', () => {});
 	const read = transform._read;
 	transform._read = function (size) {
 		transform._read = read;
-		// pipeline, not pipe: a source error must fail the returned stream, which is what the HTTP layer reports
 		stream.pipeline(source, transform, () => {});
 		return read.call(this, size);
 	};
