@@ -8045,14 +8045,8 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _assertNestedReadAccess(name, context, target) {
 			if (!target.checkPermission) return;
-			const permission = getTablePermissions(context?.user, target);
-			if (permission?.isSuperUser) return;
-			const path = Array.isArray(name) ? name : [name ?? primaryKey];
-			const readable = permission?.attribute_permissions;
-			if (!permission?.read || (readable?.length && !attributesAsObject(readable, 'read')[path[0]]))
+			if (TableResource._readDenial(Array.isArray(name) ? name : [name ?? primaryKey], context?.user, target))
 				throw new AccessViolation(context?.user);
-			if (path.length > 1)
-				propertyResolvers[path[0]]?.definition?.tableClass?._assertNestedReadAccess(path.slice(1), context, target);
 		}
 		static _prepareQueryConditions(conditions, operator, target, context, nested = false) {
 			let includeFullTextHighlights = false;
@@ -8501,7 +8495,7 @@ export function makeTable(options): TableResourceClass {
 				select === '__proto__' ||
 				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
 			let relationshipSelections;
-			for (const attribute of Array.isArray(select) ? select : []) {
+			for (const attribute of Array.isArray(select) ? select : select?.name !== undefined ? [select] : []) {
 				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
 					(relationshipSelections ||= Object.create(null))[attribute.name] = this._prepareRelationshipSelection(
 						attribute,

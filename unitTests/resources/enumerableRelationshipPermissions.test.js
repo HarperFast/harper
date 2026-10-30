@@ -570,6 +570,28 @@ describe('Default reads authorize @enumerable relationships against the related 
 		assert.deepStrictEqual(Object.getOwnPropertyDescriptor(record, '__proto__').value, { name: 'shadow' });
 	});
 
+	it('filters a related selection through a forward relationship the role reads by its foreign key', async () => {
+		const user = roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'orgId'), EnumOrg: READ });
+		const byOrgName = (value) => [
+			'id',
+			{ name: 'dept', select: ['id'], conditions: [{ attribute: ['org', 'name'], value }] },
+		];
+		assert.deepStrictEqual(await searchAs(EnumEmp, user, byOrgName('Org')), [{ id: 'e1', dept: { id: 'd1' } }]);
+		assert.deepStrictEqual(await searchAs(EnumEmp, user, byOrgName('Other')), [{ id: 'e1' }]);
+	});
+
+	it('applies the conditions of a single-object relationship selection', async () => {
+		const search = async (select) => {
+			const results = [];
+			for await (const result of EnumEmp.search({ conditions: [{ attribute: 'id', value: 'e1' }], select }, {}))
+				results.push(result);
+			return plain(results);
+		};
+		const byBudget = (value) => ({ name: 'dept', select: ['id'], conditions: [{ attribute: 'budget', value }] });
+		assert.deepStrictEqual(await search(byBudget(100)), [{ id: 'd1' }]);
+		assert.deepStrictEqual(await search(byBudget(0)), [null]);
+	});
+
 	it('expands * only in a select written by authorization', async () => {
 		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ, EnumPublisher: READ });
 		const superUser = { role: { permission: { super_user: true } } };
