@@ -231,6 +231,10 @@ function conjuncts(expression: string): string[] | undefined {
 const PULL_REQUEST_HEAD =
 	/head\.sha|head\.ref|head\.repo|head_ref|GITHUB_HEAD_REF|merge_commit_sha|refs\/pull\/|(?<![\w/])pull\/\S/;
 const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/s;
+// Whole lines too: the split below cannot follow `$(a; b)`, which can hide the verb from the head it fetches.
+const PR_HEAD_SHELL_LINE = new RegExp(
+	String.raw`\bgit\b[^\n]*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b[^\n]*(?:${PULL_REQUEST_HEAD.source})`
+);
 const EXPRESSION = String.raw`\$\{\{((?:[^}]|\}(?!\}))*)\}\}`;
 const SHELL_REFERENCE = new RegExp(String.raw`${EXPRESSION}|\$\{?(\w+)|\$\(|` + '`', 'g');
 // Under pull_request_target these describe the base repository and branch, or the runner.
@@ -344,7 +348,7 @@ function checkPullRequestCheckout(name: string, job: any, workflow: any, problem
 		}
 		if (typeof step?.run !== 'string') continue;
 		const commands = shellCommands(step.run.replace(/\\\r?\n\s*/g, ' '));
-		if (commands.some((command) => /\bgh\s+pr\s+checkout\b/.test(command))) {
+		if (PR_HEAD_SHELL_LINE.test(step.run) || commands.some((command) => /\bgh\s+pr\s+checkout\b/.test(command))) {
 			problems.push(headCheckout);
 			continue;
 		}
