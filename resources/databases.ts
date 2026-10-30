@@ -495,9 +495,7 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 			configuredAllowStall: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL),
 			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
 		}),
-		...(envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS) === true
-			? { transactionLogAbortMarkers: true }
-			: {}),
+		transactionLogAbortMarkers: envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS) === true,
 	});
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
