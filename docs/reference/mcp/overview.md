@@ -17,7 +17,7 @@ Harper implements the [Model Context Protocol](https://modelcontextprotocol.io) 
 - **Resumable notification streams.** <VersionBadge version="v5.1.10" /> A dropped GET-SSE connection can reconnect with a `Last-Event-ID` header and replay the notifications it missed from a bounded per-session buffer, so a brief network blip doesn't lose `list_changed` / `resources/updated` events. See [Resource Subscriptions](./subscriptions.md#resuming-a-dropped-stream).
 - **Per-session bookkeeping.** Sessions persist for the configured idle window; `Mcp-Session-Id` ties JSON-RPC requests, GET-SSE notifications, and the optional DELETE-session cleanup together.
 - **Built-in auth and RBAC.** Harper's existing Basic, JWT, and mTLS authentication paths run unchanged on the MCP endpoint. Tool and resource visibility is filtered through your role's `permission` block (`super_user`, `structure_user`, per-operation, per-table, per-attribute).
-- **Audit + rate limits.** Every `tools/call` writes to Harper's audit log (with credential redaction); per-session and per-tool token-bucket rate limits prevent a runaway agent from overwhelming a Harper worker.
+- **Audit + rate limits.** Every `tools/call` writes to Harper's audit log (with credential redaction); per-session and per-tool token-bucket rate limits prevent a runaway agent from overwhelming a Harper worker, and a per-client limit on `initialize` (on by default, 5.4.0+) bounds how fast one client can create sessions. See [`mcp.<profile>.rateLimit.*`](./configuration.md#mcpprofileratelimit).
 
 ## Protocol versions supported
 
@@ -66,4 +66,4 @@ The following items are explicitly deferred to a follow-on release:
 - OAuth 2.1 PRM (Protected Resource Metadata) authorization.
 - Cross-worker session sharing (each MCP session is bound to the worker that accepted the GET stream).
 - TypeScript type reflection into JSON Schema for custom `mcpTools` entries (schemas are hand-authored).
-- Global REST/operations rate limiting — only per-session/per-tool limits apply on the MCP surface.
+- Global REST/operations rate limiting — the MCP rate limits (per-session, per-tool, per-client, and `initialize`) apply to the MCP surface only.

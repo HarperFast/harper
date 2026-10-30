@@ -20,7 +20,7 @@ This page covers what changes for you and how to migrate.
 | Tool surface                 | Hand-curated wrapper around the Operations API   | Operations profile + Application profile (Resources walker)                                     |
 | Resource exposure            | None                                             | `harper://about`, `harper://operations`, `harper://schema/*`, `harper://openapi`, `https://...` |
 | `notifications/list_changed` | Not supported                                    | Supported per-session on both profiles                                                          |
-| Rate limiting                | Not present                                      | Per-session, per-tool token-bucket on both profiles                                             |
+| Rate limiting                | Not present                                      | Per-session, per-tool, and per-client token buckets on both profiles, including `initialize`    |
 | Audit logging                | Operations API audit log only                    | Dedicated `mcp.audit` category with credential redaction                                        |
 | Per-attribute permissions    | Not honored in the tool surface                  | Narrowed at schema-derivation time                                                              |
 | Config                       | Env vars + addon's own JSON                      | Top-level `mcp:` block in `harper-config.yaml`                                                  |

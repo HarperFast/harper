@@ -60,7 +60,7 @@ Maximum number of tools returned in a single `tools/list` response page. The MCP
 
 See [`mcp.<profile>.rateLimit.*`](#mcpprofileratelimit) below — the schema is identical for both profiles.
 
-Default per-profile values for `operations`: `perToolPerSecond: 10`, `perToolBurst: 20`, `sessionConcurrency: 25`, `sessionPerSecond: 100`.
+Default per-profile values for `operations`: `perToolPerSecond: 10`, `perToolBurst: 20`, `sessionConcurrency: 25`, `sessionPerSecond: 100`, `initializePerSecond: 10`, `initializeBurst: 50`.
 
 ## `mcp.application.*`
 
@@ -74,11 +74,13 @@ Default: `1000`
 
 Hard cap on the number of records a generated `search_<resource>` tool can return per call. Clients still pass `limit`, but the server clamps to this ceiling regardless of what the client requests — bounded to keep a runaway agent from exhausting memory.
 
-Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`, `perToolBurst: 50`, `sessionConcurrency: 50`, `sessionPerSecond: 200`.
+Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`, `perToolBurst: 50`, `sessionConcurrency: 50`, `sessionPerSecond: 200`, `initializePerSecond: 10`, `initializeBurst: 50`.
 
 ## `mcp.<profile>.rateLimit.*`
 
-Per-session, per-tool token-bucket rate limits. A bucket exists per `(session, tool)` pair plus one per-session bucket across all tools. When either bucket is exhausted, `tools/call` returns `result.isError = true` with `kind: "rate_limited"` — **not** a JSON-RPC error — so the LLM can read the message and back off without the transport tearing down.
+Per-session, per-tool token-bucket rate limits. A bucket exists per `(session, tool)` pair plus one per-session bucket across all tools. When either bucket is exhausted, `tools/call` returns `result.isError = true` with `kind: "rate_limited"` — **not** a JSON-RPC error — so the LLM can read the message and back off without the transport tearing down. The one exception is the [`initialize` limit](#mcpprofileratelimitinitializepersecond), which rejects the request with HTTP `429`.
+
+Every numeric key accepts a quoted number in the config file (`"0.5"`) as well as a plain one.
 
 ### `mcp.<profile>.rateLimit.perToolPerSecond`
 
@@ -129,6 +131,42 @@ Type: `number` (minimum 0)
 Default: the `perClientPerSecond` value, floored at `1`
 
 Burst capacity of the per-client bucket. Defaults to the sustained rate so enabling the limit is a one-key change — floored at 1 whole token: a fractional `perClientPerSecond` (e.g. `0.1` for "6 per minute") still yields `perClientBurst: 1` by default, since a bucket capped below one token could never admit a call.
+
+### `mcp.<profile>.rateLimit.initializePerSecond`
+
+Type: `number` (minimum 0)
+
+Default: `10`
+
+Sustained rate of session creation (`initialize`) per client identity (5.4.0+). Set to `0` to turn the limit off. Unlike `perClientPerSecond`, this limit is **on by default**: each session is a persisted row in `system.mcp_session`, kept for [`mcp.session.idleTimeoutSeconds`](#mcpsessionidletimeoutseconds), and the application profile accepts anonymous `initialize`. To keep each row small, `initialize` stores only the names of the client capabilities Harper checks before sending a server-to-client request (`sampling`, `elicitation`, `roots`), each as `{}`, not the capabilities object the client sent.
+
+Client identity is the socket IP, or the first value of [`identityHeader`](#mcpprofileratelimitidentityheader) when set — the same rules as `perClientPerSecond`. Harper canonicalizes it before counting:
+
+- An IPv4 address with a port, and an IPv4-mapped IPv6 address (`::ffff:192.0.2.1`), count as the plain IPv4 address.
+- Any other IPv6 address counts as its `/64`, the block a single client is typically assigned.
+- A request with no identity (for example, a Unix-socket ingress with no `identityHeader`) shares one bucket per profile instead of going unthrottled. Past 100,000 tracked identities per profile and worker, new identities also share that bucket.
+
+The bucket is in memory per thread, like the others: it is not shared across threads and does not survive a restart. On the application profile, a client that opens fresh connections spread over the HTTP worker threads can get the configured rate and burst once per worker ([`threads.count`](../configuration/options.md#threads) of them, or the main thread alone when it is `0`); a client that reuses one connection stays on one worker and gets the configured figure. The operations profile is served by the main thread only, so it admits the configured figure.
+
+A denied `initialize` gets HTTP `429` with a `Retry-After` header and a JSON-RPC error body, and no session is created:
+
+```json
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"error": { "code": -32600, "message": "MCP initialize rate limit reached; back off and try again" }
+}
+```
+
+`Retry-After` is in whole seconds, `ceil(1 / initializePerSecond)` — the time the bucket takes to refill one token. This is an HTTP-level error, not a tool result: there is no `kind: "rate_limited"` on an `initialize` denial.
+
+### `mcp.<profile>.rateLimit.initializeBurst`
+
+Type: `number` (minimum 1)
+
+Default: `50`
+
+Burst capacity of the per-client `initialize` bucket — how many sessions one client identity can open back to back on one thread before the `initializePerSecond` refill applies.
 
 ### `mcp.<profile>.rateLimit.identityHeader`
 
@@ -228,7 +266,7 @@ The two profiles ship with **different CORS defaults**, but both accept any `Ori
 
 ## Example
 
-A common deployment pattern that locks down the operations profile to a small explicit set, enables MCP DELETE for graceful client logout, and raises per-tool throughput for the application profile:
+A common deployment pattern that locks down the operations profile to a small explicit set, enables MCP DELETE for graceful client logout, raises per-tool throughput for the application profile, and lowers how fast one client can open application-profile sessions:
 
 ```yaml
 mcp:
@@ -246,6 +284,8 @@ mcp:
     rateLimit:
       perToolPerSecond: 50
       perToolBurst: 100
+      initializePerSecond: 2
+      initializeBurst: 20
   session:
     idleTimeoutSeconds: 3600
     allowClientDelete: true
