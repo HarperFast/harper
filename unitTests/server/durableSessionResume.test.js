@@ -2909,9 +2909,14 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		const rest = ids.slice(1);
 		await waitFor(() => rest.every((id) => delivery(second.received, id)), {
 			timeout: 20_000,
-			message: () => `missing ${rest.filter((id) => !delivery(second.received, id)).length} of the unacknowledged late records`,
+			message: () =>
+				`missing ${rest.filter((id) => !delivery(second.received, id)).length} of the unacknowledged late records`,
 		});
-		assert.strictEqual(delivery(second.received, 'late-0'), undefined, 'the acknowledged first record is not sent again');
+		assert.strictEqual(
+			delivery(second.received, 'late-0'),
+			undefined,
+			'the acknowledged first record is not sent again'
+		);
 		second.session.disconnect(true);
 	});
 
