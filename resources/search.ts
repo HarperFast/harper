@@ -1876,6 +1876,11 @@ export function filterByType(
 	const negated = searchCondition.negated;
 	let attribute = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
+	// an omitted attribute is the primary key, as in searchByIndex
+	if (attribute == null && Table?.primaryKey != null) {
+		attribute = Table.primaryKey;
+		isPrimaryKey = true;
+	}
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
 		if (attribute.length === 1) {
@@ -2382,18 +2387,8 @@ export function conditionDrivesIndex(table, condition): boolean {
 	const value = condition[1] ?? condition.value;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
 	if (Array.isArray(attributeName)) {
-		if (attributeName.length > 1) {
-			const attribute = findAttribute(table.attributes, attributeName[0]);
-			const relatedTable = attribute?.definition?.tableClass || attribute?.elements?.definition?.tableClass;
-			if (!attribute?.relationship || !relatedTable) return false;
-			const from = attribute.relationship.from;
-			if (from && from !== table.primaryKey && !usableIndex(table, from)) return false;
-			return conditionDrivesIndex(relatedTable, {
-				attribute: attributeName.length > 2 ? attributeName.slice(1) : attributeName[1],
-				comparator,
-				value,
-			});
-		}
+		// a relationship condition leading would change which related record a sibling on it must meet
+		if (attributeName.length > 1) return false;
 		attributeName = attributeName[0];
 	}
 	if (fullTextComparatorMode(comparator))

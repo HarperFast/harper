@@ -68,42 +68,23 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 	});
 
 	describe('conditionDrivesIndex across a relationship', () => {
-		const relatedTable = {
-			primaryKey: 'id',
-			primaryStore: {},
-			attributes: [{ name: 'id' }, { name: 'name' }, { name: 'note' }],
-			indices: { name: {} },
-		};
-		const makeTable = (indices) => ({
+		const relatedTable = { primaryKey: 'id', primaryStore: {}, attributes: [{ name: 'name' }], indices: { name: {} } };
+		const table = {
 			primaryKey: 'id',
 			primaryStore: {},
 			attributes: [
 				{ name: 'owner', relationship: { from: 'ownerId' }, definition: { tableClass: relatedTable } },
-				{ name: 'self', relationship: { from: 'id' }, definition: { tableClass: relatedTable } },
 				{ name: 'items', relationship: { to: 'ownerId' }, elements: { definition: { tableClass: relatedTable } } },
 				{ name: 'json' },
 			],
-			indices,
-		});
-		const drives = (indices, attribute, comparator = 'equals') =>
-			conditionDrivesIndex(makeTable(indices), { attribute, comparator, value: 'v' });
+			indices: { ownerId: {} },
+		};
+		const drives = (attribute) => conditionDrivesIndex(table, { attribute, comparator: 'equals', value: 'v' });
 
-		it('drives by an indexed attribute of the related table through the local join index', () => {
-			assert.strictEqual(drives({ ownerId: {} }, ['owner', 'name']), true);
-			assert.strictEqual(drives({}, ['items', 'name']), true);
-			assert.strictEqual(drives({}, ['self', 'name']), true, 'a join from the primary key seeks the primary store');
-		});
-
-		it('does not drive by an unindexed related attribute, or without a usable local join index', () => {
-			assert.strictEqual(drives({ ownerId: {} }, ['owner', 'note']), false);
-			assert.strictEqual(drives({}, ['owner', 'name']), false);
-			assert.strictEqual(drives({ ownerId: { isIndexing: true } }, ['owner', 'name']), false);
-			assert.strictEqual(drives({ ownerId: {} }, ['owner', 'name'], 'in'), false);
-		});
-
-		it('does not drive by a plain nested JSON path', () => {
-			assert.strictEqual(drives({}, ['json', 'k']), false);
-			assert.strictEqual(drives({}, ['json', 'k'], 'ge'), false);
+		it('never drives by a related or nested attribute, so promotion cannot change which related record siblings meet', () => {
+			assert.strictEqual(drives(['owner', 'name']), false);
+			assert.strictEqual(drives(['items', 'name']), false);
+			assert.strictEqual(drives(['json', 'k']), false);
 		});
 	});
 
@@ -533,6 +514,30 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 					await ids(Table.search({ conditions: [negated(), neGroup()], allowFullScan: false })),
 					idsWhere((row) => row.a !== 'x-3' && notFive(row))
 				);
+			});
+
+			it('finds a row by an implicit primary-key condition that a narrower group now leads', async () => {
+				const group = {
+					operator: 'and',
+					conditions: [
+						{ attribute: 'a', value: 'plain-7' },
+						{ attribute: 'b', value: 7 },
+						{ attribute: 'flag', comparator: 'contains', value: 'one' },
+					],
+				};
+				for (const implicit of [
+					{ value: 'r07' },
+					{ attribute: null, value: 'r07' },
+					{ attribute: null, comparator: 'starts_with', value: 'r0' },
+				]) {
+					const conditions = [implicit, group];
+					assert.ok((await plan(conditions)).conditions[0].conditions, 'the group leads');
+					assert.deepStrictEqual(await ids(Table.search({ conditions, allowFullScan: false })), ['r07']);
+					assert.deepStrictEqual(
+						await ids(Table.search({ conditions, allowFullScan: false, enforceExecutionOrder: true })),
+						['r07']
+					);
+				}
 			});
 
 			it('answers a nested FIQL AND group under allowFullScan: false', async () => {
