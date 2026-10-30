@@ -431,6 +431,17 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 				);
 			});
 
+			it('keeps a leading condition on the sort attribute when full scans are allowed, as it streams the sorted page', async () => {
+				const conditions = [common(), inLeg()];
+				const sort = { attribute: 'b' };
+				assert.strictEqual((await plan(conditions, { sort, allowFullScan: true }))[0].attribute, 'b');
+				assert.strictEqual((await plan(conditions, { sort }))[0].attribute, 'c', 'but not when they are forbidden');
+				assert.deepStrictEqual(
+					await ids(Table.search({ conditions, sort, allowFullScan: true })),
+					await scan(conditions)
+				);
+			});
+
 			it('moves only the lead, leaving the other conditions to filter in estimate order', async () => {
 				const rare = { attribute: 'c', value: 'rare' };
 				const notNull = { attribute: 'b', comparator: 'ne', value: null };

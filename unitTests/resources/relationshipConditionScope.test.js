@@ -141,3 +141,39 @@ describe('A condition inside an OR decides which rows match, not which related r
 		});
 	}
 });
+
+describe('A relationship condition that leads by estimate keeps the lead', function () {
+	this.timeout(60000);
+
+	it('does not hand it to a broader indexed condition, which would change which related record siblings meet', async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const kids = { name: 'kids', elements: { type: 'LeadChild', definition: {} }, relationship: { to: 'parentId' } };
+		const Parent = table({
+			table: 'LeadParent',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'group', indexed: true }, kids],
+		});
+		const Child = table({
+			table: 'LeadChild',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'label' },
+				{ name: 'parentId', indexed: true },
+			],
+		});
+		kids.elements.definition.tableClass = Child;
+		for (let i = 0; i < 60; i++) await Parent.put({ id: `p${i}`, group: 'g1' });
+		await Child.put({ id: 'c1', parentId: 'p1', name: 'a', label: 'x' });
+		await Child.put({ id: 'c2', parentId: 'p1', name: 'b', label: 'y' });
+		const conditions = [
+			{ attribute: 'group', value: 'g1' },
+			{ attribute: ['kids', 'name'], value: 'a' },
+			{ attribute: ['kids', 'label'], value: 'y' },
+		];
+		const { conditions: planned } = await Parent.search({ conditions, explain: true, allowFullScan: true });
+		assert.deepStrictEqual(planned[0].attribute, ['kids', 'name']);
+	});
+});

@@ -476,7 +476,6 @@ describe('Queries read related records asynchronously', () => {
 					select: ['id', { name: 'children', select: ['name'] }],
 				})
 			);
-			// a condition inside an OR decides which parents match, not which related records they select
 			assert.deepEqual(results, [
 				{ id: 'parent-1', children: [{ name: 'child 5' }, { name: 'child 9' }] },
 				{ id: 'parent-null', children: null },

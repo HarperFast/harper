@@ -175,6 +175,7 @@ import {
 	findAttribute,
 	estimateCondition,
 	conditionDrivesIndex,
+	leadsByRelationship,
 	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
@@ -7537,8 +7538,10 @@ export function makeTable(options): TableResourceClass {
 				// order for their query.
 				if (conditions.length > 1 && operator !== 'or') {
 					const ordered = sortBy(conditions, estimateCondition(TableResource));
-					// a leading synthetic sort keeps its place: it full-scans but streams a sorted page
-					if (ordered[0] !== syntheticOrderCondition) {
+					// a leading sort-aligned condition keeps its place, when it may full-scan: it streams a sorted page
+					const streamsSort =
+						ordered[0] === syntheticOrderCondition || (ordered[0] === orderAlignedCondition && target.allowFullScan);
+					if (!streamsSort && !leadsByRelationship(TableResource, ordered[0])) {
 						const lead = ordered.findIndex((condition) => conditionDrivesIndex(TableResource, condition));
 						if (lead > 0) ordered.unshift(ordered.splice(lead, 1)[0]);
 					}

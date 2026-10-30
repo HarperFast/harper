@@ -157,7 +157,6 @@ export function executeConditions(
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
-			// a join inside an OR decides rows only: it stays out of the AND scope's selection
 			filtered: inUnion || operator === 'or' ? Object.create(null) : filtered,
 			context,
 			holderTable: table,
@@ -1914,7 +1913,6 @@ export function filterByType(
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
 			const filterMap = relationshipRestriction(filtered, firstAttributeName);
-			// a condition inside an OR decides rows only: it neither joins into nor selects the related records
 			const join: any = !inUnion && filterMap instanceof Map ? filterMap : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
 			const loadEntries = resolver?.loadEntries;
@@ -2373,6 +2371,17 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 function usableIndex(table, attributeName): any {
 	const index = attributeName == null ? undefined : conditionIndex(table, attributeName);
 	return index?.isIndexing ? undefined : index;
+}
+
+// A relationship condition that leads decides which related record its siblings must meet, so promotion leaves it alone
+export function leadsByRelationship(table, condition): boolean {
+	if (condition.conditions) return condition.conditions.some((leg) => leadsByRelationship(table, leg));
+	const attribute = condition[0] ?? condition.attribute;
+	return (
+		Array.isArray(attribute) &&
+		attribute.length > 1 &&
+		Boolean(findAttribute(table.attributes, attribute[0])?.relationship)
+	);
 }
 
 // must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)
