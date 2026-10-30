@@ -4464,6 +4464,31 @@ export function makeTable(options): TableResourceClass {
 				return result;
 			}
 		}
+		/**
+		 * Read without recordLockFor's pruning, so a lapsed lease still refuses the write. Called again after
+		 * _writeUpdate's async model hooks: a handle that lapsed while bound keeps refusing it even if a
+		 * re-lock replaced it, and only one released by unlock() lets it go.
+		 */
+		#bindWriteLock(write: any, id: Id, transaction: any): void {
+			const bound = write.lockHandle;
+			if (bound && (bound.expired || (!bound.released && bound.isLeaseExpired()))) return;
+			const own = this.#lockHandle;
+			const tableLocks = transaction.recordLocks?.get(primaryStore);
+			if (!own && !tableLocks && !write.lockJoined) return;
+			const keyId = (write.keyId ??= writeKeyId(id));
+			if (own?.keyId === keyId) {
+				write.lockHandle = own;
+				return;
+			}
+			const joined = tableLocks?.get(keyId);
+			if (joined) {
+				write.lockHandle = joined;
+				write.lockJoined = true;
+			} else if (write.lockJoined) {
+				write.lockHandle = undefined;
+				write.lockJoined = false;
+			}
+		}
 		#closeWriteChain(operation: any) {
 			const owner = operation.stagedIn;
 			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
@@ -4481,7 +4506,7 @@ export function makeTable(options): TableResourceClass {
 					(this as any).set(property, sum);
 					if (own) delete this[property];
 				} else {
-					if (!this.#savingOperation) (this as any).update();
+					if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
 					addToChanges(this, property, value);
 				}
 			} else {
@@ -4543,7 +4568,7 @@ export function makeTable(options): TableResourceClass {
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				chainsStagedState: true,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
@@ -4666,6 +4691,7 @@ export function makeTable(options): TableResourceClass {
 					// TODO: recordDeletion?
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, partialRecord);
 			transaction.addWrite(write);
 		}
@@ -4685,7 +4711,7 @@ export function makeTable(options): TableResourceClass {
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				reloadCommitBase: true,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
@@ -4768,6 +4794,7 @@ export function makeTable(options): TableResourceClass {
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			transaction.addWrite(write);
 		}
 
@@ -5224,7 +5251,7 @@ export function makeTable(options): TableResourceClass {
 						const transactionCannotAdopt =
 							explicit &&
 							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
-								link.hasUnlockedWrite() ||
+								link.hasUnlockedWrite(primaryStore, keyId) ||
 								(link.timestamp !== undefined && link.timestamp >= floor));
 						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
 					}
@@ -5289,6 +5316,7 @@ export function makeTable(options): TableResourceClass {
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
 					const releaseAfterReloadFailure = (error) => {
+						detachScopedUpgradeWrite(link, keyId, handle, true, true);
 						link.unregisterRecordLock(handle);
 						handle.release();
 						if (
@@ -5399,7 +5427,7 @@ export function makeTable(options): TableResourceClass {
 			// run into the released-handle guard at the sweep.
 			if (this.#savingOperation && !this.#savingOperation.saved && this.#savingOperation.lockHandle === handle)
 				this.#savingOperation = null;
-			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle);
+			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
 		}
@@ -5673,11 +5701,7 @@ export function makeTable(options): TableResourceClass {
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
-				// Include the lock handle (if any) so the expired-handle guard in
-				// DatabaseTransaction.save() can throw 409 when the lease has lapsed.
-				// Only attach the hold handle when it covers exactly this key; off-key writes
-				// are ordinary and must not carry an unrelated hold's handle.
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				captureChanges,
 				releaseChanges,
@@ -7002,6 +7026,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
@@ -7032,6 +7057,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			const proceed = (): any => {
 				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
+				if (modelHooksBefore) this.#bindWriteLock(write, id, transaction);
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
 				if (!tracksInstance)
@@ -7126,7 +7152,7 @@ export function makeTable(options): TableResourceClass {
 				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
-				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				lockHandle: undefined,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
@@ -7237,6 +7263,7 @@ export function makeTable(options): TableResourceClass {
 					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
 			};
+			this.#bindWriteLock(write, id, transaction);
 			transaction.addWrite(write);
 			if (condition) condition.consumed = true;
 			return true;
@@ -11977,13 +12004,28 @@ export function makeTable(options): TableResourceClass {
 	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
 	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
 	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
-	 * instead of resolving a detached, dead reference.
+	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or one staged
+	 * before lock()) is the caller's own: an upgrade keeps it, and a release within the lease (`releasing`)
+	 * returns it to an ordinary unlocked write, which is what it would be had it been staged after the
+	 * unlock. Past the lease it keeps the handle, so its save is refused like any lapsed lock write. A
+	 * `lockFailed` lock() was never handed to the caller, so its joined writes always revert.
 	 */
-	function detachScopedUpgradeWrite(link: any, keyId: unknown, handle: RecordLockHandle): void {
+	function detachScopedUpgradeWrite(
+		link: any,
+		keyId: unknown,
+		handle: RecordLockHandle,
+		releasing = false,
+		lockFailed = false
+	): void {
 		for (const write of link.writes) {
-			if (write && !write.saved && write.lockHandle === handle && writeKeyId(write.key) === keyId) {
+			if (!write || write.saved || write.lockHandle !== handle || writeKeyId(write.key) !== keyId) continue;
+			if (!write.lockJoined) {
 				write.dropped = true;
 				link.detachWrite(write);
+			} else if (lockFailed || (releasing && !handle.isLeaseExpired())) {
+				write.lockHandle = undefined;
+				write.lockJoined = false;
+				link.unlockedWriteScan = undefined;
 			}
 		}
 	}
