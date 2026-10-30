@@ -92,7 +92,7 @@ Harper pins `@harperfast/fulltext` to **0.8.0**, embedding **Tantivy 0.27.0**, a
 
 ### Upgrading from fulltext 0.7.0
 
-Harper's existing indexes written by fulltext 0.7.0 contain text fields only and remain reusable with 0.8.0. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. Remove new `storage.fullText.query` settings before returning to an older Harper version that does not recognize them. Returning to fulltext 0.7.0 after 0.8.0 has written to an index is not a qualified operator rollback procedure.
+Harper's existing indexes written by fulltext 0.7.0 contain text fields only and remain reusable with 0.8.0. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations write the default `storage.fullText.query` block even when it is not customized. Older Harper versions reject that block during configuration validation; remove it before attempting to return to one. Returning to fulltext 0.7.0 after 0.8.0 has written to an index is not a qualified operator rollback procedure.
 
 ### Upgrading an existing native index
 
