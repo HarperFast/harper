@@ -397,7 +397,33 @@ async function main(): Promise<void> {
 	}
 	out.push(`| **total CPU µs/op** | ${rows.map((r) => `**${r.profile.cpuMicrosPerOp.toFixed(1)}**`).join(' | ')} |`);
 	out.push(`| throughput, ops/s | ${rows.map((r) => r.profile.throughput.toFixed(0)).join(' | ')} |`);
+	out.push(
+		`| host cores busy elsewhere | ${rows.map((r) => r.profile.host?.otherCores.toFixed(1) ?? '–').join(' | ')} |`
+	);
 	out.push('');
+	const steady = rows.filter((r) => r.profile.steady);
+	if (steady.length > 0) {
+		const per = (r: ProfileRow, f: (t: Counters) => number, scale = 1, digits = 1) =>
+			((f(r.profile.steady.perf.total) / r.profile.steady.ops) * scale).toFixed(digits);
+		const instructions = (t: Counters) => t.instructionsUser + t.instructionsKernel;
+		const cycles = (t: Counters) => t.cyclesUser + t.cyclesKernel;
+		out.push(
+			`| counters, steady window, all components | ${steady.map((r) => `${r.target} ${r.workload} ${r.point}`).join(' | ')} |`
+		);
+		out.push(`|---|${steady.map(() => '--:').join('|')}|`);
+		out.push(`| CPU µs/op | ${steady.map((r) => r.profile.steady.cpuMicrosPerOp.toFixed(1)).join(' | ')} |`);
+		out.push(`| instructions/op (k) | ${steady.map((r) => per(r, instructions, 1e-3)).join(' | ')} |`);
+		out.push(`| cycles/op (k) | ${steady.map((r) => per(r, cycles, 1e-3)).join(' | ')} |`);
+		out.push(
+			`| IPC | ${steady.map((r) => (instructions(r.profile.steady.perf.total) / cycles(r.profile.steady.perf.total)).toFixed(2)).join(' | ')} |`
+		);
+		out.push(
+			`| kernel share of instructions | ${steady.map((r) => `${((100 * r.profile.steady.perf.total.instructionsKernel) / instructions(r.profile.steady.perf.total)).toFixed(0)}%`).join(' | ')} |`
+		);
+		out.push(`| context switches/op | ${steady.map((r) => per(r, (t) => t.contextSwitches, 1, 2)).join(' | ')} |`);
+		out.push(`| page faults/op | ${steady.map((r) => per(r, (t) => t.pageFaults, 1, 3)).join(' | ')} |`);
+		out.push('');
+	}
 	for (const r of rows) {
 		out.push(`### ${r.label}`);
 		if (r.profile.steady)
