@@ -27,6 +27,7 @@ import {
 	planIdentityReconcile,
 	policiesOverlap,
 	policyDifferences,
+	sameAuthority,
 	sameSet,
 	type DesiredIdentity,
 	type DesiredPolicy,
@@ -200,7 +201,11 @@ function rivalPolicies(names: PreviewNames, policies: any[], wanted: DesiredPoli
 	const ours = new Set([names.policy, names.cleanupPolicy]);
 	return wanted.flatMap((policy) => {
 		const rival = policies.find(
-			(candidate) => !ours.has(candidate?.id) && candidate?.enabled !== false && policiesOverlap(candidate, policy)
+			(candidate) =>
+				!ours.has(candidate?.id) &&
+				candidate?.enabled !== false &&
+				policiesOverlap(candidate, policy) &&
+				!sameAuthority(candidate, policy)
 		);
 		return rival
 			? [
