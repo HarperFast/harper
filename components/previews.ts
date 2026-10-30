@@ -4,7 +4,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getConfigPath, getConfigValue } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import {
 	DEPLOYMENT_PROVENANCE_FILE,
@@ -97,7 +97,6 @@ const admissionLockPath = (componentsRoot: string, app: string) =>
 const fencePath = (componentsRoot: string, app: string) =>
 	join(componentsRoot, FENCE_DIRECTORY, `${encodeURIComponent(app)}.json`);
 
-/** The identity generations of `app` whose previews this node refuses; an unreadable record throws. */
 async function revokedGenerations(app: string, componentsRoot: string): Promise<string[]> {
 	const path = fencePath(componentsRoot, app);
 	const raw = await readFile(path, 'utf8').catch((error) => {
@@ -105,9 +104,13 @@ async function revokedGenerations(app: string, componentsRoot: string): Promise<
 		throw error;
 	});
 	if (raw === undefined) return [];
-	const revoked = JSON.parse(raw);
+	let revoked: unknown;
+	try {
+		revoked = JSON.parse(raw);
+	} catch {}
 	if (!Array.isArray(revoked) || !revoked.every((generation) => typeof generation === 'string')) {
-		throw new Error(`${path} is not a list of revoked preview identity generations`);
+		logger.error?.(`${path} is not a list of revoked preview identity generations`);
+		throw new ServerError(`The revocation record for previews of ${app} cannot be read`);
 	}
 	return revoked;
 }

@@ -8,7 +8,12 @@ const path = require('node:path');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { enablePreviews, disablePreviews, getPreviewPolicy } = require('#src/components/previewOperations');
+const {
+	enablePreviews,
+	disablePreviews,
+	fencePreviewReleases,
+	getPreviewPolicy,
+} = require('#src/components/previewOperations');
 const { deployComponent, getComponents } = require('#js/components/operations');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
@@ -354,6 +359,25 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const finished = await disablePreviews({ operation: 'disable_previews', app: 'opsshop', hdb_user: SU });
 			assert.deepStrictEqual(finished.removed.sort(), ['role opsshop-ci-preview', 'user opsshop-ci-preview']);
 			assert.strictEqual(getUserWithRole('opsshop-ci-preview'), undefined);
+		});
+
+		it('fences on a peer through the operation itself, and refuses anyone but a super user or a replication', async () => {
+			const { REPLICATED_FROM } = require('#src/utility/hdbTerms');
+			const generation = 'opspeer-generation';
+			const request = { operation: 'fence_preview_releases', app: 'opspeer', generation };
+			await assert.rejects(
+				fencePreviewReleases({
+					...request,
+					hdb_user: { username: 'ci', role: { permission: { super_user: false } } },
+				}),
+				{ statusCode: 403 }
+			);
+			const answer = await fencePreviewReleases({ ...request, replicated: false, [REPLICATED_FROM]: 'node-a' });
+			assert.strictEqual(answer.fenced, true);
+			await assert.rejects(deploy('opspeer-pr-1', { ...metadata('opspeer', 1), generation }), {
+				statusCode: 403,
+				message: /previews of opspeer .* were disabled/,
+			});
 		});
 
 		it('stops when a peer answers the census without acknowledging the fence', async () => {

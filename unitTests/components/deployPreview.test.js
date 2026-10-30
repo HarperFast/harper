@@ -241,12 +241,19 @@ describe('PR preview metadata (harper#3048)', () => {
 				await gate;
 				await fs.mkdir(path.join(root, 'shop-pr-1'));
 			});
-			await inSwap;
 			let fenceDone = false;
-			const fence = fencePreviewGeneration('shop', 'g1', root).then(() => (fenceDone = true));
-			await new Promise((resolve) => setTimeout(resolve, 200));
-			assert.strictEqual(fenceDone, false, 'the fence waits for the swap');
-			release();
+			let fence;
+			try {
+				await Promise.race([
+					inSwap,
+					new Promise((_, reject) => setTimeout(() => reject(new Error('the swap never started')), 10_000)),
+				]);
+				fence = fencePreviewGeneration('shop', 'g1', root).then(() => (fenceDone = true));
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				assert.strictEqual(fenceDone, false, 'the fence waits for the swap');
+			} finally {
+				release();
+			}
 			await Promise.all([swap, fence]);
 			assert.ok(await fs.stat(path.join(root, 'shop-pr-1')), 'the swap finished before the fence was recorded');
 		});

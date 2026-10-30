@@ -25,7 +25,6 @@ interface NodeReleases {
 	node: string;
 	components?: ComponentReleases[];
 	error?: string;
-	/** Set by a node that ran `fence` before it read. */
 	fenced?: true;
 }
 
