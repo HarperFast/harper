@@ -556,6 +556,26 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				deepStrictEqual(search.body, [SEAT], `${as} operations API without get_attributes`);
 			}
 		});
+		test('a * anywhere in operations get_attributes omits or narrows an @enumerable relationship', async () => {
+			const expected = { empOnly: undefined, restricted: { id: DEPT.id, name: DEPT.name } };
+			for (const [as, dept] of Object.entries(expected) as [RoleName, any][]) {
+				for (const body of [
+					{ operation: 'search_by_hash', hash_values: [SEAT.id] },
+					{ operation: 'search_by_conditions', conditions: [{ search_attribute: 'id', search_value: SEAT.id }] },
+					{ operation: 'search_by_value', search_attribute: 'id', search_value: SEAT.id },
+				]) {
+					for (const get_attributes of [
+						['id', '*'],
+						['*', 'id'],
+					]) {
+						const response = await op(as, { ...body, table: 'Seat', get_attributes });
+						strictEqual(response.status, 200, `${as}: ${JSON.stringify(response.body)}`);
+						const label = `${as} ${body.operation} ${get_attributes}`;
+						deepStrictEqual(response.body[0].dept, get_attributes[0] === '*' ? dept : undefined, label);
+					}
+				}
+			}
+		});
 		test('a relationship read as a property path is authorized against the related table', async () => {
 			const full = await rest('full', `/Emp/${EMP.id}.dept`);
 			strictEqual(full.status, 200, JSON.stringify(full.body));
