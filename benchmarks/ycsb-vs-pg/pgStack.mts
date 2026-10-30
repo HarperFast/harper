@@ -136,6 +136,8 @@ export interface PgStackOptions {
 	fastifyUnit: string;
 	/** Start from this snapshot (see `snapshot`) instead of an empty table. */
 	restore?: string;
+	/** NODE_OPTIONS for the Fastify cluster (profiling flags). */
+	nodeOptions?: string;
 }
 
 export interface PgStack {
@@ -242,6 +244,7 @@ async function startServices(
 			USE_CACHE: String(options.useCache),
 			PG_URL,
 			REDIS_URL,
+			...(options.nodeOptions ? { NODE_OPTIONS: options.nodeOptions } : {}),
 		},
 		stdio: ['ignore', 'pipe', 'inherit'],
 	});

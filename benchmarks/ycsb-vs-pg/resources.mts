@@ -397,6 +397,67 @@ export async function waitForQuiet(
 	return { waitedMs: Date.now() - start, quiet: false };
 }
 
+/** Host-wide busy CPU seconds (user, nice, system, irq, softirq, steal) from /proc/stat. */
+async function hostBusyCpuSeconds(): Promise<number> {
+	const fields = (await readFile('/proc/stat', 'utf8')).split('\n', 1)[0].trim().split(/\s+/).slice(1).map(Number);
+	const [user, nice, system, , , irq, softirq, steal] = fields;
+	return (user + nice + system + irq + softirq + steal) / USER_HZ;
+}
+
+export interface HostLoad {
+	loadavg1: number;
+	/** Mean cores busy over the window outside this run (its own cgroup and the target's). */
+	otherCores: number;
+	/** Mean cores busy inside this run over the window. */
+	ownCores: number;
+}
+
+/**
+ * Splits host CPU over a window into this run's and everyone else's. Other agents on the host run
+ * CPU-heavy work outside the bench lock, which lands on the target cores' SMT siblings and shared
+ * caches; this is the measure of that, not the load average, which counts the run itself.
+ */
+export function startHostLoad(targets?: ResourceTargets): { stop(): Promise<HostLoad> } {
+	// This process's cgroup holds, under bench-run, the orchestrator and the load generator's shards.
+	const own = async () =>
+		(targets ? await totalCpuSeconds(targets) : 0) + (await cgroupCpuSeconds(processCgroup(process.pid)));
+	const begin = Promise.all([hostBusyCpuSeconds(), own(), Date.now()]);
+	return {
+		async stop() {
+			const [hostBefore, ownBefore, startMs] = await begin;
+			const [hostAfter, ownAfter] = await Promise.all([hostBusyCpuSeconds(), own()]);
+			const seconds = Math.max(1e-3, (Date.now() - startMs) / 1000);
+			const ownCores = (ownAfter - ownBefore) / seconds;
+			return {
+				loadavg1: Number((await readFile('/proc/loadavg', 'utf8')).split(' ')[0]),
+				otherCores: Math.max(0, (hostAfter - hostBefore) / seconds - ownCores),
+				ownCores,
+			};
+		},
+	};
+}
+
+/**
+ * Waits until the rest of the host has used under `maxOtherCores` over a `windowMs` window, for at
+ * most `maxMs`; then the sample runs anyway and is marked not quiet.
+ */
+export async function waitForQuietHost({ maxOtherCores = 1, windowMs = 30_000, maxMs = 20 * 60_000 } = {}): Promise<{
+	waitedMs: number;
+	quiet: boolean;
+	last: HostLoad;
+}> {
+	const start = Date.now();
+	for (;;) {
+		const probe = startHostLoad();
+		await new Promise((r) => setTimeout(r, windowMs));
+		const last = await probe.stop();
+		const waitedMs = Date.now() - start;
+		if (last.otherCores < maxOtherCores) return { waitedMs, quiet: true, last };
+		if (waitedMs >= maxMs) return { waitedMs, quiet: false, last };
+		console.log(`  [host] ${last.otherCores.toFixed(1)} cores busy outside the run; waiting`);
+	}
+}
+
 /** Pins every thread of `pid` (and threads it creates later) to `cpus`. */
 export async function pinPid(pid: number, cpus: number[]): Promise<void> {
 	await exec('taskset', ['-acp', cpus.join(','), String(pid)]);

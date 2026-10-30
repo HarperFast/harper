@@ -8,6 +8,7 @@
  *
  *   node benchmarks/ycsb-vs-pg/memory-sweep.mts --ratios=0.5,2,8 --targets=harper-uws,harper,pg-redis,pg-only
  *   node benchmarks/ycsb-vs-pg/memory-sweep.mts --targets=harper-uws,harper-uws-sized,pg-redis --sized-ratios=0.5
+ *   node benchmarks/ycsb-vs-pg/memory-sweep.mts --cells=0.5:B:harper-uws,8:B:pg-redis --reps=3
  *
  * Each dataset size is loaded once per engine (REST, the same generator as run-compare) into a
  * quiesced snapshot. Every (target, workload) sample then restores that snapshot inside its own
@@ -22,7 +23,8 @@ import { WORKLOADS, formatKey } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
-import { sampleResources, waitForQuiet, readCgroupMemory } from './resources.mts';
+import { sampleResources, waitForQuiet, waitForQuietHost, readCgroupMemory, type HostLoad } from './resources.mts';
+import { readRocksdbEvents, summarizeEvents, type RocksdbActivity, type RocksdbEvent } from './rocksdbLog.mts';
 import {
 	TARGETS,
 	MEMORY_BUDGET_BYTES,
@@ -100,18 +102,57 @@ interface SweepSample {
 	records: number;
 	target: TargetName;
 	workload: string;
+	rep: number;
 	position: number;
-	status: 'ok' | 'failed';
+	/** `quiesce-timeout`: measured, but the restored target was still busy when the quiesce wait ran out. */
+	status: 'ok' | 'quiesce-timeout' | 'failed';
+	/** Present, and true, on every row of a session run with Harper uncapped (--allow-uncapped). */
+	allowUncapped?: true;
 	failure?: { phase: string; error: string };
+	/** The wait for the rest of the host to go quiet before this sample started. */
+	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
 	startupMs?: number;
 	quiesceMs?: number;
 	/** False when the target was still busy when the quiesce wait ran out. */
 	quiet?: boolean;
-	/** Quiet before warmup and converged during it; an unsettled `ok` row is not a result to compare. */
+	/**
+	 * The snapshot quiesced, the restored target quiesced, and warmup converged. An unsettled row is
+	 * not a result to compare.
+	 */
 	settled?: boolean;
 	warmup?: WarmupChunk[];
 	converged?: boolean;
 	measured?: MeasuredWindow;
+	/** Harper: RocksDB flushes and compactions from restore to the end of the sample, and per phase. */
+	rocksdb?: { events: RocksdbEvent[]; warmup: RocksdbActivity; measured: RocksdbActivity };
+}
+
+/**
+ * The sweep's claim is an equal enforced memory budget, so an uncapped Harper needs an explicit
+ * `--allow-uncapped`, which every output row then carries. Returns the argv without that flag.
+ */
+export function checkHarperMemory(argv: string[]): { argv: string[]; allowUncapped: boolean } {
+	const allowUncapped = argv.includes('--allow-uncapped');
+	if (argValue(argv, '--harper-memory') === 'measured' && !allowUncapped) {
+		throw new Error(
+			"--harper-memory=measured runs Harper without a memory cap, which voids the sweep's equal-budget " +
+				'comparison; add --allow-uncapped to run it anyway (every row is then marked allowUncapped)'
+		);
+	}
+	return { argv: argv.filter((a) => a !== '--allow-uncapped'), allowUncapped };
+}
+
+export type Cell = { ratio: number; workload: string; target: TargetName };
+
+/** `--cells=0.5:B:harper-uws,8:B:pg-redis`: exactly these (ratio, workload, target) samples. */
+export function parseCells(list: string): Cell[] {
+	return list.split(',').map((item) => {
+		const [ratio, workload, target, extra] = item.trim().split(':');
+		if (extra !== undefined || !target) throw new Error(`--cells: "${item}" is not ratio:workload:target`);
+		const [parsed] = parseTargets(target);
+		if (!WORKLOADS[workload]) throw new Error(`--cells: unknown workload "${workload}"`);
+		return { ratio: Number(ratio), workload, target: parsed };
+	});
 }
 
 const engineOf = (target: TargetName): 'harper' | 'pg' => (TARGETS[target].kind === 'stack' ? 'pg' : 'harper');
@@ -249,6 +290,7 @@ async function measureSweepSample(
 	{ chunkOps, maxChunks, measureOps }: { chunkOps: number; maxChunks: number; measureOps: number }
 ): Promise<void> {
 	let phase = 'start';
+	const startedAt = Date.now();
 	const spec = TARGETS[target];
 	const launch = {
 		restore: snapshot.restore,
@@ -270,13 +312,37 @@ async function measureSweepSample(
 					sample.quiesceMs = waitedMs;
 					sample.quiet = quiet;
 					phase = 'warmup';
+					const warmupStart = Date.now();
 					const { chunks, converged } = await warmUp(running, driver, workload, chunkOps, maxChunks);
 					sample.warmup = chunks;
 					sample.converged = converged;
 					phase = 'measure';
-					sample.measured = await measureWindow(session, running, driver, workload, 'zipfian', measureOps);
-					sample.status = 'ok';
-					sample.settled = converged && quiet;
+					sample.measured = await measureWindow(
+						session,
+						running,
+						driver,
+						workload,
+						'zipfian',
+						measureOps,
+						`${target}-${workload}-${sample.ratio}x-rep${sample.rep + 1}`
+					);
+					sample.status = quiet ? 'ok' : 'quiesce-timeout';
+					sample.settled = converged && quiet && snapshot.quiet;
+					if (running.dataRoot) {
+						phase = 'rocksdb-log';
+						const { startMs, endMs } = sample.measured.window;
+						const events = await readRocksdbEvents(running.dataRoot, startedAt, Date.now());
+						sample.rocksdb = {
+							events,
+							warmup: summarizeEvents(events, warmupStart, startMs),
+							measured: summarizeEvents(events, startMs, endMs),
+						};
+						const m = sample.rocksdb.measured;
+						console.log(
+							`  [rocksdb] measured window: ${m.flushes} flushes, ${m.compactions} compactions ` +
+								`(${m.compactionCpuMs.toFixed(0)} ms CPU, ${(m.compactionOutputBytes / 1048576).toFixed(0)} MiB written)`
+						);
+					}
 				} finally {
 					driver.close();
 				}
@@ -290,7 +356,7 @@ async function measureSweepSample(
 	}
 }
 
-function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryBytes: number): void {
+function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryBytes: number, chunkOps: number): void {
 	const out: string[] = ['', '='.repeat(150)];
 	out.push(
 		`Budget per target: 4 cores, ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB (hard caps, page cache included, swap off)` +
@@ -302,6 +368,7 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 			'records'.padStart(11),
 			' wl'.padEnd(4),
 			'target'.padEnd(18),
+			'rep'.padStart(4),
 			'ops/s'.padStart(8),
 			'p50 ms'.padStart(8),
 			'p99 ms'.padStart(8),
@@ -327,20 +394,41 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 					point.records.toLocaleString().padStart(11),
 					` ${s.workload}`.padEnd(4),
 					s.target.padEnd(18),
-					(s.status === 'ok' ? m!.result.throughput.toFixed(0) : 'FAILED').padStart(8),
+					String(s.rep + 1).padStart(4),
+					(m ? m.result.throughput.toFixed(0) : 'FAILED').padStart(8),
 					(lat ? lat.p50.toFixed(2) : '-').padStart(8),
 					(lat ? lat.p99.toFixed(2) : '-').padStart(8),
 					(m ? m.cpuMicrosPerOp.toFixed(1) : '-').padStart(10),
 					(m?.redisHitRate === undefined ? '-' : (m.redisHitRate * 100).toFixed(2)).padStart(7),
 					(s.warmup ? `${s.warmup.length}${s.settled ? '' : '!'}` : '-').padStart(7),
-					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}`,
+					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}` +
+						(s.status === 'quiesce-timeout' ? '  (quiesce timed out)' : '') +
+						(s.hostGate && !s.hostGate.quiet ? '  (host busy)' : ''),
 				].join('')
 			);
 		}
 	}
 	out.push(
-		"warmup = 1M-op chunks until 3 agree; '!' = no plateau within the chunk ceiling, or never quiet before warmup (not settled)"
+		`warmup = ${(chunkOps / 1e6).toFixed(1)}M-op chunks until 3 agree; ` +
+			"'!' = not settled: no plateau within the chunk ceiling, or the snapshot or restored target never got quiet"
 	);
+	const cells = new Map<string, SweepSample[]>();
+	for (const s of samples) {
+		if (!s.measured) continue;
+		const key = `${s.ratio}x ${s.workload} ${s.target}`;
+		cells.set(key, [...(cells.get(key) ?? []), s]);
+	}
+	if ([...cells.values()].some((reps) => reps.length > 1)) {
+		out.push('', 'per cell: median ops/s [min-max], reps settled');
+		for (const [key, reps] of cells) {
+			const values = reps.map((s) => s.measured!.result.throughput).sort((a, b) => a - b);
+			out.push(
+				`  ${key.padEnd(32)} ${values[Math.floor((values.length - 1) / 2)].toFixed(0).padStart(8)} ` +
+					`[${values[0].toFixed(0)}-${values[values.length - 1].toFixed(0)}]  ` +
+					`${reps.filter((s) => s.settled).length}/${reps.length}`
+			);
+		}
+	}
 	out.push('='.repeat(150));
 	process.stdout.write(out.join('\n') + '\n');
 }
@@ -351,9 +439,24 @@ async function removeSnapshots(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	const argv = process.argv.slice(2);
-	const targets = parseTargets(argValue(argv, '--targets') ?? 'harper-uws,harper,pg-redis,pg-only');
-	const ratios = (argValue(argv, '--ratios') ?? '0.5,2,8').split(',').map(Number);
+	const { argv, allowUncapped } = checkHarperMemory(process.argv.slice(2));
+	const cellsArg = argValue(argv, '--cells');
+	const cells = cellsArg ? parseCells(cellsArg) : undefined;
+	if (
+		cells &&
+		['--targets', '--ratios', '--workloads', '--sized-ratios'].some((f) => argValue(argv, f) !== undefined)
+	) {
+		throw new Error(
+			'--cells names every sample; it does not combine with --targets, --ratios, --workloads or --sized-ratios'
+		);
+	}
+	const unique = <T,>(items: T[]) => [...new Set(items)];
+	const targets = cells
+		? unique(cells.map((c) => c.target))
+		: parseTargets(argValue(argv, '--targets') ?? 'harper-uws,harper,pg-redis,pg-only');
+	const ratios = cells
+		? unique(cells.map((c) => c.ratio))
+		: (argValue(argv, '--ratios') ?? '0.5,2,8').split(',').map(Number);
 	// A record cache sized to the dataset is only plausible at the smallest point, so that is the default.
 	const sizedRatios = argValue(argv, '--sized-ratios')?.split(',').map(Number) ?? [Math.min(...ratios)];
 	for (const ratio of sizedRatios) {
@@ -361,17 +464,40 @@ async function main(): Promise<void> {
 	}
 	const chunkOps = Number(argValue(argv, '--warmup-chunk') ?? 1_000_000);
 	const maxChunks = Number(argValue(argv, '--warmup-max-chunks') ?? 12);
+	// The rest of the host, in cores busy over 30 s, and how long to wait for it.
+	const hostQuietCores = Number(argValue(argv, '--host-quiet-cores') ?? 1);
+	const hostQuietMaxMin = Number(argValue(argv, '--host-quiet-max-min') ?? 20);
 	for (const [flag, value] of Object.entries({ chunkOps, maxChunks })) {
 		if (!Number.isInteger(value) || value < 1) throw new Error(`${flag} must be a positive integer, got ${value}`);
+	}
+	for (const [flag, value] of Object.entries({ hostQuietCores, hostQuietMaxMin })) {
+		if (!(value >= 0)) throw new Error(`${flag} must be a non-negative number, got ${value}`);
 	}
 	const { session, meta } = await createSession(argv, {
 		targets,
 		cache: 'warm',
 		stackMemory: (target) => SWEEP_STACK_MEMORY[target],
-		ownFlags: ['ratios', 'sized-ratios', 'warmup-chunk', 'warmup-max-chunks'],
+		ownFlags: [
+			'ratios',
+			'sized-ratios',
+			'warmup-chunk',
+			'warmup-max-chunks',
+			'cells',
+			'host-quiet-cores',
+			'host-quiet-max-min',
+		],
 	});
 	const { config } = session.options;
-	const workloads = argv.some((a) => a.startsWith('--workloads=')) ? config.workloads : ['C', 'B'];
+	const workloads = cells
+		? unique(cells.map((c) => c.workload))
+		: argv.some((a) => a.startsWith('--workloads='))
+			? config.workloads
+			: ['C', 'B'];
+	const selected = (ratio: number, workload: string, target: TargetName): boolean => {
+		if (cells) return cells.some((c) => c.ratio === ratio && c.workload === workload && c.target === target);
+		const spec = TARGETS[target];
+		return spec.kind === 'stack' || !spec.sized || sizedRatios.includes(ratio);
+	};
 	for (const w of workloads)
 		if (WORKLOADS[w].mix.insert) throw new Error(`workload ${w} inserts; the sweep restores fixed datasets`);
 	const measureOps = argv.some((a) => a.startsWith('--ops=')) ? config.opsPerWorkload : 1_000_000;
@@ -387,9 +513,13 @@ async function main(): Promise<void> {
 			workloads,
 			distribution: 'zipfian',
 			measureOps,
+			reps: config.reps,
+			cells,
+			allowUncapped,
+			hostGate: { maxOtherCores: hostQuietCores, windowMs: 30_000, maxMs: hostQuietMaxMin * 60_000 },
 			warmup: { chunkOps, maxChunks, window: 3, throughputTolerance: 0.05, hitRateTolerance: 0.005 },
 			recordBytes,
-			targetOrderRule: 'forward on even points, reversed on odd points',
+			targetOrderRule: 'forward on even (point + rep), reversed on odd',
 			pageCache:
 				'charged to the cgroup of the process that first touches a page; each sample writes its own dataset copy from inside its own cgroup',
 		},
@@ -411,46 +541,55 @@ async function main(): Promise<void> {
 			const point: PointResult = { ratio: ratios[p], records, logicalBytes: records * recordBytes, snapshots: {} };
 			points.push(point);
 			console.log(`\n######## point ${ratios[p]}x: ${records.toLocaleString()} records ########`);
-			const order = targetOrder(
-				targets.filter((t) => {
-					const spec = TARGETS[t];
-					return spec.kind === 'stack' || !spec.sized || sizedRatios.includes(ratios[p]);
-				}),
-				p
-			);
-			for (const engine of new Set(order.map(engineOf))) {
+			const pointTargets = targets.filter((t) => workloads.some((w) => selected(ratios[p], w, t)));
+			for (const engine of new Set(pointTargets.map(engineOf))) {
 				point.snapshots[engine] = await prepareSnapshot(pointSession, engine, keyWidth);
 				await persist();
 			}
 			for (const workload of workloads) {
-				for (let i = 0; i < order.length; i++) {
-					const target = order[i];
-					const sample: SweepSample = {
-						ratio: ratios[p],
-						records,
-						target,
-						workload,
-						position: i + 1,
-						status: 'failed',
-					};
-					console.log(`\n--- ${ratios[p]}x #${i + 1} ${target} / workload ${workload} ---`);
-					await measureSweepSample(
-						pointSession,
-						target,
-						workload,
-						point.snapshots[engineOf(target)]!,
-						keyWidth,
-						sample,
-						{
-							chunkOps,
-							maxChunks,
-							measureOps,
-						}
+				for (let rep = 0; rep < config.reps; rep++) {
+					const order = targetOrder(
+						pointTargets.filter((t) => selected(ratios[p], workload, t)),
+						p + rep
 					);
-					samples.push(sample);
-					await persist();
-					if (sample.status === 'failed' && !(await nothingLeftRunning(session))) {
-						throw new Error('a failed sample left processes or containers running; aborting the session');
+					for (let i = 0; i < order.length; i++) {
+						const target = order[i];
+						const sample: SweepSample = {
+							ratio: ratios[p],
+							records,
+							target,
+							workload,
+							rep,
+							position: i + 1,
+							status: 'failed',
+							...(allowUncapped ? { allowUncapped: true as const } : {}),
+						};
+						console.log(`\n--- ${ratios[p]}x rep ${rep + 1} #${i + 1} ${target} / workload ${workload} ---`);
+						const gate = await waitForQuietHost({ maxOtherCores: hostQuietCores, maxMs: hostQuietMaxMin * 60_000 });
+						sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
+						console.log(
+							`  [host] ${gate.last.otherCores.toFixed(2)} cores busy elsewhere, load ${gate.last.loadavg1}` +
+								(gate.quiet ? '' : ' — not quiet, running anyway') +
+								` (waited ${(gate.waitedMs / 1000).toFixed(0)} s)`
+						);
+						await measureSweepSample(
+							pointSession,
+							target,
+							workload,
+							point.snapshots[engineOf(target)]!,
+							keyWidth,
+							sample,
+							{
+								chunkOps,
+								maxChunks,
+								measureOps,
+							}
+						);
+						samples.push(sample);
+						await persist();
+						if (sample.status === 'failed' && !(await nothingLeftRunning(session))) {
+							throw new Error('a failed sample left processes or containers running; aborting the session');
+						}
 					}
 				}
 			}
@@ -459,7 +598,7 @@ async function main(): Promise<void> {
 	} finally {
 		await removeSnapshots().catch(() => {});
 	}
-	printSweep(points, samples, session.harperMemoryBytes);
+	printSweep(points, samples, session.harperMemoryBytes, chunkOps);
 	console.log(`\nResults written to ${file}`);
 }
 

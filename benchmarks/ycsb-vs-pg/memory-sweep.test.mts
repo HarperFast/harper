@@ -7,7 +7,9 @@ import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recordsForRatio, warmupConverged } from './memory-sweep.mts';
+import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from './memory-sweep.mts';
+import { parsePerfStat, frameName } from './perfProfile.mts';
+import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
 import { TARGETS, parseTargets, writeJsonAtomic, MEMORY_BUDGET_BYTES } from './run-compare.mts';
 import { SWEEP_STACK_MEMORY, WARM_STACK_MEMORY } from './pgStack.mts';
 
@@ -76,4 +78,89 @@ test('results are replaced atomically, leaving no temp file', async () => {
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
+});
+
+test('an uncapped Harper needs an explicit opt-in, and the flag never reaches the option parser', () => {
+	throws(() => checkHarperMemory(['--harper-memory=measured']), /--allow-uncapped/);
+	deepStrictEqual(checkHarperMemory(['--harper-memory=measured', '--allow-uncapped', '--reps=3']), {
+		argv: ['--harper-memory=measured', '--reps=3'],
+		allowUncapped: true,
+	});
+	deepStrictEqual(checkHarperMemory(['--reps=3']), { argv: ['--reps=3'], allowUncapped: false });
+});
+
+test('cells name ratio, workload and target', () => {
+	deepStrictEqual(parseCells('0.5:B:harper-uws, 8:B:pg-redis'), [
+		{ ratio: 0.5, workload: 'B', target: 'harper-uws' },
+		{ ratio: 8, workload: 'B', target: 'pg-redis' },
+	]);
+	throws(() => parseCells('0.5:B'), /ratio:workload:target/);
+	throws(() => parseCells('0.5:Z:harper'), /unknown workload/);
+	throws(() => parseCells('0.5:B:redis'), /unknown target/);
+});
+
+test('perf stat output is read per cgroup', () => {
+	const cg = 'user.slice/app.slice/x.scope';
+	const lines = [
+		['cpu_core/instructions/u', 1000],
+		['cpu_core/instructions/k', 200],
+		['cpu_core/cycles/u', 900],
+		['cpu_core/cycles/k', 300],
+		['context-switches', 5],
+		['cpu-migrations', 0],
+		['page-faults', 7],
+	].map(([event, value]) => `${value},,${event},${cg},1000,100.00,,`);
+	deepStrictEqual(parsePerfStat(lines.join('\n')), {
+		[cg]: {
+			instructionsUser: 1000,
+			instructionsKernel: 200,
+			cyclesUser: 900,
+			cyclesKernel: 300,
+			contextSwitches: 5,
+			cpuMigrations: 0,
+			pageFaults: 7,
+		},
+	});
+	throws(() => parsePerfStat(`<not counted>,,cpu_core/cycles/u,${cg},0,0.00,,`), /could not count/);
+});
+
+test('perf script frames keep JS names and native libraries', () => {
+	strictEqual(
+		frameName('\t    7a7702000d60 JS:*get /app/resources/Table.js:10:3 (/tmp/perf-123.map)'),
+		'*get /app/resources/Table.js:10:3'
+	);
+	strictEqual(
+		frameName('\t  dbfd82 v8::internal::Heap::Scavenge()+0x12 (/usr/bin/node)'),
+		'v8::internal::Heap::Scavenge() (node)'
+	);
+	strictEqual(frameName('\t  1234 [unknown] (/x/rocksdb-js.node)'), '[rocksdb-js.node]');
+	strictEqual(frameName('\t ffffffff8a2b3c4d [unknown] ([unknown])'), '[kernel]');
+});
+
+test('RocksDB event-log lines are placed in the sample phases', () => {
+	const at = (ms: number, event: string, extra = '') =>
+		`2026/10/30-13:00:00.000000 1 EVENT_LOG_v1 {"time_micros": ${ms * 1000}, "job": 1, "event": "${event}"${extra}}`;
+	const log = [
+		'2026/10/30-13:00:00.000000 1 [db/db_impl.cc:1] some text',
+		at(100, 'flush_started', ', "flush_reason": "Write Buffer Full"'),
+		at(110, 'flush_finished'),
+		at(200, 'compaction_finished', ', "compaction_time_cpu_micros": 5000, "total_output_size": 1048576'),
+		'2026/10/30-13:00:00.000000 1 EVENT_LOG_v1 {"time_micros": 3', // truncated
+	].join('\n');
+	const events = parseEventLog(log, 'data');
+	strictEqual(events.length, 3);
+	deepStrictEqual(events[0], {
+		db: 'data',
+		timeMs: 100,
+		event: 'flush_started',
+		fields: {},
+		reason: 'Write Buffer Full',
+	});
+	deepStrictEqual(summarizeEvents(events, 150, 250), {
+		flushes: 0,
+		compactions: 1,
+		compactionCpuMs: 5,
+		compactionOutputBytes: 1048576,
+	});
+	strictEqual(summarizeEvents(events, 0, 150).flushes, 1);
 });

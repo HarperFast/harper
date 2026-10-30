@@ -38,11 +38,22 @@ import {
 	stopScope,
 	pinPid,
 	writePinnedRuntime,
+	startHostLoad,
+	type HostLoad,
 	type ResourceTargets,
 	type ResourceDelta,
 	type MemoryLimit,
 	type CgroupMemory,
 } from './resources.mts';
+import {
+	PERF_NODE_OPTIONS,
+	foldPerfScript,
+	perfAvailable,
+	startCounters,
+	startRecord,
+	sumCounters,
+	type Counters,
+} from './perfProfile.mts';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_APP_DIR = join(REPO_ROOT, 'benchmarks', 'ycsb', 'app');
@@ -116,6 +127,10 @@ export interface Session {
 	unitPrefix: string;
 	/** Shared by every copy of the session (memory-sweep makes one per dataset size). */
 	units: { count: number };
+	/** Hardware counters on every measured window: --perf-counters, or implied by --profile. */
+	perfCounters: boolean;
+	/** Set by --profile: profiler flags on the targets and a separate sampled-profile window after each measured one. */
+	profile?: { dir: string; ops: number };
 }
 
 interface Sample {
@@ -152,6 +167,8 @@ export interface Running {
 	pinned: Record<string, number>;
 	memoryLimits: Record<string, MemoryLimit>;
 	recordCacheSize?: number;
+	/** Harper's install directory (its RocksDB info LOGs are under it). */
+	dataRoot?: string;
 	/** Milliseconds from launch to accepting requests; a restore's copy is part of it. */
 	startupMs: number;
 	afterLoad?: () => Promise<void>;
@@ -203,6 +220,7 @@ async function withHarper<T>(
 		YCSB_MEMORY_MAX: Number.isFinite(session.harperMemoryBytes) ? String(session.harperMemoryBytes) : 'infinity',
 		...(spec.uws ? { HARPER_UWS_HTTP: '1' } : {}),
 		...(recordCacheSize ? { HARPER_RECORD_CACHE_SIZE: String(recordCacheSize) } : {}),
+		...(session.profile ? { NODE_OPTIONS: PERF_NODE_OPTIONS } : {}),
 	};
 	const harperOptions = {
 		harperBinPath: bin,
@@ -251,6 +269,7 @@ async function withHarper<T>(
 				harper: verifyMemoryLimit('harper', cgroup, session.harperMemoryBytes, MEMORY_BUDGET_BYTES),
 			},
 			recordCacheSize,
+			dataRoot: started.harper.dataRootDir,
 			startupMs: Date.now() - launchedAt,
 			async snapshot(dir: string): Promise<string> {
 				// Long grace: RocksDB flushes its memtables on a clean shutdown.
@@ -295,6 +314,7 @@ async function withPgStack<T>(
 		memory,
 		fastifyUnit: nextUnit(session, 'fastify'),
 		restore: launch.restore,
+		nodeOptions: session.profile ? PERF_NODE_OPTIONS : undefined,
 	});
 	try {
 		await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000);
@@ -373,6 +393,67 @@ export interface MeasuredWindow {
 	checkpoints?: number;
 	recordCacheSize?: number;
 	affinityVerifiedThreads: number;
+	/** Wall clock of the measured run, epoch ms. */
+	window: { startMs: number; endMs: number };
+	/** CPU busy on the host outside this run during the window, and the 1-min load average at its end. */
+	host: HostLoad;
+	/** With --perf-counters or --profile: hardware counters over the measured window, per component and summed. */
+	perf?: { byComponent: Record<string, Counters>; total: Counters };
+	/** With --profile: a separate window of `ops` under `perf record`, folded per component. */
+	profile?: ProfiledWindow;
+}
+
+export interface ProfiledWindow {
+	/** Prefix of the folded-stack files: `<prefix>.<component>.folded`; perf.data at `<prefix>.perf.data`. */
+	prefix: string;
+	ops: number;
+	throughput: number;
+	cpuMicrosPerOp: number;
+	byComponentCpuSeconds: Record<string, number>;
+	samples: Record<string, number>;
+}
+
+/**
+ * Runs `ops` more of the workload under `perf record` on the target cores. Kept apart from the
+ * measured window so sampling and its unwinding never touch the published numbers.
+ */
+async function profileWindow(
+	session: Session,
+	running: Running,
+	driver: DriverRun,
+	workload: string,
+	distribution: DistributionName,
+	label: string
+): Promise<ProfiledWindow> {
+	const { dir, ops } = session.profile!;
+	const prefix = join(dir, label);
+	const before = await sampleResources(running.targets);
+	const recorder = await startRecord(session.serverCpus, `${prefix}.perf.data`);
+	let result: PhaseResult;
+	try {
+		result = await driver.runWorkload(workload, distribution, ops);
+	} finally {
+		await recorder.stop();
+	}
+	const delta = diffResources(before, await sampleResources(running.targets));
+	assertNoErrors(`profiled ${workload}`, result);
+	// Folded while the target still runs: symbols come from its live JIT maps and container roots.
+	const samples = await foldPerfScript(`${prefix}.perf.data`, running.targets.cgroups, prefix);
+	const cpuMicrosPerOp = (delta.totalCpuSeconds * 1e6) / result.ops;
+	console.log(
+		`  [profile ${label}] ${result.throughput.toFixed(0)} ops/sec, ${cpuMicrosPerOp.toFixed(1)} CPU µs/op, ` +
+			Object.entries(samples)
+				.map(([k, v]) => `${k} ${v} samples`)
+				.join(', ')
+	);
+	return {
+		prefix,
+		ops: result.ops,
+		throughput: result.throughput,
+		cpuMicrosPerOp,
+		byComponentCpuSeconds: delta.byComponent,
+		samples,
+	};
 }
 
 /**
@@ -386,7 +467,8 @@ export async function measureWindow(
 	driver: DriverRun,
 	workload: string,
 	distribution: DistributionName,
-	ops?: number
+	ops?: number,
+	label = workload
 ): Promise<MeasuredWindow> {
 	const affinityVerifiedThreads = verifyPlacement(session, running, driver);
 	const checkpointsBefore = await running.checkpoints?.();
@@ -394,6 +476,9 @@ export async function measureWindow(
 	const clock = new ClockProbe(session.serverCpus);
 	const before = await sampleResources(running.targets);
 	const generatorBefore = await cpuSecondsOf(driver.pids);
+	const host = startHostLoad(running.targets);
+	const counters = session.perfCounters ? await startCounters(running.targets.cgroups, RESULTS_DIR) : undefined;
+	const startMs = Date.now();
 	memory.start();
 	clock.start();
 	let result: PhaseResult;
@@ -401,6 +486,7 @@ export async function measureWindow(
 	let after: Awaited<ReturnType<typeof sampleResources>>;
 	let generatorCpuSeconds: number;
 	let peaks: Awaited<ReturnType<MemoryPeakSampler['stop']>>;
+	let perf: MeasuredWindow['perf'];
 	try {
 		try {
 			result = await driver.runWorkload(workload, distribution, ops);
@@ -411,9 +497,15 @@ export async function measureWindow(
 		// that gap would be charged to the run.
 		after = await sampleResources(running.targets);
 		generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
+		if (counters) {
+			const byComponent = await counters.stop();
+			perf = { byComponent, total: sumCounters(byComponent) };
+		}
 	} finally {
 		peaks = await memory.stop();
 	}
+	const window = { startMs, endMs: Date.now() };
+	const hostLoad = await host.stop();
 	const cgroupMemory: Record<string, CgroupMemory> = {};
 	for (const [name, scope] of Object.entries(running.targets.cgroups)) {
 		cgroupMemory[name] = await readCgroupMemory(scope);
@@ -455,6 +547,18 @@ export async function measureWindow(
 			(redisHitRate !== undefined ? `, cache-hit ${(redisHitRate * 100).toFixed(2)}%` : '')
 	);
 	if (overBudget) console.log(`  WARNING: peak memory exceeds the ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB budget`);
+	if (perf) {
+		const t = perf.total;
+		const instructions = t.instructionsUser + t.instructionsKernel;
+		const cycles = t.cyclesUser + t.cyclesKernel;
+		console.log(
+			`  [perf] ${(instructions / result.ops / 1000).toFixed(1)}k instructions/op, ` +
+				`${(cycles / result.ops / 1000).toFixed(1)}k cycles/op, IPC ${(instructions / cycles).toFixed(2)}`
+		);
+	}
+	const profile = session.profile
+		? await profileWindow(session, running, driver, workload, distribution, label)
+		: undefined;
 	return {
 		result,
 		resources,
@@ -472,6 +576,10 @@ export async function measureWindow(
 				: checkpointsAfter - checkpointsBefore,
 		recordCacheSize: running.recordCacheSize,
 		affinityVerifiedThreads,
+		window,
+		host: hostLoad,
+		perf,
+		profile,
 	};
 }
 
@@ -516,7 +624,15 @@ async function measureSample(
 			if (warm.ops !== config.records) throw new Error(`read-all pass read ${warm.ops} of ${config.records} keys`);
 			console.log(`  [read-all] ${warm.ops.toLocaleString()} keys at ${warm.throughput.toFixed(0)} reads/sec`);
 
-			const measured = await measureWindow(session, running, driver, workload, distribution);
+			const measured = await measureWindow(
+				session,
+				running,
+				driver,
+				workload,
+				distribution,
+				undefined,
+				`${target}-${workload}-${session.cache}-rep${rep + 1}`
+			);
 			if (session.cache === 'warm' && measured.redisHitRate !== undefined && measured.redisHitRate < 0.99) {
 				throw new Error(
 					`workload ${workload}: Redis hit rate ${(measured.redisHitRate * 100).toFixed(2)}% < 99% in warm mode ` +
@@ -775,8 +891,11 @@ export async function createSession(
 		'cache',
 		'base-harper',
 		'harper-memory',
+		'profile',
+		'profile-ops',
 	];
 	const passthrough = argv.filter((a) => {
+		if (a === '--perf-counters') return false;
 		const name = /^--([^=]+)=/.exec(a)?.[1];
 		return !name || ![...sessionFlags, ...ownFlags].includes(name);
 	});
@@ -808,6 +927,19 @@ export async function createSession(
 	await pinPid(process.pid, driverCpus);
 	process.env.HARPER_RUNTIME = await writePinnedRuntime(RESULTS_DIR, serverCpus);
 
+	const profileDir = argValue(argv, '--profile');
+	const perfCounters = Boolean(profileDir) || argv.includes('--perf-counters');
+	if (perfCounters) await perfAvailable();
+	let profile: Session['profile'];
+	if (profileDir) {
+		const ops = Number(argValue(argv, '--profile-ops') ?? 1_000_000);
+		if (!Number.isInteger(ops) || ops < 1) throw new Error(`--profile-ops must be a positive integer, got ${ops}`);
+		profile = { dir: resolve(profileDir), ops };
+		await mkdir(profile.dir, { recursive: true });
+		// The profiler flags also make V8 write isolate-*-v8.log files into each target's working
+		// directory, which it inherits from here; every path this harness uses is absolute.
+		process.chdir(profile.dir);
+	}
 	const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 	const session: Session = {
 		options,
@@ -822,6 +954,8 @@ export async function createSession(
 		stackMemory,
 		unitPrefix: `ycsb-vs-pg-${process.pid}`,
 		units: { count: 0 },
+		perfCounters,
+		profile,
 	};
 
 	const { base } = await prepareDataDirs();
@@ -865,6 +999,8 @@ export async function createSession(
 			? { bin: baseHarperBin, revision: gitRevision(join(baseHarperBin, '..', '..', '..')) }
 			: undefined,
 		config: { ...options.config, threads: options.threads, engine: options.engine },
+		perfCounters,
+		profile: profile && { ...profile, nodeOptions: PERF_NODE_OPTIONS },
 	};
 	return { session, meta };
 }
