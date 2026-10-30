@@ -466,21 +466,27 @@ export function releaseArchiveStaging(source: { backup_dir: string; source_kind?
 }
 
 /**
- * Every staging area of a database that some restore pinned and nothing holds any longer: a chain of
- * failed attempts at one target leaves one per attempt, and a rerun takes over only the latest. An area
- * no restore ever pinned is still being staged, so it is left alone.
+ * Every staging area, under any database, that some restore pinned and nothing holds any longer: a chain
+ * of failed attempts at one target leaves one per attempt, possibly from different source databases,
+ * and a rerun takes over only the latest. An area no restore ever pinned is still being staged, so it is
+ * left alone.
  */
-export function releaseLapsedStaging(databaseName: string): void {
-	const stagingRoot = join(backupDirForDatabase(databaseName), IMPORT_STAGING_DIR);
-	let ids: string[];
-	try {
-		ids = existsSync(stagingRoot) ? readdirSync(stagingRoot) : [];
-	} catch (error) {
-		logger.warn(`Could not list the restore staging areas in ${stagingRoot}; the next sweep retries`, error);
-		return;
+export function releaseLapsedStaging(): void {
+	const stagingDirs: string[] = [];
+	const list = (directory: string): string[] => {
+		try {
+			return existsSync(directory) ? readdirSync(directory) : [];
+		} catch (error) {
+			logger.warn(`Could not list ${directory} for lapsed restore staging; the next sweep retries`, error);
+			return [];
+		}
+	};
+	const backupsRoot: string = getBackupsRoot();
+	for (const database of list(backupsRoot)) {
+		const stagingRoot = join(backupsRoot, database, IMPORT_STAGING_DIR);
+		for (const id of list(stagingRoot)) stagingDirs.push(join(stagingRoot, id));
 	}
-	for (const id of ids) {
-		const stagingDir = join(stagingRoot, id);
+	for (const stagingDir of stagingDirs) {
 		try {
 			if (readBackupPins(stagingDir).length > 0) releaseStagingIfUnowned(stagingDir);
 		} catch (error) {

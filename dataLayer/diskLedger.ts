@@ -79,6 +79,14 @@ function existingAncestor(path: string): string {
  * prefix — a mount below a root is a different budget. The budget gates admission; a write's own
  * ENOSPC/EDQUOT remains authoritative.
  */
+/**
+ * The block a charge rounds to: the reported size, capped, because ZFS reports its record size and NFS
+ * its write size there, and rounding small files to either would refuse writes that fit.
+ */
+export function allocationUnit(bsize: number): number {
+	return Math.min(bsize, 64 * 1024);
+}
+
 export class DiskLedger {
 	#stats: (path: string) => Promise<StorageSpaceStats>;
 	#statfs: (path: string) => FilesystemShape;
@@ -229,7 +237,7 @@ export class DiskLedger {
 		budget.bytesSinceResample = 0;
 		const inodesSampledAt = this.#now();
 		const fs = this.#statfs(path);
-		budget.bsize = fs.bsize;
+		budget.bsize = allocationUnit(fs.bsize);
 		if (inodesSampledAt > budget.lastDebitAt) {
 			// a filesystem with no fixed inode table (btrfs) reports files = 0
 			budget.inodesFree = fs.files > 0 ? fs.ffree : Infinity;

@@ -322,10 +322,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	// a staged archive an earlier failed attempt kept for this rerun is no longer anyone's source
 	// best effort, and never in the way of the reload below: the restore is already published
 	try {
-		const stagedSources = new Set<string>();
-		if (request.sourceKind === 'staged_tree') stagedSources.add(sourceDatabase);
-		if (takenOver?.source_kind === 'staged_tree') stagedSources.add(takenOver.source_database);
-		for (const database of stagedSources) releaseLapsedStaging(database);
+		if (request.sourceKind === 'staged_tree' || takenOver?.source_kind === 'staged_tree') releaseLapsedStaging();
 	} catch (error) {
 		logger.warn(`Could not release the restore staging of '${targetDatabase}'; the next sweep retries`, error);
 	}

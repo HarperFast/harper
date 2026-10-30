@@ -2142,19 +2142,36 @@ describe('releaseLapsedStaging', function () {
 		mkdirSync(unpinned, { recursive: true });
 		const lock = acquireRestoreLock(target);
 		try {
-			restoreArchive.releaseLapsedStaging(name);
+			restoreArchive.releaseLapsedStaging();
 			assert.ok(existsSync(running), 'the running restore keeps its source');
 		} finally {
 			releaseRestoreLock(lock);
 		}
-		restoreArchive.releaseLapsedStaging(name);
+		restoreArchive.releaseLapsedStaging();
 		assert.ok(!existsSync(running), 'released once nothing holds its pin');
 		assert.ok(existsSync(unpinned), 'an area no restore pinned is still being staged');
+	});
+
+	it('releases a lapsed area under any source database, as a chain of attempts from several leaves', function () {
+		const other = `${name}_other`;
+		const target = join(targets, 'done');
+		mkdirSync(target);
+		const here = pinnedStaging(target);
+		const there = join(backupDirForDatabase(other), '.staging', randomUUID());
+		mkdirSync(join(there, 'tree'), { recursive: true });
+		pinBackup(there, 'restore-pin', 1, 'test restore', target);
+		try {
+			restoreArchive.releaseLapsedStaging();
+			assert.ok(!existsSync(here));
+			assert.ok(!existsSync(there));
+		} finally {
+			rmSync(backupDirForDatabase(other), { recursive: true, force: true });
+		}
 	});
 
 	it('does not throw when the staging folder cannot be listed', function () {
 		mkdirSync(backupDirForDatabase(name), { recursive: true });
 		writeFileSync(join(backupDirForDatabase(name), '.staging'), 'not a directory');
-		assert.doesNotThrow(() => restoreArchive.releaseLapsedStaging(name));
+		assert.doesNotThrow(() => restoreArchive.releaseLapsedStaging());
 	});
 });

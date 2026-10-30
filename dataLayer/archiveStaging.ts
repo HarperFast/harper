@@ -21,7 +21,7 @@ import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 import { fsyncTolerantSync } from '../utility/fsync.ts';
 import { safeFetchToFile } from '../utility/safeFetch.ts';
 import { openRestoredGeneration, closeRestoredGeneration } from '../resources/databases.ts';
-import { DiskLedger, ledgerMeter } from './diskLedger.ts';
+import { allocationUnit, DiskLedger, ledgerMeter } from './diskLedger.ts';
 import { extractArchive, tallyArchive } from './archiveExtraction.ts';
 import { fsyncTree } from './blobBackup.ts';
 import type { BackupManifest } from './backupManifest.ts';
@@ -274,9 +274,11 @@ export async function stageArchive(args: StageArchiveArgs) {
 	}
 
 	const treeDir = join(stagingDir, 'tree');
-	const tally = await tallyArchive(archivePath, { bsize: statfsSync(stagingDir).bsize }).catch((error) => {
-		throw notAnArchive(error, args.restoredFrom);
-	});
+	const tally = await tallyArchive(archivePath, { bsize: allocationUnit(statfsSync(stagingDir).bsize) }).catch(
+		(error) => {
+			throw notAnArchive(error, args.restoredFrom);
+		}
+	);
 	// refuse an archive the staging device cannot hold before writing any of it; extraction then debits
 	// the same bytes as it lands
 	(await ledger.reserve(stagingDir, tally.bytes, tally.inodes)).release(0);

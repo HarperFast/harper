@@ -26,7 +26,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import { fsyncDirectory } from '../utility/durableFile.ts';
 import { fsyncTolerantSync } from '../utility/fsync.ts';
 import { copyTree, fsyncTree } from './blobBackup.ts';
-import { DiskLedger } from './diskLedger.ts';
+import { allocationUnit, DiskLedger } from './diskLedger.ts';
 import { STAGED_INVENTORY_FILE, stagedTreeDir, type InventoryFile } from './archiveStaging.ts';
 
 const IMMUTABLE_ENGINE_FILE = /^[^/]+\.(sst|blob)$/;
@@ -80,11 +80,22 @@ async function* inventoryEntries(stagingDir: string): AsyncGenerator<InventoryFi
 }
 
 /** What the install will write where, in bytes and files, gathered while verifying. */
-export interface InstallPlan {
-	immutableEngine: { bytes: number; files: number; sample?: string };
-	otherEngine: { bytes: number; files: number };
-	blobRoots: Map<number, { bytes: number; files: number; sample?: string }>;
+interface PlanEntry {
+	bytes: number;
+	files: number;
+	/** Every directory the install creates, charged whether or not the files beside it are linked. */
+	directoryBytes: number;
+	directories: number;
+	sample?: string;
 }
+
+export interface InstallPlan {
+	immutableEngine: PlanEntry;
+	otherEngine: PlanEntry;
+	blobRoots: Map<number, PlanEntry>;
+}
+
+const emptyEntry = (): PlanEntry => ({ bytes: 0, files: 0, directoryBytes: 0, directories: 0 });
 
 /**
  * Before anything is destroyed: every staged file must still be byte-for-byte what was verified when
@@ -100,16 +111,23 @@ export async function verifyStagedTree(
 	const blockSizes = new Map<string, number>();
 	const allocated = (destination: string, size: number) => {
 		let blockSize = blockSizes.get(destination);
-		if (blockSize === undefined)
-			blockSizes.set(destination, (blockSize = statfsSync(nearestExisting(destination)).bsize));
+		if (blockSize === undefined) {
+			blockSizes.set(destination, (blockSize = allocationUnit(statfsSync(nearestExisting(destination)).bsize)));
+		}
 		return Math.ceil(size / blockSize) * blockSize;
 	};
-	const directories = new Set<string>();
-	const plan: InstallPlan = {
-		immutableEngine: { bytes: 0, files: 0 },
-		otherEngine: { bytes: 0, files: 0 },
-		blobRoots: new Map(),
+	const createdDirectories = new Set<string>();
+	const chargeDirectories = (entry: PlanEntry, destination: string, relativePath: string) => {
+		const ancestors = relativePath.split('/').slice(0, -1);
+		for (let depth = 0; depth <= ancestors.length; depth++) {
+			const key = `${destination}\0${ancestors.slice(0, depth).join('/')}`;
+			if (createdDirectories.has(key)) continue;
+			createdDirectories.add(key);
+			entry.directoryBytes += allocated(destination, 1);
+			entry.directories++;
+		}
 	};
+	const plan: InstallPlan = { immutableEngine: emptyEntry(), otherEngine: emptyEntry(), blobRoots: new Map() };
 	for await (const file of inventoryEntries(stagingDir)) {
 		const path = join(treeDir, file.path);
 		let size: number;
@@ -127,28 +145,18 @@ export async function verifyStagedTree(
 		if (file.path.startsWith(BLOBS_PREFIX)) {
 			const index = blobRootIndex(file.path);
 			if (index === undefined) continue;
-			const root = plan.blobRoots.get(index) ?? { bytes: 0, files: 0, sample: file.path };
+			const entry = plan.blobRoots.get(index) ?? { ...emptyEntry(), sample: file.path };
 			const destination = blobRoots[index] ?? databasePath;
-			root.bytes += allocated(destination, file.size);
-			root.files++;
-			if (!directories.has(dirname(file.path))) {
-				directories.add(dirname(file.path));
-				root.bytes += allocated(destination, 1);
-				root.files++;
-			}
-			plan.blobRoots.set(index, root);
-		} else if (IMMUTABLE_ENGINE_FILE.test(file.path)) {
-			plan.immutableEngine.bytes += allocated(databasePath, file.size);
-			plan.immutableEngine.files++;
-			plan.immutableEngine.sample ??= file.path;
+			entry.bytes += allocated(destination, file.size);
+			entry.files++;
+			chargeDirectories(entry, destination, file.path.split('/').slice(2).join('/'));
+			plan.blobRoots.set(index, entry);
 		} else {
-			plan.otherEngine.bytes += allocated(databasePath, file.size);
-			plan.otherEngine.files++;
-			if (!directories.has(dirname(file.path))) {
-				directories.add(dirname(file.path));
-				plan.otherEngine.bytes += allocated(databasePath, 1);
-				plan.otherEngine.files++;
-			}
+			const entry = IMMUTABLE_ENGINE_FILE.test(file.path) ? plan.immutableEngine : plan.otherEngine;
+			entry.bytes += allocated(databasePath, file.size);
+			entry.files++;
+			if (entry === plan.immutableEngine) entry.sample ??= file.path;
+			chargeDirectories(plan.otherEngine, databasePath, file.path);
 		}
 	}
 	return plan;
@@ -207,8 +215,8 @@ export async function assertInstallFits(
 		canLink(join(treeDir, plan.immutableEngine.sample), databasePath, operationTag);
 	needs.push({
 		destination: databasePath,
-		bytes: plan.otherEngine.bytes + (engineLinks ? 0 : plan.immutableEngine.bytes),
-		files: plan.otherEngine.files + plan.immutableEngine.files,
+		bytes: plan.otherEngine.bytes + plan.otherEngine.directoryBytes + (engineLinks ? 0 : plan.immutableEngine.bytes),
+		files: plan.otherEngine.files + plan.otherEngine.directories + plan.immutableEngine.files,
 		credit: reclaimableBytes(databasePath),
 	});
 	if (installBlobs) {
@@ -220,8 +228,8 @@ export async function assertInstallFits(
 			const links = root.sample !== undefined && canLink(join(treeDir, root.sample), destination, operationTag);
 			needs.push({
 				destination,
-				bytes: links ? 0 : root.bytes,
-				files: root.files,
+				bytes: root.directoryBytes + (links ? 0 : root.bytes),
+				files: root.files + root.directories,
 				credit: reclaimableBytes(destination),
 			});
 		}

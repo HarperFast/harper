@@ -16,7 +16,7 @@ const {
 	writeFileSync,
 } = fs;
 const { tmpdir } = require('node:os');
-const { dirname, join } = require('node:path');
+const { join } = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const { waitFor } = require('../waitFor.js');
 const { closeDatabase, table } = require('#src/resources/databases');
@@ -241,11 +241,10 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			const roots = [...plan.blobRoots.entries()];
 			assert.ok(roots.length > 0);
 			assert.ok(roots.every(([index, root]) => Number.isInteger(index) && root.files > 0));
-			const blobDirectories = new Set(blobFiles.map((file) => dirname(file)));
 			assert.strictEqual(
 				roots.reduce((sum, [, root]) => sum + root.files, 0),
-				blobFiles.length + blobDirectories.size,
-				'every blob file and the directory holding it, and no blobs README'
+				blobFiles.length,
+				'every blob file, and no blobs README'
 			);
 		});
 
@@ -260,6 +259,59 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			);
 			assert.strictEqual(plan.immutableEngine.bytes, allocated);
 			assert.strictEqual(plan.immutableEngine.bytes % blockSize, 0);
+		});
+	});
+
+	describe('directory allocation', function () {
+		const { DiskLedger } = require('#src/dataLayer/diskLedger');
+		const { createHash } = require('node:crypto');
+
+		/** A staging area holding one blob file five directories deep, inventoried as staging writes it. */
+		function deepBlobStaging() {
+			const stagingDir = mkdtempSync(join(tempDir, 'deep-'));
+			const relative = 'blobs/0/a/b/c/d/blob';
+			mkdirSync(join(stagingDir, 'tree', 'blobs', '0', 'a', 'b', 'c', 'd'), { recursive: true });
+			writeFileSync(join(stagingDir, 'tree', relative), 'x');
+			const sha256 = createHash('sha256').update('x').digest('hex');
+			writeFileSync(
+				join(stagingDir, STAGED_INVENTORY_FILE),
+				JSON.stringify({ path: relative, size: 1, sha256 }) + '\n'
+			);
+			return stagingDir;
+		}
+
+		it('counts every directory the install creates, at every depth', async function () {
+			const stagingDir = deepBlobStaging();
+			const root = join(tempDir, 'deep-root');
+			const plan = await verifyStagedTree(stagingDir, join(tempDir, 'deep-target'), [root]);
+			const entry = plan.blobRoots.get(0);
+			// the root itself and a, a/b, a/b/c, a/b/c/d
+			assert.strictEqual(entry.directories, 5);
+			assert.ok(entry.directoryBytes > 0);
+		});
+
+		it('still charges those directories when the files beside them are linked', async function () {
+			const stagingDir = deepBlobStaging();
+			const root = join(tempDir, 'deep-root-linked');
+			const plan = await verifyStagedTree(stagingDir, join(tempDir, 'deep-target'), [root]);
+			const reserved = [];
+			const original = DiskLedger.prototype.reserve;
+			DiskLedger.prototype.reserve = async function (path, bytes, inodes) {
+				reserved.push({ bytes, inodes });
+				return original.call(this, path, bytes, inodes);
+			};
+			try {
+				await assertInstallFits(stagingDir, plan, join(tempDir, 'deep-target'), [root], true, 'deep');
+			} finally {
+				DiskLedger.prototype.reserve = original;
+			}
+			const entry = plan.blobRoots.get(0);
+			assert.ok(
+				reserved.some(
+					({ bytes, inodes }) => bytes >= entry.directoryBytes && inodes === entry.files + entry.directories
+				),
+				`a blob root reservation covers its directories: ${JSON.stringify(reserved)}`
+			);
 		});
 	});
 
