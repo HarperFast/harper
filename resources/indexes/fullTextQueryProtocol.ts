@@ -89,7 +89,10 @@ export function validateFullTextFuzzyOptions(
 ): void {
 	if (condition.fuzzyDistance === undefined && condition.fuzzyTranspositions === undefined) return;
 	if (mode !== 'fuzzy' && mode !== 'fuzzy-prefix')
-		throw new ClientError('Fuzzy controls require matches_fuzzy or matches_fuzzy_prefix', 400);
+		throw new ClientError(
+			'Fuzzy controls require matches_fuzzy or matches_fuzzy_prefix on a full-text index condition',
+			400
+		);
 	if (
 		condition.fuzzyDistance !== undefined &&
 		(typeof condition.fuzzyDistance !== 'number' ||

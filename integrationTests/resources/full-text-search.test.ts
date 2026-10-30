@@ -108,7 +108,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		return text ? JSON.parse(text) : undefined;
 	}
 
-	async function operation(body: Record<string, unknown>, expectedStatus = 200) {
+	async function operation(body: Record<string, unknown>) {
 		const response = await fetch(ctx.harper.operationsAPIURL, {
 			method: 'POST',
 			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
@@ -116,7 +116,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			signal: AbortSignal.timeout(45_000),
 		});
 		const text = await response.text();
-		assert.strictEqual(response.status, expectedStatus, `operation ${body.operation}: ${text}`);
+		assert.strictEqual(response.status, 200, `operation ${body.operation}: ${text}`);
 		return JSON.parse(text);
 	}
 

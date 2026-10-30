@@ -174,7 +174,7 @@ describe('published native full-text Table.search integration', () => {
 				const group = { operator: 'and', conditions, ...controls };
 				await assert.rejects(
 					async () => collect(Product.search({ conditions: [group] })),
-					(error) => error.statusCode === 400,
+					(error) => error.statusCode === 400 && /on a full-text index condition/.test(error.message),
 					`group with ${conditions.length} conditions and ${Object.keys(controls)[0]}`
 				);
 			}
