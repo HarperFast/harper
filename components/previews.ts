@@ -1,4 +1,5 @@
 /** PR previews' cap and expiry sweep; see components/DESIGN.md, "PR previews record what they came from, and expire". */
+import { mkdirSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getConfigPath, getConfigValue } from '../config/configUtils.ts';
@@ -14,10 +15,12 @@ import {
 } from './deploymentProvenance.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
+import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 
 const logger = harperLogger.forComponent('previews');
 const SWEEP_JOB = 'preview-expiry';
 const DEFAULT_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+const FENCE_DIRECTORY = '.preview-revoked';
 
 export interface LocalPreview {
 	component: string;
@@ -89,31 +92,96 @@ export async function assertPreviewCapacity(
 	);
 }
 
+const admissionLockPath = (componentsRoot: string, app: string) =>
+	join(componentsRoot, `.preview-admission-${encodeURIComponent(app)}`);
+const fencePath = (componentsRoot: string, app: string) =>
+	join(componentsRoot, FENCE_DIRECTORY, `${encodeURIComponent(app)}.json`);
+
+/** The identity generations of `app` whose previews this node refuses; an unreadable record throws. */
+async function revokedGenerations(app: string, componentsRoot: string): Promise<string[]> {
+	const path = fencePath(componentsRoot, app);
+	const raw = await readFile(path, 'utf8').catch((error) => {
+		if (error?.code === 'ENOENT') return undefined;
+		throw error;
+	});
+	if (raw === undefined) return [];
+	const revoked = JSON.parse(raw);
+	if (!Array.isArray(revoked) || !revoked.every((generation) => typeof generation === 'string')) {
+		throw new Error(`${path} is not a list of revoked preview identity generations`);
+	}
+	return revoked;
+}
+
 /**
- * Swap a preview in only while its application is under its cap, holding one lock per application across the count
- * and the swap, so two previews never both take the last slot. The metadata is the candidate's own, which a staged
- * build's later activation carries too, and `admit` may refuse it, a missing one included, before anything is counted.
+ * Records, on this node, that previews built by `app`'s identity at `generation` must never go live. Taken under the
+ * lock every such activation holds across its check and its swap, so one already swapping finishes first, and the
+ * census that follows sees it.
+ */
+export async function fencePreviewGeneration(
+	app: string,
+	generation: string,
+	componentsRoot: string = componentsRootPath()
+): Promise<void> {
+	await withComponentPreparationLock(
+		admissionLockPath(componentsRoot, app),
+		async () => {
+			const directory = join(componentsRoot, FENCE_DIRECTORY);
+			mkdirSync(directory, { recursive: true });
+			fsyncDirectory(componentsRoot);
+			const revoked = await revokedGenerations(app, componentsRoot);
+			// Flushed even when it is already there: an earlier attempt may have failed after its rename.
+			if (revoked.includes(generation)) return fsyncDirectory(directory);
+			writeFileDurably(
+				fencePath(componentsRoot, app),
+				JSON.stringify([...revoked, generation]),
+				`.${encodeURIComponent(app)}.json.tmp`
+			);
+		},
+		{ purpose: `fencing previews of ${app}` }
+	);
+}
+
+/**
+ * Swap a preview in only while its application is under its cap, past `admit`, and unless this node revoked the
+ * identity generation that built it, holding one lock per application across those checks and the swap: two previews
+ * never both take the last slot, and a fence waits for a swap under way. The metadata is the candidate's own, which a
+ * staged build's later activation carries too. `cap` is `null` for none, as on a peer, which makes live what its origin
+ * admitted; `fenced` asks for the generation check with no cap and no `admit`.
  */
 export async function admitPreviewActivation(
 	component: string,
 	candidateDirPath: string,
 	activate: () => Promise<void>,
-	max: number | undefined = positiveInteger(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION)),
+	cap: number | null | undefined = positiveInteger(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION)),
 	componentsRoot: string = componentsRootPath(),
 	admit?: (preview: PreviewMetadata | undefined) => void,
-	limitName?: string
+	limitName?: string,
+	fenced = false
 ): Promise<void> {
-	if (max === undefined && !admit) return activate();
-	const raw = await readFile(join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(() => undefined);
+	const max = cap ?? undefined;
+	if (max === undefined && !admit && !fenced) return activate();
+	const raw = await readFile(join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch((error) => {
+		if (fenced && error?.code !== 'ENOENT') throw error;
+		return undefined;
+	});
 	const preview = raw === undefined ? undefined : parseDeploymentPreview(raw, component);
 	admit?.(preview);
-	if (!preview || max === undefined) return activate();
+	const generation = typeof preview?.generation === 'string' ? preview.generation : undefined;
+	if (!preview || (max === undefined && generation === undefined)) return activate();
 	await withComponentPreparationLock(
-		join(componentsRoot, `.preview-admission-${encodeURIComponent(preview.app)}`),
+		admissionLockPath(componentsRoot, preview.app),
 		async () => {
-			await assertPreviewCapacity(component, preview.app, max, await listLocalPreviews(componentsRoot), limitName);
+			if (max !== undefined) {
+				await assertPreviewCapacity(component, preview.app, max, await listLocalPreviews(componentsRoot), limitName);
+			}
 			// Again, after waiting for the lock: what it refuses may have changed meanwhile.
 			admit?.(preview);
+			if (generation !== undefined && (await revokedGenerations(preview.app, componentsRoot)).includes(generation)) {
+				throw new ClientError(
+					`'${component}' was not activated: previews of ${preview.app} by the identity that built it were disabled`,
+					403
+				);
+			}
 			await activate();
 		},
 		{ purpose: `preview admission for ${preview.app}` }

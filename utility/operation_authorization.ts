@@ -436,6 +436,10 @@ requiredPermissions.set(
 	new permission(true, [], terms.OPERATIONS_ENUM.DISABLE_PREVIEWS)
 );
 requiredPermissions.set(
+	previewOperations.fencePreviewReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.FENCE_PREVIEW_RELEASES)
+);
+requiredPermissions.set(
 	previewOperations.getPreviewPolicy.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY)
 );

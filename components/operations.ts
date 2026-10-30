@@ -634,6 +634,11 @@ async function deployComponent(req?: any) {
 			req.preview = { ...req.preview, expiresAt: new Date(bound).toISOString() };
 			previewExpiryClamped = req.preview.expiresAt;
 		}
+		const { generation } = componentGrant.constraints ?? {};
+		if (req.preview) {
+			const { generation: _claimed, ...preview } = req.preview;
+			req.preview = generation === undefined ? preview : { ...preview, generation };
+		}
 	}
 	// An activation names a build the grant may never have admitted, live here or dormant on a peer, so its recorded
 	// preview is checked first, ahead of the return for a release that is already live.
@@ -895,19 +900,21 @@ async function deployComponent(req?: any) {
 				routing: declaredRouting,
 				isolated: Boolean(nowIsolated),
 			}),
-			// The cap is the origin's: a peer makes live what the origin admitted.
+			// The cap is the origin's: a peer makes live what the origin admitted. A revoked identity's preview is refused
+			// on every node, a peer included, since only that node's fence orders its swap against disabling.
 			aroundActivation:
-				isReplicatedExecution && !componentGrant
+				isReplicatedExecution && !componentGrant && !req.preview && !isActivation
 					? undefined
 					: (candidateDirPath, activate) =>
 							admitPreviewActivation(
 								req.project,
 								candidateDirPath,
 								activate,
-								previewCap,
+								isReplicatedExecution && !componentGrant ? null : previewCap,
 								undefined,
 								componentGrant?.constraints?.preview === 'required' ? admitGrantPreview : undefined,
-								previewCapName
+								previewCapName,
+								Boolean(req.preview) || isActivation
 							),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
