@@ -1,6 +1,5 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
-import { request as httpRequest } from 'node:http';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -55,43 +54,22 @@ async function assertOperationsQueryRejection(
 	target: ReturnType<typeof query>,
 	message: string
 ) {
-	const capture = await new Promise<{ status: number; complete: boolean; body: string }>((resolve, reject) => {
-		const request = httpRequest(
-			operationsAPIURL,
-			{
-				method: 'POST',
-				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
-				signal: AbortSignal.timeout(45_000),
-			},
-			(response) => {
-				const chunks: Buffer[] = [];
-				response.on('data', (chunk: Buffer) => chunks.push(chunk));
-				response.on('error', (error: NodeJS.ErrnoException) => {
-					if (error.code !== 'ECONNRESET') reject(error);
-				});
-				response.on('close', () =>
-					resolve({
-						status: response.statusCode,
-						complete: response.complete,
-						body: Buffer.concat(chunks).toString('utf8'),
-					})
-				);
-			}
-		);
-		request.on('error', reject);
-		request.end(JSON.stringify({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target }));
+	const response = await fetch(operationsAPIURL, {
+		method: 'POST',
+		headers: {
+			'Authorization': authorization,
+			'Content-Type': 'application/json',
+			'Accept': 'application/x-ndjson',
+		},
+		body: JSON.stringify({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target }),
+		signal: AbortSignal.timeout(45_000),
 	});
-	if (capture.status === 400) {
-		assert.strictEqual(capture.complete, true);
-		assert.ok(capture.body.includes(message), capture.body);
-		assert.ok(!Array.isArray(JSON.parse(capture.body)), capture.body);
-	} else {
-		// The pre-first-yield JSON-array contract aborts after its diagnostic (stream-error-contract.test.ts).
-		assert.strictEqual(capture.status, 200, capture.body);
-		assert.strictEqual(capture.complete, false, capture.body);
-		assert.strictEqual(capture.body, `[${JSON.stringify({ error: `ClientError: ${message}` })}`);
-		assert.throws(() => JSON.parse(capture.body), SyntaxError);
-	}
+	const body = await response.text();
+	assert.strictEqual(response.status, 200, body);
+	assert.match(response.headers.get('content-type'), /^application\/x-ndjson(?:;|$)/);
+	assert.deepStrictEqual(body.trim().split('\n').map(JSON.parse), [
+		{ $harperStreamError: { error: 'ClientError', message, status: 400 } },
+	]);
 }
 
 suite('deployed full-text fields and native search', (ctx: ContextWithHarper) => {
