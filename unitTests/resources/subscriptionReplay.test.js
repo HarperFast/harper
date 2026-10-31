@@ -1228,11 +1228,13 @@ describe('Subscription replay', () => {
 			}
 			const subscription = await subscribe(T, { startTime, isCollection: true });
 			const events = [];
-			subscription.on('data', (e) => events.push(e));
-			// don't wait for completion — return early
-			await delay(20);
 			const iter = subscription[Symbol.asyncIterator]();
-			iter.return();
+			subscription.on('data', (event) => {
+				events.push(event);
+				if (events.length === 10) iter.return();
+			});
+			await waitFor(() => subscription.closed, { message: 'returning the iterator did not close the subscription' });
+			assert.equal(events.length, 10, 'the iterator must return during replay after exactly ten events');
 			assert.strictEqual(subscription.closed, true, 'returning the iterator must close the subscription');
 			assert.strictEqual(subscription.subscriptions, null, 'returning the iterator must unregister the subscription');
 			const deliveredAtClose = events.length;
