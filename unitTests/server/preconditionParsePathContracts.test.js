@@ -459,6 +459,33 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			assert.strictEqual((await BaseTable.get('default:consumed')) ?? null, null);
 		});
 
+		it('leaves the verb the typed query values a parsePath changes in place', async () => {
+			class ShiftsDay extends BaseTable {
+				static parsePath(path, _context, query) {
+					const day = query.conditions.find((condition) => condition.attribute === 'day').value;
+					assert.ok(day instanceof Date);
+					day.setUTCDate(day.getUTCDate() + 1);
+					return `${day.getTime()}:${path}`;
+				}
+				static put(target, data, context) {
+					return super.put(target, data, context);
+				}
+			}
+			resources.set('ShiftsDay', ShiftsDay, { rest: true });
+
+			await BaseTable.put('86400000:shifted', { n: 1 });
+			assert.strictEqual((await request('PUT', '/ShiftsDay/shifted?day=gt=date:0', { n: 2 }, stale)).status, 412);
+			assert.strictEqual((await BaseTable.get('86400000:shifted')).n, 1);
+			assert.strictEqual((await BaseTable.get('172800000:shifted')) ?? null, null);
+
+			const etag = versionToEtag(BaseTable.primaryStore.getEntry('86400000:shifted').version);
+			assert.strictEqual(
+				(await request('PUT', '/ShiftsDay/shifted?day=gt=date:0', { n: 3 }, { 'if-match': etag })).status,
+				204
+			);
+			assert.strictEqual((await BaseTable.get('86400000:shifted')).n, 3);
+		});
+
 		it('leaves the verb a target with its raw id when the first parse mutates the target and throws', async () => {
 			let calls = 0;
 			class MutatesThenThrows extends BaseTable {

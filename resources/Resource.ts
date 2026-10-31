@@ -1115,6 +1115,12 @@ export function cloneRequestTarget(source: any): RequestTarget {
 	const cloneValue = (value: any): any => {
 		if (value == null || typeof value !== 'object') return value;
 		if (seen.has(value)) return seen.get(value);
+		// `date:` query values are the only mutable non-plain objects the query parser creates
+		if (value instanceof Date) {
+			const copy = new Date(value.getTime());
+			seen.set(value, copy);
+			return copy;
+		}
 		if (Array.isArray(value)) {
 			const copy: any[] = [];
 			seen.set(value, copy);

@@ -206,9 +206,9 @@ function conditionRecordId(resource, target: RequestTarget, request) {
 	if (target.isCollection || target.select || target.id == null) return;
 	if (resource.directURLMapping) return target.toString().slice(1);
 	if (typeof target.id !== 'string') return target.id;
-	// The verb's own dispatch parses this target again (applyContext), so parsePath only sees a copy of the target
 	const { requestedContentType } = request;
 	try {
+		// The verb's own dispatch parses this target again (applyContext), so parsePath only sees a copy of the target;
 		// the built-in parsePath reads and writes nothing but `property` on its query
 		const probe: { property?: string } =
 			resource.parsePath === Resource.parsePath ? { property: target.property } : cloneRequestTarget(target);
