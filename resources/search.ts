@@ -365,30 +365,37 @@ function compileFullTextExpression(
 		...fullTextFuzzyOptions(condition),
 		...(condition.fields ? { fields: condition.fields } : null),
 	};
-	const withBoost = (clause: any, boost: number | undefined) =>
-		boost === undefined ? clause : { operator: 'boost', boost: Math.fround(boost), clause };
-	let expression = withBoost(leaf, condition.boost);
-	const optionalLeaves = (condition.should ?? []).map((clause: any) => ({
-		text: clause.value,
-		mode: fullTextComparatorMode(clause.comparator),
-		...fullTextFuzzyOptions(clause),
-		fields: clause.fields,
-	}));
-	if (optionalLeaves.length > 0)
+	let expression = boostExpression(leaf, condition.boost);
+	let leaves = condition.negated ? [] : [leaf];
+	if (condition.should) {
+		const optionalLeaves = condition.should.map((clause: any) => ({
+			text: clause.value,
+			mode: fullTextComparatorMode(clause.comparator),
+			...fullTextFuzzyOptions(clause),
+			fields: clause.fields,
+		}));
 		expression = {
 			operator: 'optional',
 			required: expression,
-			optional: optionalLeaves.map((clause: any, index: number) => withBoost(clause, condition.should[index].boost)),
+			optional: optionalLeaves.map((clause: any, index: number) =>
+				boostExpression(clause, condition.should[index].boost)
+			),
 		};
+		leaves = [leaf, ...optionalLeaves];
+	}
 	return {
 		indexName,
 		expression: condition.negated ? { operator: 'not', clause: leaf } : expression,
-		leaves: condition.negated ? [] : [leaf, ...optionalLeaves],
+		leaves,
 		positive: !condition.negated,
 		includeHighlights: condition.includeHighlights === true,
 		maxIndexLagMilliseconds: condition.maxIndexLagMilliseconds,
 		waitForIndexMilliseconds: condition.waitForIndexMilliseconds,
 	};
+}
+
+function boostExpression(clause: any, boost: number | undefined): any {
+	return boost === undefined ? clause : { operator: 'boost', boost: Math.fround(boost), clause };
 }
 
 function mergeFullTextOption(name: string, current: number | undefined, next: number | undefined): number | undefined {

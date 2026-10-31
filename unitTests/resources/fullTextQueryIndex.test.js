@@ -164,6 +164,9 @@ function simpleQueryIndex({
 	onTrace,
 	onGetEntry,
 	onSearch,
+	onBinding,
+	bindingReady,
+	queryApiVersion,
 	entryForKey,
 	estimatedRecordCount = 20,
 	isEntryCurrent,
@@ -199,7 +202,10 @@ function simpleQueryIndex({
 		limits: {},
 		binding: {
 			async runtimeInfo() {
+				onBinding?.();
+				if (bindingReady) await bindingReady;
 				return {
+					queryApiVersion,
 					queryClassIsolationMinimumSearchThreads: 1,
 					limits: queryLimits({ maxSearchWindow, maxTraceRecords: 10 }),
 				};
@@ -1351,6 +1357,49 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(rebuilds, 1);
 		await index.close();
 	});
+
+	for (const waitForIndexMilliseconds of [0, 5000])
+		it(`does not open a reader after cancellation during cold scoring capability loading (wait ${waitForIndexMilliseconds})`, async () => {
+			const auditStore = sharedStore();
+			const readinessId = `cold-scoring-abort-${waitForIndexMilliseconds}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const bindingReady = Promise.withResolvers();
+			let opens = 0;
+			let bindingStarted = false;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				onOpen: () => opens++,
+				onBinding: () => (bindingStarted = true),
+				bindingReady: bindingReady.promise,
+				queryApiVersion: 8,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const controller = new AbortController();
+			const reason = new Error('cancel cold scoring');
+			try {
+				const pending = index.search(
+					{
+						attribute: readinessId,
+						comparator: 'matches',
+						value: 'shoe',
+						fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+						waitForIndexMilliseconds,
+					},
+					{ signal: controller.signal }
+				);
+				await waitFor(() => bindingStarted);
+				controller.abort(reason);
+				bindingReady.resolve();
+				await assert.rejects(pending, (error) => error === reason);
+			} finally {
+				bindingReady.resolve();
+				await index.close();
+			}
+			assert.strictEqual(opens, 0);
+		});
 
 	it('does not open native storage before shared readiness is ready', async () => {
 		const auditStore = sharedStore();
