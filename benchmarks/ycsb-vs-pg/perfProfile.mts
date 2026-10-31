@@ -234,15 +234,23 @@ export function dedupePerfMap(text: string): string {
 
 /**
  * Rewrites the perf maps of every process in `cgroups` (see dedupePerfMap). V8 keeps appending to
- * the file it opened, so that inode is first kept under a second name, `perf-<pid>.v8.map`, and
- * every fold rebuilds the deduplicated map perf reads from it.
+ * the file it opened, so that inode is first kept under a second name, `perf-<pid>-<start>.v8.map`
+ * (the start time keeps a reused PID from inheriting it), and every fold rebuilds the deduplicated
+ * map perf reads from it.
  */
 async function dedupeMapsOf(cgroups: Record<string, string>): Promise<void> {
 	for (const scope of Object.values(cgroups)) {
 		const pids = (await readFile(join(scope, 'cgroup.procs'), 'utf8')).split('\n').filter(Boolean);
 		for (const pid of pids) {
 			const path = `/tmp/perf-${pid}.map`;
-			const live = `/tmp/perf-${pid}.v8.map`;
+			let stat: string;
+			try {
+				stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+			} catch {
+				continue; // exited
+			}
+			const startTime = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+			const live = `/tmp/perf-${pid}-${startTime}.v8.map`;
 			try {
 				await link(path, live);
 			} catch (error) {
