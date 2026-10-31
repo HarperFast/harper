@@ -18,6 +18,7 @@ import {
 	isReservedComponentName,
 } from '../utility/componentNames.ts';
 import { assertBranchedDatabases } from './Application.ts';
+import { PREVIEW_GENERATION_PATTERN } from '../utility/previewIdentity.ts';
 
 // dotenv's accepted key character set. Restricting keys to this prevents a crafted key (e.g. one
 // containing `=` or a newline) from injecting extra assignments into a .env file.
@@ -632,6 +633,7 @@ function deployComponentValidator(req) {
 				.optional(),
 			// Required: nothing else would ever drop a preview a caller forgot to date.
 			expiresAt: Joi.alternatives().try(Joi.number().integer().min(0).strict(), Joi.string().isoDate()).required(),
+			generation: Joi.string().pattern(PREVIEW_GENERATION_PATTERN).optional(),
 		})
 			.unknown(false)
 			// The cap counts previews by `app`, so a preview's name has to say which application it is a preview of.
