@@ -9,6 +9,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 
 interface ListReleasesRequest {
+	operation?: string;
 	project?: string;
 	replicated?: boolean;
 }
@@ -27,7 +28,8 @@ interface NodeReleases {
 }
 
 export async function handleListReleases(
-	req: ListReleasesRequest = {}
+	req: ListReleasesRequest = {},
+	{ timeoutMs }: { timeoutMs?: number } = {}
 ): Promise<NodeReleases | { nodes: NodeReleases[] }> {
 	const { project } = req;
 	if (project !== undefined && (typeof project !== 'string' || !/^[^./\\][^/\\]*$/.test(project))) {
@@ -37,7 +39,7 @@ export async function handleListReleases(
 	// that lands during the local read is never an unhandled one.
 	const whenReplicated =
 		req.replicated === true
-			? server.replication.replicateOperation({ ...req, replicated: true }).then(
+			? server.replication.replicateOperation({ ...req, replicated: true }, { timeoutMs }).then(
 					(response) => ({ response }),
 					(error) => ({ error })
 				)
@@ -57,7 +59,11 @@ export async function handleListReleases(
 			continue;
 		}
 		const answer = peer?.components ? peer : (peer?.value ?? peer?.body ?? peer);
-		nodes.push({ node: peer?.node ?? answer?.node, components: answer?.components ?? [] });
+		if (!Array.isArray(answer?.components)) {
+			nodes.push({ node: peer?.node ?? answer?.node, error: 'it answered without a list of releases' });
+			continue;
+		}
+		nodes.push({ node: peer?.node ?? answer?.node, components: answer.components });
 	}
 	return { nodes };
 }

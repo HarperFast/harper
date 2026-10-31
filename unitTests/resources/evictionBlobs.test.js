@@ -218,14 +218,15 @@ describe('eviction keeps a record a same-version write changed after the evictio
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'tag', indexed: true },
 				{ name: 'blob', type: 'Blob' },
+				{ name: 'deadline', expiresAt: true, indexed: true },
 			],
 		});
 	}
 
 	// An older write that adds a key the record lacks merges under the record's version.
-	async function resequence(Table, id, patch, expiresAt) {
+	async function resequence(Table, id, patch, deadline) {
 		const read = Table.primaryStore.getEntry(id);
-		await Table.patch(id, patch, { timestamp: read.version - 50, expiresAt });
+		await Table.patch(id, deadline === undefined ? patch : { ...patch, deadline }, { timestamp: read.version - 50 });
 		const merged = Table.primaryStore.getEntry(id);
 		assert.equal(merged.version, read.version, 'precondition: the resequenced write kept the version');
 		assert.ok(merged.metadataFlags & VERSION_REUSED, 'precondition: the version is marked reused');
@@ -277,14 +278,14 @@ describe('eviction keeps a record a same-version write changed after the evictio
 		return Atomics.load(holdState, slot + REFERENCE_GENERATION);
 	}
 
-	it('evict() keeps a record whose expiry a resequenced write renewed from the table expiration', async function () {
+	it('evict() keeps a record whose expiry a resequenced write renewed through its @expiresAt field', async function () {
 		const Table = newTable();
 		Table.setTTLExpiration({ expiration: 60, eviction: 3600 }); // nothing becomes evictable to the scan here
 		const blob = await createBlob(randomBytes(20000));
 		await Table.put('renewed', { id: 'renewed', blob }, { expiresAt: EXPIRED() });
 		const filePath = getFilePathForBlob(blob);
-		const { read, merged } = await resequence(Table, 'renewed', { tag: 'merged' });
-		assert.ok(merged.expiresAt > Date.now() + 50_000, 'precondition: the merge took a fresh table expiration');
+		const { read, merged } = await resequence(Table, 'renewed', { tag: 'merged' }, LIVE());
+		assert.ok(merged.expiresAt > Date.now() + 50_000, 'precondition: the merge took the field expiry');
 
 		await Table.evict('renewed', read.value, read.version, undefined, read.expiresAt);
 		await delay(RECLAMATION_SETTLE_MS);

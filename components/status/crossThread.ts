@@ -21,19 +21,13 @@ import {
 	type AggregatedComponentStatus,
 	type ComponentStatusLevel,
 	COMPONENT_STATUS_LEVELS,
+	STATUS_PRIORITY,
 	type ComponentStatusAbnormality,
 } from './types.ts';
 import { ITCError } from './errors.ts';
 
 const logger = loggerWithTag('componentStatus.crossThread');
 const THREAD_IDENTITY_SEPARATOR = '#thread-';
-const STATUS_PRIORITY = [
-	COMPONENT_STATUS_LEVELS.ERROR,
-	COMPONENT_STATUS_LEVELS.WARNING,
-	COMPONENT_STATUS_LEVELS.LOADING,
-	COMPONENT_STATUS_LEVELS.UNKNOWN,
-	COMPONENT_STATUS_LEVELS.HEALTHY,
-];
 
 function parseStatusKey(statusKey: string): {
 	componentName: string;

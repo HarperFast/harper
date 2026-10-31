@@ -2,7 +2,7 @@
 
 import fs from 'fs-extra';
 import Joi from 'joi';
-import { resolveFullTextSearchLimits } from '../resources/indexes/fullTextSearchLimits.ts';
+import { resolveFullTextSearchLimits, resolveFullTextQueryLimits } from '../resources/indexes/fullTextSearchLimits.ts';
 import { validateHeaderValue } from 'node:http';
 import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
@@ -590,6 +590,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				.custom((value, helpers) => {
 					try {
 						resolveFullTextSearchLimits(value);
+						resolveFullTextQueryLimits(value?.query);
 						return value;
 					} catch (error) {
 						return helpers.message({ custom: error instanceof Error ? error.message : String(error) });

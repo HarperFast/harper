@@ -105,6 +105,13 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 const RELEASED_STATUSES = new Set(['success', 'rolling_out', 'partial']);
 const RELEASE_FIELDS = ['deployment_id', 'project', 'status', 'activated_from', 'completed_at'];
 
+/** A deployment's record by id, without its payload; undefined when this node has none. */
+export async function deploymentRecord(deploymentId: unknown): Promise<any | undefined> {
+	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
+	if (!table || typeof deploymentId !== 'string') return undefined;
+	return stripBlob(await table.get(deploymentId)) ?? undefined;
+}
+
 /**
  * The record that made a component's live release live: the newest released deploy or activation naming the id in
  * its tree's provenance marker, found by key and by `activated_from` so a long history is never scanned. A tree without
