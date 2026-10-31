@@ -426,7 +426,7 @@ export class RecordEncoder extends StructonEncoder {
 						// `valueStart` is OR'd into msgpackr's encode options below, where the reserved-space field
 						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
 						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
-						// count is one byte too. Refs are best-effort — a later in-order write drops them outright —
+						// count is one byte too. Refs are best-effort — an audited in-order write drops them outright —
 						// so over budget the oldest are dropped, identities first (they only answer a re-delivery, a
 						// log key also leads the walk to a branch), and never the first log key (the addressable audit
 						// head when the record and log clocks diverge) nor the last of either kind (the newest receipt
