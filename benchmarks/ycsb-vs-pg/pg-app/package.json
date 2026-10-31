@@ -3,6 +3,7 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
+		"@fastify/jwt": "^10.2.6",
 		"fastify": "^5.2.1",
 		"ioredis": "^5.4.2",
 		"pg": "^8.13.1"

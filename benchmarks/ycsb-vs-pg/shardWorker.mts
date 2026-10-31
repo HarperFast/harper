@@ -18,6 +18,8 @@ export interface ShardCommand {
 	shape: RecordShape;
 	keyWidth: number;
 	maxScanLength: number;
+	/** Sent on every request when the target checks a credential (--auth=token). */
+	authorization?: string;
 	/** load / readAll: the [from, to) key range this shard inserts or reads. */
 	from?: number;
 	to?: number;
@@ -36,6 +38,7 @@ async function rangePhase(command: ShardCommand): Promise<PhaseResult> {
 		baseUrls: [command.baseUrl],
 		table: command.table,
 		maxSockets: command.concurrency,
+		authorization: command.authorization,
 	});
 	const from = command.from!;
 	const to = command.to!;
@@ -67,6 +70,7 @@ async function runPhase(command: ShardCommand): Promise<PhaseResult> {
 		baseUrls: [command.baseUrl],
 		table: command.table,
 		maxSockets: command.concurrency,
+		authorization: command.authorization,
 	});
 	const spec = WORKLOADS[command.workload!];
 	const keys = new KeyState({

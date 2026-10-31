@@ -16,7 +16,7 @@ import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startDriver } from './shardedDriver.mts';
-import { startPgStack, dataDir } from './pgStack.mts';
+import { startPgStack, dataDir, WARM_STACK_MEMORY } from './pgStack.mts';
 import {
 	sampleResources,
 	diffResources,
@@ -84,8 +84,8 @@ async function waitForRoute(url: string, deadlineMs: number): Promise<void> {
 /** One freshly started server per ratio, matching run-compare's isolation. */
 async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: number; opsPerCore: number }> {
 	const mix: Record<string, number> = ratio === 0 ? { read: 1 } : { read: 1 - ratio, update: ratio };
-	const run = async (baseUrl: string, targets: ResourceTargets) => {
-		for (const [name, pid] of Object.entries(targets.processes)) verifyAffinity(name, pid, SERVER_CPUS);
+	const run = async (baseUrl: string, targets: ResourceTargets, pinned: Record<string, number>) => {
+		for (const [name, pid] of Object.entries(pinned)) verifyAffinity(name, pid, SERVER_CPUS);
 		const driver = await startDriver({
 			baseUrl,
 			table: 'usertable',
@@ -121,7 +121,7 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 			const best = reps.reduce((a, b) => (a.throughput >= b.throughput ? a : b));
 			return { ...best, opsPerCore: OPS / Math.max(best.cpu, 1e-9) };
 		} finally {
-			driver.close();
+			await driver.close();
 		}
 	};
 
@@ -143,7 +143,7 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 		try {
 			await waitForRoute(`${started.harper.httpURL}/usertable/`, 30_000);
 			const pid = (started.harper as unknown as { process: { pid: number } }).process.pid;
-			return await run(started.harper.httpURL, { processes: { harper: pid }, cgroups: {} });
+			return await run(started.harper.httpURL, { processes: { harper: pid }, cgroups: {} }, { harper: pid });
 		} finally {
 			await teardownHarper(started);
 		}
@@ -155,14 +155,16 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 		fields: 10,
 		poolSize: 20,
 		serverCpus: SERVER_CPUS,
+		memory: WARM_STACK_MEMORY['pg-redis'],
+		fastifyUnit: `ycsb-ratio-sweep-${process.pid}-${ratio}`.replace('.', '_'),
 	});
 	try {
 		await waitForRoute(`${stack.baseUrl}/usertable/`, 30_000);
-		return await run(stack.baseUrl, {
-			processes: { fastify: stack.appPid },
-			cgroups: stack.cgroups,
-			redisExec: stack.redisExec,
-		});
+		return await run(
+			stack.baseUrl,
+			{ processes: {}, cgroups: stack.cgroups, redisExec: stack.redisExec },
+			{ fastify: stack.appPid }
+		);
 	} finally {
 		await stack.stop();
 	}
