@@ -249,7 +249,7 @@ export class FullTextQueryIndex {
 		let coverage: DerivedIndexCoverage | undefined;
 		const execute = async () => {
 			const query = condition.fullTextQuery ?? leafDescriptor(condition);
-			const scoring = assertFuzzyPolicy(query, getFullTextQueryPolicy().maxFuzzyDistance);
+			const scoring = assertQueryPolicy(query, getFullTextQueryPolicy().maxFuzzyDistance);
 			assertReady(
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
@@ -257,10 +257,10 @@ export class FullTextQueryIndex {
 			if (waiting) {
 				if (scoring) {
 					if (!this.#binding) {
-						await this.#getBinding();
+						await waitForBinding(this.#getBinding(), context?.signal);
 						context?.signal?.throwIfAborted();
 					}
-					validateFullTextScoringRuntime(query, this.#queryApiVersion);
+					validateFullTextScoringRuntime(this.#queryApiVersion);
 				}
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
@@ -296,10 +296,10 @@ export class FullTextQueryIndex {
 			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			if (scoring) {
 				if (!this.#binding) {
-					await this.#getBinding();
+					await waitForBinding(this.#getBinding(), context?.signal);
 					context?.signal?.throwIfAborted();
 				}
-				validateFullTextScoringRuntime(query, this.#queryApiVersion);
+				validateFullTextScoringRuntime(this.#queryApiVersion);
 			}
 			const result = await this.#search(condition, context, options);
 			this.#unexpectedSearchFailureWarned = false;
@@ -1490,7 +1490,7 @@ function withTimeout<T>(
 	]).finally(() => clearTimeout(timer));
 }
 
-function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: number): boolean {
+function assertQueryPolicy(expression: NativeFullTextSearchExpression, maximum: number): boolean {
 	if ('text' in expression) {
 		validateFullTextFuzzyOptions(expression, expression.mode);
 		if (
@@ -1500,17 +1500,32 @@ function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: 
 			throw new ClientError('Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance', 400);
 		return false;
 	}
-	if (expression.operator === 'not') return assertFuzzyPolicy(expression.clause, maximum);
+	if (expression.operator === 'not') return assertQueryPolicy(expression.clause, maximum);
 	if (expression.operator === 'boost') {
-		assertFuzzyPolicy(expression.clause, maximum);
+		assertQueryPolicy(expression.clause, maximum);
 		return true;
 	}
 	if (expression.operator === 'optional') {
-		assertFuzzyPolicy(expression.required, maximum);
-		for (const clause of expression.optional) assertFuzzyPolicy(clause, maximum);
+		assertQueryPolicy(expression.required, maximum);
+		for (const clause of expression.optional) assertQueryPolicy(clause, maximum);
 		return true;
 	}
 	let scoring = false;
-	for (const clause of expression.clauses) if (assertFuzzyPolicy(clause, maximum)) scoring = true;
+	for (const clause of expression.clauses) if (assertQueryPolicy(clause, maximum)) scoring = true;
 	return scoring;
+}
+
+async function waitForBinding<T>(binding: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return binding;
+	signal.throwIfAborted();
+	let abort: () => void;
+	const cancelled = new Promise<never>((_, reject) => {
+		abort = () => reject(signal.reason);
+		signal.addEventListener('abort', abort, { once: true });
+	});
+	try {
+		return await Promise.race([binding, cancelled]);
+	} finally {
+		signal.removeEventListener('abort', abort!);
+	}
 }

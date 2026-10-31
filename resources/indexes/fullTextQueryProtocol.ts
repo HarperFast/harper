@@ -1,10 +1,6 @@
 import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
-import type {
-	NativeFullTextFuzzyOptions,
-	NativeFullTextSearchMode,
-	NativeFullTextSearchExpression,
-} from './fullTextNativeBinding.ts';
+import type { NativeFullTextFuzzyOptions, NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
 export const FULLTEXT_SCORING_NATIVE_ABI_VERSION = 14;
 export const FULLTEXT_SCORING_QUERY_API_VERSION = 8;
@@ -158,18 +154,8 @@ function validateFullTextBoost(boost: unknown): void {
 		);
 }
 
-export function fullTextExpressionUsesScoring(expression: NativeFullTextSearchExpression): boolean {
-	if ('text' in expression) return false;
-	if (expression.operator === 'boost' || expression.operator === 'optional') return true;
-	if (expression.operator === 'not') return fullTextExpressionUsesScoring(expression.clause);
-	return expression.clauses.some(fullTextExpressionUsesScoring);
-}
-
-export function validateFullTextScoringRuntime(
-	expression: NativeFullTextSearchExpression,
-	queryApiVersion: number | undefined
-): void {
-	if (queryApiVersion !== FULLTEXT_SCORING_QUERY_API_VERSION && fullTextExpressionUsesScoring(expression))
+export function validateFullTextScoringRuntime(queryApiVersion: number | undefined): void {
+	if (queryApiVersion !== FULLTEXT_SCORING_QUERY_API_VERSION)
 		throw new ClientError(
 			'Query scoring requires a full-text wrapper with query API 8; the installed wrapper does not support scoring controls',
 			400

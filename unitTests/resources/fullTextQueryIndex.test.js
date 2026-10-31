@@ -1392,8 +1392,10 @@ describe('FullTextQueryIndex', () => {
 				);
 				await waitFor(() => bindingStarted);
 				controller.abort(reason);
-				bindingReady.resolve();
-				await assert.rejects(pending, (error) => error === reason);
+				await Promise.race([
+					assert.rejects(pending, (error) => error === reason),
+					new Promise((_, reject) => setTimeout(() => reject(new Error('abort did not settle pending binding')), 1000)),
+				]);
 			} finally {
 				bindingReady.resolve();
 				await index.close();
