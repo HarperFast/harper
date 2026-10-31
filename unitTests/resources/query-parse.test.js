@@ -6,6 +6,14 @@ const { RequestTarget } = require('#src/resources/RequestTarget');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Parsing queries', () => {
 	before(function () {});
+	it('decodes a request target id only where it is percent-encoded', function () {
+		assert.strictEqual(new RequestTarget('/user%201').id, 'user 1');
+		assert.strictEqual(new RequestTarget('/user1').id, 'user1');
+		assert.strictEqual(new RequestTarget('/a+b').id, 'a+b');
+		assert.strictEqual(new RequestTarget('/user1?select=name').id, 'user1');
+		assert.strictEqual(new RequestTarget('/sub/').id, 'sub/');
+		assert.throws(() => new RequestTarget('/100%'), URIError);
+	});
 	it('Basic AND query', function () {
 		const query = parseQuery('id=1&name=2');
 		const conditions = Array.from(query);
