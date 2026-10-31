@@ -185,6 +185,45 @@ storage:
 
 The policy is captured for the whole process and inherited by HTTP and application workers. Restart the full Harper process to change it; restarting only workers does not change the captured values. It applies to readers, including reopened readers, and does not change writer limits or index identity. Requests cannot raise it. Terms must be 1–1,024 and clauses 1–4,096, also within the loaded native runtime's advertised ceilings. Clause cost includes Boolean structure, NOT and field expansion, so a query below its term limit can still fail its clause limit. Overflow rejects the query rather than executing a truncated one. Before a response starts, query-capacity validation failures return 400; an operations JSON stream that has already started instead aborts and may include an error diagnostic. Treat an incomplete response as failed and discard its rows. Other depth, byte, phrase/fuzzy construction, queue, response and deadline guards still apply. Deadlines are cooperative and do not guarantee interruption during every native construction step. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.8.0/docs/limits.md).
 
+### Query relevance controls
+
+Query scoring requires a wrapper with native ABI 14 and query API 8. The currently pinned 0.8.0 release uses ABI 13/query API 7: existing searches remain supported, and scoring controls return 400. Release and pin the compatible wrapper before shipping this feature; qualification currently uses a locally built artifact.
+
+Use `boost` to scale the required clause score, and `should` to add optional scoring clauses. Every result must still match the outer condition. An optional clause can improve a result's rank without adding or removing matches. Field-restricted optional clauses compose with configured index field weights, without rebuilding the index:
+
+```js
+const target = {
+	conditions: [
+		{
+			attribute: 'catalogSearch',
+			comparator: 'matches_all',
+			value: 'waterproof shoes',
+			fields: ['title', 'description'],
+			boost: 1,
+			should: [
+				{
+					comparator: 'matches_phrase',
+					value: 'trail running',
+					fields: ['title'],
+					boost: 4,
+				},
+			],
+		},
+	],
+	select: ['id', 'title', '$score'],
+	limit: 20,
+};
+const results = Product.search(target);
+```
+
+The same JSON target is accepted by HTTP `QUERY /Product/`. Operations `search_by_conditions` accepts these `conditions` with its usual `schema`, `table` and `get_attributes` properties. FIQL comparators retain their existing syntax and defaults.
+
+Boosts use float32 rounding and must then be finite, between 0 and 100 inclusive, excluding negative zero. Zero retains matching records with a zero contribution from that clause. Omitting both controls preserves the existing native query expression. With `should`, the outer `boost` scales only the required clause; each optional clause has its own boost.
+
+`should` must be a non-empty array of positive, same-index leaf descriptors. Its permitted properties are `comparator`, `value`, `fields`, `boost`, `fuzzyDistance` and `fuzzyTranspositions`. Nested optional clauses, index overrides and negation are rejected. Scoring controls on ordinary record predicates, condition groups, negated conditions or the query target itself are rejected. Both required and optional fields require read permission; omitting optional `fields` searches every source field of the parent index and requires permission to all of them.
+
+Optional clauses share the existing term, compiled-clause, depth, fuzzy, autocomplete, response and request budgets. Their count is also bounded by the host's configured `maxQueryClauses`; native compilation charges the required clause and scoring wrappers too. Requested highlights include matching optional clauses from current source values, using the existing highlight format and limits. No exact total-count metadata is added by these controls.
+
 On structured full-text conditions, `fuzzyDistance` accepts integer 0–2 (default 1), and `fuzzyTranspositions` accepts a boolean (default true). They are valid only with `matches_fuzzy` or `matches_fuzzy_prefix`. Distance zero uses native exact matching; disabling transpositions makes adjacent swaps cost two edits. Both controls reach retrieval, traversal and highlights through Table.search and operations `search_by_conditions`; REST FIQL comparators retain their defaults. String values such as `"2"` and `"false"`, controls on condition groups, and controls on other comparators are rejected.
 
 Distance two remains preview and requires operator opt-in with `storage.fullText.query.maxFuzzyDistance: 2`. The host maximum accepts 0–2; zero disables edit-tolerant fuzzy requests unless the condition explicitly requests distance zero. Qualify the actual corpus and concurrency before enabling two: admission and deadlines do not provide a hard process-memory bound. Fuzzy-prefix remains preview. Phrase slop remains deferred; no unreleased Tantivy patch is included.

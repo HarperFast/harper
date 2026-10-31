@@ -184,6 +184,7 @@ import {
 	relationshipRestriction,
 	fullTextComparatorMode,
 	validateFullTextFuzzyOptions,
+	validateFullTextScoringOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
@@ -8172,6 +8173,7 @@ export function makeTable(options): TableResourceClass {
 				throw new AccessViolation(context?.user);
 		}
 		static _prepareQueryConditions(conditions, operator, target, context, nested = false) {
+			validateFullTextScoringOptions(target);
 			let includeFullTextHighlights = false;
 			const QueryError = nested ? ClientError : Error;
 			function prepareConditions(conditions: any[], operator: string) {
@@ -8190,6 +8192,7 @@ export function makeTable(options): TableResourceClass {
 				for (const condition of conditions) {
 					if (condition.conditions) {
 						validateFullTextFuzzyOptions(condition);
+						validateFullTextScoringOptions(condition);
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
 						continue;
 					}
@@ -8217,34 +8220,46 @@ export function makeTable(options): TableResourceClass {
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
 							: undefined;
 					validateFullTextFuzzyOptions(condition, fullTextMode);
+					validateFullTextScoringOptions(condition, fullTextMode);
 					if (fullTextMode && Array.isArray(attribute_name))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
 					if (fullTextDefinition) {
-						const fields = condition.fields;
-						if (fields !== undefined) {
-							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
-								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
-							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
-						} else assertFullTextReadAccess(context, target, fullTextDefinition);
-						const value = condition[1] ?? condition.value;
-						if (typeof value !== 'string' || value.length === 0)
-							throw new ClientError(
-								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
-								400
-							);
-						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
-						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
-						if (fields !== undefined) {
-							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
-							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+						const validateLeaf = (leaf: any, mode: string) => {
+							const fields = leaf.fields;
+							if (fields !== undefined) {
+								if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+									throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+								assertFullTextReadAccess(context, target, fullTextDefinition, fields);
+							} else assertFullTextReadAccess(context, target, fullTextDefinition);
+							const value = leaf[1] ?? leaf.value;
+							if (typeof value !== 'string' || value.length === 0)
 								throw new ClientError(
-									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
+									`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
 									400
 								);
-						}
+							if (mode === 'phrase' && !fullTextDefinition.positions)
+								throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
+							if ((mode === 'prefix' || mode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
+								throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
+							if (fields !== undefined) {
+								const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
+								if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+									throw new ClientError(
+										`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
+										400
+									);
+							}
+						};
+						validateLeaf(condition, fullTextMode);
+						if (condition.should)
+							condition.should = condition.should.map((clause) => {
+								validateLeaf(clause, fullTextComparatorMode(clause.comparator));
+								return {
+									...clause,
+									fields: clause.fields ? [...clause.fields] : fullTextDefinition.fields.map(({ name }) => name),
+								};
+							});
 						condition.includeHighlights =
 							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
 						if (condition.includeHighlights && !fullTextDefinition.highlighting)

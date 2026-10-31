@@ -17,9 +17,10 @@ import {
 	fullTextComparatorMode,
 	fullTextFuzzyOptions,
 	validateFullTextFuzzyOptions,
+	validateFullTextScoringOptions,
 } from './indexes/fullTextQueryProtocol.ts';
 
-export { fullTextComparatorMode, validateFullTextFuzzyOptions };
+export { fullTextComparatorMode, validateFullTextFuzzyOptions, validateFullTextScoringOptions };
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -321,6 +322,7 @@ function compileFullTextExpression(
 	| undefined {
 	if (condition.conditions) {
 		validateFullTextFuzzyOptions(condition);
+		validateFullTextScoringOptions(condition);
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
 		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
 		if (fullTextChildren.length === 0) return;
@@ -356,16 +358,32 @@ function compileFullTextExpression(
 	if (typeof (condition[1] ?? condition.value) !== 'string')
 		throw new ClientError(`Full-text index '${indexName}' requires a full-text comparator and string value`, 400);
 	const text = condition[1] ?? condition.value;
+	validateFullTextScoringOptions(condition, mode);
 	const leaf = {
 		text,
 		mode,
 		...fullTextFuzzyOptions(condition),
 		...(condition.fields ? { fields: condition.fields } : null),
 	};
+	const withBoost = (clause: any, boost: number | undefined) =>
+		boost === undefined ? clause : { operator: 'boost', boost: Math.fround(boost), clause };
+	let expression = withBoost(leaf, condition.boost);
+	const optionalLeaves = (condition.should ?? []).map((clause: any) => ({
+		text: clause.value,
+		mode: fullTextComparatorMode(clause.comparator),
+		...fullTextFuzzyOptions(clause),
+		fields: clause.fields,
+	}));
+	if (optionalLeaves.length > 0)
+		expression = {
+			operator: 'optional',
+			required: expression,
+			optional: optionalLeaves.map((clause: any, index: number) => withBoost(clause, condition.should[index].boost)),
+		};
 	return {
 		indexName,
-		expression: condition.negated ? { operator: 'not', clause: leaf } : leaf,
-		leaves: condition.negated ? [] : [leaf],
+		expression: condition.negated ? { operator: 'not', clause: leaf } : expression,
+		leaves: condition.negated ? [] : [leaf, ...optionalLeaves],
 		positive: !condition.negated,
 		includeHighlights: condition.includeHighlights === true,
 		maxIndexLagMilliseconds: condition.maxIndexLagMilliseconds,

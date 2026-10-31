@@ -306,8 +306,10 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
 		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
 		assert.strictEqual(info.mutationBatchApiVersion, 5);
-		assert.strictEqual(info.nativeAbiVersion, 13);
-		assert.strictEqual(info.queryApiVersion, 7);
+		assert.ok(
+			(info.nativeAbiVersion === 13 && info.queryApiVersion === 7) ||
+				(info.nativeAbiVersion === 14 && info.queryApiVersion === 8)
+		);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');
@@ -328,6 +330,73 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const record = await request('/Product/one');
 		assert.strictEqual(record.title, 'Waterproof Trail Running Shoes');
 		assert.ok(!Object.hasOwn(record, 'catalogSearch'));
+	});
+
+	test('ranks required matches with optional clauses through HTTP QUERY and operations', async () => {
+		const baseline = await search(query('waterproof', { fields: ['title'] }, { select: ['id', 'title', '$score'] }));
+		const target = query(
+			'waterproof',
+			{
+				fields: ['title'],
+				boost: 0.5,
+				should: [{ comparator: 'matches_phrase', value: 'road shoes', fields: ['title'], boost: 10 }],
+			},
+			{ select: ['id', 'title', '$score', '$highlights'] }
+		);
+		const ranked = await search(target);
+		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		assert.deepStrictEqual(
+			ranked.map(({ id }) => id),
+			['two', 'one']
+		);
+		assert.deepStrictEqual(
+			ranked[0].$highlights.title.flatMap(({ spans }) => spans),
+			[
+				{ start: 0, end: 10 },
+				{ start: 11, end: 21 },
+			]
+		);
+		const rest = await request('/Product/', { method: 'QUERY', body: JSON.stringify(target) });
+		assert.deepStrictEqual(rest, ranked);
+		const operations = await operation({
+			operation: 'search_by_conditions',
+			schema: 'data',
+			table: 'Product',
+			conditions: target.conditions,
+			get_attributes: target.select,
+		});
+		assert.deepStrictEqual(operations, ranked);
+		const page = await request('/Product/', {
+			method: 'QUERY',
+			body: JSON.stringify({ ...target, offset: 1, limit: 1 }),
+		});
+		assert.deepStrictEqual(
+			page.map(({ id }) => id),
+			['one']
+		);
+		await request('/Product/', { method: 'QUERY', body: JSON.stringify(query('waterproof', { boost: '2' })) }, 400);
+		const invalid = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('waterproof', { should: [] }),
+			}),
+		});
+		assert.strictEqual(invalid.status, 400, await invalid.text());
+		const negated = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('waterproof', { negated: true, boost: 2 }),
+			}),
+		});
+		assert.strictEqual(negated.status, 400, await negated.text());
 	});
 
 	test('returns exact query-mode matches from Table.search and the REST parser', async () => {
@@ -571,6 +640,39 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			),
 		});
 		assert.deepStrictEqual(restAllowed, allowed);
+		const scoringAllowed = query(
+			'waterproof',
+			{
+				fields: ['title'],
+				should: [{ comparator: 'matches_phrase', value: 'road shoes', fields: ['title'], boost: 10 }],
+			},
+			{ select: ['id', 'title', '$score'] }
+		);
+		const scoringRest = await request('/Product/', {
+			method: 'QUERY',
+			headers: { Authorization: READER_AUTH },
+			body: JSON.stringify(scoringAllowed),
+		});
+		assert.deepStrictEqual(
+			scoringRest.map(({ id }) => id),
+			['two', 'one']
+		);
+		for (const should of [
+			[{ comparator: 'matches', value: 'classified', fields: ['description'] }],
+			[{ comparator: 'matches', value: 'classified' }],
+		])
+			await request(
+				'/Product/',
+				{
+					method: 'QUERY',
+					headers: { Authorization: READER_AUTH },
+					body: JSON.stringify(
+						query('waterproof', { fields: ['title'], should }, { select: ['id', 'title', '$score'] })
+					),
+				},
+				403
+			);
+
 		const restHidden = await request('/Product/', {
 			method: 'QUERY',
 			headers: { Authorization: READER_AUTH },

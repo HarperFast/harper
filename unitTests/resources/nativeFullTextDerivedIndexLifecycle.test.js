@@ -11,7 +11,10 @@ const {
 	NativeFullTextDerivedIndexLifecycle,
 	retireNativeFullTextDerivedIndexStorage,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
-const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
+const {
+	loadFullTextNativeBinding,
+	validateFullTextRuntimeVersions,
+} = require('#src/resources/indexes/fullTextNativeBinding');
 const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
@@ -205,10 +208,10 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const runtime = await binding.runtimeInfo();
 		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
 		assert.strictEqual(runtime.tantivyVersion, '0.27.0');
-		assert.strictEqual(runtime.nativeAbiVersion, 13);
+		validateFullTextRuntimeVersions(runtime);
 		assert.strictEqual(runtime.lifecycleApiVersion, 1);
 		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
-		assert.strictEqual(runtime.queryApiVersion, 7);
+
 		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
 		const compatibleBinding = {
 			...binding,
