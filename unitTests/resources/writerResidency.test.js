@@ -436,7 +436,12 @@ describe('Writer residency (harper#2257)', () => {
 						attributes: [
 							{ name: 'id', isPrimaryKey: true },
 							{ name: 'unindexedScore', computed: true },
-							{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
+							{
+								name: 'exprScore',
+								computed: { from: (record) => record.id },
+								indexed: { type: 'value' },
+								computedFromExpression: 'id',
+							},
 							{ name: 'indexedScore', computed: true, indexed: { type: 'value' } },
 						],
 					});
@@ -469,7 +474,12 @@ describe('Writer residency (harper#2257)', () => {
 				database: 'test',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
-					{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
+					{
+						name: 'exprScore',
+						computed: { from: (record) => record.id },
+						indexed: { type: 'value' },
+						computedFromExpression: 'id',
+					},
 				],
 			});
 			assert.ok(!poolUnsupportedTablesHere().includes('test.ComputedExpressionOverride'));

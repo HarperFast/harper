@@ -10875,8 +10875,9 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			for (const [attribute, resolver] of computedResolvers) {
-				if (typeof attribute.computed.from === 'function') this.setComputedAttribute(attribute.name, resolver);
-				else this.userResolvers[attribute.name] = resolver; // a schema expression, compiled on every thread
+				if (attribute.computedFromExpression)
+					this.userResolvers[attribute.name] = resolver; // compiled on every thread
+				else this.setComputedAttribute(attribute.name, resolver);
 			}
 			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
 			primaryKeyAttribute = nextPrimaryKeyAttribute;
