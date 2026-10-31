@@ -754,6 +754,7 @@ export class FullTextQueryIndex {
 			if (optionalCount && pageReady && Math.floor(countDeadline - performance.now()) <= 0) incompleteCount = true;
 			if (optionalCount && moreMayExist && accepted.length >= target) incompleteCount = true;
 			if (incompleteCount) options.onIncompleteCount?.();
+			if (optionalCount && incompleteCount) accepted.length = Math.min(accepted.length, pageTarget);
 			if (!bounded && moreMayExist)
 				throw unboundedSearchLimitError(
 					target,

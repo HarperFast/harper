@@ -7806,7 +7806,7 @@ export function makeTable(options): TableResourceClass {
 								if (scanned >= pageEnd) {
 									// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
 									// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
-									if (!wantExact || approximateResultSet) break;
+									if (!wantExact || approximateResultSet || !fullTextCountComplete) break;
 									// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
 									// large match set can't turn a bounded page fetch into an unbounded scan.
 									if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {

@@ -430,4 +430,25 @@ describe('published full-text ordering and exact counts', () => {
 		assert.strictEqual(counted.recordCount, null);
 		assert.strictEqual(counted.recordCountExact, false);
 	});
+	it('discards count-only tail entries after an advisory count becomes incomplete', async () => {
+		await seed(['a', 'b', 'c', 'd'].map((id) => ({ id, title: 'widget' })));
+		await collect(Product.search(query({ limit: 1 })));
+		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 2, maxResultsPerRequest: 2 });
+		let incomplete = 0;
+		const entries = await Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+			condition({ includeHighlights: true }),
+			undefined,
+			{
+				minResults: 1,
+				exhaustive: true,
+				countBudgetMilliseconds: 30000,
+				onIncompleteCount: () => {
+					incomplete++;
+				},
+			}
+		);
+		assert.strictEqual(incomplete, 1);
+		assert.strictEqual(entries.length, 1);
+		assert(entries[0].$highlights.title.length > 0);
+	});
 });
