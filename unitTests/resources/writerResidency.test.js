@@ -426,21 +426,21 @@ describe('Writer residency (harper#2257)', () => {
 			ByIdTable.setResidencyById(undefined);
 		});
 
-		it('warns once per table when setComputedAttribute assigns an indexed resolver, not for unindexed or expressions', () => {
-			const ComputedTable = table({
-				table: 'ComputedIndexDeprecated',
-				database: 'test',
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'unindexedScore', computed: true },
-					{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
-					{ name: 'indexedScore', computed: true, indexed: { type: 'value' } },
-				],
-			});
+		it('warns once per table when setComputedAttribute assigns an indexed resolver, not for unindexed or a schema expression', () => {
+			let ComputedTable;
 			assert.deepStrictEqual(
 				capturingWarnings(() => {
+					ComputedTable = table({
+						table: 'ComputedIndexDeprecated',
+						database: 'test',
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{ name: 'unindexedScore', computed: true },
+							{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
+							{ name: 'indexedScore', computed: true, indexed: { type: 'value' } },
+						],
+					});
 					ComputedTable.setComputedAttribute('unindexedScore', (rec) => rec.id);
-					ComputedTable.setComputedAttribute('exprScore', (rec) => rec.id);
 				}),
 				[]
 			);
@@ -461,6 +461,24 @@ describe('Writer residency (harper#2257)', () => {
 				}),
 				[]
 			);
+		});
+
+		it('records an application resolver that overrides an indexed schema expression', () => {
+			const OverrideTable = table({
+				table: 'ComputedExpressionOverride',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
+				],
+			});
+			assert.ok(!poolUnsupportedTablesHere().includes('test.ComputedExpressionOverride'));
+			const warnings = capturingWarnings(() => {
+				OverrideTable.setComputedAttribute('exprScore', (rec) => rec.id);
+			});
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /indexed @computed attribute 'exprScore'/);
+			assert.ok(poolUnsupportedTablesHere().includes('test.ComputedExpressionOverride'));
 		});
 	});
 });

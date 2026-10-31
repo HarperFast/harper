@@ -10874,7 +10874,10 @@ export function makeTable(options): TableResourceClass {
 					nextPropertyResolvers[attribute.name].directReturn = true;
 				}
 			}
-			for (const [attribute, resolver] of computedResolvers) this.setComputedAttribute(attribute.name, resolver);
+			for (const [attribute, resolver] of computedResolvers) {
+				if (typeof attribute.computed.from === 'function') this.setComputedAttribute(attribute.name, resolver);
+				else this.userResolvers[attribute.name] = resolver; // a schema expression, compiled on every thread
+			}
 			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
 			primaryKeyAttribute = nextPrimaryKeyAttribute;
 			expiresAtProperty = nextExpiresAtProperty;
@@ -10962,7 +10965,6 @@ export function makeTable(options): TableResourceClass {
 			if (
 				typeof resolver === 'function' &&
 				!resolver.unresolved &&
-				!attribute.computedFromExpression &&
 				Boolean(indices[attribute_name] || attribute.indexed)
 			) {
 				notePoolUnsupportedTable(`${databaseName}.${tableName}`);

@@ -1587,8 +1587,13 @@ function withPoolFor(application?: string) {
 	return true;
 }
 
-/** Admitted only once any pending pool is decided, and told the decision, which it applies before it binds. */
+/**
+ * Admitted only once any pending pool is decided, and told the decision, which it applies before it binds. The first
+ * admitted shared HTTP worker's report decides; an isolated worker's tables are never replicated from its thread.
+ */
 function admitWorker(worker) {
+	if (worker.name === hdbTerms.THREAD_TYPES.HTTP && worker.application === undefined)
+		decideWorkerPools(worker.poolUnsupportedTables);
 	const admit = () =>
 		worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED, workerPools: activeWorkerPools() });
 	const decision = workerPoolDecision();
@@ -1597,9 +1602,7 @@ function admitWorker(worker) {
 }
 
 function recordLoadedApplications(worker: any, message: any) {
-	// An isolated worker's tables are never replicated from its thread, pool or not.
-	if (worker.name === hdbTerms.THREAD_TYPES.HTTP && worker.application === undefined)
-		decideWorkerPools(message.poolUnsupportedTables);
+	worker.poolUnsupportedTables = message.poolUnsupportedTables;
 	if (!Array.isArray(message.applications)) return;
 	worker.loadedApplications = new Set(message.applications);
 	notifyWorkerRelease();
