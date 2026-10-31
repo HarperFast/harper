@@ -228,7 +228,10 @@ export async function authentication(request, nextHandler) {
 					request.peerCertificate.subject.CN
 				);
 				return applyResponseHeaders(
-					rejectAuthenticationInPlace(request, 'Certificate revoked or verification failed', 'mTLS', true)
+					request,
+					rejectAuthenticationInPlace(request, 'Certificate revoked or verification failed', 'mTLS', true),
+					responseHeaders,
+					wasUnauthorized
 				);
 			}
 
@@ -250,7 +253,7 @@ export async function authentication(request, nextHandler) {
 				} catch (error) {
 					if (LOG_AUTH_FAILED) authAuditLog(username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');
-					if (failureResponse) return applyResponseHeaders(failureResponse);
+					if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
 					mtlsCredentialDeferred = true;
 				}
 				if (!mtlsCredentialDeferred) {
@@ -333,11 +336,16 @@ export async function authentication(request, nextHandler) {
 									if (decoded === null || (decoded as any)?.sub === 'refresh') {
 										try {
 											await validateRefreshToken(credentials, hasActiveValidators);
-											return applyResponseHeaders({
-												// we explicitly declare we don't want to handle this because the operations
-												// API has its own logic for handling this
-												status: -1,
-											});
+											return applyResponseHeaders(
+												request,
+												{
+													// we explicitly declare we don't want to handle this because the operations
+													// API has its own logic for handling this
+													status: -1,
+												},
+												responseHeaders,
+												wasUnauthorized
+											);
 										} catch (refreshError) {
 											deferredRefreshError = refreshError;
 											// Preserve refresh-validation faults; only a tagged rejection permits falling
@@ -389,7 +397,7 @@ export async function authentication(request, nextHandler) {
 					}
 
 					const failureResponse = settleAuthFailure(request, err, strategy);
-					if (failureResponse) return applyResponseHeaders(failureResponse);
+					if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
 					credentialDeferred = true;
 				}
 
@@ -414,7 +422,7 @@ export async function authentication(request, nextHandler) {
 			} catch (error) {
 				if (LOG_AUTH_FAILED) authAuditLog(session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
 				const failureResponse = settleAuthFailure(request, error, 'Session');
-				if (failureResponse) return applyResponseHeaders(failureResponse);
+				if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
 			}
 		} else if (
 			(AUTHORIZE_LOCAL && authorizeAllAsLocal) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
@@ -516,62 +524,66 @@ export async function authentication(request, nextHandler) {
 				else response.headers.set('WWW-Authenticate', authenticationChallenge(authorization?.split(' ', 1)[0]));
 			}
 		}
-		return applyResponseHeaders(response);
+		return applyResponseHeaders(request, response, responseHeaders, wasUnauthorized);
 	} catch (error) {
-		throw applyResponseHeaders(error);
-	}
-	function applyResponseHeaders(response) {
-		const l = responseHeaders.length;
-		// a response is identity-dependent if a principal was resolved (Authorization/session/mTLS) or
-		// if we are rejecting the credentials (401, possibly rewritten to a login redirect); such a
-		// response must never be stored by a shared cache and served to a different principal (#1565)
-		const rejectedAuth = response?.status === 401 || wasUnauthorized;
-		// A downstream response produced under the untouched credential remains identity-dependent (#1565).
-		const identityDependent = !!request.user || rejectedAuth || !!getDeferredCredentialRejection(request);
-		// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
-		// its absence when no Origin was sent is origin-dependent too — so a shared cache must
-		// partition on Origin either way (#1518)
-		const corsEnabled = request.isOperationsServer ? operationsCors : appsCors;
-		if ((l > 0 || corsEnabled || identityDependent) && typeof response === 'object') {
-			let headers = response.headers;
-			// normalize plain-object headers so get/set below work uniformly
-			if (!headers || typeof headers.set !== 'function') response.headers = headers = new Headers(headers);
-			for (let i = 0; i < l;) {
-				const name = responseHeaders[i++];
-				headers.set(name, responseHeaders[i++]);
-			}
-			if (corsEnabled) addVaryHeader(headers, 'Origin');
-			// #1565: keep identity-dependent responses out of shared caches. An explicit
-			// `public`/`s-maxage` set by the app is RFC 9111's opt-in for shared-caching an
-			// authenticated response, so that is trusted as-is — but only for successfully
-			// authenticated responses; a credential rejection must never opt into shared caching.
-			// Otherwise partition on the credential headers and ensure a `private` scope
-			// (`private, no-cache` when none was set, so browsers still revalidate against the
-			// ETag/Last-Modified we emit).
-			if (identityDependent) {
-				const existingCacheControl = headers.get('Cache-Control');
-				const cacheControlString = existingCacheControl
-					? Array.isArray(existingCacheControl)
-						? existingCacheControl.join(', ')
-						: existingCacheControl
-					: '';
-				const optedIn = !rejectedAuth && SHARED_CACHE_OPTIN.test(cacheControlString);
-				if (!optedIn) {
-					addVaryHeader(headers, 'Authorization');
-					if (ENABLE_SESSIONS) addVaryHeader(headers, 'Cookie');
-					// a 401 never opts into shared caching: any non-private Cache-Control it carries is
-					// replaced outright (an existing private/no-store is already at least as strict)
-					if (!cacheControlString || (rejectedAuth && !PRIVATE_SCOPE.test(cacheControlString)))
-						headers.set('Cache-Control', 'private, no-cache');
-					else if (!PRIVATE_SCOPE.test(cacheControlString))
-						headers.set('Cache-Control', cacheControlString + ', private');
-				}
-			}
-		}
+		throw applyResponseHeaders(request, error, responseHeaders, wasUnauthorized);
+	} finally {
+		// from here on, session updates write to the response's own headers
 		responseHeaders = null;
-		return response;
 	}
 }
+
+function applyResponseHeaders(request, response, responseHeaders: any[], wasUnauthorized: boolean) {
+	const l = responseHeaders.length;
+	// a response is identity-dependent if a principal was resolved (Authorization/session/mTLS) or
+	// if we are rejecting the credentials (401, possibly rewritten to a login redirect); such a
+	// response must never be stored by a shared cache and served to a different principal (#1565)
+	const rejectedAuth = response?.status === 401 || wasUnauthorized;
+	// A downstream response produced under the untouched credential remains identity-dependent (#1565).
+	const identityDependent = !!request.user || rejectedAuth || !!getDeferredCredentialRejection(request);
+	// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
+	// its absence when no Origin was sent is origin-dependent too — so a shared cache must
+	// partition on Origin either way (#1518)
+	const corsEnabled = request.isOperationsServer ? operationsCors : appsCors;
+	if ((l > 0 || corsEnabled || identityDependent) && typeof response === 'object') {
+		let headers = response.headers;
+		// normalize plain-object headers so get/set below work uniformly
+		if (!headers || typeof headers.set !== 'function') response.headers = headers = new Headers(headers);
+		for (let i = 0; i < l;) {
+			const name = responseHeaders[i++];
+			headers.set(name, responseHeaders[i++]);
+		}
+		if (corsEnabled) addVaryHeader(headers, 'Origin');
+		// #1565: keep identity-dependent responses out of shared caches. An explicit
+		// `public`/`s-maxage` set by the app is RFC 9111's opt-in for shared-caching an
+		// authenticated response, so that is trusted as-is — but only for successfully
+		// authenticated responses; a credential rejection must never opt into shared caching.
+		// Otherwise partition on the credential headers and ensure a `private` scope
+		// (`private, no-cache` when none was set, so browsers still revalidate against the
+		// ETag/Last-Modified we emit).
+		if (identityDependent) {
+			const existingCacheControl = headers.get('Cache-Control');
+			const cacheControlString = existingCacheControl
+				? Array.isArray(existingCacheControl)
+					? existingCacheControl.join(', ')
+					: existingCacheControl
+				: '';
+			const optedIn = !rejectedAuth && cacheControlString !== '' && SHARED_CACHE_OPTIN.test(cacheControlString);
+			if (!optedIn) {
+				addVaryHeader(headers, 'Authorization');
+				if (ENABLE_SESSIONS) addVaryHeader(headers, 'Cookie');
+				// a 401 never opts into shared caching: any non-private Cache-Control it carries is
+				// replaced outright (an existing private/no-store is already at least as strict)
+				if (!cacheControlString || (rejectedAuth && !PRIVATE_SCOPE.test(cacheControlString)))
+					headers.set('Cache-Control', 'private, no-cache');
+				else if (!PRIVATE_SCOPE.test(cacheControlString))
+					headers.set('Cache-Control', cacheControlString + ', private');
+			}
+		}
+	}
+	return response;
+}
+
 let started = false;
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	if (started) return;

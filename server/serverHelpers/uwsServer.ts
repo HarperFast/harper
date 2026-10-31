@@ -298,9 +298,10 @@ function writeHeaders(res: UwsResponse, headers: Headers): void {
 	const setCookies =
 		typeof (headers as any).getSetCookie === 'function' ? ((headers as any).getSetCookie() as string[]) : null;
 	for (const [name, value] of headers) {
-		const lower = (name as string).toLowerCase();
-		if (lower === 'content-length') continue;
-		if (setCookies && lower === 'set-cookie') continue;
+		// toLowerCase() never shortens a string and only lengthens one with non-ASCII, so other lengths cannot match
+		const length = (name as string).length;
+		if (length === 14 && (name as string).toLowerCase() === 'content-length') continue;
+		if (setCookies && length === 10 && (name as string).toLowerCase() === 'set-cookie') continue;
 		if (Array.isArray(value)) for (const v of value) res.writeHeader(name, String(v));
 		else if (value != null) res.writeHeader(name, String(value));
 	}
