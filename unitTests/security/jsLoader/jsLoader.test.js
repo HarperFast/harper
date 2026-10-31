@@ -1,6 +1,6 @@
 'use strict';
 
-const { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -721,3 +721,309 @@ describe('native addon delegation', () => {
 		expect(error?.message).to.include('outside of allowed path');
 	});
 });
+
+for (const mode of ['vm-current-context', 'vm']) {
+	describe(`CommonJS require (${mode})`, () => {
+		let runtimeRoot;
+		let loadedModules;
+		let nativeRuntimeMarked;
+		const loaderScope = (options = {}) => ({
+			mode,
+			runtimeRoot,
+			allowedPath: runtimeRoot,
+			resources: {},
+			recordLoadedModule: (url, source) => loadedModules.set(url, source.toString()),
+			markNativeRuntime: () => (nativeRuntimeMarked = true),
+			...options,
+		});
+		const writePackage = (name, packageJson = {}) => {
+			const packageRoot = join(runtimeRoot, 'node_modules', name);
+			mkdirSync(packageRoot, { recursive: true });
+			writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name, main: 'index.js', ...packageJson }));
+			writeFileSync(join(packageRoot, 'index.js'), 'module.exports = { marker: {} };\n');
+			return join(packageRoot, 'index.js');
+		};
+		const loadedUrl = (path) => pathToFileURL(path).toString();
+
+		beforeEach(() => {
+			runtimeRoot = mkdtempSync(join(realpathSync(tmpdir()), 'harper-js-loader-cjs-'));
+			loadedModules = new Map();
+			nativeRuntimeMarked = false;
+		});
+		afterEach(() => rmSync(runtimeRoot, { recursive: true, force: true }));
+
+		it('passes filesystem paths as __filename and __dirname', async () => {
+			writeFileSync(join(runtimeRoot, 'paths.cjs'), 'module.exports = { filename: __filename, dirname: __dirname };\n');
+			writeFileSync(join(runtimeRoot, 'entry.cjs'), "module.exports = require('./paths.cjs');\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.filename).to.equal(join(runtimeRoot, 'paths.cjs'));
+			expect(result.dirname).to.equal(runtimeRoot);
+		});
+
+		it('strips TypeScript types from a required .ts file and records its source as read', async () => {
+			const typedSource =
+				"interface Shape { value: string }\nconst shape: Shape = { value: 'stripped' };\nmodule.exports = shape;\n";
+			writeFileSync(join(runtimeRoot, 'typed.ts'), typedSource);
+			writeFileSync(join(runtimeRoot, 'entry.cjs'), "module.exports = require('./typed.ts');\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.value).to.equal('stripped');
+			expect(loadedModules.get(loadedUrl(join(runtimeRoot, 'typed.ts')))).to.equal(typedSource);
+		});
+
+		it('imports a required module as the instance require() evaluated, reading it once', async () => {
+			let typedReads = 0;
+			writeFileSync(join(runtimeRoot, 'typed.ts'), "const value: string = 'stripped';\nmodule.exports = { value };\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.viaRequire = require('./typed.ts');\nexports.viaImport = () => import('./typed.ts');\n"
+			);
+			const result = await scopedImport(
+				join(runtimeRoot, 'entry.cjs'),
+				loaderScope({ recordLoadedModule: (url) => url.endsWith('/typed.ts') && typedReads++ })
+			);
+			expect((await result.viaImport()).default).to.equal(result.viaRequire);
+			expect(typedReads).to.equal(1);
+		});
+
+		it('import() keeps the route require() chose for a file reached by another specifier', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'package.json'),
+				JSON.stringify({ name: 'route-local', imports: { '#helper': './helper.cjs' } })
+			);
+			writeFileSync(join(runtimeRoot, 'helper.cjs'), 'module.exports = { marker: {} };\n');
+			const probePath = writePackage('route-probe');
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.nativeHelper = require('#helper');\n" +
+					"exports.importHelper = () => import('./helper.cjs');\n" +
+					"exports.appProbe = require('./node_modules/route-probe/index.js');\n" +
+					"exports.importProbe = () => import('route-probe');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.nativeHelper).to.equal(require(join(runtimeRoot, 'helper.cjs')));
+			expect((await result.importHelper()).default).to.equal(result.nativeHelper);
+			expect(loadedModules.has(loadedUrl(probePath))).to.equal(true);
+			expect((await result.importProbe()).default).to.equal(result.appProbe);
+		});
+
+		it('require() keeps the route import() chose for a file reached by another specifier', async () => {
+			const probePath = writePackage('imported-probe');
+			const pendingProbePath = writePackage('pending-probe');
+			writeFileSync(
+				join(runtimeRoot, 'entry.mjs'),
+				"export { default as imported } from 'imported-probe';\n" +
+					"export { default as pendingImport } from 'pending-probe';\n" +
+					"export { required, pendingRequired } from './requires.cjs';\n"
+			);
+			// linked after both native imports start, and evaluated at link time, before they settle
+			writeFileSync(
+				join(runtimeRoot, 'requires.cjs'),
+				"exports.pendingRequired = require('./node_modules/pending-probe/index.js');\n" +
+					"exports.required = () => require('./node_modules/imported-probe/index.js');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.imported).to.equal(require(probePath));
+			expect(result.required()).to.equal(result.imported);
+			expect(result.pendingImport).to.equal(require(pendingProbePath));
+			expect(result.pendingRequired).to.equal(result.pendingImport);
+			expect(loadedModules.has(loadedUrl(probePath))).to.equal(false);
+			expect(loadedModules.has(loadedUrl(pendingProbePath))).to.equal(false);
+		});
+
+		it('keeps the native route a require() took while a native import of the file failed', async () => {
+			const probeRoot = join(runtimeRoot, 'node_modules', 'thenable-probe');
+			mkdirSync(probeRoot, { recursive: true });
+			writeFileSync(join(probeRoot, 'package.json'), JSON.stringify({ name: 'thenable-probe', main: 'index.js' }));
+			// import() adopts the then export, so a native import of this file rejects while require() of it succeeds
+			writeFileSync(
+				join(probeRoot, 'index.js'),
+				"exports.then = (resolve, reject) => reject(new Error('rejected by then'));\n"
+			);
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				'exports.load = async () => {\n' +
+					"\tconst pending = import('thenable-probe');\n" +
+					"\tconst duringImport = require('./node_modules/thenable-probe/index.js');\n" +
+					"\tconst failure = await pending.then(() => 'loaded', (error) => error.message);\n" +
+					"\treturn { duringImport, failure, afterImport: require('./node_modules/thenable-probe/index.js') };\n" +
+					'};\n'
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			const { duringImport, failure, afterImport } = await result.load();
+			expect(failure).to.equal('rejected by then');
+			expect(afterImport).to.equal(duringImport);
+			expect(loadedModules.has(loadedUrl(join(probeRoot, 'index.js')))).to.equal(false);
+		});
+
+		it('rejects import() of an ESM module that already threw as a dependency', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'failing.mjs'),
+				"export const reached = true;\nthrow new Error('failing threw');\n"
+			);
+			writeFileSync(join(runtimeRoot, 'imports-failing.mjs'), "import './failing.mjs';\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				'exports.load = async () => {\n' +
+					"\tawait import('./imports-failing.mjs').catch(() => {});\n" +
+					"\treturn import('./failing.mjs').then((namespace) => namespace.reached, (error) => error.message);\n" +
+					'};\n'
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(await result.load()).to.equal('failing threw');
+		});
+
+		it('imports a CommonJS module that exports null', async () => {
+			writeFileSync(join(runtimeRoot, 'nothing.cjs'), 'module.exports = null;\n');
+			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { default as nothing } from './nothing.cjs';\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope());
+			expect(result.nothing).to.equal(null);
+		});
+
+		it('still strips TypeScript types from an imported ESM .ts file', async () => {
+			writeFileSync(join(runtimeRoot, 'typed.ts'), "export const value: string = 'stripped';\n");
+			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from './typed.ts';\n");
+			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope());
+			expect(result.value).to.equal('stripped');
+		});
+
+		it('requires a dependency natively under dependencyLoader: native, as import() does', async () => {
+			const probePath = writePackage('native-probe');
+			writeFileSync(join(runtimeRoot, 'local.cjs'), 'module.exports = {};\n');
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.viaRequire = require('native-probe');\n" +
+					"exports.viaImport = () => import('native-probe');\n" +
+					"exports.local = require('./local.cjs');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.viaRequire).to.equal(require(probePath));
+			expect((await result.viaImport()).default).to.equal(result.viaRequire);
+			expect(loadedModules.has(loadedUrl(join(runtimeRoot, 'local.cjs')))).to.equal(true);
+			expect(nativeRuntimeMarked).to.equal(false);
+		});
+
+		it('routes required dependencies by whether they depend on harper under dependencyLoader: auto', async () => {
+			const plainPath = writePackage('plain-probe');
+			const harperDependentPath = writePackage('@scoped/harper-probe', { dependencies: { harper: '*' } });
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.plain = require('plain-probe');\nexports.harperDependent = require('@scoped/harper-probe');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'auto' }));
+			expect(result.plain).to.equal(require(plainPath));
+			expect(loadedModules.has(loadedUrl(plainPath))).to.equal(false);
+			expect(loadedModules.has(loadedUrl(harperDependentPath))).to.equal(true);
+		});
+
+		it('keeps required dependencies in the application loader under dependencyLoader: app', async () => {
+			const probePath = writePackage('app-probe');
+			writeFileSync(join(runtimeRoot, 'entry.cjs'), "module.exports = require('app-probe');\n");
+			await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'app' }));
+			expect(loadedModules.has(loadedUrl(probePath))).to.equal(true);
+		});
+
+		it('marks the runtime opaque before natively evaluating an application-local module', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'package.json'),
+				JSON.stringify({ name: 'native-local', imports: { '#helper': './helper.cjs' } })
+			);
+			writeFileSync(join(runtimeRoot, 'helper.cjs'), "throw new Error('helper failed');\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"try { require('#helper'); } catch (error) { exports.failure = error.message; }\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope({ dependencyLoader: 'native' }));
+			expect(result.failure).to.equal('helper failed');
+			expect(nativeRuntimeMarked).to.equal(true);
+			expect(loadedModules.has(loadedUrl(join(runtimeRoot, 'helper.cjs')))).to.equal(false);
+		});
+
+		it('propagates an evaluation error instead of retrying the module as ESM', async () => {
+			writeFileSync(join(runtimeRoot, 'bad.cjs'), 'module.exports.value ====\n');
+			writeFileSync(join(runtimeRoot, 'requires-bad.cjs'), "module.exports = require('./bad.cjs');\n");
+			writeFileSync(
+				join(runtimeRoot, 'throws.cjs'),
+				"module.exports = {};\nthrow new Error('failed to import settings');\n"
+			);
+			const failure = (file) =>
+				scopedImport(join(runtimeRoot, file), loaderScope()).then(
+					() => expect.fail(`${file} should not load`),
+					(error) => error
+				);
+			expect((await failure('throws.cjs')).message).to.equal('failed to import settings');
+			const syntaxError = await failure('requires-bad.cjs');
+			expect(syntaxError.name).to.equal('SyntaxError');
+			expect(syntaxError.stack).to.include('bad.cjs');
+		});
+
+		it('evaluates a module again after its evaluation threw, as Node does', async () => {
+			writeFileSync(join(runtimeRoot, 'failing.cjs'), "throw new Error('evaluation failed');\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"const attempt = () => { try { require('./failing.cjs'); return 'loaded'; } catch (error) { return error.message; } };\n" +
+					'exports.first = attempt();\nexports.second = attempt();\n'
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.first).to.equal('evaluation failed');
+			expect(result.second).to.equal('evaluation failed');
+		});
+
+		it('hands a circular require the incomplete module and repeats return one instance', async () => {
+			writeFileSync(join(runtimeRoot, 'a.cjs'), "exports.name = 'a';\nexports.fromB = require('./b.cjs').fromA;\n");
+			writeFileSync(join(runtimeRoot, 'b.cjs'), "exports.fromA = require('./a.cjs').name;\n");
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.fromB = require('./a.cjs').fromB;\nexports.same = require('./b.cjs') === require('./b.cjs');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			expect(result.fromB).to.equal('a');
+			expect(result.same).to.equal(true);
+		});
+
+		describe('outside allowedPath', () => {
+			let allowedPath;
+			const rejection = (options = {}) =>
+				scopedImport(join(allowedPath, 'entry.cjs'), loaderScope({ allowedPath, ...options })).then(
+					() => expect.fail('entry.cjs should not load'),
+					(error) => expect(error.message).to.include('outside of allowed path')
+				);
+
+			beforeEach(() => {
+				allowedPath = join(runtimeRoot, 'app');
+				mkdirSync(allowedPath);
+				writeFileSync(join(runtimeRoot, 'outside.js'), 'module.exports = { loaded: true };\n');
+				writeFileSync(join(runtimeRoot, 'outside.cjs'), 'module.exports = { loaded: true };\n');
+			});
+
+			for (const file of ['outside.js', 'outside.cjs']) {
+				it(`rejects a required ${file}`, async () => {
+					writeFileSync(join(allowedPath, 'entry.cjs'), `module.exports = require('../${file}');\n`);
+					await rejection();
+				});
+			}
+
+			it('rejects a required symlink whose target is outside', async () => {
+				symlinkSync(join(runtimeRoot, 'outside.cjs'), join(allowedPath, 'link.cjs'));
+				writeFileSync(join(allowedPath, 'entry.cjs'), "module.exports = require('./link.cjs');\n");
+				await rejection();
+			});
+
+			it('rejects a natively required dependency', async () => {
+				writePackage('hoisted-probe');
+				writeFileSync(join(allowedPath, 'entry.cjs'), "module.exports = require('hoisted-probe');\n");
+				await rejection({ dependencyLoader: 'native' });
+			});
+		});
+
+		it('substitutes the constrained child_process for require()', async () => {
+			writeFileSync(
+				join(runtimeRoot, 'entry.cjs'),
+				"exports.bare = require('child_process');\nexports.prefixed = require('node:child_process');\n"
+			);
+			const result = await scopedImport(join(runtimeRoot, 'entry.cjs'), loaderScope());
+			for (const childProcess of [result.bare, result.prefixed]) {
+				expect(() => childProcess.execSync('exit 0')).to.throw('execSync is not allowed');
+			}
+		});
+	});
+}
