@@ -11,8 +11,8 @@ import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
 
 class ContextStorage extends AsyncLocalStorage<Context> {
-	// Node 22's async_hooks exit() only disables the storage: a run() nested inside re-enables it with the outer store
-	// still current. Node 24+ implements exit() exactly like this.
+	// The async_hooks storage (Node 22's default) implements exit() by disabling itself, so a run() nested inside
+	// re-enables it with the outer store still current. AsyncContextFrame (Node 24+) implements exit() exactly like this.
 	exit<R, TArgs extends any[]>(callback: (...args: TArgs) => R, ...args: TArgs): R {
 		return this.run(undefined, callback, ...args);
 	}

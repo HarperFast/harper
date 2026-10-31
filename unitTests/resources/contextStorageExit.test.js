@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { spawnSync } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const { contextStorage } = require('#src/resources/transaction');
 
@@ -17,6 +18,24 @@ describe('contextStorage.exit', function () {
 			});
 			assert.strictEqual(contextStorage.getStore(), request, "the caller's context is restored");
 		});
+	});
+
+	it('leaves the request context under the async_hooks storage, whatever the runtime', () => {
+		// Node 22 always uses the async_hooks storage; Node 24+ only with this flag, so their PR runs cover it too
+		const flags = process.allowedNodeEnvironmentFlags.has('--no-async-context-frame')
+			? ['--no-async-context-frame']
+			: [];
+		const script = `const { contextStorage } = require(process.argv[1]);
+			const store = contextStorage.run({}, () => contextStorage.exit(() => {
+				contextStorage.run({}, () => {});
+				return contextStorage.getStore();
+			}));
+			process.stdout.write(String(store));`;
+		const child = spawnSync(process.execPath, [...flags, '-e', script, require.resolve('#src/resources/transaction')], {
+			encoding: 'utf8',
+			timeout: 30_000,
+		});
+		assert.strictEqual(child.stdout, 'undefined', child.stderr);
 	});
 
 	it('keeps async work started inside it out of the request context', async () => {
