@@ -443,6 +443,26 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		);
 	});
 
+	test('orders complete full-text matches and returns exact pagination counts through two-worker REST', async () => {
+		await waitForIds(query('pagination'), PAGE_IDS);
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const response = await fetch(
+				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&sort(-id)&limit(2,5)&select(id)`,
+				{
+					headers: { Authorization: authorization, Prefer: 'count=exact' },
+					signal: AbortSignal.timeout(45_000),
+				}
+			);
+			assert.strictEqual(response.status, 200, await response.clone().text());
+			assert.strictEqual(response.headers.get('content-range'), 'items 2-4/300');
+			assert.strictEqual(response.headers.get('preference-applied'), 'count=exact');
+			assert.deepStrictEqual(
+				(await response.json()).map(({ id }) => id),
+				[...PAGE_IDS].reverse().slice(2, 5)
+			);
+		}
+	});
+
 	test('rejects removed paging functions before a collection delete can run', async () => {
 		for (const option of ['continuation()', 'continuation(token)', 'closeContinuation()']) {
 			for (const method of ['GET', 'DELETE']) {
@@ -519,6 +539,11 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			},
 		});
 		await operation({ operation: 'add_user', ...READER, role: 'fulltext_reader', active: true });
+		await search(
+			query('waterproof', { fields: ['title'] }, { sort: { attribute: 'description' }, limit: 1 }),
+			READER_AUTH,
+			403
+		);
 		await operation({
 			operation: 'add_role',
 			role: 'fulltext_denied',

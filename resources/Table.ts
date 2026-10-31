@@ -186,6 +186,11 @@ import {
 	validateFullTextFuzzyOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
+import {
+	FULL_TEXT_SEARCH_OPTIONS,
+	FullTextSearchLimitError,
+	type FullTextSearchEntry,
+} from './indexes/fullTextQueryProtocol.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
@@ -383,6 +388,18 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
+
+function canCountPage(target: RequestTarget): boolean {
+	const offset = target.offset || 0;
+	return (
+		Number.isInteger(target.limit) &&
+		target.limit >= 0 &&
+		target.limit <= MAX_COUNT_PAGE &&
+		Number.isInteger(offset) &&
+		offset >= 0 &&
+		offset + target.limit <= MAX_EXACT_COUNT_SCAN
+	);
+}
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
 // check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
 const COUNT_YIELD_INTERVAL = 2_048;
@@ -7543,14 +7560,20 @@ export function makeTable(options): TableResourceClass {
 			conditions = prepared.conditions;
 			const includeFullTextHighlights = prepared.includeFullTextHighlights;
 			let sort = typeof target.sort === 'object' && target.sort;
+			let fullTextOrder: ((entries: FullTextSearchEntry[]) => void) | undefined;
+			let exhaustiveFullText = false;
+			const fullTextBudget = (target as any)[FULL_TEXT_SEARCH_OPTIONS]?.budget ?? {};
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
 				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
 			) {
 				if ((target as any).reverse)
 					throw new ClientError('Full-text results can only use descending $score order', 400);
-				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending !== true))
+				if (sort && (sort.attribute !== '$score' || sort.next))
+					fullTextOrder = fullTextResultOrder(sort, context, target);
+				else if (sort && sort.descending !== true)
 					throw new ClientError('Full-text results can only use descending $score order', 400);
+				exhaustiveFullText = Boolean(fullTextOrder) || (target.count === 'exact' && canCountPage(target));
 				sort = undefined;
 			}
 			for (let order = sort; order; order = order.next) {
@@ -7683,7 +7706,11 @@ export function makeTable(options): TableResourceClass {
 					operator,
 					TableResource,
 					readTxn,
-					target,
+					exhaustiveFullText
+						? Object.assign(Object.create(target), {
+								[FULL_TEXT_SEARCH_OPTIONS]: { exhaustive: true, orderResults: fullTextOrder, budget: fullTextBudget },
+							})
+						: target,
 					context,
 					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 					filtered,
@@ -7740,27 +7767,11 @@ export function makeTable(options): TableResourceClass {
 				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
 				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
 				const pageLimit = target.limit as number;
-				if (
-					target.count &&
-					Number.isInteger(pageLimit) &&
-					pageLimit >= 0 &&
-					pageLimit <= MAX_COUNT_PAGE &&
-					Number.isInteger(offset) &&
-					offset >= 0 &&
-					offset + pageLimit <= MAX_EXACT_COUNT_SCAN
-				) {
+				if (target.count && canCountPage(target)) {
 					const wantExact = target.count === 'exact';
 					const pageEnd = offset + pageLimit;
 					const countStart = performance.now();
-					// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
-					// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
-					// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
-					// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
-					// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
-					// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
-					// filter. Report the total as unavailable for those rather than advertising it as count=exact
-					// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
-					// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
+					// Only an exhaustive full-text traversal can supply an exact custom-index count.
 					const touchesCustomIndex = (conds: any[]): boolean =>
 						conds.some((c: any) => {
 							if (!c) return false;
@@ -7768,7 +7779,7 @@ export function makeTable(options): TableResourceClass {
 							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
 							if (typeof attr !== 'string') return false;
 							return fullTextComparatorMode(c.comparator)
-								? Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
+								? !exhaustiveFullText && Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
 								: Boolean(indices[attr]?.customIndex);
 						});
 					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
@@ -7776,6 +7787,7 @@ export function makeTable(options): TableResourceClass {
 						const page: any = [];
 						let scanned = 0;
 						let exact = true;
+						let fullTextLimitExceeded = false;
 						try {
 							for await (const record of results) {
 								if (scanned >= offset && scanned < pageEnd) page.push(record);
@@ -7799,6 +7811,10 @@ export function makeTable(options): TableResourceClass {
 									}
 								}
 							}
+						} catch (error) {
+							if (exhaustiveFullText && !fullTextOrder && error instanceof FullTextSearchLimitError)
+								fullTextLimitExceeded = true;
+							else throw error;
 						} finally {
 							// Count pages have no streaming onDone consumer to release their cursors.
 							try {
@@ -7810,6 +7826,17 @@ export function makeTable(options): TableResourceClass {
 									releaseRelatedLeases(filtered);
 								}
 							}
+						}
+						if (fullTextLimitExceeded) {
+							const fallback: any = await this.search(
+								Object.assign(Object.create(target), {
+									count: 'estimated',
+									[FULL_TEXT_SEARCH_OPTIONS]: { budget: fullTextBudget },
+								})
+							);
+							fallback.recordCount = null;
+							fallback.recordCountExact = false;
+							return fallback;
 						}
 						let total: number | null;
 						if (wantExact) {
@@ -12068,6 +12095,47 @@ export function makeTable(options): TableResourceClass {
 				throw new ClientError(`Full-text field "${name}" is query-only and cannot be written`, 400);
 			}
 		}
+	}
+
+	function fullTextResultOrder(sort: Sort, context: Context, target: RequestTarget) {
+		const clauses: Sort[] = [];
+		for (let order = sort; order; order = order.next) {
+			if (clauses.length >= 32) throw new ClientError('Full-text sort supports at most 32 fields', 400);
+			const attribute = attributes.find(({ name }) => name === order.attribute);
+			if (
+				order.attribute !== '$score' &&
+				(!attribute ||
+					attribute.computed ||
+					attribute.computedFromExpression ||
+					attribute.relationship ||
+					attribute.type === 'Blob')
+			)
+				throw new ClientError('Full-text sort requires directly stored record fields or $score', 400);
+			if (order.attribute !== '$score')
+				assertFullTextReadAccess(context, target, TableResource.fullTextIndexes[0], [String(order.attribute)]);
+			clauses.push(order);
+		}
+		return (entries: FullTextSearchEntry[]) => {
+			const keys = new Map(
+				entries.map((entry) => [
+					entry,
+					clauses.map((clause) =>
+						clause.attribute === '$score'
+							? entry.$score
+							: convertToComparableKeys(getAttributeValue(entry.recordEntry, clause.attribute, context, clause))
+					),
+				])
+			);
+			entries.sort((left, right) => {
+				for (let index = 0; index < clauses.length; index++) {
+					const compared = clauses[index].descending
+						? compareKeys(keys.get(right)[index], keys.get(left)[index])
+						: compareKeys(keys.get(left)[index], keys.get(right)[index]);
+					if (compared !== 0) return compared;
+				}
+				return 0;
+			});
+		};
 	}
 
 	function assertFullTextReadAccess(

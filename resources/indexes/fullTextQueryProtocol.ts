@@ -1,6 +1,26 @@
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type { NativeFullTextFuzzyOptions, NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
+export const FULL_TEXT_SEARCH_OPTIONS = Symbol('full-text-search-options');
+
+export type FullTextSearchEntry = {
+	key: unknown;
+	$score: number;
+	$highlights?: Record<string, unknown>;
+	nativeId: string;
+	record: Record<string, unknown>;
+	recordEntry: any;
+};
+
+export type FullTextSearchOptions = {
+	budget?: { deadline?: number };
+	exhaustive?: boolean;
+	orderResults?: (entries: FullTextSearchEntry[]) => void;
+	resultEnd?: number;
+};
+
+export class FullTextSearchLimitError extends ClientError {}
+
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
 export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
 

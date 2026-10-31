@@ -32,12 +32,16 @@ import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.t
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
 import {
 	fullTextComparatorMode,
+	FullTextSearchLimitError,
+	type FullTextSearchOptions,
+	type FullTextSearchEntry,
 	replayFullTextPrefix,
 	fullTextHitsAdvance,
 	fullTextFuzzyOptions,
 	validateFullTextFuzzyOptions,
 } from './fullTextQueryProtocol.ts';
 export {
+	FullTextSearchLimitError,
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
 	FULL_TEXT_QUERY_RESUME_OPERATION,
 	fullTextComparatorMode,
@@ -228,7 +232,7 @@ export class FullTextQueryIndex {
 	search(
 		condition: FullTextCondition,
 		context: any,
-		options: {
+		options: FullTextSearchOptions & {
 			filter?: (id: unknown, entry?: any) => boolean;
 			minResults?: number;
 			resultOffset?: number;
@@ -269,7 +273,7 @@ export class FullTextQueryIndex {
 						503
 					);
 				context?.signal?.throwIfAborted();
-				if (options.minResults === 0) {
+				if (options.minResults === 0 && !options.exhaustive) {
 					this.#unexpectedSearchFailureWarned = false;
 					return [];
 				}
@@ -421,7 +425,7 @@ export class FullTextQueryIndex {
 	async #search(
 		condition: FullTextCondition,
 		context: any,
-		options: {
+		options: FullTextSearchOptions & {
 			filter?: (id: unknown, entry?: any) => boolean;
 			minResults?: number;
 			resultOffset?: number;
@@ -429,7 +433,7 @@ export class FullTextQueryIndex {
 			candidateKeys?: CandidateKeyPlan;
 		}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
-		if (options.minResults === 0) return [];
+		if (options.minResults === 0 && !options.exhaustive) return [];
 		let policy;
 		try {
 			policy = resolveFullTextSearchLimits({
@@ -446,36 +450,32 @@ export class FullTextQueryIndex {
 		const lease = await this.#acquireSearchReader(condition, context);
 		const reader = lease.reader;
 		try {
-			const deadline =
+			const configuredDeadline =
 				performance.now() + Math.min(policy.requestBudgetMilliseconds, this.#maxSearchBudgetMilliseconds!);
+			const deadline = Math.min(options.budget?.deadline ?? configuredDeadline, configuredDeadline);
+			if (options.budget) options.budget.deadline = deadline;
+			remainingSearchBudget(deadline);
 			const rawHitLimit = policy.maxRawHitsPerRequest;
 			let rawHitsFetched = 0;
 			const maxSearchWindow = this.#maxSearchWindow!;
 			const query = condition.fullTextQuery ?? leafDescriptor(condition);
 			const autocomplete = expressionUsesAutocomplete(query);
 			const searchWindow = maxSearchWindow;
-			const bounded = options.minResults !== undefined;
+			const bounded = options.minResults !== undefined && !options.exhaustive;
 			const target = bounded
 				? Math.max(1, options.minResults!)
 				: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
 			if (!Number.isSafeInteger(target) || target < 0 || target > rawHitLimit)
-				throw new ClientError(
+				throw new FullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxRawHitsPerRequest; reduce offset or limit, or increase the work budget',
 					400
 				);
 			if (target > policy.maxResultsPerRequest)
-				throw new ClientError(
+				throw new FullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxResultsPerRequest; reduce offset or limit, or increase the result budget',
 					400
 				);
-			const accepted: Array<{
-				key: unknown;
-				$score: number;
-				$highlights?: Record<string, unknown>;
-				nativeId: string;
-				record: Record<string, unknown>;
-				recordEntry: any;
-			}> = [];
+			const accepted: FullTextSearchEntry[] = [];
 			let traversal:
 				{ continuation?: string; skip: number; prefix?: NativeFullTextSearchPageResult['hits'] } | undefined;
 			let maxRawPageSize = this.#maxFilteredRawPageSize!;
@@ -502,7 +502,7 @@ export class FullTextQueryIndex {
 						: Math.min(rawPageSize, maxSearchWindow);
 				const remainingHits = rawHitLimit - rawHitsFetched;
 				if (remainingHits <= 0)
-					throw new ClientError(
+					throw new FullTextSearchLimitError(
 						'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
 						400
 					);
@@ -659,7 +659,7 @@ export class FullTextQueryIndex {
 				if (!traversal && moreMayExist && accepted.length < target) {
 					const minimumNewHits = Math.min(target - accepted.length, Math.max(0, result.total - result.hits.length));
 					if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
-						throw new ClientError(
+						throw new FullTextSearchLimitError(
 							'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
 							400
 						);
@@ -681,12 +681,17 @@ export class FullTextQueryIndex {
 				}
 			}
 			if (!bounded && moreMayExist) throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
+			if (options.exhaustive) {
+				options.orderResults?.(accepted);
+				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+				remainingSearchBudget(deadline);
+			}
 			if (condition.includeHighlights && accepted.length > 0)
 				await this.#addHighlights(
 					reader,
 					lease.definition,
 					condition,
-					accepted.slice(options.resultOffset ?? 0),
+					accepted.slice(options.resultOffset ?? 0, options.resultEnd),
 					deadline
 				);
 			return accepted.map((entry) => ({
@@ -1420,14 +1425,18 @@ const REBUILD_REQUIRED_CODES = new Set([
 	'E_INDEX_FORMAT_INCOMPATIBLE',
 ]);
 
-function unboundedSearchLimitError(target: number, searchWindow: number, rawHitLimit: number): ClientError {
+function unboundedSearchLimitError(
+	target: number,
+	searchWindow: number,
+	rawHitLimit: number
+): FullTextSearchLimitError {
 	const bound =
 		target < searchWindow
 			? target === rawHitLimit
 				? 'storage.fullText.maxRawHitsPerRequest'
 				: 'storage.fullText.maxResultsPerRequest'
 			: `the ${searchWindow}-result search window`;
-	return new ClientError(
+	return new FullTextSearchLimitError(
 		`Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
 		400
 	);

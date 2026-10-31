@@ -144,6 +144,12 @@ Each page runs a new query. Changes to records, permissions, or the index can mo
 
 Within one request, Harper reads native batches on the same index reader until enough eligible records have been found or the matches are exhausted. Current source versions and record filters are checked before counting records toward the offset and limit. This traversal also lets prefix and fuzzy-prefix searches return more than the initial autocomplete batch. The library's ordinary search window is not a total-result cutoff for a bounded Harper request.
 
+Full-text queries also accept the existing `sort` option for directly stored record attributes, including linked sort fields. Harper uses its ordinary value ordering and keeps relevance order for equal sort keys. Computed fields, relationship paths, Blob fields and the query-only full-text field cannot be sort keys. The default remains descending `$score`.
+
+A stored-field sort must examine the complete eligible matching set before applying offset and limit. It shares the configured raw-hit, retained-result and execution budgets; exceeding a bound returns an error rather than sorting a relevance-only subset. Highlights are computed only for the requested page after sorting.
+
+The existing `count: 'exact'` option computes a total from the complete eligible set when a bounded page fits the count guardrails. REST exposes this through `Prefer: count=exact` on mounts configured with `rest: { exactCount: true }`. Totals include ordinary conditions, row guards, current source-version checks and expiry. If an unsorted count exceeds a full-text work or result ceiling, Harper returns the bounded page with an unknown total (`Content-Range: items …/*`). Sorting still requires complete enumeration and cannot use that fallback. Native execution and cancellation failures remain errors.
+
 Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. Harper can retain up to `offset + limit` accepted records while building a bounded result, so raising the work limit can also increase memory use. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
 
 Search settings are under `storage.fullText`:
@@ -189,6 +195,6 @@ On structured full-text conditions, `fuzzyDistance` accepts integer 0–2 (defau
 
 Distance two remains preview and requires operator opt-in with `storage.fullText.query.maxFuzzyDistance: 2`. The host maximum accepts 0–2; zero disables edit-tolerant fuzzy requests unless the condition explicitly requests distance zero. Qualify the actual corpus and concurrency before enabling two: admission and deadlines do not provide a hard process-memory bound. Fuzzy-prefix remains preview. Phrase slop remains deferred; no unreleased Tantivy patch is included.
 
-Metadata sorting, native structured-filter pushdown, candidate-ID pushdown and facets/nested aggregations are not enabled by this package upgrade. Their schema, authorization, consistency and workload qualification remain in [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
+Native metadata sorting, structured-filter pushdown, candidate-ID pushdown and facets/nested aggregations remain unexposed. Stored-field ordering above uses Harper’s existing source-value sorter and requires no metadata declaration or index rebuild. Their schema, authorization, consistency and workload qualification remain in [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
 
 For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); compiler and generation rules live in [fullTextSchema.ts](fullTextSchema.ts).

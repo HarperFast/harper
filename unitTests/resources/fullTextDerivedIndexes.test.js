@@ -431,8 +431,8 @@ describe('@fullText derived-index activation', () => {
 			limit: 1,
 			count: 'exact',
 		});
-		assert.strictEqual(counted.recordCount, null);
-		assert.strictEqual(counted.recordCountExact, false);
+		assert.strictEqual(counted.recordCount, 2);
+		assert.strictEqual(counted.recordCountExact, true);
 		const excluded = await collect(
 			Product.search({
 				operator: 'and',
@@ -1770,7 +1770,7 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.resets.length > 0);
 	});
 
-	rocksOnly('enforces score ordering after adding full text to an existing table class', async () => {
+	rocksOnly('allows stored-field ordering after adding full text to an existing table class', async () => {
 		const database = `fulltext-redeclare-order-${Date.now()}`;
 		const attributes = [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -1781,13 +1781,14 @@ describe('@fullText derived-index activation', () => {
 		Product = table({ database, table: 'Product', audit: true, attributes, fullTextIndexes: [definition()] });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 
-		assert.throws(
-			() =>
+		assert.deepStrictEqual(
+			await collect(
 				Product.search({
 					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
 					sort: { attribute: 'title' },
-				}),
-			/Full-text results can only use descending \$score order/
+				})
+			),
+			[]
 		);
 		assert.throws(
 			() =>
