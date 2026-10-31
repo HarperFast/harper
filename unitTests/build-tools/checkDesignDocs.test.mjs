@@ -28,21 +28,18 @@ const padded = (content, count) => {
 
 describe('check-design-docs', function () {
 	this.timeout(60_000);
-	let workDir;
-
-	beforeEach(function () {
-		workDir = mkdtempSync(join(tmpdir(), 'check-design-docs-'));
-	});
+	const workDirs = [];
 
 	afterEach(function () {
-		rmSync(workDir, { recursive: true, force: true });
+		for (const workDir of workDirs.splice(0)) rmSync(workDir, { recursive: true, force: true });
 	});
 
 	// The script finds its repository from its own location, so each case runs a copy inside a fixture.
 	function check(files) {
+		const workDir = mkdtempSync(join(tmpdir(), 'check-design-docs-'));
+		workDirs.push(workDir);
 		const all = { 'DESIGN.md': ROOT, 'a/DESIGN.md': NOTE, ...files };
 		for (const [name, content] of Object.entries(all)) {
-			if (content === null) continue;
 			mkdirSync(dirname(join(workDir, name)), { recursive: true });
 			writeFileSync(join(workDir, name), content);
 		}
@@ -137,6 +134,22 @@ describe('check-design-docs', function () {
 				{ 'a/DESIGN.md': note('[self](#nope)') },
 				/a\/DESIGN\.md:\d+ links to #nope, which no heading there produces/
 			);
+		});
+
+		it('checks a titled link, and a heading indented up to three spaces', function () {
+			fails(
+				{ 'a/DESIGN.md': note('[gone](./gone.ts "the title") [other](./gone.ts \'t\')') },
+				/links to missing file \.\/gone\.ts/
+			);
+			passes({ 'a/DESIGN.md': `${NOTE}\n   ### Indented\n\n[ok](#indented \"title\")\n` });
+		});
+
+		it('reads headings and fences in a file with CRLF line endings', function () {
+			const crlf = (text) => text.replaceAll('\n', '\r\n');
+			passes({
+				'DESIGN.md': crlf(ROOT),
+				'a/DESIGN.md': crlf(note('```md\n[x](./gone.ts)\n```\n\n[self](#topic-one)')),
+			});
 		});
 
 		it('rejects a link to a missing file', function () {

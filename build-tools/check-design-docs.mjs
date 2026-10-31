@@ -28,7 +28,7 @@ const slug = (s) =>
 const errors = [];
 const lineCache = new Map();
 const lines = (file) =>
-	lineCache.get(file) ?? lineCache.set(file, fs.readFileSync(path.join(repo, file), 'utf8').split('\n')).get(file);
+	lineCache.get(file) ?? lineCache.set(file, fs.readFileSync(path.join(repo, file), 'utf8').split(/\r?\n/)).get(file);
 
 const proseCache = new Map();
 // Numbered lines outside fenced code blocks, which neither define headings nor carry links. A fence
@@ -58,7 +58,7 @@ function anchors(file) {
 	const taken = new Map();
 	const found = [];
 	for (const [, line] of prose(file)) {
-		const heading = /^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+		const heading = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
 		if (!heading) continue;
 		const base = slug(heading[2]);
 		let anchor = base;
@@ -77,7 +77,9 @@ function anchors(file) {
 const CODE_SPAN = /(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)/g;
 function* links(file) {
 	for (const [number, line] of prose(file)) {
-		for (const m of line.replace(CODE_SPAN, '').matchAll(/\]\(([^)#\s]*)(?:#([^)\s]*))?\)/g)) {
+		for (const m of line
+			.replace(CODE_SPAN, '')
+			.matchAll(/\]\(([^)#\s]*)(?:#([^)\s]*))?(?:\s+(?:"[^"]*"|'[^']*'))?\)/g)) {
 			if (/^[a-z][a-z0-9+.-]*:/i.test(m[1])) continue;
 			yield { number, target: m[1], anchor: m[2], listItem: /^\s*[-*] /.test(line) };
 		}
@@ -106,8 +108,7 @@ const rootLines = lines('DESIGN.md');
 if (rootLines.length > ROOT_BUDGET)
 	errors.push(`DESIGN.md is ${rootLines.length} lines; the index budget is ${ROOT_BUDGET}`);
 
-// A list entry in the index registers its target as a design note; prose references to other documents
-// are only link-checked.
+// Only list entries register notes: a prose link to AGENTS.md must not give it a note's section rules.
 const registered = new Map();
 for (const link of links('DESIGN.md')) {
 	const file = resolveLink('DESIGN.md', link, link.listItem ? 2 : undefined);
