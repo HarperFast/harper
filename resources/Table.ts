@@ -8225,36 +8225,16 @@ export function makeTable(options): TableResourceClass {
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
 					if (fullTextDefinition) {
-						const validateLeaf = (leaf: any, mode: string) => {
-							const fields = leaf.fields;
-							if (fields !== undefined) {
-								if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
-									throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
-								assertFullTextReadAccess(context, target, fullTextDefinition, fields);
-							} else assertFullTextReadAccess(context, target, fullTextDefinition);
-							const value = leaf[1] ?? leaf.value;
-							if (typeof value !== 'string' || value.length === 0)
-								throw new ClientError(
-									`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
-									400
-								);
-							if (mode === 'phrase' && !fullTextDefinition.positions)
-								throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
-							if ((mode === 'prefix' || mode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
-								throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
-							if (fields !== undefined) {
-								const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
-								if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
-									throw new ClientError(
-										`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
-										400
-									);
-							}
-						};
-						validateLeaf(condition, fullTextMode);
+						validateFullTextLeaf(condition, fullTextMode, context, target, fullTextDefinition);
 						if (condition.should)
 							condition.should = condition.should.map((clause) => {
-								validateLeaf(clause, fullTextComparatorMode(clause.comparator));
+								validateFullTextLeaf(
+									clause,
+									fullTextComparatorMode(clause.comparator),
+									context,
+									target,
+									fullTextDefinition
+								);
 								return {
 									...clause,
 									fields: clause.fields ? [...clause.fields] : fullTextDefinition.fields.map(({ name }) => name),
@@ -12082,6 +12062,36 @@ export function makeTable(options): TableResourceClass {
 					throw new ServerError(`Source for ${tableName} returned query-only full-text field "${name}"`, 502);
 				throw new ClientError(`Full-text field "${name}" is query-only and cannot be written`, 400);
 			}
+		}
+	}
+
+	function validateFullTextLeaf(
+		leaf: any,
+		mode: string,
+		context: Context | undefined,
+		target: RequestTarget,
+		definition: FullTextDefinition
+	): void {
+		const fields = leaf.fields;
+		if (fields !== undefined) {
+			if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+				throw new ClientError(`Full-text index '${definition.name}' requires a non-empty fields list`, 400);
+			assertFullTextReadAccess(context, target, definition, fields);
+		} else assertFullTextReadAccess(context, target, definition);
+		const value = leaf[1] ?? leaf.value;
+		if (typeof value !== 'string' || value.length === 0)
+			throw new ClientError(
+				`Full-text index '${definition.name}' requires a full-text comparator and non-empty string value`,
+				400
+			);
+		if (mode === 'phrase' && !definition.positions)
+			throw new ClientError(`Full-text index '${definition.name}' does not store phrase positions`, 400);
+		if ((mode === 'prefix' || mode === 'fuzzy-prefix') && !definition.surfaceTerms)
+			throw new ClientError(`Full-text index '${definition.name}' does not store surface terms`, 400);
+		if (fields !== undefined) {
+			const sourceNames = new Set(definition.fields.map(({ name }) => name));
+			if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+				throw new ClientError(`Full-text index '${definition.name}' contains an unknown or duplicate field`, 400);
 		}
 	}
 
