@@ -229,6 +229,64 @@ describe('published full-text ordering and exact counts', () => {
 		assert(entries[0].$highlights.title.length > 0);
 	});
 
+	it('propagates cancellation from stored ordering instead of returning results', async () => {
+		await seed(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
+		const controller = new AbortController();
+		const reason = new Error('cancel stored ordering');
+		let ordered = 0;
+		let incomplete = 0;
+		await assert.rejects(
+			Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+				condition({ includeHighlights: true }),
+				{ signal: controller.signal },
+				{
+					minResults: 1,
+					exhaustive: true,
+					orderResults(entries) {
+						assert.strictEqual(entries.length, 3);
+						ordered++;
+						controller.abort(reason);
+					},
+					onIncompleteCount() {
+						incomplete++;
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert.strictEqual(ordered, 1);
+		assert.strictEqual(incomplete, 0);
+	});
+
+	it('propagates cancellation during optional counting after securing the highlighted page', async () => {
+		await seed(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
+		const controller = new AbortController();
+		const reason = new Error('cancel optional count tail');
+		let candidates = 0;
+		let incomplete = 0;
+		await assert.rejects(
+			Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+				condition({ includeHighlights: true }),
+				{ signal: controller.signal },
+				{
+					minResults: 1,
+					exhaustive: true,
+					countBudgetMilliseconds: 30000,
+					filter() {
+						if (++candidates === 2) controller.abort(reason);
+						return true;
+					},
+					onIncompleteCount() {
+						incomplete++;
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert(candidates >= 2);
+		assert.strictEqual(incomplete, 0);
+	});
+
 	it('fails complete sorting at the work ceiling but preserves bounded exact-count pages with unknown totals', async () => {
 		await seed(['a', 'b', 'c', 'd'].map((id, price) => ({ id, title: 'widget', price })));
 		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 2, maxResultsPerRequest: 2 });
