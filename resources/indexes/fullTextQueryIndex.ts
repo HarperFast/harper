@@ -260,6 +260,7 @@ export class FullTextQueryIndex {
 						await waitForBinding(this.#getBinding(), context?.signal);
 						context?.signal?.throwIfAborted();
 					}
+					if (this.#closed) throw new ServerError('Full-text index is closed', 503);
 					validateFullTextScoringRuntime(this.#queryApiVersion);
 				}
 				await context?.indexSearchStart;
@@ -306,6 +307,7 @@ export class FullTextQueryIndex {
 					context?.signal?.throwIfAborted();
 					validateFullTextScoringRuntime(this.#queryApiVersion);
 				}
+				if (this.#closed) throw new ServerError('Full-text index is closed', 503);
 				if (coverageError) {
 					this.#refreshReader(true);
 					throw coverageError;

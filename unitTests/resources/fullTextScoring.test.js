@@ -35,7 +35,10 @@ describe('full-text scoring contract', () => {
 			[{ ...leaf, value: '' }],
 			[{ ...leaf, fuzzyDistance: 1 }],
 		])
-			assert.throws(() => validateFullTextScoringOptions({ should }, 'any'));
+			assert.throws(
+				() => validateFullTextScoringOptions({ should }, 'any'),
+				(error) => error.statusCode === 400
+			);
 	});
 
 	it('explicitly rejects scoring on old runtimes', () => {

@@ -1399,6 +1399,48 @@ describe('FullTextQueryIndex', () => {
 		});
 
 	for (const waitForIndexMilliseconds of [0, 5000])
+		it(`rejects zero-result scoring after close during capability loading (wait ${waitForIndexMilliseconds})`, async () => {
+			const auditStore = sharedStore();
+			const readinessId = `cold-scoring-close-${waitForIndexMilliseconds}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const bindingReady = Promise.withResolvers();
+			let opens = 0;
+			let bindingStarted = false;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				onOpen: () => opens++,
+				onBinding: () => (bindingStarted = true),
+				bindingReady: bindingReady.promise,
+				queryApiVersion: 8,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const pending = index.search(
+				{
+					attribute: readinessId,
+					comparator: 'matches',
+					value: 'shoe',
+					fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+					waitForIndexMilliseconds,
+				},
+				{},
+				{ minResults: 0 }
+			);
+			try {
+				await waitFor(() => bindingStarted);
+				await index.close();
+				bindingReady.resolve();
+				await assert.rejects(pending, (error) => error.statusCode === 503 && /closed/.test(error.message));
+				assert.strictEqual(opens, 0);
+			} finally {
+				bindingReady.resolve();
+				await index.close();
+			}
+		});
+
+	for (const waitForIndexMilliseconds of [0, 5000])
 		it(`does not open a reader after cancellation during cold scoring capability loading (wait ${waitForIndexMilliseconds})`, async () => {
 			const auditStore = sharedStore();
 			const readinessId = `cold-scoring-abort-${waitForIndexMilliseconds}`;
