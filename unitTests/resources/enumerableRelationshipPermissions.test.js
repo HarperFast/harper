@@ -8,7 +8,7 @@ const { toCsvStream } = require('#src/server/serverHelpers/contentTypes');
 const { verifyPerms } = require('#src/utility/operation_authorization');
 
 const READ = { read: true, insert: false, update: false, delete: false, attribute_permissions: [] };
-const roleWith = (tables) => ({ role: { permission: { test: { tables } } } });
+const roleWith = (tables) => ({ role: { permission: { enumPerms: { tables } } } });
 const readOnly = (...names) => ({
 	...READ,
 	attribute_permissions: names.map((attribute_name) => ({ attribute_name, read: true, insert: false, update: false })),
@@ -21,12 +21,12 @@ describe('Default reads authorize @enumerable relationships against the related 
 		setMainIsWorker(true);
 		EnumOrg = table({
 			table: 'EnumOrg',
-			database: 'test',
+			database: 'enumPerms',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
 		EnumDept = table({
 			table: 'EnumDept',
-			database: 'test',
+			database: 'enumPerms',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
@@ -37,7 +37,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 		});
 		EnumEmp = table({
 			table: 'EnumEmp',
-			database: 'test',
+			database: 'enumPerms',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
@@ -47,14 +47,14 @@ describe('Default reads authorize @enumerable relationships against the related 
 		});
 		EnumPublisher = table({
 			table: 'EnumPublisher',
-			database: 'test',
+			database: 'enumPerms',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
 		const authorDefinition = {};
 		const bookDefinition = {};
 		EnumBook = table({
 			table: 'EnumBook',
-			database: 'test',
+			database: 'enumPerms',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'title' },
@@ -72,7 +72,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 		bookDefinition.tableClass = EnumBook;
 		EnumAuthor = table({
 			table: 'EnumAuthor',
-			database: 'test',
+			database: 'enumPerms',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
@@ -209,7 +209,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 			lookups: 0,
 			role: {
 				permission: {
-					get test() {
+					get enumPerms() {
 						if (++user.lookups === failAt) throw new Error('permission lookup failed');
 						return { tables };
 					},
@@ -233,7 +233,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 					enumerable: true,
 				});
 			}
-			shared = table({ table: 'EnumShared' + i, database: 'test', attributes });
+			shared = table({ table: 'EnumShared' + i, database: 'enumPerms', attributes });
 		}
 		const tables = {};
 		for (let i = 0; i <= length; i++) tables['EnumShared' + i] = READ;
@@ -242,7 +242,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 		for (let b = 0; b < siblings; b++) {
 			const sibling = table({
 				table: 'EnumSibling' + b,
-				database: 'test',
+				database: 'enumPerms',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
 					{ name: 'sharedId' },
@@ -265,7 +265,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 			definition: { tableClass: EnumDept },
 			enumerable: true,
 		});
-		const Root = table({ table: 'EnumSharedRoot', database: 'test', attributes: rootAttributes });
+		const Root = table({ table: 'EnumSharedRoot', database: 'enumPerms', attributes: rootAttributes });
 		tables.EnumSharedRoot = READ;
 		const user = countingUser(tables);
 		assert.deepStrictEqual(await searchAs(Root, user), []);
@@ -303,7 +303,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 			const name = 'EnumCycle' + i;
 			next = table({
 				table: name,
-				database: 'test',
+				database: 'enumPerms',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
 					{ name: 'nextId' },
@@ -324,7 +324,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 		for (let b = 0; b < siblings; b++) {
 			const sibling = table({
 				table: 'EnumCycleSibling' + b,
-				database: 'test',
+				database: 'enumPerms',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
 					{ name: 'cycleId' },
@@ -340,7 +340,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 			});
 			selection.push('c' + b);
 		}
-		const Root = table({ table: 'EnumCycleRoot', database: 'test', attributes: rootAttributes });
+		const Root = table({ table: 'EnumCycleRoot', database: 'enumPerms', attributes: rootAttributes });
 		tables.EnumCycleRoot = READ;
 		const user = countingUser(tables);
 		assert.deepStrictEqual(await searchAs(Root, user, selection), []);
@@ -363,7 +363,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 					enumerable: true,
 				});
 			}
-			tables[name] = definitions[name].tableClass = table({ table: prefix + name, database: 'test', attributes });
+			tables[name] = definitions[name].tableClass = table({ table: prefix + name, database: 'enumPerms', attributes });
 		}
 		return tables;
 	}
@@ -385,7 +385,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 				selection.push(name);
 			}
 		}
-		const Root = table({ table: 'EnumAltRoot', database: 'test', attributes: rootAttributes });
+		const Root = table({ table: 'EnumAltRoot', database: 'enumPerms', attributes: rootAttributes });
 		const tables = { EnumAltRoot: READ };
 		for (const name in graph) tables['EnumAlt' + name] = READ;
 		const user = countingUser(tables);
@@ -486,19 +486,19 @@ describe('Default reads authorize @enumerable relationships against the related 
 		const priorSchema = global.hdb_schema;
 		const schemaOf = (name, attributes) => ({
 			name,
-			schema: 'test',
+			schema: 'enumPerms',
 			hash_attribute: 'id',
 			attributes: attributes.map((attribute) => ({ attribute })),
 		});
 		global.hdb_schema = {
-			test: {
+			enumPerms: {
 				EnumEmp: schemaOf('EnumEmp', ['id', 'name', 'deptId', 'dept']),
 				EnumDept: schemaOf('EnumDept', ['id', 'name', 'budget', 'orgId', 'org', '__proto__']),
 			},
 		};
 		const request = {
 			operation: 'search_by_conditions',
-			schema: 'test',
+			schema: 'enumPerms',
 			table: 'EnumEmp',
 			get_attributes: ['id'],
 			conditions: [{ search_attribute: ['dept', '__proto__'], search_type: 'equals', search_value: 1 }],
@@ -510,7 +510,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 					__updatedtime__: Date.now(),
 					permission: {
 						super_user: false,
-						test: {
+						enumPerms: {
 							tables: {
 								EnumEmp: READ,
 								EnumDept: {
@@ -544,7 +544,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 		assert.deepStrictEqual(response.invalid_schema_items, []);
 		assert.deepStrictEqual(JSON.parse(JSON.stringify(response.unauthorized_access)), [
 			{
-				schema: 'test',
+				schema: 'enumPerms',
 				table: 'EnumDept',
 				required_table_permissions: [],
 				required_attribute_permissions: [{ attribute_name: '__proto__', required_permissions: ['read'] }],
@@ -555,7 +555,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 	it("keeps a source record's own __proto__ field when narrowing a default read", async () => {
 		const EnumCachedEmp = table({
 			table: 'EnumCachedEmp',
-			database: 'test',
+			database: 'enumPerms',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
@@ -648,7 +648,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 					enumerable: true,
 				});
 			}
-			next = table({ table: 'EnumChain' + i, database: 'test', attributes });
+			next = table({ table: 'EnumChain' + i, database: 'enumPerms', attributes });
 			chain.unshift(next);
 		}
 		const tables = {};
@@ -657,7 +657,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 		const user = {
 			role: {
 				permission: {
-					get test() {
+					get enumPerms() {
 						lookups++;
 						return { tables };
 					},

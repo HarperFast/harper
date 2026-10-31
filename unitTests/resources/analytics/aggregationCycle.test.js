@@ -583,4 +583,71 @@ describe('analytics aggregation cycle', () => {
 		assert.ok(!flushedPaths.includes('ReenableStale'), 'no flush reported the pre-disable action');
 		assert.ok(report.period <= performance.now() - enabledAt, `period ${report.period} covers only the new window`);
 	});
+
+	function rawReportPaths(prefix) {
+		const reports = [];
+		for (const { value } of databases.system.hdb_raw_analytics.primaryStore.getRange({ start: false, end: Infinity })) {
+			const paths = value?.metrics?.filter((entry) => entry.path?.startsWith(prefix)).map((entry) => entry.path);
+			if (paths?.length) reports.push(paths);
+		}
+		return reports;
+	}
+
+	it('does not deliver a flush that was in progress when analytics was re-enabled', async function () {
+		this.timeout(30000);
+		const flushes = [];
+		analytics.addAnalyticsListener((metrics) => {
+			const paths = metrics.filter((entry) => entry.path?.startsWith('InFlight')).map((entry) => entry.path);
+			if (paths.length) flushes.push(paths);
+		});
+		let probeRan = false;
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'InFlightStale');
+		// a function-valued action is called by the flush itself, before its next yield
+		analytics.recordAction(
+			() => {
+				probeRan = true;
+				analytics.setAnalyticsEnabled(true);
+				analytics.recordAction(1, 'db-write', 'InFlightFresh');
+				return {};
+			},
+			'flush-probe',
+			'InFlightProbe'
+		);
+		await waitFor(() => rawReportPaths('InFlight').length > 0, {
+			timeout: 10000,
+			message: 'the window after re-enable was recorded',
+		});
+		assert.ok(probeRan);
+		assert.deepStrictEqual(flushes, [['InFlightFresh']]);
+		assert.deepStrictEqual(rawReportPaths('InFlight'), [['InFlightFresh']]);
+	});
+
+	it('stops delivering a flush to later listeners once a listener re-enables analytics', async function () {
+		this.timeout(30000);
+		let reenabled = false;
+		analytics.addAnalyticsListener((metrics) => {
+			if (!reenabled && metrics.some((entry) => entry.path === 'ListenerStale')) {
+				reenabled = true;
+				analytics.setAnalyticsEnabled(true);
+				analytics.recordAction(1, 'db-write', 'ListenerFresh');
+			}
+		});
+		const laterListenerSaw = [];
+		analytics.addAnalyticsListener((metrics) => {
+			const paths = metrics.filter((entry) => entry.path?.startsWith('Listener')).map((entry) => entry.path);
+			if (paths.length) laterListenerSaw.push(paths);
+		});
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'ListenerStale');
+		await waitFor(() => rawReportPaths('Listener').length > 0, {
+			timeout: 10000,
+			message: 'the window after re-enable was recorded',
+		});
+		assert.ok(reenabled);
+		assert.deepStrictEqual(laterListenerSaw, [['ListenerFresh']]);
+		assert.deepStrictEqual(rawReportPaths('Listener'), [['ListenerFresh']]);
+	});
 });

@@ -47,6 +47,8 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+// Advanced by every setAnalyticsEnabled(), so a flush that was already running when it was called never delivers its window
+let analyticsGeneration = 0;
 
 onStartup(() => {
 	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
@@ -74,6 +76,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsStart = 0;
 	lastFlushAt = 0;
 	activeActions = new Map();
+	analyticsGeneration++;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -204,6 +207,7 @@ function sendAnalytics() {
 
 async function flushAnalytics() {
 	sendAnalyticsTimeout = null;
+	const generation = analyticsGeneration;
 	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
 	// an entry already reported, and dropped with it.
 	const reportingActions = activeActions;
@@ -264,6 +268,7 @@ async function flushAnalytics() {
 			);
 		}
 		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
+		if (generation !== analyticsGeneration) return;
 	}
 	const memoryUsage = process.memoryUsage();
 	metrics.push({
@@ -300,8 +305,10 @@ async function flushAnalytics() {
 		maxDepth: queueDepths.readMaxDepth,
 	});
 	for (const listener of analyticsListeners) {
+		if (generation !== analyticsGeneration) return;
 		listener(metrics);
 	}
+	if (generation !== analyticsGeneration) return;
 	if (parentPort)
 		parentPort.postMessage({
 			type: ANALYTICS_REPORT_TYPE,
