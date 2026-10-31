@@ -488,6 +488,81 @@ describe('published full-text ordering and exact counts', () => {
 		assert.strictEqual(counted.recordCount, null);
 		assert.strictEqual(counted.recordCountExact, false);
 	});
+	it('proves exhaustion at the retained ceiling without retaining filtered tail rows', async () => {
+		await seed(Array.from({ length: 600 }, (_, price) => ({ id: `record-${price}`, title: 'widget', price })));
+		const baseline = await collect(Product.search(query({ limit: 600 })));
+		const allowed = new Set(ids(baseline.slice(0, 2)));
+		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 2000, maxResultsPerRequest: 2 });
+		const examined = new Set();
+		const target = query({
+			limit: 1,
+			rowFilter(record) {
+				examined.add(record.id);
+				return allowed.has(record.id);
+			},
+		});
+		assert.deepStrictEqual(ids(await collect(Product.search(target))), [baseline[0].id]);
+		assert.deepStrictEqual([...examined], [baseline[0].id]);
+		const sorted = await collect(Product.search({ ...target, sort: { attribute: 'price', descending: true } }));
+		assert.deepStrictEqual(ids(sorted), [baseline.slice(0, 2).sort((a, b) => b.price - a.price)[0].id]);
+		for (const limit of [0, 1]) {
+			const counted = await Product.search({ ...target, limit, count: 'exact' });
+			assert.strictEqual(counted.length, limit);
+			assert.strictEqual(counted.recordCount, 2);
+			assert.strictEqual(counted.recordCountExact, true);
+		}
+
+		allowed.add(baseline[500].id);
+		await assert.rejects(
+			async () => collect(Product.search({ ...target, sort: { attribute: 'price' } })),
+			(error) => isFullTextSearchLimitError(error) && /maxResultsPerRequest/.test(error.message)
+		);
+		const overflow = await Product.search({ ...target, count: 'exact' });
+		assert.deepStrictEqual(ids(overflow), [baseline[0].id]);
+		assert.strictEqual(overflow.recordCount, null);
+		assert.strictEqual(overflow.recordCountExact, false);
+
+		allowed.delete(baseline[500].id);
+		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 600, maxResultsPerRequest: 2 });
+		await assert.rejects(
+			async () => collect(Product.search({ ...target, sort: { attribute: 'price' } })),
+			(error) => isFullTextSearchLimitError(error) && /maxRawHitsPerRequest/.test(error.message)
+		);
+		const bounded = await Product.search({ ...target, count: 'exact' });
+		assert.deepStrictEqual(ids(bounded), [baseline[0].id]);
+		assert.strictEqual(bounded.recordCount, null);
+		assert.strictEqual(bounded.recordCountExact, false);
+	});
+
+	it('observes cancellation after securing page highlights before examining the count tail', async () => {
+		await seed(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
+		const controller = new AbortController();
+		const reason = new Error('cancel while securing page highlights');
+		let candidates = 0;
+		let incomplete = 0;
+		await assert.rejects(
+			Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+				condition({ includeHighlights: true }),
+				{ signal: controller.signal },
+				{
+					minResults: 1,
+					exhaustive: true,
+					countBudgetMilliseconds: 30000,
+					filter() {
+						if (++candidates === 1) queueMicrotask(() => controller.abort(reason));
+						return true;
+					},
+					onIncompleteCount() {
+						incomplete++;
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert.strictEqual(candidates, 1);
+		assert.strictEqual(incomplete, 0);
+	});
+
 	it('discards count-only tail entries after an advisory count becomes incomplete', async () => {
 		await seed(['a', 'b', 'c', 'd'].map((id) => ({ id, title: 'widget' })));
 		await collect(Product.search(query({ limit: 1 })));

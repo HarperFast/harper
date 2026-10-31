@@ -529,7 +529,7 @@ export class FullTextQueryIndex {
 			let candidateGatePlanned = false;
 			let candidateProbeFailureEpoch = 0;
 			try {
-				while (accepted.length < target) {
+				while (options.exhaustive || accepted.length < target) {
 					if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 					const desiredLimit = traversal
 						? Math.min(maxRawPageSize, rawPageSize + traversal.skip)
@@ -617,7 +617,6 @@ export class FullTextQueryIndex {
 						: result.totalRelation === 'exact'
 							? result.hits.length < result.total
 							: result.hits.length === limit;
-					if (optionalCount && target === 0) break;
 					if (result.hits.length === 0) {
 						if (traversal && moreMayExist) continue;
 						break;
@@ -705,17 +704,28 @@ export class FullTextQueryIndex {
 						const entry = this.#currentSearchEntry(key, hit.version, transaction);
 						if (!entry) continue;
 						if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
+						if (options.exhaustive && accepted.length >= target)
+							throw unboundedSearchLimitError(
+								target,
+								searchWindow,
+								rawHitLimit,
+								Boolean(options.orderResults),
+								policy.maxResultsPerRequest
+							);
 						accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
-						if (optionalCount && !pageReady && accepted.length >= pageTarget) await preservePage();
-						if (accepted.length >= target) {
+						if (optionalCount && !pageReady && accepted.length >= pageTarget) {
+							await preservePage();
+							if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+						}
+						if (!options.exhaustive && accepted.length >= target) {
 							if ((!bounded || optionalCount) && hitIndex + 1 < result.hits.length) moreMayExist = true;
 							break;
 						}
 					}
-					if (!traversal && moreMayExist && accepted.length < target) {
+					if (!traversal && moreMayExist && (options.exhaustive || accepted.length < target)) {
 						const requiredResults = optionalCount && !pageReady ? pageTarget : target;
 						const minimumNewHits = Math.min(
-							requiredResults - accepted.length,
+							Math.max(1, requiredResults - accepted.length),
 							Math.max(0, result.total - result.hits.length)
 						);
 						if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
@@ -726,7 +736,7 @@ export class FullTextQueryIndex {
 						traversal = { skip: result.hits.length, prefix: result.hits };
 					}
 					if (!moreMayExist) break;
-					if (accepted.length < target) {
+					if (options.exhaustive || accepted.length < target) {
 						if (bounded) {
 							const acceptedThisPage = accepted.length - acceptedBeforePage;
 							rawPageSize = nextFilteredRawPageSize(

@@ -396,12 +396,13 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 		});
 		assert.strictEqual(counted.status, 200);
 		assert.strictEqual(counted.headers.get('preference-applied'), 'count=exact');
-		assert.match(counted.headers.get('content-range') ?? '', /\/\*$/);
+		const countedRows = await counted.json();
+		assert.strictEqual(counted.headers.get('content-range'), `items 0-${countedRows.length - 1}/${countedRows.length}`);
+		assert.strictEqual(countedRows.length, 3);
 		assert.match(
 			counted.headers.get('harper-index-coverage') ?? '',
 			/^(current; lag=0|bounded; lag=\d+(?:\.\d+)?); tolerance=3000$/
 		);
-		await counted.arrayBuffer();
 		await request('/Product/?catalogSearch=matches=waterproof&select(id,name)', {}, 403, READER_AUTH);
 	});
 
