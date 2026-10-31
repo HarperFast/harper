@@ -47,7 +47,7 @@ describe('published full-text ordering and exact counts', () => {
 		}
 	});
 
-	async function seed(records) {
+	async function seed(records, extraAttributes = []) {
 		Product = table({
 			database: `fulltext-ordering-${Date.now()}-${serial++}`,
 			table: 'Product',
@@ -59,6 +59,7 @@ describe('published full-text ordering and exact counts', () => {
 				{ name: 'price', type: 'Float' },
 				{ name: 'active', type: 'Boolean' },
 				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+				...extraAttributes,
 			],
 			fullTextIndexes: [
 				{
@@ -73,7 +74,7 @@ describe('published full-text ordering and exact counts', () => {
 				},
 			],
 		});
-		await Product.put(records);
+		for (let start = 0; start < records.length; start += 250) await Product.put(records.slice(start, start + 250));
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
 	}
 	const condition = (extra = {}) => ({
@@ -216,7 +217,6 @@ describe('published full-text ordering and exact counts', () => {
 			undefined,
 			{
 				minResults: 1,
-				resultEnd: 1,
 				exhaustive: true,
 				countBudgetMilliseconds: 0,
 				onIncompleteCount: () => {
@@ -275,5 +275,101 @@ describe('published full-text ordering and exact counts', () => {
 				(error) => error.statusCode === 503
 			);
 		}
+	});
+	it('preserves a counted page beyond the native offset window with an unknown total', async () => {
+		const info = await (await loadFullTextNativeBinding()).runtimeInfo();
+		const count = info.limits.maxSearchWindow + 5;
+		await seed(
+			Array.from({ length: count }, (_, index) => ({
+				id: `record-${String(index).padStart(6, '0')}`,
+				title: 'widget',
+			}))
+		);
+		setFullTextTestConfiguration({
+			...previousConfiguration,
+			maxRawHitsPerRequest: count * 4,
+			maxResultsPerRequest: count * 2,
+			requestBudgetMilliseconds: 30000,
+		});
+		const target = query({ offset: info.limits.maxSearchWindow, limit: 2 });
+		const baseline = await collect(Product.search(target));
+		assert.strictEqual(baseline.length, 2);
+		const page = await Product.search({ ...target, count: 'exact' });
+		assert.deepStrictEqual(ids(page), ids(baseline));
+		assert.strictEqual(page.recordCount, null);
+		assert.strictEqual(page.recordCountExact, false);
+	});
+
+	it('traces only the visible page while retaining all real index entries for counting and ordering', async () => {
+		await seed(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
+		await collect(Product.search(query({ limit: 1 })));
+		const index = Product.fullTextQueryIndexes.catalogSearch.customIndex;
+		for (const ordered of [false, true]) {
+			let incomplete = false;
+			const entries = await index.search(condition({ includeHighlights: true }), undefined, {
+				minResults: 2,
+				resultOffset: 1,
+				exhaustive: true,
+				...(ordered
+					? { orderResults: (entries) => entries.reverse() }
+					: {
+							countBudgetMilliseconds: 30000,
+							onIncompleteCount: () => {
+								incomplete = true;
+							},
+						}),
+			});
+			assert.strictEqual(entries.length, 3);
+			assert.strictEqual(incomplete, false);
+			assert.strictEqual(entries[0].$highlights, undefined);
+			assert(entries[1].$highlights.title.length > 0);
+			assert.strictEqual(entries[2].$highlights, undefined);
+		}
+		const emptyPage = await index.search(condition({ includeHighlights: true }), undefined, {
+			minResults: 0,
+			exhaustive: true,
+			countBudgetMilliseconds: 30000,
+			onIncompleteCount() {},
+		});
+		assert.strictEqual(emptyPage.length, 3);
+		assert(emptyPage.every((entry) => entry.$highlights === undefined));
+	});
+	it('rejects vector-distance ordering even when the text query has no matches', async () => {
+		await seed([{ id: 'a', title: 'widget' }], [{ name: 'vector', type: 'Array', indexed: { type: 'HNSW' } }]);
+		assert.strictEqual(typeof Product.indices.vector.customIndex.exactDistance, 'function');
+		for (const value of ['widget', 'absent'])
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search({
+							conditions: [condition({ value })],
+							limit: 1,
+							sort: { attribute: 'vector', target: [1, 0], distance: 'cosine' },
+						})
+					),
+				(error) => error.statusCode === 400 && /vector.distance|directly stored/.test(error.message)
+			);
+	});
+
+	it('keeps vector-filter count requests on the bounded row-policy path', async () => {
+		await seed(Array.from({ length: 40 }, (_, index) => ({ id: `record-${index}`, title: 'widget' })));
+		let policyCalls = 0;
+		const target = query({
+			limit: 1,
+			vectorFilter: () => true,
+			rowFilter: () => {
+				policyCalls++;
+				return true;
+			},
+		});
+		const baseline = await collect(Product.search(target));
+		const boundedCalls = policyCalls;
+		assert(boundedCalls > 0);
+		policyCalls = 0;
+		const counted = await Product.search({ ...target, count: 'exact' });
+		assert.deepStrictEqual(ids(counted), ids(baseline));
+		assert.strictEqual(policyCalls, boundedCalls);
+		assert.strictEqual(counted.recordCount, null);
+		assert.strictEqual(counted.recordCountExact, false);
 	});
 });

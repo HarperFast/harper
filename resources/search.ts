@@ -174,10 +174,7 @@ export function executeConditions(
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
 			fullTextSearchOptions: fullTextComparatorMode(condition.comparator)
-				? {
-						...request[FULL_TEXT_SEARCH_OPTIONS],
-						resultEnd: request.limit === undefined ? undefined : (request.offset || 0) + request.limit,
-					}
+				? request[FULL_TEXT_SEARCH_OPTIONS]
 				: undefined,
 		});
 	}

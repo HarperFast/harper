@@ -466,7 +466,8 @@ export class FullTextQueryIndex {
 				bounded && !optionalCount
 					? Math.max(1, options.minResults!)
 					: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
-			const requiredTarget = optionalCount ? Math.max(target, pageTarget) : target;
+			if (optionalCount) target = Math.max(target, pageTarget);
+			const requiredTarget = target;
 			if (!Number.isSafeInteger(requiredTarget) || requiredTarget < 0 || requiredTarget > rawHitLimit)
 				throw fullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxRawHitsPerRequest; reduce offset or limit, or increase the work budget',
@@ -501,7 +502,7 @@ export class FullTextQueryIndex {
 						reader,
 						lease.definition,
 						condition,
-						accepted.slice(options.resultOffset ?? 0, options.resultEnd),
+						accepted.slice(options.resultOffset ?? 0, options.minResults),
 						deadline
 					);
 				highlightsDone = true;
@@ -755,7 +756,7 @@ export class FullTextQueryIndex {
 					reader,
 					lease.definition,
 					condition,
-					accepted.slice(options.resultOffset ?? 0, options.resultEnd),
+					accepted.slice(options.resultOffset ?? 0, options.minResults),
 					deadline
 				);
 			if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
@@ -1504,7 +1505,7 @@ function unboundedSearchLimitError(
 			: `the ${searchWindow}-result search window`;
 	return fullTextSearchLimitError(
 		ordered
-			? `Stored-field full-text ordering requires all text matches before filtering within ${bound}; narrow the text query or increase the relevant budget`
+			? `Stored-field full-text ordering requires all text matches before filtering within ${bound}; narrow the text query${target < searchWindow ? ' or increase the relevant budget' : ''}`
 			: `Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
 		400
 	);

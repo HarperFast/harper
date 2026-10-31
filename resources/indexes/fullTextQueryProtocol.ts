@@ -17,7 +17,6 @@ export type FullTextSearchOptions = {
 	onIncompleteCount?: () => void;
 	countBudgetMilliseconds?: number;
 	orderResults?: (entries: FullTextSearchEntry[]) => void;
-	resultEnd?: number;
 };
 
 const fullTextSearchLimits = new WeakSet<ClientError>();

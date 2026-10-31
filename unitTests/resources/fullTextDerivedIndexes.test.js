@@ -1796,7 +1796,7 @@ describe('@fullText derived-index activation', () => {
 					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
 					sort: { attribute: '$score' },
 				}),
-			/Full-text results can only use descending \$score order/
+			/Full-text \$score sorts must be descending/
 		);
 		assert.throws(
 			() =>
@@ -1804,7 +1804,15 @@ describe('@fullText derived-index activation', () => {
 					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
 					reverse: true,
 				}),
-			/Full-text results can only use descending \$score order/
+			/Full-text reverse is not supported/
+		);
+		assert.throws(
+			() =>
+				Product.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+					sort: { attribute: '$score', next: { attribute: 'title' } },
+				}),
+			/Full-text \$score sorts must be descending/
 		);
 		assert.doesNotThrow(() =>
 			Product.search({

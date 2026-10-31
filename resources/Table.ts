@@ -7564,12 +7564,17 @@ export function makeTable(options): TableResourceClass {
 				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
 			) {
 				if ((target as any).reverse)
-					throw new ClientError('Full-text results can only use descending $score order', 400);
+					throw new ClientError('Full-text reverse is not supported; use an explicit stored-field sort', 400);
 				if (sort && (sort.attribute !== '$score' || sort.next))
 					fullTextOrder = fullTextResultOrder(sort, context, target);
 				else if (sort && sort.descending !== true)
-					throw new ClientError('Full-text results can only use descending $score order', 400);
-				exhaustiveFullText = Boolean(fullTextOrder) || (target.count === 'exact' && canCountPage(target));
+					throw new ClientError('Full-text $score sorts must be descending', 400);
+				exhaustiveFullText =
+					Boolean(fullTextOrder) ||
+					(target.count === 'exact' &&
+						canCountPage(target) &&
+						typeof target.vectorFilter !== 'function' &&
+						!touchesCustomIndex(conditions, true));
 				sort = undefined;
 			}
 			for (let order = sort; order; order = order.next) {
@@ -7779,17 +7784,8 @@ export function makeTable(options): TableResourceClass {
 					const pageEnd = offset + pageLimit;
 					let countStart = exhaustiveFullText ? undefined : performance.now();
 					// A custom-index traversal sized by minResults counts the page, not all matches; exhaustive full-text is exact.
-					const touchesCustomIndex = (conds: any[]): boolean =>
-						conds.some((c: any) => {
-							if (!c) return false;
-							if (c.conditions) return touchesCustomIndex(c.conditions);
-							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
-							if (typeof attr !== 'string') return false;
-							return fullTextComparatorMode(c.comparator)
-								? !exhaustiveFullText && Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
-								: Boolean(indices[attr]?.customIndex);
-						});
-					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
+					const approximateResultSet =
+						typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions, exhaustiveFullText);
 					return (async () => {
 						const page: any = [];
 						let scanned = 0;
@@ -12089,11 +12085,29 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 
+	function touchesCustomIndex(conditions: any[], exhaustiveFullText: boolean): boolean {
+		return conditions.some((condition) => {
+			if (!condition) return false;
+			if (condition.conditions) return touchesCustomIndex(condition.conditions, exhaustiveFullText);
+			const attribute = Array.isArray(condition.attribute)
+				? condition.attribute[0]
+				: (condition.attribute ?? condition[0]);
+			if (typeof attribute !== 'string') return false;
+			return fullTextComparatorMode(condition.comparator)
+				? !exhaustiveFullText && Boolean(TableResource.fullTextQueryIndexes?.[attribute]?.customIndex)
+				: Boolean(indices[attribute]?.customIndex);
+		});
+	}
+
 	function fullTextResultOrder(sort: Sort, context: Context, target: RequestTarget) {
 		const clauses: Sort[] = [];
 		for (let order = sort; order; order = order.next) {
 			if (clauses.length >= 32) throw new ClientError('Full-text sort supports at most 32 fields', 400);
 			const attribute = attributes.find(({ name }) => name === order.attribute);
+			if (order.attribute === '$score' && order.descending !== true)
+				throw new ClientError('Full-text $score sorts must be descending', 400);
+			if (attribute && (attribute.indexed?.type === 'HNSW' || indices[attribute.name]?.customIndex?.exactDistance))
+				throw new ClientError('Full-text sort does not support vector distance fields', 400);
 			if (
 				order.attribute !== '$score' &&
 				(!attribute ||
@@ -12108,25 +12122,24 @@ export function makeTable(options): TableResourceClass {
 			clauses.push({ attribute: order.attribute, descending: order.descending });
 		}
 		return (entries: FullTextSearchEntry[]) => {
-			const keys = new Map(
-				entries.map((entry) => [
-					entry,
-					clauses.map((clause) =>
-						clause.attribute === '$score'
-							? entry.$score
-							: convertToComparableKeys(getAttributeValue(entry.recordEntry, clause.attribute, context, clause))
-					),
-				])
-			);
-			entries.sort((left, right) => {
+			const ordered = entries.map((entry) => ({
+				entry,
+				keys: clauses.map((clause) =>
+					clause.attribute === '$score'
+						? entry.$score
+						: convertToComparableKeys(getAttributeValue(entry.recordEntry, clause.attribute, context, clause))
+				),
+			}));
+			ordered.sort((left, right) => {
 				for (let index = 0; index < clauses.length; index++) {
 					const compared = clauses[index].descending
-						? compareKeys(keys.get(right)[index], keys.get(left)[index])
-						: compareKeys(keys.get(left)[index], keys.get(right)[index]);
+						? compareKeys(right.keys[index], left.keys[index])
+						: compareKeys(left.keys[index], right.keys[index]);
 					if (compared !== 0) return compared;
 				}
 				return 0;
 			});
+			for (let index = 0; index < ordered.length; index++) entries[index] = ordered[index].entry;
 		};
 	}
 
