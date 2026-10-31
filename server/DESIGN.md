@@ -889,15 +889,8 @@ and last-worker duties never land on one. The invariants:
   `replication.threads` was explicitly set, a missing or shared replication port throws in
   `admittedWorkerPools`, whereas a defaulted pool logs a warning and falls back to `0` (`[]`). With
   `threads.count: 0` there is no pool, and an explicit `replication.threads > 0` is logged and ignored.
-- **A defaulted pool waits on the first HTTP worker's load (harper-pro#1197).** A defaulted size above 0 starts _pending_ (`setActiveWorkerPools(types, pending)`): main counts it active, so placement defers to it; HTTP workers get it in `workerData.pendingWorkerPools` and treat it as not yet active, so registration-time choices (a UDS mirror) are made as if they bind the port. Every HTTP worker's admission (`admitWorker` in `manageThreads.ts`, for `admitOnReport` and certified `holdStart`) waits on the decision and carries `workerPools`, which `heldStart.awaitAdmission` applies before `listenOnPorts`. The first shared (non-isolated) HTTP worker's load report decides (`decideWorkerPools`), since shared workers load the same applications: a non-empty `poolUnsupportedTables` declines the pool with one warning, and `startHTTPThreads` starts pool slots only after the decision. Not covered, by owner ruling: a table first registered by a deferred component load or a later deploy is warned, not re-decided. An explicit size never pends.
-- **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted
-  built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
-  Anything an application installs per thread (for example `Table.setResidency`,
-  `Table.setResidencyById`, or a `setComputedAttribute` resolver) is absent there. The first two, and
-  a resolver for an indexed computed attribute, are deprecated as of 5.4: registering one warns once
-  per table per thread, pool or not, and records the table for the decision above; `Table.unresolvedComputedIndexes()`
-  names the indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly,
-  and a pool worker that resolves one anyway throws instead of indexing `undefined`.
+- **A defaulted pool waits on the first HTTP worker's load (harper-pro#1197).** A defaulted size above 0 starts _pending_ (`setActiveWorkerPools(types, pending)`): main counts it active, so placement defers to it; HTTP workers get it in `workerData.pendingWorkerPools` and treat it as not yet active, so registration-time choices (a UDS mirror) are made as if they bind the port. Every HTTP worker's admission (`admitWorker` in `manageThreads.ts`, for `admitOnReport` and certified `holdStart`) waits on the decision and carries `workerPools`, which `heldStart.awaitAdmission` applies before `listenOnPorts`. The load report of the first admitted shared (non-isolated) HTTP worker decides (`decideWorkerPools`, called from `admitWorker`), since shared workers load the same applications: a non-empty `poolUnsupportedTables` declines the pool with one warning, and `startHTTPThreads` starts pool slots only after the decision. Not covered, by owner ruling: a table first registered by a deferred component load or a later deploy is warned, not re-decided. An explicit size never pends.
+- **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage. Anything an application installs per thread (`Table.setResidency`, `Table.setResidencyById`, a `setComputedAttribute` resolver) is absent there. The first two, and a resolver for an indexed computed attribute, are deprecated as of 5.4: registering one warns once per table per thread, pool or not, and records the table for the decision above. `Table.unresolvedComputedIndexes()` names the indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly, and a pool worker that resolves one anyway throws instead of indexing `undefined`.
 - **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
   `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
   that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.
@@ -905,9 +898,7 @@ and last-worker duties never land on one. The invariants:
   because its restarted predecessor keeps the port through its shutdown drain. A pool worker then fails
   startup on `EADDRINUSE` rather than reporting ready with no listener; a drain longer than that minute
   costs auto-restarts of the replacement until the port frees.
-- **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup (once a pending pool
-  is decided) and passed to every worker in `workerData.workerPools`, so an owned port is never handed back to HTTP workers while the
-  pool restarts. Changing the pool size needs a full restart.
+- **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup (once a pending pool is decided) and passed to every worker in `workerData.workerPools`, so an owned port is never handed back to HTTP workers while the pool restarts. Changing the pool size needs a full restart.
 - **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` (an
   operator restart) restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts
   overlap like HTTP ones.
