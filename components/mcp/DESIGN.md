@@ -71,12 +71,39 @@ A handful of design points are non-obvious and easy to break:
   and receives nothing. `harper://*` pseudo-resources are **list-changed-only** (not row-backed). Subscriptions
   use `omitCurrent` (notify on change, not a retained snapshot — the notification just says "re-read this").
 
+- **Custom resources subscribe through the read resolver (#3250).** `subscribeToResource` calls
+  `matchCustomResource(profile, uri)` first, exactly as `readResource` does, so read and subscribe always resolve
+  the same entry; an entry without `subscribe` stays `-32602`. The author's method runs in the read path's
+  user-carrying transaction and the returned iterable is consumed after it ends, which is why generator methods
+  are refused at registration (their body would run outside it). A stream with no `end()` is refused at
+  subscribe when its iterator has no `return()`, or is an async generator (whose `return()` cannot interrupt a
+  pending await): unsubscribe could not release its source. Custom values are opaque — only audit-log events get `acknowledge()`. Release is one idempotent `stop()` for both sources: `end()` if the stream has
+  one, else the iterator's `return()`, also run when iteration ends or throws, and for a stream acquired by a
+  transaction that then failed to commit (`acquireChangeStream`). A custom stream is also registered with
+  `registerLiveSubscription` for identity lifetime only (token expiry, removed user or role), which
+  `Resource.subscribe` already gives row-backed ones; an expired or stale principal is verified before admission.
+
 - **Subscribe requires a live GET stream; teardown is asymmetric.** `resources/subscribe` rejects (`-32602`)
   if no GET SSE stream has registered the session — the audit-log iterator has nowhere to deliver, and there'd
   be no `RegisteredSession` close hook to stop it. The GET `'close'` handler drops **subscriptions only**
   (`dropSessionSubscriptions`), _not_ pending server requests: those ride the per-call POST stream, so a normal
   GET reconnect must not reject an in-flight `ctx.serverRequest`. A `DELETE` (explicit session teardown) drops
-  **both**, because it may arrive with no open GET stream.
+  **both**, because it may arrive with no open GET stream. The stream check is repeated at **admission**, after
+  the subscribe await: `addResourceSubscription` binds each setup to the `RegisteredSession` record current when
+  it started plus a per-`(session, uri)` pending token, and installs only if that record is still registered and
+  no unsubscribe, re-subscribe or drop overtook the token — otherwise it releases the stream and throws
+  `SubscriptionCancelledError`. Delivery starts only after admission and pushes only to that record. Restore
+  reserves every URI before it starts, admits up to 8 at a time, stops starting new ones when its GET is
+  superseded, and prunes only URIs a registered
+  resource reported not subscribable — a thrown subscribe, and a URI nothing on the worker matches yet (its
+  component may still be loading), stay. The prune is decided inside its queued write, against GET ownership
+  and current subscription intent at that moment. Restore runs in the background after the GET returns its
+  stream (an author's subscribe may do I/O), so its notifications queue on the record until the adapter
+  attaches; registry teardown uses `queue.close()`, which latches `closed`, so `toSseStream` ends a stream
+  whose queue closed before it attached. Subscribe, unsubscribe and restore change the durable list only through
+  `updateSessionSubscriptions`, a load-and-save against the stored record that this worker serializes per session
+  together with `deleteSession`. `touchSession`, `logging/setLevel` and other workers' writes are not ordered by
+  it and still save whole records (harper#3255).
 
 - **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
   assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a
