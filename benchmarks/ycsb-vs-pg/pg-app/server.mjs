@@ -74,8 +74,8 @@ async function startWorker() {
 		app.addHook('onRequest', async (request, reply) => {
 			try {
 				await request.jwtVerify();
-			} catch (error) {
-				return reply.send(error);
+			} catch {
+				return reply.code(401).send({ error: 'unauthorized' });
 			}
 		});
 	}

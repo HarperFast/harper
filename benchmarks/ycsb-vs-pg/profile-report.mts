@@ -66,14 +66,14 @@ const JS_FILE_RULES: [RegExp, Bucket][] = [
 	[/node:(internal\/)?(_?http|net|stream|internal\/streams|internal\/stream_base_commons|_http_\w+)/, 'http'],
 ];
 
+const NATIVE_TRANSACTION =
+	/rocksdb_js::(Transaction|TransactionHandle)\b|rocksdb_js::DBDescriptor::transaction|rocksdb::(Pessimistic|Optimistic)?Transaction(DB)?(Impl|BaseImpl)?::(Commit|Rollback|~|Initialize|Clear|SetSnapshot)/;
+
 const NATIVE_RULES: [RegExp, Bucket][] = [
 	[/[([]uws_linux_[^)\]]*\.node[)\]]|^uWS::|^us_/, 'http'],
 	[/[([]node\.napi\.glibc\.node[)\]]|Extractor::/, 'decode'],
 	[/VerificationTable|verification_table/, 'record-cache'],
-	[
-		/rocksdb_js::(Transaction|TransactionHandle)\b|rocksdb_js::DBDescriptor::transaction|rocksdb::(Pessimistic|Optimistic)?Transaction(DB)?(Impl|BaseImpl)?::(Commit|Rollback|~|Initialize|Clear|SetSnapshot)/,
-		'txn',
-	],
+	[NATIVE_TRANSACTION, 'txn'],
 	[/[([]rocksdb-js\.node[)\]]/, 'rocksdb'],
 	[/JsonStringifier|Builtins_JsonStringify|JsonStringify/, 'serialize'],
 	[
@@ -90,6 +90,11 @@ const NATIVE_RULES: [RegExp, Bucket][] = [
 const JS_FRAME = / ((?:file:\/\/)?\/[^ ]+|node:[^ ]+):\d+:\d+$/;
 const isJsFrame = (frame: string) => JS_FRAME.test(frame);
 
+/** Library plumbing inside a native module (locks, allocation, napi glue) belongs to its caller. */
+const isNativePlumbing = (frame: string) =>
+	/^(std::|operator (new|delete)|__gnu_cxx::|napi_|v8impl::|\[)/.test(frame) &&
+	!/^\[(uws_|rocksdb-js|node\.napi)/.test(frame);
+
 /** The bucket a single frame claims, or undefined to defer to its caller. */
 function frameBucket(frame: string): Bucket | undefined {
 	const js = JS_FRAME.exec(frame);
@@ -97,13 +102,7 @@ function frameBucket(frame: string): Bucket | undefined {
 		for (const [pattern, bucket] of JS_FILE_RULES) if (pattern.test(js[1])) return bucket;
 		return undefined;
 	}
-	// Library plumbing inside a native module (locks, allocation, napi glue) belongs to its caller.
-	if (
-		/^(std::|operator (new|delete)|__gnu_cxx::|napi_|v8impl::|\[)/.test(frame) &&
-		!/^\[(uws_|rocksdb-js|node\.napi)/.test(frame)
-	) {
-		return undefined;
-	}
+	if (isNativePlumbing(frame)) return undefined;
 	for (const [pattern, bucket] of NATIVE_RULES) if (pattern.test(frame)) return bucket;
 	return undefined;
 }
@@ -147,7 +146,11 @@ const PIPELINE: { layer: string; js?: RegExp; native?: RegExp }[] = [
 	{ layer: 'http.ts handle, middleware chain', js: /\/dist\/server\/(http|middlewareChain)\.js/ },
 	{ layer: 'authentication middleware', js: /\/dist\/security\// },
 	{ layer: 'REST handler', js: /\/dist\/server\/REST\.js/ },
-	{ layer: 'request transaction', js: /\/dist\/resources\/(transaction|DatabaseTransaction)\.js/ },
+	{
+		layer: 'request transaction',
+		js: /\/dist\/resources\/(transaction|DatabaseTransaction)\.js/,
+		native: NATIVE_TRANSACTION,
+	},
 	{
 		layer: 'resource resolution, context',
 		js: /\/dist\/resources\/(Resource|Resources|RequestTarget|ResourceInterface)\.js/,
@@ -188,6 +191,7 @@ export function pipelineLayer(stack: string[]): string {
 			if (layer) return layer.layer;
 			continue;
 		}
+		if (isNativePlumbing(frame)) continue;
 		const layer = PIPELINE.find((l) => l.native?.test(frame));
 		if (layer) return layer.layer;
 	}
@@ -303,7 +307,6 @@ async function analyze(
 				const layer = pipelineLayer(stack);
 				pipelineUs[layer] = (pipelineUs[layer] ?? 0) + us;
 				const self = (pipelineSelf[layer] ??= new Map());
-				// C++ signatures carry little beyond the qualified name
 				const compact = isJsFrame(stack[leaf]) ? name : stripSignature(name);
 				self.set(compact, (self.get(compact) ?? 0) + us);
 			}

@@ -427,6 +427,23 @@ function parentPid(pid: number): number | undefined {
 	}
 }
 
+/**
+ * The host gate counts everything in this process's cgroup as the run's own CPU, so it needs a cgroup
+ * holding only this run, as bench-run gives. Other processes there (a login or tmux session's jobs)
+ * need an explicit `--allow-shared-cgroup`, and every output row then carries `sharedCgroup`.
+ */
+export function checkOwnCgroup(argv: string[], foreign: string[]): { argv: string[]; sharedCgroup: boolean } {
+	const allowed = argv.includes('--allow-shared-cgroup');
+	if (foreign.length > 0 && !allowed) {
+		throw new Error(
+			`this run's cgroup also holds ${foreign.slice(0, 5).join(', ')}${foreign.length > 5 ? ', ...' : ''}, ` +
+				"whose CPU the host gate would count as the run's own; run under bench-run, or add " +
+				'--allow-shared-cgroup to run anyway (every row is then marked sharedCgroup)'
+		);
+	}
+	return { argv: argv.filter((a) => a !== '--allow-shared-cgroup'), sharedCgroup: foreign.length > 0 };
+}
+
 /** Processes in this process's cgroup that are not part of this run (see foreignPids), as "pid (comm)". */
 export function foreignProcessesInOwnCgroup(): string[] {
 	const procs = readFileSync(join(processCgroup(process.pid), 'cgroup.procs'), 'utf8')

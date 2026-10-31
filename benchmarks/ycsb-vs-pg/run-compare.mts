@@ -41,6 +41,8 @@ import {
 	writePinnedRuntime,
 	startHostLoad,
 	waitForQuietHost,
+	checkOwnCgroup,
+	foreignProcessesInOwnCgroup,
 	type HostLoad,
 	type ResourceTargets,
 	type ResourceDelta,
@@ -150,6 +152,8 @@ interface Sample {
 	auth: AuthMode;
 	/** With --host-quiet-cores: the wait for a quiet host before this sample. */
 	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
+	/** The gate ran with other processes in this run's cgroup, whose CPU it counted as the run's (see checkOwnCgroup). */
+	sharedCgroup?: true;
 	shards: number;
 	load: PhaseResult;
 	warm: PhaseResult;
@@ -177,7 +181,7 @@ async function waitForRoute(url: string, deadlineMs: number, authorization?: str
 const TOKEN_USER = 'ycsb_reader';
 
 /** An HS256 JWT signed with `secret`: what the stack's clients would hold. */
-export function mintHs256(secret: string, subject: string): string {
+function mintHs256(secret: string, subject: string): string {
 	const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
 	const body = `${part({ alg: 'HS256', typ: 'JWT' })}.${part({ sub: subject, iat: Math.floor(Date.now() / 1000) })}`;
 	return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
@@ -193,6 +197,7 @@ async function harperTokenAuthorization(operationsURL: string, admin: string, ta
 			method: 'POST',
 			headers: { 'content-type': 'application/json', 'authorization': admin },
 			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(60_000),
 		});
 		const text = await response.text();
 		if (response.ok) return JSON.parse(text);
@@ -1189,11 +1194,13 @@ async function main(): Promise<void> {
 	if (cache !== 'warm' && cache !== 'cold') throw new Error(`--cache must be warm or cold, got ${cache}`);
 	const hostQuietArg = argValue(argv, '--host-quiet-cores');
 	const hostQuietCores = hostQuietArg === undefined ? undefined : Number(hostQuietArg);
-	const hostQuietMaxMin = Number(argValue(argv, '--host-quiet-max-min') ?? 15);
+	const hostQuietMaxMin = Number(argValue(argv, '--host-quiet-max-min') ?? 20);
 	for (const [flag, value] of Object.entries({ hostQuietCores, hostQuietMaxMin })) {
 		if (value !== undefined && !(value >= 0)) throw new Error(`${flag} must be a non-negative number, got ${value}`);
 	}
-	const { session, meta } = await createSession(argv, {
+	const { argv: sessionArgv, sharedCgroup } =
+		hostQuietCores === undefined ? { argv, sharedCgroup: false } : checkOwnCgroup(argv, foreignProcessesInOwnCgroup());
+	const { session, meta } = await createSession(sessionArgv, {
 		targets,
 		cache,
 		stackMemory: (target) => WARM_STACK_MEMORY[target],
@@ -1226,7 +1233,10 @@ async function main(): Promise<void> {
 					);
 				}
 				const sample = await measureSample(session, order[i], workload, rep, i + 1);
-				if (gate) sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
+				if (gate) {
+					sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
+					if (sharedCgroup || foreignProcessesInOwnCgroup().length > 0) sample.sharedCgroup = true;
+				}
 				samples.push(sample);
 				await persist();
 			}

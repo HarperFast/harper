@@ -7,11 +7,11 @@ import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recordsForRatio, warmupConverged, checkHarperMemory, checkOwnCgroup, parseCells } from './memory-sweep.mts';
-import { foreignPids } from './resources.mts';
+import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from './memory-sweep.mts';
+import { checkOwnCgroup, foreignPids } from './resources.mts';
 import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
-import { classify, rocksdbPart } from './profile-report.mts';
+import { classify, pipelineLayer, rocksdbPart } from './profile-report.mts';
 import { TARGETS, parseTargets, writeJsonAtomic, MEMORY_BUDGET_BYTES } from './run-compare.mts';
 import { SWEEP_STACK_MEMORY, WARM_STACK_MEMORY } from './pgStack.mts';
 
@@ -223,4 +223,32 @@ test('profile stacks go to their innermost recognized frame, GC and JIT to thems
 	const reply = '*Reply.send /w/pg-app/node_modules/fastify/lib/reply.js:156:33';
 	strictEqual(classify(['node', ioredis, ...write], 'fastify'), 'cache-client');
 	strictEqual(classify(['node', ioredis, reply, ...write], 'fastify'), 'http');
+});
+
+test('pipeline samples go to their innermost layer; native transaction work is not a RocksDB read', () => {
+	const js = (name: string, path: string) => `*${name} /w/dist/${path}:10:3`;
+	const request = ['http', '[uws_linux_x64_147.node]', js('onRequest', 'server/serverHelpers/uwsServer.js')];
+	const txn = [...request, js('http', 'server/REST.js'), js('getReadTxn', 'resources/DatabaseTransaction.js')];
+	strictEqual(pipelineLayer([...request, js('http', 'server/REST.js')]), 'REST handler');
+	strictEqual(
+		pipelineLayer([...txn, 'rocksdb_js::Transaction::Constructor(napi_env__*) (rocksdb-js.node)']),
+		'request transaction'
+	);
+	const get = [...txn, js('getEntry', 'resources/PrimaryRocksDatabase.js')];
+	strictEqual(pipelineLayer([...get, 'rocksdb::DBImpl::GetImpl() (rocksdb-js.node)']), 'RocksDB read');
+	strictEqual(
+		pipelineLayer([
+			...get,
+			'rocksdb_js::VerificationTable::hashFor() (rocksdb-js.node)',
+			'std::mutex::lock() (rocksdb-js.node)',
+		]),
+		'record cache',
+		'plumbing defers to its caller'
+	);
+	strictEqual(
+		pipelineLayer([...request, js('applyResponseHeaders', 'security/auth.js')]),
+		'response headers (header-assembly task)'
+	);
+	strictEqual(pipelineLayer([...get, 'v8::internal::Scavenger::Process() (node)']), 'GC');
+	strictEqual(pipelineLayer(['http', 'uv_run (node)', 'uv__io_poll (node)']), 'event loop, microtasks');
 });

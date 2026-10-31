@@ -40,22 +40,22 @@ is required: every host process runs in its own capped scope.
 
 All `benchmarks/ycsb` flags apply, plus:
 
-| Flag                           | Default           | Meaning                                                            |
-| ------------------------------ | ----------------- | ------------------------------------------------------------------ |
-| `--targets`                    | `harper,pg-redis` | Targets to compare (table above)                                   |
-| `--harper-memory`              | `capped`          | `capped` (8 GiB cgroup) or `measured` (no cap)                     |
-| `--target-cpus=K`              | `4`               | Size of the CPU set every target runs on                           |
-| `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`                      |
-| `--cache`                      | `warm`            | `warm` or `cold` (below)                                           |
-| `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs               |
-| `--shards`                     | `4`               | Load-generator processes                                           |
-| `--reps`                       | `1`               | Independent samples per target × workload                          |
-| `--perf-counters`              | off               | `perf stat` per component over each measured run                   |
-| `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                    |
-| `--profile-ops`                | `1000000`         | Ops in each of the two profile windows                             |
-| `--auth`                       | `none`            | `none` or `token` (below); recorded in every row                   |
-| `--host-quiet-cores=N`         | off               | Before each sample, wait for the rest of the host to use < N cores |
-| `--host-quiet-max-min`         | `15`              | Longest that wait, in minutes                                      |
+| Flag                           | Default           | Meaning                                                                                                     |
+| ------------------------------ | ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| `--targets`                    | `harper,pg-redis` | Targets to compare (table above)                                                                            |
+| `--harper-memory`              | `capped`          | `capped` (8 GiB cgroup) or `measured` (no cap)                                                              |
+| `--target-cpus=K`              | `4`               | Size of the CPU set every target runs on                                                                    |
+| `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`                                                               |
+| `--cache`                      | `warm`            | `warm` or `cold` (below)                                                                                    |
+| `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs                                                        |
+| `--shards`                     | `4`               | Load-generator processes                                                                                    |
+| `--reps`                       | `1`               | Independent samples per target × workload                                                                   |
+| `--perf-counters`              | off               | `perf stat` per component over each measured run                                                            |
+| `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                                                             |
+| `--profile-ops`                | `1000000`         | Ops in each of the two profile windows                                                                      |
+| `--auth`                       | `none`            | `none` or `token` (below); recorded in every row                                                            |
+| `--host-quiet-cores=N`         | off               | Before each sample, wait for the rest of the host to use < N cores; refuses a shared cgroup, like the sweep |
+| `--host-quiet-max-min`         | `20`              | Longest that wait, in minutes                                                                               |
 
 `--threads` (Harper's worker threads and the Fastify cluster size) defaults to K.
 Results land in `benchmarks/ycsb-vs-pg/results/`, written after every sample, with

@@ -247,7 +247,8 @@ async function startServices(
 			PG_URL,
 			REDIS_URL,
 			...(options.nodeOptions ? { NODE_OPTIONS: options.nodeOptions } : {}),
-			...(options.jwtSecret ? { JWT_SECRET: options.jwtSecret } : {}),
+			// set either way: an inherited secret would otherwise turn authentication on
+			JWT_SECRET: options.jwtSecret ?? '',
 		},
 		stdio: ['ignore', 'pipe', 'inherit'],
 	});
