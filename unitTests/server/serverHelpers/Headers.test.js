@@ -525,12 +525,16 @@ describe('addVaryHeader matches split/trim/toLowerCase membership', () => {
 		'Xooki\u00a0',
 		'\u00a0Cooki',
 		'Cookİe',
+		'*\u00a0',
+		'*    \u00a0',
+		'Xoo\u212aie',
+		'Coo\u212aie',
 		'Accept, ~x, `y',
 		'Accept,, Origin',
 		['Accept', 'Origin'],
 		['Accept', ' cookie '],
 	];
-	const tokens = ['Origin', 'Authorization', 'Cookie', 'Accept', 'accept-ENCODING', '^x', '@y', 'i̇', 'k', 'x'];
+	const tokens = ['Origin', 'Authorization', 'Cookie', 'Accept', 'accept-ENCODING', '^x', '@y', 'i̇', 'k', 'x', 'ab'];
 	for (const vary of varyValues) {
 		for (const token of tokens) {
 			it(`${JSON.stringify(vary)} + ${JSON.stringify(token)}`, () => {
