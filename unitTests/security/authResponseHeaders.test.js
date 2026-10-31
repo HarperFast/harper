@@ -1,10 +1,4 @@
-/**
- * The full response header set `authentication` produces (#1518 Origin partitioning, #1565
- * identity floor), pinned as ordered [name, value] lists so a change to how the headers are
- * assembled cannot change what is emitted: names, case, values and insertion order.
- *
- * CORS config is read once at startup, so each CORS setting gets its own instance of the auth module.
- */
+// CORS config is read once at startup, so each CORS setting gets its own instance of the auth module.
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
