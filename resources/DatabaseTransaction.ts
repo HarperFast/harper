@@ -2709,6 +2709,7 @@ export class DatabaseTransaction implements Transaction {
 			if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 			if (this.disconnected) throw requestAbortedError();
 		}
+		if (options.doneWriting && this.endsScopeUnwritten(options)) return this.finishUnwrittenScope();
 		this.commitsInFlight = (this.commitsInFlight ?? 0) + 1;
 		// Only a top-level attempt records the intent: a continuation would re-read hasPendingWrites()
 		// after clearWrites() has already emptied it.
@@ -2736,6 +2737,68 @@ export class DatabaseTransaction implements Transaction {
 				throw error;
 			}
 		);
+	}
+
+	/**
+	 * Whether the scope's final commit has nothing left to do but release the read snapshot: nothing was
+	 * ever staged here and no commit attempt, chained store or retained reader depends on this link.
+	 * Each condition is a state the general path treats specially, so any of them sends the commit there.
+	 */
+	private endsScopeUnwritten(options: CommitOptions): boolean {
+		const handle = this.transaction;
+		return (
+			!options.transaction &&
+			!options.continuation &&
+			this.stagesWriteOnSave &&
+			!this.saveCommits &&
+			this.open === TRANSACTION_STATE.OPEN &&
+			this.commitsInFlight === 0 &&
+			!this.next &&
+			!this.root &&
+			this.writes.length === 0 &&
+			this.completions.length === 0 &&
+			this.validated === 0 &&
+			!this.writesByKey &&
+			!this.recordLocks &&
+			!this.hasExclusiveWrites &&
+			!this.requiresOwnerConfirmation &&
+			!this.hasLeaseProtectedWrite &&
+			!this.unlockedWriteScan &&
+			!this.requestAbortListener &&
+			!this.hasActiveCommitHandle() &&
+			(!handle || (this.readTxnsUsed === 1 && !this.baseReadRefConsumed && !hasDurableLog(handle))) &&
+			!this.isChainCommitting()
+		);
+	}
+
+	/** What the general path does to a link endsScopeUnwritten() accepts, without its attempt bookkeeping. */
+	private finishUnwrittenScope(): CommitResolution {
+		this.open = TRANSACTION_STATE.CLOSED;
+		const transaction = this.detachOwnedTransaction();
+		if (transaction) this.abortUnwrittenHandle(transaction);
+		this.endScopeOwnership();
+		this.releaseContext(true);
+		const resolution: CommitResolution = { txnTime: this.timestamp };
+		this.timestamp = 0;
+		return resolution;
+	}
+
+	private abortUnwrittenHandle(transaction: RocksTransaction): void {
+		releaseLocalKey(transaction);
+		try {
+			transaction.abort();
+		} catch (abortError) {
+			if ((abortError as any)?.code === 'ERR_TRANSACTION_ABANDONED') {
+				harperLogger.error?.(
+					`Aborted a transaction with a durable log entry (empty write set), ${describeCommitIdentity(this.db, this.startedFrom, transaction)}`,
+					abortError
+				);
+			}
+			// The transaction has uncommitted writes that were already cleared from
+			// this.writes by a concurrent immediate-commit path (e.g. writes made with
+			// an explicitly-reused closed transaction). Those writes are handled by the
+			// concurrent commit, so there is nothing left to do here.
+		}
 	}
 
 	protected markNativeCommitSubmitted(): void {
@@ -3197,21 +3260,7 @@ export class DatabaseTransaction implements Transaction {
 							// transient-conflict retry rejects this promise and issues a fresh commit()
 							// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
 						} else {
-							releaseLocalKey(transaction);
-							try {
-								commitResolution = transaction.abort();
-							} catch (abortError) {
-								if ((abortError as any)?.code === 'ERR_TRANSACTION_ABANDONED') {
-									harperLogger.error?.(
-										`Aborted a transaction with a durable log entry (empty write set), ${describeCommitIdentity(this.db, this.startedFrom, transaction)}`,
-										abortError
-									);
-								}
-								// The transaction has uncommitted writes that were already cleared from
-								// this.writes by a concurrent immediate-commit path (e.g. writes made with
-								// an explicitly-reused closed transaction). Those writes are handled by the
-								// concurrent commit, so there is nothing left to do here.
-							}
+							this.abortUnwrittenHandle(transaction);
 						}
 					}
 				}
