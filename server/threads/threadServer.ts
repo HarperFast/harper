@@ -521,7 +521,11 @@ function listenOnPorts() {
 	if (uwsServeConfigs) {
 		for (const key in uwsServeConfigs) {
 			const cfg = uwsServeConfigs[key];
-			if (!shouldStartUwsListenerHere(cfg) || !shouldBindListenerHere(key)) continue; // dedicated worker: its own mirrors only
+			if (!shouldStartUwsListenerHere(cfg)) continue; // dedicated worker: its own mirrors only
+			if (!shouldBindListenerHere(key)) {
+				httpComponent.markUdsBindFailed(key); // as in bindsDomainSocketHere
+				continue;
+			}
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = uwsServerRuntimeModule;
 			listening.push(
