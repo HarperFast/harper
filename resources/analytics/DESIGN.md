@@ -7,11 +7,13 @@ Analytics recording and aggregation.
 Index of every design note: [DESIGN.md](../../DESIGN.md).
 
 **A reset ends the window that was being flushed too.** After `setAnalyticsEnabled()` returns, no
-listener or sink receives a sample recorded before it. Dropping `activeActions` and the timer covers the
-window still being recorded; `flushAnalytics()` has already rotated the previous one out and yields once
-per action, so it also captures `analyticsGeneration`, which every reset advances, and stops after a
-yield, before each listener and before the sink once it changes. A listener that resets keeps the report
-it was handed; later listeners and the sink do not get it. Pinned by the two in-flight cases in
+listener or sink on that thread receives a sample recorded on it before the call; other threads keep
+their own windows. Dropping `activeActions` and the timer covers the window still being recorded, and
+the queue-depth high-water marks restart with it. `flushAnalytics()` has already rotated the previous
+window out and yields once per action, so it also captures `analyticsGeneration`, which every reset
+advances, and stops after a yield, before each listener and before the sink once it changes. A listener
+that resets keeps the report it was handed, as do the listeners before it; later listeners and the sink
+do not get it. Pinned by the two in-flight cases in
 `../../unitTests/resources/analytics/aggregationCycle.test.js`.
 
 ---

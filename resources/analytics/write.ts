@@ -47,7 +47,6 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
-// Advanced by every setAnalyticsEnabled(): a flush already running across the reset stops delivering
 let analyticsGeneration = 0;
 
 onStartup(() => {
