@@ -69,6 +69,10 @@ const JS_FILE_RULES: [RegExp, Bucket][] = [
 const NATIVE_TRANSACTION =
 	/rocksdb_js::(Transaction|TransactionHandle)\b|rocksdb_js::DBDescriptor::transaction|rocksdb::(Pessimistic|Optimistic)?Transaction(DB)?(Impl|BaseImpl)?::(Commit|Rollback|~|Initialize|Clear|SetSnapshot)/;
 
+/** Begin, snapshot, abort and commit of a native transaction, not the reads made through one (TransactionHandle::getSync). */
+const NATIVE_TRANSACTION_LIFECYCLE =
+	/rocksdb_js::Transaction::(Constructor|Abort|Commit|Id)\b|rocksdb_js::TransactionHandle::(~?TransactionHandle|close|closeIterators|resetTransaction|ensureSnapshot|commit)\b|rocksdb_js::DBDescriptor::transaction|rocksdb::OptimisticTransactionDBImpl::BeginTransaction|rocksdb::(Optimistic|Pessimistic)?Transaction(BaseImpl)?::(~?(Optimistic|Pessimistic)?Transaction(BaseImpl)?|Rollback|Commit|Clear|ClearSnapshot|SetSnapshot|SetSnapshotInternal)\b/;
+
 const NATIVE_RULES: [RegExp, Bucket][] = [
 	[/[([]uws_linux_[^)\]]*\.node[)\]]|^uWS::|^us_/, 'http'],
 	[/[([]node\.napi\.glibc\.node[)\]]|Extractor::/, 'decode'],
@@ -149,7 +153,7 @@ const PIPELINE: { layer: string; js?: RegExp; native?: RegExp }[] = [
 	{
 		layer: 'request transaction',
 		js: /\/dist\/resources\/(transaction|DatabaseTransaction)\.js/,
-		native: NATIVE_TRANSACTION,
+		native: NATIVE_TRANSACTION_LIFECYCLE,
 	},
 	{
 		layer: 'resource resolution, context',
@@ -193,7 +197,11 @@ export function pipelineLayer(stack: string[]): string {
 		}
 		if (isNativePlumbing(frame)) continue;
 		const layer = PIPELINE.find((l) => l.native?.test(frame));
-		if (layer) return layer.layer;
+		if (!layer) continue;
+		// rocksdb-js work done on behalf of a transaction call (option reads, snapshots) is the transaction's
+		for (let j = i - 1; j >= 0 && !isJsFrame(stack[j]); j--)
+			if (NATIVE_TRANSACTION_LIFECYCLE.test(stack[j])) return 'request transaction';
+		return layer.layer;
 	}
 	return stack.some((f) => /RunMicrotasks|MicrotaskQueue|uv_run|uv__io_poll|epoll_p?wait/.test(f))
 		? 'event loop, microtasks'

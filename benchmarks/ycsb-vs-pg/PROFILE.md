@@ -182,11 +182,11 @@ harper-uws, warm C, local trust (`--auth=none`), Harper `85bafde3`. CPU from a f
 | `http.ts` handle, middleware chain            |       2.1 |              38.1 |         1,518 |            13.7 |
 | authentication middleware (`auth.ts`)         |       1.3 |              36.0 |         2,392 |            21.0 |
 | REST handler (`REST.ts`)                      |       2.2 |              34.7 |         1,846 |            15.6 |
-| request transaction (JS and native lifecycle) |       8.9 |              32.5 |         2,734 |            36.3 |
-| resource resolution, context                  |       1.7 |              23.6 |           814 |             8.7 |
-| `Table.get`                                   |       2.5 |              21.9 |           558 |             9.3 |
-| record cache (weak-lru-cache, VT)             |       1.5 |              19.4 |           230 |             2.6 |
-| RocksDB read                                  |      12.5 |              17.9 |           524 |             6.3 |
+| request transaction (JS and native lifecycle) |      10.2 |              32.5 |         2,734 |            36.3 |
+| resource resolution, context                  |       1.7 |              22.2 |           814 |             8.7 |
+| `Table.get`                                   |       2.5 |              20.5 |           558 |             9.3 |
+| record cache (weak-lru-cache, VT)             |       1.5 |              18.1 |           230 |             2.6 |
+| RocksDB read                                  |      11.1 |              16.6 |           524 |             6.3 |
 | record decode                                 |       2.8 |               5.5 |         1,801 |            12.9 |
 | response serialization (JSON)                 |       2.7 |               2.7 |         1,025 |             6.8 |
 | response headers (handled by the header task) |       2.9 |                   |         1,588 |            34.1 |
@@ -194,7 +194,7 @@ harper-uws, warm C, local trust (`--auth=none`), Harper `85bafde3`. CPU from a f
 | event loop, microtasks; JIT; other            |       3.7 |                   |           135 |             3.4 |
 | **total**                                     |  **76.3** |                   |    **17,138** |       **205.0** |
 
-By stack containment (each function once per stack), the uWS `bodyless` callback is 32.4 µs/op inclusive. Below it: `http.ts` `handle` 30.3, `authentication` 30.3, `REST.ts` `http` 30.0, `transaction()` 24.7, `REST` `dispatch` 23.9, `Resource.applyContext` 23.6, `Table.getResource` 22.8, `loadLocalRecord` 16.8, rocksdb-js `get` 12.3. Each stage adds only 0.1–2 µs/op of its own CPU. The cost is spread thin, and the larger part of it is allocation: 17.1 KB and ~205 objects per GET of a 1 KB record, against GC at 11.5 µs/op. The largest single sites are the big `async` stage functions themselves: `authentication` 2.4 KB, `onRequest` 1.8 KB, `REST.http` 1.7 KB, `transaction()` 1.6 KB, `handle` 1.2 KB. Each await suspends a large frame, and their closures, promises and strings are allocated anew per request. Excluding header assembly, which the header task covers (2.9 µs/op own, 1.6 KB and 34 objects per request), the pipeline from uWS down to `Table.getResource` costs about 13 µs/op of its own CPU and ~12 KB per request.
+By stack containment (each function once per stack), the uWS `bodyless` callback is 32.4 µs/op inclusive. Below it: `http.ts` `handle` 30.3, `authentication` 30.3, `REST.ts` `http` 30.0, `transaction()` 24.7, `REST` `dispatch` 23.9, `Resource.applyContext` 23.6, `Table.getResource` 22.8, `loadLocalRecord` 16.8, rocksdb-js `get` 12.3. Each stage adds only 0.1–2 µs/op of its own CPU. The cost is spread thin, and the larger part of it is allocation: 17.1 KB and ~205 objects per GET of a 1 KB record, against GC at 11.5 µs/op. The largest single sites are the big `async` stage functions themselves: `authentication` 2.4 KB, `onRequest` 1.8 KB, `REST.http` 1.7 KB, `transaction()` 1.6 KB, `handle` 1.2 KB. Each await suspends a large frame, and their closures, promises and strings are allocated anew per request. From `http.ts` down to `Table.get`, the layers' own CPU is 20.0 µs/op. Of that, 10.2 is the request transaction (its JS commit path and the native transaction's lifecycle); the other 9.8 is spread over ~25 functions at 0.1–1 µs/op each. Those layers allocate ~10 KB per request. Header assembly is excluded here, since the header task covers it: 2.9 µs/op own, 1.6 KB and 34 objects per request.
 
 String internalization (`StringTable::LookupKey`, hash computation) is ~3% of Harper's samples, ~2.3 µs/op, spread across layers:
 

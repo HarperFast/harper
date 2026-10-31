@@ -239,8 +239,36 @@ test('pipeline samples go to their innermost layer; native transaction work is n
 		pipelineLayer([...txn, 'rocksdb_js::Transaction::Constructor(napi_env__*) (rocksdb-js.node)']),
 		'request transaction'
 	);
+	strictEqual(
+		pipelineLayer([
+			...txn,
+			'rocksdb_js::Transaction::Constructor(napi_env__*) (rocksdb-js.node)',
+			'bool rocksdb_js::getProperty<bool>() (rocksdb-js.node)',
+		]),
+		'request transaction',
+		"a transaction call's rocksdb-js callees"
+	);
 	const get = [...txn, js('getEntry', 'resources/PrimaryRocksDatabase.js')];
 	strictEqual(pipelineLayer([...get, 'rocksdb::DBImpl::GetImpl() (rocksdb-js.node)']), 'RocksDB read');
+	strictEqual(
+		pipelineLayer([
+			...get,
+			'rocksdb_js::Database::GetSync() (rocksdb-js.node)',
+			'rocksdb_js::TransactionHandle::getSync() (rocksdb-js.node)',
+			'rocksdb::TransactionBaseImpl::Get() (rocksdb-js.node)',
+			'rocksdb::DBImpl::GetImpl() (rocksdb-js.node)',
+		]),
+		'RocksDB read',
+		'a read through a transaction is still a read'
+	);
+	strictEqual(
+		pipelineLayer([
+			...get,
+			'rocksdb_js::TransactionHandle::ensureSnapshot() (rocksdb-js.node)',
+			'rocksdb::DBImpl::GetSnapshotImpl() (rocksdb-js.node)',
+		]),
+		'request transaction'
+	);
 	strictEqual(
 		pipelineLayer([
 			...get,
