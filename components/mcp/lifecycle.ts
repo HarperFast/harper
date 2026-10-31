@@ -8,6 +8,7 @@
  * can decide whether to connect on the older version or disconnect.
  */
 import { createSession, saveSession, type McpSessionRecord } from './session.ts';
+import { GATED_CLIENT_CAPABILITIES } from './serverRequests.ts';
 import { packageJson } from '../../utility/packageUtils.js';
 
 export const PROTOCOL_VERSION_PREFERRED = '2025-06-18';
@@ -82,11 +83,11 @@ export async function handleInitialize(
 	const negotiated = SUPPORTED_PROTOCOL_VERSIONS.includes(requested as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])
 		? requested
 		: PROTOCOL_VERSION_PREFERRED;
-	const clientCapabilities =
-		params?.capabilities && typeof params.capabilities === 'object' && !Array.isArray(params.capabilities)
-			? (params.capabilities as Record<string, unknown>)
-			: undefined;
-	const session = await createSession({ user, protocolVersion: negotiated, clientCapabilities });
+	const session = await createSession({
+		user,
+		protocolVersion: negotiated,
+		clientCapabilities: pickClientCapabilities(params?.capabilities),
+	});
 	return {
 		ok: true,
 		session,
@@ -96,6 +97,19 @@ export async function handleInitialize(
 			capabilities: SERVER_CAPABILITIES,
 		},
 	};
+}
+
+/**
+ * Keep only presence of the capabilities Harper gates on, so the persisted
+ * session row's size does not depend on what an (often anonymous) client sends.
+ */
+function pickClientCapabilities(capabilities: unknown): Record<string, unknown> | undefined {
+	if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return undefined;
+	let picked: Record<string, unknown> | undefined;
+	for (const name of GATED_CLIENT_CAPABILITIES) {
+		if ((capabilities as Record<string, unknown>)[name]) (picked ??= {})[name] = {};
+	}
+	return picked;
 }
 
 /**

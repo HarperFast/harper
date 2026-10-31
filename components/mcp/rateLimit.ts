@@ -10,6 +10,10 @@
  *     rate keyed on CLIENT IDENTITY rather than session. Session buckets are
  *     trivially cycled by an anonymous client (initialize → call → drop
  *     session → repeat); the client bucket survives that loop.
+ *   - initializePerSecond / initializeBurst (default ON): session creation
+ *     (`initialize`) per client identity and per worker. Each session is a persisted row held
+ *     for the idle timeout, so unthrottled creation is a disk-exhaustion vector
+ *     on the anonymous application profile.
  *   - identityHeader (#1610): identity is the socket IP by default; proxied
  *     deployments can name a trusted header (e.g. `x-forwarded-for`) whose
  *     first (client-most) value is used instead. Only set this when the
@@ -39,6 +43,9 @@ export interface RateLimitConfig {
 	/** 0 disables the per-client-identity bucket (the default). */
 	perClientPerSecond: number;
 	perClientBurst: number;
+	/** 0 disables the per-client-identity `initialize` bucket. */
+	initializePerSecond: number;
+	initializeBurst: number;
 	/** Trusted header (lowercased) to derive client identity from; absent = socket IP. */
 	identityHeader?: string;
 }
@@ -51,6 +58,8 @@ const DEFAULTS: Record<'operations' | 'application', RateLimitConfig> = {
 		sessionPerSecond: 100,
 		perClientPerSecond: 0,
 		perClientBurst: 0,
+		initializePerSecond: 10,
+		initializeBurst: 50,
 	},
 	application: {
 		perToolPerSecond: 25,
@@ -59,6 +68,8 @@ const DEFAULTS: Record<'operations' | 'application', RateLimitConfig> = {
 		sessionPerSecond: 200,
 		perClientPerSecond: 0,
 		perClientBurst: 0,
+		initializePerSecond: 10,
+		initializeBurst: 50,
 	},
 };
 
@@ -70,6 +81,8 @@ const CONFIG_KEYS = {
 		sessionPerSecond: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_SESSIONPERSECOND,
 		perClientPerSecond: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_PERCLIENTPERSECOND,
 		perClientBurst: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_PERCLIENTBURST,
+		initializePerSecond: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_INITIALIZEPERSECOND,
+		initializeBurst: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_INITIALIZEBURST,
 		identityHeader: CONFIG_PARAMS.MCP_OPERATIONS_RATELIMIT_IDENTITYHEADER,
 	},
 	application: {
@@ -79,6 +92,8 @@ const CONFIG_KEYS = {
 		sessionPerSecond: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_SESSIONPERSECOND,
 		perClientPerSecond: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_PERCLIENTPERSECOND,
 		perClientBurst: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_PERCLIENTBURST,
+		initializePerSecond: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_INITIALIZEPERSECOND,
+		initializeBurst: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_INITIALIZEBURST,
 		identityHeader: CONFIG_PARAMS.MCP_APPLICATION_RATELIMIT_IDENTITYHEADER,
 	},
 };
@@ -110,12 +125,23 @@ export function configFor(profile: 'operations' | 'application'): RateLimitConfi
 function buildConfig(profile: 'operations' | 'application'): RateLimitConfig {
 	const keys = CONFIG_KEYS[profile];
 	const defaults = DEFAULTS[profile];
-	const read = (key: string, fallback: number): number => {
+	// The config validator accepts quoted numbers but leaves them strings in the loaded config.
+	const readNumber = (key: string): number | undefined => {
 		const v = env.get(key);
-		return typeof v === 'number' && v > 0 ? v : fallback;
+		const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+		return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
+	};
+	const read = (key: string, fallback: number): number => {
+		const v = readNumber(key);
+		return v > 0 ? v : fallback;
+	};
+	const readAllowingZero = (key: string, fallback: number): number => {
+		const v = readNumber(key);
+		return v >= 0 ? v : fallback;
 	};
 	const identityHeader = env.get(keys.identityHeader);
 	const perClientPerSecond = read(keys.perClientPerSecond, defaults.perClientPerSecond);
+	const initializePerSecond = readAllowingZero(keys.initializePerSecond, defaults.initializePerSecond);
 	return {
 		perToolPerSecond: read(keys.perToolPerSecond, defaults.perToolPerSecond),
 		perToolBurst: read(keys.perToolBurst, defaults.perToolBurst),
@@ -127,6 +153,8 @@ function buildConfig(profile: 'operations' | 'application'): RateLimitConfig {
 		// rate (0.1/s = "6 per minute") yields a bucket that can never admit
 		// (consume requires a whole token and refill caps at burst).
 		perClientBurst: read(keys.perClientBurst, perClientPerSecond > 0 ? Math.max(1, perClientPerSecond) : 0),
+		initializePerSecond,
+		initializeBurst: Math.max(1, read(keys.initializeBurst, defaults.initializeBurst)),
 		...(typeof identityHeader === 'string' && identityHeader ? { identityHeader: identityHeader.toLowerCase() } : {}),
 	};
 }
@@ -159,8 +187,8 @@ export function resolveClientIdentity(
  * `tokens` + `lastRefill`, both updated on every consume call.
  */
 class TokenBucket {
-	private readonly rate: number;
-	private readonly burst: number;
+	private rate: number;
+	private burst: number;
 	private tokens: number;
 	private lastRefill: number;
 	constructor(rate: number, burst: number) {
@@ -176,6 +204,18 @@ class TokenBucket {
 			return true;
 		}
 		return false;
+	}
+	/** Apply a changed rate/burst without refunding tokens already spent. */
+	reconfigure(rate: number, burst: number): void {
+		if (rate === this.rate && burst === this.burst) return;
+		this.refill();
+		this.rate = rate;
+		this.burst = burst;
+		this.tokens = Math.min(this.tokens, burst);
+	}
+	isFull(): boolean {
+		this.refill();
+		return this.tokens >= this.burst;
 	}
 	/**
 	 * Refill-and-check, without consuming. Used by `tryAdmit` to peek each
@@ -219,6 +259,23 @@ interface ClientState {
 	lastSeen: number;
 }
 const clients = new Map<string, ClientState>();
+interface InitializeBucket {
+	rate: TokenBucket;
+	config: RateLimitConfig;
+}
+interface InitializeState {
+	clients: Map<string, InitializeBucket>;
+	lastPruneAt: number;
+}
+const initializeState: Record<'operations' | 'application', InitializeState> = {
+	operations: { clients: new Map(), lastPruneAt: 0 },
+	application: { clients: new Map(), lastPruneAt: 0 },
+};
+const INITIALIZE_PRUNE_INTERVAL_MS = 10_000;
+// Past this many tracked identities, new ones share the no-identity bucket:
+// memory stays bounded and no existing bucket is evicted (eviction would refund it).
+const MAX_INITIALIZE_IDENTITIES = 100_000;
+const SHARED_IDENTITY = '';
 
 // Belt-and-braces against state leaks: sessions that get TTL-evicted from the
 // system.mcp_session table never reach deleteSession() in this process, so
@@ -245,6 +302,24 @@ function pruneIdleSessions(): void {
 			clients.delete(key);
 		}
 	}
+}
+
+// Swept from `initialize` itself, never from `tools/call`: the map holds one
+// entry per source address, which an attacker controls. Only a full bucket is
+// dropped, since only that one is indistinguishable from a new one.
+function pruneInitializeClients(state: InitializeState, config: RateLimitConfig, t: number): void {
+	if (t - state.lastPruneAt < INITIALIZE_PRUNE_INTERVAL_MS) return;
+	state.lastPruneAt = t;
+	for (const [key, c] of state.clients) {
+		reconfigureInitializeClient(c, config);
+		if (c.rate.isFull()) state.clients.delete(key);
+	}
+}
+
+function reconfigureInitializeClient(c: InitializeBucket, config: RateLimitConfig): void {
+	if (c.config === config) return;
+	c.rate.reconfigure(config.initializePerSecond, config.initializeBurst);
+	c.config = config;
 }
 
 function getOrCreate(sessionId: string, profile: 'operations' | 'application'): SessionState {
@@ -292,6 +367,10 @@ export function clearSessionRateState(sessionId: string): void {
 export function _resetForTest(): void {
 	sessions.clear();
 	clients.clear();
+	for (const state of Object.values(initializeState)) {
+		state.clients.clear();
+		state.lastPruneAt = 0;
+	}
 	configCache.clear();
 	warnedIdentityHeader = false;
 }
@@ -352,4 +431,74 @@ export function tryAdmit(
 			if (state.inFlight > 0) state.inFlight -= 1;
 		},
 	};
+}
+
+/**
+ * Admit an `initialize` (session creation) from `clientIdentity`; on denial,
+ * the seconds until a token is available. A request with no identity (e.g. a
+ * Unix-socket ingress with no `identityHeader`) shares one bucket per profile
+ * rather than going unthrottled. IPv6 addresses share a bucket per /64, the
+ * block a single client is typically assigned.
+ */
+export function tryAdmitInitialize(
+	profile: 'operations' | 'application',
+	clientIdentity: string | undefined
+): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
+	const config = configFor(profile);
+	const state = initializeState[profile];
+	if (config.initializePerSecond <= 0) {
+		state.clients.clear();
+		return { allowed: true };
+	}
+	const t = now();
+	pruneInitializeClients(state, config, t);
+	let key = clientIdentity ? initializeIdentity(clientIdentity) : SHARED_IDENTITY;
+	if (!state.clients.has(key) && state.clients.size >= MAX_INITIALIZE_IDENTITIES) key = SHARED_IDENTITY;
+	let c = state.clients.get(key);
+	if (!c) {
+		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst), config };
+		state.clients.set(key, c);
+	} else {
+		reconfigureInitializeClient(c, config);
+	}
+	return c.rate.tryConsume()
+		? { allowed: true }
+		: { allowed: false, retryAfterSeconds: Math.ceil(1 / config.initializePerSecond) };
+}
+
+function initializeIdentity(identity: string): string {
+	const address = identity
+		.replace(/^\[|\](:\d+)?$/g, '')
+		.split('%')[0]
+		.toLowerCase();
+	const ipv4WithPort = address.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+	if (ipv4WithPort) return ipv4WithPort[1];
+	if (!address.includes(':')) return address;
+	const groups = expandIpv6(address);
+	if (!groups) return address;
+	if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+		return `${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
+	}
+	return `${groups
+		.slice(0, 4)
+		.map((group) => group.toString(16))
+		.join(':')}::/64`;
+}
+
+function expandIpv6(address: string): number[] | undefined {
+	const dotted = address.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+	if (dotted) {
+		const [, prefix, a, b, c, d] = dotted;
+		address = `${prefix}${((+a << 8) | +b).toString(16)}:${((+c << 8) | +d).toString(16)}`;
+	}
+	const [head, tail, extra] = address.split('::');
+	if (extra !== undefined) return undefined;
+	const headGroups = head ? head.split(':') : [];
+	const tailGroups = tail ? tail.split(':') : [];
+	const fill = tail === undefined ? 0 : 8 - headGroups.length - tailGroups.length;
+	if (fill < 0) return undefined;
+	const groups = [...headGroups, ...Array(fill).fill('0'), ...tailGroups].map((group) =>
+		/^[0-9a-f]{1,4}$/.test(group) ? parseInt(group, 16) : NaN
+	);
+	return groups.length === 8 && groups.every((group) => group >= 0) ? groups : undefined;
 }
