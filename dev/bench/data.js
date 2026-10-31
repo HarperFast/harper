@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793370464929,
+  "lastUpdate": 1793430795288,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8546,6 +8546,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1434.42,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6048a06709a7bff15b6d5732fb0b3ecdc69b8098",
+          "message": "Adopt fulltext 0.8 with host query policy and fuzzy controls (#3824)\n\n* Adopt fulltext 0.8 with host query policy and fuzzy controls\n\n* Keep query policy in the search error boundary and strengthen compatibility proof\n\n* Clarify the installed query policy block during downgrade planning\n\n* Tighten full-text condition validation and qualify query policy boundaries\n\n* Clarify fuzzy-control targets and trim unused test options\n\n* Qualify query rejections across runtimes and isolate TTL observations\n\n* Balance resource CI shards and isolate encoder error capture\n\n* Close owned subscriptions in replay test fixtures\n\n* Make replay iterator cancellation deterministic\n\n* Keep full-text query defaults implicit\n\n* Test the allowed default full-text term boundary",
+          "timestamp": "2026-10-31T04:49:23Z",
+          "url": "https://github.com/HarperFast/harper/commit/6048a06709a7bff15b6d5732fb0b3ecdc69b8098"
+        },
+        "date": 1793430793208,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 13215.33,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 22826.97,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 21716.46,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 14896.42,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 10359.14,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 20589.92,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1981.56,
             "unit": "ops/sec"
           }
         ]
