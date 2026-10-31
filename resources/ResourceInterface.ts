@@ -5,7 +5,7 @@ import { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Entry, RecordObject } from './RecordEncoder.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
-import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
+import { FULL_TEXT_COMPARATORS, FULL_TEXT_POSITIVE_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
 
 /**
  * A part has exactly name/value fields; consume each streamed Blob before requesting the next part.
@@ -212,6 +212,16 @@ export type Comparator = (typeof COMPARATORS)[number];
 
 export type DirectCondition<Record extends object = any> = TypedDirectCondition<Record, keyof Record>;
 
+export type FullTextScoringClause = {
+	comparator: (typeof FULL_TEXT_POSITIVE_COMPARATORS)[number];
+	value: string;
+	fields?: string[];
+	/** Scale this full-text clause score without changing match eligibility; finite float32 0–100; requires query API 8. */
+	boost?: number;
+	fuzzyDistance?: number;
+	fuzzyTranspositions?: boolean;
+};
+
 interface TypedDirectCondition<Record extends object, Property extends keyof Record> {
 	attribute?: keyof Record | Array<keyof Record> | string | string[];
 	search_attribute?: keyof Record | Array<keyof Record> | string | string[];
@@ -221,6 +231,10 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_value?: Record[Property] | Record[Property][];
 	/** Optional source-field restriction for a named full-text index. */
 	fields?: string[];
+	/** Scale this full-text clause score without changing match eligibility; finite float32 0–100; requires query API 8. */
+	boost?: number;
+	/** Positive same-index clauses add optional score bonuses without admitting additional records; requires query API 8. */
+	should?: FullTextScoringClause[];
 	/** Fuzzy edit distance 0–2, default 1; bounded by storage.fullText.query.maxFuzzyDistance. */
 	fuzzyDistance?: number;
 	/** Count adjacent swaps as one edit, default true; fuzzy comparators only. */

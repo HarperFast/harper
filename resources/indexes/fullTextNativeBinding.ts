@@ -1,3 +1,4 @@
+import { FULLTEXT_SCORING_NATIVE_ABI_VERSION, FULLTEXT_SCORING_QUERY_API_VERSION } from './fullTextQueryProtocol.ts';
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -9,10 +10,10 @@ import {
 import { getFullTextRuntimeConfiguration, FullTextWorkerInitializationError } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
-const FULLTEXT_NATIVE_ABI_VERSION = 13;
+const FULLTEXT_LEGACY_NATIVE_ABI_VERSION = 13;
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
-const FULLTEXT_QUERY_API_VERSION = 7;
+const FULLTEXT_LEGACY_QUERY_API_VERSION = 7;
 const logger = loggerWithTag('fulltext-derived-index');
 
 export interface NativeFullTextRuntimeBudget {
@@ -57,7 +58,9 @@ export type NativeFullTextSearchExpression =
 			fields?: string[];
 	  })
 	| { operator: 'and' | 'or'; clauses: NativeFullTextSearchExpression[] }
-	| { operator: 'not'; clause: NativeFullTextSearchExpression };
+	| { operator: 'not'; clause: NativeFullTextSearchExpression }
+	| { operator: 'boost'; boost: number; clause: NativeFullTextSearchExpression }
+	| { operator: 'optional'; required: NativeFullTextSearchExpression; optional: NativeFullTextSearchExpression[] };
 
 export type NativeFullTextSearchRequest = NativeFullTextFuzzyOptions & {
 	text?: string;
@@ -295,15 +298,12 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		throw new TypeError('@harperfast/fulltext/native does not implement the required Harper binding contract');
 	const binding = module as NativeFullTextModule;
 	const info = await binding.runtimeInfo();
+	validateFullTextRuntimeVersions(info);
 	validateFullTextQueryRuntimeInfo(info);
 	if (
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
-		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
-		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
-		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION ||
-		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
 		!Array.isArray(info.storageBackends) ||
 		!info.storageBackends.includes('native') ||
 		!info.limits ||
@@ -376,4 +376,24 @@ export function nativeFullTextQueryLimits(info: NativeFullTextQueryRuntimeInfo, 
 		if (policy[name] > ceiling)
 			throw new TypeError(`storage.fullText.query.${name} exceeds the native runtime ceiling ${ceiling}`);
 	return policy;
+}
+
+export function validateFullTextRuntimeVersions(
+	info: Pick<
+		NativeFullTextRuntimeInfo,
+		'nativeAbiVersion' | 'queryApiVersion' | 'lifecycleApiVersion' | 'mutationBatchApiVersion'
+	>
+): void {
+	if (
+		!info ||
+		!(
+			(info.nativeAbiVersion === FULLTEXT_LEGACY_NATIVE_ABI_VERSION &&
+				info.queryApiVersion === FULLTEXT_LEGACY_QUERY_API_VERSION) ||
+			(info.nativeAbiVersion === FULLTEXT_SCORING_NATIVE_ABI_VERSION &&
+				info.queryApiVersion === FULLTEXT_SCORING_QUERY_API_VERSION)
+		) ||
+		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
+		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION
+	)
+		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
 }
