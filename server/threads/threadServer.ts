@@ -523,7 +523,7 @@ function listenOnPorts() {
 			const cfg = uwsServeConfigs[key];
 			if (!shouldStartUwsListenerHere(cfg)) continue; // dedicated worker: its own mirrors only
 			if (!shouldBindListenerHere(key)) {
-				httpComponent.markUdsBindFailed(key); // as in bindsDomainSocketHere
+				httpComponent.markUdsBindFailed(key);
 				continue;
 			}
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
