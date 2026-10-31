@@ -805,7 +805,7 @@ async function measureSample(
 				measured,
 			};
 		} finally {
-			driver.close();
+			await driver.close();
 		}
 	});
 }

@@ -121,7 +121,7 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 			const best = reps.reduce((a, b) => (a.throughput >= b.throughput ? a : b));
 			return { ...best, opsPerCore: OPS / Math.max(best.cpu, 1e-9) };
 		} finally {
-			driver.close();
+			await driver.close();
 		}
 	};
 

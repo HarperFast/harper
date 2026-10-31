@@ -83,9 +83,20 @@ class ShardPool {
 		return this.children.length;
 	}
 
-	stop(): void {
-		for (const child of this.children) child.kill();
+	/** Resolves once every shard has exited, so none outlives the sample (or the run) that forked it. */
+	async stop(): Promise<void> {
+		const children = this.children;
 		this.children = [];
+		await Promise.all(
+			children.map(async (child) => {
+				if (child.exitCode !== null || child.signalCode !== null) return;
+				const exited = new Promise((resolve) => child.once('exit', resolve));
+				child.kill();
+				const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+				await exited;
+				clearTimeout(timer);
+			})
+		);
 	}
 }
 
@@ -142,7 +153,7 @@ export interface DriverRun {
 		mix?: Record<string, number>
 	): Promise<PhaseResult>;
 	shardsUsed(name: string): number;
-	close(): void;
+	close(): Promise<void>;
 }
 
 export async function startDriver(config: DriverConfig): Promise<DriverRun> {
@@ -154,7 +165,7 @@ export async function startDriver(config: DriverConfig): Promise<DriverRun> {
 	try {
 		return await drive(pool, config);
 	} catch (error) {
-		pool.stop();
+		await pool.stop();
 		throw error;
 	}
 }
@@ -208,8 +219,6 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 			}));
 			return mergeShardResults(await pool.dispatch(commands));
 		},
-		close(): void {
-			pool.stop();
-		},
+		close: () => pool.stop(),
 	};
 }

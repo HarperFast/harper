@@ -8,7 +8,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from './memory-sweep.mts';
-import { checkOwnCgroup, foreignPids } from './resources.mts';
+import { checkOwnCgroup, foreignPids, isInstanceMonitor } from './resources.mts';
 import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
 import { classify, pipelineLayer, rocksdbPart } from './profile-report.mts';
@@ -106,6 +106,11 @@ test("the host gate's cgroup must hold only this run, its ancestors and descenda
 		sharedCgroup: true,
 	});
 	deepStrictEqual(checkOwnCgroup(['--reps=3'], []), { argv: ['--reps=3'], sharedCgroup: false });
+	strictEqual(
+		isInstanceMonitor('/usr/bin/node\0/w/node_modules/@harperfast/integration-testing/dist/harperMonitor.js\0'),
+		true
+	);
+	strictEqual(isInstanceMonitor('/usr/bin/node\0/w/benchmarks/ycsb-vs-pg/run-compare.mts\0'), false);
 });
 
 test('cells name ratio, workload and target', () => {

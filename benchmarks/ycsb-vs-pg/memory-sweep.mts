@@ -204,7 +204,7 @@ async function prepareSnapshot(session: Session, engine: 'harper' | 'pg', keyWid
 		try {
 			load = driver.load;
 		} finally {
-			driver.close();
+			await driver.close();
 		}
 		assertNoErrors('load', load);
 		if (load.ops !== config.records) throw new Error(`load inserted ${load.ops} of ${config.records} records`);
@@ -397,7 +397,7 @@ async function measureSweepSample(
 						);
 					}
 				} finally {
-					driver.close();
+					await driver.close();
 				}
 			},
 			launch

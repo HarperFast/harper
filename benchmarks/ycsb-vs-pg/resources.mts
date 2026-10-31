@@ -444,21 +444,37 @@ export function checkOwnCgroup(argv: string[], foreign: string[]): { argv: strin
 	return { argv: argv.filter((a) => a !== '--allow-shared-cgroup'), sharedCgroup: foreign.length > 0 };
 }
 
+/**
+ * @harperfast/integration-testing's detached instance monitor, which an earlier run in the same scope
+ * started and which idles on for a minute after that run. It only rescans a registry file every 2 s.
+ */
+export const isInstanceMonitor = (cmdline: string) =>
+	cmdline.includes('/@harperfast/integration-testing/dist/harperMonitor.js');
+
 /** Processes in this process's cgroup that are not part of this run (see foreignPids), as "pid (comm)". */
 export function foreignProcessesInOwnCgroup(): string[] {
 	const procs = readFileSync(join(processCgroup(process.pid), 'cgroup.procs'), 'utf8')
 		.split('\n')
 		.filter(Boolean)
 		.map(Number);
-	return foreignPids(procs, process.pid, parentPid).map((pid) => {
-		let comm = '?';
+	const cmdline = (pid: number) => {
 		try {
-			comm = readFileSync(`/proc/${pid}/comm`, 'utf8').trim();
+			return readFileSync(`/proc/${pid}/cmdline`, 'utf8');
 		} catch {
-			// exited
+			return '';
 		}
-		return `${pid} (${comm})`;
-	});
+	};
+	return foreignPids(procs, process.pid, parentPid)
+		.filter((pid) => !isInstanceMonitor(cmdline(pid)))
+		.map((pid) => {
+			let comm = '?';
+			try {
+				comm = readFileSync(`/proc/${pid}/comm`, 'utf8').trim();
+			} catch {
+				// exited
+			}
+			return `${pid} (${comm})`;
+		});
 }
 
 export interface HostLoad {
