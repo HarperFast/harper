@@ -505,7 +505,8 @@ export class FullTextQueryIndex {
 						lease.definition,
 						condition,
 						accepted.slice(options.resultOffset ?? 0, options.minResults),
-						deadline
+						deadline,
+						context?.signal
 					);
 				highlightsDone = true;
 				pageReady = true;
@@ -589,7 +590,9 @@ export class FullTextQueryIndex {
 						result.total + result.hits.length > rawHitLimit
 					)
 						throw fullTextSearchLimitError(
-							'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
+							options.orderResults
+								? 'Stored-field full-text sorting must examine every text match and exceeds storage.fullText.maxRawHitsPerRequest; narrow the text query, remove the sort, or increase the work budget'
+								: 'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
 							400
 						);
 					if (!options.exhaustive && !bounded && result.totalRelation === 'exact' && result.total > searchWindow)
@@ -641,6 +644,7 @@ export class FullTextQueryIndex {
 								},
 								assertSearchActive
 							);
+							assertSearchActive();
 							candidateProbeFailureEpoch = this.#candidateProbeFailureEpoch;
 						}
 					}
@@ -784,7 +788,8 @@ export class FullTextQueryIndex {
 					lease.definition,
 					condition,
 					accepted.slice(options.resultOffset ?? 0, options.minResults),
-					deadline
+					deadline,
+					context?.signal
 				);
 			if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 			return accepted.map((entry) => ({
@@ -876,7 +881,8 @@ export class FullTextQueryIndex {
 			record: Record<string, unknown>;
 			recordEntry: any;
 		}>,
-		deadline: number
+		deadline: number,
+		signal: AbortSignal | undefined
 	): Promise<void> {
 		const highlighting = definition.highlighting;
 		if (!highlighting) return;
@@ -910,6 +916,7 @@ export class FullTextQueryIndex {
 				this.#maxTraceRecords!,
 				this.#maxTraceSourceBytes!
 			)) {
+				signal?.throwIfAborted();
 				const records = await Promise.all(
 					sourceEntries.map(async ({ nativeId, record }) => ({
 						id: nativeId,
@@ -918,6 +925,7 @@ export class FullTextQueryIndex {
 				);
 				for (const leaf of fieldLeaves) {
 					for (const traceRecords of traceSourceBatches(records, this.#maxTraceSourceBytes!)) {
+						signal?.throwIfAborted();
 						const traced = await reader.traceMatches({ ...leaf, fields }, traceRecords, {
 							remainingBudgetMilliseconds: remainingSearchBudget(deadline),
 							snippets: true,

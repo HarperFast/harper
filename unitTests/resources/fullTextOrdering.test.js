@@ -599,6 +599,121 @@ describe('published full-text ordering and exact counts', () => {
 		assert.strictEqual(incomplete, 0);
 	});
 
+	it('stops source reads after cancellation during candidate-gate planning', async () => {
+		await seed([{ id: 'a', title: 'widget' }]);
+		const controller = new AbortController();
+		const reason = new Error('cancel after candidate gate');
+		let candidates = 0;
+		await assert.rejects(
+			Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+				condition(),
+				{ signal: controller.signal },
+				{
+					minResults: 1,
+					candidateKeys: {
+						estimatedCount: Number.MAX_SAFE_INTEGER,
+						get probe() {
+							queueMicrotask(() => controller.abort(reason));
+							return undefined;
+						},
+						collect() {
+							assert.fail('the broad candidate plan should not be collected');
+						},
+					},
+					filter() {
+						candidates++;
+						return true;
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert.strictEqual(candidates, 0);
+	});
+
+	for (const optionalCount of [false, true]) {
+		it(`stops native tracing and source hydration after cancellation between real trace batches (${optionalCount ? 'optional count' : 'page'})`, async () => {
+			const binding = await loadFullTextNativeBinding();
+			const batchSize = (await binding.runtimeInfo()).limits.maxTraceRecords;
+			const count = batchSize * 2 + 1;
+			const controller = new AbortController();
+			const reason = new Error('cancel after first native trace batch');
+			let abortAfterTrace = true;
+			let traceCalls = 0;
+			let sourceReads = 0;
+			const restores = [];
+			setFullTextNativeBindingForTests({
+				binding: {
+					...binding,
+					async openNativeFullTextReader(options) {
+						const reader = await binding.openNativeFullTextReader(options);
+						const original = reader.traceMatches;
+						reader.traceMatches = async function (...args) {
+							const result = await original.apply(this, args);
+							assert.strictEqual(result.complete, true);
+							if (abortAfterTrace && ++traceCalls === 1) controller.abort(reason);
+							return result;
+						};
+						restores.push(() => {
+							reader.traceMatches = original;
+						});
+						return reader;
+					},
+				},
+				closeTimeoutMilliseconds: 5000,
+				shutdownTimeoutMilliseconds: 10000,
+			});
+			try {
+				await seed(Array.from({ length: count }, (_, index) => ({ id: `trace-${index}`, title: 'widget' })));
+				await assert.rejects(
+					Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+						condition({ includeHighlights: true }),
+						{ signal: controller.signal },
+						{
+							minResults: count,
+							...(optionalCount
+								? { exhaustive: true, onIncompleteCount: () => assert.fail('abort is not an incomplete count') }
+								: null),
+							filter(key, entry) {
+								Object.defineProperty(entry.value, 'title', {
+									configurable: true,
+									get() {
+										sourceReads++;
+										return 'widget';
+									},
+								});
+								return true;
+							},
+						}
+					),
+					(error) => error === reason
+				);
+				assert.deepStrictEqual({ traceCalls, sourceReads }, { traceCalls: 1, sourceReads: count + batchSize });
+				abortAfterTrace = false;
+				let completed = false;
+				const retry = Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+					condition({ includeHighlights: true }),
+					undefined,
+					{ minResults: 1 }
+				);
+				retry.then(
+					() => {
+						completed = true;
+					},
+					() => {
+						completed = true;
+					}
+				);
+				await waitFor(() => completed, 10000);
+				const entries = await retry;
+				assert.strictEqual(entries.length, 1);
+				assert(entries[0].$highlights.title.length > 0);
+			} finally {
+				for (const restore of restores) restore();
+			}
+		});
+	}
+
 	it('discards count-only tail entries after an advisory count becomes incomplete', async () => {
 		await seed(['a', 'b', 'c', 'd'].map((id) => ({ id, title: 'widget' })));
 		await collect(Product.search(query({ limit: 1 })));
