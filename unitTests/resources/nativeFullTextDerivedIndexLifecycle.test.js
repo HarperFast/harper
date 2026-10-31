@@ -211,7 +211,6 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		validateFullTextRuntimeVersions(runtime);
 		assert.strictEqual(runtime.lifecycleApiVersion, 1);
 		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
-
 		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
 		const compatibleBinding = {
 			...binding,

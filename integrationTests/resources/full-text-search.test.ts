@@ -339,25 +339,49 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			{
 				fields: ['title'],
 				boost: 0.5,
-				should: [{ comparator: 'matches_phrase', value: 'road shoes', fields: ['title'], boost: 10 }],
+				should: [{ comparator: 'matches_phrase', value: 'trail running', fields: ['title'], boost: 10 }],
 			},
 			{ select: ['id', 'title', '$score', '$highlights'] }
 		);
 		const ranked = await search(target);
 		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		assert.notDeepStrictEqual(
+			ranked.map(({ id }) => id),
+			baseline.map(({ id }) => id)
+		);
+		const baselineById = new Map(baseline.map((record) => [record.id, record]));
+		assert.strictEqual(ranked[1].$score, Math.fround(baselineById.get('two').$score * 0.5));
+		assert(ranked[0].$score > Math.fround(baselineById.get('one').$score * 0.5));
+
 		assert.deepStrictEqual(
 			ranked.map(({ id }) => id),
-			['two', 'one']
+			['one', 'two']
 		);
 		assert.deepStrictEqual(
 			ranked[0].$highlights.title.flatMap(({ spans }) => spans),
 			[
 				{ start: 0, end: 10 },
-				{ start: 11, end: 21 },
+				{ start: 11, end: 24 },
 			]
 		);
 		const rest = await request('/Product/', { method: 'QUERY', body: JSON.stringify(target) });
 		assert.deepStrictEqual(rest, ranked);
+		const certified = await fetch(`${ctx.harper.httpURL}/Product/`, {
+			method: 'QUERY',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				...target,
+				conditions: target.conditions.map((condition) => ({
+					...condition,
+					waitForIndexMilliseconds: 0,
+					maxIndexLagMilliseconds: 5000,
+				})),
+			}),
+		});
+		assert.strictEqual(certified.status, 200, await certified.clone().text());
+		assert.match(certified.headers.get('harper-index-coverage'), /^(current|bounded); lag=.*; tolerance=5000$/);
+		assert.deepStrictEqual(await certified.json(), ranked);
+
 		const operations = await operation({
 			operation: 'search_by_conditions',
 			schema: 'data',
@@ -372,7 +396,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		});
 		assert.deepStrictEqual(
 			page.map(({ id }) => id),
-			['one']
+			['two']
 		);
 		await request('/Product/', { method: 'QUERY', body: JSON.stringify(query('waterproof', { boost: '2' })) }, 400);
 		const invalid = await fetch(ctx.harper.operationsAPIURL, {
@@ -644,7 +668,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			'waterproof',
 			{
 				fields: ['title'],
-				should: [{ comparator: 'matches_phrase', value: 'road shoes', fields: ['title'], boost: 10 }],
+				should: [{ comparator: 'matches_phrase', value: 'trail running', fields: ['title'], boost: 10 }],
 			},
 			{ select: ['id', 'title', '$score'] }
 		);
@@ -655,7 +679,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		});
 		assert.deepStrictEqual(
 			scoringRest.map(({ id }) => id),
-			['two', 'one']
+			['one', 'two']
 		);
 		for (const should of [
 			[{ comparator: 'matches', value: 'classified', fields: ['description'] }],

@@ -249,20 +249,15 @@ export class FullTextQueryIndex {
 		const waiting = waitForIndexMilliseconds > 0;
 		let coverage: DerivedIndexCoverage | undefined;
 		const execute = async () => {
-			assertFuzzyPolicy(
-				condition.fullTextQuery ?? leafDescriptor(condition),
-				getFullTextQueryPolicy().maxFuzzyDistance
-			);
+			const query = condition.fullTextQuery ?? leafDescriptor(condition);
+			assertFuzzyPolicy(query, getFullTextQueryPolicy().maxFuzzyDistance);
 			assertReady(
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
 			);
-			const query = condition.fullTextQuery ?? leafDescriptor(condition);
-			if (fullTextExpressionUsesScoring(query)) {
-				await this.#getBinding();
-				validateFullTextScoringRuntime(query, this.#queryApiVersion);
-			}
+			const scoring = fullTextExpressionUsesScoring(query);
 			if (waiting) {
+				if (scoring) await this.#assertScoringRuntime(query);
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
 				const waitDeadline = performance.now() + waitForIndexMilliseconds;
@@ -295,6 +290,7 @@ export class FullTextQueryIndex {
 				return result;
 			}
 			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
+			if (scoring) await this.#assertScoringRuntime(query);
 			const result = await this.#search(condition, context, options);
 			this.#unexpectedSearchFailureWarned = false;
 			this.#incompletePageFailureLogged = false;
@@ -1116,6 +1112,11 @@ export class FullTextQueryIndex {
 		try {
 			logger.warn?.('Could not close a retired full-text reader; the reader remains retired', error);
 		} catch {}
+	}
+
+	async #assertScoringRuntime(query: NativeFullTextSearchExpression): Promise<void> {
+		await this.#getBinding();
+		validateFullTextScoringRuntime(query, this.#queryApiVersion);
 	}
 
 	async #getBinding(): Promise<NativeFullTextModule> {

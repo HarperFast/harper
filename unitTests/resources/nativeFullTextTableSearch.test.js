@@ -111,6 +111,20 @@ describe('published native full-text Table.search integration', () => {
 		);
 		const boosted = await search({ boost: 3 });
 		assert.deepStrictEqual(ids(boosted), ids(baseline));
+		const pending = Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+			{
+				...condition,
+				fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'widget', mode: 'any', fields: ['title'] } },
+				maxIndexLagMilliseconds: 5000,
+				waitForIndexMilliseconds: 0,
+			},
+			{},
+			{ minResults: 1 }
+		);
+		assert(pending.indexCoverage, 'non-waiting scoring exposes coverage before await');
+		assert(['current', 'bounded'].includes(pending.indexCoverage.state));
+		await pending;
+
 		for (let index = 0; index < baseline.length; index++)
 			assert.strictEqual(boosted[index].$score, Math.fround(baseline[index].$score * 3));
 		const zero = await search({ boost: 0 });

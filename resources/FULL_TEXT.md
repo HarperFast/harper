@@ -187,7 +187,7 @@ The policy is captured for the whole process and inherited by HTTP and applicati
 
 ### Query relevance controls
 
-Query scoring requires a wrapper with native ABI 14 and query API 8. The currently pinned 0.8.0 release uses ABI 13/query API 7: existing searches remain supported, and scoring controls return 400. Release and pin the compatible wrapper before shipping this feature; qualification currently uses a locally built artifact.
+Query scoring requires a wrapper with native ABI 14 and query API 8. The currently pinned 0.8.0 release uses ABI 13/query API 7: existing searches remain supported, and scoring controls return 400.
 
 Use `boost` to scale the required clause score, and `should` to add optional scoring clauses. Every result must still match the outer condition. An optional clause can improve a result's rank without adding or removing matches. Field-restricted optional clauses compose with configured index field weights, without rebuilding the index:
 

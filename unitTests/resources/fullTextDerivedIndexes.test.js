@@ -309,6 +309,37 @@ describe('@fullText derived-index activation', () => {
 		await assert.rejects(Product.clear(), /whole-table invalidation is crash-safe/);
 	});
 
+	rocksOnly('rejects scoring on query API 7 while ordinary Table searches remain available', async () => {
+		Product = table({
+			database: `fulltext-legacy-scoring-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		await Product.put('legacy', { title: 'widget' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30000);
+		assert.strictEqual((await binding.runtimeInfo()).queryApiVersion, 7);
+		const condition = {
+			attribute: 'search',
+			comparator: 'matches',
+			value: 'widget',
+			maxIndexLagMilliseconds: 0,
+			waitForIndexMilliseconds: 30000,
+		};
+		assert.strictEqual((await collect(Product.search({ conditions: [condition] }))).length, 1);
+		for (const controls of [{ boost: 1 }, { should: [{ comparator: 'matches', value: 'widget', fields: ['title'] }] }])
+			await assert.rejects(
+				async () => collect(Product.search({ conditions: [{ ...condition, ...controls }] })),
+				(error) => error.statusCode === 400 && /query API 8/.test(error.message)
+			);
+		assert.strictEqual((await collect(Product.search({ conditions: [condition] }))).length, 1);
+	});
+
 	rocksOnly('keeps ordinary source equality separate from full-text search', async () => {
 		Product = table({
 			database: `fulltext-query-routing-${Date.now()}`,
