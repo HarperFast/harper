@@ -276,13 +276,14 @@ describe('published full-text ordering and exact counts', () => {
 			);
 		}
 	});
-	it('preserves a counted page beyond the native offset window with an unknown total', async () => {
+	it('preserves pages and completes selective ordering and counting beyond the native offset window', async () => {
 		const info = await (await loadFullTextNativeBinding()).runtimeInfo();
 		const count = info.limits.maxSearchWindow + 5;
 		await seed(
 			Array.from({ length: count }, (_, index) => ({
 				id: `record-${String(index).padStart(6, '0')}`,
 				title: 'widget',
+				price: index,
 			}))
 		);
 		setFullTextTestConfiguration({
@@ -296,8 +297,34 @@ describe('published full-text ordering and exact counts', () => {
 		assert.strictEqual(baseline.length, 2);
 		const page = await Product.search({ ...target, count: 'exact' });
 		assert.deepStrictEqual(ids(page), ids(baseline));
-		assert.strictEqual(page.recordCount, null);
-		assert.strictEqual(page.recordCountExact, false);
+		if (page.recordCountExact) assert.strictEqual(page.recordCount, count);
+		else assert.strictEqual(page.recordCount, null);
+		setFullTextTestConfiguration({
+			...previousConfiguration,
+			maxRawHitsPerRequest: count * 4,
+			maxResultsPerRequest: 10,
+			requestBudgetMilliseconds: 30000,
+		});
+		const tailIds = new Set(ids(baseline));
+		const selective = query({
+			conditions: [condition(), { attribute: 'price', comparator: 'ge', value: 0 }],
+			rowFilter: (record) => tailIds.has(record.id),
+			limit: 1,
+		});
+		const ordered = await collect(Product.search({ ...selective, sort: { attribute: 'price', descending: true } }));
+		assert.deepStrictEqual(
+			ids(ordered),
+			ids(
+				baseline
+					.slice()
+					.sort((a, b) => b.price - a.price)
+					.slice(0, 1)
+			)
+		);
+		const counted = await Product.search({ ...selective, count: 'exact' });
+		assert.strictEqual(counted.length, 1);
+		assert.strictEqual(counted.recordCount, 2);
+		assert.strictEqual(counted.recordCountExact, true);
 	});
 
 	it('traces only the visible page while retaining all real index entries for counting and ordering', async () => {

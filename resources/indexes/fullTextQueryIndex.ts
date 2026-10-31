@@ -465,7 +465,9 @@ export class FullTextQueryIndex {
 			let target =
 				bounded && !optionalCount
 					? Math.max(1, options.minResults!)
-					: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
+					: options.exhaustive
+						? Math.min(rawHitLimit, policy.maxResultsPerRequest)
+						: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
 			if (optionalCount) target = Math.max(target, pageTarget);
 			const requiredTarget = target;
 			if (!Number.isSafeInteger(requiredTarget) || requiredTarget < 0 || requiredTarget > rawHitLimit)
@@ -577,13 +579,8 @@ export class FullTextQueryIndex {
 						if (traversal.skip === 0) traversal.prefix = undefined;
 						if (replayedHits > 0) result = { ...result, hits: replay.hits };
 					}
-					if (result.totalRelation === 'exact' && result.total > searchWindow) {
-						if (optionalCount) {
-							incompleteCount = true;
-							target = pageTarget;
-						} else if (!bounded)
-							throw unboundedSearchLimitError(target, searchWindow, rawHitLimit, Boolean(options.orderResults));
-					}
+					if (!options.exhaustive && !bounded && result.totalRelation === 'exact' && result.total > searchWindow)
+						throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
 					if (previousHit && result.hits.length > 0 && !fullTextHitsAdvance(previousHit, result.hits[0]))
 						throw new ServerError('Full-text traversal did not advance past its previous page', 500);
 					if (result.hits.length > 0) previousHit = result.hits[result.hits.length - 1];
@@ -1498,14 +1495,14 @@ function unboundedSearchLimitError(
 	ordered = false
 ): ClientError {
 	const bound =
-		target < searchWindow
+		ordered || target < searchWindow
 			? target === rawHitLimit
 				? 'storage.fullText.maxRawHitsPerRequest'
 				: 'storage.fullText.maxResultsPerRequest'
 			: `the ${searchWindow}-result search window`;
 	return fullTextSearchLimitError(
 		ordered
-			? `Stored-field full-text ordering requires all text matches before filtering within ${bound}; narrow the text query${target < searchWindow ? ' or increase the relevant budget' : ''}`
+			? `Stored-field full-text ordering exceeds ${bound}; narrow the query or increase the relevant budget`
 			: `Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
 		400
 	);
