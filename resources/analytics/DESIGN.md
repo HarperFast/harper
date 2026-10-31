@@ -6,16 +6,6 @@ Analytics recording and aggregation.
 
 Index of every design note: [DESIGN.md](../../DESIGN.md).
 
-**A reset ends the window that was being flushed too.** After `setAnalyticsEnabled()` returns, no
-listener or sink on that thread receives a sample recorded on it before the call; other threads keep
-their own windows. Dropping `activeActions` and the timer covers the window still being recorded, and
-the queue-depth high-water marks restart with it. `flushAnalytics()` has already rotated the previous
-window out and yields once per action, so it also captures `analyticsGeneration`, which every reset
-advances, and stops after a yield, before each listener and before the sink once it changes. A listener
-that resets keeps the report it was handed, as do the listeners before it; later listeners and the sink
-do not get it. Pinned by the two in-flight cases in
-`../../unitTests/resources/analytics/aggregationCycle.test.js`.
-
 ---
 
 ## Analytics aggregation resumes from a raw cursor, which is not a clock (`resources/analytics/write.ts`)
@@ -46,6 +36,17 @@ Still open: `findLastAggregationTime` seeds both markers after a restart from th
 analytics record, whose `time` is an end-of-cycle stamp, so a restart mid-drain can skip the rest of
 the backlog; and `storeMetric` discards `table.put()`'s result, so the cursor advances past raw
 records whose aggregate rows failed to commit. Both need a cursor persisted with the rows.
+
+## A reset ends the window that was being flushed too (`resources/analytics/write.ts`)
+
+After `setAnalyticsEnabled()` returns, no listener or sink on that thread receives a sample recorded on
+it before the call; other threads keep their own windows. Dropping `activeActions` and the timer covers
+the window still being recorded, and the queue-depth high-water marks restart with it.
+`flushAnalytics()` has already rotated the previous window out and yields once per action, so it also
+captures `analyticsGeneration`, which every reset advances, and stops after a yield, before each
+listener and before the sink once it changes. A listener that resets keeps the report it was handed, as
+do the listeners before it; later listeners and the sink do not get it. Pinned by the two in-flight
+cases in `../../unitTests/resources/analytics/aggregationCycle.test.js`.
 
 ## Per-thread rows carry a `thread` attribute under their own metric name (`resources/analytics/write.ts`)
 
