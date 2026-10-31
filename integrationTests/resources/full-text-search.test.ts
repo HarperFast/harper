@@ -1080,7 +1080,12 @@ suite('deployed full-text default query policy', (ctx: ContextWithHarper) => {
 		}
 	});
 
-	test('rejects more than 64 analyzed terms with implied query defaults', async () => {
+	test('accepts 64 analyzed terms and rejects 65 with implied query defaults', async () => {
+		const accepted = query([...Array.from({ length: 63 }, (_, index) => `term${index}`), 'waterproof'].join(' '), {
+			fields: ['title'],
+		});
+		for (const operations of [false, true])
+			assert.deepStrictEqual(ids(await search(accepted, operations)), ['default-policy']);
 		const target = query(Array.from({ length: 65 }, (_, index) => `term${index}`).join(' '), { fields: ['title'] });
 		await search(target, false, 400);
 		await assertOperationsQueryRejection(
