@@ -38,18 +38,12 @@ describe('full-text scoring contract', () => {
 			assert.throws(() => validateFullTextScoringOptions({ should }, 'any'));
 	});
 
-	it('preserves ordinary queries on old runtimes and explicitly rejects scoring', () => {
-		const leaf = { text: 'widget', mode: 'any' };
-		validateFullTextScoringRuntime(leaf, 7);
-		const boost = { operator: 'boost', boost: 1, clause: leaf };
-		const optional = { operator: 'optional', required: leaf, optional: [leaf] };
-		for (const expression of [boost, optional, { operator: 'and', clauses: [leaf, boost] }]) {
-			validateFullTextScoringRuntime(expression, 8);
-			assert.throws(
-				() => validateFullTextScoringRuntime(expression, 7),
-				(error) => error.statusCode === 400 && /query API 8/.test(error.message)
-			);
-		}
+	it('explicitly rejects scoring on old runtimes', () => {
+		validateFullTextScoringRuntime(8);
+		assert.throws(
+			() => validateFullTextScoringRuntime(7),
+			(error) => error.statusCode === 400 && /query API 8/.test(error.message)
+		);
 	});
 
 	it('accepts only supported ABI and query API pairs', () => {

@@ -104,6 +104,15 @@ describe('published native full-text Table.search integration', () => {
 					...options,
 				})
 			);
+		const boundaryClause = { comparator: 'matches', value: 'widget', fields: ['title'] };
+		assert.strictEqual(
+			(await search({ should: Array.from({ length: 127 }, () => ({ ...boundaryClause })) })).length,
+			3
+		);
+		await assert.rejects(
+			search({ should: Array.from({ length: 128 }, () => ({ ...boundaryClause })) }),
+			(error) => error.statusCode === 400 && /Full-text query on 'catalogSearch' is invalid/.test(error.message)
+		);
 		const baseline = await search();
 		assert.deepStrictEqual(
 			baseline.map(({ id }) => id),
