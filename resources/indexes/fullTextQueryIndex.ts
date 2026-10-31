@@ -1517,11 +1517,11 @@ function assertQueryPolicy(expression: NativeFullTextSearchExpression, maximum: 
 
 async function waitForBinding<T>(binding: Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (!signal) return binding;
-	signal.throwIfAborted();
 	let abort: () => void;
 	const cancelled = new Promise<never>((_, reject) => {
 		abort = () => reject(signal.reason);
-		signal.addEventListener('abort', abort, { once: true });
+		if (signal.aborted) abort();
+		else signal.addEventListener('abort', abort, { once: true });
 	});
 	try {
 		return await Promise.race([binding, cancelled]);

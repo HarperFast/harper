@@ -1403,6 +1403,52 @@ describe('FullTextQueryIndex', () => {
 			assert.strictEqual(opens, 0);
 		});
 
+	it('observes a delayed binding failure after an already-aborted scoring request', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'already-aborted-scoring-binding';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const bindingReady = Promise.withResolvers();
+		let opens = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			onOpen: () => opens++,
+			bindingReady: bindingReady.promise,
+			queryApiVersion: 8,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const controller = new AbortController();
+		const reason = new Error('already cancelled');
+		controller.abort(reason);
+		const unhandled = [];
+		const onUnhandled = (error) => unhandled.push(error);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			await assert.rejects(
+				index.search(
+					{
+						attribute: readinessId,
+						comparator: 'matches',
+						value: 'shoe',
+						fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+					},
+					{ signal: controller.signal }
+				),
+				(error) => error === reason
+			);
+			bindingReady.reject(new Error('delayed capability failure'));
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepStrictEqual(unhandled, []);
+			assert.strictEqual(opens, 0);
+		} finally {
+			bindingReady.resolve();
+			await index.close();
+			process.removeListener('unhandledRejection', onUnhandled);
+		}
+	});
+
 	it('does not open native storage before shared readiness is ready', async () => {
 		const auditStore = sharedStore();
 		let opens = 0;
