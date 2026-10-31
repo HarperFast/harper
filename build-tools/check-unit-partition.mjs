@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CI runs unitTests/resources as three shard scripts (core:a-q, core:r-z, indexes) and nothing else
+// CI runs unitTests/resources as three shard scripts (core:a-n, core:o-z, indexes) and nothing else
 // runs that tree as a whole on the default engine, so a file the globs stop selecting silently loses
 // its coverage.
 import { createRequire } from 'node:module';
@@ -30,7 +30,7 @@ const errors = [];
 const sets = {};
 for (const prefix of ['test:unit', 'test:unit:typestrip']) {
 	const all = filesOf(`${prefix}:resources`);
-	const shards = ['core:a-q', 'core:r-z', 'indexes'].map((shard) => [shard, filesOf(`${prefix}:resources:${shard}`)]);
+	const shards = ['core:a-n', 'core:o-z', 'indexes'].map((shard) => [shard, filesOf(`${prefix}:resources:${shard}`)]);
 	const owners = new Map();
 	for (const [shard, files] of shards) {
 		if (files.size === 0) errors.push(`${prefix}:resources:${shard} selects no files`);

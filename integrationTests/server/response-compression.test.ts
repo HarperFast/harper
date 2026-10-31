@@ -3,7 +3,8 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import http from 'node:http';
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib';
-import { unpack } from 'msgpackr';
+import { unpack, unpackMultiple } from 'msgpackr';
+import { decode as decodeCbor } from 'cbor-x';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -18,9 +19,9 @@ interface Captured {
 	error?: Error;
 }
 
-function request(url: string, headers: Record<string, string>): Promise<Captured> {
+function request(url: string, headers: Record<string, string>, method = 'GET'): Promise<Captured> {
 	return new Promise((resolvePromise, reject) => {
-		const req = http.get(url, { headers }, (res) => {
+		const req = http.request(url, { headers, method }, (res) => {
 			const chunks: Buffer[] = [];
 			const done = (error?: Error) =>
 				resolvePromise({ status: res.statusCode!, headers: res.headers, body: Buffer.concat(chunks), error });
@@ -30,6 +31,7 @@ function request(url: string, headers: Record<string, string>): Promise<Captured
 			res.on('error', (error) => done(error));
 		});
 		req.on('error', reject);
+		req.end();
 	});
 }
 
@@ -41,12 +43,34 @@ const records = (count: number) => Array.from({ length: count }, (_, n) => ({ n,
 suite('response compression', { skip: process.platform === 'win32' }, (ctx: ContextWithHarper) => {
 	let restBase = '';
 	let authorization = '';
-	const get = (path: string, accept: string, acceptEncoding = 'br') =>
-		request(`${restBase}${path}`, {
-			'Authorization': authorization,
-			'Accept': accept,
-			'Accept-Encoding': acceptEncoding,
-		});
+	const get = (path: string, accept: string, acceptEncoding = 'br', method = 'GET') =>
+		request(
+			`${restBase}${path}`,
+			{
+				'Authorization': authorization,
+				'Accept': accept,
+				'Accept-Encoding': acceptEncoding,
+			},
+			method
+		);
+	const rowCounts = async () => JSON.parse((await get('/RowCounts/', 'application/json', 'identity')).body.toString());
+	const settledRowCounts = async () => {
+		const counts = { opened: 0, stepped: 0, returned: 0 };
+		const deadline = Date.now() + 5_000;
+		do {
+			await new Promise((r) => setTimeout(r, 50));
+			const next = await rowCounts();
+			counts.opened += next.opened;
+			counts.stepped += next.stepped;
+			counts.returned += next.returned;
+		} while (counts.returned < counts.opened && Date.now() < deadline);
+		return counts;
+	};
+	const streamedRows: Record<string, (body: Buffer) => unknown[]> = {
+		'application/cbor': (body) => decodeCbor(body),
+		'application/x-msgpack': (body) => unpackMultiple(body),
+		'text/csv': (body) => body.toString().trim().split('\n').slice(1),
+	};
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
@@ -114,6 +138,45 @@ suite('response compression', { skip: process.platform === 'win32' }, (ctx: Cont
 			strictEqual(response.status, 200);
 			strictEqual(response.headers['content-encoding'], 'br');
 			strictEqual(decoded(response).toString(), 'onetwo');
+		});
+	}
+
+	for (const [accept, parse] of Object.entries(streamedRows)) {
+		test(`a compressed ${accept} stream round-trips, and its HEAD leaves the source unread`, async () => {
+			await rowCounts();
+			const response = await get('/CountedRows/', accept);
+			strictEqual(response.status, 200);
+			strictEqual(response.headers['content-encoding'], 'br');
+			strictEqual(parse(decoded(response)).length, 200);
+			const { opened, stepped } = await rowCounts();
+			deepStrictEqual({ opened, stepped }, { opened: 1, stepped: 200 });
+
+			const head = await get('/CountedRows/', accept, 'br', 'HEAD');
+			strictEqual(head.status, 200);
+			// the only open is the discard's own close of a fresh iterator
+			deepStrictEqual(await settledRowCounts(), { opened: 1, stepped: 0, returned: 1 });
+		});
+
+		test(`a client disconnecting from a ${accept} stream closes its source`, { timeout: 20_000 }, async () => {
+			await rowCounts();
+			await new Promise<void>((resolvePromise, reject) => {
+				const req = http.get(
+					`${restBase}/SlowCountedRows/`,
+					{ headers: { 'Authorization': authorization, 'Accept': accept, 'Accept-Encoding': 'identity' } },
+					(res) => {
+						res.once('data', () => {
+							req.destroy();
+							resolvePromise();
+						});
+					}
+				);
+				req.on('error', () => {});
+				setTimeout(() => reject(new Error('no data before the deadline')), 10_000);
+			});
+			const counts = await settledRowCounts();
+			strictEqual(counts.opened, 1);
+			strictEqual(counts.returned, 1);
+			ok(counts.stepped < 200, 'the source must stop being read after the disconnect');
 		});
 	}
 

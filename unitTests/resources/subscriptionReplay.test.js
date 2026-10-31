@@ -62,6 +62,29 @@ async function collect(subscription, quietMs = 50, { minEvents = 1, timeout = 50
 describe('Subscription replay', () => {
 	let StartTimeTable, CountTable, CurrentStateTable, RecordTable, FreshTable;
 
+	const ownedSubscriptions = [];
+
+	async function subscribe(Table, request) {
+		const subscription = await Table.subscribe(request);
+		ownedSubscriptions.push(subscription);
+		return subscription;
+	}
+
+	afterEach(() => {
+		const failures = [];
+		while (ownedSubscriptions.length) {
+			const subscription = ownedSubscriptions.pop();
+			try {
+				subscription.end();
+				assert.strictEqual(subscription.closed, true, 'the owned subscription stayed open');
+				assert.strictEqual(subscription.subscriptions, null, 'the owned subscription stayed registered');
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		if (failures.length) throw new AggregateError(failures, 'Failed to clean up owned subscriptions');
+	});
+
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -108,9 +131,9 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < N; i++) {
 				await StartTimeTable.put(i, { name: 'v' + i });
 			}
-			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const subscription = await subscribe(StartTimeTable, { startTime: startTime - 1, isCollection: true });
 			const events = await collect(subscription, 200);
-			subscription.return?.();
+			subscription.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			assert.equal(ids.size, N, `expected ${N} distinct ids, got ${ids.size}`);
@@ -130,7 +153,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 150; i++) {
 				await StartTimeTable.put(1000 + i, { name: 'pre' + i });
 			}
-			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const subscription = await subscribe(StartTimeTable, { startTime: startTime - 1, isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			// fire writes concurrently with the replay loop
@@ -154,7 +177,7 @@ describe('Subscription replay', () => {
 			).catch(() => {});
 			// additive settle: a duplicate trailing the last expected delivery can still land
 			await delay(100);
-			subscription.return?.();
+			subscription.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			// every pre-populated id should be present
@@ -188,7 +211,7 @@ describe('Subscription replay', () => {
 			// A `function` listener runs inside the replay loop's send with the subscription as `this`.
 			async function replayUntil(T, startTime, stopAfter) {
 				const delivered = [];
-				const subscription = await T.subscribe({
+				const subscription = await subscribe(T, {
 					startTime,
 					isCollection: true,
 					includeSuperseded: true,
@@ -201,7 +224,7 @@ describe('Subscription replay', () => {
 				return { cursor: subscription.startTime, delivered };
 			}
 			async function resume(T, cursor, expectedIds) {
-				const subscription = await T.subscribe({ startTime: cursor, isCollection: true, includeSuperseded: true });
+				const subscription = await subscribe(T, { startTime: cursor, isCollection: true, includeSuperseded: true });
 				const ids = [];
 				subscription.on('data', (event) => ids.push(event.id));
 				await waitFor(() => expectedIds.every((id) => ids.includes(id)), 5000).catch(() => {});
@@ -254,7 +277,7 @@ describe('Subscription replay', () => {
 				const lastKey = [...T.auditStore.getRange({ start: startTime })]
 					.filter((record) => record.tableId === T.tableId)
 					.at(-1).txnLogKey;
-				const subscription = await T.subscribe({
+				const subscription = await subscribe(T, {
 					startTime,
 					isCollection: true,
 					includeSuperseded: true,
@@ -296,7 +319,7 @@ describe('Subscription replay', () => {
 				});
 				await T.put(size, { name: 'after' });
 				// with no consumer the queue fills until replay passes EVENT_HIGH_WATER_MARK (100) and waits to drain
-				const subscription = await T.subscribe({ startTime, isCollection: true, includeSuperseded: true });
+				const subscription = await subscribe(T, { startTime, isCollection: true, includeSuperseded: true });
 				await waitFor(() => subscription.queue?.length > 100);
 				const lastSent = subscription.queue.at(-1).id;
 				subscription.end();
@@ -314,9 +337,9 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 200; i++) {
 				await CountTable.put(i, { name: 'v' + i });
 			}
-			const subscription = await CountTable.subscribe({ previousCount: 10, isCollection: true });
+			const subscription = await subscribe(CountTable, { previousCount: 10, isCollection: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			// at least 10 history events (could be more if writes overlapped, but should not exceed by much)
 			assert.ok(events.length >= 10, `expected at least 10 events, got ${events.length}`);
@@ -333,7 +356,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 150; i++) {
 				await CountTable.put(3000 + i, { name: 'count_pre' + i });
 			}
-			const subscription = await CountTable.subscribe({ previousCount: 5, isCollection: true });
+			const subscription = await subscribe(CountTable, { previousCount: 5, isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			// fire writes after subscribe returns but while replay loop is still running
@@ -352,7 +375,7 @@ describe('Subscription replay', () => {
 				{ timeout: 5000 }
 			).catch(() => {});
 			await delay(100);
-			subscription.return?.();
+			subscription.end();
 
 			// concurrent writes should arrive
 			const ids = new Set(events.map((e) => e.id));
@@ -384,9 +407,9 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < N; i++) {
 				await CurrentStateTable.put(i, { name: 'curr' + i });
 			}
-			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
+			const subscription = await subscribe(CurrentStateTable, { isCollection: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			for (let i = 0; i < N; i++) {
@@ -399,7 +422,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 150; i++) {
 				await CurrentStateTable.put(5000 + i, { name: 'dedupe_pre' + i });
 			}
-			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
+			const subscription = await subscribe(CurrentStateTable, { isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			// concurrent writes that may be observed by both cursor (snapshot:false) and the listener
@@ -421,7 +444,7 @@ describe('Subscription replay', () => {
 				{ timeout: 5000 }
 			).catch(() => {});
 			await delay(100);
-			subscription.return?.();
+			subscription.end();
 
 			// every updated key MUST be delivered with its final value at least once, even if
 			// the same (id, version) is also delivered via the cursor first
@@ -447,9 +470,9 @@ describe('Subscription replay', () => {
 			await RecordTable.put(42, { name: 'v2' });
 			await RecordTable.put(42, { name: 'v3' });
 			await delay(10);
-			const subscription = await RecordTable.subscribe({ id: 42, startTime: startTime - 1, includeSuperseded: true });
+			const subscription = await subscribe(RecordTable, { id: 42, startTime: startTime - 1, includeSuperseded: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			// no duplicate (id, version) pairs - this is the regression we're testing
 			const pairs = events.map((e) => `${e.id}:${e.version}`);
@@ -474,7 +497,7 @@ describe('Subscription replay', () => {
 			await RecordTable.put(99, { name: 'pre1' });
 			await RecordTable.put(99, { name: 'pre2' });
 			await delay(10);
-			const subscription = await RecordTable.subscribe({ id: 99, startTime: startTime - 1, includeSuperseded: true });
+			const subscription = await subscribe(RecordTable, { id: 99, startTime: startTime - 1, includeSuperseded: true });
 			const finalConcurrentValue = 'post4';
 			const events = [];
 			subscription.on('data', (event) => events.push(event));
@@ -488,7 +511,7 @@ describe('Subscription replay', () => {
 				timeout: 5000,
 			}).catch(() => {});
 			await delay(100);
-			subscription.return?.();
+			subscription.end();
 
 			assert.ok(
 				events.some((event) => event.value?.name === finalConcurrentValue),
@@ -512,7 +535,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 200; i++) {
 				inFlight.push(FreshTable.put(20000 + i, { name: 'fresh_inflight' + i }));
 			}
-			const subscription = await FreshTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const subscription = await subscribe(FreshTable, { startTime: startTime - 1, isCollection: true });
 			// Collect while writes commit: attach listener first, await all commits, then drain.
 			// Using collect()'s quiet-period timer here is racy — it can expire before all in-flight
 			// writes have committed and their events have been delivered.
@@ -532,7 +555,7 @@ describe('Subscription replay', () => {
 				},
 				{ timeout: 5000 }
 			).catch(() => {});
-			subscription.return?.();
+			subscription.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			for (let i = 0; i < 200; i++) {
@@ -551,7 +574,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 200; i++) {
 				await CurrentStateTable.put(6000 + i, { name: 'rc_init' + i });
 			}
-			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
+			const subscription = await subscribe(CurrentStateTable, { isCollection: true });
 			// hammer keys late in the iteration — cursor with snapshot:false will likely see them
 			// AFTER they were updated, while the listener also queues them
 			const concurrentWrites = (async () => {
@@ -580,7 +603,7 @@ describe('Subscription replay', () => {
 				},
 				{ timeout: 5000 }
 			).catch(() => {});
-			subscription.return?.();
+			subscription.end();
 
 			// every key in 6000..6199 must appear at least once
 			const ids = new Set(events.map((e) => e.id));
@@ -607,7 +630,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 50; i++) {
 				await CurrentStateTable.put(7000 + i, { name: 'pp_init' + i });
 			}
-			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
+			const subscription = await subscribe(CurrentStateTable, { isCollection: true });
 			// updates to existing keys — cursor may or may not see depending on its position
 			const concurrentWrites = (async () => {
 				// first wait briefly so cursor likely advances
@@ -633,7 +656,7 @@ describe('Subscription replay', () => {
 				},
 				{ timeout: 5000 }
 			).catch(() => {});
-			subscription.return?.();
+			subscription.end();
 
 			// every key 7000..7049 must end up at the updated value as its final delivery
 			// (duplicates of (id, version) are acceptable under retained-message semantics)
@@ -661,9 +684,13 @@ describe('Subscription replay', () => {
 				await RecordTable.put(8000, { name: 'rapid_v' + i });
 			}
 			await delay(5);
-			const subscription = await RecordTable.subscribe({ id: 8000, startTime: startTime - 1, includeSuperseded: true });
+			const subscription = await subscribe(RecordTable, {
+				id: 8000,
+				startTime: startTime - 1,
+				includeSuperseded: true,
+			});
 			const events = await collect(subscription, 200);
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 250, 'all versions must replay across the yield boundary');
 			const pairs = events.map((e) => `${e.id}:${e.version}`);
@@ -684,7 +711,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 300; i++) {
 				await StartTimeTable.put(9000 + i, { name: 'race_pre' + i });
 			}
-			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const subscription = await subscribe(StartTimeTable, { startTime: startTime - 1, isCollection: true });
 			const events = [];
 			subscription.on('data', (event) => events.push(event));
 			// fire a batch of writes that will interleave with cursor yields
@@ -708,7 +735,7 @@ describe('Subscription replay', () => {
 				// Let any late duplicate delivery reach the uniqueness assertion below.
 				await delay(200);
 			} finally {
-				subscription.return?.();
+				subscription.end();
 			}
 
 			const ids = new Set(events.map((e) => e.id));
@@ -735,7 +762,7 @@ describe('Subscription replay', () => {
 				inFlight.push(StartTimeTable.put(13000 + i, { name: 'inflight' + i }));
 			}
 			// subscribe immediately — lastTxnTime is captured now, mid-flight
-			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const subscription = await subscribe(StartTimeTable, { startTime: startTime - 1, isCollection: true });
 			// Same fix as FIRST-subscription race test: attach listener before awaiting writes
 			// so events from commits that land after collect()'s quiet period aren't dropped.
 			const events = [];
@@ -747,7 +774,7 @@ describe('Subscription replay', () => {
 				for (let i = 0; i < 200; i++) if (!seen.has(13000 + i)) return false;
 				return true;
 			});
-			subscription.return?.();
+			subscription.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			for (let i = 0; i < 200; i++) {
@@ -763,7 +790,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 200; i++) {
 				inFlight.push(CurrentStateTable.put(14000 + i, { name: 'inflight' + i }));
 			}
-			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
+			const subscription = await subscribe(CurrentStateTable, { isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
@@ -775,7 +802,7 @@ describe('Subscription replay', () => {
 				},
 				{ timeout: 5000 }
 			).catch(() => {});
-			subscription.return?.();
+			subscription.end();
 
 			// every in-flight key must be delivered at least once (duplicates allowed under
 			// retained-message semantics for !omitCurrent)
@@ -804,7 +831,7 @@ describe('Subscription replay', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 				audit: true,
 			});
-			const subscription = await T.subscribe({ isCollection: true });
+			const subscription = await subscribe(T, { isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			// allow subscribe's IIFE to fully complete before issuing the write — this is
@@ -812,7 +839,7 @@ describe('Subscription replay', () => {
 			await delay(50);
 			await T.put(50000, { name: 'single' });
 			await waitFor(() => events.length >= 1);
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 1, `expected 1 event for the post-subscribe write, got ${events.length}`);
 			assert.equal(events[0].id, 50000);
@@ -830,7 +857,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 30; i++) {
 				inFlight.push(CountTable.put(17000 + i, { name: 'count_race_inflight' + i }));
 			}
-			const subscription = await CountTable.subscribe({ previousCount: 10, isCollection: true });
+			const subscription = await subscribe(CountTable, { previousCount: 10, isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
@@ -849,7 +876,7 @@ describe('Subscription replay', () => {
 			// additive settle: a duplicate trailing the sentinel can still land; this can only
 			// catch more, never lose events
 			await delay(100);
-			subscription.return?.();
+			subscription.end();
 
 			// the regression we want to catch: a record landing in BOTH history (from cursor's
 			// snapshot:true view) AND pendingRealTimeQueue (from the listener firing during the
@@ -869,7 +896,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 50; i++) {
 				inFlight.push(RecordTable.put(15000, { name: 'inflight_v' + i }));
 			}
-			const subscription = await RecordTable.subscribe({ id: 15000, startTime: startTime - 1 });
+			const subscription = await subscribe(RecordTable, { id: 15000, startTime: startTime - 1 });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
@@ -885,7 +912,7 @@ describe('Subscription replay', () => {
 			});
 			// additive settle so a duplicate trailing the sentinel can still surface
 			await delay(100);
-			subscription.return?.();
+			subscription.end();
 
 			const pairs = events.map((e) => `${e.id}:${e.version}`);
 			assert.equal(
@@ -904,7 +931,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 200; i++) {
 				await StartTimeTable.put(11000 + i, { name: 'crosstab' + i });
 			}
-			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const subscription = await subscribe(StartTimeTable, { startTime: startTime - 1, isCollection: true });
 			// concurrent writes to a DIFFERENT table — we should not see these, but they cause
 			// resetReadTxn churn that stresses our cursor's renewal
 			const otherTableWrites = (async () => {
@@ -914,7 +941,7 @@ describe('Subscription replay', () => {
 			})();
 			const events = await collect(subscription, 200);
 			await otherTableWrites;
-			subscription.return?.();
+			subscription.end();
 
 			// only StartTimeTable records should be delivered (id 11000..11199)
 			for (const e of events) {
@@ -944,9 +971,9 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 7; i++) {
 				await T.put(i, { name: 'v' + i });
 			}
-			const subscription = await T.subscribe({ previousCount: 100, isCollection: true });
+			const subscription = await subscribe(T, { previousCount: 100, isCollection: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			for (let i = 0; i < 7; i++) {
@@ -966,9 +993,9 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 5; i++) {
 				await T.put(i, { name: 'v' + i });
 			}
-			const subscription = await T.subscribe({ previousCount: 1, isCollection: true });
+			const subscription = await subscribe(T, { previousCount: 1, isCollection: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			// the 4 here is i=4, the last put — we expect that as the most recent
 			assert.equal(events.length, 1, `expected exactly 1 history event, got ${events.length}`);
@@ -983,9 +1010,9 @@ describe('Subscription replay', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 				audit: true,
 			});
-			const subscription = await T.subscribe({ previousCount: 10, isCollection: true });
+			const subscription = await subscribe(T, { previousCount: 10, isCollection: true });
 			const events = await collect(subscription, 150, { minEvents: 0 });
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 0, `expected 0 events on empty table, got ${events.length}`);
 		});
@@ -998,7 +1025,7 @@ describe('Subscription replay', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 				audit: true,
 			});
-			const subscription = await T.subscribe({ previousCount: 10, isCollection: true });
+			const subscription = await subscribe(T, { previousCount: 10, isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			// Write immediately — these are post-subscribe live commits and MUST be delivered.
@@ -1006,7 +1033,7 @@ describe('Subscription replay', () => {
 				await T.put(100 + i, { name: 'live' + i });
 			}
 			await waitFor(() => events.length >= 5);
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 5, `expected 5 live events, got ${events.length}`);
 			const ids = events.map((e) => e.id);
@@ -1025,9 +1052,9 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 20; i++) {
 				await T.put(42, { name: 'v' + i });
 			}
-			const subscription = await T.subscribe({ previousCount: 5, isCollection: true, includeSuperseded: true });
+			const subscription = await subscribe(T, { previousCount: 5, isCollection: true, includeSuperseded: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			// all 5 should be for id=42, with the LAST 5 versions (v15..v19) delivered chronologically
 			assert.equal(events.length, 5, `expected 5 history events, got ${events.length}`);
@@ -1059,7 +1086,7 @@ describe('Subscription replay', () => {
 				await Other.put(20000 + i, { name: 'noise' + i });
 			}
 			// subscribe to Ours which has no records
-			const subscription = await Ours.subscribe({ previousCount: 5, isCollection: true });
+			const subscription = await subscribe(Ours, { previousCount: 5, isCollection: true });
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await delay(2);
@@ -1068,7 +1095,7 @@ describe('Subscription replay', () => {
 				await Ours.put(30000 + i, { name: 'real' + i });
 			}
 			await waitFor(() => events.length >= 3);
-			subscription.return?.();
+			subscription.end();
 
 			// the cursor iterated 50 audit records, all skipped (different table); history is empty.
 			// listener delivers our 3 live writes via the queue+drain (during) and direct (after).
@@ -1094,9 +1121,9 @@ describe('Subscription replay', () => {
 			}
 			// startTime well in the future — gate skips everything ≤ that
 			const futureTime = Date.now() + 10_000_000_000; // far future
-			const subscription = await T.subscribe({ startTime: futureTime, isCollection: true });
+			const subscription = await subscribe(T, { startTime: futureTime, isCollection: true });
 			const events = await collect(subscription, 150, { minEvents: 0 });
-			subscription.return?.();
+			subscription.end();
 
 			// nothing delivered initially (gate skips, cursor's exclusiveStart skips)
 			assert.equal(events.length, 0, `expected 0 events for far-future startTime, got ${events.length}`);
@@ -1110,9 +1137,9 @@ describe('Subscription replay', () => {
 				audit: true,
 			});
 			// startTime: 1 (truthy) to force the branch
-			const subscription = await T.subscribe({ startTime: 1, isCollection: true });
+			const subscription = await subscribe(T, { startTime: 1, isCollection: true });
 			const events = await collect(subscription, 100, { minEvents: 0 });
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 0, `expected 0 events on empty audit log, got ${events.length}`);
 		});
@@ -1126,9 +1153,9 @@ describe('Subscription replay', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 				audit: true,
 			});
-			const subscription = await T.subscribe({ isCollection: true });
+			const subscription = await subscribe(T, { isCollection: true });
 			const events = await collect(subscription, 100, { minEvents: 0 });
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 0, `expected 0 events on empty store, got ${events.length}`);
 		});
@@ -1143,9 +1170,9 @@ describe('Subscription replay', () => {
 			await T.put(1, { name: 'a' });
 			await T.put(2, { name: 'b' });
 			await T.delete(1);
-			const subscription = await T.subscribe({ isCollection: true });
+			const subscription = await subscribe(T, { isCollection: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			const ids = events.map((e) => e.id);
 			assert.ok(ids.includes(2), `live id 2 should be in current state, got: ${JSON.stringify(ids)}`);
@@ -1161,9 +1188,9 @@ describe('Subscription replay', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 				audit: true,
 			});
-			const subscription = await T.subscribe({ id: 999, startTime: Date.now() - 1 });
+			const subscription = await subscribe(T, { id: 999, startTime: Date.now() - 1 });
 			const events = await collect(subscription, 100, { minEvents: 0 });
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 0, `expected 0 events for non-existent record, got ${events.length}`);
 		});
@@ -1177,9 +1204,9 @@ describe('Subscription replay', () => {
 			});
 			await T.put(7, { name: 'only' });
 			const startTime = 1;
-			const subscription = await T.subscribe({ id: 7, startTime });
+			const subscription = await subscribe(T, { id: 7, startTime });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			assert.equal(events.length, 1, `expected 1 event for single-version record, got ${events.length}`);
 			assert.equal(events[0].id, 7);
@@ -1188,7 +1215,7 @@ describe('Subscription replay', () => {
 
 		// ---- general edge cases ----
 
-		it('subscription.return() ends iteration cleanly even mid-replay', async () => {
+		it('iterator.return() ends iteration cleanly even mid-replay', async () => {
 			const T = table({
 				table: 'EdgeReturnMidReplay',
 				database: 'test',
@@ -1199,16 +1226,20 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 500; i++) {
 				await T.put(i, { name: 'x' + i });
 			}
-			const subscription = await T.subscribe({ startTime, isCollection: true });
+			const subscription = await subscribe(T, { startTime, isCollection: true });
 			const events = [];
-			subscription.on('data', (e) => events.push(e));
-			// don't wait for completion — return early
-			await delay(20);
 			const iter = subscription[Symbol.asyncIterator]();
-			iter.return?.();
+			subscription.on('data', (event) => {
+				events.push(event);
+				if (events.length === 10) iter.return();
+			});
+			await waitFor(() => subscription.closed, { message: 'returning the iterator did not close the subscription' });
+			assert.equal(events.length, 10, 'the iterator must return during replay after exactly ten events');
+			assert.strictEqual(subscription.closed, true, 'returning the iterator must close the subscription');
+			assert.strictEqual(subscription.subscriptions, null, 'returning the iterator must unregister the subscription');
+			const deliveredAtClose = events.length;
 			await delay(200);
-			// shouldn't have crashed; we likely got some events (anywhere from 0 to 500)
-			assert.ok(events.length >= 0, `events array exists`);
+			assert.equal(events.length, deliveredAtClose, 'replay delivered another event after the iterator returned');
 		});
 
 		it('delivers all live events when a single committed burst exceeds the notify batch size', async () => {
@@ -1222,7 +1253,7 @@ describe('Subscription replay', () => {
 				audit: true,
 			});
 			const startTime = Date.now();
-			const subscription = await T.subscribe({ startTime: startTime - 100, isCollection: true });
+			const subscription = await subscribe(T, { startTime: startTime - 100, isCollection: true });
 			// give the live-listener wiring a microtask to attach before we start writing
 			await delay(10);
 			// queue a burst of writes large enough to span multiple notify batches
@@ -1244,7 +1275,7 @@ describe('Subscription replay', () => {
 				{ timeout: 10000 }
 			).catch(() => {});
 			await delay(100);
-			subscription.return?.();
+			subscription.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			let missing = 0;
@@ -1297,19 +1328,21 @@ describe('Subscription replay', () => {
 				audit: true,
 			});
 			const startTime = Date.now();
-			const s1 = await T.subscribe({ startTime: startTime - 1, isCollection: true });
+			const s1 = await subscribe(T, { startTime: startTime - 1, isCollection: true });
 			await T.put(30000, { name: 'first' });
 			await delay(50);
-			s1.return?.();
+			s1.end();
+			assert.strictEqual(s1.closed, true, 'the first subscription must close before the idle writes');
+			assert.strictEqual(s1.subscriptions, null, 'the first subscription must unregister before the idle writes');
 			// commits land while no subscriber is attached
 			await T.put(30001, { name: 'orphan_a' });
 			await T.put(30002, { name: 'orphan_b' });
 
 			const reSubStart = Date.now();
-			const s2 = await T.subscribe({ startTime: reSubStart - 1, isCollection: true });
+			const s2 = await subscribe(T, { startTime: reSubStart - 1, isCollection: true });
 			await T.put(30003, { name: 'after_resub' });
 			const events = await collect(s2, 150);
-			s2.return?.();
+			s2.end();
 
 			const ids = new Set(events.map((e) => e.id));
 			assert.ok(ids.has(30003), 'event after re-subscribe was not delivered');
@@ -1330,9 +1363,9 @@ describe('Subscription replay', () => {
 			await T.delete(1);
 			await T.put(1, { name: 'b' });
 
-			const subscription = await T.subscribe({ startTime: 1, isCollection: true, id: 1, includeSuperseded: true });
+			const subscription = await subscribe(T, { startTime: 1, isCollection: true, id: 1, includeSuperseded: true });
 			const events = await collect(subscription, 100);
-			subscription.return?.();
+			subscription.end();
 
 			// We expect history of put/delete/put events for id=1, all delivered.
 			const ids = events.filter((e) => e.id === 1).map((e) => e.type);
@@ -1357,7 +1390,7 @@ describe('Subscription replay', () => {
 			process.on('unhandledRejection', onUnhandled);
 			let subscription, later;
 			try {
-				subscription = await T.subscribe({
+				subscription = await subscribe(T, {
 					startTime,
 					isCollection: true,
 					listener(event) {
@@ -1374,7 +1407,7 @@ describe('Subscription replay', () => {
 				assert.strictEqual(subscription.subscriptions, null, 'the subscription is still registered');
 				// a subscriber added later on the same key is notified after it, so its delivery bounds the wait
 				const laterEvents = [];
-				later = await T.subscribe({
+				later = await subscribe(T, {
 					isCollection: true,
 					omitCurrent: true,
 					listener: (event) => laterEvents.push(event),
@@ -1410,7 +1443,7 @@ describe('Subscription replay', () => {
 			process.on('unhandledRejection', onUnhandled);
 			let subscription;
 			try {
-				subscription = await T.subscribe({
+				subscription = await subscribe(T, {
 					startTime,
 					isCollection: true,
 					listener(event) {

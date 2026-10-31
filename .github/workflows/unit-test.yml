@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
-        shard: [main, components, server, resources-core-a-q, resources-core-r-z, resources-indexes, lmdb]
+        shard: [main, components, server, resources-core-a-n, resources-core-o-z, resources-indexes, lmdb]
         # harper#3349: LMDB segfaults intermittently in this shard, and every leg gates `Unit Test`.
         exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"shard":"lmdb","node-version":24}]' || '[]') }}
         # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
@@ -68,12 +68,12 @@ jobs:
           - shard: server
             script: test:unit:main:server
             timeout: 8
-          - shard: resources-core-a-q
-            script: test:unit:resources:core:a-q
-            timeout: 7
-          - shard: resources-core-r-z
-            script: test:unit:resources:core:r-z
-            timeout: 6
+          - shard: resources-core-a-n
+            script: test:unit:resources:core:a-n
+            timeout: 9
+          - shard: resources-core-o-z
+            script: test:unit:resources:core:o-z
+            timeout: 8
           - shard: resources-indexes
             script: test:unit:resources:indexes
             timeout: 8
@@ -152,17 +152,17 @@ jobs:
         # run the .ts sources directly; they run with Node 22 nightly. Caps follow the rule on the
         # `unit-test` job.
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '["22.18.0", "24.0.0", 22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
-        shard: [core, resources-core-a-q, resources-core-r-z, resources-indexes]
+        shard: [core, resources-core-a-n, resources-core-o-z, resources-indexes]
         include:
           - shard: core
             script: test:unit:typestrip
             timeout: 10
-          - shard: resources-core-a-q
-            script: test:unit:typestrip:resources:core:a-q
-            timeout: 7
-          - shard: resources-core-r-z
-            script: test:unit:typestrip:resources:core:r-z
-            timeout: 6
+          - shard: resources-core-a-n
+            script: test:unit:typestrip:resources:core:a-n
+            timeout: 9
+          - shard: resources-core-o-z
+            script: test:unit:typestrip:resources:core:o-z
+            timeout: 8
           - shard: resources-indexes
             script: test:unit:typestrip:resources:indexes
             timeout: 8
@@ -172,7 +172,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Node.js
         timeout-minutes: 5
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
@@ -277,7 +277,7 @@ jobs:
 
   uws-tcp-macos:
     name: uWS TCP uploads (macOS, Node.js v26)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -308,7 +308,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -326,7 +326,7 @@ jobs:
         run: npm run build
 
       - name: Verify the published native binding loads
-        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || (await binding.runtimeInfo()).queryApiVersion !== 4) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and query API 4 contract');"
+        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); const info = await binding.runtimeInfo(); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || info.nativeAbiVersion !== 13 || info.queryApiVersion !== 7) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and native ABI 13 and query API 7 contract');"
 
       - name: Native full-text lifecycle test
         run: >-

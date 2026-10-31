@@ -12,9 +12,14 @@ import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import type { FullTextCondition } from './indexes/fullTextQueryIndex.ts';
-import { FULL_TEXT_POSITIVE_COMPARATORS, fullTextComparatorMode } from './indexes/fullTextQueryProtocol.ts';
+import {
+	FULL_TEXT_POSITIVE_COMPARATORS,
+	fullTextComparatorMode,
+	fullTextFuzzyOptions,
+	validateFullTextFuzzyOptions,
+} from './indexes/fullTextQueryProtocol.ts';
 
-export { fullTextComparatorMode };
+export { fullTextComparatorMode, validateFullTextFuzzyOptions };
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -265,7 +270,7 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 	}
 	if (!indexName) return conditions;
 	if (operator === 'or' && remaining.length > 0)
-		throw new ClientError('A full-text OR group can only contain conditions on the same full-text index', 400);
+		throw new ClientError('A full-text OR group cannot mix full-text and record conditions', 400);
 	if (!positive) throw new ClientError('A full-text query requires at least one non-negated condition', 400);
 	const expression =
 		expressions.length === 1 ? expressions[0] : { operator: operator === 'or' ? 'or' : 'and', clauses: expressions };
@@ -315,6 +320,7 @@ function compileFullTextExpression(
 	  }
 	| undefined {
 	if (condition.conditions) {
+		validateFullTextFuzzyOptions(condition);
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
 		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
 		if (fullTextChildren.length === 0) return;
@@ -350,7 +356,12 @@ function compileFullTextExpression(
 	if (typeof (condition[1] ?? condition.value) !== 'string')
 		throw new ClientError(`Full-text index '${indexName}' requires a full-text comparator and string value`, 400);
 	const text = condition[1] ?? condition.value;
-	const leaf = { text, mode, ...(condition.fields ? { fields: condition.fields } : null) };
+	const leaf = {
+		text,
+		mode,
+		...fullTextFuzzyOptions(condition),
+		...(condition.fields ? { fields: condition.fields } : null),
+	};
 	return {
 		indexName,
 		expression: condition.negated ? { operator: 'not', clause: leaf } : leaf,
