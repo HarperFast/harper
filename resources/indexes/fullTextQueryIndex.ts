@@ -293,14 +293,24 @@ export class FullTextQueryIndex {
 				this.#incompletePageFailureLogged = false;
 				return result;
 			}
-			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			if (scoring) {
+				if (this.#binding) validateFullTextScoringRuntime(this.#queryApiVersion);
+				let coverageError: unknown;
+				try {
+					coverage = this.#queryCoverage(maxIndexLagMilliseconds, false);
+				} catch (error) {
+					coverageError = error;
+				}
 				if (!this.#binding) {
 					await waitForBinding(this.#getBinding(), context?.signal);
 					context?.signal?.throwIfAborted();
+					validateFullTextScoringRuntime(this.#queryApiVersion);
 				}
-				validateFullTextScoringRuntime(this.#queryApiVersion);
-			}
+				if (coverageError) {
+					this.#refreshReader(true);
+					throw coverageError;
+				}
+			} else coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			const result = await this.#search(condition, context, options);
 			this.#unexpectedSearchFailureWarned = false;
 			this.#incompletePageFailureLogged = false;
@@ -1165,10 +1175,10 @@ export class FullTextQueryIndex {
 		return (this.#binding = binding);
 	}
 
-	#queryCoverage(maxLagMilliseconds: number): DerivedIndexCoverage {
+	#queryCoverage(maxLagMilliseconds: number, refreshOnUnknown = true): DerivedIndexCoverage {
 		const coverage = this.#readCoverage(maxLagMilliseconds);
 		if (!coverage || coverage.state === 'unknown') {
-			this.#refreshReader(true);
+			if (refreshOnUnknown) this.#refreshReader(true);
 			const age = coverage?.lagUpperBoundMilliseconds;
 			throw new DerivedIndexLagError(
 				`Cannot certify full-text index coverage within ${maxLagMilliseconds} ms` +

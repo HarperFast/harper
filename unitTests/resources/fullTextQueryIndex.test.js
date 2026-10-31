@@ -1358,6 +1358,45 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	for (const queryApiVersion of [7, 8])
+		it(`prioritizes scoring capability over unknown strict coverage on query API ${queryApiVersion}`, async () => {
+			const auditStore = sharedStore();
+			const readinessId = `strict-scoring-capability-${queryApiVersion}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				onOpen: () => opens++,
+				onSearch: () => searches++,
+				queryApiVersion,
+			});
+			try {
+				await assert.rejects(
+					index.search(
+						{
+							attribute: readinessId,
+							comparator: 'matches',
+							value: 'shoe',
+							maxIndexLagMilliseconds: 0,
+							waitForIndexMilliseconds: 0,
+							fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+						},
+						{}
+					),
+					(error) => error.statusCode === (queryApiVersion === 7 ? 400 : 503)
+				);
+				if (queryApiVersion === 7) assert.strictEqual(opens, 0);
+				else await waitFor(() => opens > 0);
+				assert.strictEqual(searches, 0);
+			} finally {
+				await index.close();
+			}
+		});
+
 	for (const waitForIndexMilliseconds of [0, 5000])
 		it(`does not open a reader after cancellation during cold scoring capability loading (wait ${waitForIndexMilliseconds})`, async () => {
 			const auditStore = sharedStore();
