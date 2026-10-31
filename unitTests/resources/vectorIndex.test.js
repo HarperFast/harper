@@ -3525,7 +3525,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
-	it('clears the allow-set gate with a real estimate on a range narrow enough to be counted exactly', async () => {
+	it('clears the allow-set gate with an unpinned planner estimate on a narrow range', async () => {
 		const { results, stats } = await searchWithSpy(
 			[104.3, 0],
 			[{ attribute: 'rank', comparator: 'between', value: [100, 109] }],
