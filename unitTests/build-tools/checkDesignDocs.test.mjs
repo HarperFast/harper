@@ -152,6 +152,14 @@ describe('check-design-docs', function () {
 			});
 		});
 
+		it('rejects a link that leaves the repository, and reads a leading slash from the repository root', function () {
+			fails(
+				{ 'a/DESIGN.md': note('[out](../../outside.md)') },
+				/a\/DESIGN\.md:\d+ links outside the repository: \.\.\/\.\.\/outside\.md/
+			);
+			passes({ 'a/DESIGN.md': note('[root](/a/other.ts)'), 'a/other.ts': 'export {};\n' });
+		});
+
 		it('rejects a link to a missing file', function () {
 			fails({ 'a/DESIGN.md': note('[gone](./gone.ts)') }, /a\/DESIGN\.md:\d+ links to missing file \.\/gone\.ts/);
 		});

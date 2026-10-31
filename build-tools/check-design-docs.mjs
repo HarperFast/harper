@@ -31,8 +31,7 @@ const lines = (file) =>
 	lineCache.get(file) ?? lineCache.set(file, fs.readFileSync(path.join(repo, file), 'utf8').split(/\r?\n/)).get(file);
 
 const proseCache = new Map();
-// Numbered lines outside fenced code blocks, which neither define headings nor carry links. A fence
-// left open would hide the rest of the file from every check, so it is an error.
+// A fence left open would hide the rest of the file from every check, so it is an error.
 function prose(file) {
 	if (proseCache.has(file)) return proseCache.get(file);
 	const kept = [];
@@ -87,8 +86,12 @@ function* links(file) {
 }
 
 function resolveLink(from, { number, target, anchor }, level) {
-	const file = target ? rel(path.join(repo, path.dirname(from), target)) : from;
+	const file = target ? rel(path.join(repo, target.startsWith('/') ? '' : path.dirname(from), target)) : from;
 	const at = `${from}:${number}`;
+	if (file === '..' || file.startsWith('../')) {
+		errors.push(`${at} links outside the repository: ${target}`);
+		return;
+	}
 	if (!fs.existsSync(path.join(repo, file))) {
 		errors.push(`${at} links to missing file ${target}`);
 		return;
@@ -108,7 +111,6 @@ const rootLines = lines('DESIGN.md');
 if (rootLines.length > ROOT_BUDGET)
 	errors.push(`DESIGN.md is ${rootLines.length} lines; the index budget is ${ROOT_BUDGET}`);
 
-// Only list entries register notes: a prose link to AGENTS.md must not give it a note's section rules.
 const registered = new Map();
 for (const link of links('DESIGN.md')) {
 	const file = resolveLink('DESIGN.md', link, link.listItem ? 2 : undefined);
