@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793430795288,
+  "lastUpdate": 1793430798148,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20152,6 +20152,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 133.91,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6048a06709a7bff15b6d5732fb0b3ecdc69b8098",
+          "message": "Adopt fulltext 0.8 with host query policy and fuzzy controls (#3824)\n\n* Adopt fulltext 0.8 with host query policy and fuzzy controls\n\n* Keep query policy in the search error boundary and strengthen compatibility proof\n\n* Clarify the installed query policy block during downgrade planning\n\n* Tighten full-text condition validation and qualify query policy boundaries\n\n* Clarify fuzzy-control targets and trim unused test options\n\n* Qualify query rejections across runtimes and isolate TTL observations\n\n* Balance resource CI shards and isolate encoder error capture\n\n* Close owned subscriptions in replay test fixtures\n\n* Make replay iterator cancellation deterministic\n\n* Keep full-text query defaults implicit\n\n* Test the allowed default full-text term boundary",
+          "timestamp": "2026-10-31T04:49:23Z",
+          "url": "https://github.com/HarperFast/harper/commit/6048a06709a7bff15b6d5732fb0b3ecdc69b8098"
+        },
+        "date": 1793430797565,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 8.28,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 8.51,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 14.04,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 7.89,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 20.11,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 9.56,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 24.88,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 8.92,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 12.8,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 33.96,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 103.98,
             "unit": "ms"
           }
         ]
