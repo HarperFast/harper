@@ -95,7 +95,9 @@ function varyCovers(vary: string, lowerToken: string): boolean {
 	return false;
 }
 
-// varyCovers without the split/trim/lowercase temporaries; ASCII-only, where trim() and toLowerCase() act per character
+const ASTERISK = 42;
+
+// ASCII-only: there trim() and toLowerCase() act per character, so comparing in place matches varyCovers
 function asciiVaryCovers(vary: string, token: string): boolean {
 	const length = vary.length;
 	const tokenLength = token.length;
@@ -108,7 +110,7 @@ function asciiVaryCovers(vary: string, token: string): boolean {
 		while (partStart < partEnd && isAsciiWhitespace(vary.charCodeAt(partStart))) partStart++;
 		while (partEnd > partStart && isAsciiWhitespace(vary.charCodeAt(partEnd - 1))) partEnd--;
 		const partLength = partEnd - partStart;
-		if (partLength === 1 && vary.charCodeAt(partStart) === 42 /* * */) return true;
+		if (partLength === 1 && vary.charCodeAt(partStart) === ASTERISK) return true;
 		if (partLength === tokenLength) {
 			let i = 0;
 			while (i < tokenLength && asciiLower(vary.charCodeAt(partStart + i)) === asciiLower(token.charCodeAt(i))) i++;
