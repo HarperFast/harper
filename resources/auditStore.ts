@@ -1382,6 +1382,11 @@ function isDecodableAction(action: number) {
 export function isLockControlType(type: unknown): boolean {
 	return type === 'lockRelease' || type === 'lockBarrier';
 }
+
+/** Not for replay or backfill: those refuse or re-snapshot on a `reload` marker rather than skipping it. */
+export function isNonHistoryType(type: unknown): boolean {
+	return type === 'evict' || type === 'reload' || isLockControlType(type);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
