@@ -393,6 +393,105 @@ jobs:
 			}
 		});
 
+		it("refuses a git command whose variable holds the pull request's head, wherever env sets it", () => {
+			const stepEnv = '        env:\n          REF: ${{ github.event.pull_request.head.sha }}\n';
+			for (const step of [
+				'      - run: git fetch origin "$SHA" && git checkout "$SHA"\n',
+				'      - run: git checkout ${{ env.SHA }}\n',
+				'      - run: |\n          git checkout \\\n            "${SHA}"\n',
+				`      - run: git switch --detach "$REF"\n${stepEnv}`,
+				'      - run: git fetch origin "$GITHUB_HEAD_REF"\n',
+				'      - run: git checkout ${{ inputs.sha || env.SHA }}\n',
+				'      - run: git checkout "$REF"\n        env:\n          REF: ${{ env.SHA }}\n',
+				'      - run: git fetch origin "$REF"\n        env:\n          REF: pull/42/head\n',
+				'      - run: git fetch origin ${{ github.event.pull_request.merge_commit_sha }}\n',
+				"      - run: git fetch origin ${{ format('refs/pull/{0}/head', github.event.number) }} && git checkout FETCH_HEAD\n",
+				'      - run: git -C $(cd .; pwd) fetch origin "${{ github.event.pull_request.head.sha }}"\n',
+				'      - run: git -C $(cd .; pwd) fetch origin "$SHA"\n',
+				'      - run: git -C `cd .; pwd` fetch origin "$SHA"\n',
+				'      - run: git fetch 2>&1 origin "$SHA"\n',
+				'      - run: git fetch origin "a;b" refs/pull/7/head\n',
+				'      - run: git fetch origin "a\\";b" refs/pull/7/head\n',
+				'      - run: git fetch origin a\\;b refs/pull/7/head\n',
+				'      - run: |\n          REF=${{ github.event.pull_request.head.sha }}\n          git checkout "$REF"\n',
+				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ env.SHA }}\n',
+			]) {
+				assert.match(problemsOf(withDeployStep(step)), /checks out the pull request's head/, step);
+			}
+			const workflowEnv = withDeployStep('      - run: git checkout "$HEAD"\n').replace(
+				'env:\n',
+				'env:\n  HEAD: ${{ github.event.pull_request.head.ref }}\n'
+			);
+			assert.match(problemsOf(workflowEnv), /a step checks out the pull request's head/);
+		});
+
+		it('cannot verify a git command naming a value the file does not show, and accepts the base branch', () => {
+			for (const command of [
+				'git checkout "$TARGET"',
+				'git checkout "$(gh pr view "$PR" --json headRefOid -q .headRefOid)"',
+				'git checkout `cat .pr-sha`',
+			]) {
+				assert.deepStrictEqual(check(withDeployStep(`      - run: ${command}\n`)), {
+					problems: [],
+					unverified: [],
+					unsafe: [`that \`${command}\` in job "deploy" does not check out the pull request's head`],
+				});
+			}
+			for (const command of [
+				'git fetch origin "$GITHUB_SHA"',
+				'git checkout main',
+				'git fetch origin "$BRANCH_NAME"',
+				'git checkout main && ./deploy.sh "$APP_DIR"',
+				'git checkout ${{ github.event.pull_request.base.sha }}',
+				'git fetch origin ${{ github.base_ref }}',
+				'git clone "https://x:${{ secrets.TOOLS_TOKEN }}@github.com/acme/tools" "$RUNNER_TEMP/tools"',
+			]) {
+				const base = withDeployStep(`      - run: ${command}\n        env:\n          BRANCH_NAME: main\n`);
+				assert.deepStrictEqual(check(base), { problems: [], unverified: [], unsafe: [] }, command);
+			}
+			const fromGithubEnv = withDeployStep(
+				'      - run: echo "BRANCH_NAME=$(cat .pr-branch)" >> "$GITHUB_ENV"\n      - run: git checkout ${{ env.BRANCH_NAME }}\n        env:\n          BRANCH_NAME: main\n'
+			);
+			assert.deepStrictEqual(check(fromGithubEnv).unsafe, [
+				'that `git checkout ${{ env.BRANCH_NAME }}` in job "deploy" does not check out the pull request\'s head',
+			]);
+			const mentioned = withDeployStep(
+				'      - run: |\n          echo "Deploying BRANCH_NAME=${{ github.base_ref }} at ${{ github.event.pull_request.head.sha }}"\n          git checkout "$BRANCH_NAME"\n        env:\n          BRANCH_NAME: main\n'
+			);
+			assert.deepStrictEqual(check(mentioned).problems, [], 'what else the line says is not the value');
+			for (const script of [
+				'for TARGET in main; do git checkout "$TARGET"; done',
+				'printf -v TARGET %s "$(cat .pr-sha)" && git checkout "$TARGET"',
+			]) {
+				const set = withDeployStep(`      - run: ${script}\n        env:\n          TARGET: main\n`);
+				assert.strictEqual(check(set).unsafe.length, 1, script);
+			}
+			const overwritten = withDeployStep(
+				'      - run: |\n          BRANCH_NAME=$(cat .pr-branch)\n          git checkout "$BRANCH_NAME"\n        env:\n          BRANCH_NAME: main\n'
+			);
+			assert.deepStrictEqual(check(overwritten).unsafe, [
+				'that `git checkout "$BRANCH_NAME"` in job "deploy" does not check out the pull request\'s head',
+			]);
+		});
+
+		it("notes a workflow that leaves a closed pull request's preview until it expires", () => {
+			const noCleanup = starter.slice(0, starter.indexOf('  cleanup:\n'));
+			assert.deepStrictEqual(check(noCleanup), {
+				problems: [],
+				unverified: [
+					`that a closed pull request's preview is dropped before it expires, since no job here runs in "preview-cleanup"`,
+				],
+				unsafe: [],
+			});
+			const notOnClose = starter.replace(
+				'types: [opened, reopened, synchronize, closed]',
+				'types: [opened, reopened, synchronize]'
+			);
+			assert.deepStrictEqual(check(notOnClose).unverified, [
+				"that a closed pull request's preview is dropped before it expires, since its pull_request_target types leave out closed",
+			]);
+		});
+
 		it("accepts a checkout of the workflow's own branch, and cannot read a ref given as an expression", () => {
 			assert.deepStrictEqual(check(withDeployStep('      - uses: actions/checkout@v5\n')).problems, []);
 			const expression = withDeployStep(

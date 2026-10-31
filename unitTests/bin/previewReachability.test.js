@@ -39,7 +39,23 @@ describe('preview reachability (harper#3042)', () => {
 			(await probePreview(URL, answer(404, '', { server: 'nginx/1.27' }))).reason,
 			/answered 404 from nginx/
 		);
-		assert.match((await probePreview(URL, answer(502))).reason, /answered 502, not from the preview/);
+	});
+
+	it("cannot tell a gateway error from the preview's own, so says it may be either, and retries", async () => {
+		for (const [status, headers] of [
+			[502, {}],
+			[504, { server: 'nginx' }],
+			[503, { server: 'nginx' }],
+		]) {
+			const outcome = await probePreview(URL, answer(status, '', headers));
+			assert.deepStrictEqual({ reachable: outcome.reachable, retry: outcome.retry }, { reachable: false, retry: true });
+			assert.match(
+				outcome.reason,
+				new RegExp(
+					`answered ${status}(?: from nginx)?: either the preview answered that itself, or whatever terminates TLS`
+				)
+			);
+		}
 	});
 
 	it("counts the preview's own server error as an answer from the preview, and says when a proxy may have answered", async () => {
