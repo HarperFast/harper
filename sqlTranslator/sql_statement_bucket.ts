@@ -5,12 +5,12 @@
  **/
 
 import alasql from 'alasql';
-import RecursiveIterator from 'recursive-iterator';
 import _harperLogger from '../utility/logging/harper_logger.ts';
 const harperLogger = _harperLogger;
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { findDatabasesWithTable, loadDatabaseRegistry } from '../sqlEngine/binder/defaultDatabase.ts';
+import { declaringTables, usingLeftOwner, type ScopeTable } from '../sqlEngine/binder/columnScope.ts';
 
 class sqlStatementBucket {
 	ast: any;
@@ -18,6 +18,7 @@ class sqlStatementBucket {
 	table_lookup: any;
 	schema_lookup: any;
 	table_to_schema_lookup: any;
+	unresolved_columns: Set<string>;
 	constructor(ast) {
 		this.ast = ast;
 		// affectedAttributes stores a table and it's attributes as a Map [schema, Map[table, [attributesArray]]].
@@ -25,12 +26,14 @@ class sqlStatementBucket {
 		this.table_lookup = new Map();
 		this.schema_lookup = new Map();
 		this.table_to_schema_lookup = new Map();
+		this.unresolved_columns = new Set();
 		interpretAST(
 			this.ast,
 			this.affected_attributes,
 			this.table_lookup,
 			this.schema_lookup,
-			this.table_to_schema_lookup
+			this.table_to_schema_lookup,
+			this.unresolved_columns
 		);
 	}
 
@@ -127,6 +130,53 @@ class sqlStatementBucket {
 	}
 
 	/**
+	 * Column references whose table qualifier names no table in scope, or several. They were not
+	 * attributed to any table, so the caller must refuse the statement.
+	 */
+	getUnresolvedColumnRefs(): string[] {
+		return [...this.unresolved_columns];
+	}
+
+	/**
+	 * Expressions that read a whole row instead of naming a column: AlaSQL's `_` (`SELECT VALUE`,
+	 * `ROW`, `x._`, `_->attr`) and JavaScript expressions. Attribute permissions cannot apply to them,
+	 * and legacy SQL's row container always carries the primary key.
+	 */
+	getRowAccessors(): string[] {
+		const accessors = [];
+		for (const node of astNodes(this.ast)) {
+			if (node instanceof (alasql as any).yy.Column && node.columnid === '_') accessors.push('_');
+			else if (node instanceof (alasql as any).yy.JavaScript) accessors.push('JavaScript expression');
+			// A JSON literal's `__proto__` key hides an expression in the prototype, where every walk here
+			// (own properties only) misses it but AlaSQL's JSON compiler still evaluates it.
+			else if (!isKnownPrototype(Object.getPrototypeOf(node))) accessors.push('JSON literal with __proto__');
+		}
+		return accessors;
+	}
+
+	/**
+	 * Attributes an UPDATE or DELETE reads to pick rows (WHERE) or compute values (SET expressions).
+	 * They need read permission on top of the write permission the statement already needs. The primary
+	 * key is left out: the statement reports the keys of the rows it touched, as NoSQL update and delete do.
+	 */
+	getWriteStatementReads(): { schema: string; table: string; attributes: string[] } | undefined {
+		const ast = this.ast;
+		const isUpdate = ast instanceof (alasql as any).yy.Update;
+		if (!isUpdate && !(ast instanceof (alasql as any).yy.Delete)) return undefined;
+		const { databaseid: schema, tableid: table } = ast.table;
+		const tables = loadDatabaseRegistry()?.[schema];
+		const primaryKey = tables && Object.hasOwn(tables, table) ? (tables[table] as any)?.primaryKey : undefined;
+		const attributes = [];
+		const trees = [ast.where, ...(isUpdate ? (ast.columns ?? []).map((column) => column?.expression) : [])];
+		for (const tree of trees) {
+			for (const node of columnNodes(tree)) {
+				if (node.columnid !== primaryKey && !attributes.includes(node.columnid)) attributes.push(node.columnid);
+			}
+		}
+		return { schema, table, attributes };
+	}
+
+	/**
 	 *When a SELECT * is included in the AST for a non-SU, we need to convert the star into the specific attributes the
 	 * user has READ permissions
 	 *
@@ -177,10 +227,14 @@ class sqlStatementBucket {
 					.get(colSchema)
 					.get(colTable)
 					.filter((attr) => !terms.SEARCH_WILDCARDS.includes(attr));
+				// In a join an unqualified expansion would bind to whichever table declares the name, not
+				// necessarily the one whose permissions were just applied.
+				const isJoin = this.ast.from.length > 1 || this.ast.joins?.length > 0;
+				const qualifier = val.tableid ?? (isJoin ? (this.ast.from[0].as ?? this.ast.from[0].tableid) : undefined);
 				finalTableAttrs.forEach(({ attribute_name }) => {
 					let newColumn = new (alasql as any).yy.Column({ columnid: attribute_name });
-					if (val.tableid) {
-						newColumn.tableid = val.tableid;
+					if (qualifier) {
+						newColumn.tableid = qualifier;
 					}
 					this.ast.columns.push(newColumn);
 					if (!tableAffectedAttrs.includes(attribute_name)) {
@@ -206,6 +260,68 @@ function filterReadRestrictedAttrs(attrPerms: any[]) {
 	return attrPerms.filter((perm) => perm[terms.PERMS_CRUD_ENUM.READ]);
 }
 
+let astPrototypes: Set<object> | undefined;
+function isKnownPrototype(prototype: object | null): boolean {
+	astPrototypes ??= new Set(
+		Object.values((alasql as any).yy)
+			.filter((value) => typeof value === 'function')
+			.map((astClass: any) => astClass.prototype)
+	);
+	return (
+		prototype === null ||
+		prototype === Object.prototype ||
+		prototype === Array.prototype ||
+		astPrototypes.has(prototype)
+	);
+}
+
+/**
+ * Every object node under `root`, each once. Iterative and unbounded: an expression nested arbitrarily
+ * deep must still be seen, and AlaSQL shares one subquery node between two fields (EXISTS).
+ */
+function* astNodes(root: any): Generator<any> {
+	if (root === null || typeof root !== 'object') return;
+	const seen = new Set();
+	const pending = [root];
+	while (pending.length > 0) {
+		const node = pending.pop();
+		if (seen.has(node)) continue;
+		seen.add(node);
+		yield node;
+		for (const key in node) {
+			if (!Object.hasOwn(node, key)) continue;
+			const child = node[key];
+			if (child !== null && typeof child === 'object') pending.push(child);
+		}
+	}
+}
+
+/**
+ * Column references under `root`. Inside a JSON literal only real Column nodes count; its own objects are
+ * data. The `*` of a plain COUNT(*) names no attribute.
+ */
+function* columnNodes(root: any): Generator<any> {
+	const notColumns = new Set();
+	for (const node of astNodes(root)) {
+		if (node instanceof (alasql as any).yy.Json) {
+			// Only the literal's own plain objects and arrays: nested AST nodes, a nested JSON literal
+			// included, are reached by the outer walk, so each is marked once.
+			const pending = [node.value];
+			while (pending.length > 0) {
+				const value = pending.pop();
+				if (value === null || typeof value !== 'object' || notColumns.has(value)) continue;
+				if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) continue;
+				notColumns.add(value);
+				for (const child of Object.values(value)) pending.push(child);
+			}
+		} else if (node.expression && isRowCountWildcard(node, node.expression)) {
+			notColumns.add(node.expression);
+		} else if (node.columnid && !notColumns.has(node)) {
+			yield node;
+		}
+	}
+}
+
 // FIRST(*), ARRAY(*) and COUNT(DISTINCT *) read the value of an attribute literally named `*`, so they stay collected.
 function isRowCountWildcard(parent: any, node: any): boolean {
 	return node.columnid === '*' && parent?.aggregatorid === 'COUNT' && parent.expression === node && !parent.distinct;
@@ -216,10 +332,11 @@ function interpretAST(
 	affectedAttributes: any,
 	tableLookup: any,
 	schemaLookup: any,
-	tableToSchemaLookup: any
+	tableToSchemaLookup: any,
+	unresolvedColumns: Set<string>
 ) {
 	qualifyBareTableRefs(ast);
-	getRecordAttributesAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
+	getRecordAttributesAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup, unresolvedColumns);
 }
 
 interface TableTargets {
@@ -389,7 +506,8 @@ function getRecordAttributesAST(
 	affectedAttributes: any,
 	tableLookup: any,
 	schemaLookup: any,
-	tableToSchemaLookup: any
+	tableToSchemaLookup: any,
+	unresolvedColumns?: Set<string>
 ) {
 	if (!ast) {
 		harperLogger.info(`getRecordAttributesAST: invalid SQL syntax tree`);
@@ -400,45 +518,59 @@ function getRecordAttributesAST(
 	if (ast instanceof (alasql as any).yy.Insert) {
 		getInsertAttributes(ast, affectedAttributes, tableLookup);
 	} else if (ast instanceof (alasql as any).yy.Select) {
-		getSelectAttributes(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
+		getSelectAttributes(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup, unresolvedColumns);
 	} else if (ast instanceof (alasql as any).yy.Update) {
-		getUpdateAttributes(ast, affectedAttributes, tableLookup);
+		getUpdateAttributes(ast, affectedAttributes, tableLookup, unresolvedColumns);
 	} else if (ast instanceof (alasql as any).yy.Delete) {
-		getDeleteAttributes(ast, affectedAttributes, tableLookup);
+		getDeleteAttributes(ast, affectedAttributes, tableLookup, unresolvedColumns);
 	} else {
 		harperLogger.error(`AST in getRecordAttributesAST() is not a valid SQL type.`);
 	}
 }
 
-/**
- * Retrieve the schemas, tables, and attributes from the source Select AST.
- *
- * @param ast - SQL command converted to an AST
- * @param affectedAttributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
- * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
- */
-/**
- * The database a column's table belongs to.
- *
- * `tableToSchemaLookup` is keyed by alias and by base table name, so it is the only mapping that
- * resolves an unaliased table in a cross-database statement. Falling back to the FROM table's
- * database (as the code did before schema-unqualified names could resolve to different databases)
- * silently attributes a joined table's columns to the wrong database, and they then get dropped
- * without an attribute-level permission check.
- */
-function resolveColumnSchema(tableName: any, schemaLookup: any, tableToSchemaLookup: any, fallbackSchema: any) {
-	if (!tableName) return fallbackSchema;
-	if (tableToSchemaLookup?.has(tableName)) return tableToSchemaLookup.get(tableName);
-	if (schemaLookup?.has(tableName)) return schemaLookup.get(tableName);
-	return fallbackSchema;
+interface AttributionTable extends ScopeTable {
+	databaseid: string;
+	/** False when the registry could not describe the table; attribution then fails closed. */
+	attributesKnown: boolean;
 }
 
+/**
+ * FROM entries then JOIN targets, in the order the engines bind them. A derived JOIN keeps its slot
+ * (so later ON/USING indexes line up) but records nothing — getTableTargets() refuses it.
+ */
+function getAttributionScope(ast: any): AttributionTable[] {
+	const entries = [...ast.from, ...(ast.joins ?? []).map((join) => join?.table ?? { as: join?.as })];
+	const scope: AttributionTable[] = entries.map((ref) => ({
+		databaseid: ref.databaseid,
+		table: ref.tableid ?? '',
+		effectiveAlias: ref.as ?? ref.tableid ?? '',
+		attributes: [],
+		attributesKnown: false,
+	}));
+	if (scope.length < 2) return scope;
+	const databases = loadDatabaseRegistry();
+	for (const entry of scope) {
+		const tables = entry.databaseid && databases?.[entry.databaseid];
+		const table: any = tables && Object.hasOwn(tables, entry.table) ? tables[entry.table] : undefined;
+		if (Array.isArray(table?.attributes)) {
+			entry.attributes = table.attributes;
+			entry.attributesKnown = true;
+		}
+	}
+	return scope;
+}
+
+/**
+ * Attributes every column reference in a SELECT to the table the engines read it from, using the v2
+ * binder's rules (sqlEngine/binder/columnScope.ts). See sqlTranslator/DESIGN.md.
+ */
 function getSelectAttributes(
 	ast: any,
 	affectedAttributes: any,
 	tableLookup: any,
 	schemaLookup: any,
-	tableToSchemaLookup: any
+	tableToSchemaLookup: any,
+	unresolvedColumns: Set<string> = new Set()
 ) {
 	if (!ast) {
 		harperLogger.info(`getSelectAttributes: invalid SQL syntax tree`);
@@ -447,8 +579,7 @@ function getSelectAttributes(
 	if (!ast.from || ast.from[0] === undefined) {
 		return;
 	}
-	let schema = ast.from[0].databaseid;
-	if (hdbUtils.isEmptyOrZeroLength(schema)) {
+	if (hdbUtils.isEmptyOrZeroLength(ast.from[0].databaseid)) {
 		harperLogger.error('No schema specified');
 		return;
 	}
@@ -470,212 +601,65 @@ function getSelectAttributes(
 		});
 	}
 
-	const iterator = new RecursiveIterator(ast.columns);
-	for (let { node, parent } of iterator) {
-		if (node && node.columnid && !isRowCountWildcard(parent, node)) {
-			let tableName = node.tableid;
-			// tableToSchemaLookup is keyed by alias AND by base table name, so it resolves
-			// `SELECT vault.Secret.ssn FROM data.Public JOIN vault.Secret` where schemaLookup — which
-			// only ever holds aliases — would fall back to the FROM table's database and drop the
-			// column, skipping its attribute-level permission check.
-			const columnSchema = resolveColumnSchema(tableName, schemaLookup, tableToSchemaLookup, schema);
+	const scope = getAttributionScope(ast);
 
-			if (!tableName) {
-				tableName = ast.from[0].tableid;
-			}
+	const record = (entry: AttributionTable, columnid: string) => {
+		const attributes = affectedAttributes.get(entry.databaseid)?.get(entry.table);
+		if (attributes && !attributes.includes(columnid)) attributes.push(columnid);
+	};
 
-			const schemaTables = affectedAttributes.get(columnSchema);
-			if (!schemaTables) {
-				// The column's table was never recorded — an unresolvable reference alongside a
-				// resolvable one. getUnauthorizedTableRefs() reports it and the statement is denied.
-				harperLogger.info(`schema for table ${tableName} not resolved; skipping its attributes.`);
-				continue;
-			}
-
-			if (!schemaTables.has(tableName)) {
-				if (!tableLookup.has(tableName)) {
-					harperLogger.info(`table specified as ${tableName} not found.`);
-					return;
-				} else {
-					tableName = tableLookup.get(tableName);
-				}
-			}
-
-			if (schemaTables.get(tableName).indexOf(node.columnid) < 0) {
-				schemaTables.get(tableName).push(node.columnid);
-			}
+	const recordColumn = (node: any, clauseScope: AttributionTable[]) => {
+		if (node.tableid) {
+			// v2 prefers an alias over a base table name; legacy SQL matches either, against every table in
+			// the statement. Only a qualifier exactly one table claims means the same table to both.
+			const claimants = scope.filter((entry) => entry.effectiveAlias === node.tableid || entry.table === node.tableid);
+			if (claimants.length === 1) record(claimants[0], node.columnid);
+			else unresolvedColumns.add(`${node.tableid}.${node.columnid}`);
+			return;
 		}
-	}
-
-	// It's important to iterate through the WHERE clause in case there are other columns that are not included in
-	// the SELECT clause
-	if (ast.where) {
-		const iterator = new RecursiveIterator(ast.where);
-		const fromTable = ast.from[0].tableid;
-
-		for (let { node, parent } of iterator) {
-			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
-				let table = node.tableid ? node.tableid : fromTable;
-
-				const whereSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
-				const schemaTables = affectedAttributes.get(whereSchema);
-				if (!schemaTables) {
-					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
-					continue;
-				}
-
-				if (!schemaTables.has(table)) {
-					if (!tableLookup.has(table)) {
-						harperLogger.info(`table specified as ${table} not found.`);
-						continue;
-					} else {
-						table = tableLookup.get(table);
-					}
-				}
-				//We need to check to ensure this columnid wasn't already set in the Map
-				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
-					schemaTables.get(table).push(node.columnid);
-				}
-			}
+		// updateAttributeWildcardsForRolePerms() expands a wildcard on the FROM table, qualified by its alias
+		// in a join, so that alias must name one table.
+		if (terms.SEARCH_WILDCARDS.includes(node.columnid)) {
+			const fromName = scope[0].effectiveAlias;
+			const claimants = scope.filter((entry) => entry.effectiveAlias === fromName || entry.table === fromName);
+			if (claimants.length === 1) record(scope[0], node.columnid);
+			else unresolvedColumns.add(`${fromName}.${node.columnid}`);
+			return;
 		}
-	}
-
-	// GROUP BY and HAVING can reference an attribute the SELECT list, WHERE, and JOIN ON never
-	// mention (`SELECT COUNT(*) FROM t GROUP BY ssn`, `... HAVING ssn = 'x'`) — without recording
-	// it here, checkAttributePerms() never sees that reference and a role denied READ on the
-	// attribute can still observe its distribution via the grouped/filtered result.
-	if (ast.group) {
-		const iterator = new RecursiveIterator(ast.group);
-		const fromTable = ast.from[0].tableid;
-
-		for (let { node, parent } of iterator) {
-			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
-				let table = node.tableid ? node.tableid : fromTable;
-
-				const groupSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
-				const schemaTables = affectedAttributes.get(groupSchema);
-				if (!schemaTables) {
-					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
-					continue;
-				}
-
-				if (!schemaTables.has(table)) {
-					if (!tableLookup.has(table)) {
-						harperLogger.info(`table specified as ${table} not found.`);
-						continue;
-					} else {
-						table = tableLookup.get(table);
-					}
-				}
-				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
-					schemaTables.get(table).push(node.columnid);
-				}
-			}
+		if (clauseScope.length === 1) {
+			record(scope[0], node.columnid);
+			return;
 		}
-	}
+		const declarers = (tables: AttributionTable[]) =>
+			tables.every((entry) => entry.attributesKnown) ? declaringTables(node.columnid, tables) : tables;
+		// Legacy SQL can bind an ON column to a table joined after that ON.
+		let owners = declarers(clauseScope);
+		if (owners.length === 0 && clauseScope.length < scope.length) owners = declarers(scope);
+		if (owners.length === 0) record(scope[0], node.columnid);
+		for (const owner of owners) record(owner, node.columnid);
+	};
 
-	if (ast.having) {
-		const iterator = new RecursiveIterator(ast.having);
-		const fromTable = ast.from[0].tableid;
+	const recordColumns = (tree: any, clauseScope: AttributionTable[]) => {
+		for (const node of columnNodes(tree)) recordColumn(node, clauseScope);
+	};
 
-		for (let { node, parent } of iterator) {
-			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
-				let table = node.tableid ? node.tableid : fromTable;
-
-				const havingSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
-				const schemaTables = affectedAttributes.get(havingSchema);
-				if (!schemaTables) {
-					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
-					continue;
-				}
-
-				if (!schemaTables.has(table)) {
-					if (!tableLookup.has(table)) {
-						harperLogger.info(`table specified as ${table} not found.`);
-						continue;
-					} else {
-						table = tableLookup.get(table);
-					}
-				}
-				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
-					schemaTables.get(table).push(node.columnid);
-				}
-			}
+	recordColumns(ast.columns, scope);
+	recordColumns(ast.where, scope);
+	recordColumns(ast.group, scope);
+	recordColumns(ast.having, scope);
+	recordColumns(ast.order, scope);
+	(ast.joins ?? []).forEach((join, index) => {
+		const joinedIdx = ast.from.length + index;
+		recordColumns(join?.on, scope.slice(0, joinedIdx + 1));
+		for (const column of join?.using ?? []) {
+			const columnid = column?.columnid;
+			if (!columnid) continue;
+			record(scope[joinedIdx], columnid);
+			const left = scope.slice(0, joinedIdx);
+			if (left.every((entry) => entry.attributesKnown)) record(usingLeftOwner(columnid, scope, joinedIdx), columnid);
+			else for (const entry of left) record(entry, columnid);
 		}
-	}
-
-	// It's important to also iterate through the JOIN clause in case there are other columns that are not included in
-	// the SELECT clause
-	if (ast.joins) {
-		ast.joins.forEach((join) => {
-			const iterator = new RecursiveIterator(join.on);
-
-			for (let { node, parent } of iterator) {
-				if (node && node.columnid && !isRowCountWildcard(parent, node)) {
-					let table = node.tableid;
-					let schema = tableToSchemaLookup.get(table);
-
-					const schemaTables = affectedAttributes.get(schema);
-					if (!schemaTables) {
-						harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
-						continue;
-					}
-
-					if (!schemaTables.has(table)) {
-						if (!tableLookup.has(table)) {
-							harperLogger.info(`table specified as ${table} not found.`);
-							continue;
-						} else {
-							table = tableLookup.get(table);
-						}
-					}
-					//We need to check to ensure this columnid wasn't already set in the Map
-					if (schemaTables.get(table).indexOf(node.columnid) < 0) {
-						schemaTables.get(table).push(node.columnid);
-					}
-				}
-			}
-		});
-	}
-
-	// It's important to iterate through the ORDER clause in case there are other columns that are not included in
-	// the SELECT clause with wildcard
-	if (ast.order) {
-		const orderIterator = new RecursiveIterator(ast.order);
-		for (let { node, parent } of orderIterator) {
-			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
-				let tableName = node.tableid;
-				// tableToSchemaLookup is keyed by alias AND by base table name — schemaLookup alone
-				// (aliases only) silently fell back to the FROM table's schema for an unaliased joined
-				// table, misattributing its column to the wrong database and dropping it from that
-				// table's attribute list without a permission check.
-				const orderSchema = resolveColumnSchema(tableName, schemaLookup, tableToSchemaLookup, schema);
-
-				if (!tableName) {
-					tableName = ast.from[0].tableid;
-				}
-
-				const schemaTables = affectedAttributes.get(orderSchema);
-				if (!schemaTables) {
-					harperLogger.info(`schema for table ${tableName} not resolved; skipping its attributes.`);
-					continue;
-				}
-
-				if (!schemaTables.has(tableName)) {
-					if (!tableLookup.has(tableName)) {
-						harperLogger.info(`table specified as ${tableName} not found.`);
-						return;
-					} else {
-						tableName = tableLookup.get(tableName);
-					}
-				}
-
-				if (schemaTables.get(tableName).indexOf(node.columnid) < 0) {
-					schemaTables.get(tableName).push(node.columnid);
-				}
-			}
-		}
-	}
+	});
 }
 
 /**
@@ -684,19 +668,32 @@ function getSelectAttributes(
  * @param affectedAttributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
  * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any) {
+function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any, unresolvedColumns?: Set<string>) {
 	if (!ast) {
 		harperLogger.info(`getUpdateAttributes: invalid SQL syntax tree`);
 		return;
 	}
-	let iterator = new RecursiveIterator(ast.columns);
 	let schema = ast.table.databaseid;
 
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (let { node } of iterator) {
-		if (node && node.columnid) {
-			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
+	// SET targets need update; what SET expressions and WHERE read needs read (getWriteStatementReads()).
+	for (const assignment of ast.columns ?? []) {
+		if (assignment?.column?.columnid) {
+			pushAttribute(ast.table.tableid, schema, assignment.column.columnid, affectedAttributes, tableLookup);
+		}
+	}
+	reportForeignQualifiers(ast, [ast.columns, ast.where], unresolvedColumns);
+}
+
+/** A write statement has one table, so a column qualified by any other name has no table to check it on. */
+function reportForeignQualifiers(ast: any, trees: any[], unresolvedColumns?: Set<string>) {
+	const { tableid, as } = ast.table;
+	for (const tree of trees) {
+		for (const node of columnNodes(tree)) {
+			if (node.tableid && node.tableid !== tableid && node.tableid !== as) {
+				unresolvedColumns?.add(`${node.tableid}.${node.columnid}`);
+			}
 		}
 	}
 }
@@ -707,21 +704,15 @@ function getUpdateAttributes(ast: any, affectedAttributes: any, tableLookup: any
  * @param affectedAttributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
  * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any) {
+function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any, unresolvedColumns?: Set<string>) {
 	if (!ast) {
 		harperLogger.info(`getDeleteAttributes: invalid SQL syntax tree`);
 		return;
 	}
-	let iterator = new RecursiveIterator(ast.where);
-	let schema = ast.table.databaseid;
-
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (let { node } of iterator) {
-		if (node && node.columnid) {
-			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
-		}
-	}
+	// DELETE writes no attribute; what WHERE reads needs read (getWriteStatementReads()), primary key exempt.
+	reportForeignQualifiers(ast, [ast.where], unresolvedColumns);
 }
 
 /**
@@ -735,15 +726,12 @@ function getInsertAttributes(ast: any, affectedAttributes: any, tableLookup: any
 		harperLogger.info(`getInsertAttributes: invalid SQL syntax tree`);
 		return;
 	}
-	let iterator = new RecursiveIterator(ast.columns);
 	let schema = ast.into.databaseid;
 
 	addSchemaTableToMap(ast.into, affectedAttributes, tableLookup);
 
-	for (let { node } of iterator) {
-		if (node && node.columnid) {
-			pushAttribute(ast.into.tableid, schema, node.columnid, affectedAttributes, tableLookup);
-		}
+	for (const node of columnNodes(ast.columns)) {
+		pushAttribute(ast.into.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 	}
 }
 
