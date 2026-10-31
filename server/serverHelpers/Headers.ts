@@ -79,10 +79,8 @@ export function addVaryHeader(
 		return;
 	}
 	const existingString = Array.isArray(existing) ? existing.join(', ') : existing;
-	const covered =
-		isAscii(existingString) && isAscii(token)
-			? asciiVaryCovers(existingString, token)
-			: varyCovers(existingString, token.toLowerCase());
+	let covered = isAscii(token) ? asciiVaryCovers(existingString, token) : undefined;
+	if (covered === undefined) covered = varyCovers(existingString, token.toLowerCase());
 	if (!covered) headers.set('Vary', existingString + ', ' + token);
 }
 
@@ -97,14 +95,16 @@ function varyCovers(vary: string, lowerToken: string): boolean {
 
 const ASTERISK = 42;
 
-// ASCII-only: there trim() and toLowerCase() act per character, so comparing in place matches varyCovers
-function asciiVaryCovers(vary: string, token: string): boolean {
+// Matches varyCovers where trim() and toLowerCase() act per ASCII character; a part with any other character
+// returns undefined for the caller to fall back (a match in an earlier part stands, as varyCovers stops there too)
+function asciiVaryCovers(vary: string, token: string): boolean | undefined {
 	const length = vary.length;
 	const tokenLength = token.length;
 	let start = 0;
 	while (start <= length) {
 		let end = vary.indexOf(',', start);
 		if (end === -1) end = length;
+		for (let i = start; i < end; i++) if (vary.charCodeAt(i) > 127) return undefined;
 		let partStart = start;
 		let partEnd = end;
 		while (partStart < partEnd && isAsciiWhitespace(vary.charCodeAt(partStart))) partStart++;
