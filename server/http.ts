@@ -1308,7 +1308,7 @@ export function makeUwsHandler(
 		if (receivedAt !== undefined)
 			recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
-		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
+		if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logHttpRequest(request, status, requestId, executionTime);
 		// Static handlers (the only handlesHeaders producers) return a `send` SendStream that writes
 		// its own headers/body to a Node ServerResponse via .pipe(). uWS has no such object, and a
@@ -1529,7 +1529,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
 				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
-				recordActionBinary(1, 'response_' + status, handlerPath, method);
+				if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logHttpRequest(request, status, requestId, executionTime);
 				// Convert body to something Bun's Response can accept
 				if (body instanceof ReadableStream) {
@@ -2263,7 +2263,7 @@ function recordOutcome(
 	method: string
 ) {
 	recordActionBinary(status < 400, 'success', handlerPath, method);
-	recordActionBinary(1, 'response_' + status, handlerPath, method);
+	if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
 	logRequest(nodeRequest, status, requestId, executionTime);
 }
 
