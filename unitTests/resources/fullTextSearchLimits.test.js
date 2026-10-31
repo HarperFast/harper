@@ -258,6 +258,67 @@ describe('full-text host query policy', () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+	it('rejects invalid explicit query policy before other startup work or workers', function () {
+		this.timeout(60000);
+		const { execFileSync } = require('node:child_process');
+		for (const [name, value, message] of [
+			['maxQueryTerms', 1025, /maxQueryTerms must not exceed 1024/],
+			['maxQueryClauses', 4097, /maxQueryClauses must not exceed 4096/],
+			['maxQueryTerms', 0, /maxQueryTerms must be a positive safe integer/],
+		]) {
+			const output = execFileSync(
+				process.execPath,
+				[require.resolve('./fixtures/fullTextQueryStartup.cjs'), JSON.stringify({ [name]: value })],
+				{ encoding: 'utf8', timeout: 30000 }
+			);
+			const result = JSON.parse(output.trim().split('\n').at(-1));
+			assert.match(result.error, message);
+			assert.strictEqual(result.workers, 0);
+		}
+	});
+	it('passes default and supported explicit policies through startup validation', async function () {
+		this.timeout(60000);
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { execFileSync } = require('node:child_process');
+		const {
+			loadFullTextNativeBinding,
+			getValidatedFullTextRuntimeInfo,
+		} = require('#src/resources/indexes/fullTextNativeBinding');
+		const info = getValidatedFullTextRuntimeInfo(await loadFullTextNativeBinding());
+		assert.strictEqual(info.limits.maxConfiguredQueryTerms, 1024);
+		assert.strictEqual(info.limits.maxConfiguredQueryClauses, 4096);
+		for (const policy of [undefined, {}, { maxQueryTerms: 128 }, { maxQueryTerms: 1024, maxQueryClauses: 4096 }]) {
+			const output = execFileSync(
+				process.execPath,
+				[require.resolve('./fixtures/fullTextQueryStartup.cjs'), JSON.stringify(policy) ?? 'undefined'],
+				{ encoding: 'utf8', timeout: 30000 }
+			);
+			const result = JSON.parse(output.trim().split('\n').at(-1));
+			assert.match(result.error, /threads.v8Flags.*fulltext-startup-sentinel/);
+			assert.strictEqual(result.workers, 0);
+		}
+	});
+	it('preserves startup when native addons are unavailable, with or without explicit query policy', function () {
+		this.timeout(60000);
+		const { execFileSync } = require('node:child_process');
+		for (const policy of [undefined, { maxQueryTerms: 128 }]) {
+			const output = execFileSync(
+				process.execPath,
+				[
+					'--no-addons',
+					require.resolve('./fixtures/fullTextQueryStartup.cjs'),
+					JSON.stringify(policy) ?? 'undefined',
+					'initialize',
+				],
+				{ encoding: 'utf8', timeout: 30000 }
+			);
+			assert.deepStrictEqual(JSON.parse(output.trim().split('\n').at(-1)), {
+				initialized: true,
+				nativeUnavailable: true,
+			});
+		}
+	});
 	it('preserves defaults and strictly bounds independent host settings', () => {
 		assert.deepStrictEqual(resolveFullTextQueryLimits(undefined), {
 			maxQueryTerms: 64,
@@ -289,14 +350,17 @@ describe('full-text host query policy', () => {
 		const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
 		const info = await new FullTextNativeTestBinding().runtimeInfo();
 		assert.strictEqual(nativeFullTextQueryLimits(info, { maxQueryTerms: 128 }).maxQueryTerms, 128);
-		assert.throws(
-			() =>
-				nativeFullTextQueryLimits(
-					{ ...info, limits: { ...info.limits, maxConfiguredQueryTerms: 127 } },
-					{ maxQueryTerms: 128 }
-				),
-			/native runtime ceiling/
-		);
+		for (const [name, capability] of [
+			['maxQueryTerms', 'maxConfiguredQueryTerms'],
+			['maxQueryClauses', 'maxConfiguredQueryClauses'],
+		]) {
+			const lowered = { ...info, limits: { ...info.limits, [capability]: 127 } };
+			assert.strictEqual(nativeFullTextQueryLimits(lowered, { [name]: 127 })[name], 127);
+			assert.throws(
+				() => nativeFullTextQueryLimits(lowered, { [name]: 128 }),
+				new RegExp(`storage.fullText.query.${name} exceeds the native runtime ceiling 127`)
+			);
+		}
 		for (const name of ['maxConfiguredQueryTerms', 'maxConfiguredQueryClauses'])
 			for (const value of [undefined, 0, -1, 1.5, NaN, Infinity, '1024'])
 				assert.throws(

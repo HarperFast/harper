@@ -1,6 +1,8 @@
 # server/ — Navigation Guide
 
-This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer. **Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior. **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
+This layer routes HTTP, HTTPS, WebSocket, MQTT and NATS traffic to Resources.
+
+Use the symbol and section names below to navigate; line numbers drift.
 
 ---
 
@@ -55,22 +57,7 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `status/`                                  | `get_status`/`set_status`/`clear_status` over `system.hdb_status`, aggregated with flat component status, an opt-in component tree (`components: true`), and opt-in resolved middleware chains (`middleware: true`, #1573). Both status views render errors with the shared `serializeStatusError()` formatter; raw Error objects remain internal.                                                                                                     |
 
-> **Subscription message identity contract.** `sharedMessageEncoding.ts` encodes a message once and
-> reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
-> sound for every internal producer because each yields a fresh object per version — `transactionBroadcast`
-> hands one `auditRecord` to every subscription, `auditStore`'s `getValue` memoizes the decode in its
-> closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content. Pinned by
-> `unitTests/resources/subscriptionValueIdentity.test.js`.
->
-> Rather than leave that as a rule custom Resources have to know, the event's record `version` is part
-> of the cache key: `DurableSubscriptionsSession` forwards it to the delivery listener, and an entry
-> whose version does not match is re-encoded. A Resource that reuses one envelope but advances the
-> version is therefore correct, not merely disallowed; one that supplies no version is not shared at
-> all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
-> indistinguishable from re-sending the same message.
->
-> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
-> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
+> **Subscription message identity.** `subscriptionValueIdentity.test.js` pins fresh internal envelopes and version-guarded shared encoding. Custom Resources may reuse an envelope only with a changed version; messages without a version are not shared. Custom serializers must be pure in their input (`ContentTypeHandler.serialize`, `Server.ts`).
 
 > **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
 > is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
