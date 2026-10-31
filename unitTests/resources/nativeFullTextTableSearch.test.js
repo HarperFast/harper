@@ -153,6 +153,33 @@ describe('published native full-text Table.search integration', () => {
 			['b', 'a', 'c']
 		);
 		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		const optionalClauses = [
+			{ comparator: 'matches', value: 'trail', fields: ['details'], boost: 2 },
+			{ comparator: 'matches', value: 'running', fields: ['details'], boost: 3.5 },
+		];
+		const bonusScores = [];
+		for (const { boost: _boost, ...clause } of optionalClauses)
+			bonusScores.push(new Map((await search(clause)).map(({ id, $score }) => [id, $score])));
+		const additive = await search({ boost: 0.5, should: optionalClauses });
+		assert.deepStrictEqual(ids(additive), ['a', 'b', 'c']);
+		const requiredScores = new Map(baseline.map(({ id, $score }) => [id, $score]));
+		for (const record of additive) {
+			const contributions = [
+				Math.fround(requiredScores.get(record.id) * 0.5),
+				...optionalClauses.map(({ boost }, index) => Math.fround((bonusScores[index].get(record.id) ?? 0) * boost)),
+			];
+			const expected = contributions.reduce((sum, score) => sum + score, 0);
+			const tolerance = Math.max(1e-6, Math.abs(expected) * 1e-6);
+			assert(Math.abs(record.$score - expected) <= tolerance, `additive Table score for ${record.id}`);
+			if (record.id === 'b') {
+				assert(record.$score > Math.max(...contributions) + tolerance, 'sum must exceed max-only scoring');
+				assert(
+					contributions.every((score) => score > tolerance),
+					'each contribution must be discriminated'
+				);
+			}
+		}
+
 		const bridge = new ResourceBridge();
 		const bridged = await collect(
 			await bridge.searchByConditions({
