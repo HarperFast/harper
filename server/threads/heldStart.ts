@@ -81,7 +81,7 @@ export async function awaitAdmission(
 	});
 }
 
-/** Read from table state when the report is sent, so a hook cleared or an index added during the load counts as it ends. */
+/** Read from table state as the load ends, not from registration events. */
 function poolUnsupportedTables(): string[] {
 	const tables = [];
 	const databases = getDatabases();

@@ -3622,7 +3622,7 @@ export function makeTable(options): TableResourceClass {
 					? 'outbound replication sends invalidation entries (residency partials) and inbound replication stores residency stubs for non-resident records instead of evaluating the callback'
 					: 'replicated writes that do not carry a residency list fall back to default residency placement instead of evaluating the callback';
 			harperLogger.warn?.(
-				`Table '${databaseName}.${tableName}' registered ${hookName}, which is deprecated as of Harper 5.4 and unsupported on replication pool workers: they load no application code, so there ${consequence}. Use the schema @sharded directive instead, or set replication.threads: 0 in harper-config.yaml to keep using ${hookName}.`
+				`Table '${databaseName}.${tableName}' registered ${hookName}, which is deprecated as of Harper 5.4 and unsupported on replication pool workers: they load no application code, so on them ${consequence}. Use the schema @sharded directive instead, or set replication.threads: 0 in harper-config.yaml to keep using ${hookName}.`
 			);
 		}
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
@@ -10943,14 +10943,14 @@ export function makeTable(options): TableResourceClass {
 			primaryStore.encoder.resolvedAttributeNamesList = resolvedAttributeNames;
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
-		/** Whether replicating this table needs a hook only application code installs, which pool workers lack. */
+		/** Pool workers lack any hook only application code installs. */
 		static requiresApplicationCodeToReplicate(): boolean {
 			if (TableResource.getResidency !== defaultGetResidency || TableResource.getResidencyById) return true;
 			for (const attribute of attributes) {
 				if (!attribute.computed || !(indices[attribute.name] || attribute.indexed)) continue;
 				const resolver = this.userResolvers[attribute.name];
-				if (typeof resolver === 'function' && !resolver.unresolved && !schemaExpressionResolvers.has(resolver))
-					return true;
+				const schemaExpression = attribute.computedFromExpression && schemaExpressionResolvers.has(resolver);
+				if (typeof resolver === 'function' && !resolver.unresolved && !schemaExpression) return true;
 			}
 			return false;
 		}
