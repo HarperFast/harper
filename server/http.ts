@@ -161,10 +161,6 @@ function ownershipOf(entry: {
  * require 'owned': its callers, an overlong path and a per-thread mirror skipped because its pool owns
  * it, never run listen(), so this worker's own identity is never recorded).
  */
-export function isUdsBindFailed(socketPath: string): boolean {
-	return failedUdsPaths.has(socketPath);
-}
-
 export function markUdsBindFailed(socketPath: string) {
 	failedUdsPaths.add(socketPath);
 	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
@@ -172,6 +168,10 @@ export function markUdsBindFailed(socketPath: string) {
 	try {
 		unlinkSync(entry.yamlPath);
 	} catch {}
+}
+
+export function isUdsBindFailed(socketPath: string): boolean {
+	return failedUdsPaths.has(socketPath);
 }
 
 export function cleanupUdsFiles() {
