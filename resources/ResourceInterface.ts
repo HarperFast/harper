@@ -216,6 +216,7 @@ export type FullTextScoringClause = {
 	comparator: (typeof FULL_TEXT_POSITIVE_COMPARATORS)[number];
 	value: string;
 	fields?: string[];
+	/** Scale this full-text clause score without changing match eligibility; finite float32 0–100. */
 	boost?: number;
 	fuzzyDistance?: number;
 	fuzzyTranspositions?: boolean;
@@ -230,7 +231,9 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_value?: Record[Property] | Record[Property][];
 	/** Optional source-field restriction for a named full-text index. */
 	fields?: string[];
+	/** Scale this full-text clause score without changing match eligibility; finite float32 0–100. */
 	boost?: number;
+	/** Positive same-index clauses add optional score bonuses without admitting additional records. */
 	should?: FullTextScoringClause[];
 	/** Fuzzy edit distance 0–2, default 1; bounded by storage.fullText.query.maxFuzzyDistance. */
 	fuzzyDistance?: number;
