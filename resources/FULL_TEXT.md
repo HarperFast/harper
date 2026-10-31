@@ -92,7 +92,7 @@ Harper pins `@harperfast/fulltext` to **0.8.0**, embedding **Tantivy 0.27.0**, a
 
 ### Upgrading from fulltext 0.7.0
 
-Harper's existing indexes written by fulltext 0.7.0 contain text fields only and remain reusable with 0.8.0. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations write the default `storage.fullText.query` block even when it is not customized. Older Harper versions reject that block during configuration validation; remove it before attempting to return to one. Returning to fulltext 0.7.0 after 0.8.0 has written to an index is not a qualified operator rollback procedure.
+Harper's existing indexes written by fulltext 0.7.0 contain text fields only and remain reusable with 0.8.0. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations omit `storage.fullText.query`; defaults apply automatically. An explicitly configured query block must be removed before returning to Harper 5.4.0-alpha.1 or alpha.2, whose validators reject it. Existing configuration is not rewritten. Returning to fulltext 0.7.0 after 0.8.0 has written to an index is not a qualified operator rollback procedure.
 
 ### Upgrading an existing native index
 
@@ -173,15 +173,14 @@ These limits apply together. For example, two indexing threads and 64 MiB of wri
 
 Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails with `FullTextWorkerInitializationError` (500, non-retryable); recreate it after Harper initializes. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
 
-Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.8.0 defaults to 64 analyzed terms per text leaf and 256 compiled clauses per query. Configure host reader policy separately from request work budgets:
+Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.8.0 defaults to 64 analyzed terms per text leaf, 256 compiled clauses per query and a maximum fuzzy distance of one. Configure `storage.fullText.query` only to override those defaults, separately from request work budgets. Omitted fields retain their defaults:
 
 ```yaml
 storage:
   fullText:
     query:
-      maxQueryTerms: 64
-      maxQueryClauses: 256
-      maxFuzzyDistance: 1
+      maxQueryTerms: 128
+      maxQueryClauses: 512
 ```
 
 The policy is captured for the whole process and inherited by HTTP and application workers. Restart the full Harper process to change it; restarting only workers does not change the captured values. It applies to readers, including reopened readers, and does not change writer limits or index identity. Requests cannot raise it. Terms must be 1–1,024 and clauses 1–4,096, also within the loaded native runtime's advertised ceilings. Clause cost includes Boolean structure, NOT and field expansion, so a query below its term limit can still fail its clause limit. Overflow rejects the query rather than executing a truncated one. Before a response starts, query-capacity validation failures return 400; an operations JSON stream that has already started instead aborts and may include an error diagnostic. Treat an incomplete response as failed and discard its rows. Other depth, byte, phrase/fuzzy construction, queue, response and deadline guards still apply. Deadlines are cooperative and do not guarantee interruption during every native construction step. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.8.0/docs/limits.md).

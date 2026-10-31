@@ -74,10 +74,6 @@ storage:
     requestBudgetMilliseconds: 5000
     maxRawHitsPerRequest: 10000
     maxResultsPerRequest: 10000
-    query:
-      maxQueryTerms: 64
-      maxQueryClauses: 256
-      maxFuzzyDistance: 1
     runtime:
       maxResidentIndexes: 128
       maxIndexingThreads: 128

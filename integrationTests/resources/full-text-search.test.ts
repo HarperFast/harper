@@ -1079,4 +1079,16 @@ suite('deployed full-text default query policy', (ctx: ContextWithHarper) => {
 			assert.deepStrictEqual(ids(await search(query('waterproof'), operations)), ['default-policy']);
 		}
 	});
+
+	test('rejects more than 64 analyzed terms with implied query defaults', async () => {
+		const target = query(Array.from({ length: 65 }, (_, index) => `term${index}`).join(' '), { fields: ['title'] });
+		await search(target, false, 400);
+		await assertOperationsQueryRejection(
+			ctx.harper.operationsAPIURL,
+			authorization,
+			target,
+			"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
+		);
+		assert.deepStrictEqual(ids(await search(query('waterproof'), true)), ['default-policy']);
+	});
 });

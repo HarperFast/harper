@@ -71,6 +71,7 @@ describe('full-text search resource limits', () => {
 				).error?.details ?? []
 			).filter(({ path }) => path[0] === 'storage' && path[1] === 'fullText');
 		assert.deepStrictEqual(errors({ requestBudgetMilliseconds: 7, runtime: { maxResidentIndexes: 256 } }), []);
+		assert.deepStrictEqual(errors({ query: { maxQueryTerms: 128 } }), []);
 		for (const value of [
 			{ requestBudgetMilliseconds: 0 },
 			{ query: { maxQueryTerms: 0 } },
@@ -110,10 +111,24 @@ describe('full-text search resource limits', () => {
 		const { parse } = require('yaml');
 		const root = resolve(__dirname, '../..');
 		const yaml = parse(readFileSync(resolve(root, 'static/defaultConfig.yaml'), 'utf8'));
-		const { query, ...requestLimits } = yaml.storage.fullText;
-		assert.deepStrictEqual(requestLimits, DEFAULT_FULL_TEXT_SEARCH_LIMITS);
-		const { DEFAULT_FULL_TEXT_QUERY_LIMITS } = require('#src/resources/indexes/fullTextSearchLimits');
-		assert.deepStrictEqual(query, DEFAULT_FULL_TEXT_QUERY_LIMITS);
+		assert.deepStrictEqual(yaml.storage.fullText, DEFAULT_FULL_TEXT_SEARCH_LIMITS);
+		const { configValidator } = require('#src/validation/configValidator');
+		const errors = configValidator({ ...yaml, rootPath: root }, true).error?.details ?? [];
+		assert.deepStrictEqual(
+			errors.filter(({ path }) => path[0] === 'storage' && path[1] === 'fullText'),
+			[]
+		);
+		const { flattenConfig } = require('#src/config/configUtils');
+		const flattened = flattenConfig(yaml);
+		assert.strictEqual(flattened.storage_fulltext_query, undefined);
+		const {
+			DEFAULT_FULL_TEXT_QUERY_LIMITS,
+			resolveFullTextQueryLimits,
+		} = require('#src/resources/indexes/fullTextSearchLimits');
+		assert.deepStrictEqual(
+			resolveFullTextQueryLimits(flattened.storage_fulltext_query),
+			DEFAULT_FULL_TEXT_QUERY_LIMITS
+		);
 		const schema = JSON.parse(readFileSync(resolve(root, 'config-root.schema.json'), 'utf8'));
 		const policy = schema.properties.storage.properties.fullText;
 		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_QUERY_LIMITS))
@@ -250,6 +265,11 @@ describe('full-text host query policy', () => {
 			maxFuzzyDistance: 1,
 		});
 		assert(Object.isFrozen(DEFAULT_FULL_TEXT_QUERY_LIMITS));
+		assert.deepStrictEqual(resolveFullTextQueryLimits({ maxQueryTerms: 128 }), {
+			maxQueryTerms: 128,
+			maxQueryClauses: 256,
+			maxFuzzyDistance: 1,
+		});
 		assert.deepStrictEqual(
 			resolveFullTextQueryLimits({ maxQueryTerms: '1024', maxQueryClauses: '4096', maxFuzzyDistance: '0' }),
 			{ maxQueryTerms: 1024, maxQueryClauses: 4096, maxFuzzyDistance: 0 }
