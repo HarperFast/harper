@@ -404,6 +404,46 @@ async function hostBusyCpuSeconds(): Promise<number> {
 	return (user + nice + system + irq + softirq + steal) / USER_HZ;
 }
 
+/**
+ * PIDs in `procs` that are neither `self`, an ancestor of it, nor a descendant: processes sharing
+ * this run's cgroup without being part of it. `parentOf` is undefined for a process that has exited.
+ */
+export function foreignPids(procs: number[], self: number, parentOf: (pid: number) => number | undefined): number[] {
+	const ancestors = new Set<number>();
+	for (let p: number | undefined = self; p !== undefined && p > 0; p = parentOf(p)) ancestors.add(p);
+	return procs.filter((pid) => {
+		if (ancestors.has(pid) || parentOf(pid) === undefined) return false;
+		for (let p: number | undefined = pid; p !== undefined && p > 0; p = parentOf(p)) if (p === self) return false;
+		return true;
+	});
+}
+
+function parentPid(pid: number): number | undefined {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+		return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Processes in this process's cgroup that are not part of this run (see foreignPids), as "pid (comm)". */
+export function foreignProcessesInOwnCgroup(): string[] {
+	const procs = readFileSync(join(processCgroup(process.pid), 'cgroup.procs'), 'utf8')
+		.split('\n')
+		.filter(Boolean)
+		.map(Number);
+	return foreignPids(procs, process.pid, parentPid).map((pid) => {
+		let comm = '?';
+		try {
+			comm = readFileSync(`/proc/${pid}/comm`, 'utf8').trim();
+		} catch {
+			// exited
+		}
+		return `${pid} (${comm})`;
+	});
+}
+
 export interface HostLoad {
 	loadavg1: number;
 	/** Mean cores busy over the window outside this run (its own cgroup and the target's). */

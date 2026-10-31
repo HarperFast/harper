@@ -9,7 +9,7 @@
  * which dominate the rep-to-rep noise of CPU seconds; cycles per op and IPC show what they cost.
  */
 import { spawn, execFile } from 'node:child_process';
-import { createReadStream } from 'node:fs';
+import { closeSync, createReadStream, openSync } from 'node:fs';
 import { link, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
@@ -95,11 +95,13 @@ async function startEnabled(args: string[], dir: string): Promise<{ stop(): Prom
 	} catch (error) {
 		proc.kill('SIGKILL');
 		// An open blocked on a FIFO perf never opened waits forever, holding a pool thread; opening
-		// each end read-write (which never blocks on Linux) completes it.
-		const releasers = await Promise.allSettled([open(ctl, 'r+'), open(ack, 'r+')]);
-		for (const settled of [...(await Promise.allSettled(opening)), ...releasers]) {
+		// each end read-write (which never blocks on Linux) completes it. Synchronous, so a small pool
+		// whose threads are all blocked in those opens cannot queue the release behind them.
+		const releasers = [ctl, ack].map((fifo) => openSync(fifo, 'r+'));
+		for (const settled of await Promise.allSettled(opening)) {
 			if (settled.status === 'fulfilled') await settled.value.close();
 		}
+		for (const fd of releasers) closeSync(fd);
 		await cleanup();
 		throw error;
 	}
@@ -238,6 +240,8 @@ export function dedupePerfMap(text: string): string {
  * (the start time keeps a reused PID from inheriting it), and every fold rebuilds the deduplicated
  * map perf reads from it.
  */
+const keptMaps = new Set<string>();
+
 async function dedupeMapsOf(cgroups: Record<string, string>): Promise<void> {
 	for (const scope of Object.values(cgroups)) {
 		const pids = (await readFile(join(scope, 'cgroup.procs'), 'utf8')).split('\n').filter(Boolean);
@@ -258,10 +262,20 @@ async function dedupeMapsOf(cgroups: Record<string, string>): Promise<void> {
 				if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 			}
+			keptMaps.add(live).add(path);
 			await writeFile(`${path}.dedupe`, dedupePerfMap(await readFile(live, 'utf8')));
 			await rename(`${path}.dedupe`, path);
 		}
 	}
+}
+
+/**
+ * Deletes the maps dedupeMapsOf kept or rewrote. Call once the target's processes have exited:
+ * they live on /tmp (tmpfs), and a later process reusing a PID must not find a dead one's map.
+ */
+export async function removePerfMaps(): Promise<void> {
+	for (const path of keptMaps) await rm(path, { force: true });
+	keptMaps.clear();
 }
 
 /**
@@ -282,6 +296,8 @@ export async function foldPerfScript(
 	let err = '';
 	proc.stderr!.on('data', (d) => (err += d));
 	const closed = once(proc, 'close') as Promise<[number | null, NodeJS.Signals | null]>;
+	// A spawn error rejects this while stdout is still being read; it is awaited after the loop.
+	closed.catch(() => {});
 	const stacks: Record<string, Map<string, number>> = Object.fromEntries(
 		Object.keys(cgroups).map((c) => [c, new Map<string, number>()])
 	);

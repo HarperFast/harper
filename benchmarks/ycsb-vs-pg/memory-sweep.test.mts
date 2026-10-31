@@ -7,7 +7,8 @@ import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from './memory-sweep.mts';
+import { recordsForRatio, warmupConverged, checkHarperMemory, checkOwnCgroup, parseCells } from './memory-sweep.mts';
+import { foreignPids } from './resources.mts';
 import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
 import { classify, rocksdbPart } from './profile-report.mts';
@@ -91,6 +92,20 @@ test('an uncapped Harper needs an explicit opt-in, and the flag never reaches th
 		allowUncapped: true,
 	});
 	deepStrictEqual(checkHarperMemory(['--reps=3']), { argv: ['--reps=3'], allowUncapped: false });
+});
+
+test("the host gate's cgroup must hold only this run, its ancestors and descendants", () => {
+	// 1 init -> 10 shell -> 20 harness -> 30 shard -> 40 its child; 11 is a sibling job of the harness
+	const parents: Record<number, number> = { 1: 0, 10: 1, 11: 10, 20: 10, 30: 20, 40: 30, 50: 1 };
+	const parentOf = (pid: number) => parents[pid];
+	deepStrictEqual(foreignPids([10, 11, 20, 30, 40, 50, 99], 20, parentOf), [11, 50]);
+	deepStrictEqual(foreignPids([20, 30], 20, parentOf), []);
+	throws(() => checkOwnCgroup(['--reps=3'], ['11 (bash)']), /--allow-shared-cgroup/);
+	deepStrictEqual(checkOwnCgroup(['--allow-shared-cgroup', '--reps=3'], ['11 (bash)']), {
+		argv: ['--reps=3'],
+		sharedCgroup: true,
+	});
+	deepStrictEqual(checkOwnCgroup(['--reps=3'], []), { argv: ['--reps=3'], sharedCgroup: false });
 });
 
 test('cells name ratio, workload and target', () => {

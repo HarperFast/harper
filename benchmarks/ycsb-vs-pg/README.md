@@ -194,14 +194,18 @@ dataset sized as a multiple of the budget (`--ratios`, logical payload of the
 - **Harper is always capped here.** `--harper-memory=measured` is refused unless
   `--allow-uncapped` is also given, and then every row carries `allowUncapped`.
   A restored target still busy when the 10-minute quiesce wait ends is measured but
-  marked `status: quiesce-timeout` and `settled: false`.
+  marked `status: quiesce-timeout` and `settled: false`; warmup without a plateau is
+  `warmup-ceiling`, and a snapshot that never went quiet `snapshot-not-quiet`.
 - **Reruns and a shared host.** `--cells=0.5:B:harper-uws,8:B:pg-redis` runs exactly
   those samples, `--reps` times each. Before every sample the run waits (up to
   `--host-quiet-max-min`, 20) until the rest of the host has used under
   `--host-quiet-cores` (1) over 30 s: host busy time from `/proc/stat` minus this
   run's own cgroup and the target's. Run it under
   `bench-run`, which gives it a cgroup of its own: from a login or tmux session, that
-  cgroup also holds whatever else the session started, and the gate would not see it. Load that arrives mid-run is caught after it:
+  cgroup also holds whatever else the session started, and the gate would not see it.
+  The sweep refuses to start when its cgroup holds any process that is not its own
+  ancestor or descendant (a `| tee` in the same scope counts), unless
+  `--allow-shared-cgroup` is given, and then every row carries `sharedCgroup`. Load that arrives mid-run is caught after it:
   a measured run with the rest of the host over the threshold is measured again on
   the warm target, up to `--noisy-retries` (2) times, and the discarded runs stay in
   the row (`noisyWindows`, `hostQuiet`). Harper rows also record RocksDB flushes and

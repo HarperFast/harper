@@ -48,6 +48,7 @@ import {
 import {
 	PERF_NODE_OPTIONS,
 	foldPerfScript,
+	removePerfMaps,
 	perfAvailable,
 	startCounters,
 	startRecord,
@@ -338,15 +339,19 @@ async function withPgStack<T>(
 	}
 }
 
-export function withTarget<T>(
+export async function withTarget<T>(
 	session: Session,
 	target: TargetName,
 	body: (running: Running) => Promise<T>,
 	launch?: LaunchOptions
 ): Promise<T> {
-	return TARGETS[target].kind === 'stack'
-		? withPgStack(session, target, body, launch)
-		: withHarper(session, target, body, launch);
+	try {
+		return TARGETS[target].kind === 'stack'
+			? await withPgStack(session, target, body, launch)
+			: await withHarper(session, target, body, launch);
+	} finally {
+		if (session.profile) await removePerfMaps();
+	}
 }
 
 async function cpuSecondsOf(pids: number[]): Promise<number> {
@@ -1036,7 +1041,17 @@ export async function createSession(
 		memorySplit: {
 			harper: harperMemory === 'capped' ? { memoryMaxBytes: MEMORY_BUDGET_BYTES } : 'measured, not capped',
 			...Object.fromEntries(
-				targets.filter((t) => TARGETS[t].kind === 'stack').map((t) => [t, stackMemory(t as 'pg-redis' | 'pg-only')])
+				targets
+					.filter((t) => TARGETS[t].kind === 'stack')
+					.map((t) => {
+						const split = stackMemory(t as 'pg-redis' | 'pg-only');
+						// A test knob composeEnv honors over every split, so the split records what applied.
+						const override = process.env.YCSB_REDIS_MAXMEMORY;
+						if (!override) return [t, split];
+						const effective: Record<string, unknown> = { ...split, redisMaxmemory: override };
+						delete effective.redisMaxmemoryMiB;
+						return [t, effective];
+					})
 			),
 		},
 		cache,
@@ -1050,8 +1065,6 @@ export async function createSession(
 		config: { ...options.config, threads: options.threads, engine: options.engine },
 		perfCounters,
 		profile: profile && { ...profile, nodeOptions: PERF_NODE_OPTIONS },
-		// A test knob composeEnv honors over every split; recorded so a result says which applied.
-		redisMaxmemoryOverride: process.env.YCSB_REDIS_MAXMEMORY,
 	};
 	return { session, meta };
 }

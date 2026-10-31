@@ -13,7 +13,7 @@ import { readFolded } from './perfProfile.mts';
 import type { Counters } from './perfProfile.mts';
 import type { ProfiledWindow } from './run-compare.mts';
 
-export const BUCKETS = {
+const BUCKETS = {
 	'http': 'HTTP parse + write, socket I/O and syscalls',
 	'routing': 'routing, request/context setup, handler',
 	'auth': 'authentication, permissions',
@@ -88,7 +88,7 @@ const JS_FRAME = / ((?:file:\/\/)?\/[^ ]+|node:[^ ]+):\d+:\d+$/;
 const isJsFrame = (frame: string) => JS_FRAME.test(frame);
 
 /** The bucket a single frame claims, or undefined to defer to its caller. */
-export function frameBucket(frame: string): Bucket | undefined {
+function frameBucket(frame: string): Bucket | undefined {
 	const js = JS_FRAME.exec(frame);
 	if (js) {
 		for (const [pattern, bucket] of JS_FILE_RULES) if (pattern.test(js[1])) return bucket;
@@ -189,8 +189,12 @@ async function analyze(
 	const topSelf: Record<string, Map<string, number>> = {};
 	const inclusive = new Map<string, number>();
 	for (const [component, samples] of Object.entries(profile.samples)) {
-		if (samples === 0) continue;
 		const componentMicrosPerOp = ((profile.byComponentCpuSeconds[component] ?? 0) * 1e6) / profile.ops;
+		if (samples === 0) {
+			// CPU the sampler never saw still belongs in the buckets, or they would not add up to the total.
+			if (componentMicrosPerOp > 0) microsPerOp.other = (microsPerOp.other ?? 0) + componentMicrosPerOp;
+			continue;
+		}
 		const perSample = componentMicrosPerOp / samples;
 		for (const { stack, count } of await readFolded(`${profile.prefix}.${component}.folded`)) {
 			const bucket = classify(stack, component);
@@ -272,7 +276,7 @@ const BUCKET_COLORS: Record<Bucket, string> = {
 const escapeXml = (s: string) => s.replace(/[<>&"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /** A static SVG flame graph (root at the bottom), colored by each frame's own bucket. */
-export function flameGraphSvg(stacks: { stack: string[]; count: number }[], title: string, width = 1600): string {
+function flameGraphSvg(stacks: { stack: string[]; count: number }[], title: string, width = 1600): string {
 	const root: FlameNode = { name: 'all', value: 0, children: new Map() };
 	for (const { stack, count } of stacks) {
 		root.value += count;
@@ -300,7 +304,9 @@ export function flameGraphSvg(stacks: { stack: string[]; count: number }[], titl
 				? 'other'
 				: depth === 1 && (node.name === 'redis' || node.name === 'postgres')
 					? `${node.name}-server`
-					: (frameBucket(node.name) ?? (GC.test(node.name) ? 'gc' : JIT.test(node.name) ? 'jit' : inherited));
+					: inherited === 'redis-server' || inherited === 'postgres-server'
+						? inherited // as classify counts them: all of a database's samples are server time
+						: (frameBucket(node.name) ?? (GC.test(node.name) ? 'gc' : JIT.test(node.name) ? 'jit' : inherited));
 		rects.push(
 			`<g><title>${escapeXml(shortFrame(node.name))} (${((100 * node.value) / root.value).toFixed(2)}%)</title>` +
 				`<rect x="${(10 + x).toFixed(1)}" y="D${depth}" width="${w.toFixed(1)}" height="${rowHeight - 1}" fill="${BUCKET_COLORS[own]}"/>` +

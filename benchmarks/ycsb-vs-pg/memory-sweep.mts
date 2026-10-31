@@ -23,7 +23,14 @@ import { WORKLOADS, formatKey } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
-import { sampleResources, waitForQuiet, waitForQuietHost, readCgroupMemory, type HostLoad } from './resources.mts';
+import {
+	foreignProcessesInOwnCgroup,
+	sampleResources,
+	waitForQuiet,
+	waitForQuietHost,
+	readCgroupMemory,
+	type HostLoad,
+} from './resources.mts';
 import { readRocksdbEvents, summarizeEvents, type RocksdbActivity, type RocksdbEvent } from './rocksdbLog.mts';
 import {
 	TARGETS,
@@ -104,10 +111,16 @@ interface SweepSample {
 	workload: string;
 	rep: number;
 	position: number;
-	/** `quiesce-timeout`: measured, but the restored target was still busy when the quiesce wait ran out. */
-	status: 'ok' | 'quiesce-timeout' | 'failed';
+	/**
+	 * Measured but not clean, first cause wins: `quiesce-timeout`, the restored target was still busy
+	 * when the quiesce wait ran out; `warmup-ceiling`, warmup hit its chunk ceiling without a plateau;
+	 * `snapshot-not-quiet`, the snapshot was taken from a target that never went quiet.
+	 */
+	status: 'ok' | 'quiesce-timeout' | 'warmup-ceiling' | 'snapshot-not-quiet' | 'failed';
 	/** Present, and true, on every row of a session run with Harper uncapped (--allow-uncapped). */
 	allowUncapped?: true;
+	/** Present, and true, on every row of a session whose cgroup held other processes (--allow-shared-cgroup). */
+	sharedCgroup?: true;
 	failure?: { phase: string; error: string };
 	/** The wait for the rest of the host to go quiet before this sample started. */
 	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
@@ -144,6 +157,23 @@ export function checkHarperMemory(argv: string[]): { argv: string[]; allowUncapp
 		);
 	}
 	return { argv: argv.filter((a) => a !== '--allow-uncapped'), allowUncapped };
+}
+
+/**
+ * The host gate counts everything in this process's cgroup as the run's own CPU, so it needs a cgroup
+ * holding only this run, as bench-run gives. Other processes there (a login or tmux session's jobs)
+ * need an explicit `--allow-shared-cgroup`, and every output row then carries `sharedCgroup`.
+ */
+export function checkOwnCgroup(argv: string[], foreign: string[]): { argv: string[]; sharedCgroup: boolean } {
+	const allowed = argv.includes('--allow-shared-cgroup');
+	if (foreign.length > 0 && !allowed) {
+		throw new Error(
+			`this run's cgroup also holds ${foreign.slice(0, 5).join(', ')}${foreign.length > 5 ? ', ...' : ''}, ` +
+				"whose CPU the host gate would count as the run's own; run under bench-run, or add " +
+				'--allow-shared-cgroup to run anyway (every row is then marked sharedCgroup)'
+		);
+	}
+	return { argv: argv.filter((a) => a !== '--allow-shared-cgroup'), sharedCgroup: foreign.length > 0 };
 }
 
 export type Cell = { ratio: number; workload: string; target: TargetName };
@@ -347,7 +377,13 @@ async function measureSweepSample(
 							`  [host] ${measured.host.otherCores.toFixed(1)} cores busy elsewhere during the run; measuring again`
 						);
 					}
-					sample.status = quiet ? 'ok' : 'quiesce-timeout';
+					sample.status = !quiet
+						? 'quiesce-timeout'
+						: !converged
+							? 'warmup-ceiling'
+							: !snapshot.quiet
+								? 'snapshot-not-quiet'
+								: 'ok';
 					sample.settled = converged && quiet && snapshot.quiet;
 					if (running.dataRoot) {
 						phase = 'rocksdb-log';
@@ -423,7 +459,7 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 					(m?.redisHitRate === undefined ? '-' : (m.redisHitRate * 100).toFixed(2)).padStart(7),
 					(s.warmup ? `${s.warmup.length}${s.settled ? '' : '!'}` : '-').padStart(7),
 					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}` +
-						(s.status === 'quiesce-timeout' ? '  (quiesce timed out)' : '') +
+						(s.status === 'ok' || s.status === 'failed' ? '' : `  (${s.status})`) +
 						(s.hostQuiet === false
 							? '  (host busy during the run)'
 							: s.hostGate && !s.hostGate.quiet
@@ -466,7 +502,9 @@ async function removeSnapshots(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	const { argv, allowUncapped } = checkHarperMemory(process.argv.slice(2));
+	const foreign = foreignProcessesInOwnCgroup();
+	const { argv: memoryChecked, allowUncapped } = checkHarperMemory(process.argv.slice(2));
+	const { argv, sharedCgroup } = checkOwnCgroup(memoryChecked, foreign);
 	const cellsArg = argValue(argv, '--cells');
 	const cells = cellsArg ? parseCells(cellsArg) : undefined;
 	if (
@@ -545,6 +583,7 @@ async function main(): Promise<void> {
 			reps: config.reps,
 			cells,
 			allowUncapped,
+			sharedCgroup: sharedCgroup ? foreign : undefined,
 			hostGate: { maxOtherCores: hostQuietCores, windowMs: 30_000, maxMs: hostQuietMaxMin * 60_000 },
 			noisyRetries,
 			warmup: { chunkOps, maxChunks, window: 3, throughputTolerance: 0.05, hitRateTolerance: 0.005 },
@@ -593,6 +632,7 @@ async function main(): Promise<void> {
 							position: i + 1,
 							status: 'failed',
 							...(allowUncapped ? { allowUncapped: true as const } : {}),
+							...(sharedCgroup ? { sharedCgroup: true as const } : {}),
 						};
 						console.log(`\n--- ${ratios[p]}x rep ${rep + 1} #${i + 1} ${target} / workload ${workload} ---`);
 						const gate = await waitForQuietHost({ maxOtherCores: hostQuietCores, maxMs: hostQuietMaxMin * 60_000 });
