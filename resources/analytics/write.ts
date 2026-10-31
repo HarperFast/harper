@@ -47,7 +47,7 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
-// Advanced by every setAnalyticsEnabled(), so a flush that was already running when it was called never delivers its window
+// Advanced by every setAnalyticsEnabled(): a flush already running across the reset stops delivering
 let analyticsGeneration = 0;
 
 onStartup(() => {
@@ -66,6 +66,7 @@ export function checkAnalyticsEnabled(): boolean {
 	return analyticsEnabled;
 }
 
+/** Resets this thread's analytics window; other threads keep their own. */
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
 	if (enabled) startEventLoopDelayMonitor();
@@ -76,6 +77,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsStart = 0;
 	lastFlushAt = 0;
 	activeActions = new Map();
+	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
 	analyticsGeneration++;
 }
 

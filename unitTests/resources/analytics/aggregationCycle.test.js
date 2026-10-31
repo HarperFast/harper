@@ -604,7 +604,6 @@ describe('analytics aggregation cycle', () => {
 		analytics.setAnalyticsEnabled(false);
 		analytics.setAnalyticsEnabled(true);
 		analytics.recordAction(1, 'db-write', 'InFlightStale');
-		// a function-valued action is called by the flush itself, before its next yield
 		analytics.recordAction(
 			() => {
 				probeRan = true;
