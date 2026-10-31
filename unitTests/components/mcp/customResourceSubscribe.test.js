@@ -11,9 +11,9 @@ process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS ??= String(24 * 60 * 60 * 100
 const { subscribeToResource } = require('#src/components/mcp/resources');
 const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
 const { contextStorage } = require('#src/resources/transaction');
-const { _liveSubscriptionCount, _notifyUserChange } = require('#src/server/liveSubscriptionAuth');
+const { _liveSubscriptionCount, _notifyUserChange, _tickNow } = require('#src/server/liveSubscriptionAuth');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
-const { findAndValidateUser } = require('#src/security/user');
+const { findAndValidateUser, localPrincipal } = require('#src/security/user');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../../waitFor');
 
@@ -313,6 +313,20 @@ describe('mcp custom resources/subscribe (#3250)', () => {
 				const subscription = await subscribeToResource('notes:///n1', scoped, 'application');
 				subscription.start(() => {});
 				await _notifyUserChange({ usernames: new Set(['mcp_sub_scoped']), roleIds: new Set() });
+				await turn();
+				assert.equal(stream.stats.endCalls, 0);
+				subscription.stop();
+			});
+
+			// no hdb_user record backs `local`, so a recheck would revoke it
+			it('keeps the local principal, which is not registered', async () => {
+				const before = _liveSubscriptionCount();
+				const stream = makeStream();
+				addNotes(async () => stream);
+				const subscription = await subscribeToResource('notes:///n1', localPrincipal(), 'application');
+				subscription.start(() => {});
+				assert.equal(_liveSubscriptionCount(), before);
+				await _tickNow();
 				await turn();
 				assert.equal(stream.stats.endCalls, 0);
 				subscription.stop();

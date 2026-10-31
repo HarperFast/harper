@@ -619,9 +619,10 @@ const resolveUser = (_scope: unknown, username: string) =>
  */
 async function trackPrincipalLifetime(subscription: ResourceSubscription, user: AuthedUser): Promise<void> {
 	const username = user?.username;
-	if (!username) return;
+	const { hasRecordProvenance, isCurrentUser, isLocalPrincipal } = userRuntimeModule;
+	// no record backs the local principal, so a recheck would revoke it
+	if (!username || isLocalPrincipal(user)) return;
 	const { registerLiveSubscription } = liveSubscriptionAuthRuntimeModule;
-	const { hasRecordProvenance, isCurrentUser } = userRuntimeModule;
 	const principal = user as User;
 	const handle = registerLiveSubscription({
 		username,
