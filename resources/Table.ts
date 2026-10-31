@@ -183,6 +183,7 @@ import {
 	matchesFilters,
 	relationshipRestriction,
 	fullTextComparatorMode,
+	validateFullTextFuzzyOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
@@ -193,7 +194,6 @@ import {
 	assignTrackedAccessors,
 	collapseChanges,
 	recordOwnBaseline,
-	hasOwnChange,
 	releaseOwnBaseline,
 	updateAndFreeze,
 	hasChanges,
@@ -274,13 +274,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
-import {
-	addValues,
-	commutativeOpsOf,
-	operations as crdtOperations,
-	rebuildUpdateBefore,
-	remainingAgainstRecord,
-} from './crdt.ts';
+import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -643,6 +637,10 @@ function isPlainData(value: any, budget: { nodes: number }, depth: number): bool
 	const prototype = Object.getPrototypeOf(value);
 	return (prototype === Object.prototype || prototype === null) && hasPlainOwnValues(value, budget, depth);
 }
+function timestampValue(attribute: Attribute, time: number): Date | string | number {
+	return attribute.type === 'Date' ? new Date(time) : attribute.type === 'String' ? new Date(time).toISOString() : time;
+}
+
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
 // a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
@@ -794,6 +792,8 @@ class ConditionLockWait {
 	}
 }
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+// On a select written by allowRead: its '*' leaves out relationships, because the select lists each one it returns
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
@@ -826,6 +826,11 @@ const FULL_PERMISSIONS = {
 	delete: true,
 	isSuperUser: true,
 };
+export interface ReadDenial {
+	database: string;
+	table: string;
+	attribute?: string;
+}
 export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
@@ -1004,6 +1009,14 @@ interface TableResourceClass {
 	set fullTextFields(names: readonly string[]);
 	assertFullTextSelection(select: unknown, sort?: any): void;
 	assertFullTextRecordField(name: unknown): void;
+	_readDenial(path: readonly any[], user: User, target?: RequestTarget, index?: number): ReadDenial | undefined;
+	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
+	_referencesRelationship(target: RequestTarget): boolean;
+	_readableInFull(user: User, target?: RequestTarget): boolean;
+	_inReadAdmission<T>(authorize: () => T): T;
+	_proveReadableInFull(): any;
+	_copyUnlistedAttributes(record: any, selected: any): void;
+	readonly hasRelationships: boolean;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
 	fullTextQueryIndexes: {
 		[name: string]: {
@@ -1457,6 +1470,13 @@ function copySelection(select) {
 	return copy;
 }
 
+function searchConditions(target: any): any[] {
+	const conditions = target.conditions;
+	if (!conditions) return Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
+	if (conditions.length === undefined) return conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
+	return conditions;
+}
+
 function selectRequestsProperty(select: any, propertyName: string): boolean {
 	if (!select) return false;
 	const selected = Array.isArray(select) ? select : [select];
@@ -1489,6 +1509,19 @@ function conditionsContainFullText(entries: any[], definitions: readonly FullTex
 // Keyed by table class → set of primary keys currently on the serialization path (avoids any tableId
 // stringification/collision concern).
 let structSerializationVisited: Map<any, Set<any>> | null = null;
+// Tables whose default projection allowRead is writing; an @enumerable edge back to one stops at its key.
+let implicitProjectionPath: Set<any> | null = null;
+// _readableInFull state. An admission is one request's synchronous authorization of a read, including the related
+// allowRead calls for its selections and projection; results proven in it hold only for its principal. A table marked
+// with the current walk is on that walk's path or already found readable there, so a revisit is a provisional success.
+let readAdmissionDepth = 0;
+let readAdmissionPrincipal: any;
+let readableInFullAdmission = 0;
+// tables whose success in the current walk rests on a table still being walked; proven once the walk succeeds
+let readableInFullProvisional: any = null;
+let readableInFullWalk = 0;
+let readableInFullDepth = 0;
+let readableInFullRevisits = 0;
 // Resolve Harper records within a guarded serialization, so none escape back to an encoder that would call
 // their toJSON after our path-scoped unwind and miss the cycle. Native values (Date, Buffer/typed arrays,
 // ArrayBuffer, etc.) stay intact for CBOR/MessagePack.
@@ -1749,6 +1782,16 @@ export function makeTable(options): TableResourceClass {
 		if (attribute.expiresAt) expiresAtProperty = attribute;
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
+	// Copies rather than assigns: the merge onto no record can return the caller's delta itself.
+	function completeCreatedRecord(record: any, id: Id, version: number) {
+		const missingKey = primaryKey && record[primaryKey] == null;
+		const missingCreatedTime = createdTimeProperty && record[createdTimeProperty.name] == null;
+		if (!missingKey && !missingCreatedTime) return record;
+		const completed = { ...record };
+		if (missingKey) completed[primaryKey] = id;
+		if (missingCreatedTime) completed[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
+		return Object.freeze(completed);
+	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
 	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
 	let deleteCallbackHandle: { remove: () => void };
@@ -1781,6 +1824,11 @@ export function makeTable(options): TableResourceClass {
 	// unset for self/forward refs at collection time); `.tableClass` is resolved lazily at detection.
 	let enumerableAttributeNames: string[] = [];
 	const enumerableRelationDefs = new Set<any>();
+	let enumerableRelationshipNames: string[] = [];
+	let readableInFullMark = 0;
+	let readableInFullProvenMark = 0;
+	let readableInFullProven = false;
+	let nextProvisional: any = null;
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
@@ -2163,6 +2211,122 @@ export function makeTable(options): TableResourceClass {
 		}
 		static assertFullTextRecordField(name: unknown): void {
 			assertFullTextRecordField(name);
+		}
+		static _readDenial(path: readonly any[], user: User, target?: RequestTarget, index = 0): ReadDenial | undefined {
+			const permission = getTablePermissions(user, target);
+			if (permission?.isSuperUser) return;
+			if (!permission?.read) return { database: databaseName, table: tableName };
+			if (index >= path.length) return;
+			const name = path[index];
+			const resolver = propertyResolvers[name];
+			const attributePermissions = permission.attribute_permissions;
+			if (attributePermissions?.length > 0) {
+				const readable = attributesAsObject(attributePermissions, 'read');
+				if (
+					!readable[name] &&
+					// a full-text index name is query-only, and search rejects it through a relationship
+					!fullTextFieldNames?.has(name) &&
+					// a forward relationship reveals no more than its foreign key; an inverse one's key lives in the related table
+					!(resolver?.definition?.tableClass && !resolver.to && resolver.from && readable[resolver.from])
+				)
+					return { database: databaseName, table: tableName, attribute: name };
+			}
+			return resolver?.definition?.tableClass?._readDenial(path, user, target, index + 1);
+		}
+		static get hasRelationships(): boolean {
+			return hasRelationships;
+		}
+		static _readableInFull(user: User, target?: RequestTarget): boolean {
+			const principal = typeof target?.checkPermission === 'object' ? target.checkPermission : user;
+			if (readAdmissionDepth === 0 || principal !== readAdmissionPrincipal) {
+				readableInFullAdmission++;
+				readAdmissionPrincipal = principal;
+			} else if (readableInFullProvenMark === readableInFullAdmission) return readableInFullProven;
+			const permission = getTablePermissions(user, target);
+			if (permission?.isSuperUser) return true;
+			if (!permission?.read || permission.attribute_permissions?.length > 0) return proveReadableInFull(false);
+			if (enumerableRelationshipNames.length === 0) return true;
+			const outermost = readableInFullDepth === 0;
+			if (outermost) {
+				readableInFullWalk++;
+				readableInFullProvisional = null;
+			} else if (readableInFullMark === readableInFullWalk) {
+				readableInFullRevisits++;
+				return true;
+			}
+			readableInFullMark = readableInFullWalk;
+			const revisits = readableInFullRevisits;
+			readableInFullDepth++;
+			try {
+				for (const name of enumerableRelationshipNames) {
+					const relatedTable = propertyResolvers[name]?.definition?.tableClass;
+					if (relatedTable && !relatedTable._readableInFull(user, target)) return proveReadableInFull(false);
+				}
+				if (outermost) {
+					for (let table = readableInFullProvisional; table; table = table._proveReadableInFull());
+					readableInFullProvisional = null;
+				} else if (readableInFullRevisits !== revisits) {
+					nextProvisional = readableInFullProvisional;
+					readableInFullProvisional = TableResource;
+					return true;
+				}
+				return proveReadableInFull(true);
+			} finally {
+				readableInFullDepth--;
+			}
+		}
+		static _copyUnlistedAttributes(record: any, selected: any): void {
+			for (const key of Object.keys(record)) {
+				// a tracked instance's view carries its resolved relationships; the select lists the ones returned
+				if (propertyResolvers[key]?.definition?.tableClass) continue;
+				// a source-loaded record can carry an own '__proto__'; assignment would run the inherited setter
+				if (key === '__proto__')
+					Object.defineProperty(selected, key, {
+						value: record[key],
+						enumerable: true,
+						writable: true,
+						configurable: true,
+					});
+				else selected[key] = record[key];
+			}
+			for (const name of enumerableAttributeNames) {
+				if (Object.hasOwn(selected, name) || propertyResolvers[name]?.definition?.tableClass) continue;
+				const value = record[name];
+				if (value !== undefined) selected[name] = value;
+			}
+		}
+		static _proveReadableInFull(): any {
+			proveReadableInFull(true);
+			const next = nextProvisional;
+			nextProvisional = null;
+			return next;
+		}
+		static _inReadAdmission<T>(authorize: () => T): T {
+			if (readAdmissionDepth++ === 0) readableInFullAdmission++;
+			try {
+				return authorize();
+			} finally {
+				readAdmissionDepth--;
+			}
+		}
+		static _referencesRelationship(target: RequestTarget): boolean {
+			return hasRelationships && someRelationshipPath(target, undefined, false);
+		}
+		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
+			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
+			if (!relatedTable) return property;
+			if (!property.name) property = { name: property };
+			// a REST property set (`related{a,b}`) is an Array whose entries are the sub-selection
+			if (Array.isArray(property) && (property as any).select == null) (property as any).select = [...property];
+			// authority comes from the request being authorized, never from the selection itself
+			if (checkPermission) property.checkPermission = checkPermission;
+			else delete property.checkPermission;
+			for (let sort = typeof property.sort === 'object' && property.sort; sort; sort = sort.next) {
+				const path = Array.isArray(sort.attribute) ? sort.attribute : [sort.attribute];
+				if (relatedTable._readDenial(path, user, property)) return false;
+			}
+			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;
+			return property.select || hasNestedQueryOptions(property) ? property : property.name;
 		}
 		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
 			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));
@@ -4137,80 +4301,12 @@ export function makeTable(options): TableResourceClass {
 				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
-				const attribute_permissions = tablePermission.attribute_permissions;
-				const select = target?.select;
-				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
-					// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-					// or if there are relationships, we need to ensure that the user has permission to read from the related table
-					// Note that if we do not have a select, we do not return any relationships by default.
-					if (!target) target = {} as any;
-					const selectArray = select ? (Array.isArray(select) ? select : [select]) : null;
-					const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-					const permittedScalarAttributes = () =>
-						attribute_permissions
-							.filter(
-								(attribute) =>
-									attribute.read &&
-									!fullTextFieldNames?.has(attribute.attribute_name) &&
-									!propertyResolvers[attribute.attribute_name]
-							)
-							.map((attribute) => attribute.attribute_name);
-					if (selectArray) {
-						(target as any).select = selectArray.flatMap((property: any) => {
-							if (property === '*' && attrsForType) return permittedScalarAttributes();
-							const propertyName = property.name || property;
-							if (
-								!attrsForType ||
-								attrsForType[propertyName] ||
-								fullTextFieldNames?.has(propertyName) ||
-								propertyName === '$score' ||
-								propertyName === '$highlights'
-							) {
-								const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
-								if (relatedTable) {
-									// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
-									if (!property.name) property = { name: property };
-									if (Array.isArray(property) && !(property as any).select)
-										(property as any).select = Array.from(property);
-									if (!property.checkPermission && (target as any).checkPermission)
-										property.checkPermission = (target as any).checkPermission;
-									// Invoke the related table's allowRead on a properly-bound instance rather than
-									// `.call(null, ...)` so `this` is a valid resource of the related type.
-									const relatedResource = new relatedTable(undefined, context);
-									if (!relatedResource.allowRead(user, property, context)) return [];
-									for (let s = typeof property.sort === 'object' ? property.sort : null; s; s = s.next) {
-										const segments = (Array.isArray(s.attribute) ? s.attribute : [s.attribute]).filter(Boolean);
-										if (segments.length === 0) continue;
-										let sortSelect: any = segments[segments.length - 1];
-										for (let i = segments.length - 2; i >= 0; i--) {
-											sortSelect = { name: segments[i], select: [sortSelect] };
-										}
-										const sortProbe: any = {
-											select: [sortSelect],
-											checkPermission: property.checkPermission,
-										};
-										if (!relatedResource.allowRead(user, sortProbe, context)) return [];
-										for (let cur = sortProbe.select; Array.isArray(cur); cur = cur[0]?.select) {
-											if (cur.length === 0) return [];
-										}
-									}
-									if (!property.select && !hasNestedQueryOptions(property)) return [property.name];
-								}
-								return [property];
-							}
-							return [];
-						});
-					}
-					// Braced sub-selects (`related{name}`) are parsed as Array instances; when all listed fields
-					// in a braced sub-select are denied, fall back to the role's permitted scalar attributes
-					// ("Can query with selecting inaccessible attributes with (limited) permission", permissions.test.js).
-					if (attrsForType && (!selectArray || (Array.isArray(target) && (target as any).select.length === 0))) {
-						target.select = permittedScalarAttributes();
-					}
-					(target as any)[AUTHORIZATION_SELECT] = true;
-					return true;
-				} else {
-					return true;
+				if (!hasRelationships) return authorizeRead(tablePermission, user, target, context);
+				if (readAdmissionDepth++ === 0) readableInFullAdmission++;
+				try {
+					return authorizeRead(tablePermission, user, target, context);
+				} finally {
+					readAdmissionDepth--;
 				}
 			}
 		}
@@ -4499,16 +4595,9 @@ export function makeTable(options): TableResourceClass {
 		addTo(property: any, value: any) {
 			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
-				if (this.#savingOperation?.fullUpdate) {
-					// a full update stores its changes, not own properties, so an own value moves into them
-					const own = hasOwnChange(this, property);
-					const sum = addValues(own ? this[property] : this.getProperty(property), value);
-					(this as any).set(property, sum);
-					if (own) delete this[property];
-				} else {
-					if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
-					addToChanges(this, property, value);
-				}
+				const fullUpdate = this.#savingOperation?.fullUpdate;
+				if (!this.#savingOperation && !(this.#lockWritable && this.#lockHandle?.hold)) (this as any).update();
+				addToChanges(this, property, value, fullUpdate);
 			} else {
 				throw new Error('Can not add a non-numeric value');
 			}
@@ -5643,6 +5732,7 @@ export function makeTable(options): TableResourceClass {
 			// validation is picked up
 			const tracksInstance = !fullUpdate && (recordUpdate === undefined || recordUpdate === this.#changes);
 			let instanceChanges = tracksInstance ? recordUpdate : undefined;
+			let ownKeys: string[] | undefined;
 			let captureChanges, releaseChanges;
 			if (recordUpdate === undefined) {
 				let captured = false;
@@ -5732,7 +5822,6 @@ export function makeTable(options): TableResourceClass {
 							);
 						}
 					}
-					let ownKeys: string[] | undefined;
 					let ownMerged = false;
 					if (tracksInstance) {
 						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
@@ -5762,30 +5851,26 @@ export function makeTable(options): TableResourceClass {
 								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
 							}
 							if (updatedTimeProperty) {
-								recordUpdate[updatedTimeProperty.name] =
-									updatedTimeProperty.type === 'Date'
-										? new Date(txnTime)
-										: updatedTimeProperty.type === 'String'
-											? new Date(txnTime).toISOString()
-											: txnTime;
+								recordUpdate[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, txnTime);
 							}
 							if (createdTimeProperty) {
 								// the reloaded commit base, not the pre-read one: a full PUT racing a create
 								// would otherwise stamp a fresh created time over the real one
 								const base = write.entry;
-								if (base?.value) {
+								// a cache stub without a created time was never stored; a residency stub's record lives on its residents
+								if (
+									base?.value &&
+									(!(base.metadataFlags & INVALIDATED) ||
+										base.residencyId ||
+										base.value[createdTimeProperty.name] != null)
+								) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
 										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
 									}
 								} else {
 									// new entry, set created time
-									recordUpdate[createdTimeProperty.name] =
-										createdTimeProperty.type === 'Date'
-											? new Date(txnTime)
-											: createdTimeProperty.type === 'String'
-												? new Date(txnTime).toISOString()
-												: txnTime;
+									recordUpdate[createdTimeProperty.name] = timestampValue(createdTimeProperty, txnTime);
 								}
 							}
 							if (primaryKey && recordUpdate[primaryKey] !== id && (fullUpdate || primaryKey in recordUpdate)) {
@@ -5798,6 +5883,8 @@ export function makeTable(options): TableResourceClass {
 							// TODO: else freeze after we have applied the changes
 						}
 					} else {
+						// every own change already equals the record
+						if (ownKeys?.length > 0) releaseOwnBaseline(this, undefined, ownKeys);
 						(committedBy as any).removeWrite?.(write);
 						return false;
 					}
@@ -5930,6 +6017,7 @@ export function makeTable(options): TableResourceClass {
 					// (resolved below, once recordToStore is merged) overrides the table default in both
 					// directions; the table default is the final fallback. -1 means no expiration.
 					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
+					let auditExpiresAt: number | undefined;
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					let receivedIdentityRefs: Array<{ version: number; nodeId: number }> | undefined;
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
@@ -6730,6 +6818,9 @@ export function makeTable(options): TableResourceClass {
 							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate, !tracksInstance);
 						}
 					}
+					// A patch that merges onto no record may lack both fields (a retry is not re-logged); fill them identically on every node
+					if (!fullUpdate && existingRecord == null && recordToStore)
+						recordToStore = completeCreatedRecord(recordToStore, id, options?.version ?? txnTime);
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
@@ -6868,6 +6959,12 @@ export function makeTable(options): TableResourceClass {
 						const fieldDeadline = fieldExpiresAtMs(recordToStore);
 						expiresAt = Number.isFinite(fieldDeadline) ? fieldDeadline : expirationMs ? expirationMs + Date.now() : -1;
 					}
+					// The head is what the write merged onto; not existingEntry once the transaction wrote the key, since
+					// RocksDB reloads that through the transaction and LMDB does not.
+					if (precedesExisting < 0 && Object.is(fieldExpiresAtMs(recordToStore), fieldExpiresAtMs(existingRecord))) {
+						auditExpiresAt = expiresAt;
+						expiresAt = (priorStaged ?? existingEntry).expiresAt ?? -1;
+					}
 					if (!fullUpdate && type !== 'put') {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
 						auditRecordToStore = recordUpdate;
@@ -6923,7 +7020,7 @@ export function makeTable(options): TableResourceClass {
 						(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 					writeCommit(true);
 					// not before: a throw while staging (residency, indexes) leaves a retry comparing against the baselines
-					if (tracksInstance) releaseOwnBaseline(this, recordUpdate);
+					if (ownKeys?.length > 0) releaseOwnBaseline(this, recordUpdate, ownKeys);
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
 						scheduleCleanup(); // arm for replicated writes too, not just local-context writes
@@ -6974,6 +7071,7 @@ export function makeTable(options): TableResourceClass {
 								residencyId,
 								residencySlot,
 								expiresAt,
+								auditExpiresAt,
 								recordVersion: txnTime,
 								recordNodeId: precedesExisting < 0 ? existingEntry?.nodeId : options?.nodeId,
 								nodeId: options?.nodeId,
@@ -7282,8 +7380,10 @@ export function makeTable(options): TableResourceClass {
 				if (select) {
 					const columns = [];
 					for (const column of select) {
-						if (column === '*') columns.push(...attributes.map((attribute) => attribute.name));
-						else columns.push((column as any).name || column);
+						if (column === '*') {
+							for (const attribute of attributes)
+								if (!(select[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+						} else columns.push((column as any).name || column);
 					}
 					return columns;
 				}
@@ -7401,11 +7501,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 
-			let conditions: any = target.conditions;
-			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
-			else if (conditions.length === undefined) {
-				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
-			}
+			let conditions: any = searchConditions(target);
 			const id = target.id ?? this.getId();
 			if (id) {
 				conditions = [
@@ -8072,14 +8168,8 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _assertNestedReadAccess(name, context, target) {
 			if (!target.checkPermission) return;
-			const permission = getTablePermissions(context?.user, target);
-			if (permission?.isSuperUser) return;
-			const path = Array.isArray(name) ? name : [name ?? primaryKey];
-			const readable = permission?.attribute_permissions;
-			if (!permission?.read || (readable?.length && !attributesAsObject(readable, 'read')[path[0]]))
+			if (TableResource._readDenial(Array.isArray(name) ? name : [name ?? primaryKey], context?.user, target))
 				throw new AccessViolation(context?.user);
-			if (path.length > 1)
-				propertyResolvers[path[0]]?.definition?.tableClass?._assertNestedReadAccess(path.slice(1), context, target);
 		}
 		static _prepareQueryConditions(conditions, operator, target, context, nested = false) {
 			let includeFullTextHighlights = false;
@@ -8099,6 +8189,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				for (const condition of conditions) {
 					if (condition.conditions) {
+						validateFullTextFuzzyOptions(condition);
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
 						continue;
 					}
@@ -8125,6 +8216,7 @@ export function makeTable(options): TableResourceClass {
 						fullTextMode && typeof attribute_name === 'string'
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
 							: undefined;
+					validateFullTextFuzzyOptions(condition, fullTextMode);
 					if (fullTextMode && Array.isArray(attribute_name))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
@@ -8528,7 +8620,7 @@ export function makeTable(options): TableResourceClass {
 				select === '__proto__' ||
 				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
 			let relationshipSelections;
-			for (const attribute of Array.isArray(select) ? select : []) {
+			for (const attribute of Array.isArray(select) ? select : select?.name !== undefined ? [select] : []) {
 				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
 					(relationshipSelections ||= Object.create(null))[attribute.name] = this._prepareRelationshipSelection(
 						attribute,
@@ -8620,7 +8712,10 @@ export function makeTable(options): TableResourceClass {
 				return selectRecord.call(this, record, entry);
 			};
 			const selectRecord = function (record, entry) {
-				if (select && !(select[0] === '*' && select.length === 1 && !(select as any).asArray)) {
+				if (
+					select &&
+					!(select[0] === '*' && select.length === 1 && !(select as any).asArray && !select[RELATIONSHIPS_LISTED])
+				) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
 						let attribute_name;
@@ -8749,7 +8844,7 @@ export function makeTable(options): TableResourceClass {
 					};
 					let selected: any;
 					try {
-						if (typeof select === 'string') {
+						if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined)) {
 							selectAttribute(select, (value) => {
 								selected = value;
 							});
@@ -8765,14 +8860,16 @@ export function makeTable(options): TableResourceClass {
 								if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
 								const forceNulls = (select as any).forceNulls;
 								for (const attribute of select) {
-									if (attribute === '*')
-										for (const key in record) {
-											const value = record[key];
-											if (typeof value === 'function') continue;
-											if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
-											else selected[key] = value;
-										}
-									else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
+									if (attribute === '*') {
+										if (select[RELATIONSHIPS_LISTED]) TableResource._copyUnlistedAttributes(record, selected);
+										else
+											for (const key in record) {
+												const value = record[key];
+												if (typeof value === 'function') continue;
+												if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
+												else selected[key] = value;
+											}
+									} else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
 										let value = record[attribute];
 										if (typeof value === 'function') value = undefined;
 										selected[attribute] = value === undefined && forceNulls ? null : value;
@@ -10570,6 +10667,7 @@ export function makeTable(options): TableResourceClass {
 				null
 			);
 			nextPropertyResolvers.$highlights.directReturn = true;
+			nextPropertyResolvers.$record.definition = { tableClass: TableResource };
 			let nextPrimaryKeyAttribute, nextCreatedTimeProperty, nextUpdatedTimeProperty;
 			let nextHasRelationships = false;
 			for (const attribute of this.attributes) {
@@ -10791,6 +10889,7 @@ export function makeTable(options): TableResourceClass {
 			// accumulating stale/duplicate entries across reloads.
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
+			enumerableRelationshipNames = [];
 			hasSurfacedComputed = false;
 			const resolvedAttributeNames: string[] = [];
 			for (const attribute of attributes) {
@@ -10818,6 +10917,7 @@ export function makeTable(options): TableResourceClass {
 					if (attribute.enumerable || (attribute.computed && !relationDef)) enumerableAttributeNames.push(name);
 					// Only @enumerable *table-typed* attributes create a serialization edge that can cycle.
 					if (attribute.enumerable && relationDef) enumerableRelationDefs.add(relationDef);
+					if (attribute.enumerable && attribute.relationship) enumerableRelationshipNames.push(name);
 					// Any surfaced non-table @computed can return a live (possibly cyclic) entity at runtime,
 					// regardless of its declared scalar type — the static edge graph can't see it — so route it
 					// through the guarded serialization path.
@@ -11763,6 +11863,167 @@ export function makeTable(options): TableResourceClass {
 			return table;
 		}
 	}
+	function authorizeRead(tablePermission: any, user: User, target: RequestTarget, context: Context): boolean {
+		if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
+		const attribute_permissions = tablePermission.attribute_permissions;
+		const property = target?.property;
+		if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
+			if (attribute_permissions?.length > 0 && TableResource._readDenial([property], user, target)) return false;
+			const selection = TableResource._authorizeRelatedSelection(
+				target.select == null ? property : { name: property, select: target.select },
+				user,
+				(target as any).checkPermission,
+				context
+			);
+			if (!selection) return false;
+			target.select = selection;
+			delete target.property;
+			(target as any)[AUTHORIZATION_SELECT] = true;
+			return true;
+		}
+		let select: any = target?.select;
+		const canListRelationships = () =>
+			enumerableRelationshipNames.length > 0 &&
+			!(attribute_permissions?.length > 0) &&
+			!TableResource._readableInFull(user, target);
+		const listRelationships =
+			(select == null || select === '*' || (Array.isArray(select) && select.includes('*'))) && canListRelationships();
+		if (listRelationships && select == null) select = '*';
+		if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
+			// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+			// or if there are relationships, we need to ensure that the user has permission to read from the related table
+			if (!target) target = {} as any;
+			const permittedScalarAttributes = () =>
+				attribute_permissions
+					.filter(
+						(attribute) =>
+							attribute.read &&
+							!fullTextFieldNames?.has(attribute.attribute_name) &&
+							!propertyResolvers[attribute.attribute_name]
+					)
+					.map((attribute) => attribute.attribute_name);
+			if (select) {
+				const selectArray = Array.isArray(select) ? select : [select];
+				const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+				let authorizedSelect: any[] = selectArray.flatMap((property: any) => {
+					if (property === '*' && attrsForType) return permittedScalarAttributes();
+					const propertyName = property.name || property;
+					if (
+						!attrsForType ||
+						attrsForType[propertyName] ||
+						fullTextFieldNames?.has(propertyName) ||
+						propertyName === '$score' ||
+						propertyName === '$highlights'
+					) {
+						const entry = TableResource._authorizeRelatedSelection(
+							property,
+							user,
+							(target as any).checkPermission,
+							context
+						);
+						return entry ? [entry] : [];
+					}
+					return [];
+				});
+				if (listRelationships)
+					listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
+				// Braced sub-selects (`related{name}`) are parsed as Array instances; when all listed fields
+				// in a braced sub-select are denied, fall back to the role's default projection for the table.
+				if (Array.isArray(target) && authorizedSelect.length === 0) {
+					if (attrsForType) {
+						authorizedSelect = permittedScalarAttributes();
+					} else if (canListRelationships()) {
+						authorizedSelect = ['*'];
+						listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
+					} else if (hasNestedQueryOptions(target)) {
+						authorizedSelect = ['*'];
+					} else {
+						delete (target as any).select;
+						(target as any)[AUTHORIZATION_SELECT] = true;
+						return true;
+					}
+				}
+				(target as any).select = authorizedSelect;
+			} else {
+				target.select = permittedScalarAttributes();
+			}
+			(target as any)[AUTHORIZATION_SELECT] = true;
+			return true;
+		} else {
+			return true;
+		}
+	}
+	function proveReadableInFull(readable: boolean): boolean {
+		readableInFullProvenMark = readableInFullAdmission;
+		readableInFullProven = readable;
+		return readable;
+	}
+	function listEnumerableRelationships(select: any[], user: User, checkPermission: any, context: Context): void {
+		let named: Set<string> | undefined;
+		for (const property of select) if (property !== '*') (named ??= new Set()).add(property?.name ?? property);
+		const outermost = implicitProjectionPath === null;
+		implicitProjectionPath ??= new Set();
+		implicitProjectionPath.add(TableResource);
+		try {
+			for (const name of enumerableRelationshipNames) {
+				if (named?.has(name)) continue;
+				const relatedTable = propertyResolvers[name]?.definition?.tableClass;
+				if (!relatedTable) continue;
+				const property = implicitProjectionPath.has(relatedTable) ? { name, select: [relatedTable.primaryKey] } : name;
+				const entry = TableResource._authorizeRelatedSelection(property, user, checkPermission, context);
+				if (entry) select.push(entry);
+			}
+		} finally {
+			implicitProjectionPath.delete(TableResource);
+			if (outermost) implicitProjectionPath = null;
+		}
+		(select as any)[RELATIONSHIPS_LISTED] = true;
+	}
+	function relationshipPathMatches(attribute: any, target: RequestTarget, user: User, checkDenial: boolean): boolean {
+		const first = Array.isArray(attribute) ? attribute[0] : attribute;
+		if (propertyResolvers[first]?.definition?.tableClass === undefined) return false;
+		if (!checkDenial) return true;
+		return TableResource._readDenial(Array.isArray(attribute) ? attribute : [attribute], user, target) !== undefined;
+	}
+	function someConditionPath(
+		conditions: Iterable<any>,
+		target: RequestTarget,
+		user: User,
+		checkDenial: boolean
+	): boolean {
+		for (const condition of conditions) {
+			if (
+				condition?.conditions
+					? someConditionPath(condition.conditions, target, user, checkDenial)
+					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, target, user, checkDenial)
+			)
+				return true;
+		}
+		return false;
+	}
+	function someRelationshipPath(target: RequestTarget, user: User, checkDenial: boolean): boolean {
+		let conditions: any = target.conditions;
+		if (conditions == null) {
+			// a selection's property set (a named array) lists attributes, not conditions
+			if (
+				typeof target[Symbol.iterator] === 'function' &&
+				(target as any).size !== 0 &&
+				(target as any).name === undefined
+			) {
+				conditions = searchConditions(target);
+				if (!Array.isArray(target) && !(target instanceof URLSearchParams)) (target as any).conditions = conditions;
+			}
+		} else {
+			// search reads the conditions again, so a one-shot iterator is materialized
+			if (!Array.isArray(conditions) && conditions[Symbol.iterator]) target.conditions = Array.from(conditions);
+			conditions = searchConditions(target);
+		}
+		if (conditions && someConditionPath(conditions, target, user, checkDenial)) return true;
+		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
+			if (relationshipPathMatches(sort.attribute, target, user, checkDenial)) return true;
+		}
+		return false;
+	}
 	function assertRecordField(name: unknown): void {
 		const field = Array.isArray(name) ? name[0] : name;
 		if (typeof field === 'string' && fullTextFieldNames?.has(field))
@@ -12180,41 +12441,47 @@ export function makeTable(options): TableResourceClass {
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
-		const filtersLength = filters?.length;
+		const filtersLength = filters?.length ?? 0;
 		const loadOptions = {
 			transaction: readTxn,
 			lazy: filtersLength > 0 || typeof select === 'string' || select?.length < 4,
 			alwaysPrefetch: true,
 		};
-		let idFiltersApplied;
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 		const matchers = filters?.some((filter) => filter.maybeAsync)
 			? filters.map((filter) => filter.maybeAsync ?? filter)
 			: undefined;
+		// an id filter compares the whole key, where a record filter tests each element of an array key
 		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
-			// apply the record-level filters
+			if (!record && !(entry?.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+			const key = id === undefined ? entry.key : id;
 			for (let i = 0; i < filtersLength; i++) {
-				if (idFiltersApplied?.includes(i)) continue; // already applied
-				if (!filters[i](record, entry)) return SKIP; // didn't match filters
+				const filter = filters[i];
+				const idFilter = filter.idFilter;
+				if (idFilter ? !idFilter(key) : !record || !filter(record, entry)) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
 			return entry;
 		}
 		function processEntryMaybeAsync(entry: Entry, id?) {
 			const record = entry?.value;
-			if (!record) return SKIP;
-			return applyFilters(record, entry, id, idFiltersApplied, 0);
+			if (!record && !(entry?.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+			return applyFilters(record, entry, id, id === undefined ? entry.key : id, 0);
 		}
-		function applyFilters(record, entry: Entry, id, applied: number[], start: number) {
+		function applyFilters(record, entry: Entry, id, key, start: number) {
 			for (let i = start; i < filtersLength; i++) {
-				if (applied?.includes(i)) continue;
+				const idFilter = filters[i].idFilter;
+				if (idFilter) {
+					if (!idFilter(key)) return SKIP;
+					continue;
+				}
+				if (!record) return SKIP;
 				const matches = matchers[i](record, entry);
 				if (matches?.then)
-					return matches.then((matches) => (matches ? applyFilters(record, entry, id, applied, i + 1) : SKIP));
+					return matches.then((matches) => (matches ? applyFilters(record, entry, id, key, i + 1) : SKIP));
 				if (!matches) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
@@ -12222,22 +12489,17 @@ export function makeTable(options): TableResourceClass {
 		}
 		if (filtersLength > 0 || !ids.hasEntries) {
 			let results = ids.map(function (this: any, idOrEntry) {
-				idFiltersApplied = null;
 				const process = matchers && !this?.isSync && !Array.isArray(ids) ? processEntryMaybeAsync : processEntry;
 				if (typeof idOrEntry === 'object' && idOrEntry?.key !== undefined)
 					return filtersLength > 0 ? process(idOrEntry) : idOrEntry; // already an entry
 				if (idOrEntry == undefined) {
 					return SKIP;
 				}
-				// it is an id, so we can try to use id any filters that are available (note that these can come into existence later, during the query)
+				// it is an id, so any id filters that are available can rule it out before loading the record (note that
+				// these can come into existence later, during the query)
 				for (let i = 0; i < filtersLength; i++) {
-					const filter = filters[i];
-					const idFilter = filter.idFilter;
-					if (idFilter) {
-						if (!idFilter(idOrEntry)) return SKIP; // didn't match filters
-						if (!idFiltersApplied) idFiltersApplied = [];
-						idFiltersApplied.push(i);
-					}
+					const idFilter = filters[i].idFilter;
+					if (idFilter && !idFilter(idOrEntry)) return SKIP; // didn't match filters
 				}
 				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
 			});
@@ -12590,21 +12852,11 @@ export function makeTable(options): TableResourceClass {
 					// before resolve(): a write that is not skipped commits at exactly resolvedVersion
 					if (updatedRecord) {
 						if (updatedTimeProperty) {
-							updatedRecord[updatedTimeProperty.name] =
-								updatedTimeProperty.type === 'Date'
-									? new Date(resolvedVersion)
-									: updatedTimeProperty.type === 'String'
-										? new Date(resolvedVersion).toISOString()
-										: resolvedVersion;
+							updatedRecord[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, resolvedVersion);
 						}
 						if (createdTimeToAssign) {
 							updatedRecord[createdTimeToAssign.name] =
-								existingRecord?.[createdTimeToAssign.name] ??
-								(createdTimeToAssign.type === 'Date'
-									? new Date(resolvedVersion)
-									: createdTimeToAssign.type === 'String'
-										? new Date(resolvedVersion).toISOString()
-										: resolvedVersion);
+								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
 					}
 					const resolvedEntry: Entry = {
@@ -13215,7 +13467,11 @@ export function makeTable(options): TableResourceClass {
 								);
 								const backpressure = trackInFlight(repair);
 								if (backpressure) await backpressure;
-							} else if (recordEntry.value[expiresAtName] < Date.now()) {
+							} else if (
+								recordEntry.expiresAt != undefined
+									? hasExpired(recordEntry)
+									: recordEntry.value[expiresAtName] < Date.now()
+							) {
 								// make sure the record hasn't changed and won't change while removing
 								const eviction = TableResource.evict(
 									id,

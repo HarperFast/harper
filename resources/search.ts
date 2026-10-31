@@ -12,9 +12,14 @@ import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import type { FullTextCondition } from './indexes/fullTextQueryIndex.ts';
-import { FULL_TEXT_POSITIVE_COMPARATORS, fullTextComparatorMode } from './indexes/fullTextQueryProtocol.ts';
+import {
+	FULL_TEXT_POSITIVE_COMPARATORS,
+	fullTextComparatorMode,
+	fullTextFuzzyOptions,
+	validateFullTextFuzzyOptions,
+} from './indexes/fullTextQueryProtocol.ts';
 
-export { fullTextComparatorMode };
+export { fullTextComparatorMode, validateFullTextFuzzyOptions };
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -265,7 +270,7 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 	}
 	if (!indexName) return conditions;
 	if (operator === 'or' && remaining.length > 0)
-		throw new ClientError('A full-text OR group can only contain conditions on the same full-text index', 400);
+		throw new ClientError('A full-text OR group cannot mix full-text and record conditions', 400);
 	if (!positive) throw new ClientError('A full-text query requires at least one non-negated condition', 400);
 	const expression =
 		expressions.length === 1 ? expressions[0] : { operator: operator === 'or' ? 'or' : 'and', clauses: expressions };
@@ -315,6 +320,7 @@ function compileFullTextExpression(
 	  }
 	| undefined {
 	if (condition.conditions) {
+		validateFullTextFuzzyOptions(condition);
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
 		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
 		if (fullTextChildren.length === 0) return;
@@ -350,7 +356,12 @@ function compileFullTextExpression(
 	if (typeof (condition[1] ?? condition.value) !== 'string')
 		throw new ClientError(`Full-text index '${indexName}' requires a full-text comparator and string value`, 400);
 	const text = condition[1] ?? condition.value;
-	const leaf = { text, mode, ...(condition.fields ? { fields: condition.fields } : null) };
+	const leaf = {
+		text,
+		mode,
+		...fullTextFuzzyOptions(condition),
+		...(condition.fields ? { fields: condition.fields } : null),
+	};
 	return {
 		indexName,
 		expression: condition.negated ? { operator: 'not', clause: leaf } : leaf,
@@ -1200,34 +1211,30 @@ export function searchByIndex(
 		reverse,
 	};
 	if (isPrimaryKey) {
-		const results = index.getRange(rangeOptions).map(
-			filter
-				? function ({ key, value }) {
-						if (this?.isSync) return value && filter(value) ? key : SKIP;
-						// for filter operations, we intentionally yield the event turn so that scanning queries
-						// do not hog resources
-						return new Promise((resolve, reject) =>
-							setImmediate(() => {
-								try {
-									resolve(value && filter(value) ? key : SKIP);
-								} catch (error) {
-									reject(error);
-								}
-							})
-						);
+		const primaryKey = Table.primaryKey;
+		const admits = filter
+			? ({ key, value, metadataFlags }) =>
+					value == null ? metadataFlags & (INVALIDATED | EVICTED) && filter({ [primaryKey]: key }) : filter(value)
+			: ({ value, metadataFlags }) => value != null || metadataFlags & (INVALIDATED | EVICTED);
+		const toEntry = (entry) => {
+			if (!admits(entry)) return SKIP;
+			freezeRecord(entry.value);
+			recordRead(entry);
+			return entry;
+		};
+		const results = index.getRange(rangeOptions).map(function (entry) {
+			if (this?.isSync) return toEntry(entry);
+			// we intentionally yield the event turn so that scanning queries do not hog resources
+			return new Promise((resolve, reject) =>
+				setImmediate(() => {
+					try {
+						resolve(toEntry(entry));
+					} catch (error) {
+						reject(error);
 					}
-				: function (entry) {
-						let result: any;
-						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) result = SKIP;
-						else {
-							freezeRecord(entry.value);
-							recordRead(entry);
-							result = entry;
-						}
-						if (this.isSync) return result;
-						return new Promise((resolve) => setImmediate(() => resolve(result)));
-					}
-		);
+				})
+			);
+		});
 		results.hasEntries = true;
 		return results;
 	} else if (index && !skipIndex) {
@@ -1542,9 +1549,10 @@ function scanStopped(scan: JoinScan) {
 	return scan.transaction?.isDone;
 }
 type JoinScan = { closed: boolean; transaction: any; checkActive?: () => void };
-async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinScan) {
+async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinScan, joinsByKey?: boolean) {
 	// a custom index search can return a plain array
 	const iterator = (rightIterable[Symbol.asyncIterator] ?? rightIterable[Symbol.iterator]).call(rightIterable);
+	const filters = (joined as any).filters;
 	let done = false;
 	try {
 		while (!scanStopped(scan)) {
@@ -1558,15 +1566,14 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 				return;
 			}
 			const entry = iteration.value;
-			let record = readRecord(entry);
+			if (joinsByKey && filters && rejectsKey(filters, entry.key ?? entry)) continue;
+			let record = !joinsByKey || (filters && needsRecord(filters)) ? readRecord(entry) : undefined;
 			if (record?.then) {
 				record = await record;
 				if (scanStopped(scan)) return;
 			}
-			const filters = (joined as any).filters;
 			if (filters) {
-				if (record == null) continue;
-				let matches = matchesFilters(filters, record, undefined, false);
+				let matches = matchesRelatedRecord(filters, record, joinsByKey, scan);
 				if (matches?.then) {
 					matches = await matches;
 					if (scanStopped(scan)) return;
@@ -1620,6 +1627,32 @@ export function matchesFilters(filters, record, entry, any: boolean, start = 0) 
 		if (any ? matches : !matches) return any;
 	}
 	return !any;
+}
+// read per candidate, since a content filter can switch to an index-backed idFilter mid-scan
+function rejectsKey(filters, key) {
+	for (let i = 0; i < filters.length; i++) {
+		const idFilter = filters[i].idFilter;
+		if (idFilter && !idFilter(key)) return true;
+	}
+	return false;
+}
+function needsRecord(filters) {
+	for (let i = 0; i < filters.length; i++) if (!filters[i].idFilter) return true;
+	return false;
+}
+function matchesRelatedRecord(filters, record, skipIdFilters: boolean, scan: JoinScan, start = 0) {
+	for (let i = start; i < filters.length; i++) {
+		const filter = filters[i];
+		if (skipIdFilters && filter.idFilter) continue;
+		if (record == null) return false;
+		const matches = (filter.maybeAsync ?? filter)(record);
+		if (matches?.then)
+			return matches.then(
+				(matches) => matches && !scanStopped(scan) && matchesRelatedRecord(filters, record, skipIdFilters, scan, i + 1)
+			);
+		if (!matches) return false;
+	}
+	return true;
 }
 /**
  * This is used to join the results of a query where the right side is a set of ids and the left side is a set of records
@@ -1688,10 +1721,14 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					defineFromRecord();
 					scanned = scanRelated(
 						rightIterable,
-						(id) => ((joined as any).filters ? when(store.getEntry(id, readOptions), entryValue) : undefined),
+						(entry) =>
+							entry.value !== undefined
+								? entry.value
+								: when(store.getEntry(entry.key ?? entry, readOptions), entryValue),
 						joined,
-						(id) => ids.add(id),
-						scan
+						(entry) => ids.add(entry.key ?? entry),
+						scan,
+						true
 					).then(() => {
 						idIterator = (scanStopped(scan) ? new Set() : ids)[Symbol.iterator]();
 					});
@@ -1705,11 +1742,18 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 					defineFromRecord();
 					//let i = 0;
 					// get all the ids of the related records
-					for (const id of rightIterable) {
-						if ((joined as any).filters) {
-							// if additional filters are defined, we need to check them
-							const record = store.getSync(id, readOptions);
-							if ((joined as any).filters.some((filter) => !filter(record))) continue;
+					const filters = (joined as any).filters;
+					for (const entry of rightIterable) {
+						const id = entry.key ?? entry;
+						if (filters) {
+							if (rejectsKey(filters, id)) continue;
+							if (needsRecord(filters)) {
+								const record = entry.value !== undefined ? entry.value : store.getSync(id, readOptions);
+								let matches = record != null;
+								for (let i = 0; matches && i < filters.length; i++)
+									if (!filters[i].idFilter) matches = filters[i](record);
+								if (!matches) continue;
+							}
 						}
 						ids.add(id);
 						// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
