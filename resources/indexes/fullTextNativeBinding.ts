@@ -260,6 +260,14 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 	return bindingPromise;
 }
 
+export async function initializeFullTextQueryPolicy(): Promise<void> {
+	const configuration = getFullTextRuntimeConfiguration();
+	if (configuration.query === undefined) return;
+	const policy = resolveFullTextQueryLimits(configuration.query);
+	const binding = await loadFullTextNativeBinding().catch(() => undefined);
+	if (binding) nativeFullTextQueryLimits(getValidatedFullTextRuntimeInfo(binding), policy);
+}
+
 export async function validateFullTextNativeBinding(module: unknown): Promise<NativeFullTextModule> {
 	const prototype = (
 		module as {

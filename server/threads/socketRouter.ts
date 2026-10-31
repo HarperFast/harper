@@ -20,7 +20,7 @@ import { startHealthChecks } from '../../components/status/healthChecks.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
-import { getFullTextRuntimeConfiguration } from '../../resources/indexes/fullTextRuntimeConfiguration.ts';
+import { initializeFullTextQueryPolicy } from '../../resources/indexes/fullTextNativeBinding.ts';
 import { setActiveWorkerPools } from './workerPools.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { isMainThread } from 'node:worker_threads';
@@ -52,7 +52,7 @@ if (isMainThread) {
 }
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
-	if (isMainThread) getFullTextRuntimeConfiguration();
+	if (isMainThread) await initializeFullTextQueryPolicy();
 	applyConfiguredV8Flags();
 	const workerSlots = [];
 	if (isProcessShuttingDown()) return [];
