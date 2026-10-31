@@ -486,6 +486,31 @@
 				"enabled": { "type": "boolean", "description": "Enable local Harper Studio GUI. Default: false" }
 			}
 		},
+		"studio": {
+			"type": "object",
+			"description": "Harper Studio UI settings for the cluster, written with set_configuration (studio_navigation, studio_landing) and readable by every authenticated role through get_studio_configuration. Each node keeps its own copy, so write it on every node, or pass replicated: true. A UI choice only: server permissions are unchanged. An invalid entry is ignored with a logged warning.",
+			"properties": {
+				"navigation": {
+					"type": ["object", "null"],
+					"description": "How Studio shows each built-in tab, or a component's page keyed <component>.<pageId>. A tab not listed is visible.",
+					"propertyNames": { "$ref": "#/definitions/studioPageKey" },
+					"properties": {
+						"applications": { "$ref": "#/definitions/studioNavigationState" },
+						"databases": { "$ref": "#/definitions/studioNavigationState" },
+						"apis": { "$ref": "#/definitions/studioNavigationState" },
+						"operations": { "$ref": "#/definitions/studioNavigationState" },
+						"status": { "$ref": "#/definitions/studioNavigationState" },
+						"logs": { "$ref": "#/definitions/studioNavigationState" },
+						"config": { "$ref": "#/definitions/studioNavigationState" }
+					},
+					"additionalProperties": { "$ref": "#/definitions/studioNavigationState" }
+				},
+				"landing": {
+					"anyOf": [{ "$ref": "#/definitions/studioPageKey" }, { "type": "null" }],
+					"description": "The page Studio opens the cluster on: a built-in tab key, or <component>.<pageId> for a page a component declares."
+				}
+			}
+		},
 
 		"logging": {
 			"type": "object",
@@ -1040,6 +1065,16 @@
 	"additionalProperties": true,
 
 	"definitions": {
+		"studioPageKey": {
+			"type": "string",
+			"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.[a-z0-9-]+)$",
+			"description": "A built-in tab key, or <component>.<pageId>: a component's name as get_components reports it, a dot, and the id of a page it declares."
+		},
+		"studioNavigationState": {
+			"type": "string",
+			"enum": ["visible", "tucked", "hidden"],
+			"description": "visible: a top tab; tucked: moved out of the top tabs; hidden: not shown."
+		},
 		"loggerConfig": {
 			"type": "object",
 			"additionalProperties": true,

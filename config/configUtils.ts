@@ -34,7 +34,12 @@ import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
-import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
+import {
+	prepareRuntimeEnvConfig,
+	hasPersistedEnvConfigState,
+	discardConfigState,
+	envLayerNaming,
+} from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
@@ -994,9 +999,17 @@ function isSuffixEscapedParam(arg: string): boolean {
 	return component !== undefined && !isReservedComponentName(component);
 }
 
+// Written only by set_configuration, as whole values: kept out of CONFIG_PARAM_MAP so a bare env var or CLI arg of
+// the same name (a generic MODELS, say) is never applied at boot.
+const SET_CONFIGURATION_ONLY_PARAMS: ReadonlySet<string> = new Set([
+	'models',
+	hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION,
+	hdbTerms.STUDIO_CONFIG_PARAMS.LANDING,
+]);
+
 function lookupConfigWriteParam(arg: string): string | undefined {
-	// Keep the generic MODELS env var out of the boot/install config allowlist.
-	if (arg.toLowerCase() === 'models') return 'models';
+	const name = arg.toLowerCase();
+	if (SET_CONFIGURATION_ONLY_PARAMS.has(name)) return name;
 	return lookupConfigParam(arg) ?? (isSuffixEscapedParam(arg) ? arg : undefined);
 }
 
@@ -1153,7 +1166,12 @@ export function updateConfigValue(
 				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
 				try {
 					if (splitParam.length > 1) {
-						if (typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
+						const parent = configDoc.getIn(splitParam.slice(0, -1));
+						// The Studio reader tolerates a non-map `studio`; a write replaces it rather than failing to land.
+						if (
+							typeof parent === 'boolean' ||
+							(SET_CONFIGURATION_ONLY_PARAMS.has(configParam) && parent !== undefined && !YAML.isMap(parent))
+						) {
 							configDoc.deleteIn(splitParam.slice(0, -1));
 						}
 					}
@@ -1325,6 +1343,27 @@ export function getConfiguration() {
 	return configDoc.toJSON();
 }
 
+// A malformed Studio setting is dropped when read rather than failing a boot, so this write is where it is refused.
+async function assertStudioSettingsValid(configFields) {
+	const problems: string[] = [];
+	let studioConfiguration;
+	for (const field in configFields) {
+		const param = field.toLowerCase();
+		if (param !== hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION && param !== hdbTerms.STUDIO_CONFIG_PARAMS.LANDING) continue;
+		// A reasserting env layer would put its own value back at the next start, so the write would silently revert.
+		const pinnedBy = envLayerNaming(param.replace('_', '.'));
+		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
+			throw new ClientError(`Cannot set ${param}: ${pinnedBy} defines it. Change that variable first.`, 409);
+		// Imported lazily: it imports this module.
+		studioConfiguration ??= await import('./studioConfiguration.ts');
+		const value = castConfigValue(param, configFields[field]);
+		if (param === hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION)
+			studioConfiguration.validateStudioNavigation(value, problems, false);
+		else studioConfiguration.validateStudioLanding(value, problems);
+	}
+	if (problems.length > 0) throw new ClientError(`Unable to update config: ${problems.join('; ')}`, 400);
+}
+
 // `set_configuration` is the one config writer that also fans out (`replicated: true`), so a value
 // accepted here lands on every peer at once and the next rolling restart takes the whole cluster
 // down together (harper-pro#558). Boot-time writers are deliberately not gated the same way: config
@@ -1413,6 +1452,7 @@ export async function setConfiguration(setConfigJson) {
 		);
 	}
 	assertThreadHeapMemoryStartable(configFields);
+	await assertStudioSettingsValid(configFields);
 	if (Object.keys(configFields).some((field) => field.toLowerCase() === 'models')) {
 		const { envLayerNamingModels } = await import('../resources/models/bootstrap.ts');
 		const pinnedBy = envLayerNamingModels();

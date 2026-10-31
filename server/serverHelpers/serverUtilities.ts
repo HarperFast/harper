@@ -27,6 +27,7 @@ import * as jobRunner from '../jobs/jobRunner.ts';
 import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
 import * as auth from '../../security/auth.ts';
 import * as configUtils from '../../config/configUtils.ts';
+import { getStudioConfiguration } from '../../config/studioConfiguration.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -118,7 +119,7 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 ];
 
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
-	['set_configuration', new Set(['models'])],
+	['set_configuration', new Set(['models', terms.STUDIO_CONFIG_PARAMS.NAVIGATION, terms.STUDIO_CONFIG_PARAMS.LANDING])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
 ]);
@@ -707,6 +708,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.LOGOUT, new OperationFunctionObject(auth.logout));
 
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configUtils.getConfiguration));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION, new OperationFunctionObject(getStudioConfiguration));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS,
 		new OperationFunctionObject(customFunctionOperations.customFunctionsStatus)

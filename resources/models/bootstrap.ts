@@ -51,7 +51,7 @@ import {
 	type CapturedInstall,
 } from './backendRegistry.ts';
 import { getSharedRootConfigWatcher, RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
-import { flattenObject } from '../../config/harperConfigEnvVars.ts';
+import { envLayerNaming } from '../../config/harperConfigEnvVars.ts';
 import { validateModelsBlock } from '../../validation/configValidator.ts';
 import { registerGenerativeDecisionBackend, type GenerativeDecisionConfig } from './generativeDecision.ts';
 import type { ModelBackend, ModelKind, ModelPricing } from './types.ts';
@@ -629,24 +629,7 @@ function modelsWatcherErrorListener(error: unknown): void {
 }
 
 export function envLayerNamingModels(): string | undefined {
-	for (const name of ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG']) {
-		const raw = process.env[name];
-		if (!raw) continue;
-		try {
-			const parsed = JSON.parse(raw);
-			// Dotted top-level keys ("models.embedding.default") compose into the models block too
-			// (harperConfigEnvVars flattens/expands them), so they pin exactly like a nested key.
-			if (
-				parsed &&
-				typeof parsed === 'object' &&
-				Object.keys(flattenObject(parsed, '', false)).some((k) => k === 'models' || k.startsWith('models.'))
-			)
-				return name;
-		} catch {
-			// Malformed env config is reported by config loading itself; not this watcher's job.
-		}
-	}
-	return undefined;
+	return envLayerNaming('models');
 }
 
 function warnOnLiteralCredentials(kind: ModelKind, logicalName: string, entry: ModelEntry): void {

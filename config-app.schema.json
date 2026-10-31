@@ -232,6 +232,54 @@
 			"description": "Conditional package loading option.",
 			"enum": ["always", "if-installed", "dev-only"],
 			"default": "always"
+		},
+		"studio": {
+			"type": "object",
+			"description": "What this component adds to Harper Studio for the cluster it is deployed to, returned to every authenticated role by get_studio_configuration. An invalid page is dropped with a logged warning; the component still loads.",
+			"properties": {
+				"pages": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"required": ["id", "name", "placement"],
+						"properties": {
+							"id": {
+								"type": "string",
+								"pattern": "^[a-z0-9-]+$",
+								"description": "Unique within the component; Studio addresses the page as <component>.<id>."
+							},
+							"name": { "type": "string", "minLength": 1 },
+							"icon": { "type": "string", "description": "A Lucide icon name." },
+							"placement": {
+								"enum": ["tab", "config"],
+								"description": "tab: a top Studio tab; config: an entry in the Config page menu."
+							},
+							"description": { "type": "string" },
+							"access": {
+								"type": "object",
+								"description": "Who Studio shows the page to, evaluated by Studio against the viewer's role. Not a server permission.",
+								"properties": {
+									"role": { "enum": ["super_user", "structure_user"] },
+									"tables": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": {
+												"database": { "type": "string" },
+												"table": { "type": "string" },
+												"actions": { "type": "array", "items": { "type": "string" } }
+											}
+										}
+									},
+									"operations": { "type": "array", "items": { "type": "string" } },
+									"endpoints": { "type": "array", "items": { "type": "string" } }
+								}
+							},
+							"content": { "type": "object", "description": "The page's content, rendered and validated by Studio." }
+						}
+					}
+				}
+			}
 		}
 	},
 	"additionalProperties": true,
