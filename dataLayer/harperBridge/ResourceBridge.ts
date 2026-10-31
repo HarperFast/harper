@@ -1,3 +1,7 @@
+import {
+	fullTextComparatorMode,
+	validateFullTextScoringOptions,
+} from '../../resources/indexes/fullTextQueryProtocol.ts';
 import searchValidator from '../../validation/searchValidator.ts';
 import { randomUUID } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
@@ -91,6 +95,7 @@ export class ResourceBridge extends BridgeMethods {
 				return condition;
 			} else {
 				const c = condition as DirectCondition;
+				validateFullTextScoringOptions(c, fullTextComparatorMode(c.comparator ?? c.search_type));
 				return {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
@@ -98,6 +103,8 @@ export class ResourceBridge extends BridgeMethods {
 					...(c.fuzzyDistance === undefined ? null : { fuzzyDistance: c.fuzzyDistance }),
 					...(c.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: c.fuzzyTranspositions }),
 					...(c.fields === undefined ? null : { fields: c.fields }),
+					...(c.boost === undefined ? null : { boost: c.boost }),
+					...(c.should === undefined ? null : { should: c.should }),
 					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
 					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
 					...(c.waitForIndexMilliseconds === undefined

@@ -19,6 +19,7 @@ import type { FullTextDefinition } from '../fullTextSchema.ts';
 import type { RocksTransactionLogStore } from '../RocksTransactionLogStore.ts';
 import {
 	loadFullTextNativeBinding,
+	getValidatedFullTextRuntimeInfo,
 	nativeFullTextSearchThreads,
 	nativeFullTextQueryLimits,
 	validateFullTextQueryRuntimeInfo,
@@ -37,6 +38,8 @@ import {
 	fullTextHitsAdvance,
 	fullTextFuzzyOptions,
 	validateFullTextFuzzyOptions,
+	validateFullTextScoringRuntime,
+	fullTextExpressionUsesScoring,
 } from './fullTextQueryProtocol.ts';
 export {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
@@ -49,6 +52,7 @@ import {
 	type DerivedNativeIndexHost,
 } from './hnswDerivedIndex.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
+import type { FullTextScoringClause } from '../ResourceInterface.ts';
 import type { CandidateKeyPlan } from '../search.ts';
 import type { Id } from '../ResourceInterface.ts';
 
@@ -78,6 +82,8 @@ export type FullTextCondition = {
 	value?: string;
 	comparator?: string;
 	fields?: string[];
+	boost?: number;
+	should?: FullTextScoringClause[];
 	fullTextQuery?: NativeFullTextSearchExpression;
 	fuzzyDistance?: number;
 	fuzzyTranspositions?: boolean;
@@ -152,6 +158,7 @@ export class FullTextQueryIndex {
 	#definitionSnapshot: string;
 	#configurationRevision = 0;
 	#binding?: NativeFullTextModule;
+	#queryApiVersion?: number;
 	#readerSlot?: ReaderSlot;
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
@@ -253,6 +260,11 @@ export class FullTextQueryIndex {
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
 			);
+			const query = condition.fullTextQuery ?? leafDescriptor(condition);
+			if (fullTextExpressionUsesScoring(query)) {
+				await this.#getBinding();
+				validateFullTextScoringRuntime(query, this.#queryApiVersion);
+			}
 			if (waiting) {
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
@@ -1127,7 +1139,9 @@ export class FullTextQueryIndex {
 				? await configured()
 				: configured
 			: await loadFullTextNativeBinding();
-		const info = validateFullTextQueryRuntimeInfo(await binding.runtimeInfo());
+		const runtime = configured ? await binding.runtimeInfo() : getValidatedFullTextRuntimeInfo(binding);
+		const info = validateFullTextQueryRuntimeInfo(runtime);
+		this.#queryApiVersion = runtime.queryApiVersion;
 		const queryPolicy = nativeFullTextQueryLimits(info, getFullTextQueryPolicy());
 		this.#nativeOptions.limits.maxQueryTerms = queryPolicy.maxQueryTerms;
 		this.#nativeOptions.limits.maxQueryClauses = queryPolicy.maxQueryClauses;
@@ -1254,7 +1268,10 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 
 function expressionUsesAutocomplete(expression: NativeFullTextSearchExpression): boolean {
 	if ('text' in expression) return expression.mode === 'prefix' || expression.mode === 'fuzzy-prefix';
-	if (expression.operator === 'not') return expressionUsesAutocomplete(expression.clause);
+	if (expression.operator === 'not' || expression.operator === 'boost')
+		return expressionUsesAutocomplete(expression.clause);
+	if (expression.operator === 'optional')
+		return expressionUsesAutocomplete(expression.required) || expression.optional.some(expressionUsesAutocomplete);
 	return expression.clauses.some(expressionUsesAutocomplete);
 }
 
@@ -1486,6 +1503,10 @@ function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: 
 			(expression.fuzzyDistance ?? 1) > maximum
 		)
 			throw new ClientError('Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance', 400);
-	} else if (expression.operator === 'not') assertFuzzyPolicy(expression.clause, maximum);
-	else for (const clause of expression.clauses) assertFuzzyPolicy(clause, maximum);
+	} else if (expression.operator === 'not' || expression.operator === 'boost')
+		assertFuzzyPolicy(expression.clause, maximum);
+	else if (expression.operator === 'optional') {
+		assertFuzzyPolicy(expression.required, maximum);
+		for (const clause of expression.optional) assertFuzzyPolicy(clause, maximum);
+	} else for (const clause of expression.clauses) assertFuzzyPolicy(clause, maximum);
 }

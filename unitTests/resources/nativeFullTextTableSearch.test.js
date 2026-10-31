@@ -8,6 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { fullTextDerivedIndexReadiness, setFullTextNativeBindingForTests } = require('#src/resources/derivedIndexes');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const { parseQuery } = require('#src/resources/search');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
@@ -60,6 +61,167 @@ describe('published native full-text Table.search integration', () => {
 		if (runtime) await runtime.close();
 		Product = undefined;
 		setFullTextNativeBindingForTests(undefined);
+	});
+
+	it('boosts required matches and adds optional scores without changing eligibility', async () => {
+		const searchDefinition = definition('catalogSearch', [
+			{ name: 'title', weight: 1, highlight: true },
+			{ name: 'details', weight: 1, highlight: true },
+		]);
+		searchDefinition.highlighting = { maxFragments: 2, fragmentLength: 80 };
+		const database = `fulltext-relevance-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'details', type: 'String' },
+			],
+			fullTextIndexes: [searchDefinition],
+		});
+		await Product.put([
+			{ id: 'a', title: 'widget', details: 'plain catalog' },
+			{ id: 'b', title: 'widget', details: 'trail running' },
+			{ id: 'c', title: 'widget', details: 'plain catalog' },
+			{ id: 'outside', title: 'different', details: 'trail running' },
+		]);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const condition = {
+			attribute: 'catalogSearch',
+			comparator: 'matches',
+			value: 'widget',
+			fields: ['title'],
+			maxIndexLagMilliseconds: 0,
+			waitForIndexMilliseconds: 30000,
+		};
+		const search = (controls = {}, options = {}) =>
+			collect(
+				Product.search({
+					conditions: [{ ...condition, ...controls }],
+					select: ['id', 'title', 'details', '$score'],
+					...options,
+				})
+			);
+		const baseline = await search();
+		assert.deepStrictEqual(
+			baseline.map(({ id }) => id),
+			['a', 'b', 'c']
+		);
+		const boosted = await search({ boost: 3 });
+		assert.deepStrictEqual(ids(boosted), ids(baseline));
+		for (let index = 0; index < baseline.length; index++)
+			assert.strictEqual(boosted[index].$score, Math.fround(baseline[index].$score * 3));
+		const zero = await search({ boost: 0 });
+		assert.deepStrictEqual(ids(zero), ids(baseline));
+		assert(zero.every(({ $score }) => $score === 0));
+		const controls = {
+			should: [{ comparator: 'matches_phrase', value: 'trail running', fields: ['details'], boost: 10 }],
+		};
+		const ranked = await search(controls);
+		assert.deepStrictEqual(
+			ranked.map(({ id }) => id),
+			['b', 'a', 'c']
+		);
+		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		const bridge = new ResourceBridge();
+		const bridged = await collect(
+			await bridge.searchByConditions({
+				database,
+				schema: database,
+				table: 'Product',
+				get_attributes: ['id', 'title', 'details', '$score'],
+				conditions: [{ ...condition, ...controls }],
+			})
+		);
+		assert.deepStrictEqual(bridged, ranked);
+		await assert.rejects(
+			() =>
+				bridge.searchByConditions({
+					database,
+					schema: database,
+					table: 'Product',
+					get_attributes: ['id'],
+					conditions: [{ ...condition, boost: 2, negated: true }],
+				}),
+			(error) => error.statusCode === 400
+		);
+
+		assert.deepStrictEqual(
+			(await search(controls, { offset: 1, limit: 1 })).map(({ id }) => id),
+			['a']
+		);
+		assert.deepStrictEqual(
+			(await search(controls, { rowFilter: (record) => record.id !== 'b', limit: 2 })).map(({ id }) => id),
+			['a', 'c']
+		);
+		const highlights = await search({ ...controls, includeHighlights: true });
+		assert.deepStrictEqual(highlights[0].$highlights.details[0].spans, [{ start: 0, end: 13 }]);
+		assert.strictEqual(highlights[1].$highlights.details, undefined);
+		const implicitFields = { should: [{ comparator: 'matches', value: 'trail' }] };
+		assert.strictEqual((await search(implicitFields))[0].id, 'b');
+		assert.strictEqual(implicitFields.should[0].fields, undefined);
+		const user = {
+			role: {
+				permission: {
+					[database]: {
+						tables: {
+							Product: {
+								read: true,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true },
+									{ attribute_name: 'details', read: false },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		const allowedTarget = {
+			conditions: [{ ...condition, should: [{ comparator: 'matches', value: 'widget', fields: ['title'] }] }],
+			select: ['title', '$score'],
+		};
+		assert.strictEqual((await collect(Product.search(allowedTarget, { user }))).length, 3);
+		for (const should of [
+			[{ comparator: 'matches', value: 'trail', fields: ['details'] }],
+			[{ comparator: 'matches', value: 'trail' }],
+		])
+			await assert.rejects(
+				async () => collect(Product.search({ ...allowedTarget, conditions: [{ ...condition, should }] }, { user })),
+				(error) => error.name === 'AccessViolation'
+			);
+
+		for (const invalid of [
+			{ should: [] },
+			{ comparator: 'not_matches', boost: 1 },
+			{ negated: true, should: controls.should },
+			{ should: [{ ...controls.should[0], attribute: 'other' }] },
+			{ should: [{ ...controls.should[0], fields: [] }] },
+			{ should: [{ ...controls.should[0], fields: ['missing'] }] },
+			{ should: [{ comparator: 'matches_fuzzy', value: 'catxxog', fuzzyDistance: 2 }] },
+		])
+			await assert.rejects(
+				async () => search(invalid),
+				(error) => error.statusCode === 400
+			);
+		for (const controls of [{ boost: 1 }, { should: [{ comparator: 'matches', value: 'widget' }] }]) {
+			await assert.rejects(
+				async () =>
+					collect(Product.search({ conditions: [{ attribute: 'id', value: 'a', comparator: 'equals', ...controls }] })),
+				/positive full-text/
+			);
+			await assert.rejects(
+				async () =>
+					collect(Product.search({ conditions: [{ operator: 'and', conditions: [condition], ...controls }] })),
+				/positive full-text/
+			);
+			await assert.rejects(
+				async () => collect(Product.search({ conditions: [condition], ...controls })),
+				/positive full-text/
+			);
+		}
 	});
 
 	it('keeps custom iterable searches and re-evaluates later offset requests', async () => {
@@ -354,7 +516,10 @@ describe('published native full-text Table.search integration', () => {
 						{ attribute: 'catalogSearch', comparator, value },
 					],
 				})
-			);
+			).catch((error) => {
+				error.message += ` (${comparator})`;
+				throw error;
+			});
 			assert.deepStrictEqual(ids(records), ['two'], comparator);
 		}
 

@@ -1,5 +1,10 @@
+import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
-import type { NativeFullTextFuzzyOptions, NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
+import type {
+	NativeFullTextFuzzyOptions,
+	NativeFullTextSearchMode,
+	NativeFullTextSearchExpression,
+} from './fullTextNativeBinding.ts';
 
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
 export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
@@ -103,4 +108,67 @@ export function validateFullTextFuzzyOptions(
 		throw new ClientError('fuzzyDistance must be an integer between 0 and 2', 400);
 	if (condition.fuzzyTranspositions !== undefined && typeof condition.fuzzyTranspositions !== 'boolean')
 		throw new ClientError('fuzzyTranspositions must be a boolean', 400);
+}
+
+export function validateFullTextScoringOptions(condition: any, mode?: NativeFullTextSearchMode): void {
+	if (condition.boost === undefined && condition.should === undefined) return;
+	if (!mode || condition.negated || condition.conditions)
+		throw new ClientError('Scoring controls require a positive full-text index condition', 400);
+	validateFullTextBoost(condition.boost);
+	if (condition.should === undefined) return;
+	if (
+		!Array.isArray(condition.should) ||
+		condition.should.length === 0 ||
+		condition.should.length > getFullTextQueryPolicy().maxQueryClauses
+	)
+		throw new ClientError('should must be non-empty and within storage.fullText.query.maxQueryClauses', 400);
+	for (const clause of condition.should) {
+		if (
+			!clause ||
+			typeof clause !== 'object' ||
+			Array.isArray(clause) ||
+			Object.keys(clause).some(
+				(name) => !['comparator', 'value', 'fields', 'boost', 'fuzzyDistance', 'fuzzyTranspositions'].includes(name)
+			)
+		)
+			throw new ClientError('should clauses accept only comparator, value, fields, boost and fuzzy controls', 400);
+		const clauseMode = fullTextComparatorMode(clause.comparator);
+		if (!clauseMode || typeof clause.value !== 'string' || clause.value.length === 0)
+			throw new ClientError('should clauses require a positive full-text comparator and non-empty string value', 400);
+		validateFullTextBoost(clause.boost);
+		validateFullTextFuzzyOptions(clause, clauseMode);
+	}
+}
+
+function validateFullTextBoost(boost: unknown): void {
+	if (boost === undefined) return;
+	if (
+		typeof boost !== 'number' ||
+		!Number.isFinite(Math.fround(boost)) ||
+		Math.fround(boost) < 0 ||
+		Math.fround(boost) > 100 ||
+		Object.is(Math.fround(boost), -0)
+	)
+		throw new ClientError(
+			'boost must be a finite non-negative number at most 100 after float32 rounding, excluding negative zero',
+			400
+		);
+}
+
+export function fullTextExpressionUsesScoring(expression: NativeFullTextSearchExpression): boolean {
+	if ('text' in expression) return false;
+	if (expression.operator === 'boost' || expression.operator === 'optional') return true;
+	if (expression.operator === 'not') return fullTextExpressionUsesScoring(expression.clause);
+	return expression.clauses.some(fullTextExpressionUsesScoring);
+}
+
+export function validateFullTextScoringRuntime(
+	expression: NativeFullTextSearchExpression,
+	queryApiVersion: number | undefined
+): void {
+	if (queryApiVersion !== 8 && fullTextExpressionUsesScoring(expression))
+		throw new ClientError(
+			'Query scoring requires a full-text wrapper with query API 8; the installed wrapper does not support scoring controls',
+			400
+		);
 }
