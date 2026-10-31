@@ -16,7 +16,7 @@ const poolUnsupportedTables: string[] = [];
 
 /**
  * Main thread: record the pool types started, so every worker spawned from here learns them. A `pending` type (a
- * defaulted pool) is decided by the first shared HTTP worker's load report: on the main thread it counts as active
+ * defaulted pool) is decided by the first admitted shared HTTP worker's load report: on the main thread it counts as active
  * until then, so placement defers to it; a worker treats it as not yet active until admitted.
  */
 export function setActiveWorkerPools(types: string[], pending: string[] = []): void {
@@ -54,8 +54,8 @@ export function workerPoolDecision(): Promise<void> | undefined {
 }
 
 /**
- * Main thread: decide the pending pools from a shared HTTP worker's load report. Every shared worker loads the same
- * applications, so the first report decides; a table that needs application code on the replication path keeps
+ * Main thread: decide the pending pools from an admitted shared HTTP worker's load report. Every shared worker loads
+ * the same applications, so the first one decides; a table that needs application code on the replication path keeps
  * replication on the HTTP workers. Later reports change nothing (a deploy is warned at registration, not re-decided).
  */
 export function decideWorkerPools(unsupportedTables: string[] = []): void {
