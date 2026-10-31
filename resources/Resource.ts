@@ -22,7 +22,7 @@ import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
 import { transaction, contextStorage } from './transaction.ts';
-import { parseQuery } from './search.ts';
+import { parseQuery, Query as QueryGroup } from './search.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
@@ -1115,7 +1115,7 @@ export function cloneRequestTarget(source: any): RequestTarget {
 	const cloneValue = (value: any): any => {
 		if (value == null || typeof value !== 'object') return value;
 		if (seen.has(value)) return seen.get(value);
-		// `date:` query values are the only mutable non-plain objects the query parser creates
+		// the query parser's `date:` values and groups are mutable, so they are copied like plain objects
 		if (value instanceof Date) {
 			const copy = new Date(value.getTime());
 			seen.set(value, copy);
@@ -1130,7 +1130,7 @@ export function cloneRequestTarget(source: any): RequestTarget {
 			return copy;
 		}
 		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) return value;
+		if (prototype !== Object.prototype && prototype !== null && prototype !== QueryGroup.prototype) return value;
 		const copy = Object.create(prototype);
 		seen.set(value, copy);
 		for (const key of Object.keys(value)) {
