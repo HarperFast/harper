@@ -186,11 +186,7 @@ import {
 	validateFullTextFuzzyOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
-import {
-	FULL_TEXT_SEARCH_OPTIONS,
-	isFullTextSearchLimitError,
-	type FullTextSearchEntry,
-} from './indexes/fullTextQueryProtocol.ts';
+import { FULL_TEXT_SEARCH_OPTIONS, type FullTextSearchEntry } from './indexes/fullTextQueryProtocol.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
@@ -7562,7 +7558,7 @@ export function makeTable(options): TableResourceClass {
 			let sort = typeof target.sort === 'object' && target.sort;
 			let fullTextOrder: ((entries: FullTextSearchEntry[]) => void) | undefined;
 			let exhaustiveFullText = false;
-			const fullTextBudget = (target as any)[FULL_TEXT_SEARCH_OPTIONS]?.budget ?? {};
+			let fullTextCountComplete = true;
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
 				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
@@ -7708,7 +7704,18 @@ export function makeTable(options): TableResourceClass {
 					readTxn,
 					exhaustiveFullText
 						? Object.assign(Object.create(target), {
-								[FULL_TEXT_SEARCH_OPTIONS]: { exhaustive: true, orderResults: fullTextOrder, budget: fullTextBudget },
+								[FULL_TEXT_SEARCH_OPTIONS]: {
+									exhaustive: true,
+									orderResults: fullTextOrder,
+									...(!fullTextOrder
+										? {
+												countBudgetMilliseconds: MAX_EXACT_COUNT_MS,
+												onIncompleteCount: () => {
+													fullTextCountComplete = false;
+												},
+											}
+										: undefined),
+								},
 							})
 						: target,
 					context,
@@ -7787,7 +7794,6 @@ export function makeTable(options): TableResourceClass {
 						const page: any = [];
 						let scanned = 0;
 						let exact = true;
-						let fullTextLimitExceeded = false;
 						try {
 							for await (const record of results) {
 								countStart ??= performance.now();
@@ -7812,10 +7818,6 @@ export function makeTable(options): TableResourceClass {
 									}
 								}
 							}
-						} catch (error) {
-							if (exhaustiveFullText && !fullTextOrder && isFullTextSearchLimitError(error))
-								fullTextLimitExceeded = true;
-							else throw error;
 						} finally {
 							// Count pages have no streaming onDone consumer to release their cursors.
 							try {
@@ -7828,22 +7830,11 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 						}
-						if (fullTextLimitExceeded) {
-							const fallback: any = await this.search(
-								Object.assign(Object.create(target), {
-									count: 'estimated',
-									[FULL_TEXT_SEARCH_OPTIONS]: { budget: fullTextBudget },
-								})
-							);
-							fallback.recordCount = null;
-							fallback.recordCountExact = false;
-							return fallback;
-						}
 						let total: number | null;
 						if (wantExact) {
 							// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
 							// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
-							total = exact && !approximateResultSet ? scanned : null;
+							total = exact && fullTextCountComplete && !approximateResultSet ? scanned : null;
 						} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
 							// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
 							// estimate; guessing would both mislead and disclose cardinality the filter hides.
@@ -7866,7 +7857,7 @@ export function makeTable(options): TableResourceClass {
 							total = offset + page.length;
 						}
 						page.recordCount = total;
-						page.recordCountExact = wantExact && exact && !approximateResultSet;
+						page.recordCountExact = wantExact && exact && fullTextCountComplete && !approximateResultSet;
 						page.selectApplied = true;
 						page.getColumns = getColumns;
 						return page;

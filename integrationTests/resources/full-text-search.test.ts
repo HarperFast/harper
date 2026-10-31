@@ -993,6 +993,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				} while (Date.now() < deadline);
 				assert.strictEqual(status, 400, body);
 				assert.ok(body.includes(name), body);
+				assert.strictEqual(JSON.parse(body).code, 'ClientError');
 			}
 			const original = (await operation({ operation: 'get_configuration' })).storage.fullText;
 			assert.ok(original, 'Installed configuration must include full-text defaults');
@@ -1009,6 +1010,17 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				assert.strictEqual(updated.requestBudgetMilliseconds, 1000);
 				await restartWorkers();
 				await assertBudget('maxResultsPerRequest');
+				const counted = await fetch(
+					`${ctx.harper.httpURL}/Product/?catalogSearch=matches=shoe&limit(1)&select(id,title)`,
+					{
+						headers: { Authorization: authorization, Prefer: 'count=exact' },
+						signal: AbortSignal.timeout(5000),
+					}
+				);
+				assert.strictEqual(counted.status, 200, await counted.clone().text());
+				assert.strictEqual(counted.headers.get('content-range'), 'items 0-0/*');
+				assert.strictEqual((await counted.json()).length, 1);
+
 				await operation({
 					operation: 'set_configuration',
 					storage_fullText_maxRawHitsPerRequest: 1,

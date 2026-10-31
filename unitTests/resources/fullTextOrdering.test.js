@@ -191,6 +191,44 @@ describe('published full-text ordering and exact counts', () => {
 		assert(page[0].$highlights.title.length > 0);
 	});
 
+	it('keeps narrowed selection without redispatching a spreading application override', async () => {
+		await seed(['a', 'b', 'c', 'd'].map((id, price) => ({ id, title: 'widget', price })));
+		let searches = 0;
+		Product = class extends Product {
+			search(target) {
+				searches++;
+				return super.search({ ...target });
+			}
+		};
+		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 2, maxResultsPerRequest: 2 });
+		const page = await Product.search(query({ count: 'exact', limit: 1, select: ['id', 'price'] }));
+		assert.strictEqual(searches, 1);
+		assert.strictEqual(page.length, 1);
+		assert.strictEqual(page.recordCount, null);
+		assert.deepStrictEqual(Object.keys(page[0]).sort(), ['id', 'price']);
+	});
+
+	it('preserves the highlighted page when optional tail counting exhausts its own deadline', async () => {
+		await seed(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
+		let incomplete = 0;
+		const entries = await Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+			condition({ includeHighlights: true }),
+			undefined,
+			{
+				minResults: 1,
+				resultEnd: 1,
+				exhaustive: true,
+				countBudgetMilliseconds: 0,
+				onIncompleteCount: () => {
+					incomplete++;
+				},
+			}
+		);
+		assert.strictEqual(incomplete, 1);
+		assert.strictEqual(entries.length, 1);
+		assert(entries[0].$highlights.title.length > 0);
+	});
+
 	it('fails complete sorting at the work ceiling but preserves bounded exact-count pages with unknown totals', async () => {
 		await seed(['a', 'b', 'c', 'd'].map((id, price) => ({ id, title: 'widget', price })));
 		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 2, maxResultsPerRequest: 2 });

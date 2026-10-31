@@ -33,6 +33,7 @@ import { decodeFullTextPublication, type FullTextPublication } from './fullTextD
 import {
 	fullTextComparatorMode,
 	fullTextSearchLimitError,
+	isFullTextSearchLimitError,
 	type FullTextSearchOptions,
 	type FullTextSearchEntry,
 	replayFullTextPrefix,
@@ -41,7 +42,6 @@ import {
 	validateFullTextFuzzyOptions,
 } from './fullTextQueryProtocol.ts';
 export {
-	fullTextSearchLimitError,
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
 	FULL_TEXT_QUERY_RESUME_OPERATION,
 	fullTextComparatorMode,
@@ -450,10 +450,8 @@ export class FullTextQueryIndex {
 		const lease = await this.#acquireSearchReader(condition, context);
 		const reader = lease.reader;
 		try {
-			const configuredDeadline =
+			const deadline =
 				performance.now() + Math.min(policy.requestBudgetMilliseconds, this.#maxSearchBudgetMilliseconds!);
-			const deadline = Math.min(options.budget?.deadline ?? configuredDeadline, configuredDeadline);
-			if (options.budget) options.budget.deadline = deadline;
 			remainingSearchBudget(deadline);
 			const rawHitLimit = policy.maxRawHitsPerRequest;
 			let rawHitsFetched = 0;
@@ -461,21 +459,54 @@ export class FullTextQueryIndex {
 			const query = condition.fullTextQuery ?? leafDescriptor(condition);
 			const autocomplete = expressionUsesAutocomplete(query);
 			const searchWindow = maxSearchWindow;
-			const bounded = options.minResults !== undefined && !options.exhaustive;
-			const target = bounded
-				? Math.max(1, options.minResults!)
-				: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
-			if (!Number.isSafeInteger(target) || target < 0 || target > rawHitLimit)
+			const optionalCount = Boolean(options.exhaustive && options.onIncompleteCount && !options.orderResults);
+			const pageTarget = Math.max(0, options.minResults ?? 0);
+			const bounded = options.minResults !== undefined && (!options.exhaustive || optionalCount);
+			let target =
+				bounded && !optionalCount
+					? Math.max(1, options.minResults!)
+					: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
+			const requiredTarget = optionalCount ? Math.max(target, pageTarget) : target;
+			if (!Number.isSafeInteger(requiredTarget) || requiredTarget < 0 || requiredTarget > rawHitLimit)
 				throw fullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxRawHitsPerRequest; reduce offset or limit, or increase the work budget',
 					400
 				);
-			if (target > policy.maxResultsPerRequest)
+			if (requiredTarget > policy.maxResultsPerRequest)
 				throw fullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxResultsPerRequest; reduce offset or limit, or increase the result budget',
 					400
 				);
 			const accepted: FullTextSearchEntry[] = [];
+			let pageReady = optionalCount && pageTarget === 0;
+			let highlightsDone = false;
+			let incompleteCount = false;
+			let countDeadline = pageReady
+				? Math.min(deadline, performance.now() + (options.countBudgetMilliseconds ?? 1000))
+				: deadline;
+			const countBudgetError = new Error('Full-text optional count budget exhausted');
+			const currentBudget = () => {
+				if (optionalCount && pageReady) {
+					const remaining = Math.floor(countDeadline - performance.now());
+					if (remaining <= 0) throw countBudgetError;
+					return remaining;
+				}
+				return remainingSearchBudget(deadline);
+			};
+			const preservePage = async () => {
+				if (!optionalCount || pageReady || accepted.length < pageTarget) return;
+				if (condition.includeHighlights && accepted.length > 0)
+					await this.#addHighlights(
+						reader,
+						lease.definition,
+						condition,
+						accepted.slice(options.resultOffset ?? 0, options.resultEnd),
+						deadline
+					);
+				highlightsDone = true;
+				pageReady = true;
+				countDeadline = Math.min(deadline, performance.now() + (options.countBudgetMilliseconds ?? 1000));
+			};
 			let traversal:
 				{ continuation?: string; skip: number; prefix?: NativeFullTextSearchPageResult['hits'] } | undefined;
 			let maxRawPageSize = this.#maxFilteredRawPageSize!;
@@ -485,7 +516,7 @@ export class FullTextQueryIndex {
 				? Math.min(
 						this.#maxFilteredRawPageSize!,
 						RAW_PAGE_SIZE,
-						Math.max(MIN_RAW_PAGE_SIZE, target * RAW_PAGE_OVERFETCH_FACTOR)
+						Math.max(MIN_RAW_PAGE_SIZE, (optionalCount ? Math.max(1, pageTarget) : target) * RAW_PAGE_OVERFETCH_FACTOR)
 					)
 				: Math.min(this.#maxFilteredRawPageSize!, RAW_PAGE_SIZE);
 			const transaction = context && this.#options.Table._readTxnForContext(context);
@@ -493,200 +524,231 @@ export class FullTextQueryIndex {
 			let candidateGate: CandidateGate | undefined;
 			let candidateGatePlanned = false;
 			let candidateProbeFailureEpoch = 0;
-			while (accepted.length < target) {
-				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-				const desiredLimit = traversal
-					? Math.min(maxRawPageSize, rawPageSize + traversal.skip)
-					: autocomplete
-						? this.#maxAutocompleteResults!
-						: Math.min(rawPageSize, maxSearchWindow);
-				const remainingHits = rawHitLimit - rawHitsFetched;
-				if (remainingHits <= 0)
-					throw fullTextSearchLimitError(
-						'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
-						400
-					);
-				const limit = Math.min(desiredLimit, remainingHits);
-				const acceptedBeforePage = accepted.length;
-				let result: NativeFullTextSearchPageResult;
-				try {
-					result = traversal
-						? await reader.searchPage(
-								{ query, limit, continuation: traversal.continuation },
-								{ remainingBudgetMilliseconds: remainingSearchBudget(deadline) }
-							)
-						: await reader.search(
-								{ query, offset: 0, limit, ...(!bounded ? { exactTotal: true } : null) },
-								{ remainingBudgetMilliseconds: remainingSearchBudget(deadline) }
-							);
-				} catch (error) {
-					if (traversal && limit > 1 && error?.code === 'E_RESULT_TOO_LARGE') {
-						maxRawPageSize = Math.max(1, Math.floor(limit / 2));
-						rawPageSize = Math.min(rawPageSize, maxRawPageSize);
-						continue;
-					}
-					throw error;
-				}
-				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-				remainingSearchBudget(deadline);
-				rawHitsFetched += result.hits.length;
-				let replayedHits = 0;
-				if (traversal) {
-					const replay = replayFullTextPrefix(traversal.prefix, traversal.skip, result);
-					traversal.continuation = result.continuation;
-					traversal.skip = replay.remaining;
-					replayedHits = replay.skipped;
-					if (traversal.skip === 0) traversal.prefix = undefined;
-					if (replayedHits > 0) result = { ...result, hits: replay.hits };
-				}
-				if (!bounded && result.totalRelation === 'exact' && result.total > searchWindow)
-					throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
-				if (previousHit && result.hits.length > 0 && !fullTextHitsAdvance(previousHit, result.hits[0]))
-					throw new ServerError('Full-text traversal did not advance past its previous page', 500);
-				if (result.hits.length > 0) previousHit = result.hits[result.hits.length - 1];
-
-				if (
-					!traversal &&
-					result.totalRelation === 'lower-bound' &&
-					result.hits.length < limit &&
-					result.hits.length < result.total
-				) {
-					if (!this.#incompletePageFailureLogged) {
-						this.#incompletePageFailureLogged = true;
-						logger.error?.(
-							`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset 0 with lower-bound total ${result.total}`
-						);
-					}
-					throw new ServerError('Full-text index returned an incomplete result page', 500);
-				}
-				moreMayExist = traversal
-					? result.continuation !== undefined
-					: result.totalRelation === 'exact'
-						? result.hits.length < result.total
-						: result.hits.length === limit;
-				if (result.hits.length === 0) {
-					if (traversal && moreMayExist) continue;
-					break;
-				}
-				if (!candidateGatePlanned) {
-					candidateGatePlanned = true;
-					if (candidatePlan) {
-						const assertSearchActive = () => {
-							if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-							options.assertTransactionActive?.();
-							remainingSearchBudget(deadline);
-						};
-						assertSearchActive();
-						const nativeHitCount = Math.min(searchWindow, Math.max(result.hits.length, result.total));
-						candidateGate = await this.#candidateGate(
-							candidatePlan,
-							target,
-							nativeHitCount,
-							async () => {
-								await new Promise((resolve) => setImmediate(resolve));
-								assertSearchActive();
-							},
-							assertSearchActive
-						);
-						candidateProbeFailureEpoch = this.#candidateProbeFailureEpoch;
-					}
-				}
-				const pointReadsPerCandidate = candidateGate?.maxReadsPerCandidate ?? 0;
-				const workYieldInterval = Math.min(
-					limit,
-					pointReadsPerCandidate === 0
-						? RAW_PAGE_YIELD_INTERVAL
-						: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / (pointReadsPerCandidate + 1)))
-				);
-				let nextYieldIndex = workYieldInterval;
-				for (let hitIndex = 0; hitIndex < result.hits.length; hitIndex++) {
-					if (hitIndex === nextYieldIndex) {
-						await new Promise((resolve) => setImmediate(resolve));
-						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-						remainingSearchBudget(deadline);
-						nextYieldIndex += workYieldInterval;
-					}
-					const hit = result.hits[hitIndex];
-					const key = decodeNativeId(hit.id, this.#options.Table.tableId) as Id;
-					if (typeof hit.version !== 'string')
-						throw new ServerError('Full-text index returned a hit without a source version', 500);
-					options.assertTransactionActive?.();
-					let candidateDecides = false;
-					if (candidateGate) {
-						try {
-							const admitted = candidateGate.has(key);
-							if (
-								candidateGate.maxReadsPerCandidate > 0 &&
-								candidateProbeFailureEpoch === this.#candidateProbeFailureEpoch
-							) {
-								this.#candidateProbeFailureWarned = false;
-								this.#candidateProbeRetryAfter = 0;
-							}
-							if (!admitted) continue;
-							candidateDecides = candidateGate.complete;
-						} catch (error) {
-							const usedPointProbe = candidateGate.maxReadsPerCandidate > 0;
-							candidateGate = undefined;
-							if (usedPointProbe) {
-								this.#candidateProbeFailureEpoch++;
-								this.#candidateProbeRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
-								if (!this.#candidateProbeFailureWarned) {
-									this.#candidateProbeFailureWarned = true;
-									logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
-								}
-							} else {
-								this.#candidateCollectionFailureEpoch++;
-								this.#candidateCollectionRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
-								if (!this.#candidateCollectionFailureWarned) {
-									this.#candidateCollectionFailureWarned = true;
-									logger.warn?.(
-										'could not apply the full-text candidate-key set; using the record predicate; point probes may resume on later requests',
-										error
-									);
-								}
-							}
-						}
-					}
-					const entry = this.#currentSearchEntry(key, hit.version, transaction);
-					if (!entry) continue;
-					if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
-					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
-					if (accepted.length >= target) {
-						if (!bounded && hitIndex + 1 < result.hits.length) moreMayExist = true;
-						break;
-					}
-				}
-				if (!traversal && moreMayExist && accepted.length < target) {
-					const minimumNewHits = Math.min(target - accepted.length, Math.max(0, result.total - result.hits.length));
-					if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
+			try {
+				while (accepted.length < target) {
+					if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+					const desiredLimit = traversal
+						? Math.min(maxRawPageSize, rawPageSize + traversal.skip)
+						: autocomplete
+							? this.#maxAutocompleteResults!
+							: Math.min(rawPageSize, maxSearchWindow);
+					const remainingHits = rawHitLimit - rawHitsFetched;
+					if (remainingHits <= 0)
 						throw fullTextSearchLimitError(
 							'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
 							400
 						);
-					traversal = { skip: result.hits.length, prefix: result.hits };
-				}
-				if (!moreMayExist) break;
-				if (accepted.length < target) {
-					if (bounded) {
-						const acceptedThisPage = accepted.length - acceptedBeforePage;
-						rawPageSize = nextFilteredRawPageSize(
-							limit - replayedHits,
-							result.hits.length,
-							acceptedThisPage,
-							target - accepted.length,
-							maxRawPageSize
-						);
+					const limit = Math.min(desiredLimit, remainingHits);
+					const acceptedBeforePage = accepted.length;
+					let result: NativeFullTextSearchPageResult;
+					try {
+						result = traversal
+							? await reader.searchPage(
+									{ query, limit, continuation: traversal.continuation },
+									{ remainingBudgetMilliseconds: currentBudget() }
+								)
+							: await reader.search(
+									{ query, offset: 0, limit, ...(!bounded ? { exactTotal: true } : null) },
+									{ remainingBudgetMilliseconds: currentBudget() }
+								);
+					} catch (error) {
+						if (traversal && limit > 1 && error?.code === 'E_RESULT_TOO_LARGE') {
+							maxRawPageSize = Math.max(1, Math.floor(limit / 2));
+							rawPageSize = Math.min(rawPageSize, maxRawPageSize);
+							continue;
+						}
+						throw error;
 					}
-					await new Promise((resolve) => setImmediate(resolve));
+					if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+					currentBudget();
+					rawHitsFetched += result.hits.length;
+					let replayedHits = 0;
+					if (traversal) {
+						const replay = replayFullTextPrefix(traversal.prefix, traversal.skip, result);
+						traversal.continuation = result.continuation;
+						traversal.skip = replay.remaining;
+						replayedHits = replay.skipped;
+						if (traversal.skip === 0) traversal.prefix = undefined;
+						if (replayedHits > 0) result = { ...result, hits: replay.hits };
+					}
+					if (result.totalRelation === 'exact' && result.total > searchWindow) {
+						if (optionalCount) {
+							incompleteCount = true;
+							target = pageTarget;
+						} else if (!bounded)
+							throw unboundedSearchLimitError(target, searchWindow, rawHitLimit, Boolean(options.orderResults));
+					}
+					if (previousHit && result.hits.length > 0 && !fullTextHitsAdvance(previousHit, result.hits[0]))
+						throw new ServerError('Full-text traversal did not advance past its previous page', 500);
+					if (result.hits.length > 0) previousHit = result.hits[result.hits.length - 1];
+
+					if (
+						!traversal &&
+						result.totalRelation === 'lower-bound' &&
+						result.hits.length < limit &&
+						result.hits.length < result.total
+					) {
+						if (!this.#incompletePageFailureLogged) {
+							this.#incompletePageFailureLogged = true;
+							logger.error?.(
+								`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset 0 with lower-bound total ${result.total}`
+							);
+						}
+						throw new ServerError('Full-text index returned an incomplete result page', 500);
+					}
+					moreMayExist = traversal
+						? result.continuation !== undefined
+						: result.totalRelation === 'exact'
+							? result.hits.length < result.total
+							: result.hits.length === limit;
+					if (optionalCount && target === 0) break;
+					if (result.hits.length === 0) {
+						if (traversal && moreMayExist) continue;
+						break;
+					}
+					if (!candidateGatePlanned) {
+						candidateGatePlanned = true;
+						if (candidatePlan) {
+							const assertSearchActive = () => {
+								if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+								options.assertTransactionActive?.();
+								currentBudget();
+							};
+							assertSearchActive();
+							const nativeHitCount = Math.min(searchWindow, Math.max(result.hits.length, result.total));
+							candidateGate = await this.#candidateGate(
+								candidatePlan,
+								target,
+								nativeHitCount,
+								async () => {
+									await new Promise((resolve) => setImmediate(resolve));
+									assertSearchActive();
+								},
+								assertSearchActive
+							);
+							candidateProbeFailureEpoch = this.#candidateProbeFailureEpoch;
+						}
+					}
+					const pointReadsPerCandidate = candidateGate?.maxReadsPerCandidate ?? 0;
+					const workYieldInterval = Math.min(
+						limit,
+						pointReadsPerCandidate === 0
+							? RAW_PAGE_YIELD_INTERVAL
+							: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / (pointReadsPerCandidate + 1)))
+					);
+					let nextYieldIndex = workYieldInterval;
+					for (let hitIndex = 0; hitIndex < result.hits.length; hitIndex++) {
+						if (optionalCount && pageReady) currentBudget();
+						if (hitIndex === nextYieldIndex) {
+							await new Promise((resolve) => setImmediate(resolve));
+							if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+							currentBudget();
+							nextYieldIndex += workYieldInterval;
+						}
+						const hit = result.hits[hitIndex];
+						const key = decodeNativeId(hit.id, this.#options.Table.tableId) as Id;
+						if (typeof hit.version !== 'string')
+							throw new ServerError('Full-text index returned a hit without a source version', 500);
+						options.assertTransactionActive?.();
+						let candidateDecides = false;
+						if (candidateGate) {
+							try {
+								const admitted = candidateGate.has(key);
+								if (
+									candidateGate.maxReadsPerCandidate > 0 &&
+									candidateProbeFailureEpoch === this.#candidateProbeFailureEpoch
+								) {
+									this.#candidateProbeFailureWarned = false;
+									this.#candidateProbeRetryAfter = 0;
+								}
+								if (!admitted) continue;
+								candidateDecides = candidateGate.complete;
+							} catch (error) {
+								const usedPointProbe = candidateGate.maxReadsPerCandidate > 0;
+								candidateGate = undefined;
+								if (usedPointProbe) {
+									this.#candidateProbeFailureEpoch++;
+									this.#candidateProbeRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+									if (!this.#candidateProbeFailureWarned) {
+										this.#candidateProbeFailureWarned = true;
+										logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
+									}
+								} else {
+									this.#candidateCollectionFailureEpoch++;
+									this.#candidateCollectionRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+									if (!this.#candidateCollectionFailureWarned) {
+										this.#candidateCollectionFailureWarned = true;
+										logger.warn?.(
+											'could not apply the full-text candidate-key set; using the record predicate; point probes may resume on later requests',
+											error
+										);
+									}
+								}
+							}
+						}
+						const entry = this.#currentSearchEntry(key, hit.version, transaction);
+						if (!entry) continue;
+						if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
+						accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
+						if (optionalCount && !pageReady && accepted.length >= pageTarget) await preservePage();
+						if (accepted.length >= target) {
+							if ((!bounded || optionalCount) && hitIndex + 1 < result.hits.length) moreMayExist = true;
+							break;
+						}
+					}
+					if (!traversal && moreMayExist && accepted.length < target) {
+						const minimumNewHits = Math.min(target - accepted.length, Math.max(0, result.total - result.hits.length));
+						if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
+							throw fullTextSearchLimitError(
+								'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
+								400
+							);
+						traversal = { skip: result.hits.length, prefix: result.hits };
+					}
+					if (!moreMayExist) break;
+					if (accepted.length < target) {
+						if (bounded) {
+							const acceptedThisPage = accepted.length - acceptedBeforePage;
+							rawPageSize = nextFilteredRawPageSize(
+								limit - replayedHits,
+								result.hits.length,
+								acceptedThisPage,
+								target - accepted.length,
+								maxRawPageSize
+							);
+						}
+						await new Promise((resolve) => setImmediate(resolve));
+					}
 				}
+			} catch (error) {
+				if (context?.signal?.aborted) throw context.signal.reason ?? error;
+				const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+				if (
+					!optionalCount ||
+					!pageReady ||
+					!(
+						error === countBudgetError ||
+						isFullTextSearchLimitError(error) ||
+						code === 'E_TIMEOUT' ||
+						code === 'E_QUEUE_FULL' ||
+						code === 'E_RESOURCE_LIMIT'
+					)
+				)
+					throw error;
+				incompleteCount = true;
 			}
-			if (!bounded && moreMayExist) throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
-			if (options.exhaustive) {
+			if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+			if (optionalCount && pageReady && Math.floor(countDeadline - performance.now()) <= 0) incompleteCount = true;
+			if (optionalCount && moreMayExist && accepted.length >= target) incompleteCount = true;
+			if (incompleteCount) options.onIncompleteCount?.();
+			if (!bounded && moreMayExist)
+				throw unboundedSearchLimitError(target, searchWindow, rawHitLimit, Boolean(options.orderResults));
+			if (options.exhaustive && !optionalCount) {
 				options.orderResults?.(accepted);
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				remainingSearchBudget(deadline);
 			}
-			if (condition.includeHighlights && accepted.length > 0)
+			if (!highlightsDone && condition.includeHighlights && accepted.length > 0)
 				await this.#addHighlights(
 					reader,
 					lease.definition,
@@ -1425,7 +1487,12 @@ const REBUILD_REQUIRED_CODES = new Set([
 	'E_INDEX_FORMAT_INCOMPATIBLE',
 ]);
 
-function unboundedSearchLimitError(target: number, searchWindow: number, rawHitLimit: number): ClientError {
+function unboundedSearchLimitError(
+	target: number,
+	searchWindow: number,
+	rawHitLimit: number,
+	ordered = false
+): ClientError {
 	const bound =
 		target < searchWindow
 			? target === rawHitLimit
@@ -1433,7 +1500,9 @@ function unboundedSearchLimitError(target: number, searchWindow: number, rawHitL
 				: 'storage.fullText.maxResultsPerRequest'
 			: `the ${searchWindow}-result search window`;
 	return fullTextSearchLimitError(
-		`Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
+		ordered
+			? `Stored-field full-text ordering requires all eligible matches within ${bound}; narrow the query or increase the relevant budget`
+			: `Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
 		400
 	);
 }

@@ -13,8 +13,9 @@ export type FullTextSearchEntry = {
 };
 
 export type FullTextSearchOptions = {
-	budget?: { deadline?: number };
 	exhaustive?: boolean;
+	onIncompleteCount?: () => void;
+	countBudgetMilliseconds?: number;
 	orderResults?: (entries: FullTextSearchEntry[]) => void;
 	resultEnd?: number;
 };
