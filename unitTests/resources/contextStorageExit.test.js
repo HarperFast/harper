@@ -20,8 +20,9 @@ describe('contextStorage.exit', function () {
 		});
 	});
 
-	it('leaves the request context under the async_hooks storage, whatever the runtime', () => {
-		// Node 22 always uses the async_hooks storage; Node 24+ only with this flag, so their PR runs cover it too
+	it('leaves the request context under the async_hooks storage, whatever the runtime', function () {
+		this.timeout(30_000);
+		// Node 22 always uses the async_hooks storage; Node 24+ only with this flag
 		const flags = process.allowedNodeEnvironmentFlags.has('--no-async-context-frame')
 			? ['--no-async-context-frame']
 			: [];
@@ -30,12 +31,14 @@ describe('contextStorage.exit', function () {
 				contextStorage.run({}, () => {});
 				return contextStorage.getStore();
 			}));
-			process.stdout.write(String(store));`;
+			process.stdout.write('store=' + String(store));`;
 		const child = spawnSync(process.execPath, [...flags, '-e', script, require.resolve('#src/resources/transaction')], {
 			encoding: 'utf8',
-			timeout: 30_000,
+			timeout: 25_000,
 		});
-		assert.strictEqual(child.stdout, 'undefined', child.stderr);
+		assert.ifError(child.error);
+		assert.strictEqual(child.status, 0, child.stderr);
+		assert.match(child.stdout, /store=undefined$/);
 	});
 
 	it('keeps async work started inside it out of the request context', async () => {

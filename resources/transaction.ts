@@ -12,7 +12,7 @@ import { withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
 
 class ContextStorage extends AsyncLocalStorage<Context> {
 	// The async_hooks storage (Node 22's default) implements exit() by disabling itself, so a run() nested inside
-	// re-enables it with the outer store still current. AsyncContextFrame (Node 24+) implements exit() exactly like this.
+	// re-enables it with the outer store still current. AsyncContextFrame (Node 24+) implements exit() as run(undefined, …).
 	exit<R, TArgs extends any[]>(callback: (...args: TArgs) => R, ...args: TArgs): R {
 		return this.run(undefined, callback, ...args);
 	}
