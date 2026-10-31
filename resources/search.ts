@@ -3059,7 +3059,7 @@ function toSortEntry(sort) {
 	recordError(`Unknown sort type ${sort}`);
 }
 
-class Query {
+export class Query {
 	declare conditions: { attribute: string; value: any; comparator: string }[];
 	declare limit: number;
 	declare offset: number;
