@@ -187,7 +187,10 @@ ranges plan again.
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
 is that ratio at the warm, regression-safe end of the measured range; `MAX_CANDIDATE_KEYS` and half the
-node count cap the synchronous scan. A complete set derives the visit budget from its selectivity,
+node count cap the synchronous scan, and it is declined up front when the planner's `estimated_count`
+exceeds that cap. An equality's count is exact; a range on a RocksDB index is a statistical estimate (a
+skip-list sample while the index is memtable-resident), so near the cap identical data can take either
+path, with the same results. A complete set derives the visit budget from its selectivity,
 widening the `filterExpansion` budget by at most `ALLOW_SET_BUDGET_MAX_WIDENING` and never narrowing it;
 a configured `filterExpansion` stays authoritative. `CandidateKeySet` is the one identity rule for both
 the scan's intersection and admission. A node-id bitset for the native plane is not built: the
