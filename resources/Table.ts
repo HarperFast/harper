@@ -7778,7 +7778,7 @@ export function makeTable(options): TableResourceClass {
 					const wantExact = target.count === 'exact';
 					const pageEnd = offset + pageLimit;
 					let countStart = exhaustiveFullText ? undefined : performance.now();
-					// Only an exhaustive full-text traversal can supply an exact custom-index count.
+					// A custom-index traversal sized by minResults counts the page, not all matches; exhaustive full-text is exact.
 					const touchesCustomIndex = (conds: any[]): boolean =>
 						conds.some((c: any) => {
 							if (!c) return false;

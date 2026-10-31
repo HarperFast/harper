@@ -242,4 +242,38 @@ describe('published full-text ordering and exact counts', () => {
 		assert.strictEqual(page.recordCount, null);
 		assert.strictEqual(page.recordCountExact, false);
 	});
+	it('preserves satisfiable filtered pages when optional count replay exceeds its budget', async () => {
+		await seed(Array.from({ length: 100 }, (_, index) => ({ id: `record-${index}`, title: 'widget' })));
+		const baseline = await collect(Product.search(query({ limit: 100 })));
+		const allowedId = baseline[32].id;
+		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 100, maxResultsPerRequest: 100 });
+		const target = query({ limit: 1, rowFilter: (record) => record.id === allowedId });
+		assert.deepStrictEqual(ids(await collect(Product.search(target))), [allowedId]);
+		const page = await Product.search({ ...target, count: 'exact' });
+		assert.deepStrictEqual(ids(page), [allowedId]);
+		assert.strictEqual(page.recordCount, null);
+		assert.strictEqual(page.recordCountExact, false);
+	});
+
+	it('does not swallow application errors that share native busy error codes during counting', async () => {
+		await seed(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
+		const baseline = await collect(Product.search(query()));
+		for (const code of ['E_TIMEOUT', 'E_QUEUE_FULL', 'E_RESOURCE_LIMIT']) {
+			const failure = Object.assign(new Error('Application row policy failed'), { code });
+			await assert.rejects(
+				async () =>
+					Product.search(
+						query({
+							limit: 1,
+							count: 'exact',
+							rowFilter: (record) => {
+								if (record.id === baseline[1].id) throw failure;
+								return true;
+							},
+						})
+					),
+				(error) => error.statusCode === 503
+			);
+		}
+	});
 });

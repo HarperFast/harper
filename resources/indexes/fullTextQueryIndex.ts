@@ -484,7 +484,8 @@ export class FullTextQueryIndex {
 			let countDeadline = pageReady
 				? Math.min(deadline, performance.now() + (options.countBudgetMilliseconds ?? 1000))
 				: deadline;
-			const countBudgetError = new Error('Full-text optional count budget exhausted');
+			const countBudgetError = optionalCount ? new Error('Full-text optional count budget exhausted') : undefined;
+			let countAdmissionFailed = false;
 			const currentBudget = () => {
 				if (optionalCount && pageReady) {
 					const remaining = Math.floor(countDeadline - performance.now());
@@ -557,6 +558,10 @@ export class FullTextQueryIndex {
 							rawPageSize = Math.min(rawPageSize, maxRawPageSize);
 							continue;
 						}
+						countAdmissionFailed =
+							optionalCount &&
+							pageReady &&
+							(error?.code === 'E_TIMEOUT' || error?.code === 'E_QUEUE_FULL' || error?.code === 'E_RESOURCE_LIMIT');
 						throw error;
 					}
 					if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
@@ -697,7 +702,11 @@ export class FullTextQueryIndex {
 						}
 					}
 					if (!traversal && moreMayExist && accepted.length < target) {
-						const minimumNewHits = Math.min(target - accepted.length, Math.max(0, result.total - result.hits.length));
+						const requiredResults = optionalCount && !pageReady ? pageTarget : target;
+						const minimumNewHits = Math.min(
+							requiredResults - accepted.length,
+							Math.max(0, result.total - result.hits.length)
+						);
 						if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
 							throw fullTextSearchLimitError(
 								'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
@@ -722,17 +731,10 @@ export class FullTextQueryIndex {
 				}
 			} catch (error) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? error;
-				const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 				if (
 					!optionalCount ||
 					!pageReady ||
-					!(
-						error === countBudgetError ||
-						isFullTextSearchLimitError(error) ||
-						code === 'E_TIMEOUT' ||
-						code === 'E_QUEUE_FULL' ||
-						code === 'E_RESOURCE_LIMIT'
-					)
+					!(error === countBudgetError || isFullTextSearchLimitError(error) || countAdmissionFailed)
 				)
 					throw error;
 				incompleteCount = true;
@@ -756,6 +758,7 @@ export class FullTextQueryIndex {
 					accepted.slice(options.resultOffset ?? 0, options.resultEnd),
 					deadline
 				);
+			if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 			return accepted.map((entry) => ({
 				key: entry.key,
 				$score: entry.$score,
@@ -1501,7 +1504,7 @@ function unboundedSearchLimitError(
 			: `the ${searchWindow}-result search window`;
 	return fullTextSearchLimitError(
 		ordered
-			? `Stored-field full-text ordering requires all eligible matches within ${bound}; narrow the query or increase the relevant budget`
+			? `Stored-field full-text ordering requires all text matches before filtering within ${bound}; narrow the text query or increase the relevant budget`
 			: `Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
 		400
 	);
