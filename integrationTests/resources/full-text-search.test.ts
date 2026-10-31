@@ -447,7 +447,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForIds(query('pagination'), PAGE_IDS);
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const response = await fetch(
-				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&sort(-id)&limit(2,5)&select(id)`,
+				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&sort(-id)&limit(2,5)&select(id,title)`,
 				{
 					headers: { Authorization: authorization, Prefer: 'count=exact' },
 					signal: AbortSignal.timeout(45_000),

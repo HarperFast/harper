@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { fullTextDerivedIndexReadiness, setFullTextNativeBindingForTests } = require('#src/resources/derivedIndexes');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
-const { FullTextSearchLimitError } = require('#src/resources/indexes/fullTextQueryProtocol');
+const { isFullTextSearchLimitError } = require('#src/resources/indexes/fullTextQueryProtocol');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
@@ -43,7 +43,7 @@ describe('published full-text ordering and exact counts', () => {
 		} finally {
 			Product = undefined;
 			setFullTextNativeBindingForTests(undefined);
-			setFullTextTestConfiguration(previousConfiguration);
+			if (previousConfiguration) setFullTextTestConfiguration(previousConfiguration);
 		}
 	});
 
@@ -192,7 +192,8 @@ describe('published full-text ordering and exact counts', () => {
 		setFullTextTestConfiguration({ ...previousConfiguration, maxRawHitsPerRequest: 2, maxResultsPerRequest: 2 });
 		await assert.rejects(
 			async () => collect(Product.search(query({ sort: { attribute: 'price' }, limit: 1 }))),
-			(error) => error instanceof FullTextSearchLimitError && error.statusCode === 400
+			(error) =>
+				isFullTextSearchLimitError(error) && error.constructor.name === 'ClientError' && error.statusCode === 400
 		);
 		const page = await Product.search(query({ count: 'exact', limit: 1 }));
 		assert.strictEqual(page.length, 1);

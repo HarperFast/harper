@@ -32,7 +32,7 @@ import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.t
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
 import {
 	fullTextComparatorMode,
-	FullTextSearchLimitError,
+	fullTextSearchLimitError,
 	type FullTextSearchOptions,
 	type FullTextSearchEntry,
 	replayFullTextPrefix,
@@ -41,7 +41,7 @@ import {
 	validateFullTextFuzzyOptions,
 } from './fullTextQueryProtocol.ts';
 export {
-	FullTextSearchLimitError,
+	fullTextSearchLimitError,
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
 	FULL_TEXT_QUERY_RESUME_OPERATION,
 	fullTextComparatorMode,
@@ -466,12 +466,12 @@ export class FullTextQueryIndex {
 				? Math.max(1, options.minResults!)
 				: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
 			if (!Number.isSafeInteger(target) || target < 0 || target > rawHitLimit)
-				throw new FullTextSearchLimitError(
+				throw fullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxRawHitsPerRequest; reduce offset or limit, or increase the work budget',
 					400
 				);
 			if (target > policy.maxResultsPerRequest)
-				throw new FullTextSearchLimitError(
+				throw fullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxResultsPerRequest; reduce offset or limit, or increase the result budget',
 					400
 				);
@@ -502,7 +502,7 @@ export class FullTextQueryIndex {
 						: Math.min(rawPageSize, maxSearchWindow);
 				const remainingHits = rawHitLimit - rawHitsFetched;
 				if (remainingHits <= 0)
-					throw new FullTextSearchLimitError(
+					throw fullTextSearchLimitError(
 						'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
 						400
 					);
@@ -659,7 +659,7 @@ export class FullTextQueryIndex {
 				if (!traversal && moreMayExist && accepted.length < target) {
 					const minimumNewHits = Math.min(target - accepted.length, Math.max(0, result.total - result.hits.length));
 					if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
-						throw new FullTextSearchLimitError(
+						throw fullTextSearchLimitError(
 							'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
 							400
 						);
@@ -1425,18 +1425,14 @@ const REBUILD_REQUIRED_CODES = new Set([
 	'E_INDEX_FORMAT_INCOMPATIBLE',
 ]);
 
-function unboundedSearchLimitError(
-	target: number,
-	searchWindow: number,
-	rawHitLimit: number
-): FullTextSearchLimitError {
+function unboundedSearchLimitError(target: number, searchWindow: number, rawHitLimit: number): ClientError {
 	const bound =
 		target < searchWindow
 			? target === rawHitLimit
 				? 'storage.fullText.maxRawHitsPerRequest'
 				: 'storage.fullText.maxResultsPerRequest'
 			: `the ${searchWindow}-result search window`;
-	return new FullTextSearchLimitError(
+	return fullTextSearchLimitError(
 		`Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
 		400
 	);

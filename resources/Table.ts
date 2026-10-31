@@ -188,7 +188,7 @@ import {
 } from './search.ts';
 import {
 	FULL_TEXT_SEARCH_OPTIONS,
-	FullTextSearchLimitError,
+	isFullTextSearchLimitError,
 	type FullTextSearchEntry,
 } from './indexes/fullTextQueryProtocol.ts';
 import { logger } from '../utility/logging/logger.ts';
@@ -7770,7 +7770,7 @@ export function makeTable(options): TableResourceClass {
 				if (target.count && canCountPage(target)) {
 					const wantExact = target.count === 'exact';
 					const pageEnd = offset + pageLimit;
-					const countStart = performance.now();
+					let countStart = exhaustiveFullText ? undefined : performance.now();
 					// Only an exhaustive full-text traversal can supply an exact custom-index count.
 					const touchesCustomIndex = (conds: any[]): boolean =>
 						conds.some((c: any) => {
@@ -7790,6 +7790,7 @@ export function makeTable(options): TableResourceClass {
 						let fullTextLimitExceeded = false;
 						try {
 							for await (const record of results) {
+								countStart ??= performance.now();
 								if (scanned >= offset && scanned < pageEnd) page.push(record);
 								scanned++;
 								// A store whose async iterator settles synchronously (the common indexed-scan case) would
@@ -7812,7 +7813,7 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 						} catch (error) {
-							if (exhaustiveFullText && !fullTextOrder && error instanceof FullTextSearchLimitError)
+							if (exhaustiveFullText && !fullTextOrder && isFullTextSearchLimitError(error))
 								fullTextLimitExceeded = true;
 							else throw error;
 						} finally {
