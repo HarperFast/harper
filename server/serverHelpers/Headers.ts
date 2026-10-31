@@ -79,13 +79,57 @@ export function addVaryHeader(
 		return;
 	}
 	const existingString = Array.isArray(existing) ? existing.join(', ') : existing;
-	const lowerToken = token.toLowerCase();
-	for (const part of existingString.split(',')) {
+	const covered =
+		isAscii(existingString) && isAscii(token)
+			? asciiVaryCovers(existingString, token)
+			: varyCovers(existingString, token.toLowerCase());
+	if (!covered) headers.set('Vary', existingString + ', ' + token);
+}
+
+// a `Vary: *` already covers every dimension, and an exact token match is a no-op
+function varyCovers(vary: string, lowerToken: string): boolean {
+	for (const part of vary.split(',')) {
 		const trimmed = part.trim().toLowerCase();
-		// a `Vary: *` already covers every dimension, and an exact token match is a no-op
-		if (trimmed === lowerToken || trimmed === '*') return;
+		if (trimmed === lowerToken || trimmed === '*') return true;
 	}
-	headers.set('Vary', existingString + ', ' + token);
+	return false;
+}
+
+// varyCovers without the split/trim/lowercase temporaries; ASCII-only, where trim() and toLowerCase() act per character
+function asciiVaryCovers(vary: string, token: string): boolean {
+	const length = vary.length;
+	const tokenLength = token.length;
+	let start = 0;
+	while (start <= length) {
+		let end = vary.indexOf(',', start);
+		if (end === -1) end = length;
+		let partStart = start;
+		let partEnd = end;
+		while (partStart < partEnd && isAsciiWhitespace(vary.charCodeAt(partStart))) partStart++;
+		while (partEnd > partStart && isAsciiWhitespace(vary.charCodeAt(partEnd - 1))) partEnd--;
+		const partLength = partEnd - partStart;
+		if (partLength === 1 && vary.charCodeAt(partStart) === 42 /* * */) return true;
+		if (partLength === tokenLength) {
+			let i = 0;
+			while (i < tokenLength && asciiLower(vary.charCodeAt(partStart + i)) === asciiLower(token.charCodeAt(i))) i++;
+			if (i === tokenLength) return true;
+		}
+		start = end + 1;
+	}
+	return false;
+}
+
+function isAscii(string: string): boolean {
+	for (let i = 0; i < string.length; i++) if (string.charCodeAt(i) > 127) return false;
+	return true;
+}
+
+function isAsciiWhitespace(code: number): boolean {
+	return code === 32 || (code >= 9 && code <= 13);
+}
+
+function asciiLower(code: number): number {
+	return code >= 65 && code <= 90 ? code + 32 : code;
 }
 
 export function appendHeader(headers, name, value, commaDelimited) {
