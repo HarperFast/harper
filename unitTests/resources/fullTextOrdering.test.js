@@ -450,6 +450,42 @@ describe('published full-text ordering and exact counts', () => {
 		assert.strictEqual(emptyPage.length, 3);
 		assert(emptyPage.every((entry) => entry.$highlights === undefined));
 	});
+	it('validates linked sort width and stored-field eligibility before evaluating text matches', async () => {
+		const Related = table({
+			database: `fulltext-ordering-related-${Date.now()}-${serial++}`,
+			table: 'Related',
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+		});
+		await seed(
+			[
+				{ id: 'a', title: 'widget', price: 2 },
+				{ id: 'b', title: 'widget', price: 1 },
+			],
+			[
+				{ name: 'computed', type: 'String', computed: true },
+				{ name: 'expression', type: 'String', computed: {}, computedFromExpression: 'title.toUpperCase()' },
+				{ name: 'blob', type: 'Blob' },
+				{ name: 'relatedId', type: 'ID' },
+				{ name: 'related', type: 'Related', relationship: { from: 'relatedId' }, definition: { tableClass: Related } },
+			]
+		);
+		Product.setComputedAttribute('computed', (record) => record.title);
+		const linked = (width) =>
+			Array.from({ length: width }).reduceRight((next) => ({ attribute: 'price', next }), undefined);
+		assert.deepStrictEqual(ids(await collect(Product.search(query({ sort: linked(32) })))), ['b', 'a']);
+		for (const value of ['widget', 'absent']) {
+			await assert.rejects(
+				async () => collect(Product.search(query({ conditions: [condition({ value })], sort: linked(33) }))),
+				(error) => error.statusCode === 400 && /at most 32/.test(error.message)
+			);
+			for (const attribute of ['computed', 'expression', 'blob', 'related', ['title', 'nested'], 'catalogSearch'])
+				await assert.rejects(
+					async () => collect(Product.search(query({ conditions: [condition({ value })], sort: { attribute } }))),
+					(error) => error.statusCode === 400 && /directly stored/.test(error.message)
+				);
+		}
+	});
+
 	it('rejects vector-distance ordering even when the text query has no matches', async () => {
 		await seed([{ id: 'a', title: 'widget' }], [{ name: 'vector', type: 'Array', indexed: { type: 'HNSW' } }]);
 		assert.strictEqual(typeof Product.indices.vector.customIndex.exactDistance, 'function');

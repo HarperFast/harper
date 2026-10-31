@@ -4,6 +4,7 @@ This directory contains single-node storage and throughput benchmarks for Harper
 
 | Benchmark          | File                              | What it measures                                                                                            |
 | ------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Full-text search   | `fulltext-sort-cost.cjs`          | Stored-key sorting and optional native query latency; [method](fulltext-sort-cost.md)                       |
 | YCSB               | `ycsb/`                           | Standard CRUD workloads (A–F) across the REST interface                                                     |
 | HNSW search        | `hnsw-search.js`                  | In-memory vector index search latency and recall                                                            |
 | **Indexed-write**  | `indexed-write/`                  | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                                                  |

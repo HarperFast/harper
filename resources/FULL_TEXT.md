@@ -152,6 +152,13 @@ A stored-field sort must examine the complete eligible matching set before apply
 
 The existing `count: 'exact'` option computes a total from the complete eligible set when a bounded page fits the count guardrails. REST exposes this through `Prefer: count=exact` on mounts configured with `rest: { exactCount: true }`. Totals include ordinary conditions, row guards, current source-version checks and expiry. For unsorted counts, Harper secures the bounded page and its highlights first, then counts the remaining eligible matches in the same reader lease. Count-only work, time or native admission limits return that page with an unknown total (`Content-Range: items …/*`). Sorting still requires complete enumeration and cannot use that fallback. Cancellation and other execution failures remain errors.
 
+For example, on an exact-count-enabled mount, return the first 20 matches in descending ID order with the existing count header:
+
+```text
+GET /Product/?catalogSearch=matches=trail%20shoes&sort(-id)&limit(0,20)
+Prefer: count=exact
+```
+
 Highlight tracing precedes final Table materialization. If a selected row expires during that interval, a retained tail row can move into the visible page without highlights. This timing-dependent limitation is tracked in [Preserve full-text highlights when expiry changes the final visible page](https://github.com/HarperFast/harper/issues/3848).
 
 Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. Ordinary bounded relevance searches retain up to `offset + limit` accepted records. Stored-field sorts and exact-count attempts can retain the complete eligible set up to the configured retained-result ceiling, so raising that ceiling can increase memory use. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
