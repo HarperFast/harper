@@ -7565,9 +7565,10 @@ export function makeTable(options): TableResourceClass {
 			) {
 				if ((target as any).reverse)
 					throw new ClientError('Full-text reverse is not supported; use an explicit stored-field sort', 400);
-				if (sort && (sort.attribute !== '$score' || sort.next))
-					fullTextOrder = fullTextResultOrder(sort, context, target);
-				else if (sort && sort.descending !== true)
+				if (sort && (sort.attribute !== '$score' || sort.next)) {
+					const order = fullTextResultOrder(sort, context, target);
+					if (target.limit !== 0) fullTextOrder = order;
+				} else if (sort && sort.descending !== true)
 					throw new ClientError('Full-text $score sorts must be descending', 400);
 				exhaustiveFullText =
 					Boolean(fullTextOrder) ||

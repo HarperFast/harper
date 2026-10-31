@@ -579,6 +579,19 @@ export class FullTextQueryIndex {
 						if (traversal.skip === 0) traversal.prefix = undefined;
 						if (replayedHits > 0) result = { ...result, hits: replay.hits };
 					}
+					// The first traversal page replays this prefix before reaching new hits.
+					if (
+						options.exhaustive &&
+						!optionalCount &&
+						!traversal &&
+						result.totalRelation === 'exact' &&
+						result.total > result.hits.length &&
+						result.total + result.hits.length > rawHitLimit
+					)
+						throw fullTextSearchLimitError(
+							'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
+							400
+						);
 					if (!options.exhaustive && !bounded && result.totalRelation === 'exact' && result.total > searchWindow)
 						throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
 					if (previousHit && result.hits.length > 0 && !fullTextHitsAdvance(previousHit, result.hits[0]))
@@ -742,7 +755,13 @@ export class FullTextQueryIndex {
 			if (optionalCount && moreMayExist && accepted.length >= target) incompleteCount = true;
 			if (incompleteCount) options.onIncompleteCount?.();
 			if (!bounded && moreMayExist)
-				throw unboundedSearchLimitError(target, searchWindow, rawHitLimit, Boolean(options.orderResults));
+				throw unboundedSearchLimitError(
+					target,
+					searchWindow,
+					rawHitLimit,
+					Boolean(options.orderResults),
+					policy.maxResultsPerRequest
+				);
 			if (options.exhaustive && !optionalCount) {
 				options.orderResults?.(accepted);
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
@@ -1492,14 +1511,17 @@ function unboundedSearchLimitError(
 	target: number,
 	searchWindow: number,
 	rawHitLimit: number,
-	ordered = false
+	ordered = false,
+	retainedResultLimit = Infinity
 ): ClientError {
 	const bound =
-		ordered || target < searchWindow
-			? target === rawHitLimit
-				? 'storage.fullText.maxRawHitsPerRequest'
-				: 'storage.fullText.maxResultsPerRequest'
-			: `the ${searchWindow}-result search window`;
+		ordered && target === rawHitLimit && target === retainedResultLimit
+			? 'storage.fullText.maxRawHitsPerRequest and storage.fullText.maxResultsPerRequest'
+			: ordered || target < searchWindow
+				? target === rawHitLimit
+					? 'storage.fullText.maxRawHitsPerRequest'
+					: 'storage.fullText.maxResultsPerRequest'
+				: `the ${searchWindow}-result search window`;
 	return fullTextSearchLimitError(
 		ordered
 			? `Stored-field full-text ordering exceeds ${bound}; narrow the query or increase the relevant budget`

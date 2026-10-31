@@ -237,6 +237,37 @@ describe('published full-text ordering and exact counts', () => {
 			(error) =>
 				isFullTextSearchLimitError(error) && error.constructor.name === 'ClientError' && error.statusCode === 400
 		);
+		assert.deepStrictEqual(await collect(Product.search(query({ sort: { attribute: 'price' }, limit: 0 }))), []);
+		await assert.rejects(
+			async () => collect(Product.search(query({ sort: { attribute: 'missing' }, limit: 0 }))),
+			(error) => error.statusCode === 400
+		);
+		const emptyCount = await Product.search(query({ sort: { attribute: 'price' }, limit: 0, count: 'exact' }));
+		assert.strictEqual(emptyCount.length, 0);
+		assert.strictEqual(emptyCount.recordCount, null);
+		assert.strictEqual(emptyCount.recordCountExact, false);
+		let policyCalls = 0;
+		await assert.rejects(
+			async () =>
+				collect(
+					Product.search(
+						query({
+							sort: { attribute: 'price' },
+							limit: 1,
+							rowFilter: () => {
+								policyCalls++;
+								return true;
+							},
+						})
+					)
+				),
+			(error) =>
+				isFullTextSearchLimitError(error) &&
+				error.statusCode === 400 &&
+				/maxRawHitsPerRequest/.test(error.message) &&
+				!error.message.includes('4')
+		);
+		assert.strictEqual(policyCalls, 0);
 		const page = await Product.search(query({ count: 'exact', limit: 1 }));
 		assert.strictEqual(page.length, 1);
 		assert.strictEqual(page.recordCount, null);
