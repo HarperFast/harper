@@ -244,6 +244,18 @@ Two consequences that are easy to miss:
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
 
+## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
+
+`request.session.update` and `request.login` are `updateSession` / `loginWithSession` bound to one
+per-request `SessionState`, installed after the stored session fields are copied (so a stored `update`
+field is still overwritten), and they work detached or copied, as the closures they replaced did. They
+must not go back to `request.login = async function …`: V8's parser pretenures a function literal assigned
+to a property (`CheckAssigningFunctionLiteralToProperty`, `deps/v8/src/parsing/parser.h`), so the closure is
+born in old space and keeps its young function context, and everything that context reaches (the request,
+its headers, the response), alive across every scavenge until the next major GC. On a warm REST GET those
+two closures promoted ~1.8 KB per request and nearly tripled major GCs. The same holds for any per-request
+or per-write path: assign a function literal to a local first, or bind a module function. The helpers' behavior is covered by `unitTests/security/authSessions.test.js`.
+
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
 There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:
