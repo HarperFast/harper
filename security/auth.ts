@@ -411,6 +411,7 @@ export async function authentication(request, nextHandler) {
 		}
 		if (ENABLE_SESSIONS) {
 			sessionState = { request, headers, sessionId, origin, responseHeaders, response: undefined };
+			// bound rather than closures assigned to a property: security/DESIGN.md
 			request.session.update = updateSession.bind(sessionState);
 			request.login = loginWithSession.bind(sessionState);
 		}
@@ -515,7 +516,6 @@ function authAuditLog(request, sessionId: string | undefined, username, status, 
 	else authEventLog.error?.(log);
 }
 
-// Bound to the session helpers rather than closed over: see security/DESIGN.md.
 interface SessionState {
 	request: any;
 	headers: any;

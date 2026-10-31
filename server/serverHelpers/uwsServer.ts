@@ -477,7 +477,8 @@ function streamResponse(
 	source.once('close', () => fail());
 }
 
-const HEX_PAIRS = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, '0'));
+const HEX_DIGITS = Buffer.from('0123456789abcdef');
+const ipv6Text = Buffer.alloc(39, ':');
 // This thread's previous peer, so a keep-alive client's requests share one address string.
 const lastPeer = new Uint8Array(16);
 let lastPeerLength = -1;
@@ -507,9 +508,13 @@ function isLastPeer(bytes: Uint8Array): boolean {
 function formatPeerAddress(bytes: Uint8Array): string {
 	const offset = ipv4Offset(bytes);
 	if (offset >= 0) return `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
-	let text = '';
-	for (let i = 0; i < bytes.length; i += 2) text += (i ? ':' : '') + HEX_PAIRS[bytes[i]] + HEX_PAIRS[bytes[i + 1]];
-	return text;
+	if (bytes.length !== 16) return '';
+	for (let i = 0, j = 0; i < 16; i++) {
+		if (i && !(i & 1)) j++; // past the ':'
+		ipv6Text[j++] = HEX_DIGITS[bytes[i] >> 4];
+		ipv6Text[j++] = HEX_DIGITS[bytes[i] & 15];
+	}
+	return ipv6Text.toString('latin1');
 }
 
 function ipv4Offset(bytes: Uint8Array): number {

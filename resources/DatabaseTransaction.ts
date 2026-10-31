@@ -2742,11 +2742,7 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 
-	/**
-	 * Whether the scope's final commit has nothing left to do but release the read snapshot: nothing was
-	 * ever staged here and no commit attempt, chained store or retained reader depends on this link.
-	 * Each condition is a state performCommit() treats specially; a state it gains must be excluded here.
-	 */
+	/** Each condition is a state performCommit() treats specially; a state it gains must be excluded here. */
 	private endsScopeUnwritten(options: CommitOptions): boolean {
 		const handle = this.transaction;
 		return (
@@ -2999,6 +2995,7 @@ export class DatabaseTransaction implements Transaction {
 		return Boolean((this.root ?? this).committingWrites) && this.isChainCommitting();
 	}
 
+	// A state this handles specially must also send a final commit away from endsScopeUnwritten()'s fast path.
 	protected performCommit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction

@@ -1,7 +1,3 @@
-/**
- * A uWS request's cancellation and peer address (server/serverHelpers/uwsServer.ts, Request.ts
- * UwsRequest), from a real client socket through to a request transaction's writes.
- */
 require('../../testUtils');
 const assert = require('node:assert');
 const net = require('node:net');
@@ -55,7 +51,6 @@ function get(port, options = {}) {
 	});
 }
 
-// the socket closes while the handler is still running
 async function disconnectDuring(port, entered) {
 	const socket = net.connect({ host: '127.0.0.1', port });
 	await within(once(socket, 'connect'), 'the connection');
@@ -148,10 +143,13 @@ async function disconnectDuring(port, entered) {
 					() => ({ fulfilled: true }),
 					(error) => ({ statusCode: error.statusCode })
 				));
-			await disconnectDuring(port, entered.promise);
-			const request = await within(entered.promise, 'the handler to start');
-			await waitFor(() => request.isAborted, 5000);
-			gate.resolve();
+			try {
+				await disconnectDuring(port, entered.promise);
+				const request = await within(entered.promise, 'the handler to start');
+				await waitFor(() => request.isAborted, 5000);
+			} finally {
+				gate.resolve();
+			}
 			assert.deepStrictEqual(await within(outcome, 'the transaction outcome'), { statusCode: 499 });
 			assert.ok(!readBefore, 'premise: the record did not exist');
 			assert.ok(!(await CancelTable.get(1)), 'the refused write left nothing');
@@ -171,11 +169,14 @@ async function disconnectDuring(port, entered) {
 					() => ({ fulfilled: true }),
 					(error) => ({ statusCode: error.statusCode })
 				));
-			await disconnectDuring(port, entered.promise);
-			await waitFor(() => scopeTxn.disconnected, 5000);
-			// the staged write's intent is gone, so a competing write to the same key commits now
-			await CancelTable.put(2, { name: 'competing' });
-			gate.resolve();
+			try {
+				await disconnectDuring(port, entered.promise);
+				await waitFor(() => scopeTxn.disconnected, 5000);
+				// the staged write's intent is gone, so a competing write to the same key commits now
+				await within(CancelTable.put(2, { name: 'competing' }), 'the competing write');
+			} finally {
+				gate.resolve();
+			}
 			assert.deepStrictEqual(await within(outcome, 'the transaction outcome'), { statusCode: 499 });
 			assert.strictEqual((await CancelTable.get(2)).name, 'competing');
 		});

@@ -13,8 +13,6 @@ const { transaction } = require('#src/resources/transaction');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// A scope that staged nothing finishes without entering performCommit(); every state the general path
-// treats specially must still take it.
 (isLMDB ? describe.skip : describe)('Read-only commit of a request transaction', () => {
 	let ReadOnlyTable, OtherDbTable;
 	before(async function () {
