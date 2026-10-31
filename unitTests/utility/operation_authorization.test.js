@@ -27,6 +27,7 @@ const PermissionTableResponseObject = require('#src/security/data_objects/Permis
 const PermissionAttributeResponseObject =
 	require('#src/security/data_objects/PermissionAttributeResponseObject').default;
 const { TEST_SCHEMA_OP_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
+const { HDB_ERROR_MSGS } = require('#src/utility/errors/commonErrors');
 
 // rewire() bypasses the require cache and re-executes serverUtilities' module body in an isolated
 // instance so we can reach its private initializeOperationFunctionMap(). But that module body also
@@ -630,6 +631,28 @@ describe('Test operation_authorization', function () {
 					null,
 					sql
 				);
+			}
+		});
+
+		it('refuses a wildcard that expands into an attribute named `_`', function () {
+			const req_json = getRequestJson(TEST_JSON);
+			req_json.hdb_user.role.permission.dev.tables.dog.read = true;
+			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = ATTRIBUTE_PERMISSION_BASE(
+				['_'],
+				crud_keys.READ,
+				true
+			);
+			const attributes = global.hdb_schema.dev.dog.attributes;
+			attributes.push({ attribute: '_' });
+			try {
+				const result = op_auth_rewire.verifyPermsAST(
+					alasql.parse('SELECT * FROM dev.dog').statements[0],
+					req_json.hdb_user,
+					search.search.name
+				);
+				assert.deepEqual(result?.unauthorized_access, [HDB_ERROR_MSGS.SQL_ROW_ACCESSOR]);
+			} finally {
+				attributes.pop();
 			}
 		});
 
