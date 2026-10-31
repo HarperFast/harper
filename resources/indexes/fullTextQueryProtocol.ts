@@ -6,6 +6,9 @@ import type {
 	NativeFullTextSearchExpression,
 } from './fullTextNativeBinding.ts';
 
+export const FULLTEXT_SCORING_NATIVE_ABI_VERSION = 14;
+export const FULLTEXT_SCORING_QUERY_API_VERSION = 8;
+
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
 export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
 
@@ -166,7 +169,7 @@ export function validateFullTextScoringRuntime(
 	expression: NativeFullTextSearchExpression,
 	queryApiVersion: number | undefined
 ): void {
-	if (queryApiVersion !== 8 && fullTextExpressionUsesScoring(expression))
+	if (queryApiVersion !== FULLTEXT_SCORING_QUERY_API_VERSION && fullTextExpressionUsesScoring(expression))
 		throw new ClientError(
 			'Query scoring requires a full-text wrapper with query API 8; the installed wrapper does not support scoring controls',
 			400
