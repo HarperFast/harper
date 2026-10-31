@@ -323,6 +323,52 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			}
 		});
 
+		it('rejects a parent by the related key alone, loading no related record, when other conditions share the relationship', async function () {
+			const reads = spyPrimaryReads(ColdChild);
+			try {
+				for (const name of ['linkedChildren']) {
+					clearValueMap(ColdChild);
+					const rows = await collect(
+						Parent.search({
+							conditions: [
+								{ attribute: 'group', value: 'g1' },
+								{ attribute: [name, 'id'], value: 'nobody' },
+								{ attribute: [name, 'label'], comparator: 'starts_with', value: 'match' },
+							],
+							enforceExecutionOrder: true,
+							select: ['id'],
+						})
+					);
+					assert.deepStrictEqual(rows, [], name);
+				}
+				assert.strictEqual(reads.sync + reads.async, 0);
+				// a key that matches does not bypass the other conditions on the same related record
+				for (const [prefix, expected] of [
+					['match', ['parent-1']],
+					['zzz', []],
+				])
+					assert.deepStrictEqual(
+						(
+							await collect(
+								Parent.search({
+									conditions: [
+										{ attribute: 'group', value: 'g1' },
+										{ attribute: ['linkedChildren', 'id'], value: 'c2' },
+										{ attribute: ['linkedChildren', 'label'], comparator: 'starts_with', value: prefix },
+									],
+									enforceExecutionOrder: true,
+									select: ['id'],
+								})
+							)
+						).map((row) => row.id),
+						expected,
+						prefix
+					);
+			} finally {
+				reads.restore();
+			}
+		});
+
 		it('sibling conditions met only by different children do not match the parent', async function () {
 			const rows = await collect(
 				Parent.search({

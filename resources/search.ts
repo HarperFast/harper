@@ -2011,6 +2011,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				return;
 			}
 			if (shared) {
+				if (resolver?.to) nextFilter.to = resolver.to;
 				// the first checks the whole set so the conditions meet one related record, as a leading join does
 				shared.filters.push(nextFilter);
 				if (shared.registered) return;
@@ -2019,43 +2020,56 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
-			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
-			const usesIdFilter = () =>
-				nextFilter.idFilter &&
-				(!shared || shared.filters.length === 1) &&
-				(!resolver.to || nextFilter.idFilter.mappedTo);
+			// a condition on the related key tests this record's `from` (or key) without loading the related record:
+			// a `to` relationship's id filter must be mapped through `to`
+			const idSource = () => {
+				if (!resolver) return;
+				if (!shared)
+					return nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo) ? nextFilter : undefined;
+				for (const filter of shared.filters)
+					if (filter.idFilter && (!resolver.to || filter.idFilter.mappedTo)) return filter;
+			};
+			const keyTest = (source) => {
+				if (!subIdFilter) {
+					// an array of foreign keys is tested per element; a single key (which may be a composite array) whole
+					const allowObjectMatching = Boolean(resolver.to) || !resolver.toMany;
+					if (source.idFilter.idSet?.size === 1) {
+						// if there is a single id we are looking for, we can create a new search condition that the
+						// attribute comparator could eventually use to create a recursive id set
+						// TODO: Eventually we should be able to handle multiple ids by creating a union
+						searchCondition = {
+							attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+							value: source.idFilter.onlyId,
+						};
+						subIdFilter = attributeComparator(
+							resolver.from ?? Table.primaryKey,
+							source.idFilter,
+							true,
+							allowObjectMatching
+						);
+					} else
+						subIdFilter = attributeComparator(
+							resolver.from ?? Table.primaryKey,
+							source.idFilter,
+							false,
+							allowObjectMatching
+						);
+				}
+				return subIdFilter;
+			};
+			// with sibling conditions the key test only rejects; the whole set still decides
+			const decidedByKey = () => !shared || shared.filters.length === 1;
 			const matchesRelated = shared ? (value, entry) => everyFilter(shared.filters, value, entry) : nextFilter;
 			const recordFilter = (record, entry) => {
-				if (resolver && usesIdFilter()) {
-					// if we are filtering by id, we can use the idFilter to avoid loading the record
-					if (!subIdFilter) {
-						// an array of foreign keys is tested per element; a single key (which may be a composite array) whole
-						const allowObjectMatching = Boolean(resolver.to) || !resolver.toMany;
-						if (nextFilter.idFilter.idSet?.size === 1) {
-							// if there is a single id we are looking for, we can create a new search condition that the
-							// attribute comparator could eventually use to create a recursive id set
-							// TODO: Eventually we should be able to handle multiple ids by creating a union
-							searchCondition = {
-								attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-								value: nextFilter.idFilter.onlyId,
-							};
-							subIdFilter = attributeComparator(
-								resolver.from ?? Table.primaryKey,
-								nextFilter.idFilter,
-								true,
-								allowObjectMatching
-							);
-						} else
-							subIdFilter = attributeComparator(
-								resolver.from ?? Table.primaryKey,
-								nextFilter.idFilter,
-								false,
-								allowObjectMatching
-							);
+				const source = idSource();
+				if (source) {
+					const test = keyTest(source);
+					const matches = test(record);
+					if (decidedByKey()) {
+						if ((test as any).idFilter) (recordFilter as any).idFilter = (test as any).idFilter;
+						return matches;
 					}
-					const matches = subIdFilter(record);
-					if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
-					return matches;
+					if (!matches) return false;
 				}
 				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
@@ -2072,7 +2086,11 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					return someRelatedMatch(loaded, nextMatch, 0);
 				};
 				(recordFilter as any).maybeAsync = (record, entry) => {
-					if (usesIdFilter()) return recordFilter(record, entry);
+					const source = idSource();
+					if (source) {
+						if (decidedByKey()) return recordFilter(record, entry);
+						if (!keyTest(source)(record)) return false;
+					}
 					const loaded = loadEntries(record, context);
 					return loaded?.then ? loaded.then(matchLoaded) : matchLoaded(loaded);
 				};
