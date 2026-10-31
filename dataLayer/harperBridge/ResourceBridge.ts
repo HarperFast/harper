@@ -81,6 +81,7 @@ export type SearchByConditionsRequest = Query &
  */
 export class ResourceBridge extends BridgeMethods {
 	async searchByConditions(searchObject: SearchByConditionsRequest) {
+		validateFullTextScoringOptions(searchObject);
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 
 		const table = getTable(searchObject);
