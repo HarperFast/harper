@@ -1,4 +1,5 @@
 const { materializePerPidRoot, removePerPidRoot } = require('../../perPidRoot.js');
+const { basename } = require('node:path');
 process.env.ROOTPATH = materializePerPidRoot();
 process.on('exit', removePerPidRoot);
 
@@ -19,7 +20,7 @@ async function run() {
 		if (!startupOnly) throw new Error('Startup passed the invalid V8 sentinel');
 		const nativeLoadedAtStartup = process.report
 			.getReport()
-			.sharedObjects.some((file) => /fulltext.*\.node$/i.test(file));
+			.sharedObjects.some((file) => /^fulltext(?:\..*)?\.node$/i.test(basename(file)));
 		let nativeUnavailable = false;
 		try {
 			await (await import('@harperfast/fulltext/native')).runtimeInfo();
