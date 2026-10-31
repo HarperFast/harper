@@ -174,6 +174,7 @@ import {
 	releaseRelatedLeases,
 	findAttribute,
 	estimateCondition,
+	conditionDrivesIndex,
 	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
@@ -7534,8 +7535,23 @@ export function makeTable(options): TableResourceClass {
 				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering.
 				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
 				// order for their query.
-				if (conditions.length > 1 && operator !== 'or') return sortBy(conditions, estimateCondition(TableResource));
-				else return conditions;
+				if (conditions.length > 1 && operator !== 'or') {
+					const ordered = sortBy(conditions, estimateCondition(TableResource));
+					// a leading sort streams a sorted page, so it keeps the lead (resources/DESIGN.md, estimator and lead rules)
+					const streamsSort =
+						ordered[0] === syntheticOrderCondition ||
+						(ordered[0] === orderAlignedCondition && target.allowFullScan !== false);
+					if (!streamsSort) {
+						let lead = 0;
+						while (lead < ordered.length && !conditionDrivesIndex(TableResource, ordered[lead])) lead++;
+						if (lead > 0 && lead < ordered.length) {
+							const driving = ordered[lead];
+							for (let i = lead; i > 0; i--) ordered[i] = ordered[i - 1];
+							ordered[0] = driving;
+						}
+					}
+					return ordered;
+				} else return conditions;
 			}
 			const operator = target.operator;
 			const prepared = TableResource._prepareQueryConditions(conditions, operator, target, context);
@@ -7906,19 +7922,28 @@ export function makeTable(options): TableResourceClass {
 			).conditions;
 			for (let sort = typeof attribute.sort === 'object' && attribute.sort; sort; sort = sort.next)
 				targetTable._assertNestedReadAccess(sort.attribute, context, attribute);
-			const compile = (conditions, operator) => {
-				const predicates = conditions.map((condition) => {
-					if (condition.conditions) return compile(condition.conditions, condition.operator);
+			// conditions of one AND on a relationship meet the same related record, as in a top-level query
+			const compile = (conditions, operator, scope: any = operator === 'or' ? null : Object.create(null)) => {
+				const predicates = [];
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						const union = condition.operator === 'or';
+						predicates.push(
+							compile(condition.conditions, condition.operator, union ? null : (scope ?? Object.create(null)))
+						);
+						continue;
+					}
 					const predicate = filterByType(
 						condition,
 						targetTable,
 						context,
-						null,
+						scope,
 						(condition.attribute ?? condition[0]) === targetTable.primaryKey
 					);
-					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
-					return predicate;
-				});
+					if (predicate) predicates.push(predicate);
+					else if (!scope || !Array.isArray(condition.attribute ?? condition[0]))
+						throw new ClientError('This predicate is not supported in a relationship selection');
+				}
 				const any = operator === 'or';
 				const combined: any = any
 					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
@@ -7941,7 +7966,6 @@ export function makeTable(options): TableResourceClass {
 			let selectionStopped = false;
 			const relationshipSelection = (record, entry?, isSync = false) => {
 				if (selectionStopped) return undefined;
-				// per call: an OR-scope condition registers its restriction while the first row is filtered
 				const filterMap: any = relationshipRestriction(filtered, attribute.name);
 				const readsKeys =
 					!isSync && (filterMap ? !filterMap.hasMappings && resolver.toMany : Boolean(resolver.resolveKeys));
