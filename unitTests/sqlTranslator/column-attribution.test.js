@@ -229,6 +229,12 @@ describe('SQL column attribution for attribute permissions', () => {
 			assert.deepStrictEqual(literal.getWriteStatementReads().attributes, []);
 		});
 
+		it('checks DELETE predicates only for read, so the primary key stays exempt', () => {
+			const remove = bucketFor(`DELETE FROM data.L WHERE id = 'x' AND ssn = '1'`);
+			assert.deepStrictEqual(attributesOf(remove, 'data', 'L'), []);
+			assert.deepStrictEqual(remove.getWriteStatementReads().attributes, ['ssn']);
+		});
+
 		it('lists nothing for a SELECT or INSERT', () => {
 			assert.strictEqual(bucketFor('SELECT label FROM data.L').getWriteStatementReads(), undefined);
 			assert.strictEqual(bucketFor("INSERT INTO data.L (id) VALUES ('x')").getWriteStatementReads(), undefined);

@@ -291,13 +291,12 @@ describe('Test sql_statement_bucket Class', () => {
 	});
 
 	describe(`Test getDeleteAttributes`, function () {
-		it('Nominal, pull attributes in delete statement', function () {
+		it('registers the table but no WHERE columns, which are checked for read instead', function () {
 			let getDeleteAttributes = sql_statement_rewire.__get__('getDeleteAttributes');
-			//let statement = new sql_statement_bucket(TEST_DELETE);
 			let statement = new Map();
 			let table_lookup = new Map();
 			getDeleteAttributes(TEST_DELETE, statement, table_lookup);
-			assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 2);
+			assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 0);
 			assert.equal(Array.from(statement.get(SCHEMA_NAME).keys()).length, 1);
 			assert.equal(Array.from(statement.keys()).length, 1);
 		});

@@ -708,13 +708,9 @@ function getDeleteAttributes(ast: any, affectedAttributes: any, tableLookup: any
 		harperLogger.info(`getDeleteAttributes: invalid SQL syntax tree`);
 		return;
 	}
-	let schema = ast.table.databaseid;
-
 	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
-	for (const node of columnNodes(ast.where)) {
-		pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
-	}
+	// DELETE writes no attribute; what WHERE reads needs read (getWriteStatementReads()), primary key exempt.
 	reportForeignQualifiers(ast, [ast.where], unresolvedColumns);
 }
 
