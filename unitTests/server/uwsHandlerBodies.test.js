@@ -7,7 +7,6 @@ const { httpServer, makeUwsHandler } = require('#src/server/http');
 
 let nextPort = 19620;
 
-// The body the uWS handler hands the adapter for each kind of body a handler returns.
 describe('uWS handler response bodies', function () {
 	function handlerReturning(body) {
 		const port = nextPort++;

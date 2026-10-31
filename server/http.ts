@@ -1345,12 +1345,6 @@ export function makeUwsHandler(
 }
 
 /**
- * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
- * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
- * stream it incrementally (buffering an SSE/event-stream body here would never return). A client
- * disconnect stops the collapse of a sync iterable.
- */
-/**
  * Drive a `send` SendStream to completion against a Writable shim, capturing the headers it writes
  * (setHeader/writeHead) onto `headers` and the status it sets (statusCode/writeHead) and buffering
  * the file body. `send` targets an http.ServerResponse (setHeader/writeHead/statusCode/finished);
@@ -1411,6 +1405,12 @@ function isFinalUwsBody(body: unknown): body is string | Uint8Array {
 	return typeof body === 'string' || body instanceof Uint8Array;
 }
 
+/**
+ * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
+ * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
+ * stream it incrementally (buffering an SSE/event-stream body here would never return). A client
+ * disconnect stops the collapse of a sync iterable.
+ */
 async function normalizeUwsBody(
 	body: any,
 	request: { readonly isAborted: boolean }

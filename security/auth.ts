@@ -437,7 +437,6 @@ export async function authentication(request, nextHandler) {
 	} catch (error) {
 		throw applyResponseHeaders(error);
 	} finally {
-		// from here on a session update sets its headers on the response itself
 		if (sessionState) sessionState.responseHeaders = null;
 	}
 	function applyResponseHeaders(response) {
@@ -516,7 +515,7 @@ function authAuditLog(request, sessionId: string | undefined, username, status, 
 	else authEventLog.error?.(log);
 }
 
-/** What a request's `session.update()` and `login()` act on, bound to them so they work detached. */
+// Bound to the session helpers rather than closed over: see security/DESIGN.md.
 interface SessionState {
 	request: any;
 	headers: any;

@@ -2745,7 +2745,7 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Whether the scope's final commit has nothing left to do but release the read snapshot: nothing was
 	 * ever staged here and no commit attempt, chained store or retained reader depends on this link.
-	 * Each condition is a state the general path treats specially, so any of them sends the commit there.
+	 * Each condition is a state performCommit() treats specially; a state it gains must be excluded here.
 	 */
 	private endsScopeUnwritten(options: CommitOptions): boolean {
 		const handle = this.transaction;
@@ -2774,7 +2774,7 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 
-	/** What the general path does to a link endsScopeUnwritten() accepts, without its attempt bookkeeping. */
+	/** Must leave the link as performCommit() would for one endsScopeUnwritten() accepts. */
 	private finishUnwrittenScope(): CommitResolution {
 		this.open = TRANSACTION_STATE.CLOSED;
 		const transaction = this.detachOwnedTransaction();

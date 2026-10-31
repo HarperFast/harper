@@ -40,8 +40,6 @@ async function storedSession(cookie) {
 	return databases.system.hdb_session.get(sessionIdOf(cookie));
 }
 
-// The session helpers authentication() installs on a request: what they persist, which response they set
-// the cookie on, and that they keep working however the application holds them.
 describe('authentication session helpers', function () {
 	before(async () => {
 		testUtils.preTestPrep();

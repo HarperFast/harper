@@ -34,6 +34,15 @@ function deferred() {
 	return { promise, resolve };
 }
 
+// mocha's timeout is 0 here, so a cancellation regression must fail rather than wait forever
+function within(promise, what, ms = 5000) {
+	let timer;
+	const deadline = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms);
+	});
+	return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 function get(port, options = {}) {
 	return new Promise((resolve, reject) => {
 		http
@@ -46,12 +55,12 @@ function get(port, options = {}) {
 	});
 }
 
-// Opens a GET and destroys the socket once `entered` resolves, i.e. while the handler is still running.
+// the socket closes while the handler is still running
 async function disconnectDuring(port, entered) {
 	const socket = net.connect({ host: '127.0.0.1', port });
-	await once(socket, 'connect');
+	await within(once(socket, 'connect'), 'the connection');
 	socket.write('GET /item HTTP/1.1\r\nHost: localhost\r\n\r\n');
-	await entered;
+	await within(entered, 'the handler to start');
 	socket.destroy();
 }
 
@@ -96,7 +105,7 @@ async function disconnectDuring(port, entered) {
 			return { status: 200, body: 'late' };
 		};
 		await disconnectDuring(port, entered.promise);
-		await left.promise;
+		await within(left.promise, 'the handler to observe the abort');
 		assert.deepStrictEqual(observed, { aborted: true, reason: 'AbortError' });
 	});
 
@@ -109,7 +118,7 @@ async function disconnectDuring(port, entered) {
 			return aborted.promise.then(() => ({ status: 200 }));
 		};
 		await disconnectDuring(port, entered.promise);
-		assert.strictEqual(await aborted.promise, true);
+		assert.strictEqual(await within(aborted.promise, 'the abort listener'), true);
 	});
 
 	describe('through a request transaction', function () {
@@ -140,10 +149,10 @@ async function disconnectDuring(port, entered) {
 					(error) => ({ statusCode: error.statusCode })
 				));
 			await disconnectDuring(port, entered.promise);
-			const request = await entered.promise;
+			const request = await within(entered.promise, 'the handler to start');
 			await waitFor(() => request.isAborted, 5000);
 			gate.resolve();
-			assert.deepStrictEqual(await outcome, { statusCode: 499 });
+			assert.deepStrictEqual(await within(outcome, 'the transaction outcome'), { statusCode: 499 });
 			assert.ok(!readBefore, 'premise: the record did not exist');
 			assert.ok(!(await CancelTable.get(1)), 'the refused write left nothing');
 		});
@@ -167,7 +176,7 @@ async function disconnectDuring(port, entered) {
 			// the staged write's intent is gone, so a competing write to the same key commits now
 			await CancelTable.put(2, { name: 'competing' });
 			gate.resolve();
-			assert.deepStrictEqual(await outcome, { statusCode: 499 });
+			assert.deepStrictEqual(await within(outcome, 'the transaction outcome'), { statusCode: 499 });
 			assert.strictEqual((await CancelTable.get(2)).name, 'competing');
 		});
 	});

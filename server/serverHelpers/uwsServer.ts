@@ -477,28 +477,41 @@ function streamResponse(
 	source.once('close', () => fail());
 }
 
-// Previous IPv4 peer of this thread, so a keep-alive client's requests share one address string.
-let lastIPv4 = -1;
-let lastIPv4Text = '';
+const HEX_PAIRS = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, '0'));
+// This thread's previous peer, so a keep-alive client's requests share one address string.
+const lastPeer = new Uint8Array(16);
+let lastPeerLength = -1;
+let lastPeerText = '';
 
 /**
  * The peer's address: IPv4, including IPv4-mapped IPv6 on a dual-stack socket, as dotted decimal, and
- * anything else in uWS's own text form. `res` must still be live, and the bytes it returns can be
- * uWS's memory, so they are read here and never kept.
+ * other IPv6 in uWS's own text form. `res` must still be live, and the bytes it returns can be uWS's
+ * memory, so they are compared and copied here and never kept.
  */
 function readPeerAddress(res: UwsResponse): string {
 	const bytes = new Uint8Array(res.getRemoteAddress());
-	const offset = ipv4Offset(bytes);
-	if (offset < 0) return Buffer.from(res.getRemoteAddressAsText()).toString();
-	const ipv4 = ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
-	if (ipv4 !== lastIPv4) {
-		lastIPv4Text = `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
-		lastIPv4 = ipv4;
+	if (!isLastPeer(bytes)) {
+		lastPeerText = formatPeerAddress(bytes);
+		lastPeer.set(bytes);
+		lastPeerLength = bytes.length;
 	}
-	return lastIPv4Text;
+	return lastPeerText;
 }
 
-/** Where an IPv4 address starts in uWS's binary peer address (4 bytes, or 16 for IPv6), or -1. */
+function isLastPeer(bytes: Uint8Array): boolean {
+	if (bytes.length !== lastPeerLength) return false;
+	for (let i = 0; i < bytes.length; i++) if (bytes[i] !== lastPeer[i]) return false;
+	return true;
+}
+
+function formatPeerAddress(bytes: Uint8Array): string {
+	const offset = ipv4Offset(bytes);
+	if (offset >= 0) return `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
+	let text = '';
+	for (let i = 0; i < bytes.length; i += 2) text += (i ? ':' : '') + HEX_PAIRS[bytes[i]] + HEX_PAIRS[bytes[i + 1]];
+	return text;
+}
+
 function ipv4Offset(bytes: Uint8Array): number {
 	if (bytes.length === 4) return 0;
 	if (bytes.length !== 16 || bytes[10] !== 0xff || bytes[11] !== 0xff) return -1;
