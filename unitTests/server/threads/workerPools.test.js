@@ -263,6 +263,26 @@ describe('dedicated worker pools', () => {
 			assert.match(warnings[0], /replication\.threads: 0/);
 		});
 
+		it('is not yet active on a worker, which applies the admitted pools before it binds', async () => {
+			const { Worker } = require('node:worker_threads');
+			const modulePath = require.resolve('#src/server/threads/workerPools');
+			const worker = new Worker(
+				`const { parentPort } = require('node:worker_threads');
+				const pools = require(${JSON.stringify(modulePath)});
+				const before = [pools.isWorkerPoolActive('replication'), pools.isWorkerPoolPending('replication')];
+				pools.admitWorkerPools(['replication']);
+				parentPort.postMessage([before, [pools.isWorkerPoolActive('replication'), pools.isWorkerPoolPending('replication')]]);`,
+				{ eval: true, workerData: { name: 'http', workerPools: [], pendingWorkerPools: ['replication'] } }
+			);
+			const [before, after] = await new Promise((resolve, reject) => {
+				worker.once('message', resolve);
+				worker.once('error', reject);
+			});
+			await worker.terminate();
+			assert.deepStrictEqual(before, [false, true], 'pending: registration-time choices are made as if it will bind');
+			assert.deepStrictEqual(after, [true, false]);
+		});
+
 		it('never applies to an explicit pool', () => {
 			const { setActiveWorkerPools, decideWorkerPools, isWorkerPoolActive, workerPoolDecision } = pools();
 			setActiveWorkerPools(['replication']);

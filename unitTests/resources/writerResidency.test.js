@@ -356,7 +356,6 @@ describe('Writer residency (harper#2257)', () => {
 	});
 
 	describe('deprecated hooks that replication pool workers cannot run', () => {
-		const { poolUnsupportedTablesHere } = require('#src/server/threads/workerPools');
 		const harperLogger = require('#js/utility/logging/harper_logger');
 
 		function capturingWarnings(run) {
@@ -373,7 +372,7 @@ describe('Writer residency (harper#2257)', () => {
 			return warnings;
 		}
 
-		it('warns once per table on setResidency / setResidencyById, records the table, and ignores clearing', () => {
+		it('warns once per table on setResidency / setResidencyById, and the table needs application code only while a hook is set', () => {
 			const ResidencyTable = table({
 				table: 'WriterResidencyDeprecated',
 				database: 'test',
@@ -387,7 +386,7 @@ describe('Writer residency (harper#2257)', () => {
 				}),
 				[]
 			);
-			assert.ok(!poolUnsupportedTablesHere().includes('test.WriterResidencyDeprecated'));
+			assert.ok(!ResidencyTable.requiresApplicationCodeToReplicate());
 			const firstWarnings = capturingWarnings(() => {
 				ResidencyTable.setResidency(fn);
 			});
@@ -397,7 +396,7 @@ describe('Writer residency (harper#2257)', () => {
 			assert.match(firstWarnings[0], /default residency placement/);
 			assert.match(firstWarnings[0], /@sharded/);
 			assert.match(firstWarnings[0], /set replication\.threads: 0 in harper-config\.yaml/);
-			assert.ok(poolUnsupportedTablesHere().includes('test.WriterResidencyDeprecated'));
+			assert.ok(ResidencyTable.requiresApplicationCodeToReplicate());
 
 			assert.deepStrictEqual(
 				capturingWarnings(() => {
@@ -408,6 +407,7 @@ describe('Writer residency (harper#2257)', () => {
 			);
 			ResidencyTable.setResidency(undefined);
 			ResidencyTable.setResidencyById(undefined);
+			assert.ok(!ResidencyTable.requiresApplicationCodeToReplicate(), 'a cleared hook no longer counts');
 
 			const ByIdTable = table({
 				table: 'WriterResidencyDeprecatedById',
@@ -422,7 +422,7 @@ describe('Writer residency (harper#2257)', () => {
 			assert.match(byIdWarnings[0], /invalidation entries \(residency partials\)/);
 			assert.match(byIdWarnings[0], /@sharded/);
 			assert.match(byIdWarnings[0], /set replication\.threads: 0 in harper-config\.yaml/);
-			assert.ok(poolUnsupportedTablesHere().includes('test.WriterResidencyDeprecatedById'));
+			assert.ok(ByIdTable.requiresApplicationCodeToReplicate());
 			ByIdTable.setResidencyById(undefined);
 		});
 
@@ -449,7 +449,7 @@ describe('Writer residency (harper#2257)', () => {
 				}),
 				[]
 			);
-			assert.ok(!poolUnsupportedTablesHere().includes('test.ComputedIndexDeprecated'));
+			assert.ok(!ComputedTable.requiresApplicationCodeToReplicate());
 			const warnings = capturingWarnings(() => {
 				ComputedTable.setComputedAttribute('indexedScore', (rec) => rec.id);
 			});
@@ -459,7 +459,7 @@ describe('Writer residency (harper#2257)', () => {
 			assert.match(warnings[0], /deprecated as of Harper 5\.4/);
 			assert.match(warnings[0], /@computed\(from:/);
 			assert.match(warnings[0], /set replication\.threads: 0 in harper-config\.yaml/);
-			assert.ok(poolUnsupportedTablesHere().includes('test.ComputedIndexDeprecated'));
+			assert.ok(ComputedTable.requiresApplicationCodeToReplicate());
 			assert.deepStrictEqual(
 				capturingWarnings(() => {
 					ComputedTable.setComputedAttribute('indexedScore', (rec) => rec.id);
@@ -482,13 +482,13 @@ describe('Writer residency (harper#2257)', () => {
 					},
 				],
 			});
-			assert.ok(!poolUnsupportedTablesHere().includes('test.ComputedExpressionOverride'));
+			assert.ok(!OverrideTable.requiresApplicationCodeToReplicate());
 			const warnings = capturingWarnings(() => {
 				OverrideTable.setComputedAttribute('exprScore', (rec) => rec.id);
 			});
 			assert.strictEqual(warnings.length, 1);
 			assert.match(warnings[0], /indexed @computed attribute 'exprScore'/);
-			assert.ok(poolUnsupportedTablesHere().includes('test.ComputedExpressionOverride'));
+			assert.ok(OverrideTable.requiresApplicationCodeToReplicate());
 		});
 	});
 });

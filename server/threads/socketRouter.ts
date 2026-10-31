@@ -150,6 +150,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
 				for (const slot of httpSlots) slot.setHeapShareCount(heapShareCount);
 			}
+			dedicatedPoolsStarted = true; // decided once per process, admitted or not
 		}
 		// Dedicated pools are numbered past the HTTP pool for the same reason isolated workers are.
 		for (const pool of dedicatedPools) {

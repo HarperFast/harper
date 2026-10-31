@@ -145,7 +145,7 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.ts';
-import { isDedicatedPoolWorker, notePoolUnsupportedTable } from '../server/threads/workerPools.ts';
+import { isDedicatedPoolWorker } from '../server/threads/workerPools.ts';
 import {
 	databases,
 	databaseResidencyBlockReason,
@@ -1302,6 +1302,7 @@ interface TableResourceClass {
 	 * with `setComputedAttribute` exists only on threads that ran the application.
 	 */
 	unresolvedComputedIndexes(): string[];
+	requiresApplicationCodeToReplicate(): boolean;
 	/**
 	 * Override the default embedder for an `@embed` attribute. Return the vector to
 	 * store at `attribute_name`. The embedder receives the write payload (the fields
@@ -3614,7 +3615,6 @@ export function makeTable(options): TableResourceClass {
 
 		static #residencyDeprecationLogged = false;
 		static #reportResidencyDeprecation(hookName: 'setResidency' | 'setResidencyById') {
-			notePoolUnsupportedTable(`${databaseName}.${tableName}`);
 			if (TableResource.#residencyDeprecationLogged) return;
 			TableResource.#residencyDeprecationLogged = true;
 			const consequence =
@@ -10875,9 +10875,10 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			for (const [attribute, resolver] of computedResolvers) {
-				if (attribute.computedFromExpression)
-					this.userResolvers[attribute.name] = resolver; // compiled on every thread
-				else this.setComputedAttribute(attribute.name, resolver);
+				if (attribute.computedFromExpression) {
+					schemaExpressionResolvers.add(resolver);
+					this.userResolvers[attribute.name] = resolver;
+				} else this.setComputedAttribute(attribute.name, resolver);
 			}
 			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
 			primaryKeyAttribute = nextPrimaryKeyAttribute;
@@ -10942,6 +10943,17 @@ export function makeTable(options): TableResourceClass {
 			primaryStore.encoder.resolvedAttributeNamesList = resolvedAttributeNames;
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
+		/** Whether replicating this table needs a hook only application code installs, which pool workers lack. */
+		static requiresApplicationCodeToReplicate(): boolean {
+			if (TableResource.getResidency !== defaultGetResidency || TableResource.getResidencyById) return true;
+			for (const attribute of attributes) {
+				if (!attribute.computed || !(indices[attribute.name] || attribute.indexed)) continue;
+				const resolver = this.userResolvers[attribute.name];
+				if (typeof resolver === 'function' && !resolver.unresolved && !schemaExpressionResolvers.has(resolver))
+					return true;
+			}
+			return false;
+		}
 		// #section: computed-history
 		static unresolvedComputedIndexes(): string[] {
 			const unresolved = [];
@@ -10968,7 +10980,6 @@ export function makeTable(options): TableResourceClass {
 				!resolver.unresolved &&
 				Boolean(indices[attribute_name] || attribute.indexed)
 			) {
-				notePoolUnsupportedTable(`${databaseName}.${tableName}`);
 				if (!TableResource.#computedIndexDeprecationLogged) {
 					TableResource.#computedIndexDeprecationLogged = true;
 					harperLogger.warn?.(
@@ -14301,6 +14312,8 @@ function noop() {
  * is loaded from metadata on a thread that hasn't loaded the GraphQL schema, so the computed
  * function needs to be reconstructed from the persisted expression.
  */
+// Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
+const schemaExpressionResolvers = new WeakSet<Function>();
 function createComputedFrom(computedFromExpression: string, attributesFallback?: any) {
 	const script = new Script(
 		attributesFallback

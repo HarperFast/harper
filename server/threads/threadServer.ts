@@ -399,8 +399,8 @@ function mirrorBindPath(socketPath?: any) {
 
 const POOL_BIND_RETRY_MS = 60_000;
 /**
- * Whether this thread binds the domain socket `port`. A per-thread mirror it skips was registered while its owning
- * pool was still pending, so its metadata is retracted: a proxy reading the sockets directory must not route to it.
+ * A per-thread mirror skipped here was registered while its owning pool was still pending, so its metadata is
+ * retracted: a proxy reading the sockets directory must not route to it.
  */
 export function bindsDomainSocketHere(port: string, server: any): boolean {
 	if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) return false;
@@ -863,7 +863,10 @@ function onSocket(listener?: any, options?: any) {
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
+			const writeMetadata = () => {
+				if (!httpComponent.isUdsBindFailed(udsPath))
+					httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
+			};
 			SNICallback.ready.then(writeMetadata);
 			secureSocketServer.secureContextsListeners.push(writeMetadata);
 		}

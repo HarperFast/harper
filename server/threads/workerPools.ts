@@ -12,7 +12,6 @@ const DEDICATED_POOL_TYPES: readonly string[] = [THREAD_TYPES.REPLICATION];
 let activePools: string[] = [];
 let undecided: { types: string[]; decide: () => void; decided: Promise<void> } | undefined;
 let admittedPools: string[] | undefined;
-const poolUnsupportedTables: string[] = [];
 
 /**
  * Main thread: record the pool types started, so every worker spawned from here learns them. A `pending` type (a
@@ -48,7 +47,6 @@ export function isWorkerPoolPending(type: string): boolean {
 	return pendingWorkerPools().includes(type);
 }
 
-/** Main thread: resolves once the pending pools are decided; undefined when none are pending. */
 export function workerPoolDecision(): Promise<void> | undefined {
 	return undecided?.decided;
 }
@@ -71,18 +69,9 @@ export function decideWorkerPools(unsupportedTables: string[] = []): void {
 	decide();
 }
 
-/** Worker: apply the pools the main thread admitted this worker under, before it binds any listener. */
+/** Worker: called before any listener binds. */
 export function admitWorkerPools(types: string[]): void {
 	admittedPools = types;
-}
-
-/** Record a table that needs application code on the replication path; reported in this worker's load report. */
-export function notePoolUnsupportedTable(table: string): void {
-	if (!poolUnsupportedTables.includes(table)) poolUnsupportedTables.push(table);
-}
-
-export function poolUnsupportedTablesHere(): string[] {
-	return poolUnsupportedTables;
 }
 
 /** This thread's worker type, or undefined on the main thread. */

@@ -9,7 +9,8 @@ import {
 	type BootVerdictOutcome,
 } from '../../components/componentLoader.ts';
 import { liveDeploymentId } from '../../components/releaseCertification.ts';
-import { admitWorkerPools, poolUnsupportedTablesHere } from './workerPools.ts';
+import { admitWorkerPools } from './workerPools.ts';
+import { getDatabases } from '../../resources/databases.ts';
 
 export type HeldStartRequest = { component: string; deploymentId: string };
 
@@ -74,8 +75,21 @@ export async function awaitAdmission(
 			type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
 			components,
 			applications: applicationsPlacedOnThisThread(),
-			poolUnsupportedTables: poolUnsupportedTablesHere(),
+			poolUnsupportedTables: poolUnsupportedTables(),
 		});
 		onReported?.();
 	});
+}
+
+/** Read from table state when the report is sent, so a hook cleared or an index added during the load counts as it ends. */
+function poolUnsupportedTables(): string[] {
+	const tables = [];
+	const databases = getDatabases();
+	for (const databaseName in databases) {
+		for (const tableName in databases[databaseName]) {
+			if (databases[databaseName][tableName]?.requiresApplicationCodeToReplicate?.())
+				tables.push(`${databaseName}.${tableName}`);
+		}
+	}
+	return tables;
 }

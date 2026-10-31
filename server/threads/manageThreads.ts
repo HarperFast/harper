@@ -1588,8 +1588,8 @@ function withPoolFor(application?: string) {
 }
 
 /**
- * Admitted only once any pending pool is decided, and told the decision, which it applies before it binds. The first
- * admitted shared HTTP worker's report decides; an isolated worker's tables are never replicated from its thread.
+ * The first admitted shared HTTP worker's report decides a pending pool; an isolated worker's tables are never
+ * replicated from its thread.
  */
 function admitWorker(worker) {
 	if (worker.name === hdbTerms.THREAD_TYPES.HTTP && worker.application === undefined)
