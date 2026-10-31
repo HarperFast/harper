@@ -837,10 +837,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	if (startedMounts.has(mountKey)) return;
 	startedMounts.add(mountKey);
 	scope.server.http(
-		async (request: any, nextHandler) => {
-			if (request.isWebSocket) return;
-			return http(request, nextHandler, resources, httpOptions);
-		},
+		(request: any, nextHandler) =>
+			request.isWebSocket ? undefined : http(request, nextHandler, resources, httpOptions),
 		{ after: 'authentication', ...(httpOptions as any) }
 	);
 	if ((httpOptions as any).webSocket === false) return;

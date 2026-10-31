@@ -1320,7 +1320,9 @@ export function makeUwsHandler(
 			const sent = await bufferSendStream(response.body, headers, status, request.signal);
 			return { status: sent.status, headers, handlesHeaders: true, body: sent.body };
 		}
-		const body = await normalizeUwsBody(response.body, request);
+		let body = response.body;
+		if (body == null) body = null;
+		else if (!isFinalUwsBody(body)) body = await normalizeUwsBody(body, request);
 		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
 	const rejectionHeaders = readRejectionHeaders(isOperationsServer);
@@ -1405,12 +1407,16 @@ function bufferSendStream(
 	});
 }
 
+function isFinalUwsBody(body: unknown): body is string | Uint8Array {
+	return typeof body === 'string' || body instanceof Uint8Array;
+}
+
 async function normalizeUwsBody(
 	body: any,
 	request: { readonly isAborted: boolean }
 ): Promise<string | Buffer | Uint8Array | Readable | null> {
 	if (body == null) return null;
-	if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) return body;
+	if (isFinalUwsBody(body)) return body;
 	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
 	if (typeof body.then === 'function') return normalizeUwsBody(await body, request);
 	// Already a Node stream — stream it as-is (re-wrapping in Readable.from breaks destroy propagation).
