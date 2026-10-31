@@ -40,19 +40,22 @@ is required: every host process runs in its own capped scope.
 
 All `benchmarks/ycsb` flags apply, plus:
 
-| Flag                           | Default           | Meaning                                              |
-| ------------------------------ | ----------------- | ---------------------------------------------------- |
-| `--targets`                    | `harper,pg-redis` | Targets to compare (table above)                     |
-| `--harper-memory`              | `capped`          | `capped` (8 GiB cgroup) or `measured` (no cap)       |
-| `--target-cpus=K`              | `4`               | Size of the CPU set every target runs on             |
-| `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`        |
-| `--cache`                      | `warm`            | `warm` or `cold` (below)                             |
-| `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs |
-| `--shards`                     | `4`               | Load-generator processes                             |
-| `--reps`                       | `1`               | Independent samples per target × workload            |
-| `--perf-counters`              | off               | `perf stat` per component over each measured run     |
-| `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)      |
-| `--profile-ops`                | `1000000`         | Ops in each of the two profile windows               |
+| Flag                           | Default           | Meaning                                                            |
+| ------------------------------ | ----------------- | ------------------------------------------------------------------ |
+| `--targets`                    | `harper,pg-redis` | Targets to compare (table above)                                   |
+| `--harper-memory`              | `capped`          | `capped` (8 GiB cgroup) or `measured` (no cap)                     |
+| `--target-cpus=K`              | `4`               | Size of the CPU set every target runs on                           |
+| `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`                      |
+| `--cache`                      | `warm`            | `warm` or `cold` (below)                                           |
+| `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs               |
+| `--shards`                     | `4`               | Load-generator processes                                           |
+| `--reps`                       | `1`               | Independent samples per target × workload                          |
+| `--perf-counters`              | off               | `perf stat` per component over each measured run                   |
+| `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                    |
+| `--profile-ops`                | `1000000`         | Ops in each of the two profile windows                             |
+| `--auth`                       | `none`            | `none` or `token` (below); recorded in every row                   |
+| `--host-quiet-cores=N`         | off               | Before each sample, wait for the rest of the host to use < N cores |
+| `--host-quiet-max-min`         | `15`              | Longest that wait, in minutes                                      |
 
 `--threads` (Harper's worker threads and the Fastify cluster size) defaults to K.
 Results land in `benchmarks/ycsb-vs-pg/results/`, written after every sample, with
@@ -162,6 +165,29 @@ sample starts a fresh server and reloads the dataset.
   returns one ~1 KB record, so it bounds the generator's request rate, not the
   cost of receiving E's multi-record scan bodies.
 
+## Authentication (`--auth`)
+
+`--auth=none` (the default) is what every earlier row measured: Harper serves loopback
+requests as its fixed local-trust principal, and the Fastify app checks nothing.
+
+`--auth=token` makes both sides verify a bearer credential on every request, and the
+generator sends the same `Authorization: Bearer <token>` header to both:
+
+- **Harper** runs with `authentication.authorizeLocal: false`. After start the harness creates
+  a role that is not `super_user` and can only read, insert and update the benchmark table
+  (no delete, no other table; B's updates need the write grant), a user in it, and that user's
+  operation token from `create_authentication_tokens`: a JWT signed RS256 (`jsonwebtoken`).
+  Harper verifies a token once and caches the header → user mapping per thread
+  (`authorizationCache`, cleared every `authentication.cacheTTL`, 30 s); each request then pays
+  the cache lookup, an expiry and current-user check, a copy of the user view, and the
+  role-permission checks on the table.
+- **Fastify** registers `@fastify/jwt` (fast-jwt) with a per-session random secret and
+  verifies the HS256 signature in an `onRequest` hook on every request, with the plugin's
+  default of no verified-token cache. The harness mints the token.
+
+Before loading, each target must answer a request without the header with 401 or 403, and
+the same request with it, or the sample fails.
+
 ## Dataset larger than memory (`memory-sweep.mts`)
 
 A Redis holding the whole dataset is the cache-aside stack's upper bound. The sweep
@@ -222,5 +248,9 @@ the measured run can still carry JIT warmup) and then `--profile-ops` more under
 `profile-report.mts <results.json> --svg-dir=<dir>` turns those into CPU µs/op per
 bucket (HTTP, routing, auth, transactions, record cache, RocksDB, decode, JSON, the
 stack's Redis and Postgres, event loop, GC, JIT), RocksDB sub-parts, Harper's
-pipeline by inclusive cost, counters, and flame graphs. Needs
+pipeline by inclusive cost, counters, and flame graphs. `--pipeline` adds Harper's samples
+by request-pipeline layer (uWS, `http.ts`, authentication, REST, transaction, resource
+resolution, `Table.get`, record cache, RocksDB, decode, serialization), each charged to the
+innermost layer on its stack: work resumed after an `await` has lost its callers' frames, so
+a layer's cost "with inner layers" is a sum down the chain, not stack containment. Needs
 `kernel.perf_event_paranoid <= 0`. [PROFILE.md](PROFILE.md) holds the results.
