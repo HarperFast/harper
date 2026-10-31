@@ -17,6 +17,7 @@ import { ClientError, hdbErrors } from '../../../utility/errors/hdbError.ts';
 import { validateBySchema } from '../../../validation/validationWrapper.ts';
 import { loggerWithTag } from '../../../utility/logging/logger.ts';
 import { getUserWithRole } from '../../user.ts';
+import { policiesOverlap, sameAuthority } from '../../ciIdentity.ts';
 import { validateClaimConstraintShape } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
 import { profileForIssuer } from './providers/index.ts';
@@ -128,9 +129,9 @@ function toRecord(row: any, problem?: string): OidcTrustPolicy & Record<string, 
 		// 'false' — one of the shapes the exchange refuses — as `enabled: true`, telling the operator
 		// a dead trust is live. Absent still means enabled, which is the documented default.
 		enabled: row.enabled === undefined ? true : row.enabled,
-		// Present only on a row the exchange will refuse, so a listing says why the trust is dead
-		// instead of leaving a per-attempt log line as the only signal. Shape problems are set here;
-		// listOidcTrust adds the ones that depend on state outside the row (a missing or inactive user).
+		// Present only on a row the exchange will refuse, for every run or the ones it conflicts over,
+		// so a listing says why instead of leaving a per-attempt log line as the only signal. Shape
+		// problems are set here; listOidcTrust adds the ones that depend on state outside the row.
 		...(problem ? { invalid_reason: problem } : {}),
 		description: row.description ?? null,
 		updated_by: row.updated_by ?? null,
@@ -326,11 +327,39 @@ export async function listOidcTrust(req: any) {
 	// doing it in readPolicies would put a user lookup on the unauthenticated exchange path, which
 	// already resolves the user itself at the right moment. A shape problem already reported wins,
 	// since it is the more fundamental complaint.
+	const reasonsFromUser = new Set<any>();
 	for (const policy of policies as any[]) {
 		if (policy.invalid_reason) continue;
 		const user = getUserWithRole(policy.user);
 		if (!user) policy.invalid_reason = `names user '${policy.user}', which does not exist`;
 		else if (user.active === false) policy.invalid_reason = `names inactive user '${policy.user}'`;
+		if (policy.invalid_reason) reasonsFromUser.add(policy);
+	}
+	// A missing or inactive user leaves a row exchangeable: the exchange refuses a conflict before it resolves the user.
+	const honored = (policies as any[]).filter((policy) => {
+		policy.exchangeable = false;
+		if (policy.enabled === false || (policy.invalid_reason && !reasonsFromUser.has(policy))) return false;
+		try {
+			const profile = profileForIssuer(policy.issuer);
+			profile.assertAudienceIsSpecific(policy.audience);
+			profile.assertPolicyIsSpecific(policy.claims);
+			policy.exchangeable = true;
+			return true;
+		} catch (error) {
+			policy.invalid_reason ??= (error as Error).message;
+			return false;
+		}
+	});
+	for (const policy of honored) {
+		if (policy.invalid_reason) continue;
+		const rival = honored.find(
+			(other) => other !== policy && policiesOverlap(policy, other) && !sameAuthority(policy, other)
+		);
+		if (rival) {
+			policy.invalid_reason =
+				`can match the same runs as '${rival.id}', which gives them a different user or operations, so the ` +
+				'exchange refuses those runs';
+		}
 	}
 
 	return { policies };

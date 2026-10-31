@@ -38,6 +38,18 @@ export interface IdentityPlan {
 const sameSet = (left: unknown, right: string[]) =>
 	Array.isArray(left) && left.length === right.length && right.every((entry) => left.includes(entry));
 
+/** An absent scope is unscoped, which no array is, not even an empty one; arrays compare as sets. */
+function sameOperationScope(left: unknown, right: unknown): boolean {
+	if (!Array.isArray(left) || !Array.isArray(right)) return Array.isArray(left) === Array.isArray(right);
+	const leftOperations = new Set(left);
+	const rightOperations = new Set(right);
+	return leftOperations.size === rightOperations.size && [...leftOperations].every((op) => rightOperations.has(op));
+}
+
+export function sameAuthority(left: any, right: any): boolean {
+	return left?.user === right?.user && sameOperationScope(left?.operations, right?.operations);
+}
+
 const ROLE_FLAGS = new Set(['super_user', 'structure_user', 'cluster_user', 'operations', 'component_deploy']);
 
 function sameValue(left: unknown, right: unknown): boolean {
@@ -102,7 +114,7 @@ export function policyDifferences(existing: any, desired: DesiredPolicy): string
 			differences.push(`claim ${name} is ${JSON.stringify(claims[name])}, not ${JSON.stringify(desired.claims[name])}`);
 		}
 	}
-	if (!sameSet(existing?.operations, desired.operations)) {
+	if (!sameOperationScope(existing?.operations, desired.operations)) {
 		differences.push(
 			`operations are ${JSON.stringify(existing?.operations ?? null)}, not ${JSON.stringify(desired.operations)}`
 		);
@@ -140,8 +152,8 @@ export function planIdentityReconcile(
 
 /**
  * Whether one token could match both policies: same issuer and audience, and for every claim both constrain, a value
- * both accept. The exchange takes the first match in id order, so two such policies leave which user a run acts as,
- * and with which operations, to the ids.
+ * both accept. The exchange refuses a token two policies match with different users or operations, so such a pair
+ * stops the runs it matches.
  */
 export function policiesOverlap(left: any, right: any): boolean {
 	if (left?.issuer !== right?.issuer || left?.audience !== right?.audience) return false;

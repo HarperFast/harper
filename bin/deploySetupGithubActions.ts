@@ -17,7 +17,9 @@ import { GITHUB_ACTIONS_ISSUER, buildWorkflowRef, canonicalWorkflowPath } from '
 import {
 	planIdentityReconcile,
 	policyDifferences,
+	policiesOverlap,
 	roleDifference,
+	sameAuthority,
 	userDifference,
 	type DesiredPolicy,
 	type DesiredRole,
@@ -365,6 +367,23 @@ export interface ReconcilePlan {
 	conflicts: string[];
 }
 
+function rivalPolicyProblem(policies: any[], wanted: DesiredPolicy): string | undefined {
+	const rival = policies.find(
+		(policy) =>
+			policy?.id !== wanted.id &&
+			policy?.enabled !== false &&
+			policy?.exchangeable !== false &&
+			policiesOverlap(policy, wanted) &&
+			!sameAuthority(policy, wanted)
+	);
+	if (!rival) return undefined;
+	return (
+		`Trust policy "${rival.id}", for user "${rival.user}", can match the same runs, and the exchange refuses a run two ` +
+		'policies give different users or operations. Give this component its own workflow (workflow=) or ' +
+		'environment (environment=), or drop that policy if this identity should deploy from those runs instead.'
+	);
+}
+
 export function planReconcile(
 	existing: { roles: any[]; users: any[]; policies: any[] },
 	desired: DesiredRecords
@@ -374,6 +393,8 @@ export function planReconcile(
 		{ role: desired.role, user: desired.user, policies: [desired.policy] },
 		(id) => `If it should be replaced, drop it with \`harper drop_oidc_trust id=${id}\` and run setup again.`
 	);
+	const rival = rivalPolicyProblem(existing.policies, desired.policy);
+	if (rival) plan.conflicts.push(rival);
 	return { role: plan.role, user: plan.user, policy: plan.policies[0], conflicts: plan.conflicts };
 }
 
@@ -724,10 +745,9 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	}
 
 	const created: string[] = [];
-	const policyNow = async () =>
-		asList(((await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true)) as any)?.policies).find(
-			(policy: any) => policy?.id === names.policy
-		);
+	const policiesNow = async () =>
+		asList(((await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true)) as any)?.policies);
+	const policyNow = async () => (await policiesNow()).find((policy: any) => policy?.id === names.policy);
 	if (plan.role === 'create' || plan.user === 'create' || plan.policy === 'create') {
 		console.log(chalk.gray('Creating what is missing. If this stops partway, run it again to finish.'));
 	}
@@ -754,9 +774,12 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		// add_oidc_trust replaces a policy, so one another super user creates (enabled or not) since the
 		// preflight would be overwritten. Checking again narrows that window to one round trip. An existing
 		// policy is never written, so this can't undo a disable or a drop.
-		if (await policyNow()) {
+		const policies = await policiesNow();
+		if (policies.some((policy: any) => policy?.id === names.policy)) {
 			throw cliError(`Trust policy "${names.policy}" was created while setup ran. Run setup again to check it.`);
 		}
+		const rival = rivalPolicyProblem(policies, desired.policy);
+		if (rival) throw cliError(`${rival} Run setup again to check it.`);
 		const response: any = await cliOperations({ ...transport, operation: 'add_oidc_trust', ...desired.policy }, true);
 		if (response?.warning) console.log(chalk.yellow(response.warning));
 		created.push(`trust policy ${names.policy}`);
