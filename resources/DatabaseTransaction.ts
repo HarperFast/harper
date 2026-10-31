@@ -1066,9 +1066,12 @@ export class DatabaseTransaction implements Transaction {
 	// open (harper#2001). Once poisoned, any further addWrite/commit throws requestAbortedError, mirroring
 	// timedOut above — the difference is only WHY the transaction was cut short.
 	declare disconnected?: boolean;
-	// The signal of the request this chain writes for, set on the root wherever a transaction is created
+	// The context of the request this chain writes for, set on the root wherever a transaction is created
 	// for a request context (resources/transaction.ts, Table.ts txnForContext). Cancellation belongs to
-	// the request: once it aborts, no link admits another write, whichever transaction it arrives on.
+	// the request: once its signal aborts, no link admits another write, whichever transaction it arrives
+	// on. The signal is read from it at the first admitted write, so a read-only request never makes its
+	// transport create one.
+	declare requestSignalSource?: { readonly signal?: AbortSignal };
 	declare requestSignal?: AbortSignal;
 	// On the root while the chain owns writes: attached at the first admitted write, released once they
 	// and every commit attempt have settled, so a read-only request never registers one.
@@ -2837,7 +2840,7 @@ export class DatabaseTransaction implements Transaction {
 	admitRequestWrite(): void {
 		if (isReadOnlyMode()) throw readOnlyModeError();
 		const root = this.root ?? this;
-		const signal = root.requestSignal;
+		const signal = (root.requestSignal ??= root.requestSignalSource?.signal);
 		if (!signal) return;
 		if (signal.aborted) {
 			this.abortDueToDisconnect();

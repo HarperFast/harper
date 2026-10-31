@@ -1320,7 +1320,7 @@ export function makeUwsHandler(
 			const sent = await bufferSendStream(response.body, headers, status, request.signal);
 			return { status: sent.status, headers, handlesHeaders: true, body: sent.body };
 		}
-		const body = await normalizeUwsBody(response.body, request.signal);
+		const body = await normalizeUwsBody(response.body, request);
 		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
 	const rejectionHeaders = readRejectionHeaders(isOperationsServer);
@@ -1345,8 +1345,8 @@ export function makeUwsHandler(
 /**
  * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
  * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
- * stream it incrementally (buffering an SSE/event-stream body here would never return). `signal`
- * aborts the collapse of a sync iterable if the client disconnects mid-response.
+ * stream it incrementally (buffering an SSE/event-stream body here would never return). A client
+ * disconnect stops the collapse of a sync iterable.
  */
 /**
  * Drive a `send` SendStream to completion against a Writable shim, capturing the headers it writes
@@ -1407,12 +1407,12 @@ function bufferSendStream(
 
 async function normalizeUwsBody(
 	body: any,
-	signal?: AbortSignal
+	request: { readonly isAborted: boolean }
 ): Promise<string | Buffer | Uint8Array | Readable | null> {
 	if (body == null) return null;
 	if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) return body;
 	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
-	if (typeof body.then === 'function') return normalizeUwsBody(await body, signal);
+	if (typeof body.then === 'function') return normalizeUwsBody(await body, request);
 	// Already a Node stream — stream it as-is (re-wrapping in Readable.from breaks destroy propagation).
 	if (typeof body.pipe === 'function') return body;
 	// Async-iterable (e.g. an event queue) — adapt to a Readable and stream it.
@@ -1421,7 +1421,7 @@ async function normalizeUwsBody(
 	if (body[Symbol.iterator]) {
 		const chunks: Buffer[] = [];
 		for (const chunk of body) {
-			if (signal?.aborted) throw new Error('client aborted');
+			if (request.isAborted) throw new Error('client aborted');
 			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 		}
 		return Buffer.concat(chunks);
