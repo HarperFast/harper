@@ -7922,19 +7922,28 @@ export function makeTable(options): TableResourceClass {
 			).conditions;
 			for (let sort = typeof attribute.sort === 'object' && attribute.sort; sort; sort = sort.next)
 				targetTable._assertNestedReadAccess(sort.attribute, context, attribute);
-			const compile = (conditions, operator) => {
-				const predicates = conditions.map((condition) => {
-					if (condition.conditions) return compile(condition.conditions, condition.operator);
+			// conditions of one AND on a relationship meet the same related record, as in a top-level query
+			const compile = (conditions, operator, scope: any = operator === 'or' ? null : Object.create(null)) => {
+				const predicates = [];
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						const union = condition.operator === 'or';
+						predicates.push(
+							compile(condition.conditions, condition.operator, union ? null : (scope ?? Object.create(null)))
+						);
+						continue;
+					}
 					const predicate = filterByType(
 						condition,
 						targetTable,
 						context,
-						null,
+						scope,
 						(condition.attribute ?? condition[0]) === targetTable.primaryKey
 					);
-					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
-					return predicate;
-				});
+					if (predicate) predicates.push(predicate);
+					else if (!scope || !Array.isArray(condition.attribute ?? condition[0]))
+						throw new ClientError('This predicate is not supported in a relationship selection');
+				}
 				const any = operator === 'or';
 				const combined: any = any
 					? (record, entry) => predicates.some((predicate) => predicate(record, entry))

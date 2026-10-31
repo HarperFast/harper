@@ -533,6 +533,25 @@ describe('AND-joined conditions on one relationship meet one related record whic
 		assert.strictEqual(toMany[1], undefined, 'the second to-many condition joins the first one');
 	});
 
+	it('selects through a nested select only the children whose one leaf meets both conditions', async () => {
+		const leafConditions = [
+			{ attribute: ['filters', 'code'], value: 'on' },
+			{ attribute: ['filters', 'tag'], value: 'wanted' },
+		];
+		for (const conditions of [leafConditions, [...leafConditions].reverse()]) {
+			const rows = [];
+			for await (const row of Parent.search({
+				conditions: [{ attribute: 'group', value: 'rare' }],
+				select: ['id', { name: 'kids', conditions, select: ['id'] }],
+			}))
+				rows.push([row.id, (row.kids ?? []).map((kid) => kid.id)]);
+			assert.deepStrictEqual(rows.sort(), [
+				['pm', ['m1']],
+				['pw', []],
+			]);
+		}
+	});
+
 	it('deletes only the parent whose one child meets both conditions', async () => {
 		await Parent.put({ id: 'dw', group: 'del', text: 'needle', n: 0 });
 		await Parent.put({ id: 'dm', group: 'del', text: 'needle', n: 0 });
