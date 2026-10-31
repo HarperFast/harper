@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
-        shard: [main, components, server, resources-core-a-q, resources-core-r-z, resources-indexes, lmdb]
+        shard: [main, components, server, resources-core-a-n, resources-core-o-z, resources-indexes, lmdb]
         # harper#3349: LMDB segfaults intermittently in this shard, and every leg gates `Unit Test`.
         exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"shard":"lmdb","node-version":24}]' || '[]') }}
         # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
@@ -68,12 +68,12 @@ jobs:
           - shard: server
             script: test:unit:main:server
             timeout: 8
-          - shard: resources-core-a-q
-            script: test:unit:resources:core:a-q
-            timeout: 7
-          - shard: resources-core-r-z
-            script: test:unit:resources:core:r-z
-            timeout: 6
+          - shard: resources-core-a-n
+            script: test:unit:resources:core:a-n
+            timeout: 9
+          - shard: resources-core-o-z
+            script: test:unit:resources:core:o-z
+            timeout: 8
           - shard: resources-indexes
             script: test:unit:resources:indexes
             timeout: 8
@@ -152,17 +152,17 @@ jobs:
         # run the .ts sources directly; they run with Node 22 nightly. Caps follow the rule on the
         # `unit-test` job.
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '["22.18.0", "24.0.0", 22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
-        shard: [core, resources-core-a-q, resources-core-r-z, resources-indexes]
+        shard: [core, resources-core-a-n, resources-core-o-z, resources-indexes]
         include:
           - shard: core
             script: test:unit:typestrip
             timeout: 10
-          - shard: resources-core-a-q
-            script: test:unit:typestrip:resources:core:a-q
-            timeout: 7
-          - shard: resources-core-r-z
-            script: test:unit:typestrip:resources:core:r-z
-            timeout: 6
+          - shard: resources-core-a-n
+            script: test:unit:typestrip:resources:core:a-n
+            timeout: 9
+          - shard: resources-core-o-z
+            script: test:unit:typestrip:resources:core:o-z
+            timeout: 8
           - shard: resources-indexes
             script: test:unit:typestrip:resources:indexes
             timeout: 8
