@@ -280,8 +280,9 @@ function isKnownPrototype(prototype: object | null): boolean {
  * deep must still be seen, and AlaSQL shares one subquery node between two fields (EXISTS).
  */
 function* astNodes(root: any): Generator<any> {
+	if (root === null || typeof root !== 'object') return;
 	const seen = new Set();
-	const pending = root !== null && typeof root === 'object' ? [root] : [];
+	const pending = [root];
 	while (pending.length > 0) {
 		const node = pending.pop();
 		if (seen.has(node)) continue;
