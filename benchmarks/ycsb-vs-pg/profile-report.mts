@@ -192,7 +192,13 @@ async function analyze(
 		const componentMicrosPerOp = ((profile.byComponentCpuSeconds[component] ?? 0) * 1e6) / profile.ops;
 		if (samples === 0) {
 			// CPU the sampler never saw still belongs in the buckets, or they would not add up to the total.
-			if (componentMicrosPerOp > 0) microsPerOp.other = (microsPerOp.other ?? 0) + componentMicrosPerOp;
+			if (componentMicrosPerOp > 0) {
+				const bucket = classify([], component);
+				microsPerOp[bucket] = (microsPerOp[bucket] ?? 0) + componentMicrosPerOp;
+				console.warn(
+					`${profile.prefix}: ${component} used ${componentMicrosPerOp.toFixed(1)} µs/op of CPU but has no samples`
+				);
+			}
 			continue;
 		}
 		const perSample = componentMicrosPerOp / samples;

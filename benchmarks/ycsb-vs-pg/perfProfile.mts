@@ -262,7 +262,7 @@ async function dedupeMapsOf(cgroups: Record<string, string>): Promise<void> {
 				if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 			}
-			keptMaps.add(live).add(path);
+			keptMaps.add(live).add(path).add(`${path}.dedupe`);
 			await writeFile(`${path}.dedupe`, dedupePerfMap(await readFile(live, 'utf8')));
 			await rename(`${path}.dedupe`, path);
 		}

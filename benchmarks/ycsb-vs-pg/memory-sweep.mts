@@ -114,12 +114,16 @@ interface SweepSample {
 	/**
 	 * Measured but not clean, first cause wins: `quiesce-timeout`, the restored target was still busy
 	 * when the quiesce wait ran out; `warmup-ceiling`, warmup hit its chunk ceiling without a plateau;
-	 * `snapshot-not-quiet`, the snapshot was taken from a target that never went quiet.
+	 * `snapshot-not-quiet`, the snapshot was taken from a target that never went quiet; `host-busy`, the
+	 * rest of the host stayed busy through every measured run (`settled` covers the target only).
 	 */
-	status: 'ok' | 'quiesce-timeout' | 'warmup-ceiling' | 'snapshot-not-quiet' | 'failed';
+	status: 'ok' | 'quiesce-timeout' | 'warmup-ceiling' | 'snapshot-not-quiet' | 'host-busy' | 'failed';
 	/** Present, and true, on every row of a session run with Harper uncapped (--allow-uncapped). */
 	allowUncapped?: true;
-	/** Present, and true, on every row of a session whose cgroup held other processes (--allow-shared-cgroup). */
+	/**
+	 * This run's cgroup held other processes, at session start (--allow-shared-cgroup) or at this
+	 * sample's start or end, so the host gate and `hostQuiet` may have counted their CPU as the run's.
+	 */
 	sharedCgroup?: true;
 	failure?: { phase: string; error: string };
 	/** The wait for the rest of the host to go quiet before this sample started. */
@@ -383,7 +387,9 @@ async function measureSweepSample(
 							? 'warmup-ceiling'
 							: !snapshot.quiet
 								? 'snapshot-not-quiet'
-								: 'ok';
+								: !sample.hostQuiet
+									? 'host-busy'
+									: 'ok';
 					sample.settled = converged && quiet && snapshot.quiet;
 					if (running.dataRoot) {
 						phase = 'rocksdb-log';
@@ -459,7 +465,7 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 					(m?.redisHitRate === undefined ? '-' : (m.redisHitRate * 100).toFixed(2)).padStart(7),
 					(s.warmup ? `${s.warmup.length}${s.settled ? '' : '!'}` : '-').padStart(7),
 					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}` +
-						(s.status === 'ok' || s.status === 'failed' ? '' : `  (${s.status})`) +
+						(s.status === 'ok' || s.status === 'failed' || s.status === 'host-busy' ? '' : `  (${s.status})`) +
 						(s.hostQuiet === false
 							? '  (host busy during the run)'
 							: s.hostGate && !s.hostGate.quiet
@@ -635,6 +641,11 @@ async function main(): Promise<void> {
 							...(sharedCgroup ? { sharedCgroup: true as const } : {}),
 						};
 						console.log(`\n--- ${ratios[p]}x rep ${rep + 1} #${i + 1} ${target} / workload ${workload} ---`);
+						// A job can join the session's cgroup after the startup check; this only marks the row.
+						const markShared = () => {
+							if (foreignProcessesInOwnCgroup().length > 0) sample.sharedCgroup = true;
+						};
+						markShared();
 						const gate = await waitForQuietHost({ maxOtherCores: hostQuietCores, maxMs: hostQuietMaxMin * 60_000 });
 						sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
 						console.log(
@@ -657,6 +668,7 @@ async function main(): Promise<void> {
 								noisyRetries,
 							}
 						);
+						markShared();
 						samples.push(sample);
 						await persist();
 						if (sample.status === 'failed' && !(await nothingLeftRunning(session))) {
