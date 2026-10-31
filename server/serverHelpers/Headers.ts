@@ -95,9 +95,9 @@ function varyCovers(vary: string, lowerToken: string): boolean {
 
 const ASTERISK = 42;
 
-// Matches varyCovers where trim() and toLowerCase() act per ASCII character; reaching any other character returns
-// undefined for the caller to fall back. A mismatch at an earlier ASCII position, or a match in an earlier part,
-// already decides what varyCovers would.
+// Matches varyCovers for an ASCII token without the split/trim/lowercase temporaries. Once a part's ends are
+// non-whitespace ASCII, trim() would remove nothing more, and only a part of the token's length can lowercase to
+// it; a non-ASCII character at an end or in such a part returns undefined for the caller to fall back.
 function asciiVaryCovers(vary: string, token: string): boolean | undefined {
 	const length = vary.length;
 	const tokenLength = token.length;
@@ -110,6 +110,7 @@ function asciiVaryCovers(vary: string, token: string): boolean | undefined {
 		while (partStart < partEnd && isAsciiWhitespace(vary.charCodeAt(partStart))) partStart++;
 		while (partEnd > partStart && isAsciiWhitespace(vary.charCodeAt(partEnd - 1))) partEnd--;
 		const partLength = partEnd - partStart;
+		if (partLength > 0 && (vary.charCodeAt(partStart) > 127 || vary.charCodeAt(partEnd - 1) > 127)) return undefined;
 		if (partLength === 1 && vary.charCodeAt(partStart) === ASTERISK) return true;
 		if (partLength === tokenLength) {
 			let i = 0;
@@ -119,8 +120,6 @@ function asciiVaryCovers(vary: string, token: string): boolean | undefined {
 				if (asciiLower(code) !== asciiLower(token.charCodeAt(i))) break;
 			}
 			if (i === tokenLength) return true;
-		} else {
-			for (let i = partStart; i < partEnd; i++) if (vary.charCodeAt(i) > 127) return undefined;
 		}
 		start = end + 1;
 	}
