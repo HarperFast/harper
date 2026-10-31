@@ -35,11 +35,9 @@ async function run() {
 
 run().then(
 	(result) => {
-		console.log(JSON.stringify(result));
-		process.exit(0);
+		process.stdout.write(JSON.stringify(result) + '\n', () => process.exit(0));
 	},
 	(error) => {
-		console.error(error);
-		process.exit(1);
+		process.stderr.write(String(error.stack ?? error) + '\n', () => process.exit(1));
 	}
 );
