@@ -137,6 +137,10 @@ describe('published full-text ordering and exact counts', () => {
 			),
 			['a', 'c']
 		);
+		const reusedSort = { attribute: 'price' };
+		const pending = Product.search(query({ sort: reusedSort, limit: 2 }));
+		reusedSort.attribute = 'label';
+		assert.deepStrictEqual(ids(await collect(pending)), ['b', 'c']);
 		assert.deepStrictEqual(ids(await collect(Product.search(query()))), ids(baseline));
 	});
 

@@ -12114,7 +12114,7 @@ export function makeTable(options): TableResourceClass {
 				throw new ClientError('Full-text sort requires directly stored record fields or $score', 400);
 			if (order.attribute !== '$score')
 				assertFullTextReadAccess(context, target, TableResource.fullTextIndexes[0], [String(order.attribute)]);
-			clauses.push(order);
+			clauses.push({ attribute: order.attribute, descending: order.descending });
 		}
 		return (entries: FullTextSearchEntry[]) => {
 			const keys = new Map(
