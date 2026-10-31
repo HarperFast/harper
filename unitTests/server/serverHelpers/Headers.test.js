@@ -492,7 +492,6 @@ describe('addVaryHeader', () => {
 });
 
 describe('addVaryHeader matches split/trim/toLowerCase membership', () => {
-	// undefined when the existing value already covers the token
 	function referenceAddVary(existing, token) {
 		if (!existing) return token;
 		const existingString = Array.isArray(existing) ? existing.join(', ') : existing;
