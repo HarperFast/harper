@@ -174,9 +174,6 @@ export async function startRecord(cpus: number[], file: string, frequency = 999)
 			String(frequency),
 			'-o',
 			file,
-			'--',
-			'sleep',
-			'86400',
 		],
 		dirname(file)
 	);
