@@ -326,7 +326,7 @@ jobs:
         run: npm run build
 
       - name: Verify the published native binding loads
-        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); const info = await binding.runtimeInfo(); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || info.nativeAbiVersion !== 13 || info.queryApiVersion !== 7) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and native ABI 13 and query API 7 contract');"
+        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); const { validateFullTextRuntimeVersions } = await import('./dist/resources/indexes/fullTextNativeBinding.js'); const info = await binding.runtimeInfo(); validateFullTextRuntimeVersions(info); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function') throw new Error('@harperfast/fulltext loaded without the required writer, reader, and traversal contract');"
 
       - name: Native full-text lifecycle test
         run: >-
