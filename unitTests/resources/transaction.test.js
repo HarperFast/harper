@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
@@ -475,23 +476,25 @@ describe('Transactions', () => {
 			await transaction(context, () => {
 				TxnTest.put(63, { name: 'original', count: 0 }, context);
 			});
-			let now = Date.now();
+			// Versions must follow table creation and precede their audit append times.
+			const baseVersion = TxnTest.primaryStore.getEntry(63).version;
+			await waitFor(() => Date.now() > baseVersion + 80);
 
 			// Create a complex out-of-order scenario
 			// Timeline: original -> update1 (t+20) -> update2 (t+40) -> update3 (t+60) -> update4 (t+80)
 			// But apply in order: original -> update4 -> update2 -> update1 -> update3
 
 			// Apply update4 first (newest)
-			await TxnTest.patch(63, { name: 'update4', prop4: true }, { timestamp: now + 80 });
+			await TxnTest.patch(63, { name: 'update4', prop4: true }, { timestamp: baseVersion + 80 });
 
 			// Apply update2 (middle, should create a branch)
-			await TxnTest.patch(63, { prop2: true }, { timestamp: now + 40 });
+			await TxnTest.patch(63, { prop2: true }, { timestamp: baseVersion + 40 });
 
 			// Apply update1 (oldest out-of-order)
-			await TxnTest.patch(63, { prop1: true, count: { __op__: 'add', value: 1 } }, { timestamp: now + 20 });
+			await TxnTest.patch(63, { prop1: true, count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 20 });
 
 			// Apply update3 (between update2 and update4)
-			await TxnTest.patch(63, { prop3: true, count: { __op__: 'add', value: 1 } }, { timestamp: now + 60 });
+			await TxnTest.patch(63, { prop3: true, count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 60 });
 
 			// Verify all properties are present
 			let record = await TxnTest.get(63);
