@@ -1375,20 +1375,21 @@ describe('FullTextQueryIndex', () => {
 				queryApiVersion,
 			});
 			try {
-				await assert.rejects(
-					index.search(
-						{
-							attribute: readinessId,
-							comparator: 'matches',
-							value: 'shoe',
-							maxIndexLagMilliseconds: 0,
-							waitForIndexMilliseconds: 0,
-							fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
-						},
-						{}
-					),
-					(error) => error.statusCode === (queryApiVersion === 7 ? 400 : 503)
-				);
+				for (let attempt = 0; attempt < 2; attempt++)
+					await assert.rejects(
+						index.search(
+							{
+								attribute: readinessId,
+								comparator: 'matches',
+								value: 'shoe',
+								maxIndexLagMilliseconds: 0,
+								waitForIndexMilliseconds: 0,
+								fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+							},
+							{}
+						),
+						(error) => error.statusCode === (queryApiVersion === 7 ? 400 : 503)
+					);
 				if (queryApiVersion === 7) assert.strictEqual(opens, 0);
 				else await waitFor(() => opens > 0);
 				assert.strictEqual(searches, 0);
