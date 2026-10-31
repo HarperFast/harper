@@ -5,7 +5,9 @@
  * charged to the code that called it. A bucket's µs/op is its share of a component's samples times
  * that component's cgroup CPU per op in the same window.
  *
- *   node benchmarks/ycsb-vs-pg/profile-report.mts results/compare-latest.json [--svg-dir=<dir>]
+ *   node benchmarks/ycsb-vs-pg/profile-report.mts results/compare-latest.json [--svg-dir=<dir>] [--pipeline]
+ *
+ * --pipeline adds, per Harper profile, its samples by request-pipeline layer (see PIPELINE).
  */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -48,6 +50,7 @@ const JS_FILE_RULES: [RegExp, Bucket][] = [
 	[/\/dist\/resources\/(Resource|RequestTarget|Resources|ResourceInterface)\.js|\/dist\/server\//, 'routing'],
 	[/\/dist\/resources\//, 'txn'],
 	[/\/node_modules\/(fast-json-stringify|secure-json-parse)\//, 'serialize'],
+	[/\/node_modules\/(@fastify\/jwt|fast-jwt|jsonwebtoken|jws|jwa|@lukeed\/ms|steed)\//, 'auth'],
 	[
 		/\/node_modules\/(fastify|find-my-way|avvio|@fastify|fastq|light-my-request|abstract-logging|pino|toad-cache|process-warning|rfdc)\/|\/pg-app\/server\.mjs/,
 		'routing',
@@ -130,6 +133,69 @@ export function classify(stack: string[], component: string): Bucket {
 	return 'other';
 }
 
+/**
+ * Harper's request pipeline, outermost first. A sample belongs to the innermost layer on its stack:
+ * work resumed after an await has lost its callers' frames, so stack containment alone would charge
+ * it to whichever async function resumed, never to the layers around it.
+ */
+const PIPELINE: { layer: string; js?: RegExp; native?: RegExp }[] = [
+	{
+		layer: 'uWS HTTP: native and uwsServer.js',
+		js: /\/dist\/server\/serverHelpers\/uwsServer\.js/,
+		native: /[([]uws_linux_[^)\]]*\.node[)\]]|^uWS::|^us_/,
+	},
+	{ layer: 'http.ts handle, middleware chain', js: /\/dist\/server\/(http|middlewareChain)\.js/ },
+	{ layer: 'authentication middleware', js: /\/dist\/security\// },
+	{ layer: 'REST handler', js: /\/dist\/server\/REST\.js/ },
+	{ layer: 'request transaction', js: /\/dist\/resources\/(transaction|DatabaseTransaction)\.js/ },
+	{
+		layer: 'resource resolution, context',
+		js: /\/dist\/resources\/(Resource|Resources|RequestTarget|ResourceInterface)\.js/,
+	},
+	{ layer: 'Table.get', js: /\/dist\/resources\/Table\.js/ },
+	{ layer: 'record cache', js: /\/node_modules\/weak-lru-cache\//, native: /VerificationTable|verification_table/ },
+	{
+		layer: 'RocksDB read',
+		js: /\/dist\/resources\/PrimaryRocksDatabase\.js|\/node_modules\/@harperfast\/rocksdb-js\//,
+		native: /[([]rocksdb-js\.node[)\]]/,
+	},
+	{
+		layer: 'record decode',
+		js: /\/dist\/resources\/RecordEncoder\.js|\/node_modules\/(msgpackr|structon|cbor-x)\//,
+		native: /[([]node\.napi\.glibc\.node[)\]]|Extractor::/,
+	},
+	{
+		layer: 'response serialization',
+		js: /\/dist\/server\/serverHelpers\/(contentTypes|JSONStream)/,
+		native: /JsonStringifier|Builtins_JsonStringify|JsonStringify/,
+	},
+];
+/** Response-header assembly, reported beside the pipeline rather than inside whichever layer called it. */
+const HEADER_FRAME =
+	/^[*~^+']*(writeHeaders|applyResponseHeaders|addVaryHeader|setHeader|appendHeader) |\/dist\/server\/serverHelpers\/Headers\.js/;
+const HEADERS = 'response headers (header-assembly task)';
+
+/** The pipeline layer (or GC, JIT, event loop, other) a Harper sample is charged to. */
+export function pipelineLayer(stack: string[]): string {
+	if (stack.some((f) => GC.test(f))) return 'GC';
+	if (stack.some((f) => JIT.test(f))) return 'JIT compilation';
+	for (let i = stack.length - 1; i >= 0; i--) {
+		const frame = stack[i];
+		const js = JS_FRAME.exec(frame);
+		if (js) {
+			if (HEADER_FRAME.test(frame)) return HEADERS;
+			const layer = PIPELINE.find((l) => l.js?.test(js[1]));
+			if (layer) return layer.layer;
+			continue;
+		}
+		const layer = PIPELINE.find((l) => l.native?.test(frame));
+		if (layer) return layer.layer;
+	}
+	return stack.some((f) => /RunMicrotasks|MicrotaskQueue|uv_run|uv__io_poll|epoll_p?wait/.test(f))
+		? 'event loop, microtasks'
+		: 'other';
+}
+
 const ROCKSDB_PARTS: [RegExp, string][] = [
 	[
 		/LRUCache|lru_cache|ShardedCache|ClockCache|HyperClock|Cache::Lookup|CacheHandleGuard|BlockBasedTable::.*Cache/,
@@ -173,12 +239,26 @@ interface ProfileRow {
 	topSelf: Record<string, [string, number][]>;
 	/** Harper's own JS frames by inclusive µs/op: the request pipeline's stages. */
 	topInclusive: [string, number][];
+	/** Harper samples by pipeline layer: µs/op and the layer's top innermost frames. */
+	pipeline: Record<string, { us: number; top: [string, number][] }>;
 }
 
 const shortFrame = (f: string) =>
 	f
 		.replace(/(file:\/\/)?\/\S*?\/(dist|node_modules|benchmarks)\//, '$2/')
 		.replace(/\s+\([^)]*\)$/, (m) => (m.includes('.so') || m.includes('.node') ? m : ''));
+
+/** `ns::f(args) const [clone .x]` -> `ns::f`: drops the last balanced parameter list and what follows it. */
+function stripSignature(name: string): string {
+	const end = name.lastIndexOf(')');
+	if (end < 0) return name;
+	let depth = 0;
+	for (let i = end; i >= 0; i--) {
+		if (name[i] === ')') depth++;
+		else if (name[i] === '(' && --depth === 0) return name.slice(0, i).trim() || name;
+	}
+	return name;
+}
 
 async function analyze(
 	profile: ProfiledWindow
@@ -188,6 +268,8 @@ async function analyze(
 	const rocksdbParts: Record<string, number> = {};
 	const topSelf: Record<string, Map<string, number>> = {};
 	const inclusive = new Map<string, number>();
+	const pipelineSelf: Record<string, Map<string, number>> = {};
+	const pipelineUs: Record<string, number> = {};
 	for (const [component, samples] of Object.entries(profile.samples)) {
 		const componentMicrosPerOp = ((profile.byComponentCpuSeconds[component] ?? 0) * 1e6) / profile.ops;
 		if (samples === 0) {
@@ -217,6 +299,14 @@ async function analyze(
 			const map = (topSelf[bucket] ??= new Map());
 			const name = shortFrame(stack[leaf]);
 			map.set(name, (map.get(name) ?? 0) + us);
+			if (component === 'harper') {
+				const layer = pipelineLayer(stack);
+				pipelineUs[layer] = (pipelineUs[layer] ?? 0) + us;
+				const self = (pipelineSelf[layer] ??= new Map());
+				// C++ signatures carry little beyond the qualified name
+				const compact = isJsFrame(stack[leaf]) ? name : stripSignature(name);
+				self.set(compact, (self.get(compact) ?? 0) + us);
+			}
 			// Tier markers dropped, so a function's optimized and baseline frames add up; once per stack.
 			const seen = new Set<string>();
 			for (const frame of stack) {
@@ -233,6 +323,12 @@ async function analyze(
 		kernelMicrosPerOp,
 		rocksdbParts,
 		topInclusive: [...inclusive].sort((a, b) => b[1] - a[1]).slice(0, 40),
+		pipeline: Object.fromEntries(
+			Object.entries(pipelineUs).map(([layer, us]) => [
+				layer,
+				{ us, top: [...pipelineSelf[layer]].sort((a, b) => b[1] - a[1]).slice(0, 12) },
+			])
+		),
 		topSelf: Object.fromEntries(
 			Object.entries(topSelf).map(([bucket, map]) => [bucket, [...map].sort((a, b) => b[1] - a[1]).slice(0, 8)])
 		),
@@ -352,6 +448,8 @@ function flameGraphSvg(stacks: { stack: string[]; count: number }[], title: stri
 
 // --- report ------------------------------------------------------------------------------------
 
+let pipelineView = false;
+
 interface ResultSample {
 	target: string;
 	workload: string;
@@ -363,6 +461,7 @@ interface ResultSample {
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
 	const svgDir = argv.find((a) => a.startsWith('--svg-dir='))?.slice('--svg-dir='.length);
+	pipelineView = argv.includes('--pipeline');
 	const files = argv.filter((a) => !a.startsWith('--'));
 	if (files.length === 0) throw new Error('usage: profile-report.mts <results.json>... [--svg-dir=<dir>]');
 	if (svgDir) await mkdir(svgDir, { recursive: true });
@@ -451,6 +550,26 @@ async function main(): Promise<void> {
 			for (const [component, counters] of Object.entries(r.profile.steady.perf.byComponent)) {
 				out.push(`- ${component}: ${counterLine(counters, r.profile.steady.ops)}`);
 			}
+		}
+		const layers = Object.keys(r.pipeline);
+		if (layers.length > 0 && pipelineView) {
+			const chain = PIPELINE.map((l) => l.layer).filter((l) => r.pipeline[l]);
+			out.push(
+				'',
+				'| Harper pipeline layer (outermost first) | own µs/op | with inner layers µs/op |',
+				'|---|--:|--:|'
+			);
+			chain.forEach((layer, i) => {
+				const inner = chain.slice(i).reduce((sum, l) => sum + r.pipeline[l].us, 0);
+				out.push(`| ${layer} | ${r.pipeline[layer].us.toFixed(2)} | ${inner.toFixed(2)} |`);
+			});
+			for (const layer of layers.filter((l) => !chain.includes(l)).sort((a, b) => r.pipeline[b].us - r.pipeline[a].us))
+				out.push(`| ${layer} | ${r.pipeline[layer].us.toFixed(2)} | |`);
+			out.push('', '<details><summary>Top innermost frames per layer, µs/op</summary>', '');
+			for (const layer of [...chain, ...layers.filter((l) => !chain.includes(l))]) {
+				out.push(`- **${layer}**: ${r.pipeline[layer].top.map(([name, us]) => `${name} ${us.toFixed(2)}`).join('; ')}`);
+			}
+			out.push('', '</details>', '');
 		}
 		if (r.topInclusive.length > 0) {
 			out.push('<details><summary>Harper JS frames by inclusive µs/op</summary>', '');

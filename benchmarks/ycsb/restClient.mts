@@ -30,6 +30,8 @@ export interface RestClientOptions {
 	table: string;
 	maxSockets: number;
 	auth?: { username: string; password: string };
+	/** A complete Authorization header value (e.g. `Bearer <token>`); takes precedence over `auth`. */
+	authorization?: string;
 	/** Per-request timeout; a hung socket otherwise blocks a closed-loop worker forever. */
 	requestTimeoutMs?: number;
 }
@@ -41,9 +43,11 @@ export interface RestExecutor extends OpExecutor {
 export function createRestExecutor(options: RestClientOptions): RestExecutor {
 	const { table } = options;
 	const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
-	const authHeader = options.auth
-		? 'Basic ' + Buffer.from(`${options.auth.username}:${options.auth.password}`).toString('base64')
-		: undefined;
+	const authHeader =
+		options.authorization ??
+		(options.auth
+			? 'Basic ' + Buffer.from(`${options.auth.username}:${options.auth.password}`).toString('base64')
+			: undefined);
 
 	const endpoints: Endpoint[] = options.baseUrls.map((raw) => {
 		const url = new URL(raw);

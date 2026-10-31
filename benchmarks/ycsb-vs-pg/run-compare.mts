@@ -16,6 +16,7 @@
 import { readFile, writeFile, mkdir, rename, rm, statfs } from 'node:fs/promises';
 import { statSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createHmac, randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { parseOptions } from '../ycsb/harness.mts';
 import { WORKLOADS } from '../ycsb/workload.mts';
@@ -39,6 +40,7 @@ import {
 	pinPid,
 	writePinnedRuntime,
 	startHostLoad,
+	waitForQuietHost,
 	type HostLoad,
 	type ResourceTargets,
 	type ResourceDelta,
@@ -109,6 +111,8 @@ export const MEMORY_BUDGET_BYTES = 8 * 1024 ** 3;
 const METHODOLOGY = 'v2: every component in its own memory cgroup (hard cap, swap off); cgroup charges reported';
 
 type CacheMode = 'warm' | 'cold';
+/** none: Harper serves loopback as its local-trust principal and Fastify checks nothing; token: both verify a bearer JWT. */
+export type AuthMode = 'none' | 'token';
 type Options = ReturnType<typeof parseOptions>;
 
 export interface Session {
@@ -132,6 +136,9 @@ export interface Session {
 	perfCounters: boolean;
 	/** Set by --profile: profiler flags on the targets and a separate sampled-profile window after each measured one. */
 	profile?: { dir: string; ops: number };
+	auth: AuthMode;
+	/** --auth=token: the stack's HS256 secret, generated per session. */
+	jwtSecret?: string;
 }
 
 interface Sample {
@@ -140,17 +147,23 @@ interface Sample {
 	position: number;
 	target: TargetName;
 	workload: string;
+	auth: AuthMode;
+	/** With --host-quiet-cores: the wait for a quiet host before this sample. */
+	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
 	shards: number;
 	load: PhaseResult;
 	warm: PhaseResult;
 	measured: MeasuredWindow;
 }
 
-async function waitForRoute(url: string, deadlineMs: number): Promise<void> {
+async function waitForRoute(url: string, deadlineMs: number, authorization?: string): Promise<void> {
 	const deadline = Date.now() + deadlineMs;
 	while (Date.now() < deadline) {
 		try {
-			const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+			const res = await fetch(url, {
+				signal: AbortSignal.timeout(5000),
+				headers: authorization ? { authorization } : {},
+			});
 			await res.body?.cancel();
 			if (res.status >= 200 && res.status < 300) return;
 		} catch {
@@ -159,6 +172,71 @@ async function waitForRoute(url: string, deadlineMs: number): Promise<void> {
 		await new Promise((r) => setTimeout(r, 250));
 	}
 	throw new Error(`timed out waiting for ${url}`);
+}
+
+const TOKEN_USER = 'ycsb_reader';
+
+/** An HS256 JWT signed with `secret`: what the stack's clients would hold. */
+export function mintHs256(secret: string, subject: string): string {
+	const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+	const body = `${part({ alg: 'HS256', typ: 'JWT' })}.${part({ sub: subject, iat: Math.floor(Date.now() / 1000) })}`;
+	return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
+}
+
+/**
+ * A non-super-user role that can read and write the benchmark table and nothing else (B updates), a
+ * user in it, and that user's operation token. Idempotent, since a restored snapshot may hold them.
+ */
+async function harperTokenAuthorization(operationsURL: string, admin: string, table: string): Promise<string> {
+	const operation = async (body: Record<string, unknown>, tolerate?: RegExp) => {
+		const response = await fetch(operationsURL, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'authorization': admin },
+			body: JSON.stringify(body),
+		});
+		const text = await response.text();
+		if (response.ok) return JSON.parse(text);
+		if (tolerate?.test(text)) return undefined;
+		throw new Error(`${body.operation} -> ${response.status}: ${text.slice(0, 300)}`);
+	};
+	const password = randomBytes(18).toString('base64url');
+	await operation(
+		{
+			operation: 'add_role',
+			role: TOKEN_USER,
+			permission: {
+				super_user: false,
+				data: {
+					tables: {
+						[table]: { read: true, insert: true, update: true, delete: false, attribute_permissions: [] },
+					},
+				},
+			},
+		},
+		/already exists/i
+	);
+	const added = await operation(
+		{ operation: 'add_user', username: TOKEN_USER, password, role: TOKEN_USER, active: true },
+		/already exists/i
+	);
+	if (!added) await operation({ operation: 'alter_user', username: TOKEN_USER, password, role: TOKEN_USER });
+	const tokens = await operation({ operation: 'create_authentication_tokens', username: TOKEN_USER, password });
+	if (!tokens?.operation_token) throw new Error('create_authentication_tokens returned no operation_token');
+	return `Bearer ${tokens.operation_token}`;
+}
+
+/** Proves the target checks the credential: a request without it is refused, one with it is served. */
+async function assertCredentialChecked(url: string, authorization: string): Promise<void> {
+	const anonymous = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+	await anonymous.body?.cancel();
+	if (anonymous.status !== 401 && anonymous.status !== 403) {
+		throw new Error(`--auth=token: ${url} without a credential answered ${anonymous.status}, not 401/403`);
+	}
+	const authorized = await fetch(url, { headers: { authorization }, signal: AbortSignal.timeout(10_000) });
+	await authorized.body?.cancel();
+	if (authorized.status !== 200 && authorized.status !== 404) {
+		throw new Error(`--auth=token: ${url} with the token answered ${authorized.status}`);
+	}
 }
 
 export interface Running {
@@ -172,6 +250,8 @@ export interface Running {
 	dataRoot?: string;
 	/** Milliseconds from launch to accepting requests; a restore's copy is part of it. */
 	startupMs: number;
+	/** --auth=token: the Authorization header every generated request carries. */
+	authorization?: string;
 	afterLoad?: () => Promise<void>;
 	checkpoints?: () => Promise<number>;
 	/**
@@ -229,6 +309,7 @@ async function withHarper<T>(
 			threads: { count: options.threads },
 			analytics: { aggregatePeriod: -1 },
 			logging: { level: 'warn' },
+			...(session.auth === 'token' ? { authentication: { authorizeLocal: false } } : {}),
 		},
 		env,
 		startupTimeoutMs: options.startupTimeoutMs,
@@ -257,8 +338,16 @@ async function withHarper<T>(
 		throw error;
 	}
 	try {
-		const { httpURL } = started.harper;
-		await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000);
+		const { httpURL, operationsAPIURL, admin } = started.harper;
+		let authorization: string | undefined;
+		if (session.auth === 'token') {
+			const adminBasic = `Basic ${Buffer.from(`${admin.username}:${admin.password}`).toString('base64')}`;
+			await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000, adminBasic);
+			authorization = await harperTokenAuthorization(operationsAPIURL, adminBasic, options.config.table);
+			await assertCredentialChecked(`${httpURL}/${options.config.table}/auth-probe`, authorization);
+		} else {
+			await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000);
+		}
 		const pid = started.harper.process.pid!;
 		const cgroup = processCgroup(pid);
 		console.log(`${target} ready at ${httpURL} (pid ${pid}, ${cgroup})`);
@@ -270,6 +359,7 @@ async function withHarper<T>(
 				harper: verifyMemoryLimit('harper', cgroup, session.harperMemoryBytes, MEMORY_BUDGET_BYTES),
 			},
 			recordCacheSize,
+			authorization,
 			dataRoot: started.harper.dataRootDir,
 			startupMs: Date.now() - launchedAt,
 			async snapshot(dir: string): Promise<string> {
@@ -316,9 +406,13 @@ async function withPgStack<T>(
 		fastifyUnit: nextUnit(session, 'fastify'),
 		restore: launch.restore,
 		nodeOptions: session.profile ? PERF_NODE_OPTIONS : undefined,
+		jwtSecret: session.jwtSecret,
 	});
 	try {
-		await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000);
+		const authorization = session.jwtSecret ? `Bearer ${mintHs256(session.jwtSecret, TOKEN_USER)}` : undefined;
+		await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000, authorization);
+		if (authorization)
+			await assertCredentialChecked(`${stack.baseUrl}/${options.config.table}/auth-probe`, authorization);
 		console.log(`${target} ready at ${stack.baseUrl}`);
 		return await body({
 			baseUrl: stack.baseUrl,
@@ -329,6 +423,7 @@ async function withPgStack<T>(
 			},
 			pinned: { fastify: stack.appPid },
 			memoryLimits: stack.memoryLimits,
+			authorization,
 			startupMs: stack.startupMs,
 			afterLoad: stack.vacuum,
 			checkpoints: stack.checkpoints,
@@ -665,6 +760,7 @@ async function measureSample(
 			shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
 			keyWidth,
 			maxScanLength: config.maxScanLength,
+			authorization: running.authorization,
 		});
 		try {
 			assertNoErrors('load', driver.load);
@@ -697,6 +793,7 @@ async function measureSample(
 				position,
 				target,
 				workload,
+				auth: session.auth,
 				shards: driver.shardsUsed(workload),
 				load: driver.load,
 				warm,
@@ -906,6 +1003,8 @@ export async function createSession(
 		});
 		if (refused.length > 0) throw new Error(`--cache=cold does not support ${refused.join(', ')}`);
 	}
+	const auth = (argValue(argv, '--auth') ?? 'none') as AuthMode;
+	if (auth !== 'none' && auth !== 'token') throw new Error(`--auth must be none or token, got ${auth}`);
 	const harperMemory = argValue(argv, '--harper-memory') ?? 'capped';
 	if (harperMemory !== 'capped' && harperMemory !== 'measured') {
 		throw new Error(`--harper-memory must be capped or measured, got ${harperMemory}`);
@@ -946,6 +1045,7 @@ export async function createSession(
 		'harper-memory',
 		'profile',
 		'profile-ops',
+		'auth',
 	];
 	const passthrough = argv.filter((a) => {
 		if (a === '--perf-counters') return false;
@@ -974,6 +1074,8 @@ export async function createSession(
 		'YCSB_RESTORE_FROM',
 		'YCSB_RESTORE_TO',
 		'YCSB_PG_RESTORE',
+		'JWT_SECRET',
+		'AUTHENTICATION_AUTHORIZELOCAL',
 	])
 		delete process.env[name];
 	// This process, and the generator shards it forks, run on the generator cores.
@@ -1010,6 +1112,8 @@ export async function createSession(
 		units: { count: 0 },
 		perfCounters,
 		profile,
+		auth,
+		jwtSecret: auth === 'token' ? randomBytes(32).toString('base64url') : undefined,
 	};
 
 	const { base } = await prepareDataDirs();
@@ -1065,6 +1169,15 @@ export async function createSession(
 		config: { ...options.config, threads: options.threads, engine: options.engine },
 		perfCounters,
 		profile: profile && { ...profile, nodeOptions: PERF_NODE_OPTIONS },
+		auth:
+			auth === 'token'
+				? {
+						mode: auth,
+						harper: `authentication.authorizeLocal false; role ${TOKEN_USER} (not super_user; read/insert/update on ${options.config.table} only); create_authentication_tokens operation token (RS256)`,
+						stack:
+							'@fastify/jwt (fast-jwt) HS256, verified in an onRequest hook on every request, no verified-token cache',
+					}
+				: { mode: auth },
 	};
 	return { session, meta };
 }
@@ -1074,10 +1187,17 @@ async function main(): Promise<void> {
 	const targets = parseTargets(argValue(argv, '--targets') ?? 'harper,pg-redis');
 	const cache = (argValue(argv, '--cache') ?? 'warm') as CacheMode;
 	if (cache !== 'warm' && cache !== 'cold') throw new Error(`--cache must be warm or cold, got ${cache}`);
+	const hostQuietArg = argValue(argv, '--host-quiet-cores');
+	const hostQuietCores = hostQuietArg === undefined ? undefined : Number(hostQuietArg);
+	const hostQuietMaxMin = Number(argValue(argv, '--host-quiet-max-min') ?? 15);
+	for (const [flag, value] of Object.entries({ hostQuietCores, hostQuietMaxMin })) {
+		if (value !== undefined && !(value >= 0)) throw new Error(`${flag} must be a non-negative number, got ${value}`);
+	}
 	const { session, meta } = await createSession(argv, {
 		targets,
 		cache,
 		stackMemory: (target) => WARM_STACK_MEMORY[target],
+		ownFlags: ['host-quiet-cores', 'host-quiet-max-min'],
 	});
 	const { options } = session;
 	const file = join(RESULTS_DIR, `compare-${meta.timestamp}.json`);
@@ -1093,7 +1213,21 @@ async function main(): Promise<void> {
 		for (const workload of options.config.workloads) {
 			const order = targetOrder(targets, rep);
 			for (let i = 0; i < order.length; i++) {
-				samples.push(await measureSample(session, order[i], workload, rep, i + 1));
+				// Before the sample, not the measured run: a gate between warmup and measuring would cool the target.
+				const gate =
+					hostQuietCores === undefined
+						? undefined
+						: await waitForQuietHost({ maxOtherCores: hostQuietCores, maxMs: hostQuietMaxMin * 60_000 });
+				if (gate) {
+					console.log(
+						`  [host] ${gate.last.otherCores.toFixed(2)} cores busy elsewhere` +
+							(gate.quiet ? '' : ' — not quiet, running anyway') +
+							` (waited ${(gate.waitedMs / 1000).toFixed(0)} s)`
+					);
+				}
+				const sample = await measureSample(session, order[i], workload, rep, i + 1);
+				if (gate) sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
+				samples.push(sample);
 				await persist();
 			}
 		}

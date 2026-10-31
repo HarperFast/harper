@@ -33,6 +33,7 @@ export interface DriverConfig {
 	maxScanLength: number;
 	/** false attaches to an already-loaded dataset (a restored snapshot) instead of inserting it. */
 	load?: boolean;
+	authorization?: string;
 }
 
 class ShardPool {
@@ -167,6 +168,7 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 		shape: config.shape,
 		keyWidth: config.keyWidth,
 		maxScanLength: config.maxScanLength,
+		authorization: config.authorization,
 	};
 
 	const rangeCommands = (phase: 'load' | 'readAll'): ShardCommand[] => {

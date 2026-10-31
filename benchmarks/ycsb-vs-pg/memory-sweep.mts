@@ -45,6 +45,7 @@ import {
 	targetOrder,
 	withTarget,
 	writeJsonAtomic,
+	type AuthMode,
 	type MeasuredWindow,
 	type Running,
 	type Session,
@@ -111,6 +112,7 @@ interface SweepSample {
 	workload: string;
 	rep: number;
 	position: number;
+	auth: AuthMode;
 	/**
 	 * Measured but not clean, first cause wins: `quiesce-timeout`, the restored target was still busy
 	 * when the quiesce wait ran out; `warmup-ceiling`, warmup hit its chunk ceiling without a plateau;
@@ -248,6 +250,7 @@ function driverConfig(session: Session, running: Running, keyWidth: number, load
 		keyWidth,
 		maxScanLength: config.maxScanLength,
 		load,
+		authorization: running.authorization,
 	};
 }
 
@@ -256,7 +259,10 @@ async function verifyRestoredData(running: Running, session: Session, keyWidth: 
 	const { config } = session.options;
 	for (const index of [0, config.records - 1]) {
 		const key = formatKey(index, keyWidth);
-		const response = await fetch(`${running.baseUrl}/${config.table}/${key}`, { signal: AbortSignal.timeout(30_000) });
+		const response = await fetch(`${running.baseUrl}/${config.table}/${key}`, {
+			signal: AbortSignal.timeout(30_000),
+			headers: running.authorization ? { authorization: running.authorization } : {},
+		});
 		const record = response.ok ? ((await response.json()) as Record<string, string>) : undefined;
 		if (!response.ok) await response.body?.cancel();
 		if (record?.field0?.length !== config.fieldLength) {
@@ -636,6 +642,7 @@ async function main(): Promise<void> {
 							workload,
 							rep,
 							position: i + 1,
+							auth: session.auth,
 							status: 'failed',
 							...(allowUncapped ? { allowUncapped: true as const } : {}),
 							...(sharedCgroup ? { sharedCgroup: true as const } : {}),

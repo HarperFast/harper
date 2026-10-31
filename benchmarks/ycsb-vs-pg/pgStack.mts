@@ -138,6 +138,8 @@ export interface PgStackOptions {
 	restore?: string;
 	/** NODE_OPTIONS for the Fastify cluster (profiling flags). */
 	nodeOptions?: string;
+	/** HS256 secret: the app then requires a JWT on every request. */
+	jwtSecret?: string;
 }
 
 export interface PgStack {
@@ -245,6 +247,7 @@ async function startServices(
 			PG_URL,
 			REDIS_URL,
 			...(options.nodeOptions ? { NODE_OPTIONS: options.nodeOptions } : {}),
+			...(options.jwtSecret ? { JWT_SECRET: options.jwtSecret } : {}),
 		},
 		stdio: ['ignore', 'pipe', 'inherit'],
 	});
