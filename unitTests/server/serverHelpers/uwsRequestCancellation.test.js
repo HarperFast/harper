@@ -53,10 +53,13 @@ function get(port, options = {}) {
 
 async function disconnectDuring(port, entered) {
 	const socket = net.connect({ host: '127.0.0.1', port });
-	await within(once(socket, 'connect'), 'the connection');
-	socket.write('GET /item HTTP/1.1\r\nHost: localhost\r\n\r\n');
-	await within(entered, 'the handler to start');
-	socket.destroy();
+	try {
+		await within(once(socket, 'connect'), 'the connection');
+		socket.write('GET /item HTTP/1.1\r\nHost: localhost\r\n\r\n');
+		await within(entered, 'the handler to start');
+	} finally {
+		socket.destroy();
+	}
 }
 
 (uwsAvailable ? describe : describe.skip)('uWS request cancellation and peer address', function () {
