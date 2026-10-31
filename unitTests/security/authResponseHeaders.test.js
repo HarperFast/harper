@@ -48,7 +48,11 @@ const RESPONSES = {
 	'vary *': () => ({ status: 200, headers: new Headers({ Vary: '*' }), body: 'x' }),
 	'vary covers': () => ({ status: 200, headers: new Headers({ vary: 'ORIGIN,  authorization ,cookie' }), body: 'x' }),
 	'vary array': () => ({ status: 200, headers: new Headers([['vary', ['Accept', 'X-Thing']]]), body: 'x' }),
-	'vary lookalike': () => ({ status: 200, headers: new Headers({ Vary: 'Authorizatio, Cookies, Origin-X' }), body: 'x' }),
+	'vary lookalike': () => ({
+		status: 200,
+		headers: new Headers({ Vary: 'Authorizatio, Cookies, Origin-X' }),
+		body: 'x',
+	}),
 	'vary blank': () => ({ status: 200, headers: new Headers({ Vary: '   ' }), body: 'x' }),
 	'public': () => ({ status: 200, headers: new Headers({ 'Cache-Control': 'public, max-age=60' }), body: 'x' }),
 	's-maxage': () => ({ status: 200, headers: new Headers({ 'cache-control': 's-maxage=30' }), body: 'x' }),
@@ -190,7 +194,9 @@ describe('authentication response headers', () => {
 	const recorded = {};
 	after(() => {
 		if (!RECORD) return;
-		const lines = Object.entries(recorded).map(([name, value]) => `\t${JSON.stringify(name)}: ${JSON.stringify(value)}`);
+		const lines = Object.entries(recorded).map(
+			([name, value]) => `\t${JSON.stringify(name)}: ${JSON.stringify(value)}`
+		);
 		fs.writeFileSync(EXPECTED_PATH, `{\n${lines.join(',\n')}\n}\n`);
 	});
 
@@ -261,4 +267,3 @@ describe('authentication response headers', () => {
 		});
 	}
 });
-
