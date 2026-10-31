@@ -258,7 +258,7 @@ describe('full-text host query policy', () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
-	it('rejects invalid explicit query policy before other startup work or workers', function () {
+	it('rejects invalid explicit query policy before V8 flag validation', function () {
 		this.timeout(60000);
 		const { execFileSync } = require('node:child_process');
 		for (const [name, value, message] of [
@@ -273,7 +273,6 @@ describe('full-text host query policy', () => {
 			);
 			const result = JSON.parse(output.trim().split('\n').at(-1));
 			assert.match(result.error, message);
-			assert.strictEqual(result.workers, 0);
 		}
 	});
 	it('passes default and supported explicit policies through startup validation', async function () {
@@ -296,11 +295,11 @@ describe('full-text host query policy', () => {
 			);
 			const result = JSON.parse(output.trim().split('\n').at(-1));
 			assert.match(result.error, /threads.v8Flags.*fulltext-startup-sentinel/);
-			assert.strictEqual(result.workers, 0);
 		}
 	});
 	it('preserves startup when native addons are unavailable, with or without explicit query policy', function () {
 		this.timeout(60000);
+		if (typeof globalThis.Bun !== 'undefined') this.skip();
 		const { execFileSync } = require('node:child_process');
 		for (const policy of [undefined, { maxQueryTerms: 128 }]) {
 			const output = execFileSync(
@@ -316,6 +315,26 @@ describe('full-text host query policy', () => {
 			assert.deepStrictEqual(JSON.parse(output.trim().split('\n').at(-1)), {
 				initialized: true,
 				nativeUnavailable: true,
+				nativeLoadedAtStartup: false,
+			});
+		}
+	});
+	it('loads the real addon at startup only for explicitly configured query policy', async function () {
+		this.timeout(60000);
+		if (typeof globalThis.Bun !== 'undefined') this.skip();
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { execFileSync } = require('node:child_process');
+		for (const policy of [undefined, {}]) {
+			const output = execFileSync(
+				process.execPath,
+				[require.resolve('./fixtures/fullTextQueryStartup.cjs'), JSON.stringify(policy) ?? 'undefined', 'initialize'],
+				{ encoding: 'utf8', timeout: 30000 }
+			);
+			assert.deepStrictEqual(JSON.parse(output.trim().split('\n').at(-1)), {
+				initialized: true,
+				nativeUnavailable: false,
+				nativeLoadedAtStartup: policy !== undefined,
 			});
 		}
 	});

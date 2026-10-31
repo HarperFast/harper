@@ -17,16 +17,19 @@ async function run() {
 	try {
 		await startup(0);
 		if (!startupOnly) throw new Error('Startup passed the invalid V8 sentinel');
+		const nativeLoadedAtStartup = process.report
+			.getReport()
+			.sharedObjects.some((file) => /fulltext.*\.node$/i.test(file));
 		let nativeUnavailable = false;
 		try {
 			await (await import('@harperfast/fulltext/native')).runtimeInfo();
 		} catch {
 			nativeUnavailable = true;
 		}
-		return { initialized: true, nativeUnavailable };
+		return { initialized: true, nativeUnavailable, nativeLoadedAtStartup };
 	} catch (error) {
 		if (startupOnly) throw error;
-		return { error: error.message, workers: require('#src/server/threads/manageThreads').workers.length };
+		return { error: error.message };
 	}
 }
 

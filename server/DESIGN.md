@@ -2,6 +2,8 @@
 
 This layer routes HTTP, HTTPS, WebSocket, MQTT and NATS traffic to Resources.
 
+**Read this when:** changing protocol handling, middleware, requests, responses or WebSocket upgrades.
+
 Use the symbol and section names below to navigate; line numbers drift.
 
 ---
@@ -955,7 +957,7 @@ any load error as a misleading "supports only Node.js versions" message.
 
 ## `threads.v8Flags` is applied once, before the first Harper worker (`server/threads/v8Flags.ts`)
 
-V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` also calls it at entry, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
+V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` calls it after explicit full-text query policy validation, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
 
 It is not applied at `manageThreads.ts` module load, as `threads.heapSnapshotNearLimit` is: `bin/run.ts` imports that module before `initialize()` runs the install that first composes `HARPER_SET_CONFIG` into the config file, and before it writes the `THREADS_V8FLAGS` env/CLI form. A module-load read misses the value on a fresh container's first boot. `unitTests/server/threads/v8Flags.test.js` assigns the setting after the module loads, so a move to module load fails it.
 
