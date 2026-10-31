@@ -137,10 +137,8 @@ describe('check-design-docs', function () {
 		});
 
 		it('checks a titled link, and a heading indented up to three spaces', function () {
-			fails(
-				{ 'a/DESIGN.md': note('[gone](./gone.ts "the title") [other](./gone.ts \'t\')') },
-				/links to missing file \.\/gone\.ts/
-			);
+			for (const title of ['"the title"', "'t'", '(t)'])
+				fails({ 'a/DESIGN.md': note(`[gone](./gone.ts ${title})`) }, /links to missing file \.\/gone\.ts/);
 			passes({ 'a/DESIGN.md': `${NOTE}\n   ### Indented\n\n[ok](#indented \"title\")\n` });
 		});
 

@@ -78,7 +78,7 @@ function* links(file) {
 	for (const [number, line] of prose(file)) {
 		for (const m of line
 			.replace(CODE_SPAN, '')
-			.matchAll(/\]\(([^)#\s]*)(?:#([^)\s]*))?(?:\s+(?:"[^"]*"|'[^']*'))?\)/g)) {
+			.matchAll(/\]\(([^)#\s]*)(?:#([^)\s]*))?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)/g)) {
 			if (/^[a-z][a-z0-9+.-]*:/i.test(m[1])) continue;
 			yield { number, target: m[1], anchor: m[2], listItem: /^\s*[-*] /.test(line) };
 		}
