@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { searchByIndex } = require('#src/resources/search');
+const { searchByIndex, relationshipRestriction } = require('#src/resources/search');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -415,7 +415,7 @@ describe('Queries read related records asynchronously', () => {
 						ColdParent,
 						{ filtered }
 					);
-					filtered.children.filters = [switching];
+					relationshipRestriction(filtered, 'children').filters = [switching];
 					const ids = [];
 					if (sync) for (const id of results) ids.push(id);
 					else for await (const id of results) ids.push(id);
@@ -555,7 +555,7 @@ describe('Queries read related records asynchronously', () => {
 			);
 			let release;
 			let laterCalls = 0;
-			filtered.children.filters = [
+			relationshipRestriction(filtered, 'children').filters = [
 				Object.assign(() => true, { maybeAsync: () => new Promise((resolve) => (release = resolve)) }),
 				() => ++laterCalls > 0,
 			];
