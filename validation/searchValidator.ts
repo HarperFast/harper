@@ -171,6 +171,8 @@ const searchByConditionsSchema = Joi.object({
 						.valid(...SEARCH_BY_CONDITIONS_COMPARATORS)
 						.optional(),
 					fields: Joi.array().min(1).items(hdbSchemaTable).optional(),
+					fuzzyDistance: Joi.number().integer().min(0).max(2).strict().optional(),
+					fuzzyTranspositions: Joi.bool().strict().optional(),
 					includeHighlights: Joi.bool().optional(),
 					maxIndexLagMilliseconds: Joi.number().min(0).optional(),
 					waitForIndexMilliseconds: Joi.number().min(0).max(30_000).optional(),

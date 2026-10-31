@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
@@ -18,6 +19,7 @@ import type { RocksTransactionLogStore } from '../RocksTransactionLogStore.ts';
 import {
 	loadFullTextNativeBinding,
 	nativeFullTextSearchThreads,
+	nativeFullTextQueryLimits,
 	validateFullTextQueryRuntimeInfo,
 	type NativeFullTextIndexConfiguration,
 	type NativeFullTextModule,
@@ -28,7 +30,13 @@ import {
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
-import { fullTextComparatorMode, replayFullTextPrefix, fullTextHitsAdvance } from './fullTextQueryProtocol.ts';
+import {
+	fullTextComparatorMode,
+	replayFullTextPrefix,
+	fullTextHitsAdvance,
+	fullTextFuzzyOptions,
+	validateFullTextFuzzyOptions,
+} from './fullTextQueryProtocol.ts';
 export {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
 	FULL_TEXT_QUERY_RESUME_OPERATION,
@@ -54,8 +62,8 @@ const MAX_CANDIDATE_KEYS = 4_096;
 // Four key-only reads remain cheaper than loading and decoding the authoritative record they replace.
 const MAX_POINT_PROBE_READS_PER_CANDIDATE = 4;
 const CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS = 1_000;
-// Query API v4 reserves 82 traversal response bytes before hits and 13 per versioned hit before strings.
-const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 82;
+// Query API v7 traversal reserves 93 bytes plus 13 per versioned hit before strings.
+const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 93;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
@@ -69,7 +77,15 @@ export type FullTextCondition = {
 	comparator?: string;
 	fields?: string[];
 	fullTextQuery?: NativeFullTextSearchExpression;
-	fullTextLeaves?: Array<{ text: string; mode: NativeFullTextSearchMode; fields?: string[] }>;
+	fuzzyDistance?: number;
+	fuzzyTranspositions?: boolean;
+	fullTextLeaves?: Array<{
+		text: string;
+		mode: NativeFullTextSearchMode;
+		fields?: string[];
+		fuzzyDistance?: number;
+		fuzzyTranspositions?: boolean;
+	}>;
 	includeHighlights?: boolean;
 	maxIndexLagMilliseconds?: number;
 	waitForIndexMilliseconds?: number;
@@ -226,6 +242,10 @@ export class FullTextQueryIndex {
 		const waiting = waitForIndexMilliseconds > 0;
 		let coverage: DerivedIndexCoverage | undefined;
 		const execute = async () => {
+			assertFuzzyPolicy(
+				condition.fullTextQuery ?? leafDescriptor(condition),
+				getFullTextQueryPolicy().maxFuzzyDistance
+			);
 			assertReady(
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
@@ -431,7 +451,7 @@ export class FullTextQueryIndex {
 			const rawHitLimit = policy.maxRawHitsPerRequest;
 			let rawHitsFetched = 0;
 			const maxSearchWindow = this.#maxSearchWindow!;
-			const query = condition.fullTextQuery ?? leafExpression(condition);
+			const query = condition.fullTextQuery ?? leafDescriptor(condition);
 			const autocomplete = expressionUsesAutocomplete(query);
 			const searchWindow = maxSearchWindow;
 			const bounded = options.minResults !== undefined;
@@ -800,7 +820,7 @@ export class FullTextQueryIndex {
 				);
 				for (const leaf of fieldLeaves) {
 					for (const traceRecords of traceSourceBatches(records, this.#maxTraceSourceBytes!)) {
-						const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, traceRecords, {
+						const traced = await reader.traceMatches({ ...leaf, fields }, traceRecords, {
 							remainingBudgetMilliseconds: remainingSearchBudget(deadline),
 							snippets: true,
 							fragmentLength: highlighting.fragmentLength,
@@ -1095,6 +1115,9 @@ export class FullTextQueryIndex {
 				: configured
 			: await loadFullTextNativeBinding();
 		const info = validateFullTextQueryRuntimeInfo(await binding.runtimeInfo());
+		const queryPolicy = nativeFullTextQueryLimits(info, getFullTextQueryPolicy());
+		this.#nativeOptions.limits.maxQueryTerms = queryPolicy.maxQueryTerms;
+		this.#nativeOptions.limits.maxQueryClauses = queryPolicy.maxQueryClauses;
 		this.#nativeOptions.limits.searchThreads = nativeFullTextSearchThreads(
 			info,
 			this.#nativeOptions.limits.searchThreads
@@ -1216,11 +1239,6 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 		);
 }
 
-function leafExpression(condition: FullTextCondition): NativeFullTextSearchExpression {
-	const leaf = leafDescriptor(condition);
-	return { text: leaf.text, mode: leaf.mode, ...(leaf.fields ? { fields: leaf.fields } : null) };
-}
-
 function expressionUsesAutocomplete(expression: NativeFullTextSearchExpression): boolean {
 	if ('text' in expression) return expression.mode === 'prefix' || expression.mode === 'fuzzy-prefix';
 	if (expression.operator === 'not') return expressionUsesAutocomplete(expression.clause);
@@ -1231,11 +1249,18 @@ function leafDescriptor(condition: FullTextCondition): {
 	text: string;
 	mode: NativeFullTextSearchMode;
 	fields?: string[];
+	fuzzyDistance?: number;
+	fuzzyTranspositions?: boolean;
 } {
 	const mode = fullTextComparatorMode(condition.comparator);
 	if (!mode || typeof condition.value !== 'string' || condition.value.length === 0)
 		throw new ClientError('Full-text conditions require a supported comparator and non-empty string value', 400);
-	return { text: condition.value, mode, ...(condition.fields ? { fields: condition.fields } : null) };
+	return {
+		text: condition.value,
+		mode,
+		...fullTextFuzzyOptions(condition),
+		...(condition.fields ? { fields: condition.fields } : null),
+	};
 }
 
 async function sourceFields(
@@ -1370,8 +1395,13 @@ function publicSearchError(error: unknown, name: string): Error {
 		return new IndexRebuildingError(`Full-text index '${name}' is not ready`);
 	if (code === 'E_QUEUE_FULL' || code === 'E_TIMEOUT' || code === 'E_RESOURCE_LIMIT')
 		return new ServerError(`Full-text index '${name}' is busy`, 503);
-	if (code === 'E_INVALID_ARGUMENT' || code === 'E_PREFIX_TOO_BROAD')
-		return new ClientError(`Full-text query on '${name}' is invalid`, 400);
+	if (code === 'E_PREFIX_TOO_BROAD')
+		return new ClientError(`Full-text prefix on '${name}' is too broad; use a longer prefix`, 400);
+	if (code === 'E_INVALID_ARGUMENT')
+		return new ClientError(
+			`Full-text query on '${name}' is invalid; check its syntax and storage.fullText.query limits`,
+			400
+		);
 	if (code === 'E_RESULT_TOO_LARGE') return new ClientError(`Full-text query on '${name}' is too large`, 413);
 	return new ServerError(`Full-text search on '${name}' failed`, 500);
 }
@@ -1433,4 +1463,16 @@ function withTimeout<T>(
 			timer.unref?.();
 		}),
 	]).finally(() => clearTimeout(timer));
+}
+
+function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: number): void {
+	if ('text' in expression) {
+		validateFullTextFuzzyOptions(expression, expression.mode);
+		if (
+			(expression.mode === 'fuzzy' || expression.mode === 'fuzzy-prefix') &&
+			(expression.fuzzyDistance ?? 1) > maximum
+		)
+			throw new ClientError('Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance', 400);
+	} else if (expression.operator === 'not') assertFuzzyPolicy(expression.clause, maximum);
+	else for (const clause of expression.clauses) assertFuzzyPolicy(clause, maximum);
 }

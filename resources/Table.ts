@@ -183,6 +183,7 @@ import {
 	matchesFilters,
 	relationshipRestriction,
 	fullTextComparatorMode,
+	validateFullTextFuzzyOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
@@ -8188,6 +8189,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				for (const condition of conditions) {
 					if (condition.conditions) {
+						validateFullTextFuzzyOptions(condition);
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
 						continue;
 					}
@@ -8214,6 +8216,7 @@ export function makeTable(options): TableResourceClass {
 						fullTextMode && typeof attribute_name === 'string'
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
 							: undefined;
+					validateFullTextFuzzyOptions(condition, fullTextMode);
 					if (fullTextMode && Array.isArray(attribute_name))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);

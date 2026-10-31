@@ -80,8 +80,8 @@
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
 		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:resources:core": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
-		"test:unit:resources:core:a-q": "mocha \"unitTests/resources/**/[a-qA-Q]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
-		"test:unit:resources:core:r-z": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-qA-Q]*.js\"",
+		"test:unit:resources:core:a-n": "mocha \"unitTests/resources/**/[a-nA-N]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:resources:core:o-z": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-nA-N]*.js\"",
 		"test:unit:resources:indexes": "mocha \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"bench": "mocha \"unitTests/resources/caching-rocks-database.bench.js\" \"unitTests/resources/indexRangeSelect.bench.js\" \"unitTests/resources/originClosedFloor.bench.js\" \"unitTests/resources/subscriptionCheckpoint.bench.js\" \"unitTests/resources/liveSubscriptionReauth.bench.js\" \"unitTests/resources/recordLockAdmission.bench.js\" \"unitTests/resources/primaryKeyFilterScan.bench.js\"",
 		"bench:record-lock-admission": "mocha unitTests/resources/recordLockAdmission.bench.js",
@@ -100,8 +100,8 @@
 		"test:unit:typestrip:resources": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:typestrip:main": "node unitTests/runTypeStripTests.mts",
 		"test:unit:typestrip:resources:core": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
-		"test:unit:typestrip:resources:core:a-q": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/[a-qA-Q]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
-		"test:unit:typestrip:resources:core:r-z": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-qA-Q]*.js\"",
+		"test:unit:typestrip:resources:core:a-n": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/[a-nA-N]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
+		"test:unit:typestrip:resources:core:o-z": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-nA-N]*.js\"",
 		"test:unit:typestrip:resources:indexes": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:types:unit": "tsc --project unitTests/tsconfig.harness.json"
 	},
@@ -162,6 +162,7 @@
 		"@aws-sdk/lib-storage": "3.1153.0",
 		"@harperfast/code-guidelines": "^0.1.2",
 		"@harperfast/fulltext-previous": "npm:@harperfast/fulltext@0.5.0",
+		"@harperfast/fulltext-v07": "npm:@harperfast/fulltext@0.7.0",
 		"@harperfast/integration-testing": "^1.0.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/busboy": "^1.5.4",
@@ -294,7 +295,7 @@
 		}
 	},
 	"optionalDependencies": {
-		"@harperfast/fulltext": "0.7.0",
+		"@harperfast/fulltext": "0.8.0",
 		"@harperfast/hnsw": "0.4.0",
 		"bufferutil": "4.1.0",
 		"segfault-handler": "1.3.0"

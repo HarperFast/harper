@@ -95,6 +95,8 @@ export class ResourceBridge extends BridgeMethods {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
 					value: c.value !== undefined ? c.value : c.search_value, // null is valid value
+					...(c.fuzzyDistance === undefined ? null : { fuzzyDistance: c.fuzzyDistance }),
+					...(c.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: c.fuzzyTranspositions }),
 					...(c.fields === undefined ? null : { fields: c.fields }),
 					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
 					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
