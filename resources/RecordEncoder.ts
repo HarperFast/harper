@@ -46,6 +46,35 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // before `transactionSync` commits, masking CAS conflicts on retry.
 const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
+// Drops both dictionaries, not just the unsaved entries: structon's reload keeps local typed
+// structures when the durable dictionary is empty or classic-only (see resources/DESIGN.md).
+interface DiscardableStructures {
+	clearSharedData(): void;
+	structures?: { uninitialized?: boolean };
+	lastTypedStructuresLength?: number;
+	typedStructs?: unknown[];
+	getStructures(): unknown;
+	_mergeStructures(sharedData: unknown): void;
+}
+
+function discardUncommittedStructures(encoder: DiscardableStructures): void {
+	encoder.clearSharedData();
+	if (encoder.structures) encoder.structures.uninitialized = true;
+	encoder.lastTypedStructuresLength = 0;
+}
+
+// No re-pack follows a throw, and harper-pro's replication sender ships this encoder's arrays without
+// checking `uninitialized`, so reload now. If that fails too, leave `typedStructs` unset: the sender
+// reloads on `!typedStructs` rather than ship empty dictionaries, and structon recreates it on load.
+function discardStructuresAfterThrow(encoder: DiscardableStructures): void {
+	discardUncommittedStructures(encoder);
+	try {
+		encoder._mergeStructures(encoder.getStructures());
+	} catch {
+		encoder.typedStructs = undefined;
+	}
+}
+
 // Analytics counter incremented whenever a record cannot be decoded because its shared structure is
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
 // monitoring; the store name is passed as the metric path.
@@ -517,22 +546,11 @@ export class RecordEncoder extends StructonEncoder {
 				// We must report a non-commit as `false` (not the buggy `undefined`, which msgpackr
 				// reads as success and then writes a record referencing a structure that was never
 				// saved → later "Record id is not defined" on decode). Returning `false` makes msgpackr
-				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
-				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
-				// trie, re-mints, and re-saves — so the record always references a persisted structure.
+				// re-pack against the durable dictionary, so the record always references a persisted structure.
 				const sharedStructuresKey = this.isRocksDB
 					? [Symbol.for('structures'), this.name]
 					: targetStore.store.sharedStructuresKey;
 				const encodedStructures = asBinary(structuresEncoder.encode(structures));
-				const resetUncommittedStructures = () => {
-					if (this.structures) {
-						this.structures.length = (this as any).lastNamedStructuresLength || 0;
-						(this.structures as any).sharedLength = this.structures.length;
-						delete (this.structures as any).transitions;
-						(this.structures as any).uninitialized = true;
-					}
-				};
-				let incompatible = false;
 				let committed: boolean | undefined;
 				try {
 					committed = targetStore.transactionSync(
@@ -546,12 +564,8 @@ export class RecordEncoder extends StructonEncoder {
 								}
 							}
 							if (typeof isCompatible == 'function') {
-								if (!isCompatible(existingStructures)) {
-									incompatible = true;
-									return false;
-								}
+								if (!isCompatible(existingStructures)) return false;
 							} else if (existingStructures && existingStructures.length !== isCompatible) {
-								incompatible = true;
 								return false;
 							}
 							txn.putSync(sharedStructuresKey, encodedStructures);
@@ -560,7 +574,7 @@ export class RecordEncoder extends StructonEncoder {
 						{ retryOnBusy: true }
 					);
 				} catch (error) {
-					resetUncommittedStructures();
+					discardStructuresAfterThrow(this);
 					throw error;
 				}
 				// Only record the structure update once the txn has actually committed. Setting it
@@ -571,16 +585,25 @@ export class RecordEncoder extends StructonEncoder {
 					this.checkStructureCapacity();
 					return true;
 				}
-				if (!incompatible) {
-					resetUncommittedStructures();
-				}
+				discardUncommittedStructures(this);
 				return false;
-			} else {
-				const result = superSaveStructures.call(this, structures, isCompatible);
-				this.structureUpdate = structures;
-				if (result !== false) this.checkStructureCapacity();
-				return result;
 			}
+			// lmdb-js's saver returns `undefined` on commit and `false` on a compatibility conflict.
+			let result: boolean | undefined;
+			try {
+				result = superSaveStructures.call(this, structures, isCompatible);
+			} catch (error) {
+				discardStructuresAfterThrow(this);
+				throw error;
+			}
+			// A decline still flags an update: the re-pack may reuse a peer's new structures (resources/DESIGN.md).
+			this.structureUpdate = structures;
+			if (result === false) {
+				discardUncommittedStructures(this);
+				return false;
+			}
+			this.checkStructureCapacity();
+			return result;
 		};
 		this.getStructures = function (): any {
 			const targetStore = this.isRocksDB ? this.rootStore : this.rocksStore;
