@@ -45,7 +45,7 @@ the window still being recorded, and the queue-depth high-water marks restart wi
 `flushAnalytics()` has already rotated the previous window out and yields once per action, so it also
 captures `analyticsGeneration`, which every reset advances, and stops after a yield, before each
 listener and before the sink once it changes. A listener that resets keeps the report it was handed, as
-do the listeners before it; later listeners and the sink do not get it. Pinned by the two in-flight
+do the listeners before it; later listeners and the sink do not get it. Pinned by the three in-flight
 cases in `../../unitTests/resources/analytics/aggregationCycle.test.js`.
 
 ## Per-thread rows carry a `thread` attribute under their own metric name (`resources/analytics/write.ts`)

@@ -88,7 +88,7 @@ function waitForAggregatedMetric(metric, time) {
 	});
 }
 
-// Stop new live reports, then let an in-flight flush finish and consume what it left above the cursor.
+// Stop new live reports (an in-flight flush stops at its next yield), then consume what was left above the cursor.
 async function drainLiveReports() {
 	analytics.setAnalyticsEnabled(false);
 	await nextPeriod();
@@ -601,6 +601,7 @@ describe('analytics aggregation cycle', () => {
 			if (paths.length) flushes.push(paths);
 		});
 		let probeRan = false;
+		let laterActionRan = false;
 		analytics.setAnalyticsEnabled(false);
 		analytics.setAnalyticsEnabled(true);
 		analytics.recordAction(1, 'db-write', 'InFlightStale');
@@ -614,11 +615,20 @@ describe('analytics aggregation cycle', () => {
 			'flush-probe',
 			'InFlightProbe'
 		);
+		analytics.recordAction(
+			() => {
+				laterActionRan = true;
+				return {};
+			},
+			'flush-probe',
+			'InFlightLater'
+		);
 		await waitFor(() => rawReportPaths('InFlight').length > 0, {
 			timeout: 10000,
 			message: 'the window after re-enable was recorded',
 		});
 		assert.ok(probeRan);
+		assert.ok(!laterActionRan, 'the abandoned flush stopped before its next action');
 		assert.deepStrictEqual(flushes, [['InFlightFresh']]);
 		assert.deepStrictEqual(rawReportPaths('InFlight'), [['InFlightFresh']]);
 	});
@@ -648,5 +658,26 @@ describe('analytics aggregation cycle', () => {
 		assert.ok(reenabled);
 		assert.deepStrictEqual(laterListenerSaw, [['ListenerFresh']]);
 		assert.deepStrictEqual(rawReportPaths('Listener'), [['ListenerFresh']]);
+	});
+
+	it('does not record a flush whose last listener re-enabled analytics', async function () {
+		this.timeout(30000);
+		let reenabled = false;
+		analytics.addAnalyticsListener((metrics) => {
+			if (!reenabled && metrics.some((entry) => entry.path === 'TailStale')) {
+				reenabled = true;
+				analytics.setAnalyticsEnabled(true);
+				analytics.recordAction(1, 'db-write', 'TailFresh');
+			}
+		});
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'TailStale');
+		await waitFor(() => rawReportPaths('Tail').length > 0, {
+			timeout: 10000,
+			message: 'the window after re-enable was recorded',
+		});
+		assert.ok(reenabled);
+		assert.deepStrictEqual(rawReportPaths('Tail'), [['TailFresh']]);
 	});
 });
