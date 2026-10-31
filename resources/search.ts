@@ -2002,7 +2002,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				context,
 				join ?? siblings?.scope,
 				attribute[1] === relatedTable.primaryKey,
-				shared?.registered ? undefined : estimatedIncomingCount
+				estimatedIncomingCount
 			);
 			if (!nextFilter) return;
 			if (join) {
