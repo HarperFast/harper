@@ -109,6 +109,11 @@ describe('published native full-text Table.search integration', () => {
 			baseline.map(({ id }) => id),
 			['a', 'b', 'c']
 		);
+		for (const controls of [{ boost: 3 }, { should: [{ comparator: 'matches', value: 'trail' }] }])
+			await assert.rejects(
+				Product.fullTextQueryIndexes.catalogSearch.customIndex.search({ ...condition, ...controls }, {}),
+				(error) => error.statusCode === 400 && /compiled fullTextQuery/.test(error.message)
+			);
 		const boosted = await search({ boost: 3 });
 		assert.deepStrictEqual(ids(boosted), ids(baseline));
 		const pending = Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
@@ -219,6 +224,20 @@ describe('published native full-text Table.search integration', () => {
 			await assert.rejects(
 				async () => search(invalid),
 				(error) => error.statusCode === 400
+			);
+		for (const operator of ['and', 'or'])
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search({
+							operator,
+							conditions: [
+								{ ...condition, boost: 2 },
+								{ ...condition, comparator: 'matches_fuzzy', value: 'catxxog', fuzzyDistance: 2 },
+							],
+						})
+					),
+				(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
 			);
 		for (const controls of [{ boost: 1 }, { should: [{ comparator: 'matches', value: 'widget' }] }]) {
 			await assert.rejects(

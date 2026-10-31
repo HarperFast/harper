@@ -39,7 +39,6 @@ import {
 	fullTextFuzzyOptions,
 	validateFullTextFuzzyOptions,
 	validateFullTextScoringRuntime,
-	fullTextExpressionUsesScoring,
 } from './fullTextQueryProtocol.ts';
 export {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
@@ -253,14 +252,19 @@ export class FullTextQueryIndex {
 		let coverage: DerivedIndexCoverage | undefined;
 		const execute = async () => {
 			const query = condition.fullTextQuery ?? leafDescriptor(condition);
-			assertFuzzyPolicy(query, getFullTextQueryPolicy().maxFuzzyDistance);
+			const scoring = assertFuzzyPolicy(query, getFullTextQueryPolicy().maxFuzzyDistance);
 			assertReady(
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
 			);
-			const scoring = fullTextExpressionUsesScoring(query);
 			if (waiting) {
-				if (scoring) await this.#assertScoringRuntime(query);
+				if (scoring) {
+					if (!this.#binding) {
+						await this.#getBinding();
+						context?.signal?.throwIfAborted();
+					}
+					validateFullTextScoringRuntime(query, this.#queryApiVersion);
+				}
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
 				const waitDeadline = performance.now() + waitForIndexMilliseconds;
@@ -293,7 +297,13 @@ export class FullTextQueryIndex {
 				return result;
 			}
 			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
-			if (scoring) await this.#assertScoringRuntime(query);
+			if (scoring) {
+				if (!this.#binding) {
+					await this.#getBinding();
+					context?.signal?.throwIfAborted();
+				}
+				validateFullTextScoringRuntime(query, this.#queryApiVersion);
+			}
 			const result = await this.#search(condition, context, options);
 			this.#unexpectedSearchFailureWarned = false;
 			this.#incompletePageFailureLogged = false;
@@ -1127,11 +1137,6 @@ export class FullTextQueryIndex {
 		} catch {}
 	}
 
-	async #assertScoringRuntime(query: NativeFullTextSearchExpression): Promise<void> {
-		await this.#getBinding();
-		validateFullTextScoringRuntime(query, this.#queryApiVersion);
-	}
-
 	async #getBinding(): Promise<NativeFullTextModule> {
 		if (this.#binding) return this.#binding;
 		const configured = this.#options.binding;
@@ -1142,7 +1147,6 @@ export class FullTextQueryIndex {
 			: await loadFullTextNativeBinding();
 		const runtime = configured ? await binding.runtimeInfo() : getValidatedFullTextRuntimeInfo(binding);
 		const info = validateFullTextQueryRuntimeInfo(runtime);
-		this.#queryApiVersion = runtime.queryApiVersion;
 		const queryPolicy = nativeFullTextQueryLimits(info, getFullTextQueryPolicy());
 		this.#nativeOptions.limits.maxQueryTerms = queryPolicy.maxQueryTerms;
 		this.#nativeOptions.limits.maxQueryClauses = queryPolicy.maxQueryClauses;
@@ -1170,6 +1174,7 @@ export class FullTextQueryIndex {
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
 		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes;
+		this.#queryApiVersion = runtime.queryApiVersion;
 		return (this.#binding = binding);
 	}
 
@@ -1283,6 +1288,8 @@ function leafDescriptor(condition: FullTextCondition): {
 	fuzzyDistance?: number;
 	fuzzyTranspositions?: boolean;
 } {
+	if (condition.boost !== undefined || condition.should !== undefined)
+		throw new ClientError('Direct full-text index scoring requires a compiled fullTextQuery expression', 400);
 	const mode = fullTextComparatorMode(condition.comparator);
 	if (!mode || typeof condition.value !== 'string' || condition.value.length === 0)
 		throw new ClientError('Full-text conditions require a supported comparator and non-empty string value', 400);
@@ -1496,7 +1503,7 @@ function withTimeout<T>(
 	]).finally(() => clearTimeout(timer));
 }
 
-function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: number): void {
+function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: number): boolean {
 	if ('text' in expression) {
 		validateFullTextFuzzyOptions(expression, expression.mode);
 		if (
@@ -1504,10 +1511,19 @@ function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: 
 			(expression.fuzzyDistance ?? 1) > maximum
 		)
 			throw new ClientError('Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance', 400);
-	} else if (expression.operator === 'not' || expression.operator === 'boost')
+		return false;
+	}
+	if (expression.operator === 'not') return assertFuzzyPolicy(expression.clause, maximum);
+	if (expression.operator === 'boost') {
 		assertFuzzyPolicy(expression.clause, maximum);
-	else if (expression.operator === 'optional') {
+		return true;
+	}
+	if (expression.operator === 'optional') {
 		assertFuzzyPolicy(expression.required, maximum);
 		for (const clause of expression.optional) assertFuzzyPolicy(clause, maximum);
-	} else for (const clause of expression.clauses) assertFuzzyPolicy(clause, maximum);
+		return true;
+	}
+	let scoring = false;
+	for (const clause of expression.clauses) if (assertFuzzyPolicy(clause, maximum)) scoring = true;
+	return scoring;
 }
