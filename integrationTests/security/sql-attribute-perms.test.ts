@@ -27,10 +27,6 @@ function attr(attribute_name: string, read: boolean) {
 	return { attribute_name, read, insert: false, update: false };
 }
 
-function readOnly(attribute_permissions: ReturnType<typeof attr>[]) {
-	return { read: true, insert: false, update: false, delete: false, attribute_permissions };
-}
-
 // sql.engine=new answers only indexed queries, so every statement carries an indexed predicate.
 const USING_DENIED = `SELECT l.label FROM data.ColPermLeft l JOIN data.ColPermRight r USING (ssn) WHERE l.id = 'l1'`;
 const USING_DENIED_SELF = `SELECT a.label FROM data.ColPermLeft a JOIN data.ColPermLeft b USING (ssn) WHERE a.id = 'l1'`;
@@ -66,7 +62,7 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 							super_user: false,
 							data: {
 								tables: {
-									// Writable, so UPDATE/DELETE predicates can be checked for read on their own.
+									// Writable, and `ssn` updatable, so only the read check can refuse a predicate on it.
 									ColPermLeft: {
 										read: true,
 										insert: false,
@@ -75,15 +71,22 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 										attribute_permissions: [
 											attr('id', true),
 											{ attribute_name: 'label', read: true, insert: false, update: true },
-											attr('ssn', false),
+											{ attribute_name: 'ssn', read: false, insert: false, update: true },
 										],
 									},
-									ColPermRight: readOnly([
-										attr('id', false),
-										attr('label', true),
-										attr('ssn', true),
-										attr('code', false),
-									]),
+									// Writable with a read-denied primary key, which write predicates may still use.
+									ColPermRight: {
+										read: true,
+										insert: false,
+										update: true,
+										delete: true,
+										attribute_permissions: [
+											attr('id', false),
+											{ attribute_name: 'label', read: true, insert: false, update: true },
+											attr('ssn', true),
+											attr('code', false),
+										],
+									},
 								},
 							},
 						},
@@ -190,8 +193,12 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 			}
 
 			test('UPDATE or DELETE that filters on a read-denied column is refused and changes nothing', async () => {
-				const update = `UPDATE data.ColPermLeft SET label = 'changed' WHERE ssn = '111'`;
-				assertRefused(await asReader(update), update);
+				for (const update of [
+					`UPDATE data.ColPermLeft SET label = 'changed' WHERE ssn = '111'`,
+					`UPDATE data.ColPermLeft SET label = ssn WHERE id = 'l2'`,
+				]) {
+					assertRefused(await asReader(update), update);
+				}
 				for (const remove of [
 					`DELETE FROM data.ColPermLeft WHERE ssn = '222'`,
 					`DELETE FROM data.ColPermLeft WHERE bogus.id IS NULL`,
@@ -213,6 +220,20 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 					strictEqual(r.status, 200, `${sql} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
 				}
 				strictEqual(await adminRow('l3'), undefined);
+			});
+
+			test('UPDATE and DELETE may filter on a read-denied primary key', async () => {
+				for (const sql of [
+					`UPDATE data.ColPermRight SET label = 'unmatched' WHERE id = 'r-primary-key-2'`,
+					`DELETE FROM data.ColPermRight WHERE id = 'r-primary-key-2'`,
+				]) {
+					const r = await asReader(sql);
+					strictEqual(r.status, 200, `${sql} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+				}
+				const left = await client
+					.req()
+					.send({ operation: 'sql', sql: `SELECT id FROM data.ColPermRight WHERE id = 'r-primary-key-2'` });
+				deepStrictEqual(left.body, []);
 			});
 
 			test('a joined SELECT * expands to the FROM table columns the role may read', async () => {
