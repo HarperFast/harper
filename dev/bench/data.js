@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793430798148,
+  "lastUpdate": 1793451184118,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -26367,6 +26367,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1609,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6048a06709a7bff15b6d5732fb0b3ecdc69b8098",
+          "message": "Adopt fulltext 0.8 with host query policy and fuzzy controls (#3824)\n\n* Adopt fulltext 0.8 with host query policy and fuzzy controls\n\n* Keep query policy in the search error boundary and strengthen compatibility proof\n\n* Clarify the installed query policy block during downgrade planning\n\n* Tighten full-text condition validation and qualify query policy boundaries\n\n* Clarify fuzzy-control targets and trim unused test options\n\n* Qualify query rejections across runtimes and isolate TTL observations\n\n* Balance resource CI shards and isolate encoder error capture\n\n* Close owned subscriptions in replay test fixtures\n\n* Make replay iterator cancellation deterministic\n\n* Keep full-text query defaults implicit\n\n* Test the allowed default full-text term boundary",
+          "timestamp": "2026-10-31T04:49:23Z",
+          "url": "https://github.com/HarperFast/harper/commit/6048a06709a7bff15b6d5732fb0b3ecdc69b8098"
+        },
+        "date": 1793451180391,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 15286,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 8945,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 8100,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 21457856,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9314,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1730,
             "unit": "ops"
           }
         ]
