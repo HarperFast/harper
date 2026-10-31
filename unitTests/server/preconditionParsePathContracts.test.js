@@ -459,10 +459,17 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 			assert.strictEqual((await BaseTable.get('default:consumed')) ?? null, null);
 		});
 
-		it('leaves the verb the typed query values a parsePath changes in place', async () => {
+		it('leaves the verb the typed query values a parsePath changes in place, inside a group too', async () => {
+			const findDay = (conditions) => {
+				for (const condition of conditions) {
+					if (condition.attribute === 'day') return condition.value;
+					const nested = condition.conditions && findDay(condition.conditions);
+					if (nested) return nested;
+				}
+			};
 			class ShiftsDay extends BaseTable {
 				static parsePath(path, _context, query) {
-					const day = query.conditions.find((condition) => condition.attribute === 'day').value;
+					const day = findDay(query.conditions);
 					assert.ok(day instanceof Date);
 					day.setUTCDate(day.getUTCDate() + 1);
 					return `${day.getTime()}:${path}`;
@@ -484,6 +491,11 @@ describe('write preconditions resolve the record id as parsePath does for the ve
 				204
 			);
 			assert.strictEqual((await BaseTable.get('86400000:shifted')).n, 3);
+
+			await BaseTable.put('86400000:grouped', { n: 1 });
+			assert.strictEqual((await request('PUT', '/ShiftsDay/grouped?(day=gt=date:0)', { n: 2 }, stale)).status, 412);
+			assert.strictEqual((await BaseTable.get('86400000:grouped')).n, 1);
+			assert.strictEqual((await BaseTable.get('172800000:grouped')) ?? null, null);
 		});
 
 		it('leaves the verb a target with its raw id when the first parse mutates the target and throws', async () => {
