@@ -465,6 +465,37 @@ async function waitForSecretRow(table: any, name: string, waitMs: number): Promi
 }
 
 /**
+ * The plaintext of a `processEnv` secret, for a server-side consumer with no component to grant it to
+ * (a `restore_backup` archive pull). Scoped secrets are refused: a grant names a component, and nothing here
+ * is one. Never returned across the API boundary or written anywhere.
+ */
+export async function resolveProcessSecret(name: string): Promise<string> {
+	const row = await secretTable().get(name);
+	if (!row) throw new ClientError(`secret '${name}' does not exist`, HTTP_STATUS_CODES.NOT_FOUND);
+	if (!row.processEnv) {
+		throw new ClientError(
+			`secret '${name}' is scoped to components; restore_backup can only use a processEnv secret`,
+			HTTP_STATUS_CODES.FORBIDDEN
+		);
+	}
+	const custody = getSecretCustody();
+	if (!custody) {
+		throw new ClientError(
+			`secrets custody is not initialized on this node; cannot resolve secret '${name}'`,
+			HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
+		);
+	}
+	try {
+		return custody.decrypt(row.envelope);
+	} catch (error) {
+		throw new ClientError(
+			`Failed to decrypt secret '${name}': ${(error as Error).message}`,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+		);
+	}
+}
+
+/**
  * Resolve deploy_component `credentials` entries that reference a stored secret
  * (`{ registry, secret }`) into concrete token entries (`{ registry, token }`) by decrypting the
  * named hdb_secret row on this thread. Entries that already carry a literal `token` pass through

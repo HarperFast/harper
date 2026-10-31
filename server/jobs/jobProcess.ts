@@ -13,6 +13,8 @@ import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
 import * as jobs from './jobs.ts';
+import { JOB_TRANSIENT_ENV } from './jobRunner.ts';
+import { recordJobResult } from './deferredJobCompletion.ts';
 import cloneDeep from 'lodash/cloneDeep.js';
 
 import { pathToFileURL } from 'node:url';
@@ -35,6 +37,7 @@ const JOB_ID = JOB_NAME.substring(4);
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
+	let afterRecorded: (() => void) | undefined;
 	try {
 		env.initSync();
 		harperLogger.notify('Starting job:', JOB_ID);
@@ -60,6 +63,11 @@ const JOB_ID = JOB_NAME.substring(4);
 			throw new Error('Did not find job request in hdb_job table, unable to proceed');
 		}
 		request = cloneDeep(request);
+		const transient = process.env[JOB_TRANSIENT_ENV];
+		if (transient) {
+			delete process.env[JOB_TRANSIENT_ENV];
+			Object.assign(request, JSON.parse(transient));
+		}
 		// The worker re-enters from the persisted row rather than re-dispatching, so a row queued before
 		// the dispatch-time strip existed — or written directly — is sanitized here.
 		stripSuppliedParsedSqlObject(request);
@@ -72,14 +80,12 @@ const JOB_ID = JOB_NAME.substring(4);
 		);
 		harperLogger.trace('Result from job:', JOB_ID, results);
 
-		jobObj.status = hdbTerms.JOB_STATUS_ENUM.COMPLETE;
-		if (typeof results === 'string') jobObj.message = results;
-		else {
-			jobObj.result = results;
-			jobObj.message = 'Successfully completed job: ' + JOB_ID;
+		afterRecorded = recordJobResult(jobObj, results);
+		if (afterRecorded || jobObj.status === hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS) {
+			harperLogger.notify('Job', JOB_ID, 'continues after this worker:', jobObj.message);
+		} else {
+			harperLogger.notify('Successfully completed job:', JOB_ID);
 		}
-		jobObj.end_datetime = Date.now();
-		harperLogger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
 		exitCode = 1;
 		harperLogger.error(err);
@@ -111,6 +117,15 @@ const JOB_ID = JOB_NAME.substring(4);
 			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
 		}
 		if (databaseHandlesReleased) notifyJobCleanupComplete();
+		// even when the row write failed: the receipt, not the row, owns a deferred job's outcome, and
+		// skipping the restart would leave it to fire at some unrelated later one
+		if (afterRecorded) {
+			try {
+				afterRecorded();
+			} catch (afterError) {
+				harperLogger.error('Error continuing job after recording it:', afterError);
+			}
+		}
 		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
 		// while sibling workers are running causes a NAPI fatal error crash. Unref
 		// parentPort (which broadcastWithAcknowledgement may have ref'd during schema

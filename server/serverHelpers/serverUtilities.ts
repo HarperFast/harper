@@ -13,6 +13,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
+import * as restoreArchive from '../../dataLayer/restoreArchive.ts';
 import * as opAuth from '../../utility/operation_authorization.ts';
 import * as jobs from '../jobs/jobs.ts';
 import * as terms from '../../utility/hdbTerms.ts';
@@ -79,6 +80,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 };
 
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { fenceMembershipChange } from '../replicationMembership.ts';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -119,6 +121,8 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
 	['set_configuration', new Set(['models'])],
+	// a presigned URL is a bearer credential, and an S3 object names its secret
+	['restore_backup', new Set(['url', 's3', 'payload'])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
 ]);
@@ -498,7 +502,7 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 	} catch (err) {
 		throw handleHDBError(err, `There was an error when trying to choose an operation path`, 500);
 	}
-	return operation_function;
+	return fenceMembershipChange(json, operation_function);
 }
 
 export function getOperationFunction(json: OperationRequestBody): OperationFunctionObject {
@@ -599,15 +603,16 @@ interface JobResult {
 	job_id: string;
 }
 
-export async function executeJob(json: OperationRequestBody): Promise<JobResult> {
+export async function executeJob(json: OperationRequestBody, transient?: Record<string, unknown>): Promise<JobResult> {
 	transformReq(json);
 
 	try {
 		const result = await jobs.addJob(json);
 		const newJobObject = result.createdJob;
 		if (!newJobObject) throw new Error(result.error || result.message || `Unable to create a ${json.operation} job`);
-		operationLog.info('addJob result', result);
-		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
+		// the created job carries the request, which can hold a presigned URL
+		operationLog.info('addJob result', { id: newJobObject.id, type: newJobObject.type });
+		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json, transient);
 		const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
 
 		return {
@@ -845,7 +850,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.PURGE_BACKUPS, new OperationFunctionObject(rocksdbBackup.purgeBackups));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.RESTORE_BACKUP,
-		new OperationFunctionObject(executeJob, rocksdbBackup.restoreBackup)
+		new OperationFunctionObject(restoreArchive.restoreBackupRequest, rocksdbBackup.restoreBackup)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 

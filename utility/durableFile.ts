@@ -59,7 +59,8 @@ export function fsyncDirectory(directory: string): void {
 /**
  * Write `contents` to `path` atomically and durably. `tempName` must be a name no reader of the
  * directory will mistake for real state, and callers holding a lock on the target may reuse a fixed
- * one — a temp left by an earlier crash is then their own debris and is simply overwritten.
+ * one — a temp left by an earlier crash is then their own debris and is simply overwritten. Fixed per
+ * target, not per directory: a writer of another file in the same directory holds a different lock.
  */
 export function writeFileDurably(path: string, contents: string, tempName: string): void {
 	const directory = dirname(path);

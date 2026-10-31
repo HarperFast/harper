@@ -19,6 +19,7 @@ import * as delete_ from '../dataLayer/delete.ts';
 import readAuditLog from '../dataLayer/readAuditLog.ts';
 import getBackup from '../dataLayer/getBackup.ts';
 import * as rocksdbBackup from '../dataLayer/rocksdbBackup.ts';
+import * as restoreArchive from '../dataLayer/restoreArchive.ts';
 import * as user from '../security/user.ts';
 import * as role from '../security/role.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -252,6 +253,11 @@ requiredPermissions.set(
 );
 requiredPermissions.set(
 	rocksdbBackup.restoreBackup.name,
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
+);
+// the request handler spools an archive upload before it queues the job keyed above
+requiredPermissions.set(
+	restoreArchive.restoreBackupRequest.name,
 	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
 );
 requiredPermissions.set(

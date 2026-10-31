@@ -9,7 +9,7 @@ import * as YAML from 'yaml';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
-import { buildRequest, cliOperations, resolveRequestOptions } from './cliOperations.ts';
+import { buildRequest, cliOperations, isLocalTarget, resolveRequestOptions } from './cliOperations.ts';
 import { loadCredentials, normalizeTarget } from './cliCredentials.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { httpRequest } from '../utility/common_utils.ts';
@@ -46,6 +46,26 @@ export async function runBackupCommand(command: string): Promise<void> {
 	// (cliOperations does the same on its first line).
 	dotenv.config();
 	const request = buildRequest();
+	// the parser drops a bare word after the command, which would silently turn `restore_backup x.tar.gz`
+	// into a restore of the latest backup
+	const words: string[] = [];
+	const argv = process.argv.slice(2);
+	for (let i = 0; i < argv.length; i++) {
+		if (argv[i].startsWith('-')) {
+			// a `--KEY value` flag carries its value as the next argument
+			if (!argv[i].includes('=') && i + 1 < argv.length && !argv[i + 1].startsWith('-') && !argv[i + 1].includes('='))
+				i++;
+			continue;
+		}
+		if (!argv[i].includes('=')) words.push(argv[i]);
+	}
+	const stray = words[1];
+	if (stray !== undefined) {
+		throw new ClientError(
+			`harper ${command} takes key=value arguments, and '${stray}' is not one` +
+				(command === OPERATIONS_ENUM.RESTORE_BACKUP ? `; to restore an archive, pass file=${stray}` : '')
+		);
+	}
 	const databaseName = request.database || 'data';
 
 	// We print results here (not by returning a string) so the CLI's top-level handler doesn't
@@ -83,35 +103,44 @@ export async function runBackupCommand(command: string): Promise<void> {
 		case OPERATIONS_ENUM.PURGE_BACKUPS:
 			result = await purgeBackupsOffline(databaseName, request.keep_count);
 			break;
-		case OPERATIONS_ENUM.RESTORE_BACKUP:
+		case OPERATIONS_ENUM.RESTORE_BACKUP: {
+			// dropping one would turn a cancel, or a restore of another source, into a restore of the latest backup
+			const needsServer = OFFLINE_RESTORE_UNSUPPORTED.filter((field) => request[field] !== undefined);
+			if (needsServer.length > 0) {
+				throw new ClientError(
+					`restore_backup ${needsServer.join(', ')} needs the server running; start Harper and rerun, or restore offline from backup_id= or file=`
+				);
+			}
 			result = await restoreBackupOffline(
 				databaseName,
 				request.backup_id,
 				request.target_database,
-				request.allow_engine_only
+				request.allow_engine_only,
+				request.accept_incompatible_backup,
+				request.immutable_source,
+				request.accept_unverified_blobs,
+				request.file === undefined ? undefined : String(request.file)
 			);
 			break;
+		}
 		default:
 			throw new Error(`Unknown backup command '${command}'`);
 	}
 	console.log(YAML.stringify(result).trim());
 }
 
-/**
- * Whether the target of a saved `last_target` is the local instance (localhost / loopback). A
- * `harper login` against a local server saves `http://localhost:9925/`, which must NOT be treated as
- * a remote target — otherwise the offline backup commands would try to reach a stopped local server
- * instead of falling back to direct file access.
- */
-function isLocalTarget(target: string): boolean {
-	try {
-		const url = new URL(target.includes('://') ? target : `http://${target}`);
-		const host = url.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
-		return host === 'localhost' || host === '::1' || host.startsWith('127.');
-	} catch {
-		return false;
-	}
-}
+const OFFLINE_RESTORE_UNSUPPORTED = [
+	'url',
+	's3',
+	'server_path',
+	'server_path_identity',
+	'sha256',
+	'declared_size',
+	'on_restart',
+	'retain_previous',
+	'resume',
+	'cancel',
+];
 
 /**
  * Whether to route a backup command through the operation API rather than direct file access. An

@@ -1064,6 +1064,8 @@ export const ITC_EVENT_TYPES = {
 	CHILD_ADMITTED: 'child_admitted',
 	CERTIFICATION_REQUEST: 'certification_request',
 	CERTIFICATION_RESPONSE: 'certification_response',
+	IMPORT_SECRET_REQUEST: 'import_secret_request',
+	IMPORT_SECRET_RESPONSE: 'import_secret_response',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
 	METRICS: 'metrics',

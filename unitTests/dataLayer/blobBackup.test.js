@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const {
 	assertEngineOnlyRestoreAllowed,
@@ -14,8 +14,10 @@ const {
 	restoreBlobSnapshot,
 	deleteBlobSnapshot,
 	purgeBlobSnapshots,
+	fsyncTree,
 } = require('#src/dataLayer/blobBackup');
 const { classifyBlobFileForCapture, isSystemicIoError } = require('#src/resources/blob');
+const durableFile = require('#src/utility/durableFile');
 
 // Lay out a blob root the way resources/blob.ts does: files nested a few directories deep by id,
 // each an 8-byte header (type in the top 16 bits, body length in the low 48) followed by the body.
@@ -57,7 +59,7 @@ describe('blobBackup', function () {
 	});
 
 	afterEach(function () {
-		rmSync(tempDir, { recursive: true, force: true });
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	describe('snapshotBlobs', function () {
@@ -336,11 +338,68 @@ describe('blobBackup', function () {
 			);
 		});
 
+		it('restores the same bytes when asked to make them durable', async function () {
+			const nested = writeBlob(rootA, '001/002/003', 'original');
+			const second = writeBlob(rootB, 'b/b/b', 'x'.repeat(70000));
+			const expected = [readFileSync(nested), readFileSync(second)];
+			await snapshotBlobs(backupDir, 1, [rootA, rootB]);
+			rmSync(rootA, { recursive: true, force: true });
+			writeBlob(rootB, '009/009/009', 'added-after-backup');
+
+			await restoreBlobSnapshot(backupDir, 1, 'testdb', [rootA, rootB], { durable: true });
+
+			assert.deepStrictEqual([readFileSync(nested), readFileSync(second)], expected);
+			assert.ok(!existsSync(join(rootB, '009/009/009')), 'a durable restore is still an exact one');
+		});
+
 		it('leaves live blobs untouched when the backup has no blob snapshot (engine-only backup)', async function () {
 			writeBlob(rootA, '001/002/003', 'live');
 			// no snapshotBlobs call for backup 2
 			await restoreBlobSnapshot(backupDir, 2, 'testdb', [rootA]);
 			assert.strictEqual(blobBody(join(rootA, '001/002/003')), 'live', 'existing blobs must be preserved');
+		});
+	});
+
+	describe('fsyncTree', function () {
+		it('flushes a nested tree and leaves every file as it was', async function () {
+			const files = [
+				writeBlob(rootA, '001/002/003', 'one'),
+				writeBlob(rootA, '001/004', 'two'),
+				writeBlob(rootA, 'top', 'three'),
+			];
+			const before = files.map((file) => readFileSync(file));
+			await fsyncTree(rootA);
+			assert.deepStrictEqual(
+				files.map((file) => readFileSync(file)),
+				before
+			);
+		});
+
+		it('accepts a root that does not exist or holds no files', async function () {
+			await fsyncTree(join(tempDir, 'never-created'));
+			mkdirSync(join(rootA, 'empty', 'nested'), { recursive: true });
+			await fsyncTree(rootA);
+		});
+
+		it('flushes every directory, the root and its entry in its parent when the tree holds only empty directories', async function () {
+			mkdirSync(join(rootA, 'empty', 'nested'), { recursive: true });
+			const flushed = [];
+			// fsyncTree reads it through the module object at call time; a directory fsync leaves no trace to observe
+			const original = durableFile.fsyncDirectory;
+			durableFile.fsyncDirectory = (directory) => {
+				// other suites' queued fsyncs can land while this one awaits
+				if (directory === dirname(rootA) || directory.startsWith(rootA)) flushed.push(directory);
+				return original(directory);
+			};
+			try {
+				await fsyncTree(rootA);
+			} finally {
+				durableFile.fsyncDirectory = original;
+			}
+			assert.deepStrictEqual(
+				flushed.sort(),
+				[dirname(rootA), rootA, join(rootA, 'empty'), join(rootA, 'empty', 'nested')].sort()
+			);
 		});
 	});
 
