@@ -1608,7 +1608,7 @@ const RESTRICTIONS = Symbol('relationshipRestrictions');
 export function relationshipRestriction(filtered, name: string) {
 	return filtered?.[RESTRICTIONS]?.get(name);
 }
-function restrictRelationship(filtered, name: string, restriction: Map<any, any> | RelationshipSelection) {
+export function restrictRelationship(filtered, name: string, restriction: Map<any, any> | RelationshipSelection) {
 	(filtered[RESTRICTIONS] ??= new Map()).set(name, restriction);
 }
 // The filters of every condition on one relationship within one scope, which must be met by the same related record.
