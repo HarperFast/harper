@@ -51,7 +51,7 @@ function prose(file) {
 }
 
 const anchorCache = new Map();
-// Every heading's anchor, de-duplicated as GitHub does (`-1`, `-2`, skipping taken slugs).
+// Slugs are de-duplicated as GitHub does: `-1`, `-2`, skipping slugs already taken.
 function anchors(file) {
 	if (anchorCache.has(file)) return anchorCache.get(file);
 	const taken = new Map();
