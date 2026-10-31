@@ -14,6 +14,8 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import type { FullTextCondition } from './indexes/fullTextQueryIndex.ts';
 import {
 	FULL_TEXT_POSITIVE_COMPARATORS,
+	FULL_TEXT_SEARCH_OPTIONS,
+	type FullTextSearchOptions,
 	fullTextComparatorMode,
 	fullTextFuzzyOptions,
 	validateFullTextFuzzyOptions,
@@ -171,6 +173,7 @@ export function executeConditions(
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
+			fullTextSearchOptions: request[FULL_TEXT_SEARCH_OPTIONS],
 		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, inUnion: boolean) {
@@ -929,6 +932,7 @@ export function searchByIndex(
 		minResults?: number;
 		// Rows before this offset are needed for correct paging but do not need highlight metadata.
 		resultOffset?: number;
+		fullTextSearchOptions?: FullTextSearchOptions;
 		// What a join into another database needs to lease that database's read handle for the search
 		// (see leaseRelatedReadTxn); without them it reads that database's latest committed state.
 		holderTable?: any;
@@ -1275,6 +1279,7 @@ export function searchByIndex(
 				resultOffset,
 				assertTransactionActive: checkActive,
 				candidateKeys,
+				...(fullTextMode ? options.fullTextSearchOptions : undefined),
 			});
 			const coverage = (searched as any).indexCoverage;
 			if (!waiting && coverage && context?.responseHeaders) {

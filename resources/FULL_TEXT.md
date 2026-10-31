@@ -144,14 +144,31 @@ Each page runs a new query. Changes to records, permissions, or the index can mo
 
 Within one request, Harper reads native batches on the same index reader until enough eligible records have been found or the matches are exhausted. Current source versions and record filters are checked before counting records toward the offset and limit. This traversal also lets prefix and fuzzy-prefix searches return more than the initial autocomplete batch. The library's ordinary search window is not a total-result cutoff for a bounded Harper request.
 
-Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. Harper can retain up to `offset + limit` accepted records while building a bounded result, so raising the work limit can also increase memory use. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
+Full-text queries also accept the existing `sort` option for directly stored record attributes, including linked sort fields, up to 32 clauses. Harper uses its ordinary value ordering and keeps relevance order for equal sort keys. Computed fields, relationship paths, Blob fields, HNSW vector-distance fields and the query-only full-text field cannot be sort keys. `$score` clauses must be descending, including within linked sorts. The default remains descending `$score`.
+
+Harper owns record permissions, source-version and expiry checks, companion predicates, and value ordering. The fulltext wrapper and Tantivy own text matching, relevance, native traversal and highlight tracing. Native metadata sorting is not interchangeable with Harper sorting: this index stores text rather than sort metadata, and native array and tie ordering differ. Native totals precede Harper record validation and cannot substitute for eligible record counts.
+
+A stored-field sort must examine the complete eligible matching set before applying offset and limit. It shares the configured raw-hit, retained-result and execution budgets; exceeding a bound returns an error rather than sorting a relevance-only subset. The native search window bounds the initial batch, not complete enumeration; filtered matches beyond that window remain eligible within the configured budgets. The raw-hit budget must cover every text match before filters plus traversal replay; its default is 10,000. Harper rejects early when the exact native total already proves that work cannot fit. Highlights are computed only for the requested page after sorting.
+
+The existing `count: 'exact'` option computes a total from the complete eligible set when a bounded page fits the count guardrails. REST exposes this through `Prefer: count=exact` on mounts configured with `rest: { exactCount: true }`. Totals include ordinary conditions, row guards, current source-version checks and expiry. For unsorted counts, Harper secures the bounded page and its highlights first, then counts the remaining eligible matches in the same reader lease. Count-only work, time or native admission limits return that page with an unknown total (`Content-Range: items …/*`). Sorting still requires complete enumeration and cannot use that fallback. Cancellation and other execution failures remain errors.
+
+For example, on an exact-count-enabled mount, return the first 20 matches in descending ID order with the existing count header:
+
+```text
+GET /Product/?catalogSearch=matches=trail%20shoes&sort(-id)&limit(0,20)
+Prefer: count=exact
+```
+
+Highlight tracing precedes final Table materialization. If a selected row expires during that interval, a retained tail row can move into the visible page without highlights. This timing-dependent limitation is tracked in [Preserve full-text highlights when expiry changes the final visible page](https://github.com/HarperFast/harper/issues/3848).
+
+Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. Ordinary bounded relevance searches retain up to `offset + limit` accepted records. Stored-field sorts and exact-count attempts can retain the complete eligible set up to the configured retained-result ceiling, so raising that ceiling can increase memory use. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
 
 Search settings are under `storage.fullText`:
 
 | Setting                     | Default | Meaning                                                                                                           |
 | --------------------------- | ------: | ----------------------------------------------------------------------------------------------------------------- |
 | `maxRawHitsPerRequest`      |  10,000 | Fetched native hits, including bounded prefix replay                                                              |
-| `maxResultsPerRequest`      |  10,000 | Maximum retained offset plus limit, independent of fetched-hit work                                               |
+| `maxResultsPerRequest`      |  10,000 | Maximum retained eligible rows; relevance pages need offset plus limit                                            |
 | `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks and highlight tracing, capped by the native execution limit |
 
 The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Reader acquisition, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.
@@ -189,6 +206,6 @@ On structured full-text conditions, `fuzzyDistance` accepts integer 0–2 (defau
 
 Distance two remains preview and requires operator opt-in with `storage.fullText.query.maxFuzzyDistance: 2`. The host maximum accepts 0–2; zero disables edit-tolerant fuzzy requests unless the condition explicitly requests distance zero. Qualify the actual corpus and concurrency before enabling two: admission and deadlines do not provide a hard process-memory bound. Fuzzy-prefix remains preview. Phrase slop remains deferred; no unreleased Tantivy patch is included.
 
-Metadata sorting, native structured-filter pushdown, candidate-ID pushdown and facets/nested aggregations are not enabled by this package upgrade. Their schema, authorization, consistency and workload qualification remain in [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
+Native metadata sorting, structured-filter pushdown, candidate-ID pushdown and facets/nested aggregations remain unexposed. Stored-field ordering above uses Harper’s source-value ordering and requires no metadata declaration or index rebuild. Schema, authorization, consistency and workload qualification for those native features remain in [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
 
 For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); compiler and generation rules live in [fullTextSchema.ts](fullTextSchema.ts).

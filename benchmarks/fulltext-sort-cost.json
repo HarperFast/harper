@@ -1,0 +1,309 @@
+{
+	"node": "v24.16.0",
+	"cpu": "Apple M4 Pro",
+	"rows": 10000,
+	"warmups": 3,
+	"samples": 30,
+	"closureSha256": "b45ac7af3644ea038f42ae987d50dcc766bac06d8077c3bef59e77195e7370d1",
+	"scope": "Production getAttributeValue and decorated-key sort closures with real Table scalar property resolvers and resident record entries. Excludes native retrieval, source-version checks, projection, highlighting, GC isolation and end-to-end latency.",
+	"cases": [
+		{
+			"clauses": 1,
+			"leadingTiedKeys": 0,
+			"milliseconds": [
+				1.6239160000000084, 1.3273340000000644, 1.307374999999979, 1.3258749999999964, 1.3218749999999773,
+				1.270208000000025, 1.245584000000008, 1.2436249999999518, 1.245541000000003, 1.400041999999985,
+				1.3236249999999927, 1.34962500000006, 1.2950839999998607, 1.2845839999999953, 1.297709000000168,
+				1.2850840000000971, 1.2898330000000442, 1.3237079999998969, 1.2835830000001351, 1.3069170000001122,
+				1.2882909999998446, 1.3005829999999605, 1.2938329999999496, 1.27862499999992, 1.319250000000011,
+				1.2788339999999607, 1.3299580000000333, 1.3332500000001346, 1.4217919999998685, 1.4325839999999062
+			],
+			"p50Milliseconds": 1.3037500000000364,
+			"p95Milliseconds": 1.4325839999999062,
+			"maxMilliseconds": 1.6239160000000084
+		},
+		{
+			"clauses": 3,
+			"leadingTiedKeys": 2,
+			"milliseconds": [
+				4.176375000000007, 4.106082999999899, 4.047041000000036, 4.058708000000024, 4.103749999999991,
+				4.157999999999902, 4.06208300000003, 4.130125000000135, 4.1908750000000055, 4.242750000000115,
+				4.241832999999815, 4.196124999999938, 4.207083999999895, 4.311500000000024, 4.226042000000007,
+				4.284249999999929, 4.192833000000064, 4.242292000000134, 4.196707999999944, 4.282666999999947,
+				4.175958000000037, 5.171875, 4.312582999999904, 4.373542000000043, 4.421708999999964, 4.374249999999847,
+				4.410833000000139, 4.453292000000147, 4.390375000000176, 4.1241670000001704
+			],
+			"p50Milliseconds": 4.216562999999951,
+			"p95Milliseconds": 4.453292000000147,
+			"maxMilliseconds": 5.171875
+		},
+		{
+			"clauses": 32,
+			"leadingTiedKeys": 31,
+			"milliseconds": [
+				37.635082999999895, 37.05441699999983, 35.43745899999999, 36.77408299999979, 36.28204100000016,
+				36.21187500000019, 36.328416999999945, 35.70283299999983, 36.3286250000001, 37.059541999999965,
+				36.98866699999985, 36.37370899999996, 36.71504199999981, 36.201458, 36.696334000000206, 36.724290999999994,
+				38.993582999999944, 37.43245900000011, 36.671625000000176, 36.77041700000018, 36.404667000000245,
+				37.78458300000011, 37.14133299999958, 35.94841700000006, 35.558958000000075, 35.748749999999745,
+				36.733999999999924, 36.60545899999988, 36.37454200000002, 36.5204590000003
+			],
+			"p50Milliseconds": 36.63854200000003,
+			"p95Milliseconds": 37.78458300000011,
+			"maxMilliseconds": 38.993582999999944
+		}
+	],
+	"native": {
+		"rows": 9000,
+		"warmups": 3,
+		"samples": 10,
+		"runtime": {
+			"packageVersion": "0.8.0",
+			"tantivyVersion": "0.27.0",
+			"nativeAbiVersion": 13,
+			"queryApiVersion": 7,
+			"queryClassIsolationMinimumSearchThreads": 2,
+			"lifecycleApiVersion": 1,
+			"mutationBatchApiVersion": 5,
+			"storageBackends": ["native"],
+			"limits": {
+				"maxConfiguredQueryTerms": 1024,
+				"maxConfiguredQueryClauses": 4096,
+				"maxAggregationDepth": 32,
+				"maxAggregationBuckets": 1024,
+				"maxAggregationMemoryBytes": 16777216,
+				"maxSortKeyBytes": 67108864,
+				"maxTermKeyBytes": 16777216,
+				"maxCommitPayloadBytes": 65536,
+				"maxQueryTextBytes": 65536,
+				"maxQueryTerms": 64,
+				"maxQueryClauses": 256,
+				"maxCandidateIds": 1024,
+				"maxCandidateBytes": 1048576,
+				"maxRecordIdBytes": 4096,
+				"maxRecordVersionBytes": 4096,
+				"maxPrefixExpansions": 50,
+				"maxFuzzyTerms": 16,
+				"maxFuzzyDistance": 2,
+				"maxSearchWindow": 10000,
+				"maxSearchPageSize": 10000,
+				"maxFilterStringBytes": 65530,
+				"maxAutocompleteResults": 100,
+				"maxSearchRequestBytes": 8388608,
+				"maxSearchResponseBytes": 8388608,
+				"maxSearchBudgetMilliseconds": 30000,
+				"maxTraceRecords": 100,
+				"maxTraceSourceBytes": 1048576,
+				"maxTraceSpans": 1024,
+				"maxSynonymRules": 1024,
+				"maxSynonymReplacements": 16,
+				"maxSynonymBytes": 1048576
+			}
+		},
+		"policy": {
+			"requestBudgetMilliseconds": 5000,
+			"maxRawHitsPerRequest": 10000,
+			"maxResultsPerRequest": 10000,
+			"runtime": {
+				"maxResidentIndexes": 128,
+				"maxIndexingThreads": 128,
+				"maxSearchThreads": 256,
+				"maxWriterMemoryBytes": 4294967296,
+				"maxQueuedBytes": 8589934592,
+				"maxExpensiveSearches": 8
+			}
+		},
+		"scope": "Real audited Table writes, published native binding and Product.search plus full consumption of the returned page. Warm resident corpus; highlights only in sort-1-highlights. No concurrency, cold storage, sustained-memory or peak-capacity qualification. RSS snapshots are not peak measurements."
+	},
+	"nativeQueryCases": [
+		{
+			"name": "relevance",
+			"clauses": 0,
+			"highlights": false,
+			"filtered": false,
+			"milliseconds": [
+				0.684208000000126, 0.7145840000002863, 0.6756249999998545, 0.6519579999999223, 0.6024170000000595,
+				0.5965830000000096, 0.6355419999999867, 0.5420420000000377, 0.5779999999999745, 0.6694999999999709
+			],
+			"p50Milliseconds": 0.6437499999999545,
+			"p95Milliseconds": 0.7145840000002863,
+			"maxMilliseconds": 0.7145840000002863,
+			"rssBeforeBytes": 414695424,
+			"rssAfterBytes": 422100992
+		},
+		{
+			"name": "exact-count",
+			"clauses": 0,
+			"highlights": false,
+			"filtered": false,
+			"milliseconds": [
+				29.72649999999976, 23.019541000000117, 24.974666999999954, 22.68566600000031, 23.376040999999987,
+				21.04449999999997, 21.720209000000068, 20.2465830000001, 21.211749999999938, 21.092208000000028
+			],
+			"p50Milliseconds": 22.20293750000019,
+			"p95Milliseconds": 29.72649999999976,
+			"maxMilliseconds": 29.72649999999976,
+			"rssBeforeBytes": 422100992,
+			"rssAfterBytes": 439304192,
+			"countOutcomes": [
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				},
+				{
+					"total": 9000,
+					"exact": true
+				}
+			]
+		},
+		{
+			"name": "sort-1",
+			"clauses": 1,
+			"highlights": false,
+			"filtered": false,
+			"milliseconds": [
+				25.271582999999737, 22.36595799999941, 23.442834000000403, 26.473666999999296, 22.32249999999931,
+				24.91112499999963, 21.99279100000058, 22.295250000000124, 24.9590419999995, 21.92975000000024
+			],
+			"p50Milliseconds": 22.904395999999906,
+			"p95Milliseconds": 26.473666999999296,
+			"maxMilliseconds": 26.473666999999296,
+			"rssBeforeBytes": 439320576,
+			"rssAfterBytes": 477249536
+		},
+		{
+			"name": "sort-3",
+			"clauses": 3,
+			"highlights": false,
+			"filtered": false,
+			"milliseconds": [
+				30.246917000000394, 31.335250000000087, 32.73920799999996, 27.16637499999979, 26.707875000000058,
+				31.780249999999796, 29.106667000000016, 30.197583000000122, 27.36937500000022, 28.50999999999931
+			],
+			"p50Milliseconds": 29.65212500000007,
+			"p95Milliseconds": 32.73920799999996,
+			"maxMilliseconds": 32.73920799999996,
+			"rssBeforeBytes": 477249536,
+			"rssAfterBytes": 517521408
+		},
+		{
+			"name": "sort-32",
+			"clauses": 32,
+			"highlights": false,
+			"filtered": false,
+			"milliseconds": [
+				63.96516699999938, 66.87691600000016, 64.93441699999948, 65.73266600000079, 63.964082999999846,
+				64.27533299999959, 66.98779200000081, 65.18220800000017, 66.71670799999993, 65.92083300000013
+			],
+			"p50Milliseconds": 65.45743700000048,
+			"p95Milliseconds": 66.98779200000081,
+			"maxMilliseconds": 66.98779200000081,
+			"rssBeforeBytes": 522584064,
+			"rssAfterBytes": 561315840
+		},
+		{
+			"name": "sort-1-highlights",
+			"clauses": 1,
+			"highlights": true,
+			"filtered": false,
+			"milliseconds": [
+				23.792749999999614, 24.23845799999981, 27.453625000000102, 24.72949999999946, 25.649833999999828,
+				22.766875000000255, 29.42370899999969, 29.561541000000034, 24.513582999999926, 24.966458999999304
+			],
+			"p50Milliseconds": 24.847979499999383,
+			"p95Milliseconds": 29.561541000000034,
+			"maxMilliseconds": 29.561541000000034,
+			"rssBeforeBytes": 561315840,
+			"rssAfterBytes": 597393408
+		},
+		{
+			"name": "sort-1-filtered-exact-count",
+			"clauses": 1,
+			"highlights": false,
+			"filtered": true,
+			"milliseconds": [
+				22.26129200000014, 19.668499999999767, 19.43462499999987, 17.89887499999986, 18.755749999999352,
+				17.69970799999919, 17.083166999999776, 16.715500000000247, 18.081457999999657, 17.01695800000016
+			],
+			"p50Milliseconds": 17.99016649999976,
+			"p95Milliseconds": 22.26129200000014,
+			"maxMilliseconds": 22.26129200000014,
+			"rssBeforeBytes": 597393408,
+			"rssAfterBytes": 605011968,
+			"countOutcomes": [
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				},
+				{
+					"total": 90,
+					"exact": true
+				}
+			]
+		}
+	]
+}
