@@ -197,6 +197,31 @@ then throws `SES_NO_SLOPPY`. Lockdown and the compartment share that one SES ins
 `pure-ESM package resolution` blocks in `unitTests/security/jsLoader/jsLoader.test.js` (both modes) and
 `integrationTests/components/compartment-pure-esm-dependency.test.ts` (Node and Bun shards).
 
+## The compartment `importHook` checks `allowedPath` before any branch loads a module (`security/jsLoader.ts`)
+
+`checkAllowedModulePath` runs once at the top of the compartment `importHook`, after the synthetic `harper`
+return and ahead of branch selection, so the `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
+branches cannot load a module it has not approved, and a branch added later inherits it (#3485). Each branch
+used to make its own call and the plain-file branch made none, so compartment mode loaded any file a relative,
+absolute or symlinked specifier reached while VM mode's ESM loader (`createModule`) refused it. This applies
+the existing prefix test only; it is not a containment boundary (#1929 and #2970 track that test's prefix and
+realpath gaps), and files a natively loaded dependency loads itself are outside it. Enforced by the
+`compartment importHook` block in `unitTests/security/jsLoader/jsLoader.test.js` and
+`integrationTests/components/compartment-allowed-directory.test.ts`.
+
+## The compartment adds a CommonJS dependency's dynamic names to its native namespace (`security/jsLoader.ts`)
+
+A bare or `node_modules` import in the compartment `importHook` is a native `import()`. For a CommonJS
+module, `dynamicCjsExports` copies the enumerable `module.exports` data properties the namespace lacks
+(leaving accessors uninvoked, skipping any Proxy trap that throws, and skipping a callable `then`, which
+would make a re-exporting namespace thenable) while every namespace key and the native
+`default` stay as they were (#3485). The module is found through its `require.cache` entry because Node 22
+gives a CommonJS namespace no `'module.exports'` key. `normalizeImportedModule` is not used here: it is a
+no-op on Node 22, and where the key exists it rebuilds the exports from enumerable properties, dropping names
+such as `Object.defineProperty(exports, ...)` and replacing a transpiled module's `default`. The VM loaders
+still use it. Enforced by the `CommonJS dependencies imported natively` block in
+`unitTests/security/jsLoader/jsLoader.test.js`.
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`
