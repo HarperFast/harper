@@ -191,6 +191,24 @@ describe('published native full-text Table.search integration', () => {
 			})
 		);
 		assert.deepStrictEqual(bridged, ranked);
+		const misplacedControls = await Promise.allSettled(
+			[{ boost: 2 }, { should: controls.should }].map((rootControls) =>
+				bridge.searchByConditions({
+					database,
+					schema: database,
+					table: 'Product',
+					get_attributes: ['id'],
+					conditions: [{ ...condition }],
+					...rootControls,
+				})
+			)
+		);
+		assert.deepStrictEqual(
+			misplacedControls.map(({ status }) => status),
+			['rejected', 'rejected']
+		);
+		for (const result of misplacedControls) assert.strictEqual(result.reason.statusCode, 400);
+
 		await assert.rejects(
 			() =>
 				bridge.searchByConditions({

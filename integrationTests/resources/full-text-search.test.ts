@@ -390,6 +390,21 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			get_attributes: target.select,
 		});
 		assert.deepStrictEqual(operations, ranked);
+		for (const rootControls of [{ boost: 2 }, { should: target.conditions[0].should }]) {
+			const misplaced = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					operation: 'search_by_conditions',
+					schema: 'data',
+					table: 'Product',
+					...query('waterproof'),
+					...rootControls,
+				}),
+			});
+			assert.strictEqual(misplaced.status, 400, await misplaced.text());
+		}
+
 		const page = await request('/Product/', {
 			method: 'QUERY',
 			body: JSON.stringify({ ...target, offset: 1, limit: 1 }),
