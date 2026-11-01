@@ -274,7 +274,13 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
-import { commutativeOpsOf, operations as crdtOperations, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
+import {
+	commutativeOpsOf,
+	hasCommutativeOp,
+	operations as crdtOperations,
+	rebuildUpdateBefore,
+	remainingAgainstRecord,
+} from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -4874,6 +4880,7 @@ export function makeTable(options): TableResourceClass {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							receivedIdentityRefs: audit ? undefined : existingEntry?.receivedIdentityRefs,
 							localOnly: options?.localOnly,
 						},
 						'relocate',
@@ -5916,9 +5923,10 @@ export function makeTable(options): TableResourceClass {
 					// this the index diff re-removes the values that write already removed and never removes
 					// the ones it added — orphaning them — and an incremental update merges onto the
 					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
-					// record comes from the earlier write. The rest of the entry is the pre-transaction one on
-					// LMDB; RocksDB reloads it through this transaction, so it also carries an earlier same-key
-					// write's audit refs, which the re-delivery check below reads past (identityBase).
+					// record (and an audit:false identity list) comes from the earlier write. The rest of the
+					// entry is the pre-transaction one on LMDB; RocksDB reloads it through this transaction, so it
+					// also carries an earlier same-key write's audit refs, which the re-delivery checks below read
+					// past (identityBase).
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					let existingRecord =
@@ -6031,6 +6039,18 @@ export function makeTable(options): TableResourceClass {
 					// (risking a missed dedup), so LMDB falls back to the normal audited apply. Replication targets
 					// RocksDB anyway. (harper-pro#480)
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
+					// Ahead of the version comparison, which an LMDB merge's older stored version (#3388) can invert. Why
+					// only the committed list counts, and only with no earlier staged body: resources/DESIGN.md.
+					if (!audit && !fullUpdate && !priorChange) {
+						// A first attempt has staged nothing but unchanged publishes, whose list is the committed one
+						const committedRefs = (
+							retry ? identityBase(write, existingEntry, committedBy) : (priorStaged ?? existingEntry)
+						)?.receivedIdentityRefs;
+						if (committedRefs && auditRefIndex(committedRefs, receivedLogKey, options?.nodeId) >= 0) {
+							write.skipped = true;
+							return writeCommit(false);
+						}
+					}
 
 					if (
 						precedesExisting <= 0 &&
@@ -6774,15 +6794,9 @@ export function makeTable(options): TableResourceClass {
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist.
-							// Without a log, a tie with the head or a listed ref is the only sign this write was already applied,
-							// and an older write must not give a deleted or publish-only head a record.
-							if (
-								precedesExisting === 0 ||
-								existingRecord == null ||
-								(existingEntry.receivedIdentityRefs &&
-									!followsAppliedWrite(write) &&
-									auditRefIndex(existingEntry.receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
-							) {
+							// A tie with the head is a re-delivery, and an older write must not give a deleted or publish-only
+							// head a record.
+							if (precedesExisting === 0 || existingRecord == null) {
 								write.skipped = true;
 								return writeCommit(false);
 							}
@@ -6796,15 +6810,19 @@ export function makeTable(options): TableResourceClass {
 							// superseded cleanup keeps any the merged record retained
 							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
 							if (existingEntry.additionalAuditRefs) additionalAuditRefs.push(...existingEntry.additionalAuditRefs);
-							receivedIdentityRefs = existingEntry.receivedIdentityRefs?.slice();
-							// only a commutative op applies again on re-delivery; the plain keys merged here are dropped then
-							if (
-								commutativeOpsOf(incrementalUpdateToApply) &&
-								!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
-							)
-								(receivedIdentityRefs ??= []).push({ version: receivedLogKey, nodeId: options?.nodeId });
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
+					}
+					if (!audit && !applyAsReplacement) {
+						receivedIdentityRefs = (priorStaged ?? existingEntry)?.receivedIdentityRefs;
+						if (
+							hasCommutativeOp(incrementalUpdateToApply ?? recordUpdate) &&
+							!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
+						)
+							receivedIdentityRefs = [
+								...(receivedIdentityRefs ?? []),
+								{ version: receivedLogKey, nodeId: options?.nodeId },
+							];
 					}
 					let recordToStore: any;
 					if (applyAsReplacement) recordToStore = incrementalUpdateToApply ?? recordUpdate;
@@ -7114,6 +7132,7 @@ export function makeTable(options): TableResourceClass {
 								if (residencyId !== undefined && !keepWriterReplica) staged.residencyId = residencyId;
 								if (expiresAt >= 0) staged.expiresAt = expiresAt;
 								if (residencySlot !== undefined) staged.residencySlot = residencySlot;
+								if (!audit && receivedIdentityRefs) staged.receivedIdentityRefs = receivedIdentityRefs;
 								write.stagedEntry = staged;
 								// any record an earlier write in this transaction stored is now replaced, so mark those
 								// writes for the superseded-blob cleanup; only the nearest staged prior needs marking:
@@ -9946,6 +9965,7 @@ export function makeTable(options): TableResourceClass {
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
 								appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
+							receivedIdentityRefs: audit ? undefined : base?.receivedIdentityRefs,
 						},
 						'message',
 						false,
@@ -9966,6 +9986,7 @@ export function makeTable(options): TableResourceClass {
 							nodeId: removal?.nodeId,
 							additionalAuditRefs: removal?.additionalAuditRefs,
 							unchanged: !priorStagedOp || priorStagedOp.stagedEntry.unchanged === true,
+							receivedIdentityRefs: audit ? undefined : base?.receivedIdentityRefs,
 						};
 						write.completeResidencyRecord = priorStagedOp?.completeResidencyRecord;
 						write.blobsAuditReferenced = true;
@@ -12613,6 +12634,8 @@ export function makeTable(options): TableResourceClass {
 
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
+		// a 304 stores existingRecord, so it keeps the list that describes that body, not the commit base's
+		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
 		let sourceTimestamp = inheritedTimestamp;
 		let issuanceFailed = false;
@@ -12869,6 +12892,7 @@ export function makeTable(options): TableResourceClass {
 						localTime: 0,
 						nodeId: 0,
 						residencyId: 0,
+						receivedIdentityRefs: reusedCachedRecord && !audit ? existingIdentityRefs : undefined,
 					} as any;
 					// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
 					// are available on the immediately-resolved entry.
@@ -13027,6 +13051,7 @@ export function makeTable(options): TableResourceClass {
 									tableToTrack: tableName,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
+									receivedIdentityRefs: reusedCachedRecord && !audit ? existingIdentityRefs : undefined,
 								},
 								'put',
 								Boolean(invalidated),
