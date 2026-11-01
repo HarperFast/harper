@@ -191,10 +191,10 @@ describe('design-docs-stale.yml', function () {
 		}
 		const issue = (number, state, body = `${MARKER}\nold report`) => ({ number, state, body });
 
-		it('creates the issue when none carries the marker', function () {
+		it('creates the issue when none carries the marker, even beside an empty-bodied one', function () {
 			const { calls, body } = sync({
 				report: REPORT,
-				issues: [issue(3, 'OPEN', 'a person filed this with the label')],
+				issues: [issue(3, 'OPEN', 'a person filed this with the label'), issue(4, 'OPEN', null)],
 			});
 			assert.deepStrictEqual(calls, [
 				[

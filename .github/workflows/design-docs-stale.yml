@@ -65,7 +65,7 @@ jobs:
           marker='<!-- design-docs-stale-report -->'
           gh label create design-docs --color c5def5 --description 'Design-doc maintenance' 2>/dev/null || true
           issue=$(gh issue list --label design-docs --state all --limit 1000 --json number,state,body |
-            jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))] | max_by(.number) // empty | "\(.number) \(.state)"')
+            jq -r --arg marker "$marker" '[.[] | select((.body // "") | contains($marker))] | max_by(.number) // empty | "\(.number) \(.state)"')
           number=${issue%% *}
           state=${issue##* }
           if [ -n "$REPORT" ]; then
