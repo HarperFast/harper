@@ -231,26 +231,6 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 		await ReadOnlyTable.delete(7);
 	});
 
-	it("reads the context's signal only at its first write", async function () {
-		const controller = new AbortController();
-		let signalReads = 0;
-		const context = {
-			get signal() {
-				signalReads++;
-				return controller.signal;
-			},
-		};
-		await transaction(context, () => ReadOnlyTable.get(1, context));
-		assert.equal(signalReads, 0, 'a read-only scope never asks its transport for a signal');
-		await transaction(context, async () => {
-			await ReadOnlyTable.put(8, { name: 'first write' }, context);
-			await ReadOnlyTable.put(9, { name: 'second write' }, context);
-		});
-		assert.equal(signalReads, 1, 'the first admitted write resolves the signal once');
-		await ReadOnlyTable.delete(8);
-		await ReadOnlyTable.delete(9);
-	});
-
 	it('still refuses the final commit of a poisoned scope', async function () {
 		let performCommit;
 		const context = {};
@@ -263,5 +243,38 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 			/exceeding the maximum open-transaction time/
 		);
 		assert.equal(performCommit.callCount, 0);
+	});
+});
+
+describe('Request signal of a request transaction', () => {
+	let SignalTable;
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		SignalTable = table({
+			table: 'RequestSignalSourceTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+	});
+
+	it("reads the context's signal only at its first write", async function () {
+		const controller = new AbortController();
+		let signalReads = 0;
+		const context = {
+			get signal() {
+				signalReads++;
+				return controller.signal;
+			},
+		};
+		await transaction(context, () => SignalTable.get(1, context));
+		assert.equal(signalReads, 0, 'a read-only scope never asks its transport for a signal');
+		await transaction(context, async () => {
+			await SignalTable.put(8, { name: 'first write' }, context);
+			await SignalTable.put(9, { name: 'second write' }, context);
+		});
+		assert.equal(signalReads, 1, 'the first admitted write resolves the signal once');
+		await SignalTable.delete(8);
+		await SignalTable.delete(9);
 	});
 });

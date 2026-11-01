@@ -510,7 +510,7 @@ function formatPeerAddress(bytes: Uint8Array): string {
 	if (offset >= 0) return `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
 	if (bytes.length !== 16) return '';
 	for (let i = 0, j = 0; i < 16; i++) {
-		if (i && !(i & 1)) j++; // past the ':'
+		if (i && !(i & 1)) j++;
 		ipv6Text[j++] = HEX_DIGITS[bytes[i] >> 4];
 		ipv6Text[j++] = HEX_DIGITS[bytes[i] & 15];
 	}

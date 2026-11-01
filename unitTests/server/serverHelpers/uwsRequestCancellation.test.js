@@ -74,7 +74,7 @@ async function disconnectDuring(port, entered) {
 		handle = (request) => ({ status: 200, body: request.ip });
 		const seen = [];
 		for (const localAddress of ['127.0.0.1', '127.0.0.2', '127.0.0.2', '127.0.0.1']) {
-			seen.push(await get(port, { localAddress }));
+			seen.push(await within(get(port, { localAddress }), 'the response'));
 		}
 		assert.deepStrictEqual(seen, ['127.0.0.1', '127.0.0.2', '127.0.0.2', '127.0.0.1']);
 	});
@@ -83,7 +83,7 @@ async function disconnectDuring(port, entered) {
 		handle = (request) => ({ status: 200, body: request.ip });
 		let body;
 		try {
-			body = await get(port, { host: '::1', family: 6 });
+			body = await within(get(port, { host: '::1', family: 6 }), 'the response');
 		} catch (error) {
 			if (error.code === 'EADDRNOTAVAIL' || error.code === 'ECONNREFUSED') this.skip();
 			throw error;
