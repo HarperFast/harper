@@ -41,7 +41,8 @@ function nonLoopbackIPv6(): { address: string; linkLocal: boolean } | undefined 
 		for (const entry of addresses ?? []) {
 			if (entry.family !== 'IPv6' || entry.internal) continue;
 			if (!entry.address.startsWith('fe80:')) return { address: entry.address, linkLocal: false };
-			linkLocal ??= `${entry.address}%${name}`;
+			// Windows takes a numeric zone; elsewhere it is the interface name
+			linkLocal ??= `${entry.address}%${process.platform === 'win32' ? entry.scopeid : name}`;
 		}
 	}
 	return linkLocal ? { address: linkLocal, linkLocal: true } : undefined;
