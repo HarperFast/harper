@@ -27,6 +27,9 @@ const ANY_FILE = /(?:^|\/)[^/.][^/]*\.[A-Za-z][A-Za-z0-9]*$/;
 const SOURCE_PATHSPECS = ['*.ts', '*.mts', '*.cts', '*.tsx', '*.js', '*.mjs', '*.cjs', '*.jsx'];
 const WORD = /#?[A-Za-z_$][\w$]*/g;
 const IDENTIFIER_PATH = /^#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*$/;
+// `path` then `:12-14`, `#L12-L14`, or `:Symbol.member` with an optional call `(...)`.
+const LOCATED =
+	/^(.+?)(?::(\d+(?:-\d+)?)|(#L\d+(?:-L?\d+)?)|:(#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*)(?:\(.*\))?)$/;
 
 const readText = (root, file) => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
 const byteSize = (text) => Buffer.byteLength(text);
@@ -85,8 +88,7 @@ export function codeSpans(text) {
 export function classifySpan(span) {
 	const section = /^(?:\/\/\s*)?#section:\s*([\w-]+)$/.exec(span);
 	if (section) return { type: 'section', name: section[1] };
-	const located =
-		/^(.+?)(?::(\d+(?:-\d+)?)|#L\d+(?:-L?\d+)?|:(#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*)(?:\(.*\))?)$/.exec(span);
+	const located = LOCATED.exec(span);
 	const file = located ? located[1] : span;
 	// A dotted name such as `Table.subscribe` is a symbol unless its extension is a known one; with a
 	// directory or a `:` suffix, any extension marks a file.
@@ -96,8 +98,8 @@ export function classifySpan(span) {
 		return {
 			type: 'path',
 			path: file.replace(/^\.\//, ''),
-			line: Boolean(located?.[2]) || /#L\d/.test(span),
-			...(located?.[3] && { symbol: located[3].split('.') }),
+			line: Boolean(located?.[2] || located?.[3]),
+			...(located?.[4] && { symbol: located[4].split('.') }),
 		};
 	const call = /^(.+?)\(.*\)$/.exec(span);
 	const name = call ? call[1] : span;
@@ -182,8 +184,7 @@ function baseState(root, base) {
 let outlineModule;
 const loadOutline = async () => (outlineModule ??= await import('./outline.mjs'));
 
-// Declared names in a source file or under a directory, each with the names of the declarations enclosing
-// it, and its section markers.
+// `names` maps each declared name to the enclosing-declaration chain of every declaration of it.
 async function symbolIndex(root, target, cache) {
 	if (cache.has(target)) return cache.get(target);
 	const { outlineSource, sourceFiles } = await loadOutline();
@@ -429,7 +430,9 @@ async function pastNames(root) {
 		if (marker) sections.add(marker[1]);
 		const code = line.slice(1);
 		if (/^\s*(?:\/\*|\*)/.test(code)) continue;
-		for (const word of code.replace(/(^|\s)\/\/.*$/, '').matchAll(WORD)) words.add(word[0]);
+		// A `//` after `:`, a word, a quote or a slash is a URL, a string or a regex, not a comment.
+		const uncommented = code.replace(/\/\*.*?\*\//g, ' ').replace(/(?<![:\w'"`/\\])\/\/.*$/, '');
+		for (const word of uncommented.matchAll(WORD)) words.add(word[0]);
 	}
 	const code = await exit;
 	if (code !== 0) throw new Error(`git log -p exited ${code}`);
@@ -484,6 +487,9 @@ export async function staleReport({ root, limit = Infinity } = {}) {
 			} else if (reference.type === 'path') {
 				if (pathIsDead(dir, reference.path)) add(file, { ...span, kind: 'path' });
 				else if (reference.symbol && symbolIsDead(reference.symbol)) add(file, { ...span, kind: 'symbol' });
+			} else if (ANY_FILE.test(span.text) && pathIsDead(dir, span.text)) {
+				// `schema.graphql` parses as a dotted name, but it names a file once a deleted file had that name.
+				add(file, { ...span, kind: 'path' });
 			} else if (isCodeShaped(reference) && !isKeyword(ts, reference) && symbolIsDead(reference.parts)) {
 				add(file, { ...span, kind: 'symbol' });
 			}

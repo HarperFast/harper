@@ -375,29 +375,34 @@ describe('build-tools/check-design-docs.mjs', function () {
 			dir = createTree({
 				'lib/old.ts': 'export function retiredHelper() {}\n// #section: retired\n',
 				'lib/methods.ts': 'export class Methods {\n\tdelete() {}\n\tremovedMethod() {}\n}\n',
-				'lib/keep.ts': 'export function keptHelper() {}\nconst key = "configuredName";\n// commentOnlyName\n',
+				'lib/keep.ts':
+					'export function keptHelper() {}\nconst key = "configuredName";\n// commentOnlyName\nconst a = 1;// trailingComment\nconst b = 2; /* blockComment */\n',
+				'lib/schema.graphql': 'type Retired {}\n',
 			});
 			const { commit } = isolatedGit(dir);
 			commit('add helpers');
 			write(dir, {
 				'lib/old.ts': null,
+				'lib/schema.graphql': null,
 				'lib/keep.ts': 'export function keptHelper() {}\nconst key = "configuredName";\n',
 				'lib/methods.ts': 'export class Methods {\n\tremove() {}\n}\n',
 				'big/DESIGN.md': sized(DESIGN_BUDGET + 1),
 				'DESIGN.md': `${INDEX}- [Big](big/DESIGN.md#note) — big.\n`,
-				'lib/DESIGN.md': `${NOTE}\nNames: \`retiredHelper()\`, \`lib/old.ts\`, \`#section: retired\`, \`keptHelper\`, \`configuredName\`, \`commentOnlyName\`, \`neverHadThis()\`, \`otherRepo.ts\`, \`mdb_env_open\`.\n\nMethods: \`delete()\`, \`lib/methods.ts:removedMethod\`, \`lib/methods.ts:remove\`.\n`,
+				'lib/DESIGN.md': `${NOTE}\nNames: \`retiredHelper()\`, \`lib/old.ts\`, \`#section: retired\`, \`keptHelper\`, \`configuredName\`, \`commentOnlyName\`, \`neverHadThis()\`, \`otherRepo.ts\`, \`mdb_env_open\`.\n\nMethods: \`delete()\`, \`lib/methods.ts:removedMethod\`, \`lib/methods.ts:remove\`, \`Methods.removedMethod\`, \`schema.graphql\`, \`trailingComment\`, \`blockComment\`.\n`,
 			});
 			commit('retire old.ts');
 			const report = await staleReport({ root: dir });
 			assert.match(report, /- `big\/DESIGN\.md`: 40,961 bytes, budget 40,960/);
 			assert.match(
 				report,
-				/### `lib\/DESIGN\.md`\n\n- line 5: `retiredHelper\(\)` \(symbol\)\n- line 5: `lib\/old\.ts` \(path\)\n- line 5: `#section: retired` \(section\)\n- line 7: `delete\(\)` \(symbol\)\n- line 7: `lib\/methods\.ts:removedMethod` \(symbol\)\n\n/
+				/### `lib\/DESIGN\.md`\n\n- line 5: `retiredHelper\(\)` \(symbol\)\n- line 5: `lib\/old\.ts` \(path\)\n- line 5: `#section: retired` \(section\)\n- line 7: `delete\(\)` \(symbol\)\n- line 7: `lib\/methods\.ts:removedMethod` \(symbol\)\n- line 7: `Methods\.removedMethod` \(symbol\)\n- line 7: `schema\.graphql` \(path\)\n\n/
 			);
 			for (const live of [
 				'keptHelper',
 				'configuredName',
 				'commentOnlyName',
+				'trailingComment',
+				'blockComment',
 				'neverHadThis',
 				'otherRepo',
 				'mdb_env_open',
@@ -479,6 +484,13 @@ describe('build-tools/check-design-docs.mjs', function () {
 				line: false,
 				symbol: ['createTables'],
 			});
+			assert.deepStrictEqual(classifySpan('store.ts:find(#L1)'), {
+				type: 'path',
+				path: 'store.ts',
+				line: false,
+				symbol: ['find'],
+			});
+			assert.deepStrictEqual(classifySpan('Table.ts#L10-L20'), { type: 'path', path: 'Table.ts', line: true });
 			assert.deepStrictEqual(classifySpan('store.ts:missing()'), {
 				type: 'path',
 				path: 'store.ts',
