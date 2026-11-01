@@ -1,0 +1,701 @@
+/**
+ * Read throughput as the dataset outgrows memory, at an equal CPU and memory budget.
+ *
+ * A Redis holding the whole dataset is the cache-aside stack's upper bound, not a realistic app.
+ * Here nothing forces a hit rate: every target gets the same 4 cores and the same 8 GiB (hard caps,
+ * page cache included, swap off), the dataset is sized as a multiple of that budget, and the hit
+ * rate is whatever the stack's memory split yields under the zipfian key distribution.
+ *
+ *   node benchmarks/ycsb-vs-pg/memory-sweep.mts --ratios=0.5,2,8 --targets=harper-uws,harper,pg-redis,pg-only
+ *   node benchmarks/ycsb-vs-pg/memory-sweep.mts --targets=harper-uws,harper-uws-sized,pg-redis --sized-ratios=0.5
+ *   node benchmarks/ycsb-vs-pg/memory-sweep.mts --cells=0.5:B:harper-uws,8:B:pg-redis --reps=3
+ *
+ * Each dataset size is loaded once per engine (REST, the same generator as run-compare) into a
+ * quiesced snapshot. Every (target, workload) sample then restores that snapshot inside its own
+ * capped cgroup — so the restored files' page cache is charged to the sample — warms up on the
+ * workload's own distribution until throughput (and Redis hit rate) settle, and measures one run.
+ */
+import { rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { join } from 'node:path';
+import { WORKLOADS, assertLinksFit, formatKey, recordReadsPerOp, usesDependentReads } from '../ycsb/workload.mts';
+import type { PhaseResult } from '../ycsb/workload.mts';
+import { startDriver, type DriverRun } from './shardedDriver.mts';
+import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
+import {
+	foreignProcessesInOwnCgroup,
+	checkOwnCgroup,
+	sampleResources,
+	waitForQuiet,
+	waitForQuietHost,
+	readCgroupMemory,
+	type HostLoad,
+} from './resources.mts';
+import { readRocksdbEvents, summarizeEvents, type RocksdbActivity, type RocksdbEvent } from './rocksdbLog.mts';
+import {
+	TARGETS,
+	MEMORY_BUDGET_BYTES,
+	RESULTS_DIR,
+	argValue,
+	assertDependentReads,
+	assertNoErrors,
+	createSession,
+	measureWindow,
+	parseTargets,
+	primaryLatency,
+	targetOrder,
+	withTarget,
+	writeJsonAtomic,
+	type AuthMode,
+	type MeasuredWindow,
+	type Running,
+	type Session,
+	type TargetName,
+} from './run-compare.mts';
+
+const exec = promisify(execFile);
+
+/** Records whose logical payload (fields × field length) is `ratio` × the memory budget. */
+export function recordsForRatio(ratio: number, budgetBytes: number, recordBytes: number): number {
+	if (!Number.isFinite(ratio) || ratio <= 0) throw new Error(`dataset ratio must be a positive number, got ${ratio}`);
+	const records = Math.floor((ratio * budgetBytes) / recordBytes);
+	if (records < 1) throw new Error(`ratio ${ratio} gives no records`);
+	if (!Number.isSafeInteger(records)) throw new Error(`ratio ${ratio} gives ${records} records`);
+	return records;
+}
+
+export interface WarmupChunk {
+	throughput: number;
+	hitRate?: number;
+}
+
+/**
+ * Whether the last `window` chunks agree as a window — max-min spread of throughput within
+ * `throughputTolerance` of its mean (5%, this host's rep-to-rep noise), and of hit rate within
+ * `hitRateTolerance` — rather than pairwise, which would admit a slow drift.
+ */
+export function warmupConverged(
+	chunks: WarmupChunk[],
+	{ window = 3, throughputTolerance = 0.05, hitRateTolerance = 0.005, requireHitRate = false } = {}
+): boolean {
+	if (chunks.length < window) return false;
+	const last = chunks.slice(-window);
+	const throughputs = last.map((c) => c.throughput);
+	const mean = throughputs.reduce((a, b) => a + b, 0) / window;
+	if (mean <= 0 || (Math.max(...throughputs) - Math.min(...throughputs)) / mean > throughputTolerance) return false;
+	const hitRates = last.map((c) => c.hitRate).filter((h): h is number => h !== undefined);
+	if (hitRates.length === 0) return !requireHitRate;
+	return hitRates.length === window && Math.max(...hitRates) - Math.min(...hitRates) <= hitRateTolerance;
+}
+
+interface Snapshot {
+	/** Harper: a directory; Postgres: a name under the data dir's snapshots/. */
+	restore: string;
+	/** Harper: the install directory to recreate on restore. */
+	restoreRoot?: string;
+	load: PhaseResult;
+	quiesceMs: number;
+	quiet: boolean;
+	diskBytes: number;
+}
+
+interface PointResult {
+	ratio: number;
+	records: number;
+	logicalBytes: number;
+	snapshots: Partial<Record<'harper' | 'pg', Snapshot>>;
+}
+
+interface SweepSample {
+	ratio: number;
+	records: number;
+	target: TargetName;
+	workload: string;
+	rep: number;
+	position: number;
+	auth: AuthMode;
+	/**
+	 * Measured but not clean, first cause wins: `quiesce-timeout`, the restored target was still busy
+	 * when the quiesce wait ran out; `warmup-ceiling`, warmup hit its chunk ceiling without a plateau;
+	 * `snapshot-not-quiet`, the snapshot was taken from a target that never went quiet; `host-busy`, the
+	 * rest of the host stayed busy through every measured run (`settled` covers the target only).
+	 */
+	status: 'ok' | 'quiesce-timeout' | 'warmup-ceiling' | 'snapshot-not-quiet' | 'host-busy' | 'failed';
+	/** Present, and true, on every row of a session run with Harper uncapped (--allow-uncapped). */
+	allowUncapped?: true;
+	/**
+	 * This run's cgroup held other processes, at session start (--allow-shared-cgroup) or at this
+	 * sample's start or end, so the host gate and `hostQuiet` may have counted their CPU as the run's.
+	 */
+	sharedCgroup?: true;
+	failure?: { phase: string; error: string };
+	/** The wait for the rest of the host to go quiet before this sample started. */
+	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
+	/** Measured runs discarded because the rest of the host was busy during them; `measured` is the last run. */
+	noisyWindows?: { throughput: number; cpuMicrosPerOp: number; host: HostLoad }[];
+	/** The rest of the host stayed under the quiet threshold through the kept measured run. */
+	hostQuiet?: boolean;
+	startupMs?: number;
+	quiesceMs?: number;
+	/** False when the target was still busy when the quiesce wait ran out. */
+	quiet?: boolean;
+	/**
+	 * The snapshot quiesced, the restored target quiesced, and warmup converged. An unsettled row is
+	 * not a result to compare.
+	 */
+	settled?: boolean;
+	warmup?: WarmupChunk[];
+	converged?: boolean;
+	measured?: MeasuredWindow;
+	/** Harper: RocksDB flushes and compactions from restore to the end of the sample, and per phase. */
+	rocksdb?: { events: RocksdbEvent[]; warmup: RocksdbActivity; measured: RocksdbActivity };
+}
+
+/**
+ * The sweep's claim is an equal enforced memory budget, so an uncapped Harper needs an explicit
+ * `--allow-uncapped`, which every output row then carries. Returns the argv without that flag.
+ */
+export function checkHarperMemory(argv: string[]): { argv: string[]; allowUncapped: boolean } {
+	const allowUncapped = argv.includes('--allow-uncapped');
+	if (argValue(argv, '--harper-memory') === 'measured' && !allowUncapped) {
+		throw new Error(
+			"--harper-memory=measured runs Harper without a memory cap, which voids the sweep's equal-budget " +
+				'comparison; add --allow-uncapped to run it anyway (every row is then marked allowUncapped)'
+		);
+	}
+	return { argv: argv.filter((a) => a !== '--allow-uncapped'), allowUncapped };
+}
+
+export type Cell = { ratio: number; workload: string; target: TargetName };
+
+/** `--cells=0.5:B:harper-uws,8:B:pg-redis`: exactly these (ratio, workload, target) samples. */
+export function parseCells(list: string): Cell[] {
+	return list.split(',').map((item) => {
+		const [ratio, workload, target, extra] = item.trim().split(':');
+		if (extra !== undefined || !target) throw new Error(`--cells: "${item}" is not ratio:workload:target`);
+		const [parsed] = parseTargets(target);
+		if (!WORKLOADS[workload]) throw new Error(`--cells: unknown workload "${workload}"`);
+		return { ratio: Number(ratio), workload, target: parsed };
+	});
+}
+
+const engineOf = (target: TargetName): 'harper' | 'pg' => (TARGETS[target].kind === 'stack' ? 'pg' : 'harper');
+
+async function diskBytes(path: string): Promise<number> {
+	// PGDATA belongs to the container's postgres uid, so measure as root in a throwaway container.
+	const { stdout } = await exec(
+		'docker',
+		['run', '--rm', '-v', `${dataDir()}:/host-data:ro`, 'alpine:latest', 'du', '-sb', `/host-data/${path}`],
+		{ timeout: 10 * 60_000 }
+	);
+	return Number(stdout.split('\t')[0]);
+}
+
+/** Loads one dataset size over REST through a capped `harper` or `pg-only`, quiesces it, and keeps it. */
+async function prepareSnapshot(session: Session, engine: 'harper' | 'pg', keyWidth: number): Promise<Snapshot> {
+	const { config } = session.options;
+	const name = `${engine}-${config.records}`;
+	const restore = engine === 'harper' ? join(dataDir(), 'snapshots', name) : name;
+	const target: TargetName = engine === 'harper' ? 'harper' : 'pg-only';
+	console.log(`\n### snapshot ${name}: loading ${config.records.toLocaleString()} records through ${target}`);
+	return withTarget(session, target, async (running) => {
+		const driver = await startDriver(driverConfig(session, running, keyWidth, true));
+		let load: PhaseResult;
+		try {
+			load = driver.load;
+		} finally {
+			await driver.close();
+		}
+		assertNoErrors('load', load);
+		if (load.ops !== config.records) throw new Error(`load inserted ${load.ops} of ${config.records} records`);
+		console.log(`  [load] ${load.throughput.toFixed(0)} records/sec, ${(load.elapsedMs / 60_000).toFixed(1)} min`);
+		await running.afterLoad?.();
+		const { waitedMs, quiet } = await waitForQuiet(running.targets, { maxMs: 60 * 60_000 });
+		console.log(`  [quiesce] ${(waitedMs / 1000).toFixed(0)} s${quiet ? '' : ' (did not get quiet)'}`);
+		for (const [component, scope] of Object.entries(running.targets.cgroups)) {
+			const kills = (await readCgroupMemory(scope)).events.oom_kill ?? 0;
+			if (kills > 0) throw new Error(`${component}: ${kills} OOM kill(s) while loading; snapshot not taken`);
+		}
+		const restoreRoot = (await running.snapshot(restore)) || undefined;
+		return { restore, restoreRoot, load, quiesceMs: waitedMs, quiet, diskBytes: await diskBytes(`snapshots/${name}`) };
+	});
+}
+
+function driverConfig(session: Session, running: Running, keyWidth: number, load: boolean) {
+	const { config } = session.options;
+	return {
+		baseUrl: running.baseUrl,
+		table: config.table,
+		records: config.records,
+		opsPerWorkload: config.opsPerWorkload,
+		concurrency: config.concurrency,
+		shards: session.shards,
+		shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
+		keyWidth,
+		maxScanLength: config.maxScanLength,
+		load,
+		authorization: running.authorization,
+		callerAuthorizations: running.callerAuthorizations,
+	};
+}
+
+/** Fails unless the first and last loaded records came back with the restore, intact. */
+async function verifyRestoredData(running: Running, session: Session, keyWidth: number): Promise<void> {
+	const { config } = session.options;
+	for (const index of [0, config.records - 1]) {
+		const key = formatKey(index, keyWidth);
+		const response = await fetch(`${running.baseUrl}/${config.table}/${key}`, {
+			signal: AbortSignal.timeout(30_000),
+			headers: running.authorization ? { authorization: running.authorization } : {},
+		});
+		const record = response.ok ? ((await response.json()) as Record<string, string>) : undefined;
+		if (!response.ok) await response.body?.cancel();
+		if (record?.field0?.length !== config.fieldLength) {
+			throw new Error(`restored dataset is missing ${key} (HTTP ${response.status})`);
+		}
+	}
+}
+
+async function warmUp(
+	running: Running,
+	driver: DriverRun,
+	workload: string,
+	chunkOps: number,
+	maxChunks: number
+): Promise<{ chunks: WarmupChunk[]; converged: boolean }> {
+	const chunks: WarmupChunk[] = [];
+	while (chunks.length < maxChunks) {
+		const before = running.targets.redisExec ? await sampleResources(running.targets) : undefined;
+		const result = await driver.runWorkload(workload, 'zipfian', chunkOps);
+		assertNoErrors(`warmup ${workload}`, result);
+		const chunk: WarmupChunk = { throughput: result.throughput };
+		if (before?.redis) {
+			const after = (await sampleResources(running.targets)).redis!;
+			const lookups = after.hits - before.redis.hits + (after.misses - before.redis.misses);
+			if (lookups > 0) chunk.hitRate = (after.hits - before.redis.hits) / lookups;
+		}
+		chunks.push(chunk);
+		console.log(
+			`  [warmup ${chunks.length}] ${chunk.throughput.toFixed(0)} ops/sec` +
+				(chunk.hitRate !== undefined ? `, cache-hit ${(chunk.hitRate * 100).toFixed(2)}%` : '')
+		);
+		if (warmupConverged(chunks, { requireHitRate: Boolean(running.targets.redisExec) })) {
+			return { chunks, converged: true };
+		}
+	}
+	return { chunks, converged: false };
+}
+
+/**
+ * True when none of this invocation's scopes and none of the compose project's containers are
+ * running. A failed sample is survivable only if it left nothing behind to compete with the next.
+ */
+async function nothingLeftRunning(session: Session): Promise<boolean> {
+	const { stdout: units } = await exec(
+		'systemctl',
+		[
+			'--user',
+			'list-units',
+			'--plain',
+			'--no-legend',
+			'--state=active,activating,deactivating,reloading',
+			`${session.unitPrefix}-*`,
+		],
+		{ timeout: 30_000 }
+	);
+	const { stdout: containers } = await exec(
+		'docker',
+		['ps', '-q', '--filter', 'label=com.docker.compose.project=ycsb-vs-pg'],
+		{ timeout: 60_000 }
+	);
+	return units.trim() === '' && containers.trim() === '';
+}
+
+async function measureSweepSample(
+	session: Session,
+	target: TargetName,
+	workload: string,
+	snapshot: Snapshot,
+	keyWidth: number,
+	sample: SweepSample,
+	{
+		chunkReads,
+		maxChunks,
+		measureReads,
+		quietCores,
+		noisyRetries,
+	}: { chunkReads: number; maxChunks: number; measureReads: number; quietCores: number; noisyRetries: number }
+): Promise<void> {
+	// Sized in record reads, so a chain-4 chunk warms the caches as much as a C chunk.
+	const readsPerOp = recordReadsPerOp(WORKLOADS[workload]);
+	const chunkOps = Math.ceil(chunkReads / readsPerOp);
+	const measureOps = Math.ceil(measureReads / readsPerOp);
+	let phase = 'start';
+	const startedAt = Date.now();
+	const spec = TARGETS[target];
+	const launch = {
+		restore: snapshot.restore,
+		restoreRoot: snapshot.restoreRoot,
+		recordCacheSize: spec.kind === 'harper' && spec.sized ? 2 ** Math.ceil(Math.log2(sample.records)) : undefined,
+	};
+	try {
+		await withTarget(
+			session,
+			target,
+			async (running) => {
+				sample.startupMs = running.startupMs;
+				phase = 'verify';
+				const driver = await startDriver(driverConfig(session, running, keyWidth, false));
+				try {
+					await verifyRestoredData(running, session, keyWidth);
+					if (usesDependentReads(WORKLOADS[workload])) {
+						await assertDependentReads(running, session.options.config, keyWidth);
+					}
+					phase = 'quiesce';
+					const { waitedMs, quiet } = await waitForQuiet(running.targets, { maxMs: 10 * 60_000 });
+					sample.quiesceMs = waitedMs;
+					sample.quiet = quiet;
+					phase = 'warmup';
+					const warmupStart = Date.now();
+					const { chunks, converged } = await warmUp(running, driver, workload, chunkOps, maxChunks);
+					sample.warmup = chunks;
+					sample.converged = converged;
+					phase = 'measure';
+					const firstMeasureStart = Date.now();
+					// Other agents' load comes in bursts the pre-sample gate cannot foresee; the target is warm, so
+					// a run spoiled by one is measured again rather than kept.
+					for (let attempt = 0; ; attempt++) {
+						const label = `${target}-${workload}-${sample.ratio}x-rep${sample.rep + 1}${attempt ? `-retry${attempt}` : ''}`;
+						const measured = await measureWindow(session, running, driver, workload, 'zipfian', measureOps, label);
+						sample.measured = measured;
+						sample.hostQuiet = measured.host.otherCores < quietCores;
+						if (sample.hostQuiet || attempt >= noisyRetries) break;
+						(sample.noisyWindows ??= []).push({
+							throughput: measured.result.throughput,
+							cpuMicrosPerOp: measured.cpuMicrosPerOp,
+							host: measured.host,
+						});
+						console.log(
+							`  [host] ${measured.host.otherCores.toFixed(1)} cores busy elsewhere during the run; measuring again`
+						);
+					}
+					sample.status = !quiet
+						? 'quiesce-timeout'
+						: !converged
+							? 'warmup-ceiling'
+							: !snapshot.quiet
+								? 'snapshot-not-quiet'
+								: !sample.hostQuiet
+									? 'host-busy'
+									: 'ok';
+					sample.settled = converged && quiet && snapshot.quiet;
+					if (running.dataRoot) {
+						phase = 'rocksdb-log';
+						const { startMs, endMs } = sample.measured.window;
+						const events = await readRocksdbEvents(running.dataRoot, startedAt, Date.now());
+						sample.rocksdb = {
+							events,
+							warmup: summarizeEvents(events, warmupStart, firstMeasureStart),
+							measured: summarizeEvents(events, startMs, endMs),
+						};
+						const m = sample.rocksdb.measured;
+						console.log(
+							`  [rocksdb] measured window: ${m.flushes} flushes, ${m.compactions} compactions ` +
+								`(${m.compactionCpuMs.toFixed(0)} ms CPU, ${(m.compactionOutputBytes / 1048576).toFixed(0)} MiB written)`
+						);
+					}
+				} finally {
+					await driver.close();
+				}
+			},
+			launch
+		);
+	} catch (error) {
+		sample.status = 'failed';
+		sample.failure = { phase, error: (error as Error).stack ?? String(error) };
+		console.log(`  FAILED in ${phase}: ${(error as Error).message}`);
+	}
+}
+
+function printSweep(
+	points: PointResult[],
+	samples: SweepSample[],
+	harperMemoryBytes: number,
+	chunkReads: number
+): void {
+	const out: string[] = ['', '='.repeat(150)];
+	out.push(
+		`Budget per target: 4 cores, ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB (hard caps, page cache included, swap off)` +
+			(Number.isFinite(harperMemoryBytes) ? '' : ' — EXCEPT Harper, uncapped (--harper-memory=measured)')
+	);
+	out.push(
+		[
+			'ratio'.padEnd(6),
+			'records'.padStart(11),
+			' wl'.padEnd(9),
+			'target'.padEnd(18),
+			'rep'.padStart(4),
+			'ops/s'.padStart(8),
+			'p50 ms'.padStart(8),
+			'p99 ms'.padStart(8),
+			'CPU µs/op'.padStart(10),
+			'hit %'.padStart(7),
+			'warmup'.padStart(7),
+			'  memory MiB: peak per component',
+		].join('')
+	);
+	out.push('-'.repeat(150));
+	for (const point of points) {
+		for (const s of samples.filter((x) => x.ratio === point.ratio)) {
+			const m = s.measured;
+			const lat = m ? primaryLatency(m.result) : undefined;
+			const memory = m
+				? Object.entries(m.resources.peakMemoryBytes)
+						.map(([k, v]) => `${k} ${(v / 1048576).toFixed(0)}`)
+						.join('  ')
+				: '';
+			out.push(
+				[
+					String(point.ratio).padEnd(6),
+					point.records.toLocaleString().padStart(11),
+					` ${s.workload}`.padEnd(9),
+					s.target.padEnd(18),
+					String(s.rep + 1).padStart(4),
+					(m ? m.result.throughput.toFixed(0) : 'FAILED').padStart(8),
+					(lat ? lat.p50.toFixed(2) : '-').padStart(8),
+					(lat ? lat.p99.toFixed(2) : '-').padStart(8),
+					(m ? m.cpuMicrosPerOp.toFixed(1) : '-').padStart(10),
+					(m?.redisHitRate === undefined ? '-' : (m.redisHitRate * 100).toFixed(2)).padStart(7),
+					(s.warmup ? `${s.warmup.length}${s.settled ? '' : '!'}` : '-').padStart(7),
+					`  ${memory}${m?.overBudget ? '  OVER BUDGET' : ''}${s.failure ? `  (${s.failure.phase})` : ''}` +
+						(s.status === 'ok' || s.status === 'failed' || s.status === 'host-busy' ? '' : `  (${s.status})`) +
+						(s.hostQuiet === false
+							? '  (host busy during the run)'
+							: s.hostGate && !s.hostGate.quiet
+								? '  (host busy before)'
+								: ''),
+				].join('')
+			);
+		}
+	}
+	out.push(
+		`warmup = chunks of ${(chunkReads / 1e6).toFixed(1)}M record reads until 3 agree; ` +
+			"'!' = not settled: no plateau within the chunk ceiling, or the snapshot or restored target never got quiet"
+	);
+	const cells = new Map<string, SweepSample[]>();
+	for (const s of samples) {
+		if (!s.measured) continue;
+		const key = `${s.ratio}x ${s.workload} ${s.target}`;
+		cells.set(key, [...(cells.get(key) ?? []), s]);
+	}
+	if ([...cells.values()].some((reps) => reps.length > 1)) {
+		out.push('', 'per cell, over reps that settled with the host quiet (all reps if none did): median ops/s [min-max]');
+		for (const [key, reps] of cells) {
+			const clean = reps.filter((s) => s.settled && s.hostQuiet !== false);
+			const values = (clean.length > 0 ? clean : reps).map((s) => s.measured!.result.throughput).sort((a, b) => a - b);
+			const mid = values.length >> 1;
+			const median = values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+			out.push(
+				`  ${key.padEnd(32)} ${median.toFixed(0).padStart(8)} ` +
+					`[${values[0].toFixed(0)}-${values[values.length - 1].toFixed(0)}]  ${clean.length}/${reps.length} clean`
+			);
+		}
+	}
+	out.push('='.repeat(150));
+	process.stdout.write(out.join('\n') + '\n');
+}
+
+async function removeSnapshots(): Promise<void> {
+	await removePgSnapshots();
+	await rm(join(dataDir(), 'snapshots'), { recursive: true, force: true });
+}
+
+async function main(): Promise<void> {
+	const foreign = foreignProcessesInOwnCgroup();
+	const { argv: memoryChecked, allowUncapped } = checkHarperMemory(process.argv.slice(2));
+	const { argv, sharedCgroup } = checkOwnCgroup(memoryChecked, foreign);
+	const cellsArg = argValue(argv, '--cells');
+	const cells = cellsArg ? parseCells(cellsArg) : undefined;
+	if (
+		cells &&
+		['--targets', '--ratios', '--workloads', '--sized-ratios'].some((f) => argValue(argv, f) !== undefined)
+	) {
+		throw new Error(
+			'--cells names every sample; it does not combine with --targets, --ratios, --workloads or --sized-ratios'
+		);
+	}
+	const unique = <T,>(items: T[]) => [...new Set(items)];
+	const targets = cells
+		? unique(cells.map((c) => c.target))
+		: parseTargets(argValue(argv, '--targets') ?? 'harper-uws,harper,pg-redis,pg-only');
+	const ratios = cells
+		? unique(cells.map((c) => c.ratio))
+		: (argValue(argv, '--ratios') ?? '0.5,2,8').split(',').map(Number);
+	// A record cache sized to the dataset is only plausible at the smallest point, so that is the default.
+	const sizedRatios = argValue(argv, '--sized-ratios')?.split(',').map(Number) ?? [Math.min(...ratios)];
+	for (const ratio of sizedRatios) {
+		if (!ratios.includes(ratio)) throw new Error(`--sized-ratios: ${ratio} is not one of --ratios ${ratios.join(',')}`);
+	}
+	const chunkReads = Number(argValue(argv, '--warmup-chunk') ?? 1_000_000);
+	const maxChunks = Number(argValue(argv, '--warmup-max-chunks') ?? 12);
+	// The rest of the host, in cores busy over 30 s, and how long to wait for it.
+	const hostQuietCores = Number(argValue(argv, '--host-quiet-cores') ?? 1);
+	const hostQuietMaxMin = Number(argValue(argv, '--host-quiet-max-min') ?? 20);
+	const noisyRetries = Number(argValue(argv, '--noisy-retries') ?? 2);
+	for (const [flag, value] of Object.entries({ chunkReads, maxChunks })) {
+		if (!Number.isInteger(value) || value < 1) throw new Error(`${flag} must be a positive integer, got ${value}`);
+	}
+	for (const [flag, value] of Object.entries({ hostQuietCores, hostQuietMaxMin, noisyRetries })) {
+		if (!(value >= 0)) throw new Error(`${flag} must be a non-negative number, got ${value}`);
+	}
+	const { session, meta } = await createSession(argv, {
+		targets,
+		cache: 'warm',
+		stackMemory: (target) => SWEEP_STACK_MEMORY[target],
+		ownFlags: [
+			'ratios',
+			'sized-ratios',
+			'warmup-chunk',
+			'warmup-max-chunks',
+			'cells',
+			'host-quiet-cores',
+			'host-quiet-max-min',
+			'noisy-retries',
+		],
+	});
+	const { config } = session.options;
+	const workloads = cells
+		? unique(cells.map((c) => c.workload))
+		: argv.some((a) => a.startsWith('--workloads='))
+			? config.workloads
+			: ['C', 'B'];
+	const selected = (ratio: number, workload: string, target: TargetName): boolean => {
+		if (cells) return cells.some((c) => c.ratio === ratio && c.workload === workload && c.target === target);
+		const spec = TARGETS[target];
+		return spec.kind === 'stack' || !spec.sized || sizedRatios.includes(ratio);
+	};
+	for (const w of workloads)
+		if (WORKLOADS[w].mix.insert) throw new Error(`workload ${w} inserts; the sweep restores fixed datasets`);
+	const measureReads = argv.some((a) => a.startsWith('--ops=')) ? config.opsPerWorkload : 1_000_000;
+	const recordBytes = config.fieldCount * config.fieldLength;
+	const pointRecords = ratios.map((ratio) => recordsForRatio(ratio, MEMORY_BUDGET_BYTES, recordBytes));
+	// --cells picks workloads parseOptions never saw.
+	assertLinksFit(workloads, config, Math.max(10, String(Math.max(...pointRecords)).length));
+
+	const file = join(RESULTS_DIR, `memory-sweep-${meta.timestamp}.json`);
+	const runMeta = {
+		...meta,
+		sweep: {
+			ratios,
+			sizedRatios,
+			workloads,
+			distribution: 'zipfian',
+			measureReads,
+			reps: config.reps,
+			cells,
+			allowUncapped,
+			sharedCgroup: sharedCgroup ? foreign : undefined,
+			hostGate: { maxOtherCores: hostQuietCores, windowMs: 30_000, maxMs: hostQuietMaxMin * 60_000 },
+			noisyRetries,
+			warmup: { chunkReads, maxChunks, window: 3, throughputTolerance: 0.05, hitRateTolerance: 0.005 },
+			recordBytes,
+			targetOrderRule: 'forward on even (point + rep), reversed on odd',
+			pageCache:
+				'charged to the cgroup of the process that first touches a page; each sample writes its own dataset copy from inside its own cgroup',
+		},
+	};
+	const points: PointResult[] = [];
+	const samples: SweepSample[] = [];
+	const persist = async () => {
+		const payload = { meta: runMeta, targets, points, samples };
+		await writeJsonAtomic(file, payload);
+		await writeJsonAtomic(join(RESULTS_DIR, 'memory-sweep-latest.json'), payload);
+	};
+
+	await removeSnapshots();
+	try {
+		for (let p = 0; p < ratios.length; p++) {
+			const records = pointRecords[p];
+			const pointSession: Session = { ...session, options: { ...session.options, config: { ...config, records } } };
+			const keyWidth = Math.max(10, String(records).length);
+			const point: PointResult = { ratio: ratios[p], records, logicalBytes: records * recordBytes, snapshots: {} };
+			points.push(point);
+			console.log(`\n######## point ${ratios[p]}x: ${records.toLocaleString()} records ########`);
+			const pointTargets = targets.filter((t) => workloads.some((w) => selected(ratios[p], w, t)));
+			for (const engine of new Set(pointTargets.map(engineOf))) {
+				point.snapshots[engine] = await prepareSnapshot(pointSession, engine, keyWidth);
+				await persist();
+			}
+			for (const workload of workloads) {
+				for (let rep = 0; rep < config.reps; rep++) {
+					const order = targetOrder(
+						pointTargets.filter((t) => selected(ratios[p], workload, t)),
+						p + rep
+					);
+					for (let i = 0; i < order.length; i++) {
+						const target = order[i];
+						const sample: SweepSample = {
+							ratio: ratios[p],
+							records,
+							target,
+							workload,
+							rep,
+							position: i + 1,
+							auth: session.auth,
+							status: 'failed',
+							...(allowUncapped ? { allowUncapped: true as const } : {}),
+							...(sharedCgroup ? { sharedCgroup: true as const } : {}),
+						};
+						console.log(`\n--- ${ratios[p]}x rep ${rep + 1} #${i + 1} ${target} / workload ${workload} ---`);
+						// A job can join the session's cgroup after the startup check; this only marks the row.
+						const markShared = () => {
+							if (foreignProcessesInOwnCgroup().length > 0) sample.sharedCgroup = true;
+						};
+						markShared();
+						const gate = await waitForQuietHost({ maxOtherCores: hostQuietCores, maxMs: hostQuietMaxMin * 60_000 });
+						sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
+						console.log(
+							`  [host] ${gate.last.otherCores.toFixed(2)} cores busy elsewhere, load ${gate.last.loadavg1}` +
+								(gate.quiet ? '' : ' — not quiet, running anyway') +
+								` (waited ${(gate.waitedMs / 1000).toFixed(0)} s)`
+						);
+						await measureSweepSample(
+							pointSession,
+							target,
+							workload,
+							point.snapshots[engineOf(target)]!,
+							keyWidth,
+							sample,
+							{
+								chunkReads,
+								maxChunks,
+								measureReads,
+								quietCores: hostQuietCores,
+								noisyRetries,
+							}
+						);
+						markShared();
+						samples.push(sample);
+						await persist();
+						if (sample.status === 'failed' && !(await nothingLeftRunning(session))) {
+							throw new Error('a failed sample left processes or containers running; aborting the session');
+						}
+					}
+				}
+			}
+			await removeSnapshots();
+		}
+	} finally {
+		await removeSnapshots().catch(() => {});
+	}
+	printSweep(points, samples, session.harperMemoryBytes, chunkReads);
+	console.log(`\nResults written to ${file}`);
+}
+
+if (import.meta.main) {
+	main().catch((error) => {
+		console.error(error);
+		process.exit(1);
+	});
+}

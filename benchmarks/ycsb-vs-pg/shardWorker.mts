@@ -18,15 +18,20 @@ export interface ShardCommand {
 	shape: RecordShape;
 	keyWidth: number;
 	maxScanLength: number;
+	/** Sent on every request when the target checks a credential (--auth=token). */
+	authorization?: string;
+	/** --auth=token: each record owner's credential, which inspect requests carry instead. */
+	callerAuthorizations?: Record<string, string>;
 	/** load / readAll: the [from, to) key range this shard inserts or reads. */
 	from?: number;
 	to?: number;
-	/** run: workload name, op count for this shard, and the loaded keyspace size. */
+	/** The loaded keyspace size (every record's link stays within it); run: also the readable keyspace. */
+	records: number;
+	/** run: workload name and op count for this shard. */
 	workload?: string;
 	/** Overrides the named workload's mix, for write-ratio sweeps. */
 	mix?: Record<string, number>;
 	opCount?: number;
-	records?: number;
 	distribution?: 'uniform' | 'zipfian' | 'latest';
 }
 
@@ -36,6 +41,7 @@ async function rangePhase(command: ShardCommand): Promise<PhaseResult> {
 		baseUrls: [command.baseUrl],
 		table: command.table,
 		maxSockets: command.concurrency,
+		authorization: command.authorization,
 	});
 	const from = command.from!;
 	const to = command.to!;
@@ -48,8 +54,12 @@ async function rangePhase(command: ShardCommand): Promise<PhaseResult> {
 			if (index >= to) break;
 			try {
 				const key = formatKey(index, command.keyWidth);
-				if (command.phase === 'load') await executor.insert(key, buildRecord(command.shape));
-				else await executor.read(key);
+				if (command.phase === 'load') {
+					const link = { index, keyCount: command.records, keyWidth: command.keyWidth };
+					await executor.insert(key, buildRecord(command.shape, link));
+				} else {
+					await executor.read(key);
+				}
 			} catch {
 				errors++;
 			}
@@ -67,11 +77,13 @@ async function runPhase(command: ShardCommand): Promise<PhaseResult> {
 		baseUrls: [command.baseUrl],
 		table: command.table,
 		maxSockets: command.concurrency,
+		authorization: command.authorization,
+		callerAuthorizations: command.callerAuthorizations,
 	});
 	const spec = WORKLOADS[command.workload!];
 	const keys = new KeyState({
 		distribution: command.distribution ?? spec.distribution,
-		initialKeyCount: command.records!,
+		initialKeyCount: command.records,
 		keyWidth: command.keyWidth,
 		shape: command.shape,
 		maxScanLength: command.maxScanLength,
@@ -80,6 +92,7 @@ async function runPhase(command: ShardCommand): Promise<PhaseResult> {
 		opCount: command.opCount!,
 		concurrency: command.concurrency,
 		mix: (command.mix as typeof spec.mix) ?? spec.mix,
+		chainHops: spec.chainHops,
 		executor,
 		keys,
 	});

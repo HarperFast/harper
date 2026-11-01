@@ -116,7 +116,7 @@ if (values.serve) {
 				);
 			}
 		} finally {
-			driverRun.close();
+			await driverRun.close();
 		}
 	} finally {
 		child.kill('SIGKILL');
