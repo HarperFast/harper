@@ -1,15 +1,6 @@
 /**
- * Local trust and `request.ip` for IPv6 and dual-stack IPv4 peers, on whichever HTTP transport serves the
- * port: Node's http server, or uWebSockets.js when HARPER_UWS_HTTP is set (CI runs this file both ways).
- *
- * `http.port` is a bare port, the production default, so both transports bind dual-stack on `::`. A peer's
- * `request.ip` must read as Node's `socket.remoteAddress` would (`::1`, `::ffff:a.b.c.d`), and
- * `authentication.authorizeLocal` must trust exactly the loopback peers — over HTTP and over a WebSocket
- * upgrade alike.
- *
- * Run:
- *   npm run test:integration -- "integrationTests/security/ipv6-local-trust.test.ts"
- *   HARPER_UWS_HTTP=1 npm run test:integration -- "integrationTests/security/ipv6-local-trust.test.ts"
+ * `request.ip` and local trust are the same on Node's HTTP server and on uWS (CI also runs this file with
+ * HARPER_UWS_HTTP=1) for a bare `http.port`, which both bind dual-stack.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, deepStrictEqual } from 'node:assert';
@@ -29,7 +20,6 @@ interface Peer {
 	ip: string | null;
 }
 
-/** Listens on `host`, port 0, and reports the port it got, or undefined when the address is unusable. */
 async function bindablePort(host: string): Promise<number | undefined> {
 	const server = createServer();
 	try {
@@ -45,7 +35,6 @@ async function bindablePort(host: string): Promise<number | undefined> {
 	}
 }
 
-/** A non-loopback IPv6 address of this host, preferring a global one. Link-local ones carry their zone. */
 function nonLoopbackIPv6(): { address: string; linkLocal: boolean } | undefined {
 	let linkLocal: string | undefined;
 	for (const [name, addresses] of Object.entries(networkInterfaces())) {
@@ -58,9 +47,13 @@ function nonLoopbackIPv6(): { address: string; linkLocal: boolean } | undefined 
 	return linkLocal ? { address: linkLocal, linkLocal: true } : undefined;
 }
 
+const HAS_IPV6 = (await bindablePort('::')) !== undefined;
 const HAS_IPV6_LOOPBACK = (await bindablePort('::1')) !== undefined;
 const REMOTE_IPV6 = nonLoopbackIPv6();
-const runtimeSkip = process.env.HARPER_RUNTIME === 'bun' ? 'Bun reports peer addresses itself' : false;
+const suiteSkip =
+	process.env.HARPER_RUNTIME === 'bun'
+		? 'Bun reports peer addresses itself'
+		: !HAS_IPV6 && 'a bare http.port binds ::, which this host cannot';
 
 function whoAmI(port: number, host: string, localAddress: string): Promise<Peer> {
 	return new Promise((resolvePeer, reject) => {
@@ -122,11 +115,11 @@ function whoAmIOverWebSocket(port: number, host: string, localAddress: string): 
 const LOCAL = { username: 'local', localMarker: true };
 const ANONYMOUS = { username: null, localMarker: false };
 
-suite('local trust and request.ip for IPv6 and dual-stack peers', { skip: runtimeSkip }, (ctx: ContextWithHarper) => {
+suite('local trust and request.ip for IPv6 and dual-stack peers', { skip: suiteSkip }, (ctx: ContextWithHarper) => {
 	let port: number;
 
 	before(async () => {
-		port = (await bindablePort('::')) ?? (await bindablePort('0.0.0.0'))!;
+		port = (await bindablePort('::'))!;
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: { authentication: { authorizeLocal: true }, http: { port } },
 		});

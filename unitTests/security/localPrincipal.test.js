@@ -406,7 +406,6 @@ describe('the local principal of a request trusted by its transport', function (
 			});
 		}
 
-		// ::127.0.0.1 is IPv4-compatible IPv6, not loopback, though its text contains 127.0.0.
 		for (const address of ['203.0.113.7', '2001:db8::1', '::127.0.0.1']) {
 			it(`refuses the same CONNECT from ${address}`, async () => {
 				const { connack, session } = await connectOverTcp(address, `remote-tcp-${address}`);

@@ -3,12 +3,9 @@ const COLON = 0x3a;
 const ipv6Text = Buffer.alloc(39);
 
 /**
- * The text Node's `socket.remoteAddress` gives for a peer's raw address bytes (4 for IPv4, 16 for
- * IPv6), so `request.ip` reads the same on every transport. This is libuv's `inet_ntop`: dotted IPv4;
- * IPv6 in lowercase hex without leading zeros, with the first longest run of two or more zero groups
- * as `::`, and a dotted tail for IPv4-mapped (`::ffff:a.b.c.d`) and IPv4-compatible (`::a.b.c.d`)
- * addresses. Node also appends `%<zone>` to a link-local address it has a scope id for; raw bytes
- * carry none. Any other length (a Unix socket has no address) is ''.
+ * Peer address bytes (4 or 16) as Node's `socket.remoteAddress` writes them, which is libuv's
+ * `inet_ntop`; '' for any other length. Node also appends `%<zone>` to a link-local address it has a
+ * scope id for, and raw bytes carry none.
  */
 export function formatPeerAddress(bytes: Uint8Array): string {
 	if (bytes.length === 4) return dotted(bytes, 0);
@@ -53,8 +50,8 @@ function dotted(bytes: Uint8Array, offset: number): string {
 }
 
 /**
- * Whether a peer address is one `authentication.authorizeLocal` trusts: `127.0.0.x`, its IPv4-mapped
- * form, or `::1`. Exact forms, not a substring: an IPv4-compatible `::127.0.0.1` is not loopback.
+ * The loopback peers `authentication.authorizeLocal` trusts. Anchored at the start, never a substring
+ * match: IPv4-compatible `::127.0.0.1` is not loopback.
  */
 export function isLocalPeerAddress(address: string | undefined): boolean {
 	if (!address) return false;

@@ -80,15 +80,22 @@ async function canBindIpv6Loopback() {
 }
 
 (uwsAvailable ? describe : describe.skip)('uWS request cancellation and peer address', function () {
-	let port, server, handle, nodePort, nodeServer;
+	let port, server, handle, nodePort, nodeServer, nodeDualStack;
 	before(async function () {
 		port = await getFreeTcpPort();
-		// no host: uWS binds dual-stack, as Harper's uWS listener does for a bare http.port
+		// no host, so uWS binds as Harper's uWS listener does for a bare http.port: dual-stack where it can
 		server = await createUwsServer({ port, handler: (request) => handle(request) });
-		// Node on '::' like threadServer.ts's default listen, the reference for request.ip on the Node path
 		nodeServer = http.createServer((request, response) => response.end(request.socket.remoteAddress));
-		nodeServer.listen(0, '::');
-		await once(nodeServer, 'listening');
+		try {
+			nodeServer.listen(0, '::');
+			await once(nodeServer, 'listening');
+			nodeDualStack = true;
+		} catch (error) {
+			if (error.code !== 'EAFNOSUPPORT' && error.code !== 'EADDRNOTAVAIL') throw error;
+			nodeServer.listen(0, '0.0.0.0');
+			await once(nodeServer, 'listening');
+			nodeDualStack = false;
+		}
 		nodePort = nodeServer.address().port;
 	});
 	after(() => {
@@ -105,7 +112,11 @@ async function canBindIpv6Loopback() {
 			seenByNode.push(await get(nodePort, { localAddress }));
 		}
 		assert.deepStrictEqual(seen, seenByNode);
-		assert.deepStrictEqual(seen, ['::ffff:127.0.0.1', '::ffff:127.0.0.2', '::ffff:127.0.0.2', '::ffff:127.0.0.1']);
+		const prefix = nodeDualStack ? '::ffff:' : '';
+		assert.deepStrictEqual(
+			seen,
+			['127.0.0.1', '127.0.0.2', '127.0.0.2', '127.0.0.1'].map((address) => prefix + address)
+		);
 	});
 
 	it('reports an IPv6 peer as Node does', async function () {

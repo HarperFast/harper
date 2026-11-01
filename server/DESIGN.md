@@ -872,7 +872,7 @@ uWS force-closes a completed `Connection: close` response while an upload is sti
 
 ## Peer-address text is Node's `socket.remoteAddress` text on every transport (`server/serverHelpers/peerAddress.ts`)
 
-uWS and PROXY v2 headers hand Harper raw address bytes. `formatPeerAddress` writes them as libuv's `inet_ntop` does, so `request.ip` reads the same over Node, uWS and a PROXY header (`::1`; `::ffff:127.0.0.1` for an IPv4 client of a dual-stack listener). `unitTests/server/serverHelpers/peerAddress.test.js` pins it against `net.SocketAddress`. One gap: Node appends `%<zone>` to a link-local peer, and raw bytes carry no scope id. Local trust compares exact forms through `isLocalPeerAddress` (`127.0.0.x`, `::ffff:127.0.0.x`, `::1`), never a substring, because the Node form of IPv4-compatible `::7f00:1` is `::127.0.0.1`.
+uWS and PROXY v2 TCP6 headers hand Harper raw address bytes. `formatPeerAddress` writes them as libuv's `inet_ntop` does, so a uWS peer's `request.ip` reads as the same peer's does on Node (`::1`; `::ffff:127.0.0.1` for an IPv4 client of a dual-stack listener), and so does a PROXY v2 TCP6 source. PROXY v1 passes the proxy's own text through. `unitTests/server/serverHelpers/peerAddress.test.js` pins it against `net.SocketAddress`. One gap: Node appends `%<zone>` to a link-local peer, and raw bytes carry no scope id. Local trust compares exact forms through `isLocalPeerAddress` (`127.0.0.x`, `::ffff:127.0.0.x`, `::1`), never a substring, because the Node form of IPv4-compatible `::7f00:1` is `::127.0.0.1`.
 
 ## Dedicated worker pools own their listeners and load no applications (`server/threads/workerPools.ts`)
 
