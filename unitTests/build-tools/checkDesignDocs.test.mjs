@@ -491,6 +491,11 @@ describe('build-tools/check-design-docs.mjs', function () {
 				line: false,
 			});
 			assert.deepStrictEqual(classifySpan('schema.graphql:5'), { type: 'path', path: 'schema.graphql', line: true });
+			assert.deepStrictEqual(classifySpan('my-schema.graphql'), {
+				type: 'path',
+				path: 'my-schema.graphql',
+				line: false,
+			});
 			assert.deepStrictEqual(classifySpan('TableResource._writeUpdate'), {
 				type: 'symbol',
 				parts: ['TableResource', '_writeUpdate'],
@@ -508,6 +513,8 @@ describe('build-tools/check-design-docs.mjs', function () {
 				'X-Replicate-To',
 				'@relationship',
 				'https://x.io/a.md',
+				'v5.3',
+				'5.4.0',
 				'*.test.js',
 			])
 				assert.strictEqual(classifySpan(other), undefined, other);

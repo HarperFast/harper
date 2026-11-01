@@ -23,7 +23,7 @@ export const CEILINGS_FILE = 'build-tools/design-docs-ceilings.json';
 const SKIP = new Set(['node_modules', 'dist', '.git', '.claude', 'fixtures']);
 const LITERALS = new Set(['true', 'false', 'null', 'undefined', 'this', 'super', 'NaN', 'Infinity']);
 const KNOWN_FILE = /(?:^|\/)[^/.][^/]*\.(?:[cm]?[jt]s|[jt]sx|json|md|ya?ml|sh)$/;
-const ANY_FILE = /(?:^|\/)[^/.][^/]*\.[A-Za-z0-9]+$/;
+const ANY_FILE = /(?:^|\/)[^/.][^/]*\.[A-Za-z][A-Za-z0-9]*$/;
 const SOURCE_PATHSPECS = ['*.ts', '*.mts', '*.cts', '*.tsx', '*.js', '*.mjs', '*.cjs', '*.jsx'];
 const WORD = /#?[A-Za-z_$][\w$]*/g;
 const IDENTIFIER_PATH = /^#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*$/;
@@ -90,7 +90,8 @@ export function classifySpan(span) {
 	const file = located ? located[1] : span;
 	// A dotted name such as `Table.subscribe` is a symbol unless its extension is a known one; with a
 	// directory or a `:` suffix, any extension marks a file.
-	const isFile = KNOWN_FILE.test(file) || ((file.includes('/') || located) && ANY_FILE.test(file));
+	const isFile =
+		KNOWN_FILE.test(file) || ((file.includes('/') || located || !IDENTIFIER_PATH.test(file)) && ANY_FILE.test(file));
 	if (isFile && !/[\s*?{}<>[\]`'"]|^[a-z]+:/.test(file))
 		return {
 			type: 'path',
@@ -130,7 +131,12 @@ const isKeyword = (ts, reference) =>
 	!reference.call && reference.parts.length === 1 && ts.stringToToken(reference.parts[0]) !== undefined;
 
 function git(root, ...args) {
-	return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+	return execFileSync('git', args, {
+		cwd: root,
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+		maxBuffer: 1 << 26,
+	});
 }
 
 function parseCeilings(text, source) {
@@ -407,8 +413,8 @@ async function pastNames(root) {
 		console.error(
 			'warning: shallow history; a name removed before its oldest commit is not reported (fetch with --unshallow)'
 		);
-	const deleted = git(root, 'log', '--no-renames', '--diff-filter=D', '--name-only', '--format=', 'HEAD')
-		.split('\n')
+	const deleted = git(root, 'log', '-z', '--no-renames', '--diff-filter=D', '--name-only', '--format=', 'HEAD')
+		.split(/[\0\n]/)
 		.filter(Boolean);
 	const words = new Set();
 	const sections = new Set();
