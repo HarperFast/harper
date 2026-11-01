@@ -3,3 +3,4 @@
 
 unitTests/security/jsLoader/fixtures
 integrationTests/**/fixture-broken-*/**
+unitTests/security/fixtures/authResponseHeaders.json
