@@ -1,0 +1,161 @@
+{
+	"format": 1,
+	"sanitization": "Only host identity strings (remote home/user, hostname and IP) may be replaced. No metric, error record or harness hash removed. Selected input contents had no such identifiers and required no replacements.",
+	"excluded": [
+		"run.log",
+		"build.log",
+		"monitor logs/registry",
+		"config files",
+		"authentication",
+		"environment",
+		"cmdline"
+	],
+	"runs": {
+		"feature": {
+			"sourceDirectoryBasename": "fulltext-linux-1m-8cpu6g",
+			"artifacts": [
+				{
+					"sourceRelativePath": "1000000.json",
+					"publishedRelativePath": "feature/1000000.json.gz",
+					"rawPrivateSha256": "8acbc9dd17ae88d1219067ee6d7cf297423bab13d547d526e2f7cd4e5de8e34d",
+					"sanitizedPayloadSha256": "8acbc9dd17ae88d1219067ee6d7cf297423bab13d547d526e2f7cd4e5de8e34d",
+					"compressedSha256": "067de22998fa04711ac80b0dfb9aa20074c24e74241958afda2e61f113a24432",
+					"replacementCount": 0
+				},
+				{
+					"sourceRelativePath": "errors.ndjson",
+					"publishedRelativePath": "feature/errors.ndjson.gz",
+					"rawPrivateSha256": "c0cb5c81c40da7b615108e208db6a71511c2bea6c4c96139fb70c5f3de4c35c9",
+					"sanitizedPayloadSha256": "c0cb5c81c40da7b615108e208db6a71511c2bea6c4c96139fb70c5f3de4c35c9",
+					"compressedSha256": "ca089672dce38acd3da10b46343d23c087c346b1b3cd7c849799529f7022a9b5",
+					"replacementCount": 0
+				},
+				{
+					"sourceRelativePath": "provenance.json",
+					"publishedRelativePath": "feature/provenance.json.gz",
+					"rawPrivateSha256": "7e3e88124c2e22fdb605827184a122ad665829965f3f1597b5d9d607bdb8b982",
+					"sanitizedPayloadSha256": "7e3e88124c2e22fdb605827184a122ad665829965f3f1597b5d9d607bdb8b982",
+					"compressedSha256": "b3902cc0b73ca904e329cd706748b8dd85caad2e19f160020def714cd5c981e9",
+					"replacementCount": 0
+				},
+				{
+					"publishedRelativePath": "feature/measurement-receipt.json",
+					"sha256": "3605c662709f7a077800220db3dbc8a5283ce79a24604fac5b82f7250f4fc79b",
+					"inputPaths": [
+						"cgroup-relative.txt",
+						"cpu.max.after.txt",
+						"cpu.max.before.txt",
+						"cpu.pressure.last.txt",
+						"cpu.pressure.mid.txt",
+						"cpu.stat.after.txt",
+						"cpu.stat.before.txt",
+						"database-footprint-last-kib.txt",
+						"database-footprint-mid-kib.txt",
+						"harness-exit-status.txt",
+						"io-observation-end.json",
+						"io-observation-start.json",
+						"io.pressure.last.txt",
+						"io.pressure.mid.txt",
+						"io.stat.after.txt",
+						"io.stat.before.txt",
+						"memory.current.after.txt",
+						"memory.current.before.txt",
+						"memory.events.after.txt",
+						"memory.events.before.txt",
+						"memory.events.last.txt",
+						"memory.events.mid.txt",
+						"memory.max.after.txt",
+						"memory.max.before.txt",
+						"memory.peak.after.txt",
+						"memory.peak.before.txt",
+						"memory.pressure.last.txt",
+						"memory.pressure.mid.txt",
+						"memory.stat.last.txt",
+						"memory.stat.mid.txt",
+						"memory.swap.max.after.txt",
+						"memory.swap.max.before.txt",
+						"server-proc-io.last.txt",
+						"server-proc-io.mid.txt",
+						"server-proc-stat.last.txt",
+						"server-proc-stat.mid.txt",
+						"server-proc-status.last.txt",
+						"server-proc-status.mid.txt"
+					]
+				}
+			]
+		},
+		"baseline": {
+			"sourceDirectoryBasename": "fulltext-linux-baseline-1m-8cpu6g",
+			"artifacts": [
+				{
+					"sourceRelativePath": "1000000.json",
+					"publishedRelativePath": "baseline/1000000.json.gz",
+					"rawPrivateSha256": "c3be16c0ee71d411884e0cccc2a09356202567c45fb295f00f16c4a893b646e4",
+					"sanitizedPayloadSha256": "c3be16c0ee71d411884e0cccc2a09356202567c45fb295f00f16c4a893b646e4",
+					"compressedSha256": "1b84f0da7ad66650a4138b7f1470b5a015c73de577899c2532987daa7b0739bc",
+					"replacementCount": 0
+				},
+				{
+					"sourceRelativePath": "errors.ndjson",
+					"publishedRelativePath": "baseline/errors.ndjson.gz",
+					"rawPrivateSha256": "d022accbd9d9f7b8f83dba99a59b7f7b7a2592bc24ac95b73b2c949dfe21f0f0",
+					"sanitizedPayloadSha256": "d022accbd9d9f7b8f83dba99a59b7f7b7a2592bc24ac95b73b2c949dfe21f0f0",
+					"compressedSha256": "687cf643683c2049f258bd6452de79ed5763bc09dcfda420a493a8a104fbe4e0",
+					"replacementCount": 0
+				},
+				{
+					"sourceRelativePath": "provenance.json",
+					"publishedRelativePath": "baseline/provenance.json.gz",
+					"rawPrivateSha256": "8ae1225f531ca1084e7471f37ae3c7962ca4449a5cd0023958b3aa44a43c34c6",
+					"sanitizedPayloadSha256": "8ae1225f531ca1084e7471f37ae3c7962ca4449a5cd0023958b3aa44a43c34c6",
+					"compressedSha256": "f2c9fc7764b7134efc58de846cd2e438ce0bfcc8e8dc34b26fe4d94b450228a0",
+					"replacementCount": 0
+				},
+				{
+					"publishedRelativePath": "baseline/measurement-receipt.json",
+					"sha256": "bef21b142f12c99ebb713ae95e85a373801fd9fbb028bb2da3c598d4855fe4b4",
+					"inputPaths": [
+						"cgroup-relative.txt",
+						"cpu.max.after.txt",
+						"cpu.max.before.txt",
+						"cpu.pressure.observed-first.txt",
+						"cpu.pressure.observed-last.txt",
+						"cpu.stat.after.txt",
+						"cpu.stat.before.txt",
+						"database-footprint-last-kib.txt",
+						"database-footprint-mid-kib.txt",
+						"harness-exit-status.txt",
+						"io-observation.json",
+						"io.pressure.observed-first.txt",
+						"io.pressure.observed-last.txt",
+						"io.stat.after.txt",
+						"io.stat.before.txt",
+						"memory.current.after.txt",
+						"memory.current.before.txt",
+						"memory.events.after.txt",
+						"memory.events.before.txt",
+						"memory.events.observed-first.txt",
+						"memory.events.observed-last.txt",
+						"memory.max.after.txt",
+						"memory.max.before.txt",
+						"memory.peak.after.txt",
+						"memory.peak.before.txt",
+						"memory.pressure.observed-first.txt",
+						"memory.pressure.observed-last.txt",
+						"memory.stat.observed-first.txt",
+						"memory.stat.observed-last.txt",
+						"memory.swap.max.after.txt",
+						"memory.swap.max.before.txt",
+						"server-proc-io.860564.first.txt",
+						"server-proc-io.860564.last.txt",
+						"server-proc-stat.860564.first.txt",
+						"server-proc-stat.860564.last.txt",
+						"server-proc-status.860564.first.txt",
+						"server-proc-status.860564.last.txt"
+					]
+				}
+			]
+		}
+	},
+	"measurementReceiptFormatting": "Normalized receipt JSON follows repository formatting; embedded input text and input hashes are unchanged."
+}

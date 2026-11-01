@@ -27,6 +27,7 @@ import {
 	cellVerdict,
 	finalizeReport,
 	validateCatalogRows,
+	diskUsageBytes,
 } from './model.mts';
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -165,8 +166,18 @@ try {
 			if (report.diagnostics.length > 50000) throw new Error('diagnostic sample bound exceeded');
 		}
 		async function guardDisk() {
-			const { stdout } = await exec('du', ['-sk', ctx.harper.dataRootDir]);
-			const bytes = Number(stdout.trim().split(/\s/)[0]) * 1024;
+			const {
+				stdout,
+				stderr,
+				code = 0,
+			} = await exec('du', ['-sk', ctx.harper.dataRootDir], {
+				env: { ...process.env, LC_ALL: 'C' },
+			}).catch((error) => {
+				if (error.code !== 1) throw error;
+				return error;
+			});
+			const bytes = diskUsageBytes(stdout, stderr, code);
+			if (code === 1) report.diskSamplesWithVanishedFiles = (report.diskSamplesWithVanishedFiles || 0) + 1;
 			assert(bytes <= 12 * 1024 ** 3, 'fixture disk exceeded 12 GiB');
 			const free = await statfs(ctx.harper.dataRootDir);
 			assert(free.bavail * free.bsize > 2 * 1024 ** 3, 'less than 2 GiB free disk');

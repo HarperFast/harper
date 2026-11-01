@@ -4,6 +4,23 @@ export const MATCHES = 1000;
 export function validateCatalogRows(rows, large = false) {
 	assert(Number.isInteger(rows) && rows >= MATCHES && rows % MATCHES === 0 && rows <= (large ? 20000000 : 1000000));
 }
+export function diskUsageBytes(stdout, stderr = '', exitCode = 0) {
+	assert(
+		exitCode === 0 ||
+			(exitCode === 1 &&
+				stderr.trim().length > 0 &&
+				stderr
+					.trim()
+					.split('\n')
+					.every((line) => /^du: .+: No such file or directory$/.test(line))),
+		`Disk usage command failed: ${stderr.trim()}`
+	);
+	const total = /^([0-9]+)[\t ]+[^\n]+\n?$/.exec(stdout);
+	assert(total, 'Disk usage command did not report one total');
+	const bytes = Number(total[1]) * 1024;
+	assert(Number.isSafeInteger(bytes), 'Disk usage total exceeded the safe integer range');
+	return bytes;
+}
 export function record(index) {
 	const bucket = Math.floor(index / MATCHES);
 	return {

@@ -1,6 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { record, target, verify, meter, runPhase, cellVerdict, finalizeReport, validateCatalogRows } from './model.mts';
+import {
+	record,
+	target,
+	verify,
+	meter,
+	runPhase,
+	cellVerdict,
+	finalizeReport,
+	validateCatalogRows,
+	diskUsageBytes,
+} from './model.mts';
 test('deterministic catalog keeps exactly 1000 rows per token and excludes writer', () => {
 	assert.strictEqual(record(0).category, record(999).category);
 	assert.notStrictEqual(record(999).category, record(1000).category);
@@ -125,4 +135,29 @@ test('large catalog requires explicit opt-in and preserves integral 1000-match b
 	for (const rows of [1000001, 10000000, 0, -1000, NaN, Infinity, 1000.5])
 		assert.throws(() => validateCatalogRows(rows));
 	for (const rows of [20001000, 20000001, 999, NaN, Infinity]) assert.throws(() => validateCatalogRows(rows, true));
+});
+
+test('disk guard accepts only valid totals with vanished paths and rejects other measurement failures', () => {
+	const total = '2419556\t<fixture-root>\n';
+	const vanished = "du: cannot access '<fixture-root>/index.fulltext/.tmpFTBtft': No such file or directory\n";
+	assert.strictEqual(diskUsageBytes(total), 2419556 * 1024);
+	assert.strictEqual(diskUsageBytes(total, vanished, 1), 2419556 * 1024);
+	assert.strictEqual(
+		diskUsageBytes('4\tfixture root\n', 'du: fixture root/gone: No such file or directory\n', 1),
+		4096
+	);
+	assert.strictEqual(diskUsageBytes(total, vanished + vanished, 1), 2419556 * 1024);
+	for (const [stdout, stderr, code] of [
+		['', vanished, 1],
+		[total, '', 1],
+		[total, vanished, 2],
+		[total, 'du: fixture: Permission denied\n', 1],
+		[total, vanished + 'du: fixture: Input/output error\n', 1],
+		[total, vanished + 'another diagnostic\n', 1],
+		['unknown\tfixture\n', '', 0],
+		['-1\tfixture\n', '', 0],
+		['1\tfixture\n2\tother\n', '', 0],
+		['9007199254740992\tfixture\n', '', 0],
+	])
+		assert.throws(() => diskUsageBytes(stdout, stderr, code));
 });
