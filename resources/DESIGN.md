@@ -46,7 +46,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 - Map writes and activation serialize on a native lock (`acquireResidencyMapFence`, 503 on contention). `installResidencyMap` imports lazily: an eager import reorders boot.
 - `captureResidencyOwners` pins owners for a commit and its retries; replicas never own. A LOCAL_ONLY transition excluding the writer is refused before submission, past any catch.
 - Main quarantines only classified failures, released only by restart. Live holds are retryable (`DatabaseShardingHeldError`); replay bypasses them, never a quarantine. Only `REPLICATION_APPLY` fills an incomplete owner (`databaseBaselineHoldReason`).
-- `blobReferenceGeneration` fences replica blob reclaim: captured before commit, compared before and after the claim, never cleared. The replica audit walk is capped at 32 reads, then continues as tracked maintenance that yields, stops once maintenance closes and rereads the live row's files before release; files it cannot verify go to orphan cleanup; encoders bump it before checking a claim, and a claimed file returns 503 `BLOB_RECLAMATION_BUSY` (`declarativeResidency.test.js`).
+- `blobReferenceGeneration` fences replica blob reclaim: captured before commit, compared before and after the claim, never cleared. The replica audit walk is capped at 32 reads, then continues after commit as tracked maintenance that yields, stops once maintenance closes and rereads the live row's files before release; files it cannot verify go to orphan cleanup; encoders bump it before checking a claim, and a claimed file returns 503 `BLOB_RECLAMATION_BUSY` (`declarativeResidency.test.js`).
 
 ## Full PUT resequencing
 
