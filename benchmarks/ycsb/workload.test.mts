@@ -237,7 +237,9 @@ test('every written record carries its own link and owner, padded to the field l
 	strictEqual(record.field0.length, 100);
 	strictEqual(parseLink({ id: 'x', ...record }).next, formatKey(linkTarget(42, records), keyWidth));
 	strictEqual(parseLink({ id: 'x', ...record }).owner, 'owner02');
-	throws(() => buildRecord({ fieldCount: 1, fieldLength: 10 }, { index: 0, keyCount: records, keyWidth }), /link/);
+	const short = buildRecord({ fieldCount: 1, fieldLength: 10 }, { index: 0, keyCount: records, keyWidth });
+	strictEqual(short.field0.length, 10);
+	throws(() => parseLink({ id: 'x', ...short }), { statusCode: 500 }, 'a field too short for the link gets none');
 
 	const writes: [string, Record<string, string>][] = [];
 	const capture = (key: string, value: Record<string, string>) => {

@@ -19,7 +19,7 @@ import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
-import { WORKLOADS, formatKey, recordReadsPerOp } from '../ycsb/workload.mts';
+import { WORKLOADS, formatKey, recordReadsPerOp, usesDependentReads } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
@@ -52,7 +52,6 @@ import {
 	type Running,
 	type Session,
 	type TargetName,
-	usesDependentReads,
 } from './run-compare.mts';
 
 const exec = promisify(execFile);

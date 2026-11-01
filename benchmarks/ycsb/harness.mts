@@ -12,7 +12,9 @@ import { join } from 'node:path';
 import {
 	WORKLOADS,
 	KeyState,
+	linkPrefixLength,
 	runOperations,
+	usesDependentReads,
 	type DistributionName,
 	type LatencyStats,
 	type OperationType,
@@ -111,6 +113,13 @@ export function parseOptions(argv: string[]): ParsedOptions {
 		distribution: values.distribution as DistributionName | undefined,
 		table: 'usertable',
 	};
+	const linked = workloads.filter((w) => usesDependentReads(WORKLOADS[w]));
+	const linkLength = linkPrefixLength(keyWidth(config));
+	if (linked.length > 0 && (config.fieldCount < 1 || config.fieldLength < linkLength)) {
+		throw new Error(
+			`${linked.join(', ')} need field0 to hold a ${linkLength}-char link; --field-length is ${config.fieldLength}`
+		);
+	}
 
 	return {
 		config,

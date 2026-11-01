@@ -17,7 +17,7 @@ function serverError(message) {
 	return error;
 }
 
-/** `{ next, owner }` from a record's link; a record without one is a server error, never a default key. */
+/** A record without a link is a server error, never a default key. */
 export function parseLink(record) {
 	const field0 = record.field0;
 	const ownerStart = typeof field0 === 'string' ? field0.indexOf(':') + 1 : 0;
@@ -26,14 +26,12 @@ export function parseLink(record) {
 	return { next: field0.slice(0, ownerStart - 1), owner: field0.slice(ownerStart, ownerEnd) };
 }
 
-/** `{ status, body }` for an inspect of `record` by `caller`. */
 export function inspectRecord(record, caller) {
 	const { owner } = parseLink(record);
 	if (caller !== owner) return { status: 403, body: { error: 'forbidden' } };
 	return { status: 200, body: { id: record.id, owner, field1: record.field1, field2: record.field2 } };
 }
 
-/** `hops` from the query string, or undefined unless it is one digit from 0 to 8. */
 export function parseHops(value) {
 	return typeof value === 'string' && /^[0-8]$/.test(value) ? Number(value) : undefined;
 }

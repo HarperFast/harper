@@ -19,8 +19,8 @@ import { execFileSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { parseOptions } from '../ycsb/harness.mts';
-import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf } from '../ycsb/workload.mts';
-import type { DistributionName, LatencyStats, PhaseResult, WorkloadSpec } from '../ycsb/workload.mts';
+import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf, usesDependentReads } from '../ycsb/workload.mts';
+import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { startPgStack, dataDir, WARM_STACK_MEMORY, type StackMemory } from './pgStack.mts';
 import {
@@ -257,10 +257,6 @@ async function assertCredentialChecked(url: string, authorization: string): Prom
 	if (authorized.status !== 200 && authorized.status !== 404) {
 		throw new Error(`--auth=token: ${url} with the token answered ${authorized.status}`);
 	}
-}
-
-export function usesDependentReads(spec: WorkloadSpec): boolean {
-	return Boolean(spec.mix.inspect || spec.mix.chain);
 }
 
 const MALFORMED_KEY = 'zz-malformed-link';

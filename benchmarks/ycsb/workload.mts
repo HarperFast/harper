@@ -102,6 +102,11 @@ export function recordReadsPerOp(spec: WorkloadSpec): number {
 	return 1 + (spec.chainHops ?? 0);
 }
 
+/** Whether the workload's requests follow record links (and so need `field0` long enough to hold one). */
+export function usesDependentReads(spec: WorkloadSpec): boolean {
+	return Boolean(spec.mix.inspect || spec.mix.chain);
+}
+
 // ---------------------------------------------------------------------------
 // Key distributions (ports of the reference YCSB generators)
 // ---------------------------------------------------------------------------
@@ -321,16 +326,18 @@ export function linkPrefix(link: RecordLink): string {
 	return `${formatKey(linkTarget(link.index, link.keyCount), link.keyWidth)}:${ownerOf(link.index)}:`;
 }
 
+export function linkPrefixLength(keyWidth: number): number {
+	return formatKey(0, keyWidth).length + ownerOf(0).length + 2;
+}
+
+/** A record with `link` written at the start of `field0`, unless `field0` is too short to hold it. */
 export function buildRecord(shape: RecordShape, link?: RecordLink): Record<string, string> {
 	const record: Record<string, string> = {};
 	for (let i = 0; i < shape.fieldCount; i++) {
 		record['field' + i] = randomValue(shape.fieldLength);
 	}
-	if (link) {
+	if (link && shape.fieldCount > 0 && linkPrefixLength(link.keyWidth) <= shape.fieldLength) {
 		const prefix = linkPrefix(link);
-		if (prefix.length > shape.fieldLength) {
-			throw new Error(`field-length ${shape.fieldLength} cannot hold the ${prefix.length}-char link ${prefix}`);
-		}
 		record.field0 = prefix + record.field0.slice(prefix.length);
 	}
 	return record;

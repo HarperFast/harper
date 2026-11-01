@@ -19,10 +19,10 @@ CPU-seconds on C, and serving Harper over uWebSockets.js moved C from 1.03x to 1
 of `pg-redis`. Sizing the record cache on top of uWS added about 12% (42.1k → 46.8k).
 The `harper-uws*` targets keep that comparison in every run.
 
-It reuses `benchmarks/ycsb` **unchanged** — same load generator, same key
-distributions, same workload mixes, same 10 × 100 B record shape. The only
-variable is the server. See `benchmarks/ycsb/README.md` for the workload
-definitions (A–F) and the REST operation mapping.
+It reuses `benchmarks/ycsb` for the load generator, key distributions, workload
+mixes and the 10 × 100 B record shape. The only variable is the server. See
+`benchmarks/ycsb/README.md` for the workload definitions and the REST operation
+mapping.
 
 ## Running
 
@@ -214,6 +214,9 @@ The link graph is the same on every target and rep (see `../ycsb/README.md`). Be
 links computed independently, inspect must answer the owner with the projection and another owner
 with 403, a record without a link must answer 500 and leave the server serving, and under
 `--auth=token` neither route may answer an anonymous request.
+
+Harper's chain reads share one snapshot (the request's transaction); the stack's are independent
+reads. These workloads do not write, so both return the same data.
 
 What this does and does not claim. Reads that do not depend on each other could be batched
 (pipelining, `MGET`), and a stack designer could denormalize or cache the composed response; those
