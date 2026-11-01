@@ -1,0 +1,3883 @@
+{
+	"feature": {
+		"sourceReportBasename": "10000000.json",
+		"sourceReportSha256": "aed78c9032762ab9b80e97ab139bb27fc13ea467fec83eaeec1b6e96272f8bff",
+		"sourceProvenanceBasename": "provenance.json",
+		"sourceProvenanceSha256": "e29c9f337c86bd347e077bbffcfe83514bd8524117cc9dca5336da04a10fbb32",
+		"head": "82d13ca6f0b42db3e68a73a9acef899e56a2d851",
+		"rows": 10000000,
+		"osCold": false,
+		"defaultQueryLimits": true,
+		"configuredWorkers": 2,
+		"qualificationScope": "two-HTTP-workers",
+		"harnessHashes": {
+			"run.mts": "b441c2764cc7ce7d271e765f2389450f35f46530bc31b521d5afe94dbe92da6c",
+			"model.mts": "5faba337775af18de578439fa838c33387b39dbb2ff819b2e364254f8782520f",
+			"fixture/resources.ts": "8a3a83b93addbd320729318b995b108fe068de00bc9291bb157733cd5e8f7246",
+			"fixture/schema.graphql": "bcaab38c0f4bb73ff151448612b695c99cc9b6acf8edc78372058a7602e33077",
+			"fixture/config.yaml": "4c4761a839b1bfc6c8a21208bdf4b97679fd79cc7f7464a243cab6e1b1617965"
+		},
+		"nativeRuntime": {
+			"packageVersion": "0.8.0",
+			"tantivyVersion": "0.27.0",
+			"nativeAbiVersion": 13,
+			"queryApiVersion": 7,
+			"queryClassIsolationMinimumSearchThreads": 2,
+			"lifecycleApiVersion": 1,
+			"mutationBatchApiVersion": 5,
+			"storageBackends": ["native"],
+			"limits": {
+				"maxConfiguredQueryTerms": 1024,
+				"maxConfiguredQueryClauses": 4096,
+				"maxAggregationDepth": 32,
+				"maxAggregationBuckets": 1024,
+				"maxAggregationMemoryBytes": 16777216,
+				"maxSortKeyBytes": 67108864,
+				"maxTermKeyBytes": 16777216,
+				"maxCommitPayloadBytes": 65536,
+				"maxQueryTextBytes": 65536,
+				"maxQueryTerms": 64,
+				"maxQueryClauses": 256,
+				"maxCandidateIds": 1024,
+				"maxCandidateBytes": 1048576,
+				"maxRecordIdBytes": 4096,
+				"maxRecordVersionBytes": 4096,
+				"maxPrefixExpansions": 50,
+				"maxFuzzyTerms": 16,
+				"maxFuzzyDistance": 2,
+				"maxSearchWindow": 10000,
+				"maxSearchPageSize": 10000,
+				"maxFilterStringBytes": 65530,
+				"maxAutocompleteResults": 100,
+				"maxSearchRequestBytes": 8388608,
+				"maxSearchResponseBytes": 8388608,
+				"maxSearchBudgetMilliseconds": 30000,
+				"maxTraceRecords": 100,
+				"maxTraceSourceBytes": 1048576,
+				"maxTraceSpans": 1024,
+				"maxSynonymRules": 1024,
+				"maxSynonymReplacements": 16,
+				"maxSynonymBytes": 1048576
+			}
+		},
+		"nativeAddonSha256": ["fb2486eda7522fdfa5ac3844f43837dc7d40688c7f3817bccd67c451f659e103"],
+		"harnessRunVerdict": "unqualified",
+		"finalRunVerdictPresent": true,
+		"runFailurePresent": false,
+		"runFailureFieldsPresent": [],
+		"runFailureEvidence": null,
+		"runBarriers": ["final run verdict is not qualified"],
+		"fullRunObservedQualified": false,
+		"expectedCellCount": 36,
+		"persistedCellCount": 36,
+		"missingExpectedOccurrenceKeys": [],
+		"unexpectedOccurrenceKeys": [],
+		"repeatedQueryKeysPresent": true,
+		"orderedMatrixPrefixMatches": true,
+		"fullExpectedMatrixPersisted": true,
+		"pressureWatchdogPolicy": "A 40% memory PSI some.avg10 condition sustained for 15 seconds triggers bounded SIGINT stop. Such a stop is capacity-boundary evidence, never a full matrix pass. Stop classification requires its separate observed receipt.",
+		"scope": "Derived observations only. Qualified means the explicitly listed count/load checks passed, not latency SLO, recovery, above-RAM operation, leak safety or release qualification. Per-cell inference does not restore a missing run verdict or missing matrix cells.",
+		"cells": [
+			{
+				"cellIndex": 0,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60010.17281000002,
+				"drainMilliseconds": 10.172810000018217,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 85.68547229950892,
+				"reportedReadThroughput": 85.68547229950892,
+				"reads": {
+					"completed": 5142,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 10.690559,
+					"p95": 16.941055,
+					"p99": 35.061759,
+					"max": 47.611903
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 24,
+				"distinctBucketsAttempted": 5142,
+				"sampledProcessRssPeakBytes": 981274624,
+				"serverCpuMicroseconds": {
+					"user": 62036498,
+					"system": 3104494
+				},
+				"clientCpuMicroseconds": {
+					"user": 3777820,
+					"system": 552050
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.085499157055335,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 1,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60024.305391,
+				"drainMilliseconds": 24.30539100000169,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 10.05,
+				"successfulWritesPerActualAdmissionSecond": 10.05,
+				"successfulWritesPerAdmissionPlusDrainSecond": 10.045930495522459,
+				"successfulReadsPerAdmissionPlusDrainSecond": 79.5011282332225,
+				"reportedReadThroughput": 79.5011282332225,
+				"reads": {
+					"completed": 4772,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 11.411455,
+					"p95": 19.169279,
+					"p99": 36.274175,
+					"max": 55.738367
+				},
+				"writes": {
+					"completed": 603,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 1.297407,
+					"p95": 4.476927,
+					"p99": 20.922367,
+					"max": 25.968639
+				},
+				"bucketStart": 5166,
+				"distinctBucketsAttempted": 4772,
+				"sampledProcessRssPeakBytes": 1406124032,
+				"serverCpuMicroseconds": {
+					"user": 60004533,
+					"system": 3285915
+				},
+				"clientCpuMicroseconds": {
+					"user": 2766518,
+					"system": 320545
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.0544136677255032,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 2,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60041.473456999986,
+				"drainMilliseconds": 41.4734569999855,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 196.6307507169211,
+				"reportedReadThroughput": 196.6307507169211,
+				"reads": {
+					"completed": 11806,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 41.713663,
+					"p95": 83.492863,
+					"p99": 95.158271,
+					"max": 163.184639
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 9938,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1415274496,
+				"serverCpuMicroseconds": {
+					"user": 135723498,
+					"system": 1462463
+				},
+				"clientCpuMicroseconds": {
+					"user": 5717491,
+					"system": 601428
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.28485333722279,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 3,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60048.274256999954,
+				"drainMilliseconds": 48.27425699995365,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 10.033333333333333,
+				"successfulWritesPerActualAdmissionSecond": 10.033333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 10.0252672945022,
+				"successfulReadsPerAdmissionPlusDrainSecond": 202.12071287935748,
+				"reportedReadThroughput": 202.12071287935748,
+				"reads": {
+					"completed": 12137,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 39.485439,
+					"p95": 83.230719,
+					"p99": 97.910783,
+					"max": 133.562367
+				},
+				"writes": {
+					"completed": 602,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 41.877503,
+					"p95": 87.818239,
+					"p99": 102.367231,
+					"max": 111.149055
+				},
+				"bucketStart": 1744,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1407172608,
+				"serverCpuMicroseconds": {
+					"user": 143674086,
+					"system": 1645864
+				},
+				"clientCpuMicroseconds": {
+					"user": 6221765,
+					"system": 647557
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.4200520630792273,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 4,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60155.34009299998,
+				"drainMilliseconds": 155.34009299997706,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 210.6712385036404,
+				"reportedReadThroughput": 210.6712385036404,
+				"reads": {
+					"completed": 12673,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 151.912447,
+					"p95": 222.560255,
+					"p99": 239.075327,
+					"max": 282.066943
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 3881,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1407574016,
+				"serverCpuMicroseconds": {
+					"user": 148020601,
+					"system": 1582720
+				},
+				"clientCpuMicroseconds": {
+					"user": 6332975,
+					"system": 701752
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.486949966016545,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 5,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60166.806496000034,
+				"drainMilliseconds": 166.8064960000338,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"successful writes / actual admission-plus-drain seconds below 9.5 per second, or duration invalid"
+				],
+				"nominalTenWriteServiceControlSatisfied": false,
+				"successfulWritesPer60Seconds": 5.916666666666667,
+				"successfulWritesPerActualAdmissionSecond": 5.916666666666667,
+				"successfulWritesPerAdmissionPlusDrainSecond": 5.900263295902215,
+				"successfulReadsPerAdmissionPlusDrainSecond": 207.52306341587342,
+				"reportedReadThroughput": 207.52306341587342,
+				"reads": {
+					"completed": 12486,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 155.451391,
+					"p95": 234.881023,
+					"p99": 251.789311,
+					"max": 278.921215
+				},
+				"writes": {
+					"completed": 355,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 168.820735,
+					"p95": 240.386047,
+					"p99": 253.755391,
+					"max": 268.435455
+				},
+				"bucketStart": 6554,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1414832128,
+				"serverCpuMicroseconds": {
+					"user": 148180539,
+					"system": 1745484
+				},
+				"clientCpuMicroseconds": {
+					"user": 6400927,
+					"system": 698382
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.4918394664999757,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 6,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60001.38711000001,
+				"drainMilliseconds": 1.3871100000105798,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 389.057672236871,
+				"reportedReadThroughput": 389.057672236871,
+				"reads": {
+					"completed": 23344,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 2.433023,
+					"p95": 3.553279,
+					"p99": 4.698111,
+					"max": 25.444351
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 9040,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1528041472,
+				"serverCpuMicroseconds": {
+					"user": 56183428,
+					"system": 2005513
+				},
+				"clientCpuMicroseconds": {
+					"user": 8796835,
+					"system": 1134674
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 0.9697932631677786,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 7,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60049.45174399996,
+				"drainMilliseconds": 49.451743999961764,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.875194240374585,
+				"successfulReadsPerAdmissionPlusDrainSecond": 355.8567044225371,
+				"reportedReadThroughput": 355.8567044225371,
+				"reads": {
+					"completed": 21369,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 2.680831,
+					"p95": 3.870719,
+					"p99": 4.878335,
+					"max": 20.299775
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 0.728063,
+						"p95": 10.772479,
+						"p99": 10.772479,
+						"max": 10.772479
+					},
+					"p50": 1.045503,
+					"p95": 2.042879,
+					"p99": 3.473407,
+					"max": 9.519103
+				},
+				"bucketStart": 2384,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1577291776,
+				"serverCpuMicroseconds": {
+					"user": 58352099,
+					"system": 2752112
+				},
+				"clientCpuMicroseconds": {
+					"user": 8969270,
+					"system": 1107961
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.0175648440638,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 8,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60005.65301500005,
+				"drainMilliseconds": 5.653015000047162,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 1395.618509127226,
+				"reportedReadThroughput": 1395.618509127226,
+				"reads": {
+					"completed": 83745,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 5.419007,
+					"p95": 9.183231,
+					"p99": 13.107199,
+					"max": 36.569087
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 3753,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1589940224,
+				"serverCpuMicroseconds": {
+					"user": 263944514,
+					"system": 5309970
+				},
+				"clientCpuMicroseconds": {
+					"user": 38402188,
+					"system": 3127904
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 4.487151967710317,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 9,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60086.95821300009,
+				"drainMilliseconds": 86.95821300009266,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.9,
+				"successfulWritesPerActualAdmissionSecond": 9.9,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.885672659520404,
+				"successfulReadsPerAdmissionPlusDrainSecond": 983.1085106787698,
+				"reportedReadThroughput": 983.1085106787698,
+				"reads": {
+					"completed": 59072,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 7.331839,
+					"p95": 14.753791,
+					"p99": 19.693567,
+					"max": 58.064895
+				},
+				"writes": {
+					"completed": 594,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 2.357247,
+						"p95": 5.189631,
+						"p99": 5.189631,
+						"max": 5.189631
+					},
+					"p50": 3.741695,
+					"p95": 11.837439,
+					"p99": 16.408575,
+					"max": 39.092223
+				},
+				"bucketStart": 7498,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1585463296,
+				"serverCpuMicroseconds": {
+					"user": 274637776,
+					"system": 7002192
+				},
+				"clientCpuMicroseconds": {
+					"user": 40002846,
+					"system": 3393593
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 4.687206281962629,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 10,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60048.49910600018,
+				"drainMilliseconds": 48.49910600017756,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 1588.9989162188022,
+				"reportedReadThroughput": 1588.9989162188022,
+				"reads": {
+					"completed": 95417,
+					"rejections": 63,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 63,
+						"p50": 1.887231,
+						"p95": 9.445375,
+						"p99": 9.625599,
+						"max": 10.354687
+					},
+					"p50": 18.776063,
+					"p95": 32.899071,
+					"p99": 48.562175,
+					"max": 110.428159
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 6570,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1620799488,
+				"serverCpuMicroseconds": {
+					"user": 325767449,
+					"system": 5516010
+				},
+				"clientCpuMicroseconds": {
+					"user": 50091117,
+					"system": 3829702
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 5.516931545869353,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 11,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60095.68431499996,
+				"drainMilliseconds": 95.68431499996223,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.867597095520326,
+				"successfulReadsPerAdmissionPlusDrainSecond": 1283.2701861879123,
+				"reportedReadThroughput": 1283.2701861879123,
+				"reads": {
+					"completed": 77119,
+					"rejections": 59,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 59,
+						"p50": 2.359295,
+						"p95": 6.324223,
+						"p99": 6.905855,
+						"max": 8.740863
+					},
+					"p50": 21.282815,
+					"p95": 46.628863,
+					"p99": 56.885247,
+					"max": 114.819071
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 12.066815,
+						"p95": 43.188223,
+						"p99": 43.188223,
+						"max": 43.188223
+					},
+					"p50": 15.155199,
+					"p95": 42.336255,
+					"p99": 55.017471,
+					"max": 97.845247
+				},
+				"bucketStart": 2050,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1662500864,
+				"serverCpuMicroseconds": {
+					"user": 338349849,
+					"system": 7035767
+				},
+				"clientCpuMicroseconds": {
+					"user": 49901003,
+					"system": 3954503
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 5.747261553585326,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 12,
+				"caseOccurrence": 1,
+				"query": "sort",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60000.539384,
+				"drainMilliseconds": 0.5393840000033379,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 59.416132531479505,
+				"reportedReadThroughput": 59.416132531479505,
+				"reads": {
+					"completed": 3565,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 15.777791,
+					"p95": 24.018943,
+					"p99": 34.045951,
+					"max": 51.773439
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 9228,
+				"distinctBucketsAttempted": 3565,
+				"sampledProcessRssPeakBytes": 1893568512,
+				"serverCpuMicroseconds": {
+					"user": 72983709,
+					"system": 1271374
+				},
+				"clientCpuMicroseconds": {
+					"user": 2110189,
+					"system": 232340
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.2375735912101014,
+				"requestedCaseIndex": 2,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 13,
+				"caseOccurrence": 1,
+				"query": "sort",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60070.609093999956,
+				"drainMilliseconds": 70.6090939999558,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.871716117811609,
+				"successfulReadsPerAdmissionPlusDrainSecond": 53.95317358824187,
+				"reportedReadThroughput": 53.95317358824187,
+				"reads": {
+					"completed": 3241,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 17.629183,
+					"p95": 25.935871,
+					"p99": 36.306943,
+					"max": 43.941887
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 1.211391,
+						"p95": 2.613247,
+						"p99": 2.613247,
+						"max": 2.613247
+					},
+					"p50": 1.308671,
+					"p95": 5.681151,
+					"p99": 18.628607,
+					"max": 25.214975
+				},
+				"bucketStart": 2793,
+				"distinctBucketsAttempted": 3241,
+				"sampledProcessRssPeakBytes": 2119450624,
+				"serverCpuMicroseconds": {
+					"user": 74677960,
+					"system": 2084622
+				},
+				"clientCpuMicroseconds": {
+					"user": 2277567,
+					"system": 249848
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.2778725429582385,
+				"requestedCaseIndex": 2,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 14,
+				"caseOccurrence": 1,
+				"query": "sort",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60069.42550199991,
+				"drainMilliseconds": 69.42550199991092,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 144.74917859353448,
+				"reportedReadThroughput": 144.74917859353448,
+				"reads": {
+					"completed": 8695,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 52.854783,
+					"p95": 92.012543,
+					"p99": 107.479039,
+					"max": 168.689663
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 6034,
+				"distinctBucketsAttempted": 8695,
+				"sampledProcessRssPeakBytes": 2385928192,
+				"serverCpuMicroseconds": {
+					"user": 206122952,
+					"system": 1914832
+				},
+				"clientCpuMicroseconds": {
+					"user": 5662729,
+					"system": 484184
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.4632890569774752,
+				"requestedCaseIndex": 2,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 15,
+				"caseOccurrence": 1,
+				"query": "sort",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60050.29201199999,
+				"drainMilliseconds": 50.29201199999079,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.866666666666667,
+				"successfulWritesPerActualAdmissionSecond": 9.866666666666667,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.858403351006174,
+				"successfulReadsPerAdmissionPlusDrainSecond": 104.32921789536094,
+				"reportedReadThroughput": 104.32921789536094,
+				"reads": {
+					"completed": 6265,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 71.630847,
+					"p95": 157.810687,
+					"p99": 190.447615,
+					"max": 246.153215
+				},
+				"writes": {
+					"completed": 592,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 6.037503,
+						"p95": 22.724607,
+						"p99": 22.724607,
+						"max": 22.724607
+					},
+					"p50": 8.056831,
+					"p95": 46.858239,
+					"p99": 79.888383,
+					"max": 108.462079
+				},
+				"bucketStart": 4729,
+				"distinctBucketsAttempted": 6265,
+				"sampledProcessRssPeakBytes": 2399227904,
+				"serverCpuMicroseconds": {
+					"user": 194905269,
+					"system": 3432485
+				},
+				"clientCpuMicroseconds": {
+					"user": 5330700,
+					"system": 531114
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.3028607747713483,
+				"requestedCaseIndex": 2,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 16,
+				"caseOccurrence": 1,
+				"query": "sort",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60340.19134599995,
+				"drainMilliseconds": 340.1913459999487,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 159.92657273268185,
+				"reportedReadThroughput": 159.92657273268185,
+				"reads": {
+					"completed": 9650,
+					"rejections": 33,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 33,
+						"p50": 37.748735,
+						"p95": 112.459775,
+						"p99": 157.810687,
+						"max": 157.810687
+					},
+					"p50": 194.904063,
+					"p95": 262.012927,
+					"p99": 304.611327,
+					"max": 443.547647
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 994,
+				"distinctBucketsAttempted": 9683,
+				"sampledProcessRssPeakBytes": 2459385856,
+				"serverCpuMicroseconds": {
+					"user": 236606002,
+					"system": 1628181
+				},
+				"clientCpuMicroseconds": {
+					"user": 6070304,
+					"system": 581628
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.94818408237933,
+				"requestedCaseIndex": 2,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 17,
+				"caseOccurrence": 1,
+				"query": "sort",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60144.76192600001,
+				"drainMilliseconds": 144.7619260000065,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified",
+					"successful writes / actual admission-plus-drain seconds below 9.5 per second, or duration invalid"
+				],
+				"nominalTenWriteServiceControlSatisfied": false,
+				"successfulWritesPer60Seconds": 8.666666666666666,
+				"successfulWritesPerActualAdmissionSecond": 8.666666666666666,
+				"successfulWritesPerAdmissionPlusDrainSecond": 8.645806938928276,
+				"successfulReadsPerAdmissionPlusDrainSecond": 110.51668985203123,
+				"reportedReadThroughput": 110.51668985203123,
+				"reads": {
+					"completed": 6647,
+					"rejections": 59,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 59,
+						"p50": 35.749887,
+						"p95": 183.238655,
+						"p99": 254.410751,
+						"max": 450.887679
+					},
+					"p50": 248.774655,
+					"p95": 471.072767,
+					"p99": 550.502399,
+					"max": 664.797183
+				},
+				"writes": {
+					"completed": 520,
+					"rejections": 8,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 8,
+						"p50": 56.492031,
+						"p95": 217.448447,
+						"p99": 217.448447,
+						"max": 217.448447
+					},
+					"p50": 66.387967,
+					"p95": 181.665791,
+					"p99": 248.119295,
+					"max": 300.679167
+				},
+				"bucketStart": 677,
+				"distinctBucketsAttempted": 6706,
+				"sampledProcessRssPeakBytes": 2486812672,
+				"serverCpuMicroseconds": {
+					"user": 236040530,
+					"system": 3794023
+				},
+				"clientCpuMicroseconds": {
+					"user": 6130266,
+					"system": 610516
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.9876216202349255,
+				"requestedCaseIndex": 2,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 18,
+				"caseOccurrence": 1,
+				"query": "highlights",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60011.452066000085,
+				"drainMilliseconds": 11.452066000085324,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 59.73859782724883,
+				"reportedReadThroughput": 59.73859782724883,
+				"reads": {
+					"completed": 3585,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 15.802367,
+					"p95": 23.494655,
+					"p99": 33.488895,
+					"max": 46.596095
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 7383,
+				"distinctBucketsAttempted": 3585,
+				"sampledProcessRssPeakBytes": 2471460864,
+				"serverCpuMicroseconds": {
+					"user": 73517617,
+					"system": 1091477
+				},
+				"clientCpuMicroseconds": {
+					"user": 2275758,
+					"system": 259800
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.2432476041063887,
+				"requestedCaseIndex": 3,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 19,
+				"caseOccurrence": 1,
+				"query": "highlights",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60051.29940600018,
+				"drainMilliseconds": 51.29940600018017,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.874890399802887,
+				"successfulReadsPerAdmissionPlusDrainSecond": 52.67163294195031,
+				"reportedReadThroughput": 52.67163294195031,
+				"reads": {
+					"completed": 3163,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 18.120703,
+					"p95": 25.952255,
+					"p99": 35.422207,
+					"max": 69.795839
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 1.032191,
+						"p95": 4.882431,
+						"p99": 4.882431,
+						"max": 4.882431
+					},
+					"p50": 1.230847,
+					"p95": 4.653055,
+					"p99": 10.969087,
+					"max": 25.870335
+				},
+				"bucketStart": 968,
+				"distinctBucketsAttempted": 3163,
+				"sampledProcessRssPeakBytes": 2463735808,
+				"serverCpuMicroseconds": {
+					"user": 74646955,
+					"system": 1979567
+				},
+				"clientCpuMicroseconds": {
+					"user": 2437163,
+					"system": 241070
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.2760177174841225,
+				"requestedCaseIndex": 3,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 20,
+				"caseOccurrence": 1,
+				"query": "highlights",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60083.06128300005,
+				"drainMilliseconds": 83.06128300004639,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 123.62885381310763,
+				"reportedReadThroughput": 123.62885381310763,
+				"reads": {
+					"completed": 7428,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 69.140479,
+					"p95": 101.908479,
+					"p99": 112.197631,
+					"max": 130.351103
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 4131,
+				"distinctBucketsAttempted": 7428,
+				"sampledProcessRssPeakBytes": 2465316864,
+				"serverCpuMicroseconds": {
+					"user": 170345822,
+					"system": 1527031
+				},
+				"clientCpuMicroseconds": {
+					"user": 4873537,
+					"system": 454403
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.86058748222654,
+				"requestedCaseIndex": 3,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 21,
+				"caseOccurrence": 1,
+				"query": "highlights",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60080.5708300001,
+				"drainMilliseconds": 80.5708300000988,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.870079325276594,
+				"successfulReadsPerAdmissionPlusDrainSecond": 100.76468842365009,
+				"reportedReadThroughput": 100.76468842365009,
+				"reads": {
+					"completed": 6054,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 77.856767,
+					"p95": 149.291007,
+					"p99": 187.301887,
+					"max": 233.439231
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 2.775039,
+						"p95": 21.479423,
+						"p99": 21.479423,
+						"max": 21.479423
+					},
+					"p50": 9.388031,
+					"p95": 42.270719,
+					"p99": 58.458111,
+					"max": 90.570751
+				},
+				"bucketStart": 1559,
+				"distinctBucketsAttempted": 6054,
+				"sampledProcessRssPeakBytes": 2463809536,
+				"serverCpuMicroseconds": {
+					"user": 200865064,
+					"system": 3222308
+				},
+				"clientCpuMicroseconds": {
+					"user": 5712364,
+					"system": 539468
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.3968946895906122,
+				"requestedCaseIndex": 3,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 22,
+				"caseOccurrence": 1,
+				"query": "highlights",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60273.72823600005,
+				"drainMilliseconds": 273.7282360000536,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 141.38830049855807,
+				"reportedReadThroughput": 141.38830049855807,
+				"reads": {
+					"completed": 8522,
+					"rejections": 17,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 17,
+						"p50": 16.367615,
+						"p95": 204.865535,
+						"p99": 217.710591,
+						"max": 217.710591
+					},
+					"p50": 206.045183,
+					"p95": 409.731071,
+					"p99": 496.500735,
+					"max": 620.756991
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 7613,
+				"distinctBucketsAttempted": 8539,
+				"sampledProcessRssPeakBytes": 2475843584,
+				"serverCpuMicroseconds": {
+					"user": 239722450,
+					"system": 1766373
+				},
+				"clientCpuMicroseconds": {
+					"user": 6914208,
+					"system": 608443
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 4.006535352425147,
+				"requestedCaseIndex": 3,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 23,
+				"caseOccurrence": 1,
+				"query": "highlights",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60185.544382999884,
+				"drainMilliseconds": 185.54438299988396,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified",
+					"successful writes / actual admission-plus-drain seconds below 9.5 per second, or duration invalid"
+				],
+				"nominalTenWriteServiceControlSatisfied": false,
+				"successfulWritesPer60Seconds": 8.066666666666666,
+				"successfulWritesPerActualAdmissionSecond": 8.066666666666666,
+				"successfulWritesPerAdmissionPlusDrainSecond": 8.041798158707218,
+				"successfulReadsPerAdmissionPlusDrainSecond": 126.37586114695681,
+				"reportedReadThroughput": 126.37586114695681,
+				"reads": {
+					"completed": 7606,
+					"rejections": 42,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 42,
+						"p50": 65.798143,
+						"p95": 209.584127,
+						"p99": 320.077823,
+						"max": 320.077823
+					},
+					"p50": 223.346687,
+					"p95": 456.654847,
+					"p99": 541.065215,
+					"max": 763.363327
+				},
+				"writes": {
+					"completed": 484,
+					"rejections": 5,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 5,
+						"p50": 117.178367,
+						"p95": 296.484863,
+						"p99": 296.484863,
+						"max": 296.484863
+					},
+					"p50": 89.063423,
+					"p95": 204.603391,
+					"p99": 295.436287,
+					"max": 353.107967
+				},
+				"bucketStart": 6152,
+				"distinctBucketsAttempted": 7648,
+				"sampledProcessRssPeakBytes": 2490171392,
+				"serverCpuMicroseconds": {
+					"user": 235993729,
+					"system": 3757511
+				},
+				"clientCpuMicroseconds": {
+					"user": 6762865,
+					"system": 551685
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.983535290040852,
+				"requestedCaseIndex": 3,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 24,
+				"caseOccurrence": 1,
+				"query": "exact",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60006.61422899994,
+				"drainMilliseconds": 6.6142289999406785,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 72.7086514721481,
+				"reportedReadThroughput": 72.7086514721481,
+				"reads": {
+					"completed": 4363,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 12.795903,
+					"p95": 19.021823,
+					"p99": 34.111487,
+					"max": 46.694399
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 3800,
+				"distinctBucketsAttempted": 4363,
+				"sampledProcessRssPeakBytes": 2489884672,
+				"serverCpuMicroseconds": {
+					"user": 72755573,
+					"system": 895033
+				},
+				"clientCpuMicroseconds": {
+					"user": 1840799,
+					"system": 173484
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.2273747977003209,
+				"requestedCaseIndex": 4,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 25,
+				"caseOccurrence": 1,
+				"query": "exact",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60044.03827500017,
+				"drainMilliseconds": 44.0382750001736,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.876084571195479,
+				"successfulReadsPerAdmissionPlusDrainSecond": 68.59964982926505,
+				"reportedReadThroughput": 68.59964982926505,
+				"reads": {
+					"completed": 4119,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 13.647871,
+					"p95": 20.250623,
+					"p99": 36.863999,
+					"max": 55.181311
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 1.449983,
+						"p95": 22.478847,
+						"p99": 22.478847,
+						"max": 22.478847
+					},
+					"p50": 1.329151,
+					"p95": 7.294975,
+					"p99": 23.363583,
+					"max": 32.063487
+				},
+				"bucketStart": 8163,
+				"distinctBucketsAttempted": 4119,
+				"sampledProcessRssPeakBytes": 2490601472,
+				"serverCpuMicroseconds": {
+					"user": 74258814,
+					"system": 1728715
+				},
+				"clientCpuMicroseconds": {
+					"user": 2111767,
+					"system": 215767
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.265529954064366,
+				"requestedCaseIndex": 4,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 26,
+				"caseOccurrence": 1,
+				"query": "exact",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60064.443592999596,
+				"drainMilliseconds": 64.44359299959615,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 128.9947852093816,
+				"reportedReadThroughput": 128.9947852093816,
+				"reads": {
+					"completed": 7748,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 66.060287,
+					"p95": 111.149055,
+					"p99": 148.111359,
+					"max": 279.445503
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 2282,
+				"distinctBucketsAttempted": 7748,
+				"sampledProcessRssPeakBytes": 2514116608,
+				"serverCpuMicroseconds": {
+					"user": 158830904,
+					"system": 1403868
+				},
+				"clientCpuMicroseconds": {
+					"user": 3428668,
+					"system": 359396
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.6677142484788634,
+				"requestedCaseIndex": 4,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 27,
+				"caseOccurrence": 1,
+				"query": "exact",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60075.878321000375,
+				"drainMilliseconds": 75.87832100037485,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.866666666666667,
+				"successfulWritesPerActualAdmissionSecond": 9.866666666666667,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.854204658262283,
+				"successfulReadsPerAdmissionPlusDrainSecond": 120.43103159210746,
+				"reportedReadThroughput": 120.43103159210746,
+				"reads": {
+					"completed": 7235,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 64.258047,
+					"p95": 132.972543,
+					"p99": 172.621823,
+					"max": 245.366783
+				},
+				"writes": {
+					"completed": 592,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 29.622271,
+						"p95": 98.566143,
+						"p99": 98.566143,
+						"max": 98.566143
+					},
+					"p50": 12.746751,
+					"p95": 49.151999,
+					"p99": 64.847871,
+					"max": 102.825983
+				},
+				"bucketStart": 30,
+				"distinctBucketsAttempted": 7235,
+				"sampledProcessRssPeakBytes": 2505981952,
+				"serverCpuMicroseconds": {
+					"user": 178095899,
+					"system": 2910565
+				},
+				"clientCpuMicroseconds": {
+					"user": 3963073,
+					"system": 418018
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.0129640890614597,
+				"requestedCaseIndex": 4,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 28,
+				"caseOccurrence": 1,
+				"query": "exact",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60393.57087399997,
+				"drainMilliseconds": 393.57087399996817,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.unknownCounts nonzero",
+					"reads.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 160.8283772500285,
+				"reportedReadThroughput": 160.8283772500285,
+				"reads": {
+					"completed": 9713,
+					"rejections": 4,
+					"timeouts": 0,
+					"unknownCounts": 3,
+					"failureLatency": {
+						"count": 4,
+						"p50": 11.714559,
+						"p95": 62.291967,
+						"p99": 62.291967,
+						"max": 62.291967
+					},
+					"p50": 191.234047,
+					"p95": 286.261247,
+					"p99": 478.937087,
+					"max": 1120.927743
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 7265,
+				"distinctBucketsAttempted": 9717,
+				"sampledProcessRssPeakBytes": 2511499264,
+				"serverCpuMicroseconds": {
+					"user": 205484956,
+					"system": 1519376
+				},
+				"clientCpuMicroseconds": {
+					"user": 4330957,
+					"system": 459327
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.4275888808077983,
+				"requestedCaseIndex": 4,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 29,
+				"caseOccurrence": 1,
+				"query": "exact",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60208.17724699993,
+				"drainMilliseconds": 208.17724699992687,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.unknownCounts nonzero",
+					"reads.failureLatency.count nonzero",
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified",
+					"successful writes / actual admission-plus-drain seconds below 9.5 per second, or duration invalid"
+				],
+				"nominalTenWriteServiceControlSatisfied": false,
+				"successfulWritesPer60Seconds": 8.2,
+				"successfulWritesPerActualAdmissionSecond": 8.2,
+				"successfulWritesPerAdmissionPlusDrainSecond": 8.171647482062173,
+				"successfulReadsPerAdmissionPlusDrainSecond": 113.1407777394462,
+				"reportedReadThroughput": 113.1407777394462,
+				"reads": {
+					"completed": 6812,
+					"rejections": 3,
+					"timeouts": 0,
+					"unknownCounts": 2,
+					"failureLatency": {
+						"count": 3,
+						"p50": 11.190271,
+						"p95": 65.929215,
+						"p99": 65.929215,
+						"max": 65.929215
+					},
+					"p50": 255.197183,
+					"p95": 464.781311,
+					"p99": 544.735231,
+					"max": 1006.632959
+				},
+				"writes": {
+					"completed": 492,
+					"rejections": 2,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 2,
+						"p50": 296.222719,
+						"p95": 316.932095,
+						"p99": 316.932095,
+						"max": 316.932095
+					},
+					"p50": 80.609279,
+					"p95": 208.011263,
+					"p99": 243.531775,
+					"max": 423.886847
+				},
+				"bucketStart": 6982,
+				"distinctBucketsAttempted": 6815,
+				"sampledProcessRssPeakBytes": 2543325184,
+				"serverCpuMicroseconds": {
+					"user": 199315198,
+					"system": 3239009
+				},
+				"clientCpuMicroseconds": {
+					"user": 4218042,
+					"system": 426362
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 3.3642308447411593,
+				"requestedCaseIndex": 4,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 30,
+				"caseOccurrence": 2,
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60007.56051200023,
+				"drainMilliseconds": 7.56051200022921,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 78.42345130925462,
+				"reportedReadThroughput": 78.42345130925462,
+				"reads": {
+					"completed": 4706,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 11.706367,
+					"p95": 18.661375,
+					"p99": 38.240255,
+					"max": 59.604991
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 3797,
+				"distinctBucketsAttempted": 4706,
+				"sampledProcessRssPeakBytes": 2501959680,
+				"serverCpuMicroseconds": {
+					"user": 60467136,
+					"system": 2324870
+				},
+				"clientCpuMicroseconds": {
+					"user": 3305961,
+					"system": 504484
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.0464015778052322,
+				"requestedCaseIndex": 5,
+				"trailingStructuredControl": true
+			},
+			{
+				"cellIndex": 31,
+				"caseOccurrence": 2,
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60053.60467700008,
+				"drainMilliseconds": 53.60467700008303,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 10.05,
+				"successfulWritesPerActualAdmissionSecond": 10.05,
+				"successfulWritesPerAdmissionPlusDrainSecond": 10.041029231188563,
+				"successfulReadsPerAdmissionPlusDrainSecond": 74.61666995846758,
+				"reportedReadThroughput": 74.61666995846758,
+				"reads": {
+					"completed": 4481,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 12.312575,
+					"p95": 19.349503,
+					"p99": 39.780351,
+					"max": 56.131583
+				},
+				"writes": {
+					"completed": 603,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 1.136639,
+					"p95": 3.424255,
+					"p99": 24.444927,
+					"max": 31.129599
+				},
+				"bucketStart": 8503,
+				"distinctBucketsAttempted": 4481,
+				"sampledProcessRssPeakBytes": 2474602496,
+				"serverCpuMicroseconds": {
+					"user": 59151817,
+					"system": 2163979
+				},
+				"clientCpuMicroseconds": {
+					"user": 2475783,
+					"system": 284579
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.0210177445598585,
+				"requestedCaseIndex": 5,
+				"trailingStructuredControl": true
+			},
+			{
+				"cellIndex": 32,
+				"caseOccurrence": 2,
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60041.40796500025,
+				"drainMilliseconds": 41.40796500025317,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 195.56503416516694,
+				"reportedReadThroughput": 195.56503416516694,
+				"reads": {
+					"completed": 11742,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 39.780351,
+					"p95": 82.051071,
+					"p99": 100.466687,
+					"max": 149.028863
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 2984,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 2483286016,
+				"serverCpuMicroseconds": {
+					"user": 143880039,
+					"system": 1649504
+				},
+				"clientCpuMicroseconds": {
+					"user": 6335301,
+					"system": 677941
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.4238196260293075,
+				"requestedCaseIndex": 5,
+				"trailingStructuredControl": true
+			},
+			{
+				"cellIndex": 33,
+				"caseOccurrence": 2,
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60054.60094100004,
+				"drainMilliseconds": 54.60094100004062,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"successful writes / actual admission-plus-drain seconds below 9.5 per second, or duration invalid"
+				],
+				"nominalTenWriteServiceControlSatisfied": false,
+				"successfulWritesPer60Seconds": 9.2,
+				"successfulWritesPerActualAdmissionSecond": 9.2,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.191635467569023,
+				"successfulReadsPerAdmissionPlusDrainSecond": 139.70619850163786,
+				"reportedReadThroughput": 139.70619850163786,
+				"reads": {
+					"completed": 8390,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 54.099967,
+					"p95": 119.472127,
+					"p99": 162.791423,
+					"max": 233.308159
+				},
+				"writes": {
+					"completed": 552,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 74.842111,
+					"p95": 154.009599,
+					"p99": 180.748287,
+					"max": 233.570303
+				},
+				"bucketStart": 4726,
+				"distinctBucketsAttempted": 8390,
+				"sampledProcessRssPeakBytes": 2477060096,
+				"serverCpuMicroseconds": {
+					"user": 126493554,
+					"system": 1494097
+				},
+				"clientCpuMicroseconds": {
+					"user": 5501312,
+					"system": 553100
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.131188102069648,
+				"requestedCaseIndex": 5,
+				"trailingStructuredControl": true
+			},
+			{
+				"cellIndex": 34,
+				"caseOccurrence": 2,
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60200.86099199997,
+				"drainMilliseconds": 200.8609919999726,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 204.78112433704652,
+				"reportedReadThroughput": 204.78112433704652,
+				"reads": {
+					"completed": 12328,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 152.043519,
+					"p95": 242.876415,
+					"p99": 264.503295,
+					"max": 323.747839
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 3116,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 2469515264,
+				"serverCpuMicroseconds": {
+					"user": 147661294,
+					"system": 1554515
+				},
+				"clientCpuMicroseconds": {
+					"user": 6489894,
+					"system": 688856
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.478632473708792,
+				"requestedCaseIndex": 5,
+				"trailingStructuredControl": true
+			},
+			{
+				"cellIndex": 35,
+				"caseOccurrence": 2,
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60376.47451700037,
+				"drainMilliseconds": 376.47451700037345,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"successful writes / actual admission-plus-drain seconds below 9.5 per second, or duration invalid"
+				],
+				"nominalTenWriteServiceControlSatisfied": false,
+				"successfulWritesPer60Seconds": 4.716666666666667,
+				"successfulWritesPerActualAdmissionSecond": 4.716666666666667,
+				"successfulWritesPerAdmissionPlusDrainSecond": 4.687256125236575,
+				"successfulReadsPerAdmissionPlusDrainSecond": 174.28973924333738,
+				"reportedReadThroughput": 174.28973924333738,
+				"reads": {
+					"completed": 10523,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 167.903231,
+					"p95": 440.401919,
+					"p99": 495.976447,
+					"max": 570.425343
+				},
+				"writes": {
+					"completed": 283,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 207.749119,
+					"p95": 454.033407,
+					"p99": 482.607103,
+					"max": 513.277951
+				},
+				"bucketStart": 5444,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 2469552128,
+				"serverCpuMicroseconds": {
+					"user": 147667816,
+					"system": 1704977
+				},
+				"clientCpuMicroseconds": {
+					"user": 6542240,
+					"system": 638839
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.4740231057701236,
+				"requestedCaseIndex": 5,
+				"trailingStructuredControl": true
+			}
+		]
+	},
+	"baseline": {
+		"sourceReportBasename": "10000000.json",
+		"sourceReportSha256": "d9bdaa50515fda05663a4b3ec58f8727f16a99350b0dab7bb17e7fc2865d1c43",
+		"sourceProvenanceBasename": "provenance.json",
+		"sourceProvenanceSha256": "06d79f186fe36559bdaa7fcc12f36712cdc67f678835b477e4e3f902cf05e3cb",
+		"head": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
+		"rows": 10000000,
+		"osCold": false,
+		"defaultQueryLimits": true,
+		"configuredWorkers": 2,
+		"qualificationScope": "two-HTTP-workers",
+		"harnessHashes": {
+			"run.mts": "b441c2764cc7ce7d271e765f2389450f35f46530bc31b521d5afe94dbe92da6c",
+			"model.mts": "5faba337775af18de578439fa838c33387b39dbb2ff819b2e364254f8782520f",
+			"fixture/resources.ts": "8a3a83b93addbd320729318b995b108fe068de00bc9291bb157733cd5e8f7246",
+			"fixture/schema.graphql": "bcaab38c0f4bb73ff151448612b695c99cc9b6acf8edc78372058a7602e33077",
+			"fixture/config.yaml": "4c4761a839b1bfc6c8a21208bdf4b97679fd79cc7f7464a243cab6e1b1617965"
+		},
+		"nativeRuntime": {
+			"packageVersion": "0.8.0",
+			"tantivyVersion": "0.27.0",
+			"nativeAbiVersion": 13,
+			"queryApiVersion": 7,
+			"queryClassIsolationMinimumSearchThreads": 2,
+			"lifecycleApiVersion": 1,
+			"mutationBatchApiVersion": 5,
+			"storageBackends": ["native"],
+			"limits": {
+				"maxConfiguredQueryTerms": 1024,
+				"maxConfiguredQueryClauses": 4096,
+				"maxAggregationDepth": 32,
+				"maxAggregationBuckets": 1024,
+				"maxAggregationMemoryBytes": 16777216,
+				"maxSortKeyBytes": 67108864,
+				"maxTermKeyBytes": 16777216,
+				"maxCommitPayloadBytes": 65536,
+				"maxQueryTextBytes": 65536,
+				"maxQueryTerms": 64,
+				"maxQueryClauses": 256,
+				"maxCandidateIds": 1024,
+				"maxCandidateBytes": 1048576,
+				"maxRecordIdBytes": 4096,
+				"maxRecordVersionBytes": 4096,
+				"maxPrefixExpansions": 50,
+				"maxFuzzyTerms": 16,
+				"maxFuzzyDistance": 2,
+				"maxSearchWindow": 10000,
+				"maxSearchPageSize": 10000,
+				"maxFilterStringBytes": 65530,
+				"maxAutocompleteResults": 100,
+				"maxSearchRequestBytes": 8388608,
+				"maxSearchResponseBytes": 8388608,
+				"maxSearchBudgetMilliseconds": 30000,
+				"maxTraceRecords": 100,
+				"maxTraceSourceBytes": 1048576,
+				"maxTraceSpans": 1024,
+				"maxSynonymRules": 1024,
+				"maxSynonymReplacements": 16,
+				"maxSynonymBytes": 1048576
+			}
+		},
+		"nativeAddonSha256": ["fb2486eda7522fdfa5ac3844f43837dc7d40688c7f3817bccd67c451f659e103"],
+		"harnessRunVerdict": "unqualified",
+		"finalRunVerdictPresent": true,
+		"runFailurePresent": false,
+		"runFailureFieldsPresent": [],
+		"runFailureEvidence": null,
+		"runBarriers": ["final run verdict is not qualified"],
+		"fullRunObservedQualified": false,
+		"expectedCellCount": 12,
+		"persistedCellCount": 12,
+		"missingExpectedOccurrenceKeys": [],
+		"unexpectedOccurrenceKeys": [],
+		"repeatedQueryKeysPresent": false,
+		"orderedMatrixPrefixMatches": true,
+		"fullExpectedMatrixPersisted": true,
+		"pressureWatchdogPolicy": "A 40% memory PSI some.avg10 condition sustained for 15 seconds triggers bounded SIGINT stop. Such a stop is capacity-boundary evidence, never a full matrix pass. Stop classification requires its separate observed receipt.",
+		"scope": "Derived observations only. Qualified means the explicitly listed count/load checks passed, not latency SLO, recovery, above-RAM operation, leak safety or release qualification. Per-cell inference does not restore a missing run verdict or missing matrix cells.",
+		"cells": [
+			{
+				"cellIndex": 0,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60006.496970999986,
+				"drainMilliseconds": 6.496970999985933,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 84.87414291924675,
+				"reportedReadThroughput": 84.87414291924675,
+				"reads": {
+					"completed": 5093,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 10.739711,
+					"p95": 17.530879,
+					"p99": 35.717119,
+					"max": 45.121535
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 8,
+				"distinctBucketsAttempted": 5093,
+				"sampledProcessRssPeakBytes": 966533120,
+				"serverCpuMicroseconds": {
+					"user": 62526466,
+					"system": 3330244
+				},
+				"clientCpuMicroseconds": {
+					"user": 3912314,
+					"system": 577321
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.0974929936641247,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 1,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60006.63332999998,
+				"drainMilliseconds": 6.633329999982379,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 10.05,
+				"successfulWritesPerActualAdmissionSecond": 10.05,
+				"successfulWritesPerAdmissionPlusDrainSecond": 10.048889040047735,
+				"successfulReadsPerAdmissionPlusDrainSecond": 79.15791532375911,
+				"reportedReadThroughput": 79.15791532375911,
+				"reads": {
+					"completed": 4750,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 11.558911,
+					"p95": 19.431423,
+					"p99": 35.782655,
+					"max": 48.988159
+				},
+				"writes": {
+					"completed": 603,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 1.317887,
+					"p95": 5.660671,
+					"p99": 20.856831,
+					"max": 26.656767
+				},
+				"bucketStart": 5101,
+				"distinctBucketsAttempted": 4750,
+				"sampledProcessRssPeakBytes": 1400283136,
+				"serverCpuMicroseconds": {
+					"user": 60264695,
+					"system": 3184264
+				},
+				"clientCpuMicroseconds": {
+					"user": 2820771,
+					"system": 317392
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.0573657524005609,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 2,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60075.63975900004,
+				"drainMilliseconds": 75.63975900004152,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 189.12823975874244,
+				"reportedReadThroughput": 189.12823975874244,
+				"reads": {
+					"completed": 11362,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 45.514751,
+					"p95": 86.048767,
+					"p99": 97.452031,
+					"max": 174.456831
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 9851,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1421856768,
+				"serverCpuMicroseconds": {
+					"user": 132118596,
+					"system": 1434338
+				},
+				"clientCpuMicroseconds": {
+					"user": 5655825,
+					"system": 622739
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.2230796798130177,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 3,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60058.66642999998,
+				"drainMilliseconds": 58.66642999998294,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.873679108262547,
+				"successfulReadsPerAdmissionPlusDrainSecond": 177.54306969882555,
+				"reportedReadThroughput": 177.54306969882555,
+				"reads": {
+					"completed": 10663,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 40.435711,
+					"p95": 91.553791,
+					"p99": 131.071999,
+					"max": 197.394431
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 45.514751,
+					"p95": 102.760447,
+					"p99": 150.601727,
+					"max": 174.063615
+				},
+				"bucketStart": 1213,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1396576256,
+				"serverCpuMicroseconds": {
+					"user": 146416275,
+					"system": 1723652
+				},
+				"clientCpuMicroseconds": {
+					"user": 6493404,
+					"system": 695236
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.4665870190884296,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 4,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60178.069808,
+				"drainMilliseconds": 178.0698080000002,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 212.22016659467928,
+				"reportedReadThroughput": 212.22016659467928,
+				"reads": {
+					"completed": 12771,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 149.159935,
+					"p95": 202.899455,
+					"p99": 229.113855,
+					"max": 311.427071
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 1876,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1396457472,
+				"serverCpuMicroseconds": {
+					"user": 147209566,
+					"system": 1640152
+				},
+				"clientCpuMicroseconds": {
+					"user": 6355158,
+					"system": 630259
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.4734877418785555,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 5,
+				"caseOccurrence": 1,
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60156.93276400014,
+				"drainMilliseconds": 156.93276400014292,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"successful writes / actual admission-plus-drain seconds below 9.5 per second, or duration invalid"
+				],
+				"nominalTenWriteServiceControlSatisfied": false,
+				"successfulWritesPer60Seconds": 5.516666666666667,
+				"successfulWritesPerActualAdmissionSecond": 5.516666666666667,
+				"successfulWritesPerAdmissionPlusDrainSecond": 5.502275212377203,
+				"successfulReadsPerAdmissionPlusDrainSecond": 171.83389386810617,
+				"reportedReadThroughput": 171.83389386810617,
+				"reads": {
+					"completed": 10337,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 162.791423,
+					"p95": 340.787199,
+					"p99": 378.535935,
+					"max": 414.187519
+				},
+				"writes": {
+					"completed": 331,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 162.791423,
+					"p95": 319.029247,
+					"p99": 375.652351,
+					"max": 390.332415
+				},
+				"bucketStart": 4647,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1406263296,
+				"serverCpuMicroseconds": {
+					"user": 146695616,
+					"system": 1718538
+				},
+				"clientCpuMicroseconds": {
+					"user": 6627372,
+					"system": 699224
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 2.4671163767979847,
+				"requestedCaseIndex": 0,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 6,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60001.252518999856,
+				"drainMilliseconds": 1.2525189998559654,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 386.2086044397505,
+				"reportedReadThroughput": 386.2086044397505,
+				"reads": {
+					"completed": 23173,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 2.430975,
+					"p95": 3.606527,
+					"p99": 4.661247,
+					"max": 15.687679
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 4984,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1533521920,
+				"serverCpuMicroseconds": {
+					"user": 56404929,
+					"system": 1969117
+				},
+				"clientCpuMicroseconds": {
+					"user": 8859493,
+					"system": 1116376
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 0.9728804574790403,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 7,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60023.72429400007,
+				"drainMilliseconds": 23.724294000072405,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.879426959504341,
+				"successfulReadsPerAdmissionPlusDrainSecond": 356.09253260108903,
+				"reportedReadThroughput": 356.09253260108903,
+				"reads": {
+					"completed": 21374,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 2.680831,
+					"p95": 3.936255,
+					"p99": 4.870143,
+					"max": 18.153471
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 0.954367,
+						"p95": 13.418495,
+						"p99": 13.418495,
+						"max": 13.418495
+					},
+					"p50": 1.059839,
+					"p95": 1.684479,
+					"p99": 2.682879,
+					"max": 8.249343
+				},
+				"bucketStart": 8157,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1564164096,
+				"serverCpuMicroseconds": {
+					"user": 58420416,
+					"system": 2891141
+				},
+				"clientCpuMicroseconds": {
+					"user": 9216425,
+					"system": 1098152
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 1.021455394865071,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 8,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60008.85805100016,
+				"drainMilliseconds": 8.858051000162959,
+				"harnessVerdict": "qualified",
+				"observedPlumbingChecksPassed": true,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": true,
+				"derivedReasons": [],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 1189.341079267721,
+				"reportedReadThroughput": 1189.341079267721,
+				"reads": {
+					"completed": 71371,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 5.836799,
+					"p95": 13.615103,
+					"p99": 17.891327,
+					"max": 60.194815
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 9531,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1596510208,
+				"serverCpuMicroseconds": {
+					"user": 267631508,
+					"system": 5201941
+				},
+				"clientCpuMicroseconds": {
+					"user": 40157447,
+					"system": 3300890
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 4.546552923372164,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 9,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60078.23832199979,
+				"drainMilliseconds": 78.23832199978642,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.9,
+				"successfulWritesPerActualAdmissionSecond": 9.9,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.887107488344673,
+				"successfulReadsPerAdmissionPlusDrainSecond": 1044.5712416474046,
+				"reportedReadThroughput": 1044.5712416474046,
+				"reads": {
+					"completed": 62756,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 6.623231,
+					"p95": 14.467071,
+					"p99": 19.152895,
+					"max": 54.591487
+				},
+				"writes": {
+					"completed": 594,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 2.570239,
+						"p95": 9.895935,
+						"p99": 9.895935,
+						"max": 9.895935
+					},
+					"p50": 2.957311,
+					"p95": 10.838015,
+					"p99": 17.170431,
+					"max": 44.236799
+				},
+				"bucketStart": 902,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1596821504,
+				"serverCpuMicroseconds": {
+					"user": 252754435,
+					"system": 6848046
+				},
+				"clientCpuMicroseconds": {
+					"user": 37791605,
+					"system": 3047365
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 4.3210734577238314,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 10,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60035.45447,
+				"drainMilliseconds": 35.454469999996945,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": null,
+				"successfulWritesPer60Seconds": 0.0,
+				"successfulWritesPerActualAdmissionSecond": 0.0,
+				"successfulWritesPerAdmissionPlusDrainSecond": 0.0,
+				"successfulReadsPerAdmissionPlusDrainSecond": 1378.801921810454,
+				"reportedReadThroughput": 1378.801921810454,
+				"reads": {
+					"completed": 82777,
+					"rejections": 60,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 60,
+						"p50": 2.334719,
+						"p95": 7.553023,
+						"p99": 9.322495,
+						"max": 11.517951
+					},
+					"p50": 20.103167,
+					"p95": 44.826623,
+					"p99": 54.951935,
+					"max": 113.704959
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"bucketStart": 3658,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1633099776,
+				"serverCpuMicroseconds": {
+					"user": 329235180,
+					"system": 5744430
+				},
+				"clientCpuMicroseconds": {
+					"user": 50902035,
+					"system": 3867244
+				},
+				"observedWorkerIds": [1, 2],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 5.579696413681534,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			},
+			{
+				"cellIndex": 11,
+				"caseOccurrence": 1,
+				"query": "relevance",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"admissionWindowMilliseconds": 60000,
+				"durationWithDrainMilliseconds": 60098.2139669999,
+				"drainMilliseconds": 98.21396699990146,
+				"harnessVerdict": "unqualified",
+				"observedPlumbingChecksPassed": false,
+				"capacityAdmissionWindowMatched": true,
+				"derivedObservedQualified": false,
+				"derivedReasons": [
+					"reads.rejections nonzero",
+					"reads.failureLatency.count nonzero",
+					"writes.rejections nonzero",
+					"writes.failureLatency.count nonzero",
+					"harness cell verdict is not qualified"
+				],
+				"nominalTenWriteServiceControlSatisfied": true,
+				"successfulWritesPer60Seconds": 9.883333333333333,
+				"successfulWritesPerActualAdmissionSecond": 9.883333333333333,
+				"successfulWritesPerAdmissionPlusDrainSecond": 9.867181748955435,
+				"successfulReadsPerAdmissionPlusDrainSecond": 1272.8165273264706,
+				"reportedReadThroughput": 1272.8165273264706,
+				"reads": {
+					"completed": 76494,
+					"rejections": 52,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 52,
+						"p50": 2.467839,
+						"p95": 7.413759,
+						"p99": 8.097791,
+						"max": 9.142271
+					},
+					"p50": 22.249471,
+					"p95": 45.842431,
+					"p99": 58.163199,
+					"max": 116.785151
+				},
+				"writes": {
+					"completed": 593,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 11.313151,
+						"p95": 42.958847,
+						"p99": 42.958847,
+						"max": 42.958847
+					},
+					"p50": 17.432575,
+					"p95": 41.713663,
+					"p99": 51.249151,
+					"max": 69.337087
+				},
+				"bucketStart": 6495,
+				"distinctBucketsAttempted": 10000,
+				"sampledProcessRssPeakBytes": 1601986560,
+				"serverCpuMicroseconds": {
+					"user": 330327607,
+					"system": 7773527
+				},
+				"clientCpuMicroseconds": {
+					"user": 50219995,
+					"system": 3857610
+				},
+				"observedWorkerIds": [2, 1],
+				"observedServerCpuCoreEquivalentOverAdmissionPlusDrain": 5.625810014681173,
+				"requestedCaseIndex": 1,
+				"trailingStructuredControl": false
+			}
+		]
+	},
+	"comparison": {
+		"sameHarnessHashes": true,
+		"sameNativeRuntime": true,
+		"sameNativeAddonSha256": true,
+		"firstOccurrenceBaselineCommonCasesOnly": [
+			{
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"featureObservedQualified": true,
+				"baselineObservedQualified": true,
+				"featureReadP95Milliseconds": 16.941055,
+				"baselineReadP95Milliseconds": 17.530879,
+				"featureReadP99Milliseconds": 35.061759,
+				"baselineReadP99Milliseconds": 35.717119,
+				"featureSuccessfulReadsPerSecond": 85.68547229950892,
+				"baselineSuccessfulReadsPerSecond": 84.87414291924675,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"featureObservedQualified": true,
+				"baselineObservedQualified": true,
+				"featureReadP95Milliseconds": 19.169279,
+				"baselineReadP95Milliseconds": 19.431423,
+				"featureReadP99Milliseconds": 36.274175,
+				"baselineReadP99Milliseconds": 35.782655,
+				"featureSuccessfulReadsPerSecond": 79.5011282332225,
+				"baselineSuccessfulReadsPerSecond": 79.15791532375911,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"featureObservedQualified": true,
+				"baselineObservedQualified": true,
+				"featureReadP95Milliseconds": 83.492863,
+				"baselineReadP95Milliseconds": 86.048767,
+				"featureReadP99Milliseconds": 95.158271,
+				"baselineReadP99Milliseconds": 97.452031,
+				"featureSuccessfulReadsPerSecond": 196.6307507169211,
+				"baselineSuccessfulReadsPerSecond": 189.12823975874244,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"featureObservedQualified": true,
+				"baselineObservedQualified": true,
+				"featureReadP95Milliseconds": 83.230719,
+				"baselineReadP95Milliseconds": 91.553791,
+				"featureReadP99Milliseconds": 97.910783,
+				"baselineReadP99Milliseconds": 131.071999,
+				"featureSuccessfulReadsPerSecond": 202.12071287935748,
+				"baselineSuccessfulReadsPerSecond": 177.54306969882555,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"featureObservedQualified": true,
+				"baselineObservedQualified": true,
+				"featureReadP95Milliseconds": 222.560255,
+				"baselineReadP95Milliseconds": 202.899455,
+				"featureReadP99Milliseconds": 239.075327,
+				"baselineReadP99Milliseconds": 229.113855,
+				"featureSuccessfulReadsPerSecond": 210.6712385036404,
+				"baselineSuccessfulReadsPerSecond": 212.22016659467928,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"featureObservedQualified": false,
+				"baselineObservedQualified": false,
+				"featureReadP95Milliseconds": 234.881023,
+				"baselineReadP95Milliseconds": 340.787199,
+				"featureReadP99Milliseconds": 251.789311,
+				"baselineReadP99Milliseconds": 378.535935,
+				"featureSuccessfulReadsPerSecond": 207.52306341587342,
+				"baselineSuccessfulReadsPerSecond": 171.83389386810617,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "relevance",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"featureObservedQualified": true,
+				"baselineObservedQualified": true,
+				"featureReadP95Milliseconds": 3.553279,
+				"baselineReadP95Milliseconds": 3.606527,
+				"featureReadP99Milliseconds": 4.698111,
+				"baselineReadP99Milliseconds": 4.661247,
+				"featureSuccessfulReadsPerSecond": 389.057672236871,
+				"baselineSuccessfulReadsPerSecond": 386.2086044397505,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "relevance",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"featureObservedQualified": false,
+				"baselineObservedQualified": false,
+				"featureReadP95Milliseconds": 3.870719,
+				"baselineReadP95Milliseconds": 3.936255,
+				"featureReadP99Milliseconds": 4.878335,
+				"baselineReadP99Milliseconds": 4.870143,
+				"featureSuccessfulReadsPerSecond": 355.8567044225371,
+				"baselineSuccessfulReadsPerSecond": 356.09253260108903,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "relevance",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"featureObservedQualified": true,
+				"baselineObservedQualified": true,
+				"featureReadP95Milliseconds": 9.183231,
+				"baselineReadP95Milliseconds": 13.615103,
+				"featureReadP99Milliseconds": 13.107199,
+				"baselineReadP99Milliseconds": 17.891327,
+				"featureSuccessfulReadsPerSecond": 1395.618509127226,
+				"baselineSuccessfulReadsPerSecond": 1189.341079267721,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "relevance",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"featureObservedQualified": false,
+				"baselineObservedQualified": false,
+				"featureReadP95Milliseconds": 14.753791,
+				"baselineReadP95Milliseconds": 14.467071,
+				"featureReadP99Milliseconds": 19.693567,
+				"baselineReadP99Milliseconds": 19.152895,
+				"featureSuccessfulReadsPerSecond": 983.1085106787698,
+				"baselineSuccessfulReadsPerSecond": 1044.5712416474046,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "relevance",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"featureObservedQualified": false,
+				"baselineObservedQualified": false,
+				"featureReadP95Milliseconds": 32.899071,
+				"baselineReadP95Milliseconds": 44.826623,
+				"featureReadP99Milliseconds": 48.562175,
+				"baselineReadP99Milliseconds": 54.951935,
+				"featureSuccessfulReadsPerSecond": 1588.9989162188022,
+				"baselineSuccessfulReadsPerSecond": 1378.801921810454,
+				"sameAdmissionWindow": true
+			},
+			{
+				"query": "relevance",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"featureObservedQualified": false,
+				"baselineObservedQualified": false,
+				"featureReadP95Milliseconds": 46.628863,
+				"baselineReadP95Milliseconds": 45.842431,
+				"featureReadP99Milliseconds": 56.885247,
+				"baselineReadP99Milliseconds": 58.163199,
+				"featureSuccessfulReadsPerSecond": 1283.2701861879123,
+				"baselineSuccessfulReadsPerSecond": 1272.8165273264706,
+				"sameAdmissionWindow": true
+			}
+		],
+		"trailingStructuredDriftControls": [
+			{
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 0,
+				"leadingCellIndex": 0,
+				"trailingCellIndex": 30,
+				"trailingOccurrence": 2,
+				"leadingObservedQualified": true,
+				"trailingObservedQualified": true,
+				"leadingReadP95Milliseconds": 16.941055,
+				"trailingReadP95Milliseconds": 18.661375,
+				"scope": "Within-feature trailing structured drift/control observation; not another baseline match or automatic causal attribution."
+			},
+			{
+				"query": "structured",
+				"clients": 1,
+				"nominalWritesPerSecond": 10,
+				"leadingCellIndex": 1,
+				"trailingCellIndex": 31,
+				"trailingOccurrence": 2,
+				"leadingObservedQualified": true,
+				"trailingObservedQualified": true,
+				"leadingReadP95Milliseconds": 19.169279,
+				"trailingReadP95Milliseconds": 19.349503,
+				"scope": "Within-feature trailing structured drift/control observation; not another baseline match or automatic causal attribution."
+			},
+			{
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 0,
+				"leadingCellIndex": 2,
+				"trailingCellIndex": 32,
+				"trailingOccurrence": 2,
+				"leadingObservedQualified": true,
+				"trailingObservedQualified": true,
+				"leadingReadP95Milliseconds": 83.492863,
+				"trailingReadP95Milliseconds": 82.051071,
+				"scope": "Within-feature trailing structured drift/control observation; not another baseline match or automatic causal attribution."
+			},
+			{
+				"query": "structured",
+				"clients": 8,
+				"nominalWritesPerSecond": 10,
+				"leadingCellIndex": 3,
+				"trailingCellIndex": 33,
+				"trailingOccurrence": 2,
+				"leadingObservedQualified": true,
+				"trailingObservedQualified": false,
+				"leadingReadP95Milliseconds": 83.230719,
+				"trailingReadP95Milliseconds": 119.472127,
+				"scope": "Within-feature trailing structured drift/control observation; not another baseline match or automatic causal attribution."
+			},
+			{
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 0,
+				"leadingCellIndex": 4,
+				"trailingCellIndex": 34,
+				"trailingOccurrence": 2,
+				"leadingObservedQualified": true,
+				"trailingObservedQualified": true,
+				"leadingReadP95Milliseconds": 222.560255,
+				"trailingReadP95Milliseconds": 242.876415,
+				"scope": "Within-feature trailing structured drift/control observation; not another baseline match or automatic causal attribution."
+			},
+			{
+				"query": "structured",
+				"clients": 32,
+				"nominalWritesPerSecond": 10,
+				"leadingCellIndex": 5,
+				"trailingCellIndex": 35,
+				"trailingOccurrence": 2,
+				"leadingObservedQualified": false,
+				"trailingObservedQualified": false,
+				"leadingReadP95Milliseconds": 234.881023,
+				"trailingReadP95Milliseconds": 440.401919,
+				"scope": "Within-feature trailing structured drift/control observation; not another baseline match or automatic causal attribution."
+			}
+		],
+		"scope": "Comparisons require separately verified identical corpus/storage/cgroup/coldness settings. Same native/harness hashes alone do not prove a controlled A/B or statistical regression. Cell order/process runs may differ; no latency SLO is invented."
+	}
+}
