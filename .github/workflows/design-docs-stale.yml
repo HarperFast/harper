@@ -1,7 +1,5 @@
 name: Design docs stale report
 
-# Keeps one `design-docs` issue listing what `npm run check:design-docs -- --stale` finds, and closes it
-# when the report is clean. A pull request that changes the report runs it into the job summary only.
 on:
   schedule:
     - cron: '37 14 * * 1'

@@ -20,7 +20,7 @@ export const MAP_BUDGET = 8 * KIB;
 export const MAP_LINES = 80;
 export const CEILING_SLACK = KIB;
 export const CEILINGS_FILE = 'build-tools/design-docs-ceilings.json';
-const SKIP = new Set(['node_modules', 'dist', '.git', '.claude', 'unitTests', 'integrationTests']);
+const SKIP = new Set(['node_modules', 'dist', '.git', '.claude', 'fixtures']);
 const LITERALS = new Set(['true', 'false', 'null', 'undefined', 'this', 'super', 'NaN', 'Infinity']);
 const PATH = /(?:^|\/)[^/.][^/]*\.(?:[cm]?[jt]s|[jt]sx|json|md|ya?ml|sh)$/;
 const SOURCE_PATHSPECS = ['*.ts', '*.mts', '*.cts', '*.tsx', '*.js', '*.mjs', '*.cjs', '*.jsx'];
@@ -84,10 +84,17 @@ export function codeSpans(text) {
 export function classifySpan(span) {
 	const section = /^(?:\/\/\s*)?#section:\s*([\w-]+)$/.exec(span);
 	if (section) return { type: 'section', name: section[1] };
-	const located = /^(.+?)(?::(\d+(?:-\d+)?)|#L\d+(?:-L?\d+)?|:[A-Za-z_$][\w$.]*)$/.exec(span);
+	const located = /^(.+?)(?::(\d+(?:-\d+)?)|#L\d+(?:-L?\d+)?|:(#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*))$/.exec(
+		span
+	);
 	const file = located ? located[1] : span;
 	if (PATH.test(file) && !/[\s*?{}<>[\]`'"]|^[a-z]+:/.test(file))
-		return { type: 'path', path: file.replace(/^\.\//, ''), line: Boolean(located?.[2]) || /#L\d/.test(span) };
+		return {
+			type: 'path',
+			path: file.replace(/^\.\//, ''),
+			line: Boolean(located?.[2]) || /#L\d/.test(span),
+			...(located?.[3] && { symbol: located[3].split('.') }),
+		};
 	const call = /^(.+?)\(.*\)$/.exec(span);
 	const name = call ? call[1] : span;
 	if (IDENTIFIER_PATH.test(name) && !LITERALS.has(name))
@@ -109,8 +116,16 @@ function repoFiles(root) {
 }
 
 const exists = (root, file) => fs.existsSync(path.join(root, file));
-const relativeTo = (root, docDir, target) =>
-	exists(root, path.posix.join(docDir, target)) || (!/^\.\.?\//.test(target) && exists(root, target));
+// The repository path `target` names from a doc in `docDir`: relative to that directory, else to the root.
+const resolveFrom = (root, docDir, target) => {
+	const fromDoc = path.posix.join(docDir, target);
+	if (exists(root, fromDoc)) return fromDoc;
+	if (!/^\.\.?\//.test(target) && exists(root, target)) return target;
+	return undefined;
+};
+const relativeTo = (root, docDir, target) => resolveFrom(root, docDir, target) !== undefined;
+const isKeyword = (ts, reference) =>
+	!reference.call && reference.parts.length === 1 && ts.stringToToken(reference.parts[0]) !== undefined;
 
 function git(root, ...args) {
 	return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -159,13 +174,15 @@ function baseState(root, base) {
 let outlineModule;
 const loadOutline = async () => (outlineModule ??= await import('./outline.mjs'));
 
-// Declared names under `dir`, each with the names of the declarations enclosing it, and its section markers.
-async function symbolIndex(root, dir, cache) {
-	if (cache.has(dir)) return cache.get(dir);
+// Declared names in a source file or under a directory, each with the names of the declarations enclosing
+// it, and its section markers.
+async function symbolIndex(root, target, cache) {
+	if (cache.has(target)) return cache.get(target);
 	const { outlineSource, sourceFiles } = await loadOutline();
 	const names = new Map();
 	const sections = new Set();
-	for (const file of sourceFiles(path.join(root, dir))) {
+	const full = path.join(root, target);
+	for (const file of fs.statSync(full).isDirectory() ? sourceFiles(full) : [full]) {
 		const visit = (node, ancestors) => {
 			for (const child of node.children) {
 				if (child.kind === 'section') sections.add(child.name);
@@ -176,7 +193,7 @@ async function symbolIndex(root, dir, cache) {
 		visit(outlineSource(file, fs.readFileSync(file, 'utf8')), []);
 	}
 	const index = { names, sections };
-	cache.set(dir, index);
+	cache.set(target, index);
 	return index;
 }
 
@@ -214,18 +231,19 @@ async function mapReferenceErrors(root, map, state) {
 					kind: 'path',
 					why: 'MAP.md names symbols, not line numbers',
 				});
-			else if (!relativeTo(root, dir, reference.path))
-				problems.push({
-					line: span.line,
-					text: span.text,
-					kind: 'path',
-					why: `no such file in ${dir}/ or the repository root`,
-				});
-		} else if (
-			!(reference.parts.length === 1 && ts.stringToToken(reference.parts[0]) !== undefined) &&
-			!declares(index, reference.parts) &&
-			!relativeTo(root, dir, span.text)
-		) {
+			else {
+				const file = resolveFrom(root, dir, reference.path);
+				if (!file)
+					problems.push({
+						line: span.line,
+						text: span.text,
+						kind: 'path',
+						why: `no such file in ${dir}/ or the repository root`,
+					});
+				else if (reference.symbol && !declares(await symbolIndex(root, file, state.symbols), reference.symbol))
+					problems.push({ line: span.line, text: span.text, kind: 'symbol', why: `not declared in ${file}` });
+			}
+		} else if (!isKeyword(ts, reference) && !declares(index, reference.parts) && !relativeTo(root, dir, span.text)) {
 			problems.push({ line: span.line, text: span.text, kind: 'symbol', why: `not declared in ${dir}/ source` });
 		}
 	}
@@ -446,6 +464,7 @@ export async function staleReport({ root, limit = Infinity } = {}) {
 				(!target.includes('/') && path.posix.basename(file) === target)
 		);
 	};
+	const symbolIsDead = (parts) => parts.some((part) => !live.names.has(part) && past.words.has(part));
 	for (const file of design) {
 		const dir = path.posix.dirname(file);
 		for (const span of codeSpans(readText(root, file))) {
@@ -456,11 +475,8 @@ export async function staleReport({ root, limit = Infinity } = {}) {
 					add(file, { ...span, kind: 'section' });
 			} else if (reference.type === 'path') {
 				if (pathIsDead(dir, reference.path)) add(file, { ...span, kind: 'path' });
-			} else if (
-				isCodeShaped(reference) &&
-				!(reference.parts.length === 1 && ts.stringToToken(reference.parts[0]) !== undefined) &&
-				reference.parts.some((part) => !live.names.has(part) && past.words.has(part))
-			) {
+				else if (reference.symbol && symbolIsDead(reference.symbol)) add(file, { ...span, kind: 'symbol' });
+			} else if (isCodeShaped(reference) && !isKeyword(ts, reference) && symbolIsDead(reference.parts)) {
 				add(file, { ...span, kind: 'symbol' });
 			}
 		}

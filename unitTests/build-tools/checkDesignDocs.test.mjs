@@ -130,6 +130,17 @@ describe('build-tools/check-design-docs.mjs', function () {
 			assert.match((await errorsOf()).join('\n'), /over its budget/);
 		});
 
+		it('holds DESIGN.md files under test directories, but not under fixtures', async function () {
+			dir = createTree({
+				'unitTests/DESIGN.md': sized(DESIGN_BUDGET + 1),
+				'unitTests/fixtures/app/DESIGN.md': sized(DESIGN_BUDGET + 1),
+				'DESIGN.md': `${INDEX}- [Tests](unitTests/DESIGN.md#note) — tests.\n`,
+			});
+			const errors = await errorsOf();
+			assert.strictEqual(errors.length, 1, errors.join('\n'));
+			assert.match(errors[0], /^unitTests\/DESIGN\.md is 40,961 bytes/);
+		});
+
 		it('holds the root index to the same budget', async function () {
 			dir = createTree({ 'DESIGN.md': `${INDEX}${'x'.repeat(DESIGN_BUDGET)}\n` });
 			assert.match((await errorsOf()).join('\n'), /^DESIGN\.md is [\d,]+ bytes, over its budget/);
@@ -309,6 +320,17 @@ describe('build-tools/check-design-docs.mjs', function () {
 			assert.doesNotMatch(errors, /notAName|`true`|`null`|outline/);
 		});
 
+		it('checks the symbol of a `file:symbol` span in that file, and a call span even when it is a keyword', async function () {
+			dir = mapTree({
+				'lib/store.ts': SOURCE.replace('put(id, value)', 'delete(id, value)'),
+				'lib/MAP.md': `${MAP}- \`store.ts:Store.get\`, \`store.ts:Store.read\`, \`delete()\` and \`return()\`.\n`,
+			});
+			const errors = (await errorsOf()).join('\n');
+			assert.match(errors, /`store\.ts:Store\.read`: not declared in lib\/store\.ts/);
+			assert.match(errors, /`return\(\)`: not declared/);
+			assert.doesNotMatch(errors, /Store\.get`|`delete/);
+		});
+
 		it('requires a dotted name to be declared directly in its qualifier', async function () {
 			dir = mapTree({ 'lib/MAP.md': `${MAP}- \`makeStore.get\` and \`Store.cache\`.\n` });
 			const errors = (await errorsOf()).join('\n');
@@ -352,6 +374,7 @@ describe('build-tools/check-design-docs.mjs', function () {
 		it('lists names the repository once had and no longer does, and files over ceiling', async function () {
 			dir = createTree({
 				'lib/old.ts': 'export function retiredHelper() {}\n// #section: retired\n',
+				'lib/methods.ts': 'export class Methods {\n\tdelete() {}\n\tremovedMethod() {}\n}\n',
 				'lib/keep.ts': 'export function keptHelper() {}\nconst key = "configuredName";\n// commentOnlyName\n',
 			});
 			const { commit } = isolatedGit(dir);
@@ -359,16 +382,17 @@ describe('build-tools/check-design-docs.mjs', function () {
 			write(dir, {
 				'lib/old.ts': null,
 				'lib/keep.ts': 'export function keptHelper() {}\nconst key = "configuredName";\n',
+				'lib/methods.ts': 'export class Methods {\n\tremove() {}\n}\n',
 				'big/DESIGN.md': sized(DESIGN_BUDGET + 1),
 				'DESIGN.md': `${INDEX}- [Big](big/DESIGN.md#note) — big.\n`,
-				'lib/DESIGN.md': `${NOTE}\nNames: \`retiredHelper()\`, \`lib/old.ts\`, \`#section: retired\`, \`keptHelper\`, \`configuredName\`, \`commentOnlyName\`, \`neverHadThis()\`, \`otherRepo.ts\`, \`mdb_env_open\`.\n`,
+				'lib/DESIGN.md': `${NOTE}\nNames: \`retiredHelper()\`, \`lib/old.ts\`, \`#section: retired\`, \`keptHelper\`, \`configuredName\`, \`commentOnlyName\`, \`neverHadThis()\`, \`otherRepo.ts\`, \`mdb_env_open\`.\n\nMethods: \`delete()\`, \`lib/methods.ts:removedMethod\`, \`lib/methods.ts:remove\`.\n`,
 			});
 			commit('retire old.ts');
 			const report = await staleReport({ root: dir });
 			assert.match(report, /- `big\/DESIGN\.md`: 40,961 bytes, budget 40,960/);
 			assert.match(
 				report,
-				/### `lib\/DESIGN\.md`\n\n- line 5: `retiredHelper\(\)` \(symbol\)\n- line 5: `lib\/old\.ts` \(path\)\n- line 5: `#section: retired` \(section\)\n\n/
+				/### `lib\/DESIGN\.md`\n\n- line 5: `retiredHelper\(\)` \(symbol\)\n- line 5: `lib\/old\.ts` \(path\)\n- line 5: `#section: retired` \(section\)\n- line 7: `delete\(\)` \(symbol\)\n- line 7: `lib\/methods\.ts:removedMethod` \(symbol\)\n\n/
 			);
 			for (const live of [
 				'keptHelper',
@@ -453,6 +477,7 @@ describe('build-tools/check-design-docs.mjs', function () {
 				type: 'path',
 				path: 'utility/mount_hdb.ts',
 				line: false,
+				symbol: ['createTables'],
 			});
 			assert.deepStrictEqual(classifySpan('TableResource._writeUpdate'), {
 				type: 'symbol',
