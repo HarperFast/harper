@@ -1698,7 +1698,12 @@
 		"successfulQueries": 761915,
 		"readFailuresIncludingUnknownCounts": 153,
 		"unknownCounts": 30,
-		"writeFailures": 73
+		"writeFailures": 73,
+		"readFailureKinds": {
+			"transportTerminations": 120,
+			"explicitNativeBusy503": 3,
+			"unknownCounts": 30
+		}
 	},
 	"baseline": {
 		"head": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
