@@ -145,6 +145,16 @@ describe('build-tools/outline.mjs', function () {
 		);
 	});
 
+	it('treats a module-level arrow function that declares a class as a factory', function () {
+		const tree = outlineOf(
+			'export const makeIt = () => {\n\tconst cache = new Map();\n\tclass It {}\n\treturn It;\n};\n'
+		);
+		assert.deepStrictEqual(
+			find(tree, 'makeIt').children.map((child) => `${child.kind} ${child.name}`),
+			['variable cache', 'class It']
+		);
+	});
+
 	it('parses JavaScript and CommonJS without types', function () {
 		const tree = outlineOf(
 			'function legacy(a) { function inner() {} return inner; }\nmodule.exports = { legacy };\n',

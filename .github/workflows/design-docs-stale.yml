@@ -4,7 +4,7 @@ name: Design docs stale report
 # when the report is clean. A pull request that changes the report runs it into the job summary only.
 on:
   schedule:
-    - cron: '37 14 * * 1' # Mondays 14:37 UTC
+    - cron: '37 14 * * 1'
   workflow_dispatch:
   pull_request:
     paths:
@@ -39,8 +39,10 @@ jobs:
       - run: npm ci
       - name: Stale report
         id: stale
+        shell: bash
+        # GitHub caps an issue body at 65,536 characters.
         run: |
-          node build-tools/check-design-docs.mjs --stale > stale-report.md
+          node build-tools/check-design-docs.mjs --stale --limit 50000 > stale-report.md
           delimiter="report-$(openssl rand -hex 16)"
           { echo "report<<$delimiter"; cat stale-report.md; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
           if [ -s stale-report.md ]; then cat stale-report.md; else echo 'No stale references, nothing over ceiling.'; fi >> "$GITHUB_STEP_SUMMARY"
@@ -59,10 +61,12 @@ jobs:
       SHA: ${{ github.sha }}
     steps:
       - name: Open, update or close the tracking issue
+        # `bash` adds pipefail, so a failed issue lookup stops the step instead of creating a duplicate.
+        shell: bash
         run: |
           marker='<!-- design-docs-stale-report -->'
           gh label create design-docs --color c5def5 --description 'Design-doc maintenance' 2>/dev/null || true
-          issue=$(gh issue list --label design-docs --state all --limit 100 --json number,state,body |
+          issue=$(gh issue list --label design-docs --state all --limit 1000 --json number,state,body |
             jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))] | max_by(.number) // empty | "\(.number) \(.state)"')
           number=${issue%% *}
           state=${issue##* }

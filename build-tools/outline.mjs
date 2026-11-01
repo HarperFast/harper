@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
-export const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 const SKIP = new Set(['node_modules', 'dist', '.git', '.claude']);
 const SECTION = /^\s*\/\/\s*#section:\s*(\S+)/;
 
@@ -144,9 +144,9 @@ export function outlineSource(fileName, text) {
 			} else if (ts.isClassDeclaration(statement) && statement.name) {
 				result.push(symbol('class', statement.name.text, statement, classMembers(statement.members)));
 			} else if (context === 'body') {
-				if (ts.isVariableStatement(statement)) result.push(...variables(statement, true));
+				if (ts.isVariableStatement(statement)) result.push(...variables(statement, context));
 			} else if (ts.isVariableStatement(statement)) {
-				result.push(...variables(statement, false));
+				result.push(...variables(statement, context));
 			} else if (ts.isInterfaceDeclaration(statement)) {
 				result.push(symbol('interface', statement.name.text, statement));
 			} else if (ts.isTypeAliasDeclaration(statement)) {
@@ -170,15 +170,21 @@ export function outlineSource(fileName, text) {
 		return result;
 	}
 
-	function variables(statement, functionsOnly) {
+	function variables(statement, context) {
 		const result = [];
 		for (const declaration of statement.declarationList.declarations) {
 			const initializer = unwrap(declaration.initializer);
 			if (ts.isIdentifier(declaration.name) && isFunctionLike(initializer)) {
-				result.push(symbol('function', declaration.name.text, declaration, functionBody(initializer.body, 'body')));
+				const bodyContext =
+					context === 'module' && ts.isBlock(initializer.body) && declaresFunctions(initializer.body)
+						? 'factory'
+						: 'body';
+				result.push(
+					symbol('function', declaration.name.text, declaration, functionBody(initializer.body, bodyContext))
+				);
 			} else if (ts.isIdentifier(declaration.name) && initializer && ts.isClassExpression(initializer)) {
 				result.push(symbol('class', declaration.name.text, declaration, classMembers(initializer.members)));
-			} else if (!functionsOnly) {
+			} else if (context !== 'body') {
 				const children =
 					ts.isIdentifier(declaration.name) && initializer && ts.isObjectLiteralExpression(initializer)
 						? objectMembers(initializer)

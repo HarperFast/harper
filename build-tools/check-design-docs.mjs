@@ -6,10 +6,12 @@
 //   --base <ref>       also reject a raised or new ceiling, and hold only files changed since <ref> to their budget
 //   --update-ceilings  rewrite CEILINGS_FILE from current sizes
 //   --stale            report-only: dead backticked paths and symbols, and files over ceiling (markdown, exit 0)
+//   --limit <chars>    cap the --stale report at about this many characters
 //   --root <dir>       check another tree (tests)
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const KIB = 1024;
@@ -19,7 +21,6 @@ export const MAP_LINES = 80;
 export const CEILING_SLACK = KIB;
 export const CEILINGS_FILE = 'build-tools/design-docs-ceilings.json';
 const SKIP = new Set(['node_modules', 'dist', '.git', '.claude', 'unitTests', 'integrationTests']);
-const STALE_REPORT_LIMIT = 50_000;
 const LITERALS = new Set(['true', 'false', 'null', 'undefined', 'this', 'super', 'NaN', 'Infinity']);
 const PATH = /(?:^|\/)[^/.][^/]*\.(?:[cm]?[jt]s|[jt]sx|json|md|ya?ml|sh)$/;
 const SOURCE_PATHSPECS = ['*.ts', '*.mts', '*.cts', '*.tsx', '*.js', '*.mjs', '*.cjs', '*.jsx'];
@@ -58,7 +59,6 @@ const headings = (root, file) =>
 		.filter((l) => l.startsWith('## '))
 		.map((l) => l.slice(3).trim());
 
-// Inline code spans outside fenced blocks, with their 1-based line.
 export function codeSpans(text) {
 	const spans = [];
 	let fence;
@@ -180,16 +180,20 @@ async function symbolIndex(root, dir, cache) {
 	return index;
 }
 
+// `A.b` needs `b` declared directly in `A`; `x.A.b` also needs an `x` enclosing that `A`.
 const declares = (index, parts) =>
 	(index.names.get(parts.at(-1)) ?? []).some((ancestors) => {
+		if (parts.length === 1) return true;
+		if (ancestors.at(-1) !== parts.at(-2)) return false;
 		let at = 0;
-		for (const name of ancestors) if (at < parts.length - 1 && name === parts[at]) at++;
-		return at === parts.length - 1;
+		for (const name of ancestors.slice(0, -1)) if (at < parts.length - 2 && name === parts[at]) at++;
+		return at === parts.length - 2;
 	});
 
 async function mapReferenceErrors(root, map, state) {
 	const dir = path.posix.dirname(map);
 	const index = await symbolIndex(root, dir, state.symbols);
+	const { default: ts } = await import('typescript');
 	const problems = [];
 	for (const span of codeSpans(readText(root, map))) {
 		const reference = classifySpan(span.text);
@@ -217,7 +221,11 @@ async function mapReferenceErrors(root, map, state) {
 					kind: 'path',
 					why: `no such file in ${dir}/ or the repository root`,
 				});
-		} else if (!declares(index, reference.parts)) {
+		} else if (
+			!(reference.parts.length === 1 && ts.stringToToken(reference.parts[0]) !== undefined) &&
+			!declares(index, reference.parts) &&
+			!relativeTo(root, dir, span.text)
+		) {
 			problems.push({ line: span.line, text: span.text, kind: 'symbol', why: `not declared in ${dir}/ source` });
 		}
 	}
@@ -260,7 +268,10 @@ export async function checkDesignDocs({ root, base } = {}) {
 	const ceilings = readCeilings(root);
 	const baseline = base ? baseState(root, base) : undefined;
 	const ceilingsChanged = baseline?.changed.has(CEILINGS_FILE);
-	const inScope = (file) => !baseline || baseline.changed.has(file) || (ceilingsChanged && file in ceilings);
+	const inScope = (file) =>
+		!baseline ||
+		baseline.changed.has(file) ||
+		(ceilingsChanged && (file in ceilings || file in (baseline.ceilings ?? {})));
 	const report = (file, message) => {
 		if (inScope(file)) errors.push(message);
 		else warnings.push(`${message} (unchanged since ${base}, so not failing this change)`);
@@ -300,6 +311,14 @@ export async function checkDesignDocs({ root, base } = {}) {
 			);
 	}
 	if (baseline?.ceilings) {
+		if (!fs.existsSync(path.join(root, CEILINGS_FILE)))
+			errors.push(`${CEILINGS_FILE} was deleted; keep it (\`{}\` once no file needs a ceiling)`);
+		for (const file of Object.keys(baseline.ceilings)) {
+			if (!(file in ceilings) && fs.existsSync(path.join(root, file)) && byteSize(readText(root, file)) > DESIGN_BUDGET)
+				errors.push(
+					`${CEILINGS_FILE} drops the ceiling for ${file}, which is still over the ${formatBytes(DESIGN_BUDGET)}-byte budget`
+				);
+		}
 		for (const [file, ceiling] of Object.entries(ceilings)) {
 			const before = baseline.ceilings[file];
 			if (before === undefined)
@@ -363,7 +382,7 @@ async function liveNames(root) {
 // What this repository once had: deleted paths, the words of removed source lines (comments stripped) and
 // removed section markers. A reference that resolves nowhere now is dead only if it is here; otherwise it
 // names something outside this repository (another repo's symbol, a native API, a runtime file).
-function pastNames(root) {
+async function pastNames(root) {
 	if (git(root, 'rev-parse', '--is-shallow-repository').trim() === 'true')
 		console.error(
 			'warning: shallow history; a name removed before its oldest commit is not reported (fetch with --unshallow)'
@@ -373,16 +392,12 @@ function pastNames(root) {
 		.filter(Boolean);
 	const words = new Set();
 	const sections = new Set();
-	const diff = execFileSync(
-		'git',
-		['log', '-p', '--no-renames', '--format=', '-U0', 'HEAD', '--', ...SOURCE_PATHSPECS],
-		{
-			cwd: root,
-			encoding: 'utf8',
-			maxBuffer: 1 << 30,
-		}
-	);
-	for (const line of diff.split('\n')) {
+	const log = spawn('git', ['log', '-p', '--no-renames', '--format=', '-U0', 'HEAD', '--', ...SOURCE_PATHSPECS], {
+		cwd: root,
+		stdio: ['ignore', 'pipe', 'inherit'],
+	});
+	const exit = new Promise((resolve, reject) => log.on('error', reject).on('close', resolve));
+	for await (const line of readline.createInterface({ input: log.stdout, crlfDelay: Infinity })) {
 		if (!line.startsWith('-') || line.startsWith('---')) continue;
 		const marker = /\/\/\s*#section:\s*(\S+)/.exec(line);
 		if (marker) sections.add(marker[1]);
@@ -390,13 +405,15 @@ function pastNames(root) {
 		if (/^\s*(?:\/\*|\*)/.test(code)) continue;
 		for (const word of code.replace(/(^|\s)\/\/.*$/, '').matchAll(WORD)) words.add(word[0]);
 	}
+	const code = await exit;
+	if (code !== 0) throw new Error(`git log -p exited ${code}`);
 	return { deleted, words, sections };
 }
 
 const isCodeShaped = (reference) =>
 	reference.call || reference.parts.length > 1 || /[a-z0-9][A-Z]|_|^#/.test(reference.parts[0]);
 
-export async function staleReport({ root } = {}) {
+export async function staleReport({ root, limit = Infinity } = {}) {
 	const { design, maps } = docFiles(root);
 	const ceilings = readCeilings(root);
 	const over = [];
@@ -411,11 +428,12 @@ export async function staleReport({ root } = {}) {
 
 	const { default: ts } = await import('typescript');
 	const live = await liveNames(root);
-	const past = pastNames(root);
+	const past = await pastNames(root);
 	const { files, basenames } = repoFiles(root);
 	const state = { symbols: new Map() };
 	const dead = new Map();
-	const add = (file, problem) => (dead.get(file) ?? dead.set(file, []).get(file)).push(problem);
+	const mapErrors = new Map();
+	const add = (file, problem, into = dead) => (into.get(file) ?? into.set(file, []).get(file)).push(problem);
 	const pathIsDead = (docDir, target) => {
 		if (relativeTo(root, docDir, target)) return false;
 		if (target.includes('/') ? files.some((file) => file.endsWith(`/${target}`)) : basenames.has(target)) return false;
@@ -449,29 +467,38 @@ export async function staleReport({ root } = {}) {
 	}
 	for (const map of maps) {
 		if (path.posix.dirname(map) === '.') continue;
-		for (const problem of await mapReferenceErrors(root, map, state)) add(map, problem);
+		for (const problem of await mapReferenceErrors(root, map, state)) add(map, problem, mapErrors);
 	}
 
-	if (over.length === 0 && dead.size === 0) return '';
+	if (over.length === 0 && dead.size === 0 && mapErrors.size === 0) return '';
 	const lines = [];
-	if (over.length) lines.push('## Over budget or ceiling', '', ...over, '');
-	if (dead.size) {
-		const count = [...dead.values()].reduce((sum, list) => sum + list.length, 0);
-		lines.push(
-			'## Dead references',
-			'',
-			`${count} backticked names in design docs that this repository once had and no longer does: a deleted file, a removed \`#section:\` marker, or a symbol that appears nowhere in source now (identifiers, string literals and module names count; comments do not) but did in a removed line. Names this repository never had are not listed. A MAP.md reference must resolve in its own directory.`,
-			''
-		);
-		for (const [file, problems] of dead) {
+	const section = (heading, intro, byFile) => {
+		const count = [...byFile.values()].reduce((sum, list) => sum + list.length, 0);
+		lines.push(heading, '', intro(count), '');
+		for (const [file, problems] of byFile) {
 			lines.push(`### \`${file}\``, '');
-			for (const problem of problems) lines.push(`- line ${problem.line}: \`${problem.text}\` (${problem.kind})`);
+			for (const problem of problems)
+				lines.push(`- line ${problem.line}: \`${problem.text}\` (${problem.why ?? problem.kind})`);
 			lines.push('');
 		}
-	}
+	};
+	if (over.length) lines.push('## Over budget or ceiling', '', ...over, '');
+	if (mapErrors.size)
+		section(
+			'## Map references that do not resolve',
+			(count) => `${count} backticked names in MAP.md files that their directory does not declare.`,
+			mapErrors
+		);
+	if (dead.size)
+		section(
+			'## Dead references',
+			(count) =>
+				`${count} backticked names in design docs that this repository once had and no longer does: a deleted file, a removed \`#section:\` marker, or a symbol that appears nowhere in source now (identifiers, string literals and module names count; comments do not) but did in a removed line. Names this repository never had are not listed.`,
+			dead
+		);
 	let text = '';
 	for (const [i, line] of lines.entries()) {
-		if (text.length + line.length > STALE_REPORT_LIMIT) {
+		if (text.length + line.length > limit) {
 			const rest = lines.slice(i).filter((l) => l.startsWith('- ')).length;
 			text += `\n- … ${rest} more not shown; run \`npm run check:design-docs -- --stale\` for the full list.\n`;
 			break;
@@ -481,12 +508,14 @@ export async function staleReport({ root } = {}) {
 	return text;
 }
 
+// Never raises an existing entry: a file past its ceiling has to be pruned, not re-recorded.
 export function updateCeilings({ root } = {}) {
 	const { design } = docFiles(root);
+	const current = readCeilings(root);
 	const ceilings = {};
 	for (const file of design) {
 		const size = byteSize(readText(root, file));
-		if (size > DESIGN_BUDGET) ceilings[file] = size;
+		if (size > DESIGN_BUDGET) ceilings[file] = Math.min(size, current[file] ?? size);
 	}
 	fs.writeFileSync(path.join(root, CEILINGS_FILE), `${JSON.stringify(ceilings, null, '\t')}\n`);
 	return ceilings;
@@ -496,6 +525,7 @@ async function main(args) {
 	let root = path.resolve(import.meta.dirname, '..');
 	let base;
 	let mode = 'check';
+	let limit;
 	const value = (i) => {
 		if (args[i + 1] === undefined) throw new Error(`${args[i]} needs a value`);
 		return args[i + 1];
@@ -505,13 +535,14 @@ async function main(args) {
 		else if (args[i] === '--root') root = path.resolve(value(i++));
 		else if (args[i] === '--stale') mode = 'stale';
 		else if (args[i] === '--update-ceilings') mode = 'update';
+		else if (args[i] === '--limit') limit = Number(value(i++));
 		else {
 			console.error(`check-design-docs: unknown argument ${args[i]}`);
 			return 2;
 		}
 	}
 	if (mode === 'stale') {
-		const text = await staleReport({ root });
+		const text = await staleReport({ root, limit });
 		if (text) process.stdout.write(text);
 		else console.error('design docs: no stale references, nothing over ceiling');
 		return 0;

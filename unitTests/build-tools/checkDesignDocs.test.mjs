@@ -41,7 +41,7 @@ const MAP = [
 	'',
 	'- `store.ts` — the store factory, `makeStore()`.',
 	'- reading a record → `Store.get`; the write path → `#section: writes`; the cache → `cache`.',
-	'- symbol inventory: `npm run outline -- lib/store.ts`; `true` and `null` are not symbols.',
+	'- symbol inventory: `npm run outline -- lib/store.ts`; `true`, `null` and `await` are not symbols; `schema.graphql` is a file; `makeStore.Store.get` is nested.',
 	'',
 	'```',
 	'`notAName` inside a fence is ignored',
@@ -50,7 +50,6 @@ const MAP = [
 ].join('\n');
 const AGENTS = '- [lib/ map](lib/MAP.md)\n';
 
-// A doc of exactly `bytes` bytes in two lines.
 const sized = (bytes) => `## Note\n${'x'.repeat(bytes - 9)}\n`;
 
 function createTree(files = {}) {
@@ -72,6 +71,7 @@ const ceilings = (entries) => `${JSON.stringify(entries, null, '\t')}\n`;
 const mapTree = (files = {}) =>
 	createTree({
 		'lib/store.ts': SOURCE,
+		'lib/schema.graphql': 'type Store {}\n',
 		'lib/MAP.md': MAP,
 		'lib/CLAUDE.md': '@MAP.md\n',
 		'AGENTS.md': AGENTS,
@@ -192,6 +192,13 @@ describe('build-tools/check-design-docs.mjs', function () {
 			assert.strictEqual(readFileSync(join(dir, CEILINGS_FILE), 'utf8'), ceilings({ 'lib/DESIGN.md': over }));
 			assert.deepStrictEqual(await errorsOf(), []);
 		});
+
+		it('--update-ceilings lowers a ceiling but never raises one', function () {
+			dir = withCeiling(over + 500, over);
+			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': over });
+			write(dir, { 'lib/DESIGN.md': sized(over - 2048) });
+			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': over - 2048 });
+		});
 	});
 
 	describe('--base', function () {
@@ -260,6 +267,18 @@ describe('build-tools/check-design-docs.mjs', function () {
 			assert.match((await errorsOf({ base: head })).join('\n'), /lib\/DESIGN\.md is [\d,]+ bytes, over its ceiling/);
 		});
 
+		it('rejects dropping the ceiling of a file still over budget, or deleting the ceilings file', async function () {
+			write(dir, { [CEILINGS_FILE]: '{}\n' });
+			assert.match(
+				(await errorsOf({ base })).join('\n'),
+				/drops the ceiling for lib\/DESIGN\.md, which is still over the [\d,]+-byte budget/
+			);
+			write(dir, { [CEILINGS_FILE]: null });
+			const errors = (await errorsOf({ base })).join('\n');
+			assert.match(errors, /design-docs-ceilings\.json was deleted/);
+			assert.match(errors, /lib\/DESIGN\.md is [\d,]+ bytes, over its budget/);
+		});
+
 		it('counts a deleted ceilinged file as changed', async function () {
 			write(dir, { 'lib/DESIGN.md': null, 'DESIGN.md': '- [Big](big/DESIGN.md#big) — another.\n' });
 			assert.match((await errorsOf({ base })).join('\n'), /lists lib\/DESIGN\.md, which does not exist/);
@@ -281,12 +300,20 @@ describe('build-tools/check-design-docs.mjs', function () {
 				'lib/MAP.md': `${MAP}- \`Missing\`, \`Other.get\`, \`gone.ts\`, \`#section: nowhere\` and \`store.ts:5\`.\n`,
 			});
 			const errors = (await errorsOf()).join('\n');
+			assert.strictEqual(errors.split('\n').length, 5, errors);
 			assert.match(errors, /lib\/MAP\.md:10 `Missing`: not declared in lib\/ source/);
 			assert.match(errors, /`Other\.get`: not declared/);
 			assert.match(errors, /`gone\.ts`: no such file/);
 			assert.match(errors, /`#section: nowhere`: no `\/\/ #section: nowhere` marker/);
 			assert.match(errors, /`store\.ts:5`: MAP\.md names symbols, not line numbers/);
 			assert.doesNotMatch(errors, /notAName|`true`|`null`|outline/);
+		});
+
+		it('requires a dotted name to be declared directly in its qualifier', async function () {
+			dir = mapTree({ 'lib/MAP.md': `${MAP}- \`makeStore.get\` and \`Store.cache\`.\n` });
+			const errors = (await errorsOf()).join('\n');
+			assert.match(errors, /`makeStore\.get`: not declared/);
+			assert.match(errors, /`Store\.cache`: not declared/);
 		});
 
 		it('fails an unchanged map once the source renames what it names', async function () {
@@ -352,6 +379,17 @@ describe('build-tools/check-design-docs.mjs', function () {
 				'mdb_env_open',
 			])
 				assert.doesNotMatch(report, new RegExp(`\`${live}`), live);
+		});
+
+		it('lists unresolved MAP.md names under their own heading, and caps the report on request', async function () {
+			dir = mapTree({ 'lib/MAP.md': `${MAP}- \`Missing\`.\n` });
+			isolatedGit(dir).commit('map');
+			const report = await staleReport({ root: dir });
+			assert.match(report, /^## Map references that do not resolve\n\n1 backticked names/);
+			assert.match(report, /- line 10: `Missing` \(not declared in lib\/ source\)/);
+			assert.doesNotMatch(report, /Dead references/);
+			const capped = await staleReport({ root: dir, limit: 60 });
+			assert.match(capped, /- … 1 more not shown; run `npm run check:design-docs -- --stale` for the full list\.\n$/);
 		});
 
 		it('is empty for a clean tree and exits 0 either way', async function () {

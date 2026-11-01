@@ -29,8 +29,13 @@ const { appendFileSync, copyFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 appendFileSync(process.env.GH_LOG, JSON.stringify(args) + '\\n');
 const [command, sub] = args;
-if (command === 'issue' && sub === 'list') process.stdout.write(process.env.GH_ISSUES);
-else if (command === 'label' && sub === 'create') {
+if (command === 'issue' && sub === 'list') {
+	if (process.env.GH_LIST_FAILS) {
+		process.stderr.write('HTTP 502\\n');
+		process.exit(1);
+	}
+	process.stdout.write(process.env.GH_ISSUES);
+} else if (command === 'label' && sub === 'create') {
 	if (process.env.GH_LABEL_EXISTS) {
 		process.stderr.write('label "design-docs" already exists\\n');
 		process.exit(1);
@@ -42,16 +47,19 @@ else if (!(command === 'issue' && (sub === 'reopen' || sub === 'close'))) {
 }
 `;
 
-function runScript(script, { cwd, env }) {
+// Runs a step the way GitHub runs `shell: bash`: `bash --noprofile --norc -eo pipefail {0}`.
+function runScript(step, { cwd, env, expectFailure = false }) {
+	assert.strictEqual(step.shell, 'bash', `${step.name} must set shell: bash to get pipefail`);
 	const file = join(cwd, '..', `step-${Math.random().toString(36).slice(2)}.sh`);
-	writeFileSync(file, script);
+	writeFileSync(file, step.run);
 	const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', file], {
 		cwd,
 		env,
 		encoding: 'utf8',
 		timeout: DEADLINE,
 	});
-	assert.strictEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+	if (expectFailure) assert.notStrictEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+	else assert.strictEqual(result.status, 0, `${result.stdout}${result.stderr}`);
 	return result;
 }
 
@@ -109,7 +117,7 @@ describe('design-docs-stale.yml', function () {
 			const summary = join(dir, 'summary');
 			writeFileSync(output, '');
 			writeFileSync(summary, '');
-			runScript(reportStep.run, { cwd: work, env: { ...env, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary } });
+			runScript(reportStep, { cwd: work, env: { ...env, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary } });
 			return { report: readOutputs(output).report, summary: readFileSync(summary, 'utf8') };
 		}
 		const INDEX = '- [Note](lib/DESIGN.md#note) — one line.\n';
@@ -150,7 +158,7 @@ describe('design-docs-stale.yml', function () {
 			assert.strictEqual(workflow.jobs['sync-issue'].if, "github.event_name != 'pull_request'");
 		});
 
-		function sync({ report, issues = [], labelExists = false }) {
+		function sync({ report, issues = [], labelExists = false, listFails = false }) {
 			const bin = join(dir, 'bin');
 			const work = join(dir, 'work');
 			mkdirSync(bin, { recursive: true });
@@ -171,7 +179,8 @@ describe('design-docs-stale.yml', function () {
 				SHA,
 			};
 			if (labelExists) env.GH_LABEL_EXISTS = '1';
-			runScript(syncStep.run, { cwd: work, env });
+			if (listFails) env.GH_LIST_FAILS = '1';
+			runScript(syncStep, { cwd: work, env, expectFailure: listFails });
 			const calls = readFileSync(log, 'utf8')
 				.split('\n')
 				.filter(Boolean)
@@ -215,6 +224,10 @@ describe('design-docs-stale.yml', function () {
 			assert.deepStrictEqual(sync({ report: REPORT, issues: [issue(9, 'OPEN')] }).calls, [
 				['issue', 'edit', '9', '--body-file', 'body.md'],
 			]);
+		});
+
+		it('stops without creating an issue when the lookup fails', function () {
+			assert.deepStrictEqual(sync({ report: REPORT, listFails: true }).calls, []);
 		});
 
 		it('closes the open issue once the report is clean, and leaves a closed one alone', function () {
