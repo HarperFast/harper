@@ -23,6 +23,21 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
+const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
+const { _resetSubscriptionsForTest, _liveSubscriptionCount } = require('#src/components/mcp/subscriptions');
+
+function makeIdleStream() {
+	const stream = {
+		ended: 0,
+		end() {
+			stream.ended++;
+		},
+		[Symbol.asyncIterator]() {
+			return { next: () => new Promise(() => {}) };
+		},
+	};
+	return stream;
+}
 
 function makeFakeResources(entries) {
 	const map = new Map();
@@ -1234,6 +1249,69 @@ describe('mcp/transport', () => {
 				const saved = await loadSession(sessionId);
 				assert.ok(!(saved.subscriptions ?? []).includes(uri), 'URI dropped from the record');
 			});
+
+			describe('failures and custom resources (#3250)', () => {
+				const headers = () => ({ 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' });
+				afterEach(() => {
+					clearProfileCustomResources('application');
+					_resetSubscriptionsForTest();
+				});
+
+				it('answers an AccessViolation from subscribe with -32602 permission denied, not HTTP 500', async () => {
+					_setSubscribeImplForTest(async () => {
+						throw new AccessViolation({ username: 'alice' });
+					});
+					const uri = 'https://app.test:9926/Product/denied';
+					const res = await handleMcpRequest(
+						makeReq({ body: jsonRpc(76, 'resources/subscribe', { uri }), headers: headers() })
+					);
+					assert.equal(res.status, 200);
+					assert.equal(res.jsonBody.error.code, -32602);
+					assert.equal(res.jsonBody.error.message, `permission denied: ${uri}`);
+					assert.ok(!((await loadSession(sessionId)).subscriptions ?? []).includes(uri), 'not persisted');
+				});
+
+				it('answers any other subscribe failure with -32603, keeping the raw error out of the reply', async () => {
+					_setSubscribeImplForTest(async () => {
+						throw new Error('https://internal.svc key=sk-abc123 exploded');
+					});
+					const uri = 'https://app.test:9926/Product/boom';
+					const res = await handleMcpRequest(
+						makeReq({ body: jsonRpc(77, 'resources/subscribe', { uri }), headers: headers() })
+					);
+					assert.equal(res.status, 200);
+					assert.equal(res.jsonBody.error.code, -32603);
+					assert.equal(res.jsonBody.error.message, `failed to subscribe: ${uri}`);
+					assert.ok(!((await loadSession(sessionId)).subscriptions ?? []).includes(uri), 'not persisted');
+				});
+
+				it('subscribes to a custom resource that declares subscribe, and not to one without it', async () => {
+					const stream = makeIdleStream();
+					addCustomResource({
+						uriTemplate: 'notes:///{id}',
+						name: 'note',
+						profile: 'application',
+						read: async () => 'x',
+						subscribe: async () => stream,
+					});
+					addCustomResource({ uri: 'plain:///readme', name: 'readme', profile: 'application', read: async () => 'x' });
+					const ok = await handleMcpRequest(
+						makeReq({ body: jsonRpc(78, 'resources/subscribe', { uri: 'notes:///1' }), headers: headers() })
+					);
+					assert.deepEqual(ok.jsonBody.result, {});
+					assert.ok((await loadSession(sessionId)).subscriptions.includes('notes:///1'), 'persisted');
+					const unsubscribed = await handleMcpRequest(
+						makeReq({ body: jsonRpc(79, 'resources/unsubscribe', { uri: 'notes:///1' }), headers: headers() })
+					);
+					assert.deepEqual(unsubscribed.jsonBody.result, {});
+					assert.equal(stream.ended, 1, 'unsubscribe releases the author stream');
+					const refused = await handleMcpRequest(
+						makeReq({ body: jsonRpc(80, 'resources/subscribe', { uri: 'plain:///readme' }), headers: headers() })
+					);
+					assert.equal(refused.jsonBody.error.code, -32602);
+					assert.equal(refused.jsonBody.error.message, 'resource is not subscribable: plain:///readme');
+				});
+			});
 		});
 
 		describe('completion/complete', () => {
@@ -1462,6 +1540,137 @@ describe('mcp/transport', () => {
 				})
 			);
 			assert.equal(res.status, 403);
+		});
+
+		describe('restoring durable subscriptions', () => {
+			const getReq = (session) =>
+				makeReq({
+					method: 'GET',
+					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+				});
+			const post = (session, id, method, uri) =>
+				handleMcpRequest(
+					makeReq({
+						body: jsonRpc(id, method, { uri }),
+						headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+			const turns = async (n = 20) => {
+				for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+			};
+			const until = async (condition) => {
+				for (let i = 0; i < 200 && !(await condition()); i++) await new Promise((r) => setImmediate(r));
+				assert.ok(await condition(), 'condition reached');
+			};
+			const durable = async (session) => (await loadSession(session.id)).subscriptions;
+			afterEach(() => {
+				_setSubscribeImplForTest(undefined);
+				_resetSubscriptionsForTest();
+				_resetSessionRegistryForTest();
+			});
+
+			it('opens the stream without waiting for a slow restore', async () => {
+				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+				const slow = 'https://app.test:9926/slow';
+				session.subscriptions = [slow];
+				await saveSession(session);
+				let release;
+				const gate = new Promise((resolve) => (release = resolve));
+				_setSubscribeImplForTest(async () => (await gate, makeIdleStream()));
+				const res = await handleMcpRequest(getReq(session));
+				assert.equal(res.status, 200);
+				assert.ok(res.sseIterable, 'stream returned while restore is still waiting');
+				assert.equal(_liveSubscriptionCount(session.id), 0);
+				release();
+				await until(() => _liveSubscriptionCount(session.id) === 1);
+			});
+
+			it('prunes only a URI reported not subscribable, keeping one whose subscribe threw', async () => {
+				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+				const [ok, gone, failing] = ['ok', 'gone', 'failing'].map((p) => `https://app.test:9926/${p}`);
+				session.subscriptions = [ok, gone, failing];
+				await saveSession(session);
+				_setSubscribeImplForTest(async (path) => {
+					if (path === 'gone') return null;
+					if (path === 'failing') throw new Error('source unavailable');
+					return makeIdleStream();
+				});
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(async () => (await durable(session)).length === 2);
+				assert.deepEqual(await durable(session), [ok, failing]);
+			});
+
+			it('keeps a subscribe and an unsubscribe that land while a GET is restoring', async () => {
+				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+				const [gone, slow, later, added] = ['gone', 'slow', 'later', 'added'].map((p) => `https://app.test:9926/${p}`);
+				session.subscriptions = [gone, slow, later];
+				await saveSession(session);
+				let release;
+				const gate = new Promise((resolve) => (release = resolve));
+				const requested = [];
+				_setSubscribeImplForTest(async (path) => {
+					requested.push(path);
+					if (path === 'gone') return null;
+					if (path === 'slow') await gate;
+					return makeIdleStream();
+				});
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => requested.includes('slow'));
+				assert.deepEqual((await post(session, 81, 'resources/subscribe', added)).jsonBody.result, {});
+				assert.deepEqual((await post(session, 82, 'resources/unsubscribe', slow)).jsonBody.result, {});
+				assert.deepEqual((await post(session, 83, 'resources/unsubscribe', later)).jsonBody.result, {});
+				release();
+				await until(async () => !(await durable(session)).includes(gone));
+				assert.deepEqual(await durable(session), [added]);
+				assert.equal(_liveSubscriptionCount(session.id), 1, 'only the subscribe that landed stays live');
+			});
+
+			it('keeps a URI that a subscribe took over while restore was pruning it', async () => {
+				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+				const [flaky, slow] = ['flaky', 'slow'].map((p) => `https://app.test:9926/${p}`);
+				session.subscriptions = [flaky, slow];
+				await saveSession(session);
+				let release;
+				const gate = new Promise((resolve) => (release = resolve));
+				let flakyCalls = 0;
+				_setSubscribeImplForTest(async (path) => {
+					if (path === 'flaky') return ++flakyCalls === 1 ? null : makeIdleStream();
+					await gate;
+					return makeIdleStream();
+				});
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => flakyCalls === 1);
+				assert.deepEqual((await post(session, 84, 'resources/subscribe', flaky)).jsonBody.result, {});
+				release();
+				await until(() => _liveSubscriptionCount(session.id) === 2);
+				await turns();
+				assert.deepEqual(await durable(session), [flaky, slow]);
+			});
+
+			it('does not let a superseded GET prune the list the newer GET restored', async () => {
+				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+				const [flaky, slow] = ['flaky', 'slow'].map((p) => `https://app.test:9926/${p}`);
+				session.subscriptions = [flaky, slow];
+				await saveSession(session);
+				let release;
+				const gate = new Promise((resolve) => (release = resolve));
+				const calls = { flaky: 0, slow: 0 };
+				_setSubscribeImplForTest(async (path) => {
+					calls[path]++;
+					// the first GET is told `flaky` is gone; by the time the second asks, it is back
+					if (path === 'flaky') return calls.flaky === 1 ? null : makeIdleStream();
+					await gate;
+					return makeIdleStream();
+				});
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => calls.slow === 1);
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => calls.slow === 2);
+				release();
+				await until(() => _liveSubscriptionCount(session.id) === 2);
+				await turns();
+				assert.deepEqual(await durable(session), [flaky, slow]);
+			});
 		});
 
 		it('opens an SSE channel for an authenticated session', async () => {
