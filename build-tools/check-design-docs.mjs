@@ -22,7 +22,8 @@ export const CEILING_SLACK = KIB;
 export const CEILINGS_FILE = 'build-tools/design-docs-ceilings.json';
 const SKIP = new Set(['node_modules', 'dist', '.git', '.claude', 'fixtures']);
 const LITERALS = new Set(['true', 'false', 'null', 'undefined', 'this', 'super', 'NaN', 'Infinity']);
-const PATH = /(?:^|\/)[^/.][^/]*\.(?:[cm]?[jt]s|[jt]sx|json|md|ya?ml|sh)$/;
+const KNOWN_FILE = /(?:^|\/)[^/.][^/]*\.(?:[cm]?[jt]s|[jt]sx|json|md|ya?ml|sh)$/;
+const ANY_FILE = /(?:^|\/)[^/.][^/]*\.[A-Za-z0-9]+$/;
 const SOURCE_PATHSPECS = ['*.ts', '*.mts', '*.cts', '*.tsx', '*.js', '*.mjs', '*.cjs', '*.jsx'];
 const WORD = /#?[A-Za-z_$][\w$]*/g;
 const IDENTIFIER_PATH = /^#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*$/;
@@ -84,11 +85,13 @@ export function codeSpans(text) {
 export function classifySpan(span) {
 	const section = /^(?:\/\/\s*)?#section:\s*([\w-]+)$/.exec(span);
 	if (section) return { type: 'section', name: section[1] };
-	const located = /^(.+?)(?::(\d+(?:-\d+)?)|#L\d+(?:-L?\d+)?|:(#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*))$/.exec(
-		span
-	);
+	const located =
+		/^(.+?)(?::(\d+(?:-\d+)?)|#L\d+(?:-L?\d+)?|:(#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*)(?:\(.*\))?)$/.exec(span);
 	const file = located ? located[1] : span;
-	if (PATH.test(file) && !/[\s*?{}<>[\]`'"]|^[a-z]+:/.test(file))
+	// A dotted name such as `Table.subscribe` is a symbol unless its extension is a known one; with a
+	// directory or a `:` suffix, any extension marks a file.
+	const isFile = KNOWN_FILE.test(file) || ((file.includes('/') || located) && ANY_FILE.test(file));
+	if (isFile && !/[\s*?{}<>[\]`'"]|^[a-z]+:/.test(file))
 		return {
 			type: 'path',
 			path: file.replace(/^\.\//, ''),
@@ -116,7 +119,6 @@ function repoFiles(root) {
 }
 
 const exists = (root, file) => fs.existsSync(path.join(root, file));
-// The repository path `target` names from a doc in `docDir`: relative to that directory, else to the root.
 const resolveFrom = (root, docDir, target) => {
 	const fromDoc = path.posix.join(docDir, target);
 	if (exists(root, fromDoc)) return fromDoc;
@@ -155,8 +157,8 @@ function baseState(root, base) {
 	}
 	const changed = new Set(
 		[
-			...git(root, 'diff', '--name-only', '--no-renames', base, '--').split('\n'),
-			...git(root, 'ls-files', '--others', '--exclude-standard').split('\n'),
+			...git(root, 'diff', '--name-only', '-z', '--no-renames', base, '--').split('\0'),
+			...git(root, 'ls-files', '-z', '--others', '--exclude-standard').split('\0'),
 		].filter(Boolean)
 	);
 	let atBase = true;

@@ -57,6 +57,7 @@ interface Shape {
 }
 type Alias = string;
 export { LIMIT as MAX, plain as default2 };
+export * as ns from './other.ts';
 `;
 
 const outlineOf = (text, file = 'thing.ts') => outlineSource(file, text);
@@ -137,11 +138,16 @@ describe('build-tools/outline.mjs', function () {
 				'type Alias',
 				'export MAX',
 				'export default2',
+				'export ns',
 			]
 		);
 		assert.deepStrictEqual(
 			find(tree, 'Anonymous').children.map((child) => child.name),
 			['method']
+		);
+		assert.deepStrictEqual(
+			find(tree, 'Shape').children.map((child) => `${child.kind} ${child.name}`),
+			['method area']
 		);
 	});
 

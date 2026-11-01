@@ -109,6 +109,18 @@ export function outlineSource(fileName, text) {
 		return result;
 	}
 
+	function interfaceMembers(members) {
+		const result = [];
+		for (const member of members) {
+			const name = memberName(member.name);
+			if (name === undefined) continue;
+			if (result.at(-1)?.name === name) result.at(-1).end = line(member.end);
+			else if (ts.isMethodSignature(member)) result.push(symbol('method', name, member));
+			else if (ts.isPropertySignature(member)) result.push(symbol('property', name, member));
+		}
+		return result;
+	}
+
 	function objectMembers(object) {
 		const result = [];
 		for (const property of object.properties) {
@@ -148,7 +160,7 @@ export function outlineSource(fileName, text) {
 			} else if (ts.isVariableStatement(statement)) {
 				result.push(...variables(statement, context));
 			} else if (ts.isInterfaceDeclaration(statement)) {
-				result.push(symbol('interface', statement.name.text, statement));
+				result.push(symbol('interface', statement.name.text, statement, interfaceMembers(statement.members)));
 			} else if (ts.isTypeAliasDeclaration(statement)) {
 				result.push(symbol('type', statement.name.text, statement));
 			} else if (ts.isEnumDeclaration(statement)) {
@@ -158,13 +170,12 @@ export function outlineSource(fileName, text) {
 				const body =
 					statement.body && ts.isModuleBlock(statement.body) ? statements(statement.body.statements, context) : [];
 				result.push(symbol('namespace', statement.name.text, statement, body));
-			} else if (
-				ts.isExportDeclaration(statement) &&
-				statement.exportClause &&
-				ts.isNamedExports(statement.exportClause)
-			) {
-				for (const specifier of statement.exportClause.elements)
-					result.push(symbol('export', specifier.name.text, specifier));
+			} else if (ts.isExportDeclaration(statement) && statement.exportClause) {
+				if (ts.isNamespaceExport(statement.exportClause))
+					result.push(symbol('export', statement.exportClause.name.text, statement.exportClause));
+				else
+					for (const specifier of statement.exportClause.elements)
+						result.push(symbol('export', specifier.name.text, specifier));
 			}
 		});
 		return result;

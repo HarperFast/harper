@@ -479,6 +479,18 @@ describe('build-tools/check-design-docs.mjs', function () {
 				line: false,
 				symbol: ['createTables'],
 			});
+			assert.deepStrictEqual(classifySpan('store.ts:missing()'), {
+				type: 'path',
+				path: 'store.ts',
+				line: false,
+				symbol: ['missing'],
+			});
+			assert.deepStrictEqual(classifySpan('sub/missing.graphql'), {
+				type: 'path',
+				path: 'sub/missing.graphql',
+				line: false,
+			});
+			assert.deepStrictEqual(classifySpan('schema.graphql:5'), { type: 'path', path: 'schema.graphql', line: true });
 			assert.deepStrictEqual(classifySpan('TableResource._writeUpdate'), {
 				type: 'symbol',
 				parts: ['TableResource', '_writeUpdate'],
