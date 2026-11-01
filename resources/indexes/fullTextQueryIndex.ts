@@ -404,7 +404,6 @@ export class FullTextQueryIndex {
 					abortListener = () => reject(context.signal.reason ?? new Error('Full-text search aborted'));
 					if (context.signal.aborted) abortListener();
 					else context.signal.addEventListener('abort', abortListener, { once: true });
-					if (context.signal.aborted) abortListener();
 				})
 			: undefined;
 		let lease: Awaited<typeof acquisition>;
@@ -473,13 +472,12 @@ export class FullTextQueryIndex {
 						? Math.min(rawHitLimit, policy.maxResultsPerRequest)
 						: Math.min(searchWindow, rawHitLimit, policy.maxResultsPerRequest);
 			if (optionalCount) target = Math.max(target, pageTarget);
-			const requiredTarget = target;
-			if (!Number.isSafeInteger(requiredTarget) || requiredTarget < 0 || requiredTarget > rawHitLimit)
+			if (!Number.isSafeInteger(target) || target < 0 || target > rawHitLimit)
 				throw fullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxRawHitsPerRequest; reduce offset or limit, or increase the work budget',
 					400
 				);
-			if (requiredTarget > policy.maxResultsPerRequest)
+			if (target > policy.maxResultsPerRequest)
 				throw fullTextSearchLimitError(
 					'Full-text offset and limit exceed storage.fullText.maxResultsPerRequest; reduce offset or limit, or increase the result budget',
 					400
@@ -525,8 +523,10 @@ export class FullTextQueryIndex {
 										context.signal.addEventListener('abort', abortListener, { once: true });
 										if (context.signal.aborted) abortListener();
 									});
-								value = await withTimeout(abort ? Promise.race([pending, abort]) : pending, remaining, () =>
-									fullTextSearchLimitError('Full-text final page materialization budget exhausted', 503)
+								value = await withTimeout(
+									abort ? Promise.race([pending, abort]) : pending,
+									remaining,
+									() => new ServerError('Full-text final page materialization budget exhausted', 503)
 								);
 							}
 							options.assertTransactionActive?.();
@@ -768,7 +768,7 @@ export class FullTextQueryIndex {
 							if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 						}
 						if (!options.exhaustive && accepted.length >= target) {
-							if ((!bounded || optionalCount) && hitIndex + 1 < result.hits.length) moreMayExist = true;
+							if (!bounded && hitIndex + 1 < result.hits.length) moreMayExist = true;
 							break;
 						}
 					}

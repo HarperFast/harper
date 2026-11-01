@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { spawnSync, execFileSync } = require('node:child_process');
 const outputDirectory = process.env.FULLTEXT_QUALIFICATION_OUTPUT;
 assert(
@@ -13,7 +14,17 @@ const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, enc
 const cells = [];
 for (const width of [1, 32])
 	for (const concurrency of [1, 4]) for (const writes of [0, 10]) cells.push({ width, concurrency, writes });
-const selected = process.env.FULLTEXT_QUALIFICATION_SMOKE === '1' ? cells.slice(0, 1) : cells;
+const relevanceControl = process.env.FULLTEXT_QUALIFICATION_RELEVANCE_CONTROL === '1';
+const matrix = relevanceControl ? [0, 10].map((writes) => ({ width: 0, concurrency: 1, writes })) : cells;
+const selected = process.env.FULLTEXT_QUALIFICATION_SMOKE === '1' ? matrix.slice(0, 1) : matrix;
+const harnessSha256 = Object.fromEntries(
+	['fulltext-qualification.cjs', 'run-fulltext-qualification.cjs'].map((file) => [
+		file,
+		createHash('sha256')
+			.update(fs.readFileSync(path.join(__dirname, file)))
+			.digest('hex'),
+	])
+);
 const reports = [];
 for (const cell of selected) {
 	const name = `sort-${cell.width}-queries-${cell.concurrency}-writes-${cell.writes}`,
@@ -47,6 +58,10 @@ for (const cell of selected) {
 }
 fs.writeFileSync(
 	path.join(outputDirectory, 'report.json'),
-	JSON.stringify({ commit, complete: true, smoke: selected.length === 1, cells: reports }, null, 2) + '\n',
+	JSON.stringify(
+		{ commit, harnessSha256, complete: true, relevanceControl, smoke: selected.length === 1, cells: reports },
+		null,
+		2
+	) + '\n',
 	{ flag: 'wx' }
 );

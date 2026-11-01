@@ -27,7 +27,7 @@ describe('isolated native full-text qualification cell', () => {
 		const concurrency = Number(process.env.FULLTEXT_QUALIFICATION_CONCURRENCY || 1);
 		const writesPerSecond = Number(process.env.FULLTEXT_QUALIFICATION_WRITES || 0);
 		const durationMilliseconds = Number(process.env.FULLTEXT_QUALIFICATION_DURATION_MS || 60000);
-		assert([1, 32].includes(width));
+		assert([0, 1, 32].includes(width));
 		assert([1, 4].includes(concurrency));
 		assert([0, 10].includes(writesPerSecond));
 		assert(Number.isFinite(durationMilliseconds) && durationMilliseconds >= 1000);
@@ -83,7 +83,10 @@ describe('isolated native full-text qualification cell', () => {
 			await Product.put({ id: 'writer', title: 'unrelated publication', key31: -1 });
 			await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
 			let sort;
-			for (const attribute of [...Array.from({ length: width - 1 }, (_, i) => `key${i}`), 'key31'].reverse())
+			for (const attribute of (width
+				? [...Array.from({ length: width - 1 }, (_, i) => `key${i}`), 'key31']
+				: []
+			).reverse())
 				sort = { attribute, descending: false, ...(sort ? { next: sort } : {}) };
 			const target = {
 				conditions: [
@@ -95,7 +98,7 @@ describe('isolated native full-text qualification cell', () => {
 						waitForIndexMilliseconds: 30000,
 					},
 				],
-				sort,
+				...(sort ? { sort } : {}),
 				limit: 20,
 				select: ['id', 'key31'],
 			};
@@ -103,11 +106,18 @@ describe('isolated native full-text qualification cell', () => {
 				const started = performance.now(),
 					result = await Product.search(target),
 					values = [];
-				for await (const row of result) values.push(row.key31);
-				assert.deepStrictEqual(
-					values,
-					Array.from({ length: 20 }, (_, i) => i)
-				);
+				for await (const row of result) {
+					assert(/^\d{5}$/.test(row.id) && Number(row.id) < rows);
+					assert.strictEqual(row.key31, (Number(row.id) * 7919) % rows);
+					values.push(row.key31);
+				}
+				assert.strictEqual(values.length, 20);
+				assert.strictEqual(new Set(values).size, 20);
+				if (width)
+					assert.deepStrictEqual(
+						values,
+						Array.from({ length: 20 }, (_, i) => i)
+					);
 				return performance.now() - started;
 			};
 			const firstQueryMilliseconds = await query();
@@ -180,6 +190,9 @@ describe('isolated native full-text qualification cell', () => {
 				concurrency,
 				writesPerSecond,
 				durationMilliseconds,
+				measurementWindowMilliseconds: durationMilliseconds,
+				drainMilliseconds: Math.max(0, elapsedMilliseconds - durationMilliseconds),
+				queryFreshness: { maxIndexLagMilliseconds: 0, waitForIndexMilliseconds: 30000 },
 				elapsedMilliseconds,
 				firstQueryMilliseconds,
 				query: {

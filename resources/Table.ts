@@ -7711,36 +7711,44 @@ export function makeTable(options): TableResourceClass {
 			let prepareToRecord: any;
 			let prepareFullTextPage: FullTextSearchOptions['prepareResults'];
 			if (includeFullTextHighlights && exhaustiveFullText) {
-				const prepared = new Map<FullTextSearchEntry, { record: any; entry: any; select: (entry?: any) => any }>();
+				const prepared = new Map<FullTextSearchEntry, { record?: any; entry?: any; select: (entry?: any) => any }>();
+				const offsetRecord = Object.create(null);
 				prepareFullTextPage = async (entries, { complete, trace, materialize }) => {
 					if (!prepareToRecord) throw new ServerError('Full-text page preparation started before Table selection', 500);
 					const offset = target.offset || 0;
 					const end = target.limit === undefined ? entries.length : offset + target.limit;
-					for (let index = 0; index < entries.length && index < end;) {
-						const candidate = entries[index];
-						if (!prepared.has(candidate)) {
+					let live = 0;
+					for (let read = 0; read < entries.length; read++) {
+						if (read > 0 && (read & (COUNT_YIELD_INTERVAL - 1)) === 0)
+							await materialize(() => new Promise((resolve) => setImmediate(resolve)));
+						const candidate = entries[read];
+						if (live < end && !prepared.has(candidate)) {
 							freezeRecord(candidate.recordEntry.value);
 							const selected = await materialize(() =>
 								prepareToRecord.call({ isSync: false }, { ...candidate.recordEntry, $score: candidate.$score })
 							);
-							if (selected === SKIP) {
-								entries.splice(index, 1);
-								continue;
-							}
-							candidate.record = selected.record;
-							candidate.recordEntry = selected.entry;
-							prepared.set(candidate, selected);
+							if (selected === SKIP) continue;
+							if (typeof selected?.select === 'function') {
+								candidate.record = selected.record;
+								candidate.recordEntry = selected.entry;
+								prepared.set(candidate, selected);
+							} else prepared.set(candidate, { select: () => selected });
 						}
-						index++;
+						entries[live++] = candidate;
 					}
+					entries.length = live;
 					if (!complete && entries.length < end) return false;
 					const prefix = entries.slice(0, end);
-					await trace(prefix.slice(offset));
-					for (const candidate of prefix) {
+					await trace(prefix.slice(offset).filter((candidate) => prepared.get(candidate)?.entry));
+					for (let index = 0; index < prefix.length; index++) {
+						const candidate = prefix[index];
 						const selected = prepared.get(candidate)!;
-						candidate[FULL_TEXT_PREPARED_RECORD] = await materialize(() =>
-							selected.select({ ...selected.entry, $highlights: candidate.$highlights })
-						);
+						candidate[FULL_TEXT_PREPARED_RECORD] =
+							index < offset
+								? offsetRecord
+								: await materialize(() =>
+										selected.select({ ...selected.entry, $score: candidate.$score, $highlights: candidate.$highlights })
+									);
 					}
 					prepared.clear();
 					return entries.length >= end;
