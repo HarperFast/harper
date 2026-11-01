@@ -438,6 +438,81 @@ test('every helper-shaped Review-Coverage footer is enforceable', () => {
 	}
 });
 
+const CURRENT_HELPER_FOOTER = `<sub>Review-Coverage: authored=codex; ran=cursor-composer,claude,cursor-grok; late=cursor-grok:adjudicated; adjudicated=domain,domain(claude); blocked=gemini(auth); declined=muse; rounds=10; full=5 @ ${PIN}</sub>`;
+const QUALIFIED_ADJUDICATORS = ['domain(claude)', 'domain(codex)', 'domain,domain(claude),domain(codex)'];
+const adjudicatedFooter = (adjudicated, ran = 'claude,gemini', extra = '') =>
+	`<sub>Review-Coverage: authored=codex; ran=${ran}; adjudicated=${adjudicated}; ${extra}rounds=3; full=1 @ ${PIN}</sub>`;
+
+test('qualified helper adjudicators preserve outside-family enforcement without adding coverage', () => {
+	for (const adjudicated of QUALIFIED_ADJUDICATORS) {
+		const footer = adjudicatedFooter(adjudicated);
+		assert.strictEqual(coverageFooterProblem(footer), '', footer);
+		const result = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+		assert.strictEqual(result.pass, true, footer);
+		assert.strictEqual(result.count, 2, footer);
+		assert.deepStrictEqual(result.families, ['anthropic', 'google'], footer);
+
+		const short = evaluateCiCoverage(pr({ body: adjudicatedFooter(adjudicated, 'claude,codex') }), {
+			mode: 'enforce',
+		});
+		assert.strictEqual(short.pass, false, 'adjudication and the author family cannot satisfy the floor');
+		assert.strictEqual(short.count, 1);
+		assert.deepStrictEqual(short.families, ['anthropic']);
+	}
+});
+
+test('current helper history is enforceable through evaluation and the CLI', () => {
+	assert.strictEqual(coverageFooterProblem(CURRENT_HELPER_FOOTER), '');
+	const result = evaluateCiCoverage(pr({ body: CURRENT_HELPER_FOOTER }), { mode: 'enforce' });
+	assert.strictEqual(result.pass, true);
+	assert.strictEqual(result.count, 3);
+	assert.deepStrictEqual(result.families, ['anthropic', 'cursor', 'xai']);
+	const cli = runResult({ pull_request: pr({ body: CURRENT_HELPER_FOOTER }) }, '--mode', 'enforce');
+	assert.strictEqual(cli.status, 0, cli.stderr);
+	assert.doesNotMatch(cli.stderr, /::error::/);
+});
+
+test('an opposite-family adjudicator does not supplement a single outside review', () => {
+	const footer = `<sub>Review-Coverage: authored=claude; ran=gemini; adjudicated=domain(codex); rounds=1 @ ${PIN}</sub>`;
+	assert.strictEqual(coverageFooterProblem(footer), '');
+	const result = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+	assert.strictEqual(result.pass, false);
+	assert.strictEqual(result.count, 1);
+	assert.deepStrictEqual(result.families, ['google']);
+});
+
+test('qualified adjudication rejects unknown providers, repeated labels and execution as an outside leg', () => {
+	for (const adjudicated of [
+		'domain(gemini)',
+		'domain(unknown)',
+		'domain(claude),domain(claude)',
+		'domain(Claude)',
+		'domain()',
+		'domain(claude)(x)',
+		'domain (claude)',
+		'codex',
+	]) {
+		const footer = adjudicatedFooter(adjudicated);
+		assert.notStrictEqual(coverageFooterProblem(footer), '', footer);
+		assert.strictEqual(evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' }).pass, false, footer);
+	}
+	for (const domain of ['domain', 'domain(claude)', 'domain(codex)']) {
+		const footer = adjudicatedFooter('domain(claude)', `claude,gemini,${domain}`);
+		assert.notStrictEqual(coverageFooterProblem(footer), '', footer);
+		assert.strictEqual(evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' }).pass, false, footer);
+	}
+});
+
+test('a completed qualified adjudicator clears historical blocked domain evidence', () => {
+	for (const adjudicated of QUALIFIED_ADJUDICATORS) {
+		const footer = adjudicatedFooter(adjudicated, 'claude,gemini', 'blocked=domain(timeout); ');
+		const result = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+		assert.strictEqual(result.pass, true, footer);
+		assert.strictEqual(result.adjudicatorBlocked, '', footer);
+		assert.strictEqual(result.count, 2);
+	}
+});
+
 // The family each leg counts as in the helper's own floor (REVIEW_LEGS in skills-internal
 // prepush-policy.mjs, where `codex` and `claude` resolve to themselves).
 const HELPER_LEG_FAMILY = new Map([
