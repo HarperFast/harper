@@ -3,12 +3,16 @@
  * key model, latency stats). Run standalone with: node --test benchmarks/ycsb/
  */
 import { test } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, ok, notStrictEqual, rejects, throws } from 'node:assert';
 import {
 	WORKLOADS,
+	DENY_EVERY,
 	makeKeyChooser,
 	formatKey,
 	buildRecord,
+	linkTarget,
+	ownerOf,
+	recordReadsPerOp,
 	KeyState,
 	LatencyRecorder,
 	ZipfianGenerator,
@@ -16,6 +20,7 @@ import {
 	type OpExecutor,
 	type OperationType,
 } from './workload.mts';
+import { parseLink } from './app/dependentReads.mjs';
 
 function countingExecutor(counts: Record<string, number>): OpExecutor {
 	const bump = (k: string) => {
@@ -36,6 +41,12 @@ function countingExecutor(counts: Record<string, number>): OpExecutor {
 		},
 		async scan() {
 			bump('scan');
+		},
+		async inspect(_key, _caller, forbidden) {
+			bump(forbidden ? 'inspectForbidden' : 'inspect');
+		},
+		async chain(_key, hops) {
+			bump(`chain-${hops}`);
 		},
 	};
 }
@@ -162,7 +173,7 @@ test('runOperations honors the workload mix within tolerance', async () => {
 		distribution: 'uniform',
 		initialKeyCount: 1000,
 		keyWidth: 8,
-		shape: { fieldCount: 2, fieldLength: 8 },
+		shape: { fieldCount: 2, fieldLength: 100 },
 		maxScanLength: 10,
 	});
 	const opCount = 20000;
@@ -186,7 +197,119 @@ test('every declared workload has a normalized op mix', () => {
 		const total = Object.values(spec.mix).reduce((a, b) => a + (b ?? 0), 0);
 		ok(Math.abs(total - 1) < 1e-9, `${spec.name} mix sums to ${total}`);
 		for (const type of Object.keys(spec.mix) as OperationType[]) {
-			ok(['read', 'update', 'insert', 'scan', 'rmw'].includes(type), `bad op ${type}`);
+			ok(['read', 'update', 'insert', 'scan', 'rmw', 'inspect', 'chain'].includes(type), `bad op ${type}`);
 		}
 	}
+});
+
+test('links are fixed per key, never point to themselves, and favor the most requested keys', () => {
+	const keys = 50_000;
+	const linked = new Map<number, number>();
+	for (let index = 0; index < keys; index++) {
+		const target = linkTarget(index, keys);
+		strictEqual(target, linkTarget(index, keys));
+		ok(target >= 0 && target < keys && target !== index, `link ${index} -> ${target}`);
+		linked.set(target, (linked.get(target) ?? 0) + 1);
+	}
+	const requested = new Map<number, number>();
+	const chooser = makeKeyChooser('zipfian');
+	for (let i = 0; i < keys; i++) {
+		const index = chooser.next(keys);
+		requested.set(index, (requested.get(index) ?? 0) + 1);
+	}
+	const top = (counts: Map<number, number>, n: number) =>
+		[...counts.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, n)
+			.map(([index]) => index);
+	// Rank 0 of the scrambled zipfian draws ~3.8% (1 / zeta(10^10, 0.99)) in both.
+	strictEqual(top(linked, 1)[0], top(requested, 1)[0]);
+	const hottestShare = linked.get(top(linked, 1)[0])! / keys;
+	ok(hottestShare > 0.03 && hottestShare < 0.047, `hottest key holds ${hottestShare} of links`);
+	const shared = top(linked, 20).filter((index) => top(requested, 20).includes(index)).length;
+	ok(shared >= 15, `only ${shared} of the 20 most linked keys are among the 20 most requested`);
+});
+
+test('every written record carries its own link and owner, padded to the field length', async () => {
+	const keyWidth = 10;
+	const records = 1000;
+	const record = buildRecord({ fieldCount: 2, fieldLength: 100 }, { index: 42, keyCount: records, keyWidth });
+	strictEqual(record.field0.length, 100);
+	strictEqual(parseLink({ id: 'x', ...record }).next, formatKey(linkTarget(42, records), keyWidth));
+	strictEqual(parseLink({ id: 'x', ...record }).owner, 'owner02');
+	throws(() => buildRecord({ fieldCount: 1, fieldLength: 10 }, { index: 0, keyCount: records, keyWidth }), /link/);
+
+	const writes: [string, Record<string, string>][] = [];
+	const capture = (key: string, value: Record<string, string>) => {
+		writes.push([key, value]);
+		return Promise.resolve();
+	};
+	const keys = new KeyState({
+		distribution: 'zipfian',
+		initialKeyCount: records,
+		keyWidth,
+		shape: { fieldCount: 2, fieldLength: 100 },
+		maxScanLength: 10,
+	});
+	await runOperations({
+		opCount: 300,
+		concurrency: 4,
+		mix: { update: 0.5, rmw: 0.5 },
+		executor: { ...countingExecutor({}), update: capture, readModifyWrite: capture },
+		keys,
+	});
+	strictEqual(writes.length, 300);
+	for (const [key, value] of writes) {
+		const index = Number(key.slice(4));
+		const link = parseLink({ id: key, ...value });
+		strictEqual(link.next, formatKey(linkTarget(index, records), keyWidth));
+		strictEqual(link.owner, ownerOf(index));
+	}
+	notStrictEqual(keys.record(7).field0, keys.record(7).field0, 'padding is fresh on every write');
+});
+
+test('inspect sends one request in DENY_EVERY as another owner; chain-N sends N hops', async () => {
+	const calls: { key: string; caller: string; forbidden: boolean }[] = [];
+	const counts: Record<string, number> = {};
+	const keys = new KeyState({
+		distribution: 'zipfian',
+		initialKeyCount: 1000,
+		keyWidth: 10,
+		shape: { fieldCount: 2, fieldLength: 100 },
+		maxScanLength: 10,
+	});
+	await runOperations({
+		opCount: 400,
+		concurrency: 4,
+		mix: WORKLOADS.inspect.mix,
+		executor: {
+			...countingExecutor(counts),
+			async inspect(key, caller, forbidden) {
+				calls.push({ key, caller, forbidden });
+			},
+		},
+		keys,
+	});
+	strictEqual(calls.filter((c) => c.forbidden).length, 400 / DENY_EVERY);
+	for (const { key, caller, forbidden } of calls) {
+		strictEqual(caller === ownerOf(Number(key.slice(4))), !forbidden, `${key} by ${caller}`);
+	}
+
+	for (const hops of [1, 2, 4]) {
+		const spec = WORKLOADS[`chain-${hops}`];
+		strictEqual(recordReadsPerOp(spec), hops + 1);
+		await runOperations({
+			opCount: 50,
+			concurrency: 4,
+			mix: spec.mix,
+			chainHops: spec.chainHops,
+			executor: countingExecutor(counts),
+			keys,
+		});
+		strictEqual(counts[`chain-${hops}`], 50);
+	}
+	await rejects(
+		runOperations({ opCount: 1, concurrency: 1, mix: { chain: 1 }, executor: countingExecutor(counts), keys }),
+		/chainHops/
+	);
 });

@@ -12,7 +12,7 @@ import { checkOwnCgroup, foreignPids, isInstanceMonitor } from './resources.mts'
 import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
 import { classify, pipelineLayer, rocksdbPart } from './profile-report.mts';
-import { TARGETS, parseTargets, writeJsonAtomic, MEMORY_BUDGET_BYTES } from './run-compare.mts';
+import { TARGETS, parseTargets, writeJsonAtomic, MEMORY_BUDGET_BYTES, primaryLatency } from './run-compare.mts';
 import { SWEEP_STACK_MEMORY, WARM_STACK_MEMORY } from './pgStack.mts';
 
 test('dataset ratios size the record count from the logical payload', () => {
@@ -114,13 +114,23 @@ test("the host gate's cgroup must hold only this run, its ancestors and descenda
 });
 
 test('cells name ratio, workload and target', () => {
-	deepStrictEqual(parseCells('0.5:B:harper-uws, 8:B:pg-redis'), [
+	deepStrictEqual(parseCells('0.5:B:harper-uws, 8:B:pg-redis, 2:inspect:harper-uws, 2:chain-4:pg-redis'), [
 		{ ratio: 0.5, workload: 'B', target: 'harper-uws' },
 		{ ratio: 8, workload: 'B', target: 'pg-redis' },
+		{ ratio: 2, workload: 'inspect', target: 'harper-uws' },
+		{ ratio: 2, workload: 'chain-4', target: 'pg-redis' },
 	]);
 	throws(() => parseCells('0.5:B'), /ratio:workload:target/);
 	throws(() => parseCells('0.5:Z:harper'), /unknown workload/);
 	throws(() => parseCells('0.5:B:redis'), /unknown target/);
+});
+
+test('primaryLatency selects read, inspect, chain, scan or the first available op bucket', () => {
+	const stat = (p50: number) => ({ count: 1, min: p50, p50, p95: p50, p99: p50, p999: p50, max: p50, mean: p50 });
+	const base = { name: 'x', ops: 1, errors: 0, elapsedMs: 1, throughput: 1 };
+	strictEqual(primaryLatency({ ...base, latency: { inspect: stat(1.2) } })?.p50, 1.2);
+	strictEqual(primaryLatency({ ...base, latency: { chain: stat(2.4) } })?.p50, 2.4);
+	strictEqual(primaryLatency({ ...base, latency: { rmw: stat(3.6) } })?.p50, 3.6);
 });
 
 test('perf stat output is read per cgroup', () => {

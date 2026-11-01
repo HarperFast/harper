@@ -87,7 +87,11 @@ export function parseOptions(argv: string[]): ParsedOptions {
 
 	const opsPerWorkload = values.ops ? Number(values.ops) : preset.opsPerWorkload;
 	const concurrency = values.concurrency ? Number(values.concurrency) : preset.concurrency;
-	const workloads = (values.workloads as string).split(',').map((w) => w.trim().toUpperCase());
+	// A–F are case-insensitive; the dependent-read workloads are lowercase.
+	const workloads = (values.workloads as string)
+		.split(',')
+		.map((w) => w.trim())
+		.map((w) => (WORKLOADS[w] ? w : w.toUpperCase()));
 	for (const w of workloads) {
 		if (!WORKLOADS[w])
 			throw new Error(`unknown workload "${w}" (expected one of ${Object.keys(WORKLOADS).join(', ')})`);
@@ -202,6 +206,7 @@ export async function runBenchmark(
 		const loadKeys = new KeyState({
 			distribution: 'uniform',
 			initialKeyCount: 0,
+			linkKeyCount: config.records,
 			keyWidth: width,
 			shape,
 			maxScanLength: config.maxScanLength,
@@ -267,6 +272,7 @@ export async function runBenchmark(
 				const keys = new KeyState({
 					distribution,
 					initialKeyCount: keyCount,
+					linkKeyCount: config.records,
 					keyWidth: width,
 					shape,
 					maxScanLength: config.maxScanLength,
@@ -276,6 +282,7 @@ export async function runBenchmark(
 					opCount: config.opsPerWorkload,
 					concurrency: config.concurrency,
 					mix: spec.mix,
+					chainHops: spec.chainHops,
 					executor,
 					keys,
 					onProgress: (done, total) => log(`  ${repLabel}: ${done.toLocaleString()} / ${total.toLocaleString()}`),

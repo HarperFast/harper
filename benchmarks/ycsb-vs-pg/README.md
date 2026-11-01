@@ -188,6 +188,38 @@ generator sends the same `Authorization: Bearer <token>` header to both:
 Before loading, each target must answer a request without the header with 401 or 403, and
 the same request with it, or the sample fails.
 
+The `inspect` caller is the verified principal: the harness adds 20 Harper users `owner00`..`owner19`
+(same role) with their own operation tokens, and mints 20 HS256 tokens with those subjects for
+Fastify; an inspect request carries its caller's token. Under `--auth=none` both sides take the
+caller from an `x-caller` header instead.
+
+## Dependent reads: `inspect`, `chain-N`, `F`
+
+The read workloads above return a record as stored, the stack's best case: Fastify sends Redis's
+JSON bytes without parsing them. These workloads make the application read a record before it can
+answer, with the same code on both sides (`../ycsb/app/dependentReads.mjs`; Harper's
+`../ycsb/app/resources.js` and the Fastify routes differ only in how they fetch a record):
+
+- **`inspect`**: read the record, answer 403 unless the caller owns it (one request in 20 comes
+  from another owner), otherwise a projection of four fields.
+- **`chain-N`** (N = 1, 2, 4): read the record, take the next key from its `field0`, read that,
+  N times; one response with a projection of all N + 1 records. Each read waits for the one
+  before. Harper reads through `tables.usertable.get` inside the request's transaction; Fastify
+  reads each record cache-aside (Redis `GET` and `JSON.parse`; a miss reads Postgres and fills
+  Redis, as the read route does).
+- **`F`**: YCSB F as defined, a client-side `GET` then `PUT` of the record (non-atomic).
+
+The link graph is the same on every target and rep (see `../ycsb/README.md`). Before measuring an
+`inspect` or `chain` sample, the harness checks the target: three chains of 4 hops must match the
+links computed independently, inspect must answer the owner with the projection and another owner
+with 403, a record without a link must answer 500 and leave the server serving, and under
+`--auth=token` neither route may answer an anonymous request.
+
+What this does and does not claim. Reads that do not depend on each other could be batched
+(pipelining, `MGET`), and a stack designer could denormalize or cache the composed response; those
+are outside these workloads. The claim is about reads that depend on each other and on record
+contents.
+
 ## Dataset larger than memory (`memory-sweep.mts`)
 
 A Redis holding the whole dataset is the cache-aside stack's upper bound. The sweep
@@ -206,12 +238,13 @@ dataset sized as a multiple of the budget (`--ratios`, logical payload of the
   wrapper, in Postgres' container entrypoint — so the copy's page cache is
   charged to the sample, not to a copier outside the budget. All targets of a
   size read byte-identical, compacted data. Redis starts empty.
-- **Warmup to a plateau, then one measured run.** 1M-op chunks of the workload's
-  own zipfian mix until the last three agree (throughput within 5%, and for
-  `pg-redis` the Redis hit rate within 0.5 points), up to `--warmup-max-chunks`.
-  A sample that hits the ceiling is reported with `!` and is not a settled
-  result. B's measured run is bounded (1M ops), not a write steady state;
-  Postgres checkpoints in the window are recorded.
+- **Warmup to a plateau, then one measured run.** Chunks of 1M record reads
+  (`--warmup-chunk`; a `chain-4` chunk is 200k ops) of the workload's own zipfian
+  mix until the last three agree (throughput within 5%, and for `pg-redis` the
+  Redis hit rate within 0.5 points), up to `--warmup-max-chunks`. A sample that
+  hits the ceiling is reported with `!` and is not a settled result. The measured
+  run is 1M record reads too. B's is bounded, not a write steady state; Postgres
+  checkpoints in the window are recorded.
 - **No hit-rate gate.** The Redis hit rate per sample is the output. Harper's
   record-cache hit rate is not observable without core changes.
 - **A failed sample** (errors, OOM kill, crash) is recorded with its phase and the

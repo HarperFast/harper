@@ -7,6 +7,11 @@
  * runner. The actual request transport is supplied as an `OpExecutor` (see
  * restClient.mts), so the same workloads drive a single node or a cluster.
  *
+ * Beyond A–F, three application workloads read a record's contents before they can answer
+ * (benchmarks/ycsb/app/dependentReads.mjs): `inspect` (row-level owner check and a projection) and
+ * `chain-N` (N dependent reads following each record's link). Every record carries that link and its
+ * owner at the start of `field0` (see `buildRecord`).
+ *
  * The distribution generators are ports of the reference YCSB Java generators
  * (Apache-2.0): ZipfianGenerator + ScrambledZipfianGenerator for hotspot
  * skew, and a Latest generator for read-recently-inserted workloads.
@@ -14,7 +19,7 @@
 
 export type DistributionName = 'uniform' | 'zipfian' | 'latest';
 
-export type OperationType = 'read' | 'update' | 'insert' | 'scan' | 'rmw';
+export type OperationType = 'read' | 'update' | 'insert' | 'scan' | 'rmw' | 'inspect' | 'chain';
 
 /** Proportion of each operation type within a workload (values sum to 1). */
 export type OpMix = Partial<Record<OperationType, number>>;
@@ -25,9 +30,16 @@ export interface WorkloadSpec {
 	mix: OpMix;
 	/** Default request distribution; overridable from the CLI. */
 	distribution: DistributionName;
+	/** `chain` ops: links followed per request (hops + 1 record reads). */
+	chainHops?: number;
 }
 
-/** The canonical YCSB core workloads. */
+/** Records have row-level owners `owner00`..`owner19`, by key index. */
+export const OWNER_COUNT = 20;
+/** One `inspect` in DENY_EVERY comes from a caller who does not own the record. */
+export const DENY_EVERY = 20;
+
+/** The canonical YCSB core workloads, then the dependent-read ones. */
 export const WORKLOADS: Record<string, WorkloadSpec> = {
 	A: {
 		name: 'A',
@@ -65,7 +77,30 @@ export const WORKLOADS: Record<string, WorkloadSpec> = {
 		mix: { read: 0.5, rmw: 0.5 },
 		distribution: 'zipfian',
 	},
+	inspect: {
+		name: 'inspect',
+		description: `Fetch and inspect (owner check, ${100 / DENY_EVERY}% denied with 403, projection)`,
+		mix: { inspect: 1.0 },
+		distribution: 'zipfian',
+	},
+	...Object.fromEntries(
+		[1, 2, 4].map((hops) => [
+			`chain-${hops}`,
+			{
+				name: `chain-${hops}`,
+				description: `Dependent reads (${hops + 1} records, each key read from the one before)`,
+				mix: { chain: 1.0 },
+				distribution: 'zipfian' as const,
+				chainHops: hops,
+			},
+		])
+	),
 };
+
+/** Record reads one op of the workload makes on average, for sizing runs by reads rather than ops. */
+export function recordReadsPerOp(spec: WorkloadSpec): number {
+	return 1 + (spec.chainHops ?? 0);
+}
 
 // ---------------------------------------------------------------------------
 // Key distributions (ports of the reference YCSB generators)
@@ -105,7 +140,11 @@ export class ZipfianGenerator {
 			this.countForZeta = itemCount;
 			this.eta = (1 - Math.pow(2 / itemCount, 1 - this.theta)) / (1 - this.zeta2theta / this.zetan);
 		}
-		const u = Math.random();
+		return this.fromUniform(Math.random(), itemCount);
+	}
+
+	/** The draw for uniform `u` in [0, 1); `nextLong` with the randomness supplied. */
+	fromUniform(u: number, itemCount: number): number {
 		const uz = u * this.zetan;
 		if (uz < 1) return this.base;
 		if (uz < 1 + Math.pow(0.5, this.theta)) return this.base + 1;
@@ -140,8 +179,11 @@ export class ScrambledZipfianGenerator {
 
 	/** Returns an index in [0, itemCount). */
 	next(itemCount: number): number {
-		const raw = this.gen.nextLong(SCRAMBLE_ITEM_COUNT);
-		return Number(fnv64(raw) % BigInt(itemCount));
+		return this.fromUniform(Math.random(), itemCount);
+	}
+
+	fromUniform(u: number, itemCount: number): number {
+		return Number(fnv64(this.gen.fromUniform(u, SCRAMBLE_ITEM_COUNT)) % BigInt(itemCount));
 	}
 }
 
@@ -234,10 +276,62 @@ export interface RecordShape {
 	fieldLength: number;
 }
 
-export function buildRecord(shape: RecordShape): Record<string, string> {
+export function ownerOf(index: number): string {
+	return 'owner' + String(index % OWNER_COUNT).padStart(2, '0');
+}
+
+const linkChooser = new ScrambledZipfianGenerator();
+const LINK_SEED = 0x5ca1ab1e;
+
+function mix32(value: number): number {
+	let x = value | 0;
+	x ^= x >>> 16;
+	x = Math.imul(x, 0x7feb352d);
+	x ^= x >>> 15;
+	x = Math.imul(x, 0x846ca68b);
+	x ^= x >>> 16;
+	return x >>> 0;
+}
+
+/**
+ * The key index record `index` links to, out of `keyCount` loaded keys: a scrambled-zipfian draw (the
+ * request distribution's popularity, so the most requested keys are also the most linked-to) taken
+ * from a hash of the index instead of Math.random, so every engine, rep and rewrite of the record
+ * holds the same link. Never the record itself.
+ */
+export function linkTarget(index: number, keyCount: number): number {
+	for (let attempt = 0; ; attempt++) {
+		const high = mix32(index ^ mix32(LINK_SEED + attempt));
+		const low = mix32(high ^ mix32(index + 0x9e3779b9));
+		const u = (high * 0x200000 + (low >>> 11)) / 0x20000000000000;
+		const target = linkChooser.fromUniform(u, keyCount);
+		if (target !== index || keyCount === 1) return target;
+	}
+}
+
+/** Where a record's link points: `index` and the loaded keyspace its links stay within. */
+export interface RecordLink {
+	index: number;
+	keyCount: number;
+	keyWidth: number;
+}
+
+/** `<next key>:<owner>:`, the start of `field0`; parsed by app/dependentReads.mjs `parseLink`. */
+export function linkPrefix(link: RecordLink): string {
+	return `${formatKey(linkTarget(link.index, link.keyCount), link.keyWidth)}:${ownerOf(link.index)}:`;
+}
+
+export function buildRecord(shape: RecordShape, link?: RecordLink): Record<string, string> {
 	const record: Record<string, string> = {};
 	for (let i = 0; i < shape.fieldCount; i++) {
 		record['field' + i] = randomValue(shape.fieldLength);
+	}
+	if (link) {
+		const prefix = linkPrefix(link);
+		if (prefix.length > shape.fieldLength) {
+			throw new Error(`field-length ${shape.fieldLength} cannot hold the ${prefix.length}-char link ${prefix}`);
+		}
+		record.field0 = prefix + record.field0.slice(prefix.length);
 	}
 	return record;
 }
@@ -259,6 +353,10 @@ export interface OpExecutor {
 	readModifyWrite(key: string, record: Record<string, string>): Promise<void>;
 	/** Scan up to `count` records starting at `startKey` (inclusive). */
 	scan(startKey: string, count: number): Promise<void>;
+	/** GET /inspect/<key> as `caller`; must answer 403 when `forbidden`, 200 otherwise. */
+	inspect(key: string, caller: string, forbidden: boolean): Promise<void>;
+	/** GET /chain/<key>?hops=<hops>. */
+	chain(key: string, hops: number): Promise<void>;
 }
 
 /** Live keyspace state shared by the workers driving a single workload run. */
@@ -273,10 +371,14 @@ export class KeyState {
 	private readableCount: number;
 	private insertCursor: number;
 	private readonly pendingAcks = new Set<number>();
+	private readonly linkKeyCount: number;
+	private inspects = 0;
 
 	constructor(opts: {
 		distribution: DistributionName;
 		initialKeyCount: number;
+		/** The loaded keyspace every written record links into; defaults to `initialKeyCount`. */
+		linkKeyCount?: number;
 		keyWidth: number;
 		shape: RecordShape;
 		maxScanLength: number;
@@ -284,16 +386,25 @@ export class KeyState {
 		this.chooser = makeKeyChooser(opts.distribution);
 		this.readableCount = opts.initialKeyCount;
 		this.insertCursor = opts.initialKeyCount;
+		this.linkKeyCount = opts.linkKeyCount ?? opts.initialKeyCount;
 		this.width = opts.keyWidth;
 		this.shape = opts.shape;
 		this.maxScanLength = opts.maxScanLength;
 	}
 
-	existingKey(): string {
+	existingIndex(): number {
 		if (this.readableCount === 0) {
 			throw new Error('no readable keys — the load phase inserted/acknowledged 0 records');
 		}
-		return formatKey(this.chooser.next(this.readableCount), this.width);
+		return this.chooser.next(this.readableCount);
+	}
+
+	existingKey(): string {
+		return this.key(this.existingIndex());
+	}
+
+	key(index: number): string {
+		return formatKey(index, this.width);
 	}
 
 	/**
@@ -320,8 +431,15 @@ export class KeyState {
 		}
 	}
 
-	record(): Record<string, string> {
-		return buildRecord(this.shape);
+	/** A fresh value for key `index`, keeping the record's link and owner. */
+	record(index: number): Record<string, string> {
+		return buildRecord(this.shape, { index, keyCount: this.linkKeyCount, keyWidth: this.width });
+	}
+
+	/** Who sends the next inspect of key `index`: its owner, except one in DENY_EVERY from another owner. */
+	inspectCaller(index: number): { caller: string; forbidden: boolean } {
+		const forbidden = ++this.inspects % DENY_EVERY === 0;
+		return { caller: ownerOf(forbidden ? index + 1 : index), forbidden };
 	}
 
 	scanLength(): number {
@@ -356,18 +474,22 @@ function pickOp(picker: WeightedOp[]): OperationType {
 	return picker[picker.length - 1].type;
 }
 
-async function executeOp(type: OperationType, executor: OpExecutor, keys: KeyState): Promise<void> {
+async function executeOp(type: OperationType, executor: OpExecutor, keys: KeyState, chainHops: number): Promise<void> {
 	switch (type) {
 		case 'read':
 			return executor.read(keys.existingKey());
-		case 'update':
-			return executor.update(keys.existingKey(), keys.record());
-		case 'rmw':
-			return executor.readModifyWrite(keys.existingKey(), keys.record());
+		case 'update': {
+			const index = keys.existingIndex();
+			return executor.update(keys.key(index), keys.record(index));
+		}
+		case 'rmw': {
+			const index = keys.existingIndex();
+			return executor.readModifyWrite(keys.key(index), keys.record(index));
+		}
 		case 'insert': {
 			const { index, key } = keys.nextInsert();
 			try {
-				await executor.insert(key, keys.record());
+				await executor.insert(key, keys.record(index));
 			} finally {
 				// Always advance the frontier, even on failure — otherwise one failed insert
 				// permanently stalls readableCount and leaks pendingAcks. A failed key may then
@@ -378,6 +500,13 @@ async function executeOp(type: OperationType, executor: OpExecutor, keys: KeySta
 		}
 		case 'scan':
 			return executor.scan(keys.existingKey(), keys.scanLength());
+		case 'inspect': {
+			const index = keys.existingIndex();
+			const { caller, forbidden } = keys.inspectCaller(index);
+			return executor.inspect(keys.key(index), caller, forbidden);
+		}
+		case 'chain':
+			return executor.chain(keys.existingKey(), chainHops);
 	}
 }
 
@@ -461,6 +590,8 @@ export interface RunOptions {
 	mix: OpMix;
 	executor: OpExecutor;
 	keys: KeyState;
+	/** Required when the mix has `chain` ops. */
+	chainHops?: number;
 	onProgress?: (done: number, total: number) => void;
 	progressEvery?: number;
 }
@@ -472,6 +603,8 @@ export interface RunOptions {
  */
 export async function runOperations(options: RunOptions): Promise<PhaseResult> {
 	const { opCount, concurrency, mix, executor, keys } = options;
+	if (mix.chain && options.chainHops === undefined) throw new Error('a mix with chain ops needs chainHops');
+	const chainHops = options.chainHops ?? 0;
 	const picker = buildPicker(mix);
 	const recorder = new LatencyRecorder();
 	const progressEvery = options.progressEvery ?? Math.max(1, Math.floor(opCount / 10));
@@ -484,7 +617,7 @@ export async function runOperations(options: RunOptions): Promise<PhaseResult> {
 			const type = pickOp(picker);
 			const start = performance.now();
 			try {
-				await executeOp(type, executor, keys);
+				await executeOp(type, executor, keys, chainHops);
 				recorder.record(type, performance.now() - start);
 			} catch {
 				recorder.errors++;

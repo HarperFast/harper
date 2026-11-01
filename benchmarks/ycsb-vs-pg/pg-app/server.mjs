@@ -6,6 +6,8 @@
  *   GET /usertable/<key>                    -> read
  *   PUT /usertable/<key>                    -> insert / update (full record)
  *   GET /usertable/?id>=<key>&limit(<n>)    -> scan
+ *   GET /inspect/<key>                      -> 403 unless the caller owns the record, else a projection
+ *   GET /chain/<key>?hops=<n>               -> n + 1 dependent reads (../../ycsb/app/dependentReads.mjs)
  *
  * Reads are cache-aside (Redis hit returns the stored JSON verbatim, a miss
  * falls through to Postgres and populates the cache). Writes are write-through:
@@ -19,7 +21,8 @@
  *
  * With JWT_SECRET set, every request must carry `Authorization: Bearer <JWT>`,
  * verified with @fastify/jwt (fast-jwt, HS256, its default: no verified-token
- * cache) in an onRequest hook, and is rejected with 401 otherwise.
+ * cache) in an onRequest hook, and is rejected with 401 otherwise. The inspect
+ * caller is then the token's subject; without JWT_SECRET it is the `x-caller` header.
  */
 import cluster from 'node:cluster';
 import { availableParallelism } from 'node:os';
@@ -27,6 +30,7 @@ import Fastify from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import pg from 'pg';
 import Redis from 'ioredis';
+import { chainRecords, inspectRecord, parseHops } from '../../ycsb/app/dependentReads.mjs';
 
 // 9940, not 9925/9926: those are the ports the integration-test framework probes
 // when allocating a loopback address for the Harper side of the comparison.
@@ -111,6 +115,34 @@ async function startWorker() {
 		if (!match) return reply.send([]); // readiness probe hits the bare path
 		const { rows } = await prepared('scan_records', SCAN_SQL, [match[1], Number(match[2])]);
 		return reply.send(rows);
+	});
+
+	// The dependent-read routes need each record's contents, so a Redis hit is parsed here
+	// (the read route returns the cached bytes as is); misses fill the cache like the read route.
+	async function fetchRecord(id) {
+		if (redis) {
+			const cached = await redis.get(id);
+			if (cached) return JSON.parse(cached);
+		}
+		const { rows } = await prepared('select_record', SELECT_SQL, [id]);
+		if (rows.length === 0) return undefined;
+		if (redis) await redis.set(id, JSON.stringify(rows[0]));
+		return rows[0];
+	}
+	const callerOf = (request) => (JWT_SECRET ? request.user.sub : request.headers['x-caller']);
+
+	app.get('/inspect/:id', async (request, reply) => {
+		const record = await fetchRecord(request.params.id);
+		if (!record) return reply.code(404).send({ error: 'not found' });
+		const { status, body } = inspectRecord(record, callerOf(request));
+		return reply.code(status).send(body);
+	});
+
+	app.get('/chain/:id', async (request, reply) => {
+		const hops = parseHops(request.query.hops);
+		if (hops === undefined) return reply.code(400).send({ error: 'hops must be an integer in [0, 8]' });
+		const { status, body } = await chainRecords(fetchRecord, request.params.id, hops);
+		return reply.code(status).send(body);
 	});
 
 	await app.listen({ port: PORT, host: '127.0.0.1', reusePort: true });

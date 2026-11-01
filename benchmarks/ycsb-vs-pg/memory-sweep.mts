@@ -19,7 +19,7 @@ import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
-import { WORKLOADS, formatKey } from '../ycsb/workload.mts';
+import { WORKLOADS, formatKey, recordReadsPerOp } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
@@ -38,6 +38,7 @@ import {
 	MEMORY_BUDGET_BYTES,
 	RESULTS_DIR,
 	argValue,
+	assertDependentReads,
 	assertNoErrors,
 	createSession,
 	measureWindow,
@@ -51,6 +52,7 @@ import {
 	type Running,
 	type Session,
 	type TargetName,
+	usesDependentReads,
 } from './run-compare.mts';
 
 const exec = promisify(execFile);
@@ -235,6 +237,7 @@ function driverConfig(session: Session, running: Running, keyWidth: number, load
 		maxScanLength: config.maxScanLength,
 		load,
 		authorization: running.authorization,
+		callerAuthorizations: running.callerAuthorizations,
 	};
 }
 
@@ -318,13 +321,17 @@ async function measureSweepSample(
 	keyWidth: number,
 	sample: SweepSample,
 	{
-		chunkOps,
+		chunkReads,
 		maxChunks,
-		measureOps,
+		measureReads,
 		quietCores,
 		noisyRetries,
-	}: { chunkOps: number; maxChunks: number; measureOps: number; quietCores: number; noisyRetries: number }
+	}: { chunkReads: number; maxChunks: number; measureReads: number; quietCores: number; noisyRetries: number }
 ): Promise<void> {
+	// Sized in record reads, so a chain-4 chunk warms the caches as much as a C chunk.
+	const readsPerOp = recordReadsPerOp(WORKLOADS[workload]);
+	const chunkOps = Math.ceil(chunkReads / readsPerOp);
+	const measureOps = Math.ceil(measureReads / readsPerOp);
 	let phase = 'start';
 	const startedAt = Date.now();
 	const spec = TARGETS[target];
@@ -343,6 +350,9 @@ async function measureSweepSample(
 				const driver = await startDriver(driverConfig(session, running, keyWidth, false));
 				try {
 					await verifyRestoredData(running, session, keyWidth);
+					if (usesDependentReads(WORKLOADS[workload])) {
+						await assertDependentReads(running, session.options.config, keyWidth);
+					}
 					phase = 'quiesce';
 					const { waitedMs, quiet } = await waitForQuiet(running.targets, { maxMs: 10 * 60_000 });
 					sample.quiesceMs = waitedMs;
@@ -409,7 +419,12 @@ async function measureSweepSample(
 	}
 }
 
-function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryBytes: number, chunkOps: number): void {
+function printSweep(
+	points: PointResult[],
+	samples: SweepSample[],
+	harperMemoryBytes: number,
+	chunkReads: number
+): void {
 	const out: string[] = ['', '='.repeat(150)];
 	out.push(
 		`Budget per target: 4 cores, ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB (hard caps, page cache included, swap off)` +
@@ -419,7 +434,7 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 		[
 			'ratio'.padEnd(6),
 			'records'.padStart(11),
-			' wl'.padEnd(4),
+			' wl'.padEnd(9),
 			'target'.padEnd(18),
 			'rep'.padStart(4),
 			'ops/s'.padStart(8),
@@ -445,7 +460,7 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 				[
 					String(point.ratio).padEnd(6),
 					point.records.toLocaleString().padStart(11),
-					` ${s.workload}`.padEnd(4),
+					` ${s.workload}`.padEnd(9),
 					s.target.padEnd(18),
 					String(s.rep + 1).padStart(4),
 					(m ? m.result.throughput.toFixed(0) : 'FAILED').padStart(8),
@@ -466,7 +481,7 @@ function printSweep(points: PointResult[], samples: SweepSample[], harperMemoryB
 		}
 	}
 	out.push(
-		`warmup = ${(chunkOps / 1e6).toFixed(1)}M-op chunks until 3 agree; ` +
+		`warmup = chunks of ${(chunkReads / 1e6).toFixed(1)}M record reads until 3 agree; ` +
 			"'!' = not settled: no plateau within the chunk ceiling, or the snapshot or restored target never got quiet"
 	);
 	const cells = new Map<string, SweepSample[]>();
@@ -523,13 +538,13 @@ async function main(): Promise<void> {
 	for (const ratio of sizedRatios) {
 		if (!ratios.includes(ratio)) throw new Error(`--sized-ratios: ${ratio} is not one of --ratios ${ratios.join(',')}`);
 	}
-	const chunkOps = Number(argValue(argv, '--warmup-chunk') ?? 1_000_000);
+	const chunkReads = Number(argValue(argv, '--warmup-chunk') ?? 1_000_000);
 	const maxChunks = Number(argValue(argv, '--warmup-max-chunks') ?? 12);
 	// The rest of the host, in cores busy over 30 s, and how long to wait for it.
 	const hostQuietCores = Number(argValue(argv, '--host-quiet-cores') ?? 1);
 	const hostQuietMaxMin = Number(argValue(argv, '--host-quiet-max-min') ?? 20);
 	const noisyRetries = Number(argValue(argv, '--noisy-retries') ?? 2);
-	for (const [flag, value] of Object.entries({ chunkOps, maxChunks })) {
+	for (const [flag, value] of Object.entries({ chunkReads, maxChunks })) {
 		if (!Number.isInteger(value) || value < 1) throw new Error(`${flag} must be a positive integer, got ${value}`);
 	}
 	for (const [flag, value] of Object.entries({ hostQuietCores, hostQuietMaxMin, noisyRetries })) {
@@ -563,7 +578,7 @@ async function main(): Promise<void> {
 	};
 	for (const w of workloads)
 		if (WORKLOADS[w].mix.insert) throw new Error(`workload ${w} inserts; the sweep restores fixed datasets`);
-	const measureOps = argv.some((a) => a.startsWith('--ops=')) ? config.opsPerWorkload : 1_000_000;
+	const measureReads = argv.some((a) => a.startsWith('--ops=')) ? config.opsPerWorkload : 1_000_000;
 	const recordBytes = config.fieldCount * config.fieldLength;
 	const pointRecords = ratios.map((ratio) => recordsForRatio(ratio, MEMORY_BUDGET_BYTES, recordBytes));
 
@@ -575,14 +590,14 @@ async function main(): Promise<void> {
 			sizedRatios,
 			workloads,
 			distribution: 'zipfian',
-			measureOps,
+			measureReads,
 			reps: config.reps,
 			cells,
 			allowUncapped,
 			sharedCgroup: sharedCgroup ? foreign : undefined,
 			hostGate: { maxOtherCores: hostQuietCores, windowMs: 30_000, maxMs: hostQuietMaxMin * 60_000 },
 			noisyRetries,
-			warmup: { chunkOps, maxChunks, window: 3, throughputTolerance: 0.05, hitRateTolerance: 0.005 },
+			warmup: { chunkReads, maxChunks, window: 3, throughputTolerance: 0.05, hitRateTolerance: 0.005 },
 			recordBytes,
 			targetOrderRule: 'forward on even (point + rep), reversed on odd',
 			pageCache:
@@ -652,9 +667,9 @@ async function main(): Promise<void> {
 							keyWidth,
 							sample,
 							{
-								chunkOps,
+								chunkReads,
 								maxChunks,
-								measureOps,
+								measureReads,
 								quietCores: hostQuietCores,
 								noisyRetries,
 							}
@@ -673,7 +688,7 @@ async function main(): Promise<void> {
 	} finally {
 		await removeSnapshots().catch(() => {});
 	}
-	printSweep(points, samples, session.harperMemoryBytes, chunkOps);
+	printSweep(points, samples, session.harperMemoryBytes, chunkReads);
 	console.log(`\nResults written to ${file}`);
 }
 

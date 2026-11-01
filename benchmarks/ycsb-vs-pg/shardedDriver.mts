@@ -34,6 +34,7 @@ export interface DriverConfig {
 	/** false attaches to an already-loaded dataset (a restored snapshot) instead of inserting it. */
 	load?: boolean;
 	authorization?: string;
+	callerAuthorizations?: Record<string, string>;
 }
 
 class ShardPool {
@@ -176,10 +177,12 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 	const base = {
 		baseUrl: config.baseUrl,
 		table: config.table,
+		records: config.records,
 		shape: config.shape,
 		keyWidth: config.keyWidth,
 		maxScanLength: config.maxScanLength,
 		authorization: config.authorization,
+		callerAuthorizations: config.callerAuthorizations,
 	};
 
 	const rangeCommands = (phase: 'load' | 'readAll'): ShardCommand[] => {
@@ -213,7 +216,6 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 				concurrency: conc[i],
 				workload: name,
 				opCount,
-				records: config.records,
 				distribution,
 				mix,
 			}));

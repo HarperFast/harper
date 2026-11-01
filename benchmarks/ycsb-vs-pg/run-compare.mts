@@ -19,8 +19,8 @@ import { execFileSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { parseOptions } from '../ycsb/harness.mts';
-import { WORKLOADS } from '../ycsb/workload.mts';
-import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
+import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf } from '../ycsb/workload.mts';
+import type { DistributionName, LatencyStats, PhaseResult, WorkloadSpec } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { startPgStack, dataDir, WARM_STACK_MEMORY, type StackMemory } from './pgStack.mts';
 import {
@@ -187,11 +187,21 @@ function mintHs256(secret: string, subject: string): string {
 	return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
 }
 
+interface Credentials {
+	/** The header every generated request carries. */
+	authorization: string;
+	/** Each record owner's header, which inspect requests carry instead: the caller is the principal. */
+	callerAuthorizations: Record<string, string>;
+}
+
+const OWNERS = Array.from({ length: OWNER_COUNT }, (_, i) => ownerOf(i));
+
 /**
  * A non-super-user role that can read and write the benchmark table and nothing else (B updates), a
- * user in it, and that user's operation token. Idempotent, since a restored snapshot may hold them.
+ * user in it and one per record owner, and their operation tokens. Idempotent, since a restored
+ * snapshot may hold them.
  */
-async function harperTokenAuthorization(operationsURL: string, admin: string, table: string): Promise<string> {
+async function harperTokenCredentials(operationsURL: string, admin: string, table: string): Promise<Credentials> {
 	const operation = async (body: Record<string, unknown>, tolerate?: RegExp) => {
 		const response = await fetch(operationsURL, {
 			method: 'POST',
@@ -204,7 +214,6 @@ async function harperTokenAuthorization(operationsURL: string, admin: string, ta
 		if (tolerate?.test(text)) return undefined;
 		throw new Error(`${body.operation} -> ${response.status}: ${text.slice(0, 300)}`);
 	};
-	const password = randomBytes(18).toString('base64url');
 	await operation(
 		{
 			operation: 'add_role',
@@ -220,14 +229,20 @@ async function harperTokenAuthorization(operationsURL: string, admin: string, ta
 		},
 		/already exists/i
 	);
-	const added = await operation(
-		{ operation: 'add_user', username: TOKEN_USER, password, role: TOKEN_USER, active: true },
-		/already exists/i
-	);
-	if (!added) await operation({ operation: 'alter_user', username: TOKEN_USER, password, role: TOKEN_USER });
-	const tokens = await operation({ operation: 'create_authentication_tokens', username: TOKEN_USER, password });
-	if (!tokens?.operation_token) throw new Error('create_authentication_tokens returned no operation_token');
-	return `Bearer ${tokens.operation_token}`;
+	const tokenFor = async (username: string): Promise<string> => {
+		const password = randomBytes(18).toString('base64url');
+		const added = await operation(
+			{ operation: 'add_user', username, password, role: TOKEN_USER, active: true },
+			/already exists/i
+		);
+		if (!added) await operation({ operation: 'alter_user', username, password, role: TOKEN_USER });
+		const tokens = await operation({ operation: 'create_authentication_tokens', username, password });
+		if (!tokens?.operation_token)
+			throw new Error(`create_authentication_tokens returned no operation_token for ${username}`);
+		return `Bearer ${tokens.operation_token}`;
+	};
+	const [authorization, ...ownerTokens] = await Promise.all([TOKEN_USER, ...OWNERS].map(tokenFor));
+	return { authorization, callerAuthorizations: Object.fromEntries(OWNERS.map((owner, i) => [owner, ownerTokens[i]])) };
 }
 
 /** Proves the target checks the credential: a request without it is refused, one with it is served. */
@@ -244,6 +259,110 @@ async function assertCredentialChecked(url: string, authorization: string): Prom
 	}
 }
 
+export function usesDependentReads(spec: WorkloadSpec): boolean {
+	return Boolean(spec.mix.inspect || spec.mix.chain);
+}
+
+const MALFORMED_KEY = 'zz-malformed-link';
+
+/**
+ * Proves the target's dependent-read routes do the declared work before it is measured: chains
+ * follow the links stored in the records (computed here independently), inspect answers the owner
+ * with the projection and another owner with 403, a record without a link is a 500 that leaves the
+ * server serving, and under --auth=token neither route answers an anonymous request.
+ */
+export async function assertDependentReads(
+	running: Running,
+	config: { table: string; records: number; fieldCount: number; fieldLength: number },
+	keyWidth: number
+): Promise<void> {
+	const key = (index: number) => formatKey(index, keyWidth);
+	const request = async (method: string, path: string, headers: Record<string, string>, body?: unknown) => {
+		const response = await fetch(`${running.baseUrl}${path}`, {
+			method,
+			headers: body === undefined ? headers : { ...headers, 'content-type': 'application/json' },
+			body: body === undefined ? undefined : JSON.stringify(body),
+			signal: AbortSignal.timeout(10_000),
+		});
+		const text = await response.text();
+		let json: any;
+		try {
+			json = JSON.parse(text);
+		} catch {
+			json = undefined;
+		}
+		return { status: response.status, json, text };
+	};
+	const defaultHeaders: Record<string, string> = running.authorization ? { authorization: running.authorization } : {};
+	const asCaller = (owner: string): Record<string, string> =>
+		running.callerAuthorizations ? { authorization: running.callerAuthorizations[owner] } : { 'x-caller': owner };
+	const fail = (what: string, got: { status: number; text: string }) => {
+		throw new Error(`dependent-read check: ${what} answered ${got.status}: ${got.text.slice(0, 300)}`);
+	};
+	const isField = (value: unknown) => typeof value === 'string' && value.length === config.fieldLength;
+
+	for (const start of [0, Math.floor(config.records / 2), config.records - 1]) {
+		const hops = 4;
+		const chainPath = `/chain/${key(start)}?hops=${hops}`;
+		const chained = await request('GET', chainPath, defaultHeaders);
+		if (chained.status !== 200 || chained.json?.records?.length !== hops + 1) fail(chainPath, chained);
+		let index = start;
+		for (const record of chained.json.records) {
+			const next = linkTarget(index, config.records);
+			if (
+				record.id !== key(index) ||
+				record.owner !== ownerOf(index) ||
+				record.next !== key(next) ||
+				!isField(record.field1) ||
+				!isField(record.field2)
+			) {
+				fail(
+					`${chainPath} (expected ${key(index)} -> ${key(next)} at ${JSON.stringify(record).slice(0, 120)})`,
+					chained
+				);
+			}
+			index = next;
+		}
+		const inspectPath = `/inspect/${key(start)}`;
+		const allowed = await request('GET', inspectPath, asCaller(ownerOf(start)));
+		const { id, owner, field1, field2 } = allowed.json ?? {};
+		if (
+			allowed.status !== 200 ||
+			id !== key(start) ||
+			owner !== ownerOf(start) ||
+			!isField(field1) ||
+			!isField(field2)
+		) {
+			fail(`${inspectPath} by its owner`, allowed);
+		}
+		const denied = await request('GET', inspectPath, asCaller(ownerOf(start + 1)));
+		if (denied.status !== 403) fail(`${inspectPath} by another owner`, denied);
+	}
+
+	const badHops = await request('GET', `/chain/${key(0)}?hops=x`, defaultHeaders);
+	if (badHops.status !== 400) fail('a chain with hops=x', badHops);
+	const malformed: Record<string, string> = {};
+	for (let i = 0; i < config.fieldCount; i++) malformed[`field${i}`] = 'x'.repeat(config.fieldLength);
+	const put = await request('PUT', `/${config.table}/${MALFORMED_KEY}`, defaultHeaders, malformed);
+	if (put.status < 200 || put.status >= 300) fail(`PUT of ${MALFORMED_KEY}`, put);
+	for (const [path, headers] of [
+		[`/chain/${MALFORMED_KEY}?hops=1`, defaultHeaders],
+		[`/inspect/${MALFORMED_KEY}`, asCaller(ownerOf(0))],
+	] as const) {
+		const broken = await request('GET', path, headers);
+		if (broken.status !== 500) fail(`${path} (a record without a link)`, broken);
+	}
+	const after = await request('GET', `/chain/${key(0)}?hops=1`, defaultHeaders);
+	if (after.status !== 200) fail('a chain after the malformed record', after);
+
+	if (running.authorization) {
+		for (const path of [`/inspect/${key(0)}`, `/chain/${key(0)}?hops=1`]) {
+			const anonymous = await request('GET', path, {});
+			if (anonymous.status !== 401 && anonymous.status !== 403) fail(`${path} without a credential`, anonymous);
+		}
+	}
+}
+
 export interface Running {
 	baseUrl: string;
 	targets: ResourceTargets;
@@ -257,6 +376,8 @@ export interface Running {
 	startupMs: number;
 	/** --auth=token: the Authorization header every generated request carries. */
 	authorization?: string;
+	/** --auth=token: each record owner's header, for inspect requests. */
+	callerAuthorizations?: Record<string, string>;
 	afterLoad?: () => Promise<void>;
 	checkpoints?: () => Promise<number>;
 	/**
@@ -304,6 +425,8 @@ async function withHarper<T>(
 		HARPER_STORAGE_ENGINE: options.engine,
 		YCSB_SCOPE_UNIT: unit,
 		YCSB_MEMORY_MAX: Number.isFinite(session.harperMemoryBytes) ? String(session.harperMemoryBytes) : 'infinity',
+		// benchmarks/ycsb/app/resources.js: who the inspect caller is
+		YCSB_AUTH: session.auth,
 		...(spec.uws ? { HARPER_UWS_HTTP: '1' } : {}),
 		...(recordCacheSize ? { HARPER_RECORD_CACHE_SIZE: String(recordCacheSize) } : {}),
 		...(session.profile ? { NODE_OPTIONS: PERF_NODE_OPTIONS } : {}),
@@ -344,12 +467,12 @@ async function withHarper<T>(
 	}
 	try {
 		const { httpURL, operationsAPIURL, admin } = started.harper;
-		let authorization: string | undefined;
+		let credentials: Credentials | undefined;
 		if (session.auth === 'token') {
 			const adminBasic = `Basic ${Buffer.from(`${admin.username}:${admin.password}`).toString('base64')}`;
 			await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000, adminBasic);
-			authorization = await harperTokenAuthorization(operationsAPIURL, adminBasic, options.config.table);
-			await assertCredentialChecked(`${httpURL}/${options.config.table}/auth-probe`, authorization);
+			credentials = await harperTokenCredentials(operationsAPIURL, adminBasic, options.config.table);
+			await assertCredentialChecked(`${httpURL}/${options.config.table}/auth-probe`, credentials.authorization);
 		} else {
 			await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000);
 		}
@@ -364,7 +487,7 @@ async function withHarper<T>(
 				harper: verifyMemoryLimit('harper', cgroup, session.harperMemoryBytes, MEMORY_BUDGET_BYTES),
 			},
 			recordCacheSize,
-			authorization,
+			...credentials,
 			dataRoot: started.harper.dataRootDir,
 			startupMs: Date.now() - launchedAt,
 			async snapshot(dir: string): Promise<string> {
@@ -414,7 +537,11 @@ async function withPgStack<T>(
 		jwtSecret: session.jwtSecret,
 	});
 	try {
-		const authorization = session.jwtSecret ? `Bearer ${mintHs256(session.jwtSecret, TOKEN_USER)}` : undefined;
+		const secret = session.jwtSecret;
+		const authorization = secret ? `Bearer ${mintHs256(secret, TOKEN_USER)}` : undefined;
+		const callerAuthorizations = secret
+			? Object.fromEntries(OWNERS.map((owner) => [owner, `Bearer ${mintHs256(secret, owner)}`]))
+			: undefined;
 		await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000, authorization);
 		if (authorization)
 			await assertCredentialChecked(`${stack.baseUrl}/${options.config.table}/auth-probe`, authorization);
@@ -429,6 +556,7 @@ async function withPgStack<T>(
 			pinned: { fastify: stack.appPid },
 			memoryLimits: stack.memoryLimits,
 			authorization,
+			callerAuthorizations,
 			startupMs: stack.startupMs,
 			afterLoad: stack.vacuum,
 			checkpoints: stack.checkpoints,
@@ -687,7 +815,7 @@ export async function measureWindow(
 	if (running.targets.redisExec) {
 		const spec = WORKLOADS[workload];
 		const lookups = resources.redisHits + resources.redisMisses;
-		const pointReads = (spec.mix.read ?? 0) + (spec.mix.rmw ?? 0) > 0;
+		const pointReads = (spec.mix.read ?? 0) + (spec.mix.rmw ?? 0) + (spec.mix.inspect ?? 0) + (spec.mix.chain ?? 0) > 0;
 		if (pointReads && lookups === 0) throw new Error(`workload ${workload}: no Redis lookups recorded`);
 		if (lookups > 0) redisHitRate = resources.redisHits / lookups;
 	}
@@ -766,6 +894,7 @@ async function measureSample(
 			keyWidth,
 			maxScanLength: config.maxScanLength,
 			authorization: running.authorization,
+			callerAuthorizations: running.callerAuthorizations,
 		});
 		try {
 			assertNoErrors('load', driver.load);
@@ -777,6 +906,7 @@ async function measureSample(
 			assertNoErrors('read-all pass', warm);
 			if (warm.ops !== config.records) throw new Error(`read-all pass read ${warm.ops} of ${config.records} keys`);
 			console.log(`  [read-all] ${warm.ops.toLocaleString()} keys at ${warm.throughput.toFixed(0)} reads/sec`);
+			if (usesDependentReads(spec)) await assertDependentReads(running, config, keyWidth);
 
 			const measured = await measureWindow(
 				session,
@@ -820,9 +950,15 @@ function median<T>(items: T[], by: (item: T) => number): T {
 	return sorted[Math.floor((sorted.length - 1) / 2)];
 }
 
-/** The latency block of a workload's primary operation (reads, else scans, else the first). */
+/** The latency block of a workload's primary operation (reads, inspect, chain, scans, else the first). */
 export function primaryLatency(result: PhaseResult): LatencyStats | undefined {
-	return result.latency.read ?? result.latency.scan ?? (Object.values(result.latency)[0] as LatencyStats | undefined);
+	return (
+		result.latency.read ??
+		result.latency.inspect ??
+		result.latency.chain ??
+		result.latency.scan ??
+		(Object.values(result.latency)[0] as LatencyStats | undefined)
+	);
 }
 
 interface Summary {
