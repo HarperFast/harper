@@ -68,7 +68,7 @@ export function transaction<T>(
 	// writes and releases what it staged (DatabaseTransaction.admitRequestWrite). sourceApply is exempt,
 	// having no resume path (harper-pro#348); work that must outlive the client runs on a context without
 	// the signal (resources/DESIGN.md).
-	if (!transaction.sourceApply) transaction.requestSignal = context.signal;
+	if (!transaction.sourceApply) transaction.requestSignalSource = context;
 
 	let result;
 	try {

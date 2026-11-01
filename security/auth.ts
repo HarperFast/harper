@@ -140,6 +140,7 @@ export async function authentication(request, nextHandler) {
 	// a 401 that gets rewritten to a login-redirect 302 below must still be treated as
 	// identity-dependent by applyResponseHeaders
 	let wasUnauthorized = false;
+	let sessionState: SessionState | undefined;
 	try {
 		if (origin) {
 			const accessList = request.isOperationsServer
@@ -178,36 +179,19 @@ export async function authentication(request, nextHandler) {
 			// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 			// host, to protect against CSRF
 			if (!origin) origin = headers.host;
-			const cookiePrefix = (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-			const cookies = cookie?.split(/;\s+/) || [];
-			for (const cookie of cookies) {
-				if (cookie.startsWith(cookiePrefix)) {
-					const end = cookie.indexOf(';');
-					sessionId = cookie.slice(cookiePrefix.length, end === -1 ? cookie.length : end);
-					session = await getSessionTable().get(sessionId);
-					break;
+			if (cookie) {
+				const cookiePrefix = sessionCookiePrefix(origin);
+				for (const entry of cookie.split(/;\s+/)) {
+					if (entry.startsWith(cookiePrefix)) {
+						const end = entry.indexOf(';');
+						sessionId = entry.slice(cookiePrefix.length, end === -1 ? entry.length : end);
+						session = await getSessionTable().get(sessionId);
+						break;
+					}
 				}
 			}
 			request.session = session ? { ...session } : (session = {});
 		}
-
-		const authAuditLog = (username, status, strategy) => {
-			const log = new AuthAuditLog(
-				username,
-				status,
-				AUTH_AUDIT_TYPES.AUTHENTICATION,
-				headers['x-forwarded-for'] ?? request.ip,
-				request.method,
-				request.pathname
-			);
-			(log as any).auth_strategy = strategy;
-			if (sessionId) (log as any).session_id = sessionId;
-			if (headers['referer']) (log as any).referer = headers['referer'];
-			if (headers['origin']) (log as any).origin = headers['origin'];
-
-			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
-			else authEventLog.error?.(log);
-		};
 
 		if (
 			!request.authorized &&
@@ -248,14 +232,14 @@ export async function authentication(request, nextHandler) {
 				try {
 					mtlsUser = await server.getUser(username, null, request);
 				} catch (error) {
-					if (LOG_AUTH_FAILED) authAuditLog(username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
+					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');
 					if (failureResponse) return applyResponseHeaders(failureResponse);
 					mtlsCredentialDeferred = true;
 				}
 				if (!mtlsCredentialDeferred) {
 					request.user = mtlsUser;
-					authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+					authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
 				}
 			} else {
 				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
@@ -384,7 +368,7 @@ export async function authentication(request, nextHandler) {
 						const failedAttempt = authorizationCache.get(credentials);
 						if (!failedAttempt) {
 							authorizationCache.set(credentials, credentials);
-							authAuditLog(username, AUTH_AUDIT_STATUS.FAILURE, strategy);
+							authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
 						}
 					}
 
@@ -399,7 +383,7 @@ export async function authentication(request, nextHandler) {
 						if (validatorEntry) validatorClaims.set(newUser, validatorEntry);
 					}
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
-						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+						authAuditLog(request, sessionId, newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 					// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 					// doesn't mutate the just-stored cache entry (defense-in-depth).
 					if (newUser?.role) newUser = cloneUserView(newUser);
@@ -412,7 +396,7 @@ export async function authentication(request, nextHandler) {
 				// or should this be cached in the session?
 				request.user = await server.getUser(session.user, null, request);
 			} catch (error) {
-				if (LOG_AUTH_FAILED) authAuditLog(session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
+				if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
 				const failureResponse = settleAuthFailure(request, error, 'Session');
 				if (failureResponse) return applyResponseHeaders(failureResponse);
 			}
@@ -426,79 +410,13 @@ export async function authentication(request, nextHandler) {
 			request.user = localPrincipal();
 		}
 		if (ENABLE_SESSIONS) {
-			request.session.update = function (updatedSession) {
-				const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
-				const useSecure =
-					request.protocol === 'https' ||
-					headers.host?.startsWith('localhost:') ||
-					headers.host?.startsWith('127.0.0.1:') ||
-					headers.host?.startsWith('::1');
-				if (!sessionId) {
-					sessionId = uuid();
-					const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
-					const expiresString = expires
-						? new Date(Date.now() + convertToMS(expires)).toUTCString()
-						: DEFAULT_COOKIE_EXPIRES;
-					const domain =
-						headers.host &&
-						domains?.find((domain) => {
-							// find a domain that matches the host header
-							// the configured cookie domain starts with a dot, that indicates a wildcard, so we need to remove it
-							if (domain.startsWith('.')) domain = domain.slice(1);
-							// host can have a port, so we need to remove it because we are comparing domain names
-							const portStart = headers.host.indexOf(':');
-							const host = portStart !== -1 ? headers.host.slice(0, portStart) : headers.host;
-							return host.endsWith(domain);
-						});
-					const cookiePrefix =
-						(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-					// "Secure" can work with localhost/127.0.0.1 in certain browsers.
-					// https://github.com/httpwg/http-extensions/issues/2605
-					let cookie = `${cookiePrefix}${sessionId}; Path=/; Expires=${expiresString}; HttpOnly`;
-					if (domain) {
-						cookie += `; Domain=${domain}`;
-					}
-
-					if (useSecure) {
-						cookie += `; SameSite=None; Secure`;
-					}
-					if (responseHeaders) {
-						responseHeaders.push('Set-Cookie', cookie);
-					} else if (response?.headers?.set) {
-						response.headers.set('Set-Cookie', cookie);
-					}
-				}
-				if (useSecure) {
-					// Indicate that we have successfully updated a session
-					// We make sure this is allowed by CORS so that a client can determine if it has
-					// a valid cookie-authenticated session (studio needs this)
-					if (responseHeaders) {
-						if (origin) responseHeaders.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
-						responseHeaders.push('X-Hdb-Session', 'Secure');
-					} else if (response?.headers?.set) {
-						if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
-						response.headers.set('X-Hdb-Session', 'Secure');
-					}
-				}
-				updatedSession.id = sessionId;
-				// trust in the transport must not become a cookie that works from anywhere else
-				if (
-					isLocalPrincipal(updatedSession.user) ||
-					(isLocalPrincipal(request.user) && updatedSession.user === request.user.username)
-				)
-					delete updatedSession.user;
-				return getSessionTable().put(updatedSession, {
-					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
-				});
-			};
-			request.login = async function (username: string, password?: string, token?: string) {
-				const user: any = (request.user = token
-					? await validateLoginToken(token)
-					: await server.authenticateUser(username, password, request));
-				request.session.update({ user: user && (user.getId?.() ?? user.username) });
-			};
+			sessionState = { request, headers, sessionId, origin, responseHeaders, response: undefined };
+			// bound rather than closures assigned to a property: security/DESIGN.md
+			request.session.update = updateSession.bind(sessionState);
+			request.login = loginWithSession.bind(sessionState);
 		}
 		const response = await nextHandler(request);
+		if (sessionState) sessionState.response = response;
 		if (!response) return response;
 		if (response.status === 401) {
 			wasUnauthorized = true;
@@ -519,6 +437,8 @@ export async function authentication(request, nextHandler) {
 		return applyResponseHeaders(response);
 	} catch (error) {
 		throw applyResponseHeaders(error);
+	} finally {
+		if (sessionState) sessionState.responseHeaders = null;
 	}
 	function applyResponseHeaders(response) {
 		const l = responseHeaders.length;
@@ -572,6 +492,111 @@ export async function authentication(request, nextHandler) {
 		return response;
 	}
 }
+
+function sessionCookiePrefix(origin: string | undefined): string {
+	return (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
+}
+
+function authAuditLog(request, sessionId: string | undefined, username, status, strategy) {
+	const headers = request.headers.asObject;
+	const log = new AuthAuditLog(
+		username,
+		status,
+		AUTH_AUDIT_TYPES.AUTHENTICATION,
+		headers['x-forwarded-for'] ?? request.ip,
+		request.method,
+		request.pathname
+	);
+	(log as any).auth_strategy = strategy;
+	if (sessionId) (log as any).session_id = sessionId;
+	if (headers['referer']) (log as any).referer = headers['referer'];
+	if (headers['origin']) (log as any).origin = headers['origin'];
+
+	if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
+	else authEventLog.error?.(log);
+}
+
+interface SessionState {
+	request: any;
+	headers: any;
+	sessionId: string | undefined;
+	origin: string | undefined;
+	// the authentication middleware's pending response headers until it has applied them
+	responseHeaders: any[] | null;
+	response: any;
+}
+
+function updateSession(this: SessionState, updatedSession) {
+	const { request, headers, origin, responseHeaders, response } = this;
+	const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
+	const useSecure =
+		request.protocol === 'https' ||
+		headers.host?.startsWith('localhost:') ||
+		headers.host?.startsWith('127.0.0.1:') ||
+		headers.host?.startsWith('::1');
+	if (!this.sessionId) {
+		this.sessionId = uuid();
+		const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
+		const expiresString = expires ? new Date(Date.now() + convertToMS(expires)).toUTCString() : DEFAULT_COOKIE_EXPIRES;
+		const domain =
+			headers.host &&
+			domains?.find((domain) => {
+				// find a domain that matches the host header
+				// the configured cookie domain starts with a dot, that indicates a wildcard, so we need to remove it
+				if (domain.startsWith('.')) domain = domain.slice(1);
+				// host can have a port, so we need to remove it because we are comparing domain names
+				const portStart = headers.host.indexOf(':');
+				const host = portStart !== -1 ? headers.host.slice(0, portStart) : headers.host;
+				return host.endsWith(domain);
+			});
+		// "Secure" can work with localhost/127.0.0.1 in certain browsers.
+		// https://github.com/httpwg/http-extensions/issues/2605
+		let cookie = `${sessionCookiePrefix(origin)}${this.sessionId}; Path=/; Expires=${expiresString}; HttpOnly`;
+		if (domain) {
+			cookie += `; Domain=${domain}`;
+		}
+
+		if (useSecure) {
+			cookie += `; SameSite=None; Secure`;
+		}
+		if (responseHeaders) {
+			responseHeaders.push('Set-Cookie', cookie);
+		} else if (response?.headers?.set) {
+			response.headers.set('Set-Cookie', cookie);
+		}
+	}
+	if (useSecure) {
+		// Indicate that we have successfully updated a session
+		// We make sure this is allowed by CORS so that a client can determine if it has
+		// a valid cookie-authenticated session (studio needs this)
+		if (responseHeaders) {
+			if (origin) responseHeaders.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
+			responseHeaders.push('X-Hdb-Session', 'Secure');
+		} else if (response?.headers?.set) {
+			if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
+			response.headers.set('X-Hdb-Session', 'Secure');
+		}
+	}
+	updatedSession.id = this.sessionId;
+	// trust in the transport must not become a cookie that works from anywhere else
+	if (
+		isLocalPrincipal(updatedSession.user) ||
+		(isLocalPrincipal(request.user) && updatedSession.user === request.user.username)
+	)
+		delete updatedSession.user;
+	return getSessionTable().put(updatedSession, {
+		expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
+	});
+}
+
+async function loginWithSession(this: SessionState, username: string, password?: string, token?: string) {
+	const request = this.request;
+	const user: any = (request.user = token
+		? await validateLoginToken(token)
+		: await server.authenticateUser(username, password, request));
+	request.session.update({ user: user && (user.getId?.() ?? user.username) });
+}
+
 let started = false;
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	if (started) return;

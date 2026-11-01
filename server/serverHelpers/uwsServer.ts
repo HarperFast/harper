@@ -83,6 +83,57 @@ export interface HarperResponse {
 // some reverse-proxy parsers, so fall back to "Unknown" for codes Node doesn't know.
 const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 
+const METHOD_NAMES = new Map(
+	['get', 'head', 'post', 'put', 'patch', 'delete', 'options', 'connect', 'trace', 'query'].map((method) => [
+		method,
+		method.toUpperCase(),
+	])
+);
+
+/**
+ * A common header name as a constant, so keying the header object skips interning uWS's fresh copy of
+ * it. A switch measured faster than both that interning and a Map lookup.
+ */
+function headerName(name: string): string {
+	switch (name) {
+		case 'accept':
+			return 'accept';
+		case 'accept-encoding':
+			return 'accept-encoding';
+		case 'accept-language':
+			return 'accept-language';
+		case 'authorization':
+			return 'authorization';
+		case 'cache-control':
+			return 'cache-control';
+		case 'connection':
+			return 'connection';
+		case 'content-length':
+			return 'content-length';
+		case 'content-type':
+			return 'content-type';
+		case 'cookie':
+			return 'cookie';
+		case 'host':
+			return 'host';
+		case 'if-modified-since':
+			return 'if-modified-since';
+		case 'if-none-match':
+			return 'if-none-match';
+		case 'origin':
+			return 'origin';
+		case 'referer':
+			return 'referer';
+		case 'user-agent':
+			return 'user-agent';
+		case 'x-forwarded-for':
+			return 'x-forwarded-for';
+		case 'x-forwarded-proto':
+			return 'x-forwarded-proto';
+	}
+	return name;
+}
+
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
 	// The process.dlopen guard refuses a standard-ABI uWS binary too, but uws.js rethrows any load
 	// error as a misleading "supports only Node.js versions …" Error; checking here keeps the real one.
@@ -117,13 +168,13 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	// HTTP routes so uWS routes upgrade requests here; normal requests still fall through to app.get/any.
 	if (wsHandler) registerWsBehavior(app, wsHandler, wsMaxPayload ?? maxBodyBytes);
 
-	const onRequest = (res: UwsResponse, req: UwsRequestRaw, hasBody: boolean) => {
+	const onRequest = (res: UwsResponse, req: UwsRequestRaw, hasBody: boolean, method: string) => {
 		// uWS HttpRequest is only valid synchronously inside this callback — copy everything now.
-		const method = req.getMethod().toUpperCase();
 		const query = req.getQuery();
 		const url = req.getUrl() + (query ? '?' + query : '');
 		const headers: Record<string, string | string[]> = {};
-		req.forEach((k: string, v: string) => {
+		req.forEach((name: string, v: string) => {
+			const k = headerName(name);
 			// uWS calls this once per header line, so preserve repeats (e.g. multiple Cookie/Forwarded).
 			const existing = headers[k];
 			if (existing === undefined) headers[k] = v;
@@ -136,63 +187,39 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		// real client IP comes from X-Forwarded-For (UwsRequest.ip falls back to XFF only when no socket
 		// address is set). request.ip feeds local-auth (security/auth.ts AUTHORIZE_LOCAL), rate limiting,
 		// and logging.
-		const ip = port != null ? normalizeAddress(Buffer.from(res.getRemoteAddressAsText()).toString()) : undefined;
+		const ip = port != null ? readPeerAddress(res) : undefined;
+		const body = hasBody ? new UwsRequestBody() : undefined;
+		const request = new UwsRequest({ method, url, headers, secure, body, ip });
 
-		const ac = new AbortController();
 		let bodyDrainTimeout: ReturnType<typeof setTimeout> | undefined;
 		let finishRejectedResponse: (() => void) | undefined;
+		let tearDownBody: ((error?: Error) => void) | undefined;
 		res.onAborted(() => {
 			clearTimeout(bodyDrainTimeout);
 			finishRejectedResponse = undefined;
-			ac.abort();
+			tearDownBody?.(new Error('request aborted'));
+			request._abort();
 		});
 		// A second handler response is invalid in uWS. The deferred 413 end instead uses its
 		// own finisher, which native onAborted invalidates independently of handler cancellation.
 		let responseCompleted = false;
 
-		const dispatch = (body?: UwsRequestBody) => {
-			const request = new UwsRequest({ method, url, headers, secure, body, signal: ac.signal, ip });
-			// when() keeps a synchronously-returning handler synchronous (no extra microtask/promise).
-			when(
-				handler(request),
-				(response) => {
-					if (ac.signal.aborted || responseCompleted) return;
-					responseCompleted = true;
-					writeResponse(res, response, ac.signal, method);
-				},
-				(error) => {
-					if (ac.signal.aborted || responseCompleted) return;
-					responseCompleted = true;
-					const status = (error && error.statusCode) || 500;
-					res.cork(() => {
-						res.writeStatus(statusText(status));
-						res.writeHeader('content-type', 'text/plain');
-						// the same renderer as the Node and Bun terminal handlers: the class name is the
-						// error code a client branches on, and it must not depend on the runtime
-						res.end(errorToString(error));
-					});
-				}
-			);
-		};
-
-		if (hasBody) {
+		if (body) {
 			// Stream the body: dispatch immediately with a push-based Readable and feed each chunk in as it
 			// arrives, so consumers (streamToBuffer, streaming deserializers) don't wait on — or hold — the
 			// whole body. streamToBuffer owns concatenation and the configurable per-request size limit;
 			// maxBodyBytes is only the coarse ceiling below, since uWS offers no way to pause the socket.
-			const body = new UwsRequestBody();
 			let total = 0;
 			let ended = false;
 			// Only surface a teardown as a stream 'error' when a consumer is listening; destroying with an
 			// error and no 'error' listener would throw. An unconsumed body just gets its chunks released.
-			const tearDown = (error?: Error) => {
+			tearDownBody = (error?: Error) => {
 				if (ended || body.destroyed) return;
 				ended = true;
 				body.destroy(error && body.listenerCount('error') > 0 ? error : undefined);
 				body.removeAllListeners('data');
 				while (body.readableLength) body.read(Math.min(body.readableLength, body.readableHighWaterMark));
 			};
-			ac.signal.addEventListener('abort', () => tearDown(new Error('request aborted')), { once: true });
 			res.onData((chunk: ArrayBuffer, isLast: boolean) => {
 				if (ended || body.destroyed) {
 					if (isLast) finishRejectedResponse?.();
@@ -203,7 +230,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 					const error = new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413);
 					// Only send 413 if nothing has been written yet: the handler may have already responded
 					// (or streamed) without consuming the body, and writing to that completed response aborts.
-					if (!ac.signal.aborted && !responseCompleted) {
+					if (!request.isAborted && !responseCompleted) {
 						responseCompleted = true;
 						const connection = Array.isArray(headers.connection) ? headers.connection[0] : headers.connection;
 						res.cork(() => {
@@ -223,8 +250,8 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 							} else res.end();
 						});
 					}
-					tearDown(error);
-					ac.abort();
+					tearDownBody(error);
+					request._abort();
 					return;
 				}
 				// uWS neuters/reuses the ArrayBuffer once this callback returns, and the body is read
@@ -236,24 +263,44 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 					body.push(null);
 				}
 			});
-			dispatch(body);
-		} else {
-			dispatch(undefined);
 		}
+
+		// when() keeps a synchronously-returning handler synchronous (no extra microtask/promise).
+		when(
+			handler(request),
+			(response) => {
+				if (request.isAborted || responseCompleted) return;
+				responseCompleted = true;
+				writeResponse(res, response, request, method);
+			},
+			(error) => {
+				if (request.isAborted || responseCompleted) return;
+				responseCompleted = true;
+				const status = (error && error.statusCode) || 500;
+				res.cork(() => {
+					res.writeStatus(statusText(status));
+					res.writeHeader('content-type', 'text/plain');
+					// the same renderer as the Node and Bun terminal handlers: the class name is the
+					// error code a client branches on, and it must not depend on the runtime
+					res.end(errorToString(error));
+				});
+			}
+		);
 	};
 
 	// Route the known-bodyless methods so they dispatch immediately, and treat everything else —
 	// including non-standard body-bearing methods like QUERY (REST vector search) — as having a
 	// body. uWS still fires onData(len=0, isLast=true) for a bodyless request that lands on the
 	// any() fallback, so this can't stall the connection.
-	const bodyless = (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false);
-	const withBody = (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, true);
-	app.get('/*', bodyless);
-	app.head('/*', bodyless);
-	app.options('/*', bodyless);
-	app.connect('/*', bodyless);
-	app.trace('/*', bodyless);
-	app.any('/*', withBody);
+	app.get('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false, 'GET'));
+	app.head('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false, 'HEAD'));
+	app.options('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false, 'OPTIONS'));
+	app.connect('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false, 'CONNECT'));
+	app.trace('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false, 'TRACE'));
+	app.any('/*', (res: UwsResponse, req: UwsRequestRaw) => {
+		const method = req.getMethod();
+		onRequest(res, req, true, METHOD_NAMES.get(method) ?? method.toUpperCase());
+	});
 
 	await new Promise<void>((resolve, reject) => {
 		let settled = false;
@@ -310,7 +357,7 @@ function writeHeaders(res: UwsResponse, headers: Headers): void {
 function writeResponse(
 	res: UwsResponse,
 	response: HarperResponse | undefined,
-	signal?: AbortSignal,
+	request: UwsRequest,
 	method?: string
 ): void {
 	if (!response) {
@@ -335,7 +382,7 @@ function writeResponse(
 
 	// Streaming body (Node stream / normalized async-iterable): write incrementally with backpressure.
 	if (body != null && typeof (body as any).pipe === 'function') {
-		streamResponse(res, status, headers, body as any, signal);
+		streamResponse(res, status, headers, body as any, request.signal);
 		return;
 	}
 
@@ -430,15 +477,51 @@ function streamResponse(
 	source.once('close', () => fail());
 }
 
-// Normalize uWS's remote-address text (raw IPv6 form, IPv4-mapped for v4 peers) to a readable IP.
-function normalizeAddress(text: string): string {
-	const mapped = /^0000:0000:0000:0000:0000:ffff:([0-9a-f]{4}):([0-9a-f]{4})$/.exec(text);
-	if (mapped) {
-		const hi = parseInt(mapped[1], 16);
-		const lo = parseInt(mapped[2], 16);
-		return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+const HEX_DIGITS = Buffer.from('0123456789abcdef');
+const ipv6Text = Buffer.alloc(39, ':');
+// This thread's previous peer, so a keep-alive client's requests share one address string.
+const lastPeer = new Uint8Array(16);
+let lastPeerLength = -1;
+let lastPeerText = '';
+
+/**
+ * The peer's address: IPv4, including IPv4-mapped IPv6 on a dual-stack socket, as dotted decimal, and
+ * other IPv6 in uWS's own text form. `res` must still be live, and the bytes it returns can be uWS's
+ * memory, so they are compared and copied here and never kept.
+ */
+function readPeerAddress(res: UwsResponse): string {
+	const bytes = new Uint8Array(res.getRemoteAddress());
+	if (!isLastPeer(bytes)) {
+		lastPeerText = formatPeerAddress(bytes);
+		lastPeer.set(bytes);
+		lastPeerLength = bytes.length;
 	}
-	return text;
+	return lastPeerText;
+}
+
+function isLastPeer(bytes: Uint8Array): boolean {
+	if (bytes.length !== lastPeerLength) return false;
+	for (let i = 0; i < bytes.length; i++) if (bytes[i] !== lastPeer[i]) return false;
+	return true;
+}
+
+function formatPeerAddress(bytes: Uint8Array): string {
+	const offset = ipv4Offset(bytes);
+	if (offset >= 0) return `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
+	if (bytes.length !== 16) return '';
+	for (let i = 0, j = 0; i < 16; i++) {
+		if (i && !(i & 1)) j++;
+		ipv6Text[j++] = HEX_DIGITS[bytes[i] >> 4];
+		ipv6Text[j++] = HEX_DIGITS[bytes[i] & 15];
+	}
+	return ipv6Text.toString('latin1');
+}
+
+function ipv4Offset(bytes: Uint8Array): number {
+	if (bytes.length === 4) return 0;
+	if (bytes.length !== 16 || bytes[10] !== 0xff || bytes[11] !== 0xff) return -1;
+	for (let i = 0; i < 10; i++) if (bytes[i] !== 0) return -1;
+	return 12;
 }
 
 function registerWsBehavior(
@@ -461,7 +544,7 @@ function registerWsBehavior(
 				else if (Array.isArray(existing)) existing.push(v);
 				else headers[k] = [existing, v];
 			});
-			const ip = normalizeAddress(Buffer.from(res.getRemoteAddressAsText()).toString());
+			const ip = readPeerAddress(res);
 			const upgradeData: UwsUpgrade = { url, headers, ip };
 			res.upgrade(
 				upgradeData,

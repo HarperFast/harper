@@ -1066,9 +1066,12 @@ export class DatabaseTransaction implements Transaction {
 	// open (harper#2001). Once poisoned, any further addWrite/commit throws requestAbortedError, mirroring
 	// timedOut above — the difference is only WHY the transaction was cut short.
 	declare disconnected?: boolean;
-	// The signal of the request this chain writes for, set on the root wherever a transaction is created
+	// The context of the request this chain writes for, set on the root wherever a transaction is created
 	// for a request context (resources/transaction.ts, Table.ts txnForContext). Cancellation belongs to
-	// the request: once it aborts, no link admits another write, whichever transaction it arrives on.
+	// the request: once its signal aborts, no link admits another write, whichever transaction it arrives
+	// on. The signal is read from it at the first admitted write, so a read-only request never makes its
+	// transport create one.
+	declare requestSignalSource?: { readonly signal?: AbortSignal };
 	declare requestSignal?: AbortSignal;
 	// On the root while the chain owns writes: attached at the first admitted write, released once they
 	// and every commit attempt have settled, so a read-only request never registers one.
@@ -2709,6 +2712,7 @@ export class DatabaseTransaction implements Transaction {
 			if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 			if (this.disconnected) throw requestAbortedError();
 		}
+		if (options.doneWriting && this.endsScopeUnwritten(options)) return this.finishUnwrittenScope();
 		this.commitsInFlight = (this.commitsInFlight ?? 0) + 1;
 		// Only a top-level attempt records the intent: a continuation would re-read hasPendingWrites()
 		// after clearWrites() has already emptied it.
@@ -2736,6 +2740,64 @@ export class DatabaseTransaction implements Transaction {
 				throw error;
 			}
 		);
+	}
+
+	/** False for LMDB, immediate commits, and every state commit() or performCommit() treats specially; a state either gains must be excluded here. */
+	private endsScopeUnwritten(options: CommitOptions): boolean {
+		const handle = this.transaction;
+		return (
+			!options.transaction &&
+			!options.continuation &&
+			this.stagesWriteOnSave &&
+			!this.saveCommits &&
+			this.open === TRANSACTION_STATE.OPEN &&
+			this.commitsInFlight === 0 &&
+			!this.next &&
+			!this.root &&
+			this.writes.length === 0 &&
+			this.completions.length === 0 &&
+			this.validated === 0 &&
+			!this.writesByKey &&
+			!this.recordLocks &&
+			!this.hasExclusiveWrites &&
+			!this.requiresOwnerConfirmation &&
+			!this.hasLeaseProtectedWrite &&
+			!this.unlockedWriteScan &&
+			!this.requestAbortListener &&
+			!this.hasActiveCommitHandle() &&
+			(!handle || (this.readTxnsUsed === 1 && !this.baseReadRefConsumed && !hasDurableLog(handle))) &&
+			!this.isChainCommitting()
+		);
+	}
+
+	/** Must leave the link as performCommit() would for one endsScopeUnwritten() accepts. */
+	private finishUnwrittenScope(): CommitResolution {
+		this.open = TRANSACTION_STATE.CLOSED;
+		const transaction = this.detachOwnedTransaction();
+		if (transaction) this.abortUnwrittenHandle(transaction);
+		this.endScopeOwnership();
+		this.releaseContext(true);
+		const resolution: CommitResolution = { txnTime: this.timestamp };
+		this.timestamp = 0;
+		return resolution;
+	}
+
+	private abortUnwrittenHandle(transaction: RocksTransaction): void {
+		releaseLocalKey(transaction);
+		try {
+			transaction.abort();
+		} catch (abortError) {
+			if ((abortError as any)?.code === 'ERR_TRANSACTION_ABANDONED') {
+				harperLogger.error?.(
+					`Aborted a transaction with a durable log entry (empty write set), ${describeCommitIdentity(this.db, this.startedFrom, transaction)}`,
+					abortError
+				);
+			}
+			// The transaction has uncommitted writes that were already cleared from
+			// this.writes by a concurrent immediate-commit path (e.g. writes made with
+			// an explicitly-reused closed transaction). Those writes are handled by the
+			// concurrent commit, so there is nothing left to do here.
+		}
 	}
 
 	protected markNativeCommitSubmitted(): void {
@@ -2774,7 +2836,7 @@ export class DatabaseTransaction implements Transaction {
 	admitRequestWrite(): void {
 		if (isReadOnlyMode()) throw readOnlyModeError();
 		const root = this.root ?? this;
-		const signal = root.requestSignal;
+		const signal = (root.requestSignal ??= root.requestSignalSource?.signal);
 		if (!signal) return;
 		if (signal.aborted) {
 			this.abortDueToDisconnect();
@@ -2933,6 +2995,7 @@ export class DatabaseTransaction implements Transaction {
 		return Boolean((this.root ?? this).committingWrites) && this.isChainCommitting();
 	}
 
+	// A state this handles specially must also send a final commit away from endsScopeUnwritten()'s fast path.
 	protected performCommit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
@@ -3197,21 +3260,7 @@ export class DatabaseTransaction implements Transaction {
 							// transient-conflict retry rejects this promise and issues a fresh commit()
 							// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
 						} else {
-							releaseLocalKey(transaction);
-							try {
-								commitResolution = transaction.abort();
-							} catch (abortError) {
-								if ((abortError as any)?.code === 'ERR_TRANSACTION_ABANDONED') {
-									harperLogger.error?.(
-										`Aborted a transaction with a durable log entry (empty write set), ${describeCommitIdentity(this.db, this.startedFrom, transaction)}`,
-										abortError
-									);
-								}
-								// The transaction has uncommitted writes that were already cleared from
-								// this.writes by a concurrent immediate-commit path (e.g. writes made with
-								// an explicitly-reused closed transaction). Those writes are handled by the
-								// concurrent commit, so there is nothing left to do here.
-							}
+							this.abortUnwrittenHandle(transaction);
 						}
 					}
 				}
