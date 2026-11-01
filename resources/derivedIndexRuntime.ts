@@ -1941,7 +1941,6 @@ class DerivedIndexRunner {
 				this.#stalledSince,
 				unreadAge > 0 ? now - unreadAge : undefined,
 			].filter((origin): origin is number => origin !== undefined);
-			// A rewind retains work age but replaces the offered chain and its catch-up target.
 			this.#lagRecovery = { since: origins.length ? Math.min(...origins) : undefined };
 			this.#discardProgress();
 			try {
@@ -1969,6 +1968,7 @@ class DerivedIndexRunner {
 		const storeStatus: string = this.#logStore.rootStore.status;
 		if (storeStatus === 'closing' || storeStatus === 'closed') {
 			// Local only: stops an install or drain from going on, and publishes nothing shared.
+			this.#generation++;
 			this.status = { state: 'unavailable', reason: `database closing: ${reason}`, ownerEpoch: this.#ownerEpoch };
 			return;
 		}

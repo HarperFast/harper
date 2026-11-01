@@ -1544,6 +1544,56 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('does not certify an inherited recovery tail when a quiet log read fails during close', async () => {
+		let clock = 1_000_000;
+		let failQuietRead = false;
+		let failureObserved = false;
+		let currentRange;
+		const records = new Map([['1:a', { version: clock + 1, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[clock, [audit({ timestamp: clock + 1, recordId: 'a' })]]]), {
+			onNext(entry) {
+				if (failQuietRead && entry === undefined) {
+					store.rootStore.status = 'closing';
+					currentRange.failedLogs.add('local');
+					failureObserved = true;
+				}
+			},
+		});
+		const getRange = store.getRange.bind(store);
+		store.getRange = (options) => (currentRange = getRange(options));
+		const policy = { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5, maxTransactionsPerTurn: 1 };
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const first = new SyncBackend('closing-inherited-tail', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => first.deliveries.length === 1);
+			clock += 401;
+			first.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			await owner.stop();
+			failQuietRead = true;
+			const second = new SyncBackend('closing-inherited-tail', cursor(1_000_000));
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => failureObserved);
+			assert.strictEqual(second.deliveries.length, 1);
+			assert.strictEqual(second.cursor.logs.local, 1_000_001);
+			assert.strictEqual(successor.getStatus(second.id).state, 'unavailable');
+			assert.notStrictEqual(
+				derivedIndexWriteRejection(store, 1),
+				undefined,
+				'a failed tail read cannot clear the shared lag trip'
+			);
+			assert.strictEqual(store.markers.size, 0, 'closing does not condemn the index');
+		} finally {
+			store.rootStore.status = 'open';
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
 	it('does not spend rebuild attempts on reload markers behind the captured tail', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const reloads = [8, 9, 10].map((timestamp) => ({ ...audit({ timestamp, type: 'reload' }), recordId: null }));
@@ -2223,6 +2273,73 @@ describe('DerivedIndexRuntime for native backends', () => {
 		}
 	});
 
+	it('keeps an inherited trip through a bounded continuously fed prefix until a healthy empty tail is read', async () => {
+		const base = 1_000_000;
+		let clock = base;
+		let endOfLogReads = 0;
+		const entries = [audit({ timestamp: base + 1, recordId: 'r1' })];
+		const records = new Map([['1:r1', { version: base + 1, value: { title: 'r1' } }]]);
+		const store = new FakeLogStore(new Map([[base, entries]]), {
+			live: true,
+			onNext: (entry) => {
+				if (entry === undefined) endOfLogReads++;
+			},
+		});
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const policy = {
+			maxLagMilliseconds: 400,
+			maxFlushAgeMilliseconds: 5,
+			maxTransactionsPerTurn: 1,
+			maxChunkRecords: 1,
+		};
+		const first = new SyncBackend('fed-inherited-prefix', cursor(base), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => first.deliveries.length === 1 && endOfLogReads > 0);
+			clock += 401;
+			first.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			await owner.stop();
+			const previousEndReads = endOfLogReads;
+			let parked = true;
+			const second = new SyncBackend('fed-inherited-prefix', cursor(base), (batch, backend) => {
+				const delivered = backend.deliveries.length;
+				if (parked && delivered >= 11) return DERIVED_INDEX_DEFERRED;
+				if (batch.through) backend.cursor = batch.through;
+				if (delivered <= 10) {
+					const index = delivered + 1;
+					const id = `r${index}`;
+					records.set(`1:${id}`, { version: base + index, value: { title: id } });
+					entries.push(audit({ timestamp: base + index, recordId: id }));
+				}
+				return DERIVED_INDEX_ACCEPTED;
+			});
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => successor.getStatus(second.id)?.state === 'deferred');
+			assert.strictEqual(second.deliveries.length, 11);
+			assert.strictEqual(second.cursor.logs.local, base + 10);
+			assert.strictEqual(endOfLogReads, previousEndReads, 'the fed successor has not observed an empty tail');
+			const metrics = successor.getMetrics(second.id);
+			assert.strictEqual(metrics.cursorLagMilliseconds, 1);
+			assert(metrics.cursorLagMilliseconds < policy.maxLagMilliseconds / 2);
+			assert.strictEqual(metrics.oldestAcceptedAgeMilliseconds, 0);
+			assert.strictEqual(metrics.stalledMilliseconds, 0);
+			assert.notStrictEqual(derivedIndexWriteRejection(store, 1), undefined);
+
+			parked = false;
+			second.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+			assert(endOfLogReads > previousEndReads);
+			assert.strictEqual(second.cursor.logs.local, base + 11);
+		} finally {
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
 	it('holds an inherited lag trip until the first complete successor tail is durable, despite later offered work', async () => {
 		let clock = 1_000_000;
 		let endOfLogReads = 0;
@@ -2656,6 +2773,63 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		await waitFor(() => derivedIndexWriteRejection(Gated.auditStore, Gated.tableId) === undefined, { timeout: 5000 });
 		await Gated.put('g2', { title: 'admitted' });
 		await gatedRuntime.stop();
+	});
+
+	it('admits a real audited write after idle while its fresh accepted mutation awaits durability', async () => {
+		const { table } = require('#src/resources/databases');
+		const Gated = table({
+			database: 'derived-index-idle-lag-rocks',
+			table: 'Gated',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		await Gated.put('seed', { title: 'seed' });
+		const anchor = [...Gated.auditStore.getRange({ start: 1 })]
+			.filter((entry) => entry.tableId === Gated.tableId)
+			.at(-1).txnLogKey;
+		let acceptFirst;
+		const firstAccepted = new Promise((resolve) => {
+			acceptFirst = resolve;
+		});
+		let accepted = false;
+		firstAccepted.then(() => {
+			accepted = true;
+		});
+		const backend = new SyncBackend('real-idle-then-accepted', { format: 1, logs: { local: anchor } }, (batch) => {
+			acceptFirst(batch);
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const idleRuntime = new DerivedIndexRuntime(
+			Gated.auditStore,
+			(tableId, recordId) => {
+				const entry = Gated.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{ idleGraceMilliseconds: 60_000 }
+		);
+		idleRuntime.register({
+			backend,
+			projections: new Map([[Gated.tableId, (record) => ({ title: record.title })]]),
+			options: { maxLagMilliseconds: 1000, maxFlushAgeMilliseconds: 5 },
+		});
+		try {
+			await waitFor(() => idleRuntime.getStatus(backend.id)?.state === 'idle');
+			await sleep(1200);
+			await Gated.put('fresh', { title: 'fresh' });
+			await waitFor(() => accepted, 5000);
+			await firstAccepted;
+			const metrics = idleRuntime.getMetrics(backend.id);
+			assert(metrics.cursorLagMilliseconds >= 1000, 'the real commit clock includes the idle interval');
+			assert(metrics.oldestAcceptedAgeMilliseconds < 1000, 'the actual pending mutation is fresh');
+			assert.strictEqual(derivedIndexWriteRejection(Gated.auditStore, Gated.tableId), undefined);
+			await Gated.put('next', { title: 'still admitted' });
+			await waitFor(() => backend.deliveries.length >= 2);
+			backend.cursor = backend.deliveries.at(-1).through;
+			backend.stateChange();
+			await waitFor(() => idleRuntime.getMetrics(backend.id).acceptedMutations === 0);
+		} finally {
+			await idleRuntime.stop();
+		}
 	});
 
 	it('rebuilds from the primary store on the retained log boundary and replays to the head', async () => {

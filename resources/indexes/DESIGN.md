@@ -777,17 +777,15 @@ generation for that turn.
 
 ### Lag policy
 
-Opt-in per registration (`maxLagMilliseconds`; zero disables shedding), with a minimum of two flush
-ages. Admission measures actual work ages in the current ownership epoch: unread commits, a deferred
-or capped delivery, and accepted work awaiting durability. `cursorLagMilliseconds` remains a diagnostic
-commit-clock distance; it includes idle gaps and replicated-clock spans and does not drive admission.
+Opt-in per registration (`maxLagMilliseconds`; zero disables shedding), at least two flush ages.
+Admission uses actual unread, deferred, capped or accepted-but-not-durable work ages per ownership epoch.
+`cursorLagMilliseconds` is diagnostic clock distance, including idle gaps and replicated-clock spans.
 
 Past the budget the owner sets the shared flag; every worker's `derivedIndexWriteRejection`
 (`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) rejects local
-user writes to those tables with retryable `DERIVED_INDEX_LAGGING` (503). Checks remain at staging
+user writes with retryable `DerivedIndexLagError` / `DERIVED_INDEX_LAGGING` (503). Checks run at staging
 (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`), never canonical-source applies,
-crash recovery or replication notifications: rejecting canonical work would advance its source cursor
-past a write that never landed.
+crash recovery or replication: rejecting canonical work could skip a write that never landed.
 
 An owner clears its trip after a durable advance and an end-of-log pass, with actual work age below
 half the budget. A successor inheriting a trip additionally captures its first observed log tail and
@@ -798,7 +796,7 @@ across owner crashes. A lost-work rewind preserves the oldest pending work age a
 fixed target from the replayed log tail. Query coverage certification remains separate.
 
 Entering rebuild, unavailable, an unrecoverable `needs-rebuild`, a failed condemnation marker or a held
-lock admits writes as before; ordinary handoff preserves the shared flag. Shedding does not pin
+lock admits writes; ordinary handoff preserves the shared flag. Shedding does not pin
 retention: rocksdb-js has no protected-position registration, so the budget belongs inside effective
 retention and every worker must run admission-aware code.
 
