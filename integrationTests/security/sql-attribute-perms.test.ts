@@ -247,6 +247,31 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 				deepStrictEqual(rStar.body, [{ label: 'shared', ssn: '111' }]);
 			});
 
+			test('a quoted string or name that spells out a column list reads no other column', async () => {
+				const literal = `SELECT 'x'', ssn, ''y' AS v FROM data.ColPermLeft WHERE id = 'l1'`;
+				const r = await asReader(literal);
+				strictEqual(r.status, 200, `${literal} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+				deepStrictEqual(r.body, [{ v: "x', ssn, 'y" }]);
+
+				// v2 has no CONCAT.
+				if (sqlEngine !== 'new') {
+					const update = `UPDATE data.ColPermLeft SET label = CONCAT('x'', ssn, ''y') WHERE id = 'l2'`;
+					const u = await asReader(update);
+					strictEqual(u.status, 200, `${update} -> ${u.status} ${JSON.stringify(u.body).slice(0, 300)}`);
+					deepStrictEqual(await adminRow('l2'), { id: 'l2', label: "x', ssn, 'y" });
+					await client
+						.req()
+						.send({ operation: 'sql', sql: `UPDATE data.ColPermLeft SET label = 'other' WHERE id = 'l2'` })
+						.expect(200);
+				}
+
+				// Legacy SQL cannot write this name back out and refuses it; v2 reads it as one name.
+				const name = "SELECT label AS [x`,ssn,`y] FROM data.ColPermLeft WHERE id = 'l1'";
+				const n = await asReader(name);
+				ok(n.status === 200 || n.status === 400, `${name} -> ${n.status} ${JSON.stringify(n.body).slice(0, 300)}`);
+				ok(!JSON.stringify(n.body).includes('111'), 'the response must not carry the read-denied value');
+			});
+
 			test('super user is unaffected', async () => {
 				const r = await client.req().send({ operation: 'sql', sql: USING_DENIED });
 				if (sqlEngine === 'legacy') {

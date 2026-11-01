@@ -21,3 +21,9 @@ So the bucket attributes columns with the binder's own rules, which live in `col
 Row accessors that name no column, AlaSQL's `_`, JavaScript expressions and a JSON literal that sets `__proto__` (every walk here reads own properties, but AlaSQL evaluates the prototype), are refused for non-super users by `getRowAccessors()`. Legacy SQL's row container always carries the primary key (`dataLayer/SQLSearch.ts` keys rows by it), so a whole-row read would expose it whatever the role allows. The JavaScript refusal stays unconditional for non-super users, even if the `_` refusal is ever relaxed for roles without attribute permissions.
 
 Enforced by `unitTests/sqlTranslator/column-attribution.test.js`, `unitTests/sqlEngine/columnScope.test.js` and `integrationTests/security/sql-attribute-perms.test.ts`.
+
+## Legacy SQL runs the re-parse of the authorized statement's text (`legacySqlText.ts`)
+
+Legacy SQL writes the authorized AST back out with `toString()` and AlaSQL parses that text again (`dataLayer/SQLSearch.ts` `_buildSQL()`, `dataLayer/update.ts`, `deleteTranslator.ts`, and the compiled SET and INSERT expressions), so the permission check holds only if the text parses back to the same statement. AlaSQL writes string and JSON literals unescaped, so `'x'', ssn, ''y'` came back as three columns. `installLegacySqlText()`, run by `alasqlFunctionImporter`, replaces the `StringValue` and `Json` writers with ones that decode to the same value. `assertLegacySqlText()` refuses, with a 400 on the legacy path only, what has no spelling: a name containing `` ` ``, `[`, `]` or `'`, which backticks and brackets cannot escape, or a string whose backslashes and quotes AlaSQL's lexer cannot reproduce. v2 binds the AST directly.
+
+Enforced by `unitTests/sqlTranslator/legacySqlText.test.js` and the quoted-string case in `integrationTests/security/sql-attribute-perms.test.ts`.

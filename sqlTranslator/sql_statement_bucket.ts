@@ -279,7 +279,7 @@ function isKnownPrototype(prototype: object | null): boolean {
  * Every object node under `root`, each once. Iterative and unbounded: an expression nested arbitrarily
  * deep must still be seen, and AlaSQL shares one subquery node between two fields (EXISTS).
  */
-function* astNodes(root: any): Generator<any> {
+export function* astNodes(root: any): Generator<any> {
 	if (root === null || typeof root !== 'object') return;
 	const seen = new Set();
 	const pending = [root];
