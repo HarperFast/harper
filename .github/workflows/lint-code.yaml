@@ -14,6 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A pull request checks out GitHub's merge commit; its first parent is the base the
+          # design-doc ceilings are compared against.
+          fetch-depth: 2
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: '.node-version'
@@ -22,5 +26,19 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run lint:required
-      - run: npm run check:design-docs
+      - name: Check design docs
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        # Pull requests and pushes compare ceilings against what they change; a push compares against
+        # the tip it replaced, so every commit of a multi-commit push is covered. A scheduled or manual
+        # run, or a push whose old tip cannot be fetched, checks every file.
+        run: |
+          base=
+          if [ "$EVENT" = pull_request ]; then
+            base=HEAD^1
+          elif [ "$EVENT" = push ] && [ -n "${BEFORE//0/}" ]; then
+            if git fetch --no-tags --depth=1 origin "$BEFORE"; then base=$BEFORE; else echo "::warning::could not fetch $BEFORE; checking every design doc"; fi
+          fi
+          npm run check:design-docs -- ${base:+--base "$base"}
       - run: npm run check:unit-partition
