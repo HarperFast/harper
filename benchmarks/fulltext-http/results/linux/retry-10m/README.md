@@ -22,7 +22,9 @@ Successful reads/s uses actual admission-plus-drain duration. Distinct bucket co
 
 ## Memory, disk and scope
 
-Whole-scope cgroup high-water was **4,761,116,672 bytes (4.434 GiB)** under the 6 GiB maximum. This includes setup/client/harness/server and file cache. Highest sampled timed-cell process RSS was **1,916,555,264 bytes**, in the final structured cell; samples are not exact allocation peaks or a leak test. Cgroup OOM/kill counters remained zero. The run stayed below its hard memory limit; these observations do **not** establish query-driven memory-pressure qualification. A separate pressure control is outside this evidence bundle.
+The shared default layout and later audit classify this fixture as tmpfs-backed; its concrete root was not independently preserved in the selected completed report. Its du footprint measures memory-backed files, not NVMe residency or query-driven disk pressure; see the later [storage-location audit](../storage-location/README.md).
+
+Whole-scope cgroup high-water was **4,761,116,672 bytes (4.434 GiB)** under the 6 GiB maximum. This includes setup/client/harness/server and file accounting, including tmpfs/shmem. Highest sampled timed-cell process RSS was **1,916,555,264 bytes**, in the final structured cell; samples are not exact allocation peaks or a leak test. Cgroup OOM/kill counters remained zero. The run stayed below its hard memory limit; these observations do **not** establish query-driven memory-pressure qualification. A separate pressure control is outside this evidence bundle.
 
 The report disk snapshot was 2,594,402,304 bytes; later external du snapshots have their own boundaries in the receipt. Snapshot races, elapsed timing and index compaction preclude treating these as exact physical-capacity guarantees. Proc I/O is partial first-to-last observation per PID, explicitly distinguishing setup and restarted server; `io.stat` unavailable. No whole-run I/O or cold-storage claim.
 

@@ -1,0 +1,292 @@
+{
+	"format": 1,
+	"sourceDirectoryBasename": "fulltext-linux-10m-disk-pressure-2g-high768m",
+	"policy": "Preserve full selected data, metrics and diagnostic/error records. Only private identity/path strings redacted. No server/run/monitor logs, registry, configuration/auth/environment/cmdline. Three explicitly selected owned-unit oomd journal lines retained.",
+	"artifacts": [
+		{
+			"sourceRelativePath": "10000000.json",
+			"publishedRelativePath": "10000000.json.gz",
+			"rawPrivateSha256": "8d606dc9547e0971bd2056fdb60d5ffc13f56a8728ba10f68a2e99c5637c9ff2",
+			"sanitizedPayloadSha256": "8d606dc9547e0971bd2056fdb60d5ffc13f56a8728ba10f68a2e99c5637c9ff2",
+			"compressedSha256": "b519bf1ebb9097dc59788cee302fcb9c24359e62550e3739f4d27f688ce80543",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "boundary-cell-1.json",
+			"publishedRelativePath": "boundary-cell-1.json.gz",
+			"rawPrivateSha256": "1abfb75cdca46742c9400ab1f74495df9ee10d167f951359f8e48e043f74317a",
+			"sanitizedPayloadSha256": "4a141f14c5edb685d11171b6173ea71ac467e0975ac5537d03a87976189431b9",
+			"compressedSha256": "cd9122d34d31c190170d4d14116f275f8e0408e0676446dff38a54552d6fbc29",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "boundary-cell-2.json",
+			"publishedRelativePath": "boundary-cell-2.json.gz",
+			"rawPrivateSha256": "ee4ed76ee868f8e78b3f49652fb7e050506a06750806bfe4dc527a1c3da532de",
+			"sanitizedPayloadSha256": "3622b78eadd1a66f2dc4070446c9dd4d060bd07315f6268cdda93bc3beb1c24d",
+			"compressedSha256": "31f27630cb86bfc3f48ad876ade5927f179e5d0d93b6c8aa79ec964b7e6f5f92",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "boundary-cell-3.json",
+			"publishedRelativePath": "boundary-cell-3.json.gz",
+			"rawPrivateSha256": "26f25f1eb770320137ec04426d10a71625c440848f4ab48b41e1f45970f5dfaa",
+			"sanitizedPayloadSha256": "5c4bde71fb8039be208a744da11e8e1bd7a319378b84709ad0f522ef08a4dc72",
+			"compressedSha256": "20da68f2d7524fb35bb89e4e15470c8baf372c97c7aa7ea9e4913e3a1d2ef35e",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "boundary-cell-4.json",
+			"publishedRelativePath": "boundary-cell-4.json.gz",
+			"rawPrivateSha256": "a6fdb3aad583eaf5c7e0e8758ebf886bcfa825d8ab7397ad22d8f3b70876edc6",
+			"sanitizedPayloadSha256": "e892a59034cce902e000d6ac668818671964b9fb71e650e2bf50eec74232a8c5",
+			"compressedSha256": "f6f197febd3326927e4bf8f04739baf777cc376549f9aa31f987322355f69d90",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "boundary-cutover.json",
+			"publishedRelativePath": "boundary-cutover.json.gz",
+			"rawPrivateSha256": "f2c6e2cef77cef2a3a303ba0b32da7af75a52a6677f35c522d41011927b6566b",
+			"sanitizedPayloadSha256": "b7c0ef87bf591cb5bd976a1b7ed6540f5dc56c9491de3551a3c974b838062971",
+			"compressedSha256": "790e5cf1428c3114a94c98b1686d7a5c8e374396e1b3c58f94f0c80beaec69d3",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "boundary-latest.json",
+			"publishedRelativePath": "boundary-latest.json.gz",
+			"rawPrivateSha256": "4f7097fe0d02fad38454d434dfb52a1c0e3c20c2f2e8b1503cc620379cf7354a",
+			"sanitizedPayloadSha256": "4ff9d9ebc0fcd722da83547024bb86e0a73b4cde5f3a5bf4cf997976f7cd045c",
+			"compressedSha256": "d3a8bfb4280ad337e6a53b88828039965710f9c850dc2d0d52fefb7b6ed831fd",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "boundary-restart-first-observed.json",
+			"publishedRelativePath": "boundary-restart-first-observed.json.gz",
+			"rawPrivateSha256": "c165383a9c3ca8ee02031d822f909aaf4faf903f32f51207bc85a2d86b16bb38",
+			"sanitizedPayloadSha256": "70c939ab4fae5f75a173112a9cc0c004f03bef011b5ff3d083140ccdbe1814a1",
+			"compressedSha256": "54cd2822da66dd91c85048054a0d41ffc6d90aa67e7bd0adb6a845df9be1437c",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "cleanup-classification.json",
+			"publishedRelativePath": "cleanup-classification.json.gz",
+			"rawPrivateSha256": "9d31900f98f15dc03a9f1d7a67d2889134b3a8802c53f53daeb78f50ac8995a4",
+			"sanitizedPayloadSha256": "02371cedafd8e74cf2197a068aa9d8b899a47d0bfc313fffeb92842bc75ae1ef",
+			"compressedSha256": "c01890c813812bc1aaa2fba12aaae6608bca7f0d6fb3e743073810409616ce9b",
+			"replacementCount": 1,
+			"replacementCategories": {
+				"fixtureRoot": 1
+			}
+		},
+		{
+			"sourceRelativePath": "engine-observation-complete.json",
+			"publishedRelativePath": "engine-observation-complete.json.gz",
+			"rawPrivateSha256": "95ab67dccc6b7b6bd47495d3f8611a685d8a6db8728d5e09d03427b94050042c",
+			"sanitizedPayloadSha256": "781587e977556fa7bab36c8d7b9ddfef6acbf2d72c08375a984670ee33c2418d",
+			"compressedSha256": "a34ce7ee68564cd8e834fc5d794e15216853a3352c64c7e6ee0d90138f1cb3cc",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "external-observation.json",
+			"publishedRelativePath": "external-observation.json.gz",
+			"rawPrivateSha256": "e69697c3cf5988faf73a7aa561eada0be7f4172925b9a7fc99ca80e8006c2a2d",
+			"sanitizedPayloadSha256": "ebd0246134a99949d17768f9777fe184d52748e0ffa18ffa89f09324c54ef60c",
+			"compressedSha256": "04b2f55725dfbc88ce9bb82fd3e16d65373b7554997f9c7498afd3edd492041c",
+			"replacementCount": 2,
+			"replacementCategories": {
+				"json:/fixtureRoots/0": 1,
+				"fixtureRoot": 1
+			}
+		},
+		{
+			"sourceRelativePath": "pressure-controller-complete.json",
+			"publishedRelativePath": "pressure-controller-complete.json.gz",
+			"rawPrivateSha256": "91316f46d46d984af550929b8734becad2794a9bea1ca38012118d842032b7d3",
+			"sanitizedPayloadSha256": "9643af71e1be05ff7a4e41d3dcfc084562779d7f76a462dee7d2cf0e202a64fa",
+			"compressedSha256": "8aa5c6b22f6585d749730b6ab90df296b7ca9643d3f02a201b6728f6a6998ad8",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "pressure-controller-initial.json",
+			"publishedRelativePath": "pressure-controller-initial.json.gz",
+			"rawPrivateSha256": "57153558935b57aa4572c20da580bac06a1f0d36c09e0d3b21d9ef696faeb41e",
+			"sanitizedPayloadSha256": "472b1794d0e3db3730d03ffe25a26a5f1f675ea6844886cecee2f9028697861b",
+			"compressedSha256": "f891a575d08a2785bac71b5408c14bacb219b3c0b9e08c78cec8600f75974c65",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "pressure-cutover.json",
+			"publishedRelativePath": "pressure-cutover.json.gz",
+			"rawPrivateSha256": "6e5b7ca433509ff2c83a80e5fb01e72262cba68f38e63f77249269c0dc0081eb",
+			"sanitizedPayloadSha256": "5e2975a38dcc16db56964d898ab4a0612dfe7a973566556059c3f81723f51b11",
+			"compressedSha256": "1de08da3a81da7510270035300dcbb316439303b24920437db0b82f69da13f02",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "provenance.json",
+			"publishedRelativePath": "provenance.json.gz",
+			"rawPrivateSha256": "cb4187c3de7a9ec83b6302649248729b7e142d85e0df632e91c454421303864b",
+			"sanitizedPayloadSha256": "cb4187c3de7a9ec83b6302649248729b7e142d85e0df632e91c454421303864b",
+			"compressedSha256": "533ce722d5364f02e60b95f02ccf7c7806beaffdec7aec8727eb54f8645a588b",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "system-information-cell-1.json",
+			"publishedRelativePath": "system-information-cell-1.json.gz",
+			"rawPrivateSha256": "1f7f9eba0946bf2cd16579e0042485cdf18dfea70e6ec9e374a91142797aa9f5",
+			"sanitizedPayloadSha256": "38343ab6d8afa4c328b1567e57c6facf58af8af47944ebe0815bad899381281c",
+			"compressedSha256": "48cf16e4adba78ef5cc7808104d8d65a0164e84a44b15c0eb748bafbe714373a",
+			"replacementCount": 3,
+			"replacementCategories": {
+				"json:/metrics/system/hostname": 1,
+				"json:/metrics/system/fqdn": 1,
+				"json:/metrics/harperdb_processes/core/0/user": 1
+			}
+		},
+		{
+			"sourceRelativePath": "system-information-cell-2.json",
+			"publishedRelativePath": "system-information-cell-2.json.gz",
+			"rawPrivateSha256": "58517f0b1ed035510eac30a3d9705c31651bb673277f14fb3ecc7a8d34d0e265",
+			"sanitizedPayloadSha256": "acbebfb156c3494b36911bbf7e98b74c37e11202ac2db4e5ed6a5d03a8dec861",
+			"compressedSha256": "36ea11374abcba664c1cb465679ecae74349b4977b064863a1777bcbf11e87ed",
+			"replacementCount": 3,
+			"replacementCategories": {
+				"json:/metrics/system/hostname": 1,
+				"json:/metrics/system/fqdn": 1,
+				"json:/metrics/harperdb_processes/core/0/user": 1
+			}
+		},
+		{
+			"sourceRelativePath": "system-information-setup-10min.json",
+			"publishedRelativePath": "system-information-setup-10min.json.gz",
+			"rawPrivateSha256": "9fc80c0207af5e8441a2be8352c4690fa74c1cc0f57a893344a72ac2c40e0a5e",
+			"sanitizedPayloadSha256": "78a07359f944084b9bfccad58b47a5b73696f07ac8cc381296d0d43d894e84d6",
+			"compressedSha256": "fda56171cd0aedf6960bd645d6923366fcf89eccc629cc2b39de8184ee30f564",
+			"replacementCount": 3,
+			"replacementCategories": {
+				"json:/metrics/system/hostname": 1,
+				"json:/metrics/system/fqdn": 1,
+				"json:/metrics/harperdb_processes/core/0/user": 1
+			}
+		},
+		{
+			"sourceRelativePath": "system-information-setup-5min.json",
+			"publishedRelativePath": "system-information-setup-5min.json.gz",
+			"rawPrivateSha256": "ebfda1f93d2dd4ab90f1caedf73c5e6ad70d392c42dc3c394dfe15ff813094a4",
+			"sanitizedPayloadSha256": "92236c2a62b70e98c8e9db20d574b33aed6846f1357b11832003da270f515185",
+			"compressedSha256": "d87b780b6f335cdb52a8bea47df9b3f74d696f69e66fa5a19d7d483e642070da",
+			"replacementCount": 3,
+			"replacementCategories": {
+				"json:/metrics/system/hostname": 1,
+				"json:/metrics/system/fqdn": 1,
+				"json:/metrics/harperdb_processes/core/0/user": 1
+			}
+		},
+		{
+			"sourceRelativePath": "errors.ndjson",
+			"publishedRelativePath": "errors.ndjson.gz",
+			"rawPrivateSha256": "195395bea54729f6752bc25ab8e611ce07766ce98104f97f9f51dbaec1b240b1",
+			"sanitizedPayloadSha256": "195395bea54729f6752bc25ab8e611ce07766ce98104f97f9f51dbaec1b240b1",
+			"compressedSha256": "c5c0f77c328c471c921558c198b8b5355039f9911b99511272339fa72425e7e3",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "pressure-observations.ndjson",
+			"publishedRelativePath": "pressure-observations.ndjson.gz",
+			"rawPrivateSha256": "196aba87ebe52b3c48757a72700ee5d5fab040cfb36520e22182e77b46e39f07",
+			"sanitizedPayloadSha256": "196aba87ebe52b3c48757a72700ee5d5fab040cfb36520e22182e77b46e39f07",
+			"compressedSha256": "cafef4567c49b68ca7e9d9efa0316eb160c4461b6e26a55492d8873e344603a6",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"publishedRelativePath": "measurement-receipt.json",
+			"sha256": "675bb594fe5101ebe3184c8d4bfa408de64b78f65f961ef028955a796936a07d",
+			"inputPaths": [
+				"actual-fixture-mount-proof.txt",
+				"cgroup-relative.txt",
+				"cpu.max.before.txt",
+				"cpu.pressure.before.txt",
+				"cpu.stat.before.txt",
+				"database-footprint-cell-1-kib.txt",
+				"database-footprint-cell-1-stderr.txt",
+				"database-footprint-cell-2-kib.txt",
+				"database-footprint-cell-2-stderr.txt",
+				"database-footprint-cell-3-kib.txt",
+				"database-footprint-cell-3-stderr.txt",
+				"database-footprint-cell-4-kib.txt",
+				"database-footprint-cell-4-stderr.txt",
+				"database-footprint-final-kib.txt",
+				"database-footprint-final-stderr.txt",
+				"database-footprint-setup-5min-kib.txt",
+				"database-footprint-setup-5min-stderr.txt",
+				"fixture-diskspace-before.txt",
+				"fixture-filesystem.txt",
+				"io.pressure.before.txt",
+				"io.stat.before.txt",
+				"memory.current.before.txt",
+				"memory.events.before.txt",
+				"memory.max.before.txt",
+				"memory.peak.before.txt",
+				"memory.pressure.before.txt",
+				"memory.stat.before.txt",
+				"memory.swap.max.before.txt",
+				"scope-ended-at.txt",
+				"scope-exit-status.txt",
+				"scope-started-at.txt",
+				"server-proc-io.922868.first.txt",
+				"server-proc-io.922868.last.txt",
+				"server-proc-io.938815.first.txt",
+				"server-proc-io.938815.last.txt",
+				"server-proc-stat.922868.first.txt",
+				"server-proc-stat.922868.last.txt",
+				"server-proc-stat.938815.first.txt",
+				"server-proc-stat.938815.last.txt",
+				"server-proc-status.922868.first.txt",
+				"server-proc-status.922868.last.txt",
+				"server-proc-status.938815.first.txt",
+				"server-proc-status.938815.last.txt",
+				"system-information-cell-3-unavailable.txt",
+				"system-information-cell-4-unavailable.txt"
+			]
+		},
+		{
+			"sourceRelativePath": "owned-unit-journal.txt",
+			"selectedSourceLineNumbers": [2, 3, 4],
+			"rawPrivateWholeFileSha256": "f1816b12436824bf55ced272f2fac29d2225a55e47e9726970c592a62f227309",
+			"rawSelectedPrivateSha256": "eded76419cab07f4b3347b24af8da953e28963c77fcb497c5addf62d1ffec1ea",
+			"publishedRelativePath": "owned-unit-oomd-journal.txt.gz",
+			"sanitizedPayloadSha256": "a9eaa475d5673c04fd398a2c0db01091d909011e5767290be5478368af670b6f",
+			"compressedSha256": "38749e04f628d903de6d0933dcb99264193012686f47ae54ace455d1c861b98b",
+			"replacementCount": 3,
+			"replacementCategories": {
+				"hostname": 3
+			},
+			"selectionNote": "Startup command line excluded. All three selected oomd/result/consumed metric lines retained."
+		}
+	],
+	"generatedArtifacts": [
+		{
+			"path": "summary.json",
+			"sha256": "39d196e97638bbd895e6af7f06f205becaa655eb457ddda0e52586b44df347e2"
+		},
+		{
+			"path": "README.md",
+			"sha256": "1f9591e9481af31d75e4b7cde72df1700af639018cc3cfa5cee26201b6429617"
+		}
+	]
+}

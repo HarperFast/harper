@@ -1,5 +1,7 @@
 # Linux large-catalog flag smoke and failed 10M pilot
 
+The failed setup has direct temporary-root evidence; the smoke uses the same default layout. The later audit classifies these fixtures as tmpfs-backed with per-run evidence limits. Catalog footprints are memory-backed; these attempts supply no disk-pressure evidence. See the later [storage-location audit](../storage-location/README.md).
+
 Status: observed 2026-11-01; no completed 10M query result. Owner: Kyle.
 
 ## Failed pilot

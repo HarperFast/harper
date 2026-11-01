@@ -1,0 +1,51 @@
+[
+	{
+		"run": "fulltext-linux-large-flag-smoke",
+		"head": "31e3ffab8c054764cde062951ceba5cda04dfb2f",
+		"runHarnessSha256": "959b6662730e1eafbf276e1f072ac288ccc3c2fb135c9f70d79f28b329e1631e",
+		"sourceProvenanceSha256": "bd9c587e63d9c4e64a065f7cab3835ba388805a2b3c1ae714680a712fbd6b8ab",
+		"locationEvidence": "bounded inference from shared/default fixture path behavior; no direct root retained in selected completed report"
+	},
+	{
+		"run": "fulltext-linux-1m-8cpu6g",
+		"head": "b5f6659f7d1ed33670d63a31807aacf5c7d8e2d5",
+		"runHarnessSha256": "b1f95fff52629f66a3272dd341be65f72136f4472c344665d1ae3d7e4e4338bd",
+		"sourceProvenanceSha256": "7e3e88124c2e22fdb605827184a122ad665829965f3f1597b5d9d607bdb8b982",
+		"locationEvidence": "bounded inference from shared/default fixture path behavior; no direct root retained in selected completed report"
+	},
+	{
+		"run": "fulltext-linux-baseline-1m-8cpu6g",
+		"head": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
+		"runHarnessSha256": "b1f95fff52629f66a3272dd341be65f72136f4472c344665d1ae3d7e4e4338bd",
+		"sourceProvenanceSha256": "8ae1225f531ca1084e7471f37ae3c7962ca4449a5cd0023958b3aa44a43c34c6",
+		"locationEvidence": "bounded inference from shared/default fixture path behavior; no direct root retained in selected completed report"
+	},
+	{
+		"run": "fulltext-linux-10m-8cpu6g",
+		"head": "31e3ffab8c054764cde062951ceba5cda04dfb2f",
+		"runHarnessSha256": "959b6662730e1eafbf276e1f072ac288ccc3c2fb135c9f70d79f28b329e1631e",
+		"sourceProvenanceSha256": "b8192056f328590aba738c3e92544ff0a3866a322697751e29101fc688326621",
+		"locationEvidence": "direct historical /tmp fixture-root trace"
+	},
+	{
+		"run": "fulltext-linux-10m-8cpu6g-retry-c092",
+		"head": "c09243d1e4f9915a0e3b933dc01d45afa24faec0",
+		"runHarnessSha256": "7e2760e9eb7398c5894cc1b65f176e7c45635ef9d272d6a97afe660c6795fbd5",
+		"sourceProvenanceSha256": "cb4187c3de7a9ec83b6302649248729b7e142d85e0df632e91c454421303864b",
+		"locationEvidence": "bounded inference from shared/default fixture path behavior; no direct root retained in selected completed report"
+	},
+	{
+		"run": "fulltext-linux-10m-pressure-2g-high768m",
+		"head": "c09243d1e4f9915a0e3b933dc01d45afa24faec0",
+		"runHarnessSha256": "7e2760e9eb7398c5894cc1b65f176e7c45635ef9d272d6a97afe660c6795fbd5",
+		"sourceProvenanceSha256": "cb4187c3de7a9ec83b6302649248729b7e142d85e0df632e91c454421303864b",
+		"locationEvidence": "direct historical /tmp fixture-root trace"
+	},
+	{
+		"run": "fulltext-linux-du-fix-smoke",
+		"head": "c09243d1e4f9915a0e3b933dc01d45afa24faec0",
+		"runHarnessSha256": "7e2760e9eb7398c5894cc1b65f176e7c45635ef9d272d6a97afe660c6795fbd5",
+		"sourceProvenanceSha256": "9cecf8a2893568cecef6c94c991daab12350e4a977292d2c050e8a1ff13c4304",
+		"locationEvidence": "bounded inference from shared/default fixture path behavior; no direct root retained in selected completed report"
+	}
+]

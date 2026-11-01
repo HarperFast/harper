@@ -154,11 +154,11 @@
 	"generatedArtifacts": [
 		{
 			"path": "summary.json",
-			"sha256": "6bc6c1b605058fd7ac26683dd3f9cfe6ffbf15090fa66bf60153549e269ac7a5"
+			"sha256": "a212d87ccf00e05d687e7bcc347d30c86c2f361eac9982b67317444a19e23e05"
 		},
 		{
 			"path": "README.md",
-			"sha256": "dd6cc0e39a68793a83650b12d0885a29e6f61f39208dea74f4dd9eaa5c6c2dc3"
+			"sha256": "f7af08b89455b55d40c1460eca3dc7800afe15a76fd39035d64458221f6dbe48"
 		}
 	],
 	"measurementReceiptFormatting": "Normalized receipt JSON uses repository formatting; input snapshot text and hashes are unchanged."

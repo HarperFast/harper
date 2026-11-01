@@ -1,0 +1,149 @@
+{
+	"format": 1,
+	"sourceDirectoryBasename": "fulltext-linux-10m-pressure-2g-high768m",
+	"policy": "Preserve report/diagnostics/errors/metrics/provenance. Redact only private identity/path strings. Exclude run/build/monitor logs, registry, config/auth/environment/cmdline. Explicit exception: retain three owned-unit OOM journal evidence lines, excluding startup command line.",
+	"artifacts": [
+		{
+			"sourceRelativePath": "10000000.json",
+			"publishedRelativePath": "10000000.json.gz",
+			"rawPrivateSha256": "23e6e70568733c009f7b1532f173ea5f26a2d18a9ad17dd47080273a5f40277b",
+			"sanitizedPayloadSha256": "23e6e70568733c009f7b1532f173ea5f26a2d18a9ad17dd47080273a5f40277b",
+			"compressedSha256": "33e8b4f66999d52e489a91f7e1c7fe8f4eff04c84562022c36bc8632a1772cd5",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "errors.ndjson",
+			"publishedRelativePath": "errors.ndjson.gz",
+			"rawPrivateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"sanitizedPayloadSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"compressedSha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "provenance.json",
+			"publishedRelativePath": "provenance.json.gz",
+			"rawPrivateSha256": "cb4187c3de7a9ec83b6302649248729b7e142d85e0df632e91c454421303864b",
+			"sanitizedPayloadSha256": "cb4187c3de7a9ec83b6302649248729b7e142d85e0df632e91c454421303864b",
+			"compressedSha256": "533ce722d5364f02e60b95f02ccf7c7806beaffdec7aec8727eb54f8645a588b",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "external-observation.json",
+			"publishedRelativePath": "external-observation.json.gz",
+			"rawPrivateSha256": "6291e80a63322a4b6730872c0a653585e52f6dc4ebe07ab6eff180eb22c0e4bc",
+			"sanitizedPayloadSha256": "6291e80a63322a4b6730872c0a653585e52f6dc4ebe07ab6eff180eb22c0e4bc",
+			"compressedSha256": "60040dfe027eab44052ef2b2b3a485cb5c9c2508140a61bb05a165e48bfb75a1",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "cleanup-classification.json",
+			"publishedRelativePath": "cleanup-classification.json.gz",
+			"rawPrivateSha256": "1174efc841efaeaa22cff748c47249ab08270bd7f5e27f75b0e7703e45c9db21",
+			"sanitizedPayloadSha256": "1174efc841efaeaa22cff748c47249ab08270bd7f5e27f75b0e7703e45c9db21",
+			"compressedSha256": "28a4f57af0bf8892bfc0ae4557368a4befd8dde2c9928d875760039b801b4bec",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "pressure-controller-initial.json",
+			"publishedRelativePath": "pressure-controller-initial.json.gz",
+			"rawPrivateSha256": "3e99d407e1f14f5c2d07d6427549dc73dc5efb4a829fa4a3717e34630984eb86",
+			"sanitizedPayloadSha256": "3e99d407e1f14f5c2d07d6427549dc73dc5efb4a829fa4a3717e34630984eb86",
+			"compressedSha256": "c34ceed3df5882f2d26ae104686c24f7aa42529ae5fd3aedb9dd1a34cbfeff6d",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "pressure-controller-complete.json",
+			"publishedRelativePath": "pressure-controller-complete.json.gz",
+			"rawPrivateSha256": "69a8289b4b6a4234c45e3b57f04a16f48c3cf3850828e6c51e1fbd306b0f7293",
+			"sanitizedPayloadSha256": "69a8289b4b6a4234c45e3b57f04a16f48c3cf3850828e6c51e1fbd306b0f7293",
+			"compressedSha256": "3131489f9d7059f0d9e5fbd96a56a74320a643ab7d24422004b9461e3e22fd7d",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "pressure-observations.ndjson",
+			"publishedRelativePath": "pressure-observations.ndjson.gz",
+			"rawPrivateSha256": "f3f808abe9659157dafa997536ab099197f1e13b1c37255883029a73eb6c17ff",
+			"sanitizedPayloadSha256": "f3f808abe9659157dafa997536ab099197f1e13b1c37255883029a73eb6c17ff",
+			"compressedSha256": "246057b63b5ccc5641d59b41965a5549c9338db2f11aeaa61a110516ca07a554",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "system-information-setup-5min.json",
+			"publishedRelativePath": "system-information-setup-5min.json.gz",
+			"rawPrivateSha256": "c1e1536c09c58cae40b5fbb4ade0f91073a3e702c007dd4fd76eda488b912178",
+			"sanitizedPayloadSha256": "15f936fde658766d85840982c406751f15fc5fe9501111299533af68a2c7b3f1",
+			"compressedSha256": "33555ecd7b9ee9c86adedf479b745dc45287ce494593bde56c89b39a224c8529",
+			"replacementCount": 3,
+			"replacementCategories": {
+				"nestedAPIIdentity": {
+					"hostname": 1,
+					"fqdn": 1,
+					"user": 1
+				}
+			},
+			"sanitizationNote": "Recursive hostname/fqdn/user/username identity fields redacted; all numeric metrics retained."
+		},
+		{
+			"publishedRelativePath": "measurement-receipt.json",
+			"sha256": "7b93fd3b706522fae4717537e0f1ce51bb0e16a39384f07dd4d960511281fc83",
+			"inputPaths": [
+				"cgroup-relative.txt",
+				"cpu.max.before.txt",
+				"cpu.pressure.before.txt",
+				"cpu.stat.before.txt",
+				"database-footprint-setup-5min-kib.txt",
+				"database-footprint-setup-5min-stderr.txt",
+				"io.pressure.before.txt",
+				"io.stat.before.txt",
+				"memory.current.before.txt",
+				"memory.events.before.txt",
+				"memory.max.before.txt",
+				"memory.peak.before.txt",
+				"memory.pressure.before.txt",
+				"memory.stat.before.txt",
+				"memory.swap.max.before.txt",
+				"scope-ended-at.txt",
+				"scope-exit-status.txt",
+				"scope-started-at.txt",
+				"server-proc-io.909825.first.txt",
+				"server-proc-io.909825.last.txt",
+				"server-proc-stat.909825.first.txt",
+				"server-proc-stat.909825.last.txt",
+				"server-proc-status.909825.first.txt",
+				"server-proc-status.909825.last.txt"
+			]
+		},
+		{
+			"sourceRelativePath": "owned-unit-journal.txt",
+			"selectedSourceLineNumbers": [2, 3, 4],
+			"omittedReason": "Startup line contains command line, excluded by privacy policy. No OOM/result/consumed metric line omitted.",
+			"rawPrivateWholeFileSha256": "994c4e690277e8a56e0479c27a506d8c8312acdcd17253f134d92ca4590da502",
+			"rawSelectedPrivateSha256": "c27efa1abed292b9be7270bb1962abf58575a311a572fc92f56f091a413843fd",
+			"sanitizedPayloadSha256": "7153ec9dd22ff4f04e1e964669b237395a45cc4f7934f24006c04d05e6aff419",
+			"compressedSha256": "b9d5b57d6a14bbab1ccd41befe735b1ca4eeaf7525f5ad35423beaafd771fe5f",
+			"publishedRelativePath": "owned-unit-oom-journal.txt.gz",
+			"replacementCount": 3,
+			"replacementCategories": {
+				"hostname": 3
+			}
+		}
+	],
+	"generatedArtifacts": [
+		{
+			"path": "README.md",
+			"sha256": "5ecd4797a97f537ac7f9c80d97930c584fbf55cff3c93bda8d7ac99c035f3b78"
+		},
+		{
+			"path": "summary.json",
+			"sha256": "be3c2b9d2c0ed71e1082a293ea41e0f5416d0a046b3d66c539a521a4fb4efc83"
+		}
+	]
+}

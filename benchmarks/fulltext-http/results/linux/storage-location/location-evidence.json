@@ -1,0 +1,43 @@
+{
+	"historicalDirectRootTraces": [
+		{
+			"run": "fulltext-linux-10m-8cpu6g",
+			"sourceRelativePath": "10000000.json",
+			"sourceField": "failure",
+			"rootLocation": "/tmp/<HARPER_TEST_ROOT>",
+			"privateDistinctFixtureRootCount": 1,
+			"locationOccurrenceCount": 4,
+			"rootStringSha256": ["d5a39cf7c6d00f208ce5ccdaf5ea164ef09166cbcca05647fe30acd5d44d368b"],
+			"scope": "Historical trace contains a concrete fixture-root path under /tmp. Ephemeral private basename omitted; no other report content exported."
+		},
+		{
+			"run": "fulltext-linux-10m-pressure-2g-high768m",
+			"sourceRelativePath": "database-footprint-setup-5min-kib.txt",
+			"sourceField": null,
+			"rootLocation": "/tmp/<HARPER_TEST_ROOT>",
+			"privateDistinctFixtureRootCount": 1,
+			"locationOccurrenceCount": 14,
+			"rootStringSha256": ["eb43fb0e55d6f1dbf87939c7742e46a52cb70d7d0d364f66c005095e6bc58bff"],
+			"scope": "Historical trace contains a concrete fixture-root path under /tmp. Ephemeral private basename omitted; no other report content exported."
+		}
+	],
+	"defaultDirectoryInference": {
+		"localIntegrationTestingVersion": "1.0.3",
+		"localLifecycleSourceSha256": "4cf198a2773839231898fd5594c11dae99baf98c02f8bcc70e610b256d57f2a9",
+		"selectedDefaultDirectorySourceLines": [
+			{
+				"line": 384,
+				"text": "const dataRootDirPrefix = join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-');"
+			},
+			{
+				"line": 385,
+				"text": "const dataRootDir = await mkdtemp(dataRootDirPrefix);"
+			},
+			{
+				"line": 432,
+				"text": "const dataRootDirPrefix = join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), `harper-integration-test-`);"
+			}
+		],
+		"scope": "Local installed dependency explains default directory resolution. It is not an exact historical remote dependency hash or proof that a per-run override was absent. No environment values are included."
+	}
+}

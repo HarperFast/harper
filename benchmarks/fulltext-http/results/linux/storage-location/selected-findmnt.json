@@ -1,0 +1,6 @@
+{
+	"observedAt": "2026-11-01T18:56:25.743555+00:00",
+	"fixtureFilesystem": "TARGET SOURCE FSTYPE OPTIONS\n/tmp   tmpfs  tmpfs  rw,nosuid,nodev,size=15998288k,nr_inodes=1048576,inode64,usrquota\n",
+	"fixtureDirectories": [],
+	"scope": "Later cleanup-time mount observation, not contemporaneous per-run findmnt capture."
+}

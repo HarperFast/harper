@@ -35,9 +35,11 @@ Two observed HTTP workers; 8 CPU quota, 6 GiB cgroup memory limit; Node 24.16.0.
 
 ## Failures and memory scope
 
+The original fixtures are classified as tmpfs-backed from the shared default layout and later audit; see the per-run evidence-strength caveat below. Catalog files were memory-backed; their footprints and cgroup file accounting do not establish NVMe residency or disk pressure. The later [storage-location audit](storage-location/README.md) records the evidence boundary.
+
 Feature recorded 70 write `DERIVED_INDEX_LAGGING` errors, 17 read transport `terminated` errors and two unknown bounded counts. Baseline recorded 10 write `DERIVED_INDEX_LAGGING` errors and two read transport `terminated` errors. Both retain every original error record. The shared classes occur on baseline too; this does not prove identical root causes. Cells with rejection or unknown-count failures remain unqualified.
 
-Cgroup high-water marks were 1,432,571,904 bytes (feature) and 1,286,000,640 bytes (baseline). Both report zero OOM/kill events. These include harness/client/server and page cache; they are not isolated server allocation peaks or leak bounds. `serverRssPeakBytes` in the reports is a sampled process RSS maximum. Proc I/O samples cover only the documented mid-run observation interval. `io.stat` was unavailable. Measurement receipts preserve raw selected snapshots and source hashes.
+Cgroup high-water marks were 1,432,571,904 bytes (feature) and 1,286,000,640 bytes (baseline). Both report zero OOM/kill events. These include harness/client/server and file accounting, including tmpfs/shmem; they are not isolated server allocation peaks or leak bounds. `serverRssPeakBytes` in the reports is a sampled process RSS maximum. Proc I/O samples cover only the documented mid-run observation interval. `io.stat` was unavailable. Measurement receipts preserve raw selected snapshots and source hashes.
 
 ## Provenance and sanitization
 
@@ -56,3 +58,11 @@ The [larger-catalog flag smoke and failed 10M setup](setup-attempt/README.md) ar
 The disk classifier was also checked at [c09243d1e](https://github.com/HarperFast/harper/commit/c09243d1e4f9915a0e3b933dc01d45afa24faec0) through a [real Node child-process replay](disk-guard-verification.json) of the failed `du` output. Permission errors and exit 2 were rejected. A five-case 1,000-row HTTP smoke passed at that commit; it did not deliberately force filesystem retirement. Neither check is large-catalog performance qualification.
 
 The [completed 10M retry](retry-10m/README.md) returned 63,897 validated pages across five read-only/eight-client cells with no errors or unknown totals. It preserves per-case coverage and does not establish an above-memory working set.
+
+The separate [2 GiB pressure control](pressure-2g/README.md) ended in a kernel OOM during setup, before timed cells or its planned soft-limit cutover. Its cgroup included substantial shared-memory charges outside process RSS. This is setup-capacity evidence, not query-pressure qualification.
+
+These recorded runs predate the final-sampler fix: an in-flight last diagnostic/guard failure could be omitted from the final verdict. Reported response oracles and raw samples are retained, but the old `qualified` verdict does not prove that final guard completed successfully. Later code fixes that race; it does not retroactively remeasure these runs.
+
+The [corrected NVMe/ext4 10M control](disk-pressure-2g/README.md) completed setup and relevance under a 2 GiB hard limit, then crossed a verified 768 MiB soft-limit cutover. It recorded 43,604 validated responses and 79 failures before systemd-oomd termination. The structured timed cell and final verdict are absent. This is observed overload/pressure evidence, not a complete qualification pass or an A/B comparison with the tmpfs run.
+
+The [final harness smoke](final-smoke/README.md) at [82d13ca6f](https://github.com/HarperFast/harper/commit/82d13ca6f0b42db3e68a73a9acef899e56a2d851) passed nine pure tests and five 1,000-row disk-backed cells, with 1,835 validated responses and no errors or unknown counts. It verifies normal finalization and fixture lifecycle after the late-sampler fix, not large-catalog capacity.
