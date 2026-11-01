@@ -65,33 +65,55 @@ async function disconnectDuring(port, entered) {
 	}
 }
 
+async function canBindIpv6Loopback() {
+	const probe = net.createServer();
+	try {
+		probe.listen(0, '::1');
+		await once(probe, 'listening');
+		return true;
+	} catch (error) {
+		if (error.code === 'EADDRNOTAVAIL' || error.code === 'EAFNOSUPPORT') return false;
+		throw error;
+	} finally {
+		probe.close();
+	}
+}
+
 (uwsAvailable ? describe : describe.skip)('uWS request cancellation and peer address', function () {
-	let port, server, handle;
+	let port, server, handle, nodePort, nodeServer;
 	before(async function () {
 		port = await getFreeTcpPort();
+		// no host: uWS binds dual-stack, as Harper's uWS listener does for a bare http.port
 		server = await createUwsServer({ port, handler: (request) => handle(request) });
+		// Node on '::' like threadServer.ts's default listen, the reference for request.ip on the Node path
+		nodeServer = http.createServer((request, response) => response.end(request.socket.remoteAddress));
+		nodeServer.listen(0, '::');
+		await once(nodeServer, 'listening');
+		nodePort = nodeServer.address().port;
 	});
-	after(() => server?.close());
+	after(() => {
+		server?.close();
+		nodeServer?.close();
+	});
 
-	it('reports each IPv4 peer as itself across a keep-alive server', async function () {
+	it('reports each IPv4 peer as Node does across a keep-alive server', async function () {
 		handle = (request) => ({ status: 200, body: request.ip });
 		const seen = [];
+		const seenByNode = [];
 		for (const localAddress of ['127.0.0.1', '127.0.0.2', '127.0.0.2', '127.0.0.1']) {
 			seen.push(await get(port, { localAddress }));
+			seenByNode.push(await get(nodePort, { localAddress }));
 		}
-		assert.deepStrictEqual(seen, ['127.0.0.1', '127.0.0.2', '127.0.0.2', '127.0.0.1']);
+		assert.deepStrictEqual(seen, seenByNode);
+		assert.deepStrictEqual(seen, ['::ffff:127.0.0.1', '::ffff:127.0.0.2', '::ffff:127.0.0.2', '::ffff:127.0.0.1']);
 	});
 
-	it('reports an IPv6 peer in uWS text form', async function () {
+	it('reports an IPv6 peer as Node does', async function () {
+		if (!(await canBindIpv6Loopback())) this.skip();
 		handle = (request) => ({ status: 200, body: request.ip });
-		let body;
-		try {
-			body = await get(port, { host: '::1', family: 6 });
-		} catch (error) {
-			if (error.code === 'EADDRNOTAVAIL' || error.code === 'ECONNREFUSED') this.skip();
-			throw error;
-		}
-		assert.strictEqual(body, '0000:0000:0000:0000:0000:0000:0000:0001');
+		const body = await get(port, { host: '::1', family: 6 });
+		assert.strictEqual(body, await get(nodePort, { host: '::1', family: 6 }));
+		assert.strictEqual(body, '::1');
 	});
 
 	it('hands a handler that reads its signal only after the client left an aborted signal', async function () {

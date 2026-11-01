@@ -870,6 +870,10 @@ Not covered: only the finally selected candidate is resolved, so a vanished dire
 
 uWS force-closes a completed `Connection: close` response while an upload is still arriving, which can lose its status to EPIPE. `uwsServer.ts` flushes a non-empty coarse-limit 413 chunk before discarding bytes until body end or a one-second deadline; that absolute resource bound guarantees early status, not complete framing for a sender that ignores it. Destroying a paused Readable does not clear its queue, so teardown removes data listeners and reads out queued bytes in bounded chunks before retaining the response. Native abort disarms the finisher independently of handler cancellation. "uWS oversized TCP uploads" in `unitTests/server/serverHelpers/uwsServer.test.js` pins these paths and unchanged immediate keep-alive rejection. Other rejection sites, including downstream responses from `contentTypes.ts`'s default 10 MB limit, still end immediately and remain outside this coarse-cap correction.
 
+## Peer-address text is Node's `socket.remoteAddress` text on every transport (`server/serverHelpers/peerAddress.ts`)
+
+uWS and PROXY v2 headers hand Harper raw address bytes. `formatPeerAddress` writes them as libuv's `inet_ntop` does, so `request.ip` reads the same over Node, uWS and a PROXY header (`::1`; `::ffff:127.0.0.1` for an IPv4 client of a dual-stack listener). `unitTests/server/serverHelpers/peerAddress.test.js` pins it against `net.SocketAddress`. One gap: Node appends `%<zone>` to a link-local peer, and raw bytes carry no scope id. Local trust compares exact forms through `isLocalPeerAddress` (`127.0.0.x`, `::ffff:127.0.0.x`, `::1`), never a substring, because the Node form of IPv4-compatible `::7f00:1` is `::127.0.0.1`.
+
 ## Dedicated worker pools own their listeners and load no applications (`server/threads/workerPools.ts`)
 
 A dedicated pool (today only `replication`, sized by `replication.threads` in `server/threads/socketRouter.ts`) is a set of workers of a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0 and last-worker duties never land on one. The invariants:

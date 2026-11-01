@@ -22,6 +22,7 @@ import { verifyCertificate } from '../security/certificateVerification/index.ts'
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import { onStartup } from '../utility/lifecycle.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
+import { isLocalPeerAddress } from './serverHelpers/peerAddress.ts';
 import { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
 import {
 	assertNoDeferredCredentialRejection,
@@ -47,8 +48,7 @@ export function bypassAuth(): () => void {
 	};
 }
 
-const authorizeLocal = (remoteAddress: string) =>
-	AUTHORIZE_LOCAL && (remoteAddress.includes('127.0.0.') || remoteAddress === '::1');
+const authorizeLocal = (remoteAddress: string) => AUTHORIZE_LOCAL && isLocalPeerAddress(remoteAddress);
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	const { network, webSocket, requireAuthentication } = scope.options.getAll() as {

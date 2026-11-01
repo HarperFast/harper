@@ -398,7 +398,7 @@ describe('the local principal of a request trusted by its transport', function (
 			}
 		}
 
-		for (const address of ['127.0.0.1', '::1']) {
+		for (const address of ['127.0.0.1', '::ffff:127.0.0.1', '::1']) {
 			it(`connects from ${address} with no credentials as the local principal`, async () => {
 				const { connack, session } = await connectOverTcp(address, `local-tcp-${address}`);
 				assert.strictEqual(connack.reasonCode, 0);
@@ -406,10 +406,13 @@ describe('the local principal of a request trusted by its transport', function (
 			});
 		}
 
-		it('refuses the same CONNECT from any other address', async () => {
-			const { connack, session } = await connectOverTcp('203.0.113.7', 'remote-tcp');
-			assert.notStrictEqual(connack.reasonCode, 0);
-			assert.strictEqual(session, undefined);
-		});
+		// ::127.0.0.1 is IPv4-compatible IPv6, not loopback, though its text contains 127.0.0.
+		for (const address of ['203.0.113.7', '2001:db8::1', '::127.0.0.1']) {
+			it(`refuses the same CONNECT from ${address}`, async () => {
+				const { connack, session } = await connectOverTcp(address, `remote-tcp-${address}`);
+				assert.notStrictEqual(connack.reasonCode, 0);
+				assert.strictEqual(session, undefined);
+			});
+		}
 	});
 });
