@@ -23,15 +23,15 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 - A ref states its kind: `additionalAuditRefs` holds log keys, `receivedIdentityRefs` received identities (bit 31, `RECEIVED_IDENTITY_REF`), an unaudited record's only re-delivery proof. An `identityIsNotKey` write records its head as a log-key ref even when key and version are equal. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
 - An LMDB merge keeps the older version: it is `LMDBTransaction.commit`'s `ifVersion` token (`noAuditOutOfOrderPatch.test.js`).
 - Duplicates are judged by committed identity (read outside the transaction after a same-key relocate or publish restamps the base); only a minted key marks a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
-- `FULL_WRITE_HEAD`: the head replaced the whole record, unchanged since; any other write clears it. An older write skips the walk only while the floor is known and both it and `fullWriteHeadKey` are at or above it (`fullWriteHead.test.js`).
-- A numeric log selector only looks a log up (`useLog` would create it); `local` reads filter by `nodeId`, and a named-log miss never falls back to `local` (`auditLog.test.js`).
+- `FULL_WRITE_HEAD`: the head replaced the whole record, unchanged since; any other write, a base-copy frame included, clears it. An older write skips the walk only while the floor is known and both it and `fullWriteHeadKey` are at or above it (`fullWriteHead.test.js`).
+- A numeric log selector only looks a log up (`useLog` would create it); `local` reads filter by `nodeId`, received-key dedup skips unnamed ids, and a named-log miss never falls back to `local` (`auditLog.test.js`).
 - Equal versions tie (0) only within one origin; others order by node name, named above unnamed, then local id. Only the head's own entry, in a same-origin tie, may resolve a 0 (`precedesAudited`, `equalVersionOriginOrder.test.js`).
 - Replay applies stored versions; a replay transaction ends at `endTxn`, a log change or a key change, never by key alone; one a corrupt frame cut short is discarded (`replayCommitBoundaries.test.js`).
 
 ## Request admission authorizes exactly what the dispatch runs
 
 - `transactional()` resolves a QUERY body first, drops client `checkPermission`, and hands its `select` to `allowRead`; only the narrowed projection reaches the search (`permissions.test.js`).
-- In false mode, `search`, `query` and `get` await `Table.search`'s `SEARCH_AUTHORIZATION` verdict, so a denial cannot become a truncated success; the search starts before the transaction settles, keeping its snapshot. Default-mode `get` adds no promise step: `allowRead` was already awaited (`asyncAllowReadSearchResults.test.js`).
+- In false mode, `search`, `query` and `get` await `Table.search`'s `SEARCH_AUTHORIZATION` verdict, so a denial cannot become a truncated success; the verdict names its gate, so a transform derived from it is never unwrapped, and the search starts before the transaction settles, keeping its snapshot. Default-mode `get` adds no promise step: `allowRead` was already awaited (`asyncAllowReadSearchResults.test.js`).
 - In false mode, array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
 - `rowFilter` is rechecked on the materialized record, and `limit` applies after it.
 
@@ -46,31 +46,31 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 - Map writes and activation serialize on a native lock (`acquireResidencyMapFence`, 503 on contention). `installResidencyMap` imports lazily: an eager import reorders boot.
 - `captureResidencyOwners` pins owners for a commit and its retries; replicas never own. A LOCAL_ONLY transition excluding the writer is refused before submission, past any catch.
 - Main quarantines only classified failures, released only by restart. Live holds are retryable (`DatabaseShardingHeldError`); replay bypasses them, never a quarantine. Only `REPLICATION_APPLY` fills an incomplete owner (`databaseBaselineHoldReason`).
-- `blobReferenceGeneration` fences replica blob reclaim: captured before commit, compared before and after the claim, never cleared; encoders bump it before checking a claim, and a claimed file returns 503 `BLOB_RECLAMATION_BUSY` (`declarativeResidency.test.js`).
+- `blobReferenceGeneration` fences replica blob reclaim: captured before commit, compared before and after the claim, never cleared. The replica audit walk is capped at 32 reads and resumes after commit; files it cannot verify go to orphan cleanup; encoders bump it before checking a claim, and a claimed file returns 503 `BLOB_RECLAMATION_BUSY` (`declarativeResidency.test.js`).
 
 ## Full PUT resequencing
 
-`_writeUpdate` replays every retained newer patch onto an out-of-order PUT, or skips the PUT when nothing can be verified. A newer `invalidate` entry is a boundary like a put or delete; test the entry, not the `INVALIDATED` flag a patch keeps. An incomplete walk falls back to the per-node merge, converging only by full copy (harper#1148); one with no patches still skips on an `INVALIDATED` head (harper#3469; `outOfOrderInvalidatedHead.test.js`).
+`_writeUpdate` replays every retained newer patch onto an out-of-order PUT, or skips the PUT when nothing can be verified; a head newer only by a message is replaced at its version, and a same-transaction restamp is undone first (`identityBase`). A newer `invalidate` entry is a boundary like a put or delete; test the entry, not the `INVALIDATED` flag a patch keeps. An incomplete walk falls back to the per-node merge, converging only by full copy (harper#1148); one with no patches still skips on an `INVALIDATED` head (harper#3469; `outOfOrderInvalidatedHead.test.js`).
 
 ## Database generation and resumable positions
 
-**No readable copy keeps its source's generation. A position resumes only with the current generation and a finite cursor at or above the resume floor** (`isResumablePosition`, RocksDB only).
+**No readable copy keeps its source's generation. A collection position resumes only with the current generation and a finite cursor at or above the resume floor** (`isResumablePosition`, RocksDB only).
 
 - A copy stamps and flushes a new generation before it is readable (`stampDatabaseGeneration`); an open never repairs one. The resume floor never reads below a finite audit floor.
 - Cursors are progress-based: a snapshot's newest key can fall below a later floor.
 - An open ends earlier handles' subscriptions (`endSubscriptionsFromEarlierHandles`).
-- A resume is checked at registration and at every replay yield against the previous check's position, since a prune raises the floor before deleting. Read failures, undecodable entries and `reload` markers refuse it; a single-record resume is verified by its own history walk. Checkpoint only after `resumeVerified` (`databaseGeneration.test.js`).
+- A resume is checked at registration and at every replay yield against the previous check's position, since a prune raises the floor before deleting. Read failures, undecodable entries and `reload` markers refuse it; a single-record resume pre-checks only the generation, and its own complete history walk overrides the floor (a missing version or the 10,000-version cap refuses). Checkpoint only after `resumeVerified` (`databaseGeneration.test.js`).
 
 ## Origin-closed timestamp floor
 
 **Nothing appends to `local` below the certified floor `F`** (`originClosedFloor.ts`, harper-pro#922).
 
 - A key is reserved on its thread before the first staged write (`DatabaseTransaction.save`, `reserveLocalKey`). Otherwise `RocksTransactionLogStore.put` throws: a logged violation is unrepairable.
-- A thread marks its bound pending before minting; samplers raise `proposed` before reading bounds, so one side sees the other. Compare-and-swap maxima keep concurrent certifiers safe. `localStartBound` cannot yield, so it uses the carried bound, never a clock (harper#3599).
+- A thread marks its bound pending before minting; samplers raise `proposed` before reading bounds, so one side sees the other. Compare-and-swap maxima keep concurrent certifiers safe. `localStartBound` cannot yield, so it uses the carried bound or the floor published before its sample, never a clock (harper#3599).
 - **Every `local` key is minted** (`reserve`, `freshKey`). A caller's value is only the record version (`uniqueLocalLogKeys.test.js`).
 - The floor syncs before publication, and the issuance ceiling is persisted before use (`coverLocalIssuance`), so a restart seeds keys above both. Once the ratchet issues a key, strict compare-and-swap admission lasts for the process.
 - A reservation ends only at its handle's terminal settle or an abort. Worker bounds retire only on main's `worker.on('exit')`, after its commits drain.
-- `progress()` reports `certifiedThrough`. A notify pass captures `localStartBound` before it drains; a same-thread registry uses its own `threadStartBound` (`subscribeProgress.test.js`).
+- `progress()` reports `certifiedThrough`. A notify pass captures `localStartBound` before it drains; a same-thread registry uses its own `threadStartBound`, runs no capture tick and certifies no scalar replay (`subscribeProgress.test.js`).
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
@@ -86,7 +86,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## A relationship read is authorized against the related table
 
-Each relationship step needs `read` on the related table and attribute (`Table._readDenial`). **The search layer checks nothing**, so REST `allowRead` (`_authorizeRelatedSelection`), `verifyPerms` (after `normalizeSearchRequest`) and `ResourceBridge.getSelect` check the query that will run. A `*` select of `@enumerable` relationships is rewritten unless `_readableInFull`, whose answer lasts one admission. Live subscriptions referencing a relationship skip the shared verdict (`_referencesRelationship`). SQL and subscription deliveries are not covered (harper#3509; `permissions.test.js`).
+Each relationship step needs `read` on the related table and attribute (`Table._readDenial`). **The search layer checks nothing**, so REST `allowRead` (`_authorizeRelatedSelection`), `verifyPerms` (after `normalizeSearchRequest`) and `ResourceBridge.getSelect` check the query that will run. A `*` select of `@enumerable` relationships is rewritten unless `_readableInFull`, whose answer lasts one admission and one permission source. Live subscriptions referencing a relationship skip the shared verdict (`_referencesRelationship`). SQL and subscription deliveries are not covered (harper#3509; `permissions.test.js`).
 
 ## Typed, discoverable resources
 
@@ -113,7 +113,7 @@ Each encoder has its own `StoreRecordObject` prototype, so getters stay per tabl
 
 ## Struct mode is gated to primary DBIs (downgrade compatibility)
 
-v4 (msgpackr v1) reads struct headers `0x20–0x3f` as integers, so a struct-encoded `__dbis__` breaks a v5→v4 downgrade. `OpenDBIObject` allows structs only on primary stores (opt-in); `databases.ts` forces them on for custom-index object stores. `RecordEncoder` bails the write hook (`_writeStruct = () => 0`), never clears it: clearing moves the fixint boundary, so the read hook would misread `0x20–0x3f` (`recordEncoder.test.js`).
+v4 (msgpackr v1) reads struct headers `0x20–0x3f` as integers, so a struct-encoded `__dbis__` breaks a v5→v4 downgrade. `OpenDBIObject` allows structs only on primary stores (opt-in); `databases.ts` forces them on for custom-index object stores. `RecordEncoder` bails the write hook (`_writeStruct = () => 0`), never clears it: clearing moves the fixint boundary, so the read hook would misread `0x20–0x3f`. The read hook stays, and structon's `prepareStructures` saves records-mode structures as the plain array v4 reads (`recordEncoder.test.js`).
 
 ## Non-`initStore` structure saves read inside their own transaction
 
@@ -200,7 +200,7 @@ Eviction trails expiry. Until then, a table without a source get treats an expir
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. On a caching store `PrimaryRocksDatabase.getEntry` passes a fresh options literal, never the caller's object; add newly needed options there. Select load options are built once per query; the plain-column fast path is decided per row (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. On a caching store `PrimaryRocksDatabase.getEntry` passes a fresh options literal, never the caller's object; add newly needed options there. Select load options are built once per query, sync and async apart, because `loadLocalRecord` mutates `options.async`; the plain-column fast path is decided per row (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 
@@ -216,7 +216,7 @@ RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. 
 
 ## Replicated apply failure listeners
 
-**After a terminal apply failure, nothing is pulled until every listener has been awaited** with the origin and position (log key, not version). A transport registers on every applying worker before delivering. A listener runs and persists outside the source transaction, resolves only once durable, and is idempotent for `(nodeId, position)`. A failing listener never stops the others (`notifyReplicatedApplyFailure`); a hung one backpressures the source (`replicatedApplyFailure.test.js`).
+**After a terminal apply failure, nothing is pulled until every listener has been awaited** with the origin and position (log key, not version). A transport registers on every applying worker before delivering. A listener runs and persists outside the source transaction, resolves only once durable, and is idempotent for `(nodeId, position)`. Registration replays nothing, a listener never waits for the source commit, and the transport owns recovery when one cannot persist. A failing listener never stops the others (`notifyReplicatedApplyFailure`); a hung one backpressures the source (`replicatedApplyFailure.test.js`).
 
 ## Source transactions are delimited per connection, and a transaction log holds one origin
 
