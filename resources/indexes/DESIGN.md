@@ -777,25 +777,32 @@ generation for that turn.
 
 ### Lag policy
 
-Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
-only proven at a barrier). The owner takes the longest of: cursor distance behind what it has read,
-time parked on backpressure or the ceiling, time since the oldest commit it may not have read
-(bounded by how far its newest read trails the clock), and the age of the oldest accepted work not
-yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
-(`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) then
-fails local user writes to the index's tables with `DerivedIndexLagError` — 503,
-`DERIVED_INDEX_LAGGING`, `retryable: true` — at the staging layer (`_writeUpdate`, `_writeDelete`,
-`_writeInvalidate`, `_writeRelocate`), never canonical-source applies (`transaction.sourceApply`),
-crash-recovery replay or replication notifications, since a rejected canonical write would advance
-the source cursor past a write that never landed. The flag is owned by the lock holder: it clears
-with hysteresis once the owner has proven catch-up (a durable advance and the end of the log both
-reached since acquiring, lag below half the budget), and on every transition out of "behind and
-still reading" — entering a rebuild (no cursor to guard; readers act on `rebuilding`), `unavailable`,
-a `needs-rebuild` the runtime cannot leave, a condemnation marker it could not write (its retry
-needs a commit wake, and commits were what was being shed), and a held lock. An ordinary handoff
-preserves it. The policy sheds writes; it does not pin retention — rocksdb-js has no protected
-position registration — so a budget belongs well inside the effective retention window, and it must
-be enabled only once every worker runs a runtime with the admission check.
+Opt-in per registration (`maxLagMilliseconds`; zero disables shedding), with a minimum of two flush
+ages. Admission measures actual work ages in the current ownership epoch: unread commits, a deferred
+or capped delivery, and accepted work awaiting durability. `cursorLagMilliseconds` remains a diagnostic
+commit-clock distance; it includes idle gaps and replicated-clock spans and does not drive admission.
+A fresh write after a long idle period must not be rejected because the previous durable commit is old.
+
+Past the budget the owner sets the shared flag; every worker's `derivedIndexWriteRejection`
+(`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) rejects local
+user writes to those tables with retryable `DERIVED_INDEX_LAGGING` (503). Checks remain at staging
+(`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`), never canonical-source applies,
+crash recovery or replication notifications: rejecting canonical work would advance its source cursor
+past a write that never landed.
+
+An owner clears its trip after a durable advance and an end-of-log pass, with actual work age below
+half the budget. A successor inheriting a trip additionally captures its first observed log tail and
+holds admission closed until that fixed target is durable; a partial barrier cannot clear inherited
+backlog, and later unrelated-table writes cannot move the target. A successor without an inherited
+trip starts age accounting at acquisition, so this policy is not an end-to-end staleness guarantee
+across owner crashes. Query coverage certification remains separate.
+
+Entering rebuild, unavailable, an unrecoverable `needs-rebuild`, a failed condemnation marker or a held
+lock admits writes as before; ordinary handoff preserves the shared flag. Shedding does not pin
+retention: rocksdb-js has no protected-position registration, so the budget belongs inside effective
+retention and every worker must run admission-aware code. The native-backend runtime regressions cover
+post-idle, unrelated-table, per-log and handoff routes; the published full-text HTTP control exercises
+the default idle-to-write boundary.
 
 ### Failure flow
 

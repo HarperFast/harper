@@ -633,6 +633,7 @@ class DerivedIndexRunner {
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
 	#lastCaughtUpAt?: number;
+	#inheritedLag?: { target?: DerivedIndexCursor };
 	/** Delivered work or acquisition; a wake that finds nothing to deliver does not extend the idle grace. */
 	#workAt = 0;
 	#lagTimer?: NodeJS.Timeout;
@@ -907,14 +908,10 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * Owner-only. Lag is the longest of four terms: cursor distance behind what this runner has read,
-	 * time parked on backpressure, time since the oldest commit this runner may not have read yet (a
-	 * reader too slow to reach the end of the log cannot hide), and the age of the oldest accepted
-	 * work not yet durable (a backend that accepts but never barriers cannot hide). All four are zero
-	 * for a caught-up owner sitting idle and stay within drain latency plus flush age for a runner
-	 * keeping up under sustained ingest. The trip survives discard and handoff: a successor clears it
-	 * only after proving catch-up itself — a durable advance and the end of the log both reached since
-	 * it acquired, so an inherited backlog cannot be cleared by one barrier — below half the budget.
+	 * Admission uses actual work ages in this ownership epoch: unread, stalled, or accepted but not
+	 * durable. Cursor timestamp distance includes idle gaps and replication clock spans, so it is
+	 * diagnostic only. An inherited trip additionally waits for durability through the first observed
+	 * log tail; one partial barrier must not clear it while inherited work is still queued.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
@@ -922,7 +919,6 @@ class DerivedIndexRunner {
 		const now = this.#options.now();
 		const oldestAccepted = this.#oldestAcceptedAt();
 		const lag = Math.max(
-			this.#cursorLag(),
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
 			this.#unreadAge(now),
 			oldestAccepted === undefined ? 0 : now - oldestAccepted
@@ -932,7 +928,13 @@ class DerivedIndexRunner {
 		if (!tripped && lag >= max) {
 			Atomics.store(words, READINESS_LAG_EXCEEDED, 1);
 			logger.warn?.(`Derived index '${this.id}' is ${Math.round(lag)} ms behind; rejecting writes until it catches up`);
-		} else if (tripped && lag < max / 2 && this.#lastCaughtUpAt !== undefined && this.#reachedEndOfLog) {
+		} else if (
+			tripped &&
+			lag < max / 2 &&
+			this.#lastCaughtUpAt !== undefined &&
+			this.#reachedEndOfLog &&
+			!this.#inheritedLag
+		) {
 			Atomics.store(words, READINESS_LAG_EXCEEDED, 0);
 			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
 		}
@@ -1065,6 +1067,7 @@ class DerivedIndexRunner {
 		this.#owned = true;
 		this.#generation++;
 		this.#lastCaughtUpAt = undefined;
+		this.#inheritedLag = Atomics.load(this.#shared().words, READINESS_LAG_EXCEEDED) === 1 ? {} : undefined;
 		this.#unreadSince = this.#options.now();
 		this.#workAt = this.#unreadSince;
 		this.#reachedEndOfLog = false;
@@ -1319,6 +1322,7 @@ class DerivedIndexRunner {
 			if (!this.#live(generation)) return;
 			// A nonempty turn can also exhaust the captured log tail. Waiting for an empty turn
 			// would starve coverage under continuous writes even when each drain catches up.
+			if (this.#collectedToEnd && this.#carried.length === 0) this.#captureInheritedLagTarget();
 			const completedCapture = this.#collectedToEnd && this.#carried.length === 0 ? capture : undefined;
 			if (completedCapture) this.#offeredCursors.at(-1)!.coverage = completedCapture;
 			if (!this.#reconcileDurableCursor()) return;
@@ -1690,11 +1694,17 @@ class DerivedIndexRunner {
 		return true;
 	}
 
+	#captureInheritedLagTarget() {
+		if (this.#inheritedLag && !this.#inheritedLag.target && this.#offered)
+			this.#inheritedLag.target = cloneCursor(this.#offered);
+	}
+
 	#finishIdlePass(capture?: CoverageCapture) {
 		this.#stalledSince = undefined;
 		this.#unreadSince = undefined;
 		this.#reachedEndOfLog = true;
 		if (this.#rebuilding || !this.#offered) return;
+		this.#captureInheritedLagTarget();
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) {
 			this.#armFlushTimer();
@@ -1759,6 +1769,11 @@ class DerivedIndexRunner {
 		}
 		// Any reconcile can publish coverage or ready, so the logs still unanchored are proven first.
 		if (!this.#checkUnanchoredLogs()) return false;
+		const inheritedTarget = this.#inheritedLag?.target;
+		if (inheritedTarget) {
+			const targetIndex = this.#offeredCursors.findIndex((offered) => sameCursor(offered.cursor, inheritedTarget));
+			if (targetIndex >= 0 && targetIndex <= offeredIndex) this.#inheritedLag = undefined;
+		}
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {
@@ -1988,6 +2003,7 @@ class DerivedIndexRunner {
 
 	/** An index no owner will catch up must not keep shedding writes. */
 	#admitWrites() {
+		this.#inheritedLag = undefined;
 		if (this.#lagBudget > 0) Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 0);
 	}
 
