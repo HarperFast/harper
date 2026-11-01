@@ -50,6 +50,8 @@ Feature harness/source: [final sampler fix](https://github.com/HarperFast/harper
 - Feature: [report](feature-10m-4g/10000000.json.gz), [all errors](feature-10m-4g/errors.ndjson.gz), [provenance](feature-10m-4g/provenance.json.gz), [observer stream](feature-10m-4g/external-observations.ndjson.gz), [manifest](feature-10m-4g/sanitization-manifest.json).
 - Baseline: [report](baseline-10m-4g/10000000.json.gz), [all errors](baseline-10m-4g/errors.ndjson.gz), [provenance](baseline-10m-4g/provenance.json.gz), [observer stream](baseline-10m-4g/external-observations.ndjson.gz), [manifest](baseline-10m-4g/sanitization-manifest.json).
 
+[Archive index](archive-index.json) binds the feature and baseline `measurement-evidence.tar.gz` files and their member lists. These archives hold the per-cell boundaries, process maps, cache, mount, cgroup and watchdog snapshots; extract each into its containing run directory before validating every manifest entry. Reports, errors, provenance and observer streams stay directly accessible. Archive construction verified byte-for-byte member equality.
+
 Manifests preserve raw-private, sanitized-payload and compressed hashes. Recursive identity redaction includes dictionary keys and nested API host/user fields; numerical samples, array order and outcomes are unchanged. Configuration, authentication, environment values, command lines and logs/registries are excluded. Observer source is identified by hash, not published. The [cleanup receipt](preflight/combined-preflight-final-cleanup.json.gz) records owned process, fixture and scope cleanup; [cross-run gates](preflight/combined-preflight-primary-cross-run-gates.json.gz) bind the matched artifacts and cache settings.
 
 ## Preflight and review
