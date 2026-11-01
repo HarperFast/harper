@@ -4,13 +4,13 @@
 	"nativeRuntimeEqual": true,
 	"featureAddons": [
 		{
-			"path": "/Users/kyle/WebstormProjects/harper/.Codex/worktrees/fulltext-metadata/node_modules/@harperfast/fulltext-darwin-arm64/fulltext.darwin-arm64.node",
+			"path": "<feature-worktree>/node_modules/@harperfast/fulltext-darwin-arm64/fulltext.darwin-arm64.node",
 			"sha256": "1be756e4ab8ad471d29dc6d2f2af97eb44ddb0d0fc85aa389a52eb8cec3c0849"
 		}
 	],
 	"baselineAddons": [
 		{
-			"path": "/Users/kyle/WebstormProjects/harper/.Codex/worktrees/fulltext-metadata/node_modules/@harperfast/fulltext-darwin-arm64/fulltext.darwin-arm64.node",
+			"path": "<feature-worktree>/node_modules/@harperfast/fulltext-darwin-arm64/fulltext.darwin-arm64.node",
 			"sha256": "1be756e4ab8ad471d29dc6d2f2af97eb44ddb0d0fc85aa389a52eb8cec3c0849"
 		}
 	],

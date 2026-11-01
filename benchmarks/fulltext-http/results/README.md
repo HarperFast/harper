@@ -2,7 +2,7 @@
 
 Status: local measurements complete; full-text qualification remains open. These observations do not close the catalog-scale release gate.
 
-The runtime is [414b4ff](https://github.com/HarperFast/harper/commit/414b4ff9866556cc450ca32482c9b42ce929303e). No production code changed for these runs. Raw JSON is gzip-compressed without changing its contents. HTTP timing here uses a single observed post-restart worker: macOS disables shared-port reuse. Earlier worker IDs sampled across the restart do not prove concurrent worker coverage. The host is an Apple M4 Pro with 24 GiB RAM; ordinary background processes remained active. Runs are sequential except for one explicitly invalidated HTTP pilot cell. Filesystem cache was not evicted.
+The runtime is [414b4ff](https://github.com/HarperFast/harper/commit/414b4ff9866556cc450ca32482c9b42ce929303e). No production code changed for these runs. Raw reports are gzip-compressed without changing their contents. Published provenance paths use worktree placeholders; artifact digests are unchanged. HTTP timing here uses a single observed post-restart worker: macOS disables shared-port reuse. Earlier worker IDs sampled across the restart do not prove concurrent worker coverage. The host is an Apple M4 Pro with 24 GiB RAM; ordinary background processes remained active. Runs are sequential except for one explicitly invalidated HTTP pilot cell. Filesystem cache was not evicted.
 
 ## Sustained single-process controls
 
@@ -57,7 +57,7 @@ Baseline results: 425,535 successful queries, 185 read transport errors (`termin
 
 ## Harness verification
 
-Six pure tests cover deterministic membership/order, wrong known totals, documented unknown totals, wrong rows despite unknown totals, bounded histograms, stop handling and report publication after cleanup failures. Live smoke validates real HTTP requests. The installed integration-testing 1.0.3 lifecycle (`dist/harperLifecycle.js`, SHA-256 `4cf198a2773839231898fd5594c11dae99baf98c02f8bcc70e610b256d57f2a9`) publishes `dataRootDir` before `launchHarper` at lines 385–388, so the cleanup guard cannot skip an already-started process in that route. Owned servers/monitor registries were checked after teardown.
+Six pure tests cover deterministic membership/order, wrong known totals, documented unknown totals, wrong rows despite unknown totals, bounded histograms, stop handling and report publication after cleanup failures. Live smoke validates real HTTP requests. The installed integration-testing 1.0.3 lifecycle (`dist/harperLifecycle.js`, SHA-256 `4cf198a2773839231898fd5594c11dae99baf98c02f8bcc70e610b256d57f2a9`) publishes `dataRootDir` before `launchHarper` at lines 385–388, and teardown is now called unconditionally; the lifecycle owns its partial-setup guard. Owned servers/monitor registries were checked after teardown. Post-measurement fixes delegate partial cleanup to the lifecycle, choose platform-appropriate defaults and normalize metadata paths. A two-cell live smoke passed after these narrow fixes; the timed matrices retain their original harness digests.
 
 ## Open qualification
 

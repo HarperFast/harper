@@ -24,7 +24,7 @@ const sizes = (process.env.FULLTEXT_HTTP_ROWS || '100000,1000000').split(',').ma
 const clients = (process.env.FULLTEXT_HTTP_CLIENTS || '8,32').split(',').map(Number);
 const cases = (process.env.FULLTEXT_HTTP_CASES || 'relevance,sort,highlights,exact,structured').split(',');
 const duration = Number(process.env.FULLTEXT_HTTP_DURATION_MS || 60000);
-const expectedWorkers = Number(process.env.FULLTEXT_HTTP_EXPECTED_WORKERS || 2);
+const expectedWorkers = Number(process.env.FULLTEXT_HTTP_EXPECTED_WORKERS || (process.platform === 'darwin' ? 1 : 2));
 assert([1, 2].includes(expectedWorkers));
 const writeRates = (process.env.FULLTEXT_HTTP_WRITES || '0,10').split(',').map(Number);
 const commonGitDirectory = (
@@ -73,7 +73,7 @@ const compiledHashes = Object.fromEntries(
 );
 const addons = await Promise.all(
 	addonFiles.map(async (name) => ({
-		path: name,
+		path: name.replace(/^.*[\\/]node_modules[\\/]/, 'node_modules/'),
 		sha256: createHash('sha256')
 			.update(await readFile(name))
 			.digest('hex'),
@@ -397,7 +397,7 @@ try {
 				report,
 				async () => {
 					if (sampling) await sampling;
-					if (ctx.harper?.dataRootDir) await teardownHarper(ctx);
+					await teardownHarper(ctx);
 				},
 				async (final) => {
 					if (final.verdict === 'unqualified') process.exitCode = 1;
