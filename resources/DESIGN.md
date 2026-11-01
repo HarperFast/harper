@@ -200,7 +200,7 @@ Eviction trails expiry. Until then, a table without a source get treats an expir
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. On a caching store `PrimaryRocksDatabase.getEntry` passes a fresh options literal, never the caller's object; add newly needed options there. Select load options are built once per query, sync and async apart, because `loadLocalRecord` mutates `options.async`; the plain-column fast path is decided per row (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached read in `PrimaryRocksDatabase.getEntry` passes a fresh options literal, never the caller's object (`uncachedRead` and cache-disabled reads forward it); add newly needed options to that literal. Select load options are built once per query, sync and async apart, because `loadLocalRecord` mutates `options.async`; the plain-column fast path is decided per row (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 
