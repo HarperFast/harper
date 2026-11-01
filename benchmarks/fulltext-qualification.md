@@ -1,6 +1,6 @@
 # Full-text concurrency and memory observation
 
-Status: draft — ten local cells completed; interpretation awaits independent review. Owner: Kyle. Last observed: 2026-11-01.
+Status: observed — ten local cells completed; numerical tables, raw-latency digests and scope checked independently. Owner: Kyle. Last observed: 2026-11-01.
 
 Observed: one-field sorting reached 42 queries/s with one query loop and no writes; 32-field sorting reached 14 queries/s. With strict freshness and 10 indexed writes/s, both sorting and relevance-only queries took approximately one second. These measurements do not establish catalog-scale readiness or a 50ms service-level guarantee.
 
@@ -69,9 +69,9 @@ The current harness bounds that instrumentation to a 20ms time series plus rolli
 
 ## Open qualification
 
-Untested: operating-system-cold storage, multiple HTTP workers, competing unrelated traffic, sustained leaks, large indexes, deep offsets and expensive query classes. [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512) retains matched standalone-wrapper/Harper baselines, representative catalogs of at least 100 million records and agreed query-class p99 targets. This local matrix does not close those release gates.
+Untested: operating-system-cold storage, multiple HTTP workers, competing unrelated traffic, sustained leaks, large indexes, catalog-scale deep offsets and expensive query classes. [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512) retains matched standalone-wrapper/Harper baselines, representative catalogs of at least 100 million records and agreed query-class p99 targets. This local matrix does not close those release gates.
 
-Independent interpretation review remains pending; the measurements above are observations, not a release sign-off.
+Independent review checked the numerical tables, raw-latency digests and scope; these observations are not a release sign-off.
 
 ## Sources
 
