@@ -141,10 +141,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const enforceable = structured?.generator && !grammarProblem ? structured.count : 0;
 	// The helper lists a leg under `blocked=` only when it delivered in no round of the branch, so no
 	// outside finding was ever ruled on. `declined=` is a policy choice and does not fail.
-	const adjudicatorBlocked = footerRead.segments
-		.get('adjudicated')
-		?.split(',')
-		.some((label) => ADJUDICATOR_LABELS.has(label))
+	const adjudicatorBlocked = footerRead.segments.has('adjudicated')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
 	// `pending=` is the older form the helper still writes beside `late=`; either one holds the PR.
