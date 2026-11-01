@@ -375,9 +375,20 @@ describe('build-tools/check-design-docs.mjs', function () {
 			dir = createTree({
 				'lib/old.ts': 'export function retiredHelper() {}\n// #section: retired\n',
 				'lib/methods.ts': 'export class Methods {\n\tdelete() {}\n\tremovedMethod() {}\n}\n',
-				'lib/keep.ts':
-					'export function keptHelper() {}\nconst key = "configuredName";\n// commentOnlyName\nconst a = 1;// trailingComment\nconst b = 2; /* blockComment */\n',
+				'lib/keep.ts': [
+					'export function keptHelper() {}',
+					'const key = "configuredName";',
+					'// commentOnlyName',
+					'const a = 1;// trailingComment',
+					'const b = 2; /* blockComment */',
+					'const c = 1// tightComment',
+					'const t = `${a} text`; // templateComment',
+					"const s = '/* inStringName */';",
+					'const current = 1;',
+					'',
+				].join('\n'),
 				'lib/schema.graphql': 'type Retired {}\n',
+				'lib/current.graphql': 'type Current {}\n',
 			});
 			const { commit } = isolatedGit(dir);
 			commit('add helpers');
@@ -388,21 +399,24 @@ describe('build-tools/check-design-docs.mjs', function () {
 				'lib/methods.ts': 'export class Methods {\n\tremove() {}\n}\n',
 				'big/DESIGN.md': sized(DESIGN_BUDGET + 1),
 				'DESIGN.md': `${INDEX}- [Big](big/DESIGN.md#note) — big.\n`,
-				'lib/DESIGN.md': `${NOTE}\nNames: \`retiredHelper()\`, \`lib/old.ts\`, \`#section: retired\`, \`keptHelper\`, \`configuredName\`, \`commentOnlyName\`, \`neverHadThis()\`, \`otherRepo.ts\`, \`mdb_env_open\`.\n\nMethods: \`delete()\`, \`lib/methods.ts:removedMethod\`, \`lib/methods.ts:remove\`, \`Methods.removedMethod\`, \`schema.graphql\`, \`trailingComment\`, \`blockComment\`.\n`,
+				'lib/DESIGN.md': `${NOTE}\nNames: \`retiredHelper()\`, \`lib/old.ts\`, \`#section: retired\`, \`keptHelper\`, \`configuredName\`, \`commentOnlyName\`, \`neverHadThis()\`, \`otherRepo.ts\`, \`mdb_env_open\`.\n\nMethods: \`delete()\`, \`lib/methods.ts:removedMethod\`, \`lib/methods.ts:remove\`, \`Methods.removedMethod\`, \`schema.graphql\`, \`current.graphql\`, \`trailingComment\`, \`blockComment\`, \`tightComment\`, \`templateComment\`, \`inStringName\`.\n`,
 			});
 			commit('retire old.ts');
 			const report = await staleReport({ root: dir });
 			assert.match(report, /- `big\/DESIGN\.md`: 40,961 bytes, budget 40,960/);
 			assert.match(
 				report,
-				/### `lib\/DESIGN\.md`\n\n- line 5: `retiredHelper\(\)` \(symbol\)\n- line 5: `lib\/old\.ts` \(path\)\n- line 5: `#section: retired` \(section\)\n- line 7: `delete\(\)` \(symbol\)\n- line 7: `lib\/methods\.ts:removedMethod` \(symbol\)\n- line 7: `Methods\.removedMethod` \(symbol\)\n- line 7: `schema\.graphql` \(path\)\n\n/
+				/### `lib\/DESIGN\.md`\n\n- line 5: `retiredHelper\(\)` \(symbol\)\n- line 5: `lib\/old\.ts` \(path\)\n- line 5: `#section: retired` \(section\)\n- line 7: `delete\(\)` \(symbol\)\n- line 7: `lib\/methods\.ts:removedMethod` \(symbol\)\n- line 7: `Methods\.removedMethod` \(symbol\)\n- line 7: `schema\.graphql` \(path\)\n- line 7: `inStringName` \(symbol\)\n\n/
 			);
 			for (const live of [
 				'keptHelper',
 				'configuredName',
 				'commentOnlyName',
+				'current.graphql',
 				'trailingComment',
 				'blockComment',
+				'tightComment',
+				'templateComment',
 				'neverHadThis',
 				'otherRepo',
 				'mdb_env_open',

@@ -184,7 +184,6 @@ function baseState(root, base) {
 let outlineModule;
 const loadOutline = async () => (outlineModule ??= await import('./outline.mjs'));
 
-// `names` maps each declared name to the enclosing-declaration chain of every declaration of it.
 async function symbolIndex(root, target, cache) {
 	if (cache.has(target)) return cache.get(target);
 	const { outlineSource, sourceFiles } = await loadOutline();
@@ -406,6 +405,30 @@ async function liveNames(root) {
 	return { names, sections };
 }
 
+// Adds the identifier, keyword, private-name and literal words of one line of source; comments are trivia.
+function addCodeWords(ts, scanner, line, words) {
+	const { SyntaxKind: Kind } = ts;
+	const templates = []; // brace depth at each open `${`, so its `}` resumes the template
+	let depth = 0;
+	scanner.setText(line);
+	for (let token = scanner.scan(); token !== Kind.EndOfFileToken; token = scanner.scan()) {
+		if (token === Kind.CloseBraceToken && templates.at(-1) === depth) {
+			templates.pop();
+			token = scanner.reScanTemplateToken(false);
+		} else if (token === Kind.OpenBraceToken) depth++;
+		else if (token === Kind.CloseBraceToken) depth--;
+		if (token === Kind.TemplateHead || token === Kind.TemplateMiddle) templates.push(depth);
+		if (
+			token === Kind.Identifier ||
+			token === Kind.PrivateIdentifier ||
+			(token >= Kind.FirstKeyword && token <= Kind.LastKeyword)
+		)
+			words.add(scanner.getTokenText());
+		else if (token >= Kind.FirstLiteralToken && token <= Kind.LastTemplateToken)
+			for (const word of scanner.getTokenValue().matchAll(WORD)) words.add(word[0]);
+	}
+}
+
 // What this repository once had: deleted paths, the words of removed source lines (comments stripped) and
 // removed section markers. A reference that resolves nowhere now is dead only if it is here; otherwise it
 // names something outside this repository (another repo's symbol, a native API, a runtime file).
@@ -417,6 +440,8 @@ async function pastNames(root) {
 	const deleted = git(root, 'log', '-z', '--no-renames', '--diff-filter=D', '--name-only', '--format=', 'HEAD')
 		.split(/[\0\n]/)
 		.filter(Boolean);
+	const { default: ts } = await import('typescript');
+	const scanner = ts.createScanner(ts.ScriptTarget.Latest, true);
 	const words = new Set();
 	const sections = new Set();
 	const log = spawn('git', ['log', '-p', '--no-renames', '--format=', '-U0', 'HEAD', '--', ...SOURCE_PATHSPECS], {
@@ -428,11 +453,8 @@ async function pastNames(root) {
 		if (!line.startsWith('-') || line.startsWith('---')) continue;
 		const marker = /\/\/\s*#section:\s*(\S+)/.exec(line);
 		if (marker) sections.add(marker[1]);
-		const code = line.slice(1);
-		if (/^\s*(?:\/\*|\*)/.test(code)) continue;
-		// A `//` after `:`, a word, a quote or a slash is a URL, a string or a regex, not a comment.
-		const uncommented = code.replace(/\/\*.*?\*\//g, ' ').replace(/(?<![:\w'"`/\\])\/\/.*$/, '');
-		for (const word of uncommented.matchAll(WORD)) words.add(word[0]);
+		// A line opening with `*` is inside a block comment.
+		if (!/^-\s*\*/.test(line)) addCodeWords(ts, scanner, line.slice(1), words);
 	}
 	const code = await exit;
 	if (code !== 0) throw new Error(`git log -p exited ${code}`);
@@ -463,9 +485,11 @@ export async function staleReport({ root, limit = Infinity } = {}) {
 	const dead = new Map();
 	const mapErrors = new Map();
 	const add = (file, problem, into = dead) => (into.get(file) ?? into.set(file, []).get(file)).push(problem);
+	const pathIsLive = (docDir, target) =>
+		relativeTo(root, docDir, target) ||
+		(target.includes('/') ? files.some((file) => file.endsWith(`/${target}`)) : basenames.has(target));
 	const pathIsDead = (docDir, target) => {
-		if (relativeTo(root, docDir, target)) return false;
-		if (target.includes('/') ? files.some((file) => file.endsWith(`/${target}`)) : basenames.has(target)) return false;
+		if (pathIsLive(docDir, target)) return false;
 		const full = path.posix.join(docDir, target);
 		return past.deleted.some(
 			(file) =>
@@ -487,9 +511,9 @@ export async function staleReport({ root, limit = Infinity } = {}) {
 			} else if (reference.type === 'path') {
 				if (pathIsDead(dir, reference.path)) add(file, { ...span, kind: 'path' });
 				else if (reference.symbol && symbolIsDead(reference.symbol)) add(file, { ...span, kind: 'symbol' });
-			} else if (ANY_FILE.test(span.text) && pathIsDead(dir, span.text)) {
-				// `schema.graphql` parses as a dotted name, but it names a file once a deleted file had that name.
-				add(file, { ...span, kind: 'path' });
+			} else if (ANY_FILE.test(span.text) && (pathIsLive(dir, span.text) || pathIsDead(dir, span.text))) {
+				// `schema.graphql` parses as a dotted name, but it names a file once a file has or had that name.
+				if (!pathIsLive(dir, span.text)) add(file, { ...span, kind: 'path' });
 			} else if (isCodeShaped(reference) && !isKeyword(ts, reference) && symbolIsDead(reference.parts)) {
 				add(file, { ...span, kind: 'symbol' });
 			}
