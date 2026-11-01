@@ -140,7 +140,6 @@ suite('local trust and request.ip for IPv6 and dual-stack peers', { skip: suiteS
 	});
 
 	test('an IPv4 client is the local principal at its IPv4-mapped address', async () => {
-		console.log(`[ipv6-local-trust] transport: ${process.env.HARPER_UWS_HTTP ? 'uWS' : 'Node'}`);
 		const host = ctx.harper.hostname;
 		const expected = { ...LOCAL, ip: `::ffff:${host}` };
 		deepStrictEqual(await whoAmI(port, host, host), expected);
