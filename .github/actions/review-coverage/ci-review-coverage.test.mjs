@@ -438,7 +438,6 @@ test('every helper-shaped Review-Coverage footer is enforceable', () => {
 	}
 });
 
-// Portable fixtures of formatReviewCoverage's qualified adjudicator labels and historical union.
 const CURRENT_HELPER_FOOTER = `<sub>Review-Coverage: authored=codex; ran=cursor-composer,claude,cursor-grok; late=cursor-grok:adjudicated; adjudicated=domain,domain(claude); blocked=gemini(auth); declined=muse; rounds=10; full=5 @ ${PIN}</sub>`;
 const QUALIFIED_ADJUDICATORS = ['domain(claude)', 'domain(codex)', 'domain,domain(claude),domain(codex)'];
 const adjudicatedFooter = (adjudicated, ran = 'claude,gemini', extra = '') =>
