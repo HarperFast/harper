@@ -40,15 +40,18 @@ function within(promise, what, ms = 5000) {
 }
 
 function get(port, options = {}) {
-	return new Promise((resolve, reject) => {
-		http
+	let request;
+	const response = new Promise((resolve, reject) => {
+		request = http
 			.get({ host: '127.0.0.1', port, agent: false, path: '/', ...options }, (res) => {
 				let body = '';
 				res.on('data', (chunk) => (body += chunk));
 				res.on('end', () => resolve(body));
+				res.on('error', reject);
 			})
 			.on('error', reject);
 	});
+	return within(response, 'the response').finally(() => request.destroy());
 }
 
 async function disconnectDuring(port, entered) {
@@ -74,7 +77,7 @@ async function disconnectDuring(port, entered) {
 		handle = (request) => ({ status: 200, body: request.ip });
 		const seen = [];
 		for (const localAddress of ['127.0.0.1', '127.0.0.2', '127.0.0.2', '127.0.0.1']) {
-			seen.push(await within(get(port, { localAddress }), 'the response'));
+			seen.push(await get(port, { localAddress }));
 		}
 		assert.deepStrictEqual(seen, ['127.0.0.1', '127.0.0.2', '127.0.0.2', '127.0.0.1']);
 	});
@@ -83,7 +86,7 @@ async function disconnectDuring(port, entered) {
 		handle = (request) => ({ status: 200, body: request.ip });
 		let body;
 		try {
-			body = await within(get(port, { host: '::1', family: 6 }), 'the response');
+			body = await get(port, { host: '::1', family: 6 });
 		} catch (error) {
 			if (error.code === 'EADDRNOTAVAIL' || error.code === 'ECONNREFUSED') this.skip();
 			throw error;

@@ -2742,7 +2742,7 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 
-	/** Each condition is a state performCommit() treats specially; a state it gains must be excluded here. */
+	/** False for LMDB, immediate commits, and every state commit() or performCommit() treats specially; a state either gains must be excluded here. */
 	private endsScopeUnwritten(options: CommitOptions): boolean {
 		const handle = this.transaction;
 		return (
