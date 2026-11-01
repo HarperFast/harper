@@ -2409,8 +2409,14 @@
 	],
 	"observation": {
 		"commit": "9b6eb847f4f407c570207cb767552b6aa2e274f8",
-		"scope": "Correctness and bounded-cost observation under concurrent full unit/integration suite load; not isolated performance or before/after regression evidence. Production code is f4551b4be26974f3944132d77c72e9d25c98addc.",
+		"scope": "Correctness and bounded-cost observation under concurrent full unit/integration suite load; not isolated performance or before/after regression evidence. Production code is f4551b4be26974f3944132d77c72e9d25c98addc. Runtime TypeScript in resources/ is unchanged from f4551b4be through 7bb7cf905; 9b6eb847 changes only resource documentation.",
 		"sourceSha256": "4de2c1d410d8f1b0051ab8f804c8bd5d3cb420943b1c86a735e79e767aa0b02e",
-		"harnessSha256": "274e07966a68e78d048a9c766dcdc9b8376bb065fede79a28eecc1c0d112fbd2"
+		"harnessSha256": "274e07966a68e78d048a9c766dcdc9b8376bb065fede79a28eecc1c0d112fbd2",
+		"runtimeBlobIdsAtMeasurement": {
+			"resources/Table.ts": "b142eb22c2e2b03cc31764ebdfc3a9441134335f",
+			"resources/search.ts": "95aca1c441e4eac88674ca4171f46ed7572980cc",
+			"resources/indexes/fullTextQueryIndex.ts": "7e779a0704acc0540a8da4c823f7a40946df1e17",
+			"resources/indexes/fullTextQueryProtocol.ts": "fe739e37812a2a379282d71bd0e76c35c8a85533"
+		}
 	}
 }

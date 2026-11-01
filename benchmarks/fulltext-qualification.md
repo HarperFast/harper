@@ -1,6 +1,6 @@
 # Full-text concurrency and memory observation
 
-Status: observed — ten local cells completed; numerical tables, raw-latency digests and scope checked independently. Owner: Kyle. Last observed: 2026-11-01.
+Status: observed — ten local cells completed. Owner: Kyle. Last observed: 2026-11-01.
 
 Observed: one-field sorting reached 42 queries/s with one query loop and no writes; 32-field sorting reached 14 queries/s. With strict freshness and 10 indexed writes/s, both sorting and relevance-only queries took approximately one second. These measurements do not establish catalog-scale readiness or a 50ms service-level guarantee.
 
@@ -65,13 +65,13 @@ Recorded resident set size (RSS) high-water values include seeding, native cache
 
 The current harness bounds that instrumentation to a 20ms time series plus rolling query-boundary peaks. This change was made after all ten cells and was not used to produce these results. Latency arrays remain retained in memory. A long-duration memory/leak study needs instrumentation overhead controls.
 
-[Compressed raw latencies](fulltext-qualification-latencies.json.gz) preserve every query/write latency as gzip JSON, with zero gzip modification time. Each entry identifies its source artifact and cell index. The summary records compressed/uncompressed SHA-256 digests, source commits and scratch artifact paths/digests; full historical memory time series remain in those scratch artifacts. Decompress with `gzip -dc benchmarks/fulltext-qualification-latencies.json.gz`.
+[Compressed raw latencies](fulltext-qualification-latencies.json.gz) preserve every query/write latency as gzip JSON, with zero gzip modification time. Each entry identifies its source artifact and cell index. The summary records compressed/uncompressed SHA-256 digests, source commits and original artifact names/digests. Full historical memory time series are not bundled; only their derived peaks and source digests are shared. Decompress with `gzip -dc benchmarks/fulltext-qualification-latencies.json.gz`.
 
 ## Open qualification
 
 Untested: operating-system-cold storage, multiple HTTP workers, competing unrelated traffic, sustained leaks, large indexes, catalog-scale deep offsets and expensive query classes. [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512) retains matched standalone-wrapper/Harper baselines, representative catalogs of at least 100 million records and agreed query-class p99 targets. This local matrix does not close those release gates.
 
-Independent review checked the numerical tables, raw-latency digests and scope; these observations are not a release sign-off.
+These observations are not a release sign-off.
 
 ## Sources
 

@@ -2,21 +2,23 @@
 	"scope": "Local 9000-row single-process real-native qualification. Original eight sort cells and later matched relevance controls used different recorded harness commits. Strict freshness includes publication wait; not OS-cold, multiworker HTTP or catalog-scale release qualification. No 50ms release gate is claimed.",
 	"sourceArtifacts": [
 		{
-			"path": "/Users/kyle/WebstormProjects/tmp/fulltext-qualification-final-20261101/report.json",
 			"sha256": "de0e5a91cef5d328e70105db29cbe3168a2b0f148e80e389c3a8fe0959283068",
 			"commit": "d5e49215c9628ee9f3b5cc83f0f7a43b5b8eea3b",
 			"harnessSha256": null,
-			"cellCount": 8
+			"cellCount": 8,
+			"localOriginalArtifactName": "fulltext-qualification-final-20261101/report.json",
+			"availability": "Original full memory series not bundled; raw query/write latency samples are committed separately."
 		},
 		{
-			"path": "/Users/kyle/WebstormProjects/tmp/fulltext-qualification-relevance-20261101/report.json",
 			"sha256": "1b49d623af5a128af0c815cc78f90ec79ae6da18eba7097480ae1d6806fc0570",
 			"commit": "f4551b4be26974f3944132d77c72e9d25c98addc",
 			"harnessSha256": {
 				"fulltext-qualification.cjs": "04a2ed193c982bf0e4b4d83fa4e86c8521c2ae11b59d3b8b09af9b81f7d424a9",
 				"run-fulltext-qualification.cjs": "1b63d70fcd4c19630b0ec5010ab3f12b258f7b6d2a8f26aad5c9bd3a4e0417a1"
 			},
-			"cellCount": 2
+			"cellCount": 2,
+			"localOriginalArtifactName": "fulltext-qualification-relevance-20261101/report.json",
+			"availability": "Original full memory series not bundled; raw query/write latency samples are committed separately."
 		}
 	],
 	"latencyArtifact": {
