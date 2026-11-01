@@ -781,7 +781,6 @@ Opt-in per registration (`maxLagMilliseconds`; zero disables shedding), with a m
 ages. Admission measures actual work ages in the current ownership epoch: unread commits, a deferred
 or capped delivery, and accepted work awaiting durability. `cursorLagMilliseconds` remains a diagnostic
 commit-clock distance; it includes idle gaps and replicated-clock spans and does not drive admission.
-A fresh write after a long idle period must not be rejected because the previous durable commit is old.
 
 Past the budget the owner sets the shared flag; every worker's `derivedIndexWriteRejection`
 (`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) rejects local
@@ -795,14 +794,13 @@ half the budget. A successor inheriting a trip additionally captures its first o
 holds admission closed until that fixed target is durable; a partial barrier cannot clear inherited
 backlog, and later unrelated-table writes cannot move the target. A successor without an inherited
 trip starts age accounting at acquisition, so this policy is not an end-to-end staleness guarantee
-across owner crashes. Query coverage certification remains separate.
+across owner crashes. A lost-work rewind preserves the oldest pending work age and recaptures its
+fixed target from the replayed log tail. Query coverage certification remains separate.
 
 Entering rebuild, unavailable, an unrecoverable `needs-rebuild`, a failed condemnation marker or a held
 lock admits writes as before; ordinary handoff preserves the shared flag. Shedding does not pin
 retention: rocksdb-js has no protected-position registration, so the budget belongs inside effective
-retention and every worker must run admission-aware code. The native-backend runtime regressions cover
-post-idle, unrelated-table, per-log and handoff routes; the published full-text HTTP control exercises
-the default idle-to-write boundary.
+retention and every worker must run admission-aware code.
 
 ### Failure flow
 

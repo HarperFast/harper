@@ -2310,6 +2310,119 @@ describe('DerivedIndexRuntime for native backends', () => {
 		}
 	});
 
+	it('preserves pending-work residence across repeated same-owner accepted-work-loss replays', async () => {
+		let clock = 1_000_000;
+		const entries = [];
+		const records = new Map();
+		const store = new FakeLogStore(new Map([[clock, entries]]), { live: true });
+		const backend = new SyncBackend('repeated-loss-age', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => clock });
+		runtime.register(registration(backend, { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 }));
+		try {
+			await waitFor(() => runtime.getStatus(backend.id)?.state === 'idle');
+			clock++;
+			records.set('1:a', { version: clock, value: { title: 'a' } });
+			entries.push(audit({ timestamp: clock, recordId: 'a' }));
+			store.rootStore.emit('committed');
+			await waitFor(() => backend.deliveries.length === 1);
+			for (let attempt = 0; attempt < 3; attempt++) {
+				clock += 150;
+				const id = `later-${attempt}`;
+				records.set(`1:${id}`, { version: clock, value: { title: id } });
+				entries.push(audit({ timestamp: clock, recordId: id }));
+				const previousDeliveries = backend.deliveries.length;
+				backend.stateChange('accepted-work-lost');
+				await waitFor(() => backend.deliveries.length > previousDeliveries);
+				if (attempt < 2) assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+			}
+			assert.strictEqual(backend.cursor.logs.local, 1_000_000);
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			backend.cursor = backend.deliveries.at(-1).through;
+			backend.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+		} finally {
+			await runtime.stop();
+		}
+	});
+
+	it('re-anchors inherited recovery after replay coalesces past the discarded target cursor', async () => {
+		let clock = 1_000_000;
+		let endOfLogReads = 0;
+		const entries = [1, 2, 3].map((index) => audit({ timestamp: clock + index, recordId: `r${index}` }));
+		const records = new Map(
+			entries.map((entry, index) => [`1:r${index + 1}`, { version: entry.version, value: { title: 'x' } }])
+		);
+		const store = new FakeLogStore(new Map([[clock, entries]]), {
+			live: true,
+			onNext: (entry) => {
+				if (entry === undefined) endOfLogReads++;
+			},
+		});
+		const policy = { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 };
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const first = new SyncBackend('lost-inherited-target', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => first.deliveries.length === 1 && endOfLogReads > 0);
+			clock += 401;
+			first.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			await owner.stop();
+			const previousEndReads = endOfLogReads;
+			const second = new SyncBackend('lost-inherited-target', cursor(1_000_000), () => DERIVED_INDEX_ACCEPTED);
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => second.deliveries.length === 1 && endOfLogReads > previousEndReads);
+			assert.strictEqual(second.deliveries[0].through.logs.local, 1_000_003);
+			records.set('1:new-tail', { version: 1_000_004, value: { title: 'new tail' } });
+			entries.push(audit({ timestamp: 1_000_004, recordId: 'new-tail' }));
+			second.stateChange('accepted-work-lost');
+			await waitFor(() => second.deliveries.length === 2);
+			assert.strictEqual(second.deliveries[1].through.logs.local, 1_000_004);
+			assert.notStrictEqual(derivedIndexWriteRejection(store, 1), undefined);
+			second.cursor = second.deliveries[1].through;
+			second.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+			assert.strictEqual(successor.getMetrics(second.id).acceptedMutations, 0);
+		} finally {
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
+	it('preserves effective unread age rather than a stale unread origin when replay starts', async () => {
+		let clock = 1_000_000;
+		const timestamp = clock + 5_000;
+		const entries = [audit({ timestamp, recordId: 'fresh' })];
+		const records = new Map([['1:fresh', { version: timestamp, value: { title: 'fresh' } }]]);
+		const store = new FakeLogStore(new Map([[clock, entries]]), {
+			onNext: (entry) => {
+				if (entry) clock = entry.txnLogKey;
+			},
+		});
+		let lost = false;
+		const backend = new SyncBackend('clamped-unread-replay', cursor(clock), (batch, target) => {
+			if (!lost) {
+				lost = true;
+				target.stateChange('accepted-work-lost');
+			}
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => clock });
+		runtime.register(registration(backend, { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 }));
+		try {
+			await waitFor(() => backend.deliveries.length === 2 && runtime.getMetrics(backend.id).acceptedMutations === 1);
+			assert.strictEqual(clock, timestamp);
+			assert.strictEqual(runtime.getMetrics(backend.id).oldestAcceptedAgeMilliseconds, 0);
+			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 5_000);
+			assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		} finally {
+			await runtime.stop();
+		}
+	});
+
 	it('keeps writes admitted when the registration sets no lag policy', async () => {
 		const records = new Map([['1:a', { version: 1, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 5_000_000, recordId: 'a' })]]]));
