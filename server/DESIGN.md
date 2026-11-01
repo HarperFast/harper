@@ -1,6 +1,10 @@
 # server/ — Navigation Guide
 
-This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer. **Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior. **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
+This layer routes HTTP, HTTPS, WebSocket, MQTT and NATS traffic to Resources.
+
+**Read this when:** changing protocol handling, middleware, requests, responses or WebSocket upgrades.
+
+Use the symbol and section names below to navigate; line numbers drift.
 
 ---
 
@@ -55,22 +59,9 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `status/`                                  | `get_status`/`set_status`/`clear_status` over `system.hdb_status`, aggregated with flat component status, an opt-in component tree (`components: true`), and opt-in resolved middleware chains (`middleware: true`, #1573). Both status views render errors with the shared `serializeStatusError()` formatter; raw Error objects remain internal.                                                                                                     |
 
-> **Subscription message identity contract.** `sharedMessageEncoding.ts` encodes a message once and
-> reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
-> sound for every internal producer because each yields a fresh object per version — `transactionBroadcast`
-> hands one `auditRecord` to every subscription, `auditStore`'s `getValue` memoizes the decode in its
-> closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content. Pinned by
-> `unitTests/resources/subscriptionValueIdentity.test.js`.
+> **Subscription message identity.** [sharedMessageEncoding.ts](serverHelpers/sharedMessageEncoding.ts) shares bytes by envelope identity and version ([subscriptionValueIdentity.test.js](../unitTests/resources/subscriptionValueIdentity.test.js)). Internal sharing is sound because `transactionBroadcast` forwards one audit envelope, `auditStore.getValue` memoizes per closure and `primaryStore.getEntry` guards versions.
 >
-> Rather than leave that as a rule custom Resources have to know, the event's record `version` is part
-> of the cache key: `DurableSubscriptionsSession` forwards it to the delivery listener, and an entry
-> whose version does not match is re-encoded. A Resource that reuses one envelope but advances the
-> version is therefore correct, not merely disallowed; one that supplies no version is not shared at
-> all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
-> indistinguishable from re-sending the same message.
->
-> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
-> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
+> Custom Resources may reuse an envelope only with a changed version; mutating it without advancing the version can serve stale bytes. Messages without a version are not shared. Custom serializers must be pure in their input (`ContentTypeHandler.serialize`, `Server.ts`).
 
 > **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
 > is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
@@ -940,7 +931,7 @@ any load error as a misleading "supports only Node.js versions" message.
 
 ## `threads.v8Flags` is applied once, before the first Harper worker (`server/threads/v8Flags.ts`)
 
-V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` also calls it at entry, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
+V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` calls it after explicit full-text query policy validation, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
 
 It is not applied at `manageThreads.ts` module load, as `threads.heapSnapshotNearLimit` is: `bin/run.ts` imports that module before `initialize()` runs the install that first composes `HARPER_SET_CONFIG` into the config file, and before it writes the `THREADS_V8FLAGS` env/CLI form. A module-load read misses the value on a fresh container's first boot. `unitTests/server/threads/v8Flags.test.js` assigns the setting after the module loads, so a move to module load fails it.
 
