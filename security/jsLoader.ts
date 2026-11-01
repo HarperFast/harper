@@ -433,6 +433,34 @@ function normalizeImportedModule(importedModule: any): any {
 	return importedModule;
 }
 
+function dynamicCjsExports(namespace: any, moduleUrl: string): Record<string, unknown> {
+	if (!moduleUrl.startsWith('file:')) return {};
+	const path = fileURLToPath(moduleUrl);
+	let cjsModule = nativeRequire.cache[path];
+	if (!cjsModule) {
+		try {
+			cjsModule = nativeRequire.cache[realpathSync(path)];
+		} catch {}
+	}
+	const cjsExports = cjsModule?.exports;
+	if (!cjsExports || cjsExports !== namespace.default) return {};
+	if (typeof cjsExports !== 'object' && typeof cjsExports !== 'function') return {};
+	const names: Record<string, unknown> = Object.create(null);
+	try {
+		if (Array.isArray(cjsExports) || ArrayBuffer.isView(cjsExports)) return names;
+		for (const name of Object.keys(cjsExports)) {
+			if (name in namespace) continue;
+			try {
+				const descriptor = Object.getOwnPropertyDescriptor(cjsExports, name);
+				if (descriptor && 'value' in descriptor && !(name === 'then' && typeof descriptor.value === 'function')) {
+					names[name] = descriptor.value;
+				}
+			} catch {}
+		}
+	} catch {}
+	return names;
+}
+
 /**
  * Load a module using Node's vm.Module API with optional sandboxing
  * @param moduleUrl - The URL of the module to load
@@ -897,8 +925,9 @@ async function getCompartment(scope: ApplicationScope, globals) {
 							Object.assign(exports, harperExports);
 						},
 					};
-				} else if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
-					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+				}
+				checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+				if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
 					const nativeModule = createRequire(moduleSpecifier)(fileURLToPath(moduleSpecifier));
 					scope.markNativeRuntime?.();
 					const moduleExports = normalizeImportedModule(nativeModule);
@@ -930,15 +959,16 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
-					const moduleExports = await import(moduleSpecifier);
+					const namespace = await import(moduleSpecifier);
+					const extra = dynamicCjsExports(namespace, moduleSpecifier);
+					const namespaceKeys = Object.keys(namespace);
+					const extraKeys = Object.keys(extra);
 					return {
 						imports: [],
-						exports: Object.keys(moduleExports),
+						exports: [...namespaceKeys, ...extraKeys],
 						execute(exports) {
-							for (const key of Object.keys(moduleExports)) {
-								exports[key] = moduleExports[key];
-							}
+							for (const key of namespaceKeys) exports[key] = namespace[key];
+							for (const key of extraKeys) exports[key] = extra[key];
 						},
 					};
 				}
