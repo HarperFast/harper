@@ -60,7 +60,7 @@ describe('jobOwnership', function () {
 	});
 
 	afterEach(async function () {
-		await removeSeededJobs(seeded);
+		await removeSeededJobs(seeded ?? []);
 	});
 
 	describe('stampJobOwner', function () {
@@ -141,6 +141,16 @@ describe('jobOwnership', function () {
 			assert.strictEqual(await reconcileInterruptedJobs(), 0);
 			assert.strictEqual(await statusOf(complete), JOB_STATUS_ENUM.COMPLETE);
 			assert.strictEqual(await statusOf(errored), JOB_STATUS_ENUM.ERROR);
+		});
+
+		it('leaves a job whose outcome a durable record still decides, and settles the rest', async function () {
+			const deferred = await seedJob({ owner_instance: randomUUID(), deferred_to: 'restore-intent' });
+			const interrupted = await seedJob({ owner_instance: randomUUID() });
+			seeded.push(deferred, interrupted);
+
+			assert.strictEqual(await reconcileInterruptedJobs(new Set([deferred])), 1);
+			assert.strictEqual(await statusOf(deferred), JOB_STATUS_ENUM.IN_PROGRESS);
+			assert.strictEqual(await statusOf(interrupted), JOB_STATUS_ENUM.ERROR);
 		});
 
 		it('is idempotent — a second pass finds nothing left to settle', async function () {

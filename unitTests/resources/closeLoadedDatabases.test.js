@@ -26,6 +26,7 @@ const {
 	databases,
 } = require('#src/resources/databases');
 const { getRegistryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { schemaHandler } = require('#src/server/itc/serverHandlers');
 const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
@@ -398,6 +399,7 @@ describe('RocksDB handle release', function () {
 		await assert.rejects(closeDatabase(databaseName), /audit cleanup failed/);
 
 		assert.strictEqual(databases[databaseName].pkg.primaryStore.rootStore, rootStore);
+		assert.equal(await databases[databaseName].pkg.get('absent'), null, 'a resumed table was disposed');
 		assert.strictEqual(databaseCommitsSuspended(rootStore), false);
 		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
 		rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
@@ -631,6 +633,70 @@ describe('RocksDB handle release', function () {
 
 		assert.strictEqual(databases[databaseName], undefined);
 		assert.strictEqual(refCountFor(dbPath), 0);
+	});
+
+	it('closeDatabase disposes each table’s background work, and a reopen registers it once', async function () {
+		this.timeout(30000);
+		const databaseName = 'close_disposes_tables';
+		const intervals = [];
+		const cleared = new Set();
+		// a synchronous window, so only this table's interval can be captured
+		const capturingExpirationIntervals = (load) => {
+			const originalSetInterval = global.setInterval;
+			global.setInterval = (...args) => {
+				const interval = originalSetInterval(...args);
+				if (new Error().stack.includes('runRecordExpirationEviction')) intervals.push(interval);
+				return interval;
+			};
+			try {
+				return load();
+			} finally {
+				global.setInterval = originalSetInterval;
+			}
+		};
+		const originalClearInterval = global.clearInterval;
+		global.clearInterval = (interval) => {
+			cleared.add(interval);
+			return originalClearInterval(interval);
+		};
+		setMainIsWorker(true);
+		try {
+			const Expiring = capturingExpirationIntervals(() =>
+				table({
+					table: 'expiring',
+					database: databaseName,
+					audit: true,
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'expiresAt', expiresAt: true, indexed: true },
+					],
+				})
+			);
+			await Expiring.dbisDB.committed;
+			assert.strictEqual(intervals.length, 1, 'the record-expiration interval was not started');
+			const { auditStore } = Expiring.primaryStore.rootStore;
+			assert.strictEqual(typeof auditStore.deleteCallbacks?.[Expiring.tableId], 'function');
+
+			assert.strictEqual(await closeDatabase(databaseName), true);
+
+			assert(cleared.has(intervals[0]), 'the record-expiration interval outlived the close');
+			assert.strictEqual(auditStore.deleteCallbacks[Expiring.tableId], undefined);
+			assert.throws(
+				() => Expiring.getResource('any', {}),
+				(error) => error.code === 'DATABASE_CLOSING' && error.retryable === true
+			);
+
+			intervals.length = 0;
+			const Reopened = capturingExpirationIntervals(() => resetDatabases()[databaseName].expiring);
+			assert.notStrictEqual(Reopened, Expiring);
+			assert.strictEqual(intervals.length, 1);
+			const reopenedCallbacks = Reopened.primaryStore.rootStore.auditStore.deleteCallbacks;
+			assert.deepStrictEqual(Object.keys(reopenedCallbacks), [String(Reopened.tableId)]);
+		} finally {
+			global.clearInterval = originalClearInterval;
+			setMainIsWorker(false);
+			await closeDatabase(databaseName);
+		}
 	});
 
 	it('closeLoadedDatabases releases every loaded user database (what a job worker does on exit)', async function () {

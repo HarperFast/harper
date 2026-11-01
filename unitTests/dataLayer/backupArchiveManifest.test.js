@@ -30,6 +30,7 @@ describe('backupArchiveManifest', function () {
 			});
 
 			assert.strictEqual(manifest.archive_schema_version, ARCHIVE_SCHEMA_VERSION);
+			assert.strictEqual(manifest.archive_schema_minor, 0);
 			assert.strictEqual(manifest.database, 'orders');
 			assert.strictEqual(manifest.blobs, true);
 			assert.strictEqual(manifest.blob_root_count, 2);
@@ -142,6 +143,29 @@ describe('backupArchiveManifest', function () {
 		it('refuses a capability this build does not have, naming it', function () {
 			assert.throws(
 				() => assertArchiveRestorable(manifestFor({ requires: ['rocksdb-stream-backup', 'blob-encryption-v2'] })),
+				(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message)
+			);
+		});
+
+		it('ignores the schema minor, however high', function () {
+			assert.deepStrictEqual(assertArchiveRestorable(manifestFor({ archive_schema_minor: 99 })), []);
+		});
+
+		it('waives only the newer-major refusal when told to, and reports it', function () {
+			const newer = manifestFor({ archive_schema_version: ARCHIVE_SCHEMA_VERSION + 1 });
+			const waived = assertArchiveRestorable(newer, { acceptIncompatible: true });
+			assert.strictEqual(waived.length, 1);
+			assert.match(waived[0], /archive_schema_version/);
+			assert.deepStrictEqual(assertArchiveRestorable(manifestFor(), { acceptIncompatible: true }), []);
+		});
+
+		it('never waives a capability this build does not have', function () {
+			assert.throws(
+				() =>
+					assertArchiveRestorable(
+						manifestFor({ archive_schema_version: ARCHIVE_SCHEMA_VERSION + 1, requires: ['blob-encryption-v2'] }),
+						{ acceptIncompatible: true }
+					),
 				(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message)
 			);
 		});

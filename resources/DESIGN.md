@@ -875,17 +875,17 @@ node. The application sees a missing variable rather than ciphertext. Plaintext 
 coexist per value; `get_env_keys` and `get_component_file` still expose key names only. The
 envelope format, key model and client flow are user-facing and belong in HarperFast/documentation.
 
-## Closing an LMDB database closes its environment, never its dbis (`databases.ts` `closeDatabase`)
+## Closing a database closes its whole alias graph and disposes its tables (`databases.ts` `closeDatabase`)
 
-Aliases that resolve to one path share one LMDB root store but open their own dbis. `mdb_env_close` releases
-every dbi, while lmdb-js's `DbiWrap.close()` calls `mdb_dbi_close` on the `MDB_env*` captured at open, so closing a
-dbi after another alias closed the environment is a use-after-free (an intermittent segfault in the lmdb unit run).
-`closeDatabase` closes an LMDB root once, skips its dbis, and closes every alias sharing it; RocksDB column families
-are refcounted and still close one by one (shared-store cases in `databaseAliasIdentity.test.js`). Only `closed`
-counts as closed: lmdb (through 3.5.8) resolves `close()` early while a read is in flight on an environment that
-never wrote, so a drop unlinked an open `.mdb`. `openLmdb` gives each root one close completion, resolved by lmdb's
-close callback (dropped on rejection); a close finding `closing` awaits it, and a drop removes the file after it even
-when an earlier close finished. Remove the wrapper once lmdb returns its deferred close (`lmdbCloseCompletion.test.js`).
+Closing one alias closes every alias sharing its roots (`collectDatabaseGraph`), on both engines. lmdb-js's
+`DbiWrap.close()` calls `mdb_dbi_close` on the `MDB_env*` captured at open, so an LMDB root closes once, only while
+`open`, and its dbis never close natively (a use-after-free once the env is gone); RocksDB column families close one
+by one. Only `closed` counts as closed: lmdb (through 3.5.8) resolves `close()` early while a read is in flight, so
+`openLmdb` gives each root one close completion resolved by lmdb's close callback (dropped on rejection), a close
+finding `closing` awaits it, and a drop removes the file after it. Tables are disposed (`cleanup`) only past the last
+point that can resume maintenance. A restore close resolves names by directory, closes any root a rescan detached,
+and fences blobs under every name and root it closes (`databaseAliasIdentity`, `closeLoadedDatabases`,
+`lmdbCloseCompletion` tests).
 
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 

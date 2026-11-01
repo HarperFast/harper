@@ -1337,8 +1337,11 @@ interface TableResourceClass {
 	>;
 	getHistoryOfRecord(id: any): Promise<any[]>;
 	clear(): any;
-	/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
-	cleanup(): void;
+	/**
+	 * Release everything makeTable() registered process-wide; the class must not be used afterwards. A
+	 * `closing` table refuses requests as retryable, since its database reopens under a new class.
+	 */
+	cleanup(options?: { closing?: boolean }): void;
 	closeMaintenance(deadline?: number): Promise<void>;
 	resumeMaintenance(): void;
 	/** @internal */
@@ -2038,6 +2041,10 @@ export function makeTable(options): TableResourceClass {
 		const error: any = new Error(`Table ${databaseName}.${tableName} has been dropped or unloaded on this thread`);
 		error.statusCode = 404;
 		throw error;
+	}
+	function closedResource(_target: RequestTarget, request: Context): never {
+		const transaction = (request as any)?.transaction;
+		throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
 	}
 	function currentFullTextDescriptor(): { key: string; descriptor: any } | undefined {
 		const namedKey = `${tableName}/${primaryKey}`;
@@ -11275,13 +11282,13 @@ export function makeTable(options): TableResourceClass {
 			return admission instanceof Promise ? admission.then(startClear) : startClear();
 		}
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
-		static cleanup() {
+		static cleanup({ closing = false }: { closing?: boolean } = {}) {
 			disposed = true;
 			const armerKey = `${primaryStore.path}:${tableId}`;
 			const armers = replicaEvictionArmers.get(armerKey);
 			armers?.delete(armReplicaEviction);
 			if (armers?.size === 0) replicaEvictionArmers.delete(armerKey);
-			TableResource.getResource = unavailableResource;
+			TableResource.getResource = closing ? closedResource : unavailableResource;
 			void TableResource.derivedIndexRuntime
 				?.close()
 				.catch((error) => logger.warn?.(`Derived index shutdown failed for ${databaseName}.${tableName}`, error));

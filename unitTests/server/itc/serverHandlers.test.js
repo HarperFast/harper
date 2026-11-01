@@ -73,10 +73,16 @@ describe('Test hdbChildIpcHandler module', () => {
 					calls.push(`block:${databaseName}`);
 					await draining;
 				},
-				resumeBlobSavesAfterRestore: (databaseName) => calls.push(`resume:${databaseName}`),
+				resumeBlobSavesForRestore: (restoreToken) => calls.push(`resume:${restoreToken}`),
+				restoreCloseTargets: (databaseName) => ({
+					databaseNames: [databaseName],
+					blobDatabaseNames: [databaseName],
+				}),
 				closeDatabase: (databaseName) => calls.push(`close:${databaseName}`),
 				cleanLmdbMap: async () => {},
-				syncSchemaMetadata: async () => {},
+				syncSchemaMetadata: async (message) => {
+					if (message.restorePhase === 'reload') calls.push('rescan');
+				},
 			});
 			try {
 				const closing = schema_handler({
@@ -91,9 +97,16 @@ describe('Test hdbChildIpcHandler module', () => {
 
 				await schema_handler({
 					type: 'schema',
-					message: { originator: 12345, operation: 'restore_backup', schema: 'orders', restorePhase: 'reload' },
+					message: {
+						originator: 12345,
+						operation: 'restore_backup',
+						schema: 'orders',
+						restorePhase: 'reload',
+						restoreToken: 'orders-restore',
+					},
 				});
-				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders']);
+				// the rescan opens the restored generation and replays its log, which saves blobs
+				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders-restore', 'rescan']);
 			} finally {
 				restore();
 			}
@@ -251,7 +264,7 @@ describe('Test hdbChildIpcHandler module', () => {
 		});
 
 		afterEach(() => {
-			resources_instance.clear();
+			resources_instance?.clear();
 		});
 
 		// Tests validation: invalid events should be rejected and logged
