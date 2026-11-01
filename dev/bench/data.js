@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793517790628,
+  "lastUpdate": 1793517794784,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20286,6 +20286,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 103.98,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2dcd7fb8255485066f7881cc64018bd624588174",
+          "message": "Make contextStorage.exit() leave the request context on Node 22 (#3840)\n\n* Make contextStorage.exit() leave the request context on Node 22\n\nNode 22's async_hooks AsyncLocalStorage implements exit() by disabling the\nstorage only; the request's store stays on the current async resource. A\nrun() nested in the callback re-enables the storage, so from then on\ngetStore() returns the outer request's store again, and async work started\nafterwards inherits it. Node 24+ (AsyncContextFrame) implements exit() as\nrun(undefined, ...).\n\nThe TLS selector's updateTLS() re-enters itself under exit() so a request\nthat first initializes it does not read hdb_certificate as that request. On\nNode 22 its hdb_certificate.subscribe() nests a run(), and the following\nsearch([]) ran as the anonymous request and failed with \"Must login\": the\nexisting keys test for that case fails on Node 22, and harper-pro's Node 22\ncluster shard has been red since harper-pro#1192.\n\ncontextStorage is now a small AsyncLocalStorage subclass whose exit() is\nrun(undefined, ...) on every runtime, which fixes all five exit() callers\n(TLS selector, user-change subscription, analytics flush, replicated apply\nfailure listeners, harper-pro's replication connect()).\n\nRefs HarperFast/harper-pro#1189\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-pro-nonowner-retrieval-node22-tls\n\n* Point the TLS selector design note at the contextStorage.exit() contract\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-pro-nonowner-retrieval-node22-tls\n\n* Cover the async_hooks exit() leak on Node 24+ PR runs through --no-async-context-frame\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-pro-nonowner-retrieval-node22-tls\n\n* Harden the subprocess exit() test against slow loads and unrelated output\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-pro-nonowner-retrieval-node22-tls\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-01T04:18:26Z",
+          "url": "https://github.com/HarperFast/harper/commit/2dcd7fb8255485066f7881cc64018bd624588174"
+        },
+        "date": 1793517793962,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.3,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 16.74,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.33,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 20.48,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 22.89,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 19.15,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 37.94,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 17.1,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 20.4,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 43.56,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 239.24,
             "unit": "ms"
           }
         ]
