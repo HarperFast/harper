@@ -3508,9 +3508,13 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			['gt', 199, [200, 0], [200, 201, 202, 203, 204]],
 			['between', [100, 199], [150.3, 0], [150, 151, 149, 152, 148]],
 		]) {
-			const { results, stats } = await searchWithSpy(target, [{ attribute: 'rank', comparator, value }], {
-				limit: 5,
-			});
+			// The allow-set gate reads this estimate, and a memtable range estimate is a skip-list sample
+			// that can land past the 150-key budget.
+			const { results, stats } = await searchWithSpy(
+				target,
+				[{ attribute: 'rank', comparator, value, estimated_count: 100 }],
+				{ limit: 5 }
+			);
 			assert.strictEqual(stats.filterEvaluations, 0, `${comparator} must be answered by the allow-set`);
 			assert.strictEqual(stats.candidateKeys, 100, `${comparator} selects 100 records`);
 			assert.deepStrictEqual(
@@ -3519,6 +3523,20 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				`unexpected results for ${comparator}`
 			);
 		}
+	});
+
+	it('clears the allow-set gate with an unpinned planner estimate on a narrow range', async () => {
+		const { results, stats } = await searchWithSpy(
+			[104.3, 0],
+			[{ attribute: 'rank', comparator: 'between', value: [100, 109] }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(stats.filterEvaluations, 0, 'the estimate must not decline the allow-set');
+		assert.strictEqual(stats.candidateKeys, 10);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[104, 105, 103, 106, 102]
+		);
 	});
 
 	it('returns what the predicate path returns when a condition admits a record the index does not hold', async () => {
