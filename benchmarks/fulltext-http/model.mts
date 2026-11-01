@@ -1,6 +1,9 @@
 import assert from 'node:assert';
 import { createHistogram } from 'node:perf_hooks';
 export const MATCHES = 1000;
+export function validateCatalogRows(rows, large = false) {
+	assert(Number.isInteger(rows) && rows >= MATCHES && rows % MATCHES === 0 && rows <= (large ? 20000000 : 1000000));
+}
 export function record(index) {
 	const bucket = Math.floor(index / MATCHES);
 	return {

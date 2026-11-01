@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { record, target, verify, meter, runPhase, cellVerdict, finalizeReport } from './model.mts';
+import { record, target, verify, meter, runPhase, cellVerdict, finalizeReport, validateCatalogRows } from './model.mts';
 test('deterministic catalog keeps exactly 1000 rows per token and excludes writer', () => {
 	assert.strictEqual(record(0).category, record(999).category);
 	assert.notStrictEqual(record(999).category, record(1000).category);
@@ -115,4 +115,14 @@ test('known exact counts pass, unknown totals remain distinct degraded evidence 
 	assert.strictEqual(summary.rejections, 1);
 	assert.strictEqual(summary.failureLatency.count, 1);
 	assert.strictEqual(cellVerdict(summary, { rejections: 0 }), 'unqualified');
+});
+
+test('large catalog requires explicit opt-in and preserves integral 1000-match buckets and a finite ceiling', () => {
+	validateCatalogRows(1000);
+	validateCatalogRows(1000000);
+	validateCatalogRows(10000000, true);
+	validateCatalogRows(20000000, true);
+	for (const rows of [1000001, 10000000, 0, -1000, NaN, Infinity, 1000.5])
+		assert.throws(() => validateCatalogRows(rows));
+	for (const rows of [20001000, 20000001, 999, NaN, Infinity]) assert.throws(() => validateCatalogRows(rows, true));
 });

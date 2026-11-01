@@ -17,10 +17,21 @@ import {
 	killHarper,
 	startHarper,
 } from '@harperfast/integration-testing';
-import { record, target, verify, meter, MATCHES, runPhase, cellVerdict, finalizeReport } from './model.mts';
+import {
+	record,
+	target,
+	verify,
+	meter,
+	MATCHES,
+	runPhase,
+	cellVerdict,
+	finalizeReport,
+	validateCatalogRows,
+} from './model.mts';
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const sizes = (process.env.FULLTEXT_HTTP_ROWS || '100000,1000000').split(',').map(Number);
+const largeCatalog = process.env.FULLTEXT_HTTP_LARGE === '1';
 const clients = (process.env.FULLTEXT_HTTP_CLIENTS || '8,32').split(',').map(Number);
 const cases = (process.env.FULLTEXT_HTTP_CASES || 'relevance,sort,highlights,exact,structured').split(',');
 const duration = Number(process.env.FULLTEXT_HTTP_DURATION_MS || 60000);
@@ -31,7 +42,7 @@ const commonGitDirectory = (
 	await exec('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: resolve(here, '../..') })
 ).stdout.trim();
 const output = resolve(process.env.FULLTEXT_HTTP_OUTPUT || resolve(commonGitDirectory, '../../tmp/fulltext-http'));
-for (const n of sizes) assert(Number.isInteger(n) && n >= MATCHES && n % MATCHES === 0 && n <= 1000000);
+for (const n of sizes) validateCatalogRows(n, largeCatalog);
 for (const n of clients) assert(Number.isInteger(n) && n >= 1 && n <= 32);
 for (const n of writeRates) assert([0, 10].includes(n));
 for (const name of cases) assert(['relevance', 'sort', 'highlights', 'exact', 'structured'].includes(name));
@@ -89,7 +100,7 @@ await writeFile(
 			compiledHashes,
 			addons,
 			node: process.version,
-			options: { sizes, clients, cases, duration, writeRates, expectedWorkers },
+			options: { sizes, clients, cases, duration, writeRates, expectedWorkers, largeCatalog },
 		},
 		null,
 		2
