@@ -42,6 +42,21 @@ All ten cells completed with zero recorded query/write errors. Rates use elapsed
 
 Verified configuration: queries set `maxIndexLagMilliseconds: 0` and `waitForIndexMilliseconds: 30000`. The [waiting query path](../resources/indexes/fullTextQueryIndex.ts) requests current coverage before searching. The [derived-index runner](../resources/derivedIndexRuntime.ts) defaults to a 1,000ms flush age. Observed write-cell median latency near one second, including the relevance-only control, supports publication waiting as the dominant cost. This control does not isolate every latency contributor or establish a before/after regression comparison. Increasing tolerated lag while retaining a positive wait does not bypass that waiting path.
 
+## Final-page preparation check
+
+A separate [final-page observation](fulltext-final-page-cost.json) runs the current highlighted shallow/deep cases over 9,000 matches. It completed all 15 correctness cases while the broad unit/integration gates were also running. These timings measure bounded observed cost under uncontrolled competing load; they do not establish an isolated performance baseline or a before/after regression comparison.
+
+| Request                                          | Offset | Observed p50 ms | Observed maximum ms |
+| ------------------------------------------------ | -----: | --------------: | ------------------: |
+| Sorted highlights                                |      0 |           30.34 |               44.65 |
+| Sorted highlights                                |  8,800 |           37.91 |               40.53 |
+| Exact count with computed projection             |      0 |           27.88 |               52.33 |
+| Exact count with computed projection             |  8,800 |           26.37 |               37.58 |
+| Highlighted exact count with computed projection |      0 |           28.85 |               30.16 |
+| Highlighted exact count with computed projection |  8,800 |           28.88 |               30.09 |
+
+Each highlighted request traces exactly the 20 visible records through the actual native reader. Exact-count projection controls expose the existing count-tail work: unhighlighted requests project all 9,000 records at either offset; highlighted requests project 9,000 at offset zero and 200 at offset 8,800. Highlighted preparation avoids offset projection, but ordinary count-tail projection remains. This can exhaust Table's separate count timer and return an unknown total; it is not represented as a completed optimization.
+
 ## Memory and provenance
 
 The eight sort cells ran at [d5e49215c9628ee9f3b5cc83f0f7a43b5b8eea3b](https://github.com/HarperFast/harper/commit/d5e49215c9628ee9f3b5cc83f0f7a43b5b8eea3b); the two relevance controls ran at [f4551b4be26974f3944132d77c72e9d25c98addc](https://github.com/HarperFast/harper/commit/f4551b4be26974f3944132d77c72e9d25c98addc). The latter adds the optional control and reporting fields; these are separate source snapshots. The summary labels freshness/window/drain fields inferred afterward for the original matrix as `posthocVerifiedConfiguration`.
