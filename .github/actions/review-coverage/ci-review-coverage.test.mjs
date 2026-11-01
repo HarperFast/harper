@@ -1354,20 +1354,23 @@ test('an easy PR at fast urgency that a fold would not rescue is not told to fol
 	}
 });
 
-test('a draft with a pending late leg still passes; its note says whether urgency lets ready-for-review pass', () => {
+test('a draft with a pending late leg still passes; its note says whether the leg holds it at ready-for-review', () => {
+	const released = (urgency) =>
+		`draft — checked again at ready-for-review; late review leg \`cursor-grok\` is still pending; \`urgency=${urgency}\` does not hold ready-for-review on it`;
 	for (const urgency of ['fast', 'urgent']) {
-		const r = evaluateCiCoverage(pr({ body: urgencyFooter(urgency), draft: true }), { mode: 'enforce' });
-		assert.strictEqual(r.pass, true);
-		assert.strictEqual(r.lateNotice, '');
-		assert.strictEqual(
-			r.exempt,
-			`draft — checked again at ready-for-review; late review leg \`cursor-grok\` is still pending; \`urgency=${urgency}\` lets ready-for-review pass with it`
+		for (const ran of ['codex,gemini', 'gemini']) {
+			const r = evaluateCiCoverage(pr({ body: urgencyFooter(urgency, ran), draft: true }), { mode: 'enforce' });
+			assert.strictEqual(r.pass, true, `${urgency} ${ran}`);
+			assert.strictEqual(r.lateNotice, '');
+			assert.strictEqual(r.exempt, released(urgency), `${urgency} ${ran}`);
+		}
+		const easy = evaluateCiCoverage({ ...easyPr('gemini', urgency), draft: true }, { mode: 'enforce' });
+		assert.strictEqual(easy.pass, true);
+		assert.match(
+			easy.exempt,
+			/late review leg `cursor-grok` must be adjudicated first$/,
+			'the easy waiver needs the fold'
 		);
-		const short = evaluateCiCoverage(pr({ body: urgencyFooter(urgency, 'gemini'), draft: true }), {
-			mode: 'enforce',
-		});
-		assert.strictEqual(short.pass, true);
-		assert.match(short.exempt, /late review leg `cursor-grok` must be adjudicated first$/);
 	}
 	const normal = evaluateCiCoverage(pr({ body: urgencyFooter(''), draft: true }), { mode: 'enforce' });
 	assert.match(normal.exempt, /late review leg `cursor-grok` must be adjudicated first$/);

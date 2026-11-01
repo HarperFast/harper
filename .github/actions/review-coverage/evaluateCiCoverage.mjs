@@ -196,7 +196,6 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	// Waives ONE leg, not "all but one": a consumer asking for three still gets two.
 	const easyWaived =
 		waiver.waived && !adjudicatorBlocked && !pendingLegs.length && enforceable >= Math.max(1, required - 1);
-	// One review short, the PR needs the easy waiver, which never covers a pending leg at any urgency.
 	const easyNeedsFold =
 		waiver.waived &&
 		!adjudicatorBlocked &&
@@ -205,11 +204,10 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		enforceable < required;
 	const pendingHeld = pendingLegs.length > 0 && (!URGENCIES_READY_WHILE_PENDING.has(urgency) || easyNeedsFold);
 	const compliant = enforceable >= required && !adjudicatorBlocked && !pendingHeld;
-	const passesWhilePending = pendingLegs.length > 0 && compliant;
 	const exempt =
 		classification.exempt ||
 		(classification.draft
-			? `draft — checked again at ready-for-review${pendingLegs.length ? `; late review leg ${pendingList} ${passesWhilePending ? `is still pending; \`urgency=${urgency}\` lets ready-for-review pass with it` : 'must be adjudicated first'}` : ''}`
+			? `draft — checked again at ready-for-review${pendingLegs.length ? `; late review leg ${pendingList} ${pendingHeld ? 'must be adjudicated first' : `is still pending; \`urgency=${urgency}\` does not hold ready-for-review on it`}` : ''}`
 			: '') ||
 		(!aiAuthored ? 'not AI-authored — coverage is reported, not required' : '') ||
 		(easyWaived ? `Complexity: easy on a ${waiver.lines}-line diff — one outside review is enough` : '');
@@ -237,7 +235,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — ${PENDING_FIX}`
 			: '';
 	const lateNotice =
-		passesWhilePending && !exempt
+		pendingLegs.length && compliant && !exempt
 			? `late review leg ${pendingList} is still pending, so its findings are not adjudicated yet; \`urgency=${urgency}\` lets a ready PR pass before the leg folds`
 			: '';
 	const summary = exempt
