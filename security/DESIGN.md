@@ -202,8 +202,9 @@ for builtins, and the substitute it returns, such as the constrained `child_proc
 (record the bytes as read, strip TypeScript). `require()` differs only in loading synchronously: native
 is `require(path)` rather than `import()`. A new entry point, or a new branch in one, owes all four.
 A CommonJS or natively loaded file keeps the route whichever form loaded it first chose: `cjsCache`
-(app-loaded CommonJS) and `nativeModules` (natively loaded, registered before a native `import()`
-settles) are keyed by URL and consulted by both `require()` and `import`, so a file reached by two
+(app-loaded CommonJS) and `nativeModules` (natively loaded, registered before a native `require()`
+evaluates or a native `import()` settles, released if that fails without loading the file) are keyed
+by URL and consulted by both `require()` and `import`, so a file reached by two
 specifiers that would route differently has one instance per scope. Not covered: an ESM file the
 application loader evaluated lives only in `moduleCache`, so a bare-specifier `require()` of it under
 `dependencyLoader: native` gets Node's `require(esm)` instance; a JSON import is its own default-only

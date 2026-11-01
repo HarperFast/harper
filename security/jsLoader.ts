@@ -563,9 +563,14 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			}
 			if (!shouldUseApplicationLoader(spec, resolvedUrl)) {
 				if (isApplicationLocalModule(resolvedUrl)) scope.markNativeRuntime?.();
-				const nativeModule = require(modulePath);
+				// reserved before evaluating, so a require() of the file re-entered meanwhile gets this instance
 				nativeModules.add(resolvedUrl);
-				return nativeModule;
+				try {
+					return require(modulePath);
+				} catch (error) {
+					if (!nativeRequire.cache[modulePath]) nativeModules.delete(resolvedUrl);
+					throw error;
+				}
 			}
 			return loadCJS(resolvedUrl, readApplicationModule(resolvedUrl)).exports;
 		};
@@ -579,7 +584,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 
 	function createCJSSyntheticModule(url: string, cjsModule: { exports: any }): SyntheticModule {
 		let exports = cjsModule.exports;
-		if (exports?.default === undefined) {
+		if (exports === null || (typeof exports !== 'object' && typeof exports !== 'function')) {
+			// as in Node, a primitive module.exports is only the default export
+			exports = { default: exports };
+		} else if (exports.default === undefined) {
 			// provide the default export for compatibility
 			exports = { default: exports, ...exports };
 		}
