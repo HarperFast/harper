@@ -28,6 +28,7 @@ import type {
 } from '../parser/ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { _setDatabasesLoader, loadDatabases, findDatabasesWithTable } from './defaultDatabase.ts';
+import { declaringTables } from './columnScope.ts';
 
 interface AttributeInfo {
 	name: string;
@@ -263,7 +264,7 @@ function resolveColumns(expr: ExprNode, scope: BoundTable[]): void {
 				return;
 			}
 			// Unqualified: bind to the unique table that declares this attribute.
-			const owners = scope.filter((t) => t.attributes.some((a) => a.name === expr.name));
+			const owners = declaringTables(expr.name, scope);
 			if (owners.length === 1) {
 				expr.table = owners[0].effectiveAlias;
 			} else if (owners.length > 1) {

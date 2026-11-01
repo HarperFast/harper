@@ -637,6 +637,13 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
+		if (!isSuperUser) {
+			const unresolvedColumns = parsedAst.getUnresolvedColumnRefs();
+			if (unresolvedColumns.length > 0) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_COLUMN(unresolvedColumns));
+			}
+		}
+
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);
 		userObject.role.permission = fullRolePerms;
 
@@ -644,6 +651,10 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 		// attributes that the user has READ perms for - we can skip this step for super users
 		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
+		}
+		// After expansion, so a wildcard cannot expand into an attribute named `_`.
+		if (!isSuperUser && parsedAst.getRowAccessors().length > 0) {
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_ROW_ACCESSOR);
 		}
 
 		for (let s = 0; s < schemas.length; s++) {
@@ -674,6 +685,19 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 				);
 			}
 		});
+
+		const writeReads = isSuperUser ? undefined : parsedAst.getWriteStatementReads();
+		if (writeReads?.attributes.length) {
+			checkAttributePerms(
+				writeReads.attributes,
+				getAttributePermissions(userObject.role.permission, writeReads.schema, writeReads.table),
+				terms.VALID_SQL_OPS_ENUM.SELECT,
+				writeReads.table,
+				writeReads.schema,
+				permsResponse,
+				undefined
+			);
+		}
 
 		return permsResponse.getPermsResponse();
 	} catch (e) {

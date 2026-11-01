@@ -284,27 +284,19 @@ function clone(a) {
 	return JSON.parse(JSON.stringify(a));
 }
 
-let logger_info_spy;
-
 describe('Test sql_statement_bucket Class', () => {
-	before(() => {
-		const logger_rw = sql_statement_rewire.__get__('harperLogger');
-		logger_info_spy = sandbox.spy(logger_rw, 'info');
-	});
-
 	after(() => {
 		sandbox.restore();
 		rewire('#js/sqlTranslator/sql_statement_bucket');
 	});
 
 	describe(`Test getDeleteAttributes`, function () {
-		it('Nominal, pull attributes in delete statement', function () {
+		it('registers the table but no WHERE columns, which are checked for read instead', function () {
 			let getDeleteAttributes = sql_statement_rewire.__get__('getDeleteAttributes');
-			//let statement = new sql_statement_bucket(TEST_DELETE);
 			let statement = new Map();
 			let table_lookup = new Map();
 			getDeleteAttributes(TEST_DELETE, statement, table_lookup);
-			assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 2);
+			assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 0);
 			assert.equal(Array.from(statement.get(SCHEMA_NAME).keys()).length, 1);
 			assert.equal(Array.from(statement.keys()).length, 1);
 		});
@@ -671,7 +663,7 @@ describe('Test sql_statement_bucket Class', () => {
 			});
 		});
 
-		it('Nominal case, INVALID table in WHERE, reasonably complex AST with attributes. ', function () {
+		it('Reports a WHERE column qualified by an unknown table as unresolved', function () {
 			let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
 			let test_copy = clone(TEST_COMPLEX_AST);
 			const invalid_table = 'steffen';
@@ -681,13 +673,16 @@ describe('Test sql_statement_bucket Class', () => {
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
 			let table_to_schema_lookup = new Map();
-			getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
-			assert.equal(logger_info_spy.calledOnce, true, 'invalid table was not logged');
-			assert.equal(
-				logger_info_spy.args[0],
-				`table specified as ${invalid_table} not found.`,
-				'invalid table was not logged'
+			const unresolved = new Set();
+			getRecordAttributesAST(
+				temp_select,
+				affected_attributes,
+				table_lookup,
+				schema_lookup,
+				table_to_schema_lookup,
+				unresolved
 			);
+			assert.deepEqual([...unresolved], [`${invalid_table}.${test_copy.where.expression.left.left.columnid}`]);
 		});
 	});
 
