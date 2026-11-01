@@ -1,0 +1,73 @@
+{
+	"harperHead": "027daf35a636ad59665927a4e89776c0d58c10c6",
+	"nativeRuntime": {
+		"packageVersion": "0.8.0",
+		"tantivyVersion": "0.27.0",
+		"nativeAbiVersion": 13,
+		"queryApiVersion": 7,
+		"queryClassIsolationMinimumSearchThreads": 2,
+		"lifecycleApiVersion": 1,
+		"mutationBatchApiVersion": 5,
+		"storageBackends": ["native"],
+		"limits": {
+			"maxConfiguredQueryTerms": 1024,
+			"maxConfiguredQueryClauses": 4096,
+			"maxAggregationDepth": 32,
+			"maxAggregationBuckets": 1024,
+			"maxAggregationMemoryBytes": 16777216,
+			"maxSortKeyBytes": 67108864,
+			"maxTermKeyBytes": 16777216,
+			"maxCommitPayloadBytes": 65536,
+			"maxQueryTextBytes": 65536,
+			"maxQueryTerms": 64,
+			"maxQueryClauses": 256,
+			"maxCandidateIds": 1024,
+			"maxCandidateBytes": 1048576,
+			"maxRecordIdBytes": 4096,
+			"maxRecordVersionBytes": 4096,
+			"maxPrefixExpansions": 50,
+			"maxFuzzyTerms": 16,
+			"maxFuzzyDistance": 2,
+			"maxSearchWindow": 10000,
+			"maxSearchPageSize": 10000,
+			"maxFilterStringBytes": 65530,
+			"maxAutocompleteResults": 100,
+			"maxSearchRequestBytes": 8388608,
+			"maxSearchResponseBytes": 8388608,
+			"maxSearchBudgetMilliseconds": 30000,
+			"maxTraceRecords": 100,
+			"maxTraceSourceBytes": 1048576,
+			"maxTraceSpans": 1024,
+			"maxSynonymRules": 1024,
+			"maxSynonymReplacements": 16,
+			"maxSynonymBytes": 1048576
+		}
+	},
+	"harnessHashes": {
+		"run.mts": "804e170904fd739adb26bb61fa8e8e2174855e4bea5e2c8167369bab5230d0ef",
+		"model.mts": "e81d5e4d01b7e2039f85804ad9fd1ced9c7d5ed3ec6f8a5e8c6bac8a117a0e93",
+		"fixture/resources.ts": "8a3a83b93addbd320729318b995b108fe068de00bc9291bb157733cd5e8f7246",
+		"fixture/schema.graphql": "bcaab38c0f4bb73ff151448612b695c99cc9b6acf8edc78372058a7602e33077",
+		"fixture/config.yaml": "4c4761a839b1bfc6c8a21208bdf4b97679fd79cc7f7464a243cab6e1b1617965"
+	},
+	"compiledHashes": {
+		"dist/resources/Table.js": "b1f4e73fe26f9bfa935f99aa3b5a3a2e7bf98cf5540c4292e09a8d5820b4d82b",
+		"dist/resources/indexes/fullTextQueryIndex.js": "5e95d1ae637da249395c97b04a2456dcbdc94e1ab2d28d900c746ce4c6243990",
+		"dist/resources/indexes/fullTextQueryProtocol.js": "411fa91a650224c4a1465f78d24d7404932d9fa8189f796d7f421e25577d4d59"
+	},
+	"addons": [
+		{
+			"path": "/Users/kyle/WebstormProjects/harper/.Codex/worktrees/fulltext-metadata/node_modules/@harperfast/fulltext-darwin-arm64/fulltext.darwin-arm64.node",
+			"sha256": "1be756e4ab8ad471d29dc6d2f2af97eb44ddb0d0fc85aa389a52eb8cec3c0849"
+		}
+	],
+	"node": "v24.16.0",
+	"options": {
+		"sizes": [1000000],
+		"clients": [8, 32],
+		"cases": ["exact", "structured"],
+		"duration": 30000,
+		"writeRates": [0, 10],
+		"expectedWorkers": 1
+	}
+}

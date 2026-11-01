@@ -3,7 +3,10 @@
 Run from a built feature worktree inside a Git checkout; copying the script outside a checkout is unsupported. This creates an isolated Harper install with the standard integration-testing lifecycle; no product API or native query limits change.
 
 ```sh
-node benchmarks/fulltext-http/run.mts
+# macOS: explicitly measure the single serving HTTP worker.
+FULLTEXT_HTTP_EXPECTED_WORKERS=1 node benchmarks/fulltext-http/run.mts
+# Supported shared-port host: require both workers.
+FULLTEXT_HTTP_EXPECTED_WORKERS=2 node benchmarks/fulltext-http/run.mts
 ```
 
 Defaults: 100,000 then 1,000,000 catalog rows in each of `Product` (audited, native full-text) and `PlainProduct` (same stored schema without full-text). Each deterministic bucket contains 1,000 matches; timed requests rotate deterministically across all catalog buckets. An untimed strict-freshness barrier validates all IDs in the first and last bucket before restart. Timed requests retain default lag settings. Five cases exercise relevance, stored rank sorting, sorted highlights, exact counts and a matched structured rank-sort control. Every case runs 8/32 concurrent clients with 0/10 HTTP writes per second to a disjoint nonmatching writer. Cells run 60 seconds. Exact counts use the existing REST GET/Prefer contract; other cases use HTTP QUERY. Queries fully consume and validate responses; no failed requests are discarded or silently retried during timed cells. Any read/write rejection marks the cell unqualified and a completed unqualified matrix exits nonzero; overload cells continue collecting evidence unless a correctness/resource guard fails.
@@ -16,7 +19,7 @@ After fixture creation and readiness, Harper restarts once. A bounded 30-second 
 
 Safety guards: 45-second request timeout, 15-minute fixture setup deadline, 6-GiB shared server RSS, 12-GiB install disk use and at least 2 GiB free disk. Guard violations fail and trigger lifecycle cleanup. Disk use is checked every 10,000 inserted rows and every ten sampler ticks; RSS is sampled each second during workloads. In-flight work drains under request timeouts before teardown. SIGINT/SIGTERM set a persistent stop request checked before catalog setup, readiness retries, restart and warmup; cleanup runs without clearing that request. The harness gives integration-testing a dedicated monitor registry and waits for its monitor to exit during final cleanup, without affecting concurrent suites.
 
-The writer table matches each case: `Product` for native search cases and `PlainProduct` for the structured control. It targets ten requests per second without catch-up bursts; actual achieved write counts/latencies are reported. Exact counts must return 1,000. Stored sorts must return rank 0–19; relevance pages must contain 20 distinct deterministic in-bucket records. No expected relevance tie prefix is asserted across native versions.
+The writer table matches each case: `Product` for native search cases and `PlainProduct` for the structured control. It targets ten requests per second without catch-up bursts; actual achieved write counts/latencies are reported. Known exact totals must be 1,000; unknown totals are recorded as degraded outcomes below. Stored sorts must return rank 0–19; relevance pages must contain 20 distinct deterministic in-bucket records. No expected relevance tie prefix is asserted across native versions.
 
 Latency includes receiving/parsing the full response and the client correctness oracle. The fixed-size native histogram records successful latency separately from rejected/timeout latency, including their counts. Throughput uses the admission window plus in-flight drain; final diagnostic sampling is outside that denominator. Client CPU includes request generation and validation; it is not server CPU. Server CPU deltas are process-wide and sampled across cell boundary diagnostics; they include diagnostic overhead. Eight short diagnostic requests per sampler tick and periodic disk checks add measurement overhead. No cell is claimed contention-free, and no OS-cache eviction is attempted.
 

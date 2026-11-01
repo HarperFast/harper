@@ -1,0 +1,1938 @@
+{
+	"scope": "Single serving HTTP worker, OS-cache uncontrolled/warm synthetic catalog, default query limits/freshness. Composite selection from two separate installs, not an uninterrupted matrix.",
+	"runtimeProductionHead": "414b4ff9866556cc450ca32482c9b42ce929303e",
+	"rowsPerTable": 1000000,
+	"matchesPerQuery": 1000,
+	"matrix": [
+		{
+			"name": "relevance",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30001.090000000004,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 1.0900000000037835,
+			"diagnosticRange": [808, 1064],
+			"clientCpu": {
+				"user": 17978020,
+				"system": 2081919
+			},
+			"serverCpuMicroseconds": {
+				"user": 56734524,
+				"system": 2338363
+			},
+			"serverRssPeakBytes": 537952256,
+			"observedWorkerIds": [1],
+			"bucketStart": 20,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 165271,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 1.337343,
+				"p95": 2.220031,
+				"p99": 3.487743,
+				"max": 14.696447
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 5508.83317906116,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "relevance",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30023.458625,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 23.4586249999993,
+			"diagnosticRange": [1064, 1320],
+			"clientCpu": {
+				"user": 17281415,
+				"system": 2164539
+			},
+			"serverCpuMicroseconds": {
+				"user": 55804760,
+				"system": 3083138
+			},
+			"serverRssPeakBytes": 544784384,
+			"observedWorkerIds": [1],
+			"bucketStart": 291,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 164682,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 1.337343,
+				"p95": 2.236415,
+				"p99": 3.520511,
+				"max": 11.427839
+			},
+			"writes": {
+				"completed": 293,
+				"rejections": 10,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 10,
+					"p50": 1.470463,
+					"p95": 7.143423,
+					"p99": 7.143423,
+					"max": 7.143423
+				},
+				"p50": 1.607679,
+				"p95": 4.399103,
+				"p99": 9.388031,
+				"max": 11.206655
+			},
+			"verdict": "unqualified",
+			"throughput": 5485.110894681276,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "relevance",
+			"concurrency": 32,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30005.965207999994,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 5.965207999994163,
+			"diagnosticRange": [1320, 1576],
+			"clientCpu": {
+				"user": 18102618,
+				"system": 2122527
+			},
+			"serverCpuMicroseconds": {
+				"user": 56057127,
+				"system": 2595183
+			},
+			"serverRssPeakBytes": 545570816,
+			"observedWorkerIds": [1],
+			"bucketStart": 973,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 165614,
+				"rejections": 13,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 13,
+					"p50": 10.428415,
+					"p95": 11.493375,
+					"p99": 11.935743,
+					"max": 11.935743
+				},
+				"p50": 5.447679,
+				"p95": 7.364607,
+				"p99": 14.057471,
+				"max": 23.592959
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "unqualified",
+			"throughput": 5519.3691938243355,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "relevance",
+			"concurrency": 32,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30034.462583999994,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 34.46258399999351,
+			"diagnosticRange": [1576, 1832],
+			"clientCpu": {
+				"user": 18005972,
+				"system": 2148352
+			},
+			"serverCpuMicroseconds": {
+				"user": 56104715,
+				"system": 3026068
+			},
+			"serverRssPeakBytes": 537903104,
+			"observedWorkerIds": [1],
+			"bucketStart": 600,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 166702,
+				"rejections": 106,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 106,
+					"p50": 5.255167,
+					"p95": 9.814015,
+					"p99": 10.117119,
+					"max": 10.297343
+				},
+				"p50": 5.431295,
+				"p95": 7.335935,
+				"p99": 14.073855,
+				"max": 18.087935
+			},
+			"writes": {
+				"completed": 293,
+				"rejections": 10,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 10,
+					"p50": 5.971967,
+					"p95": 14.352383,
+					"p99": 14.352383,
+					"max": 14.352383
+				},
+				"p50": 6.078463,
+				"p95": 8.699903,
+				"p99": 14.516223,
+				"max": 17.612799
+			},
+			"verdict": "unqualified",
+			"throughput": 5550.357344792504,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "sort",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30065.572417000018,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 65.5724170000176,
+			"diagnosticRange": [1832, 2080],
+			"clientCpu": {
+				"user": 1432328,
+				"system": 174099
+			},
+			"serverCpuMicroseconds": {
+				"user": 41598212,
+				"system": 528024
+			},
+			"serverRssPeakBytes": 531890176,
+			"observedWorkerIds": [1],
+			"bucketStart": 408,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6092,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 35.323903,
+				"p95": 75.563007,
+				"p99": 83.099647,
+				"max": 135.266303
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 202.6237822951075,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "sort",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30099.66066600001,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 99.66066600001068,
+			"diagnosticRange": [2080, 2328],
+			"clientCpu": {
+				"user": 1507542,
+				"system": 202376
+			},
+			"serverCpuMicroseconds": {
+				"user": 41603291,
+				"system": 1006328
+			},
+			"serverRssPeakBytes": 544899072,
+			"observedWorkerIds": [1],
+			"bucketStart": 500,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6108,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 35.454975,
+				"p95": 77.004799,
+				"p99": 82.968575,
+				"max": 104.333311
+			},
+			"writes": {
+				"completed": 291,
+				"rejections": 10,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 10,
+					"p50": 11.771903,
+					"p95": 22.659071,
+					"p99": 22.659071,
+					"max": 22.659071
+				},
+				"p50": 15.196159,
+				"p95": 46.432255,
+				"p99": 58.064895,
+				"max": 65.208319
+			},
+			"verdict": "unqualified",
+			"throughput": 202.925875735851,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "sort",
+			"concurrency": 32,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30180.087499999994,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 180.08749999999418,
+			"diagnosticRange": [2328, 2568],
+			"clientCpu": {
+				"user": 1765170,
+				"system": 316152
+			},
+			"serverCpuMicroseconds": {
+				"user": 41883015,
+				"system": 522072
+			},
+			"serverRssPeakBytes": 544997376,
+			"observedWorkerIds": [1],
+			"bucketStart": 608,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6338,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 141.164543,
+				"p95": 185.597951,
+				"p99": 194.117631,
+				"max": 283.377663
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 210.00601804086887,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "sort",
+			"concurrency": 32,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30121.029333000013,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 121.02933300001314,
+			"diagnosticRange": [2568, 2800],
+			"clientCpu": {
+				"user": 1731643,
+				"system": 296843
+			},
+			"serverCpuMicroseconds": {
+				"user": 41910113,
+				"system": 1009279
+			},
+			"serverRssPeakBytes": 551583744,
+			"observedWorkerIds": [1],
+			"bucketStart": 946,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6239,
+				"rejections": 1,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 1,
+					"p50": 103.415807,
+					"p95": 103.415807,
+					"p99": 103.415807,
+					"max": 103.415807
+				},
+				"p50": 143.917055,
+				"p95": 188.350463,
+				"p99": 196.476927,
+				"max": 238.944255
+			},
+			"writes": {
+				"completed": 226,
+				"rejections": 8,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 8,
+					"p50": 106.954751,
+					"p95": 158.072831,
+					"p99": 158.072831,
+					"max": 158.072831
+				},
+				"p50": 115.802111,
+				"p95": 163.839999,
+				"p99": 171.704319,
+				"max": 212.074495
+			},
+			"verdict": "unqualified",
+			"throughput": 207.1310356304681,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "highlights",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30029.606333000003,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 29.60633300000336,
+			"diagnosticRange": [2800, 3048],
+			"clientCpu": {
+				"user": 1621217,
+				"system": 219306
+			},
+			"serverCpuMicroseconds": {
+				"user": 41825703,
+				"system": 536538
+			},
+			"serverRssPeakBytes": 530022400,
+			"observedWorkerIds": [1],
+			"bucketStart": 186,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6126,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 34.734079,
+				"p95": 74.842111,
+				"p99": 79.298559,
+				"max": 103.612415
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 203.99867824001552,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "highlights",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30070.764083000016,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 70.7640830000164,
+			"diagnosticRange": [3048, 3296],
+			"clientCpu": {
+				"user": 1599304,
+				"system": 201264
+			},
+			"serverCpuMicroseconds": {
+				"user": 42102526,
+				"system": 1024600
+			},
+			"serverRssPeakBytes": 529596416,
+			"observedWorkerIds": [1],
+			"bucketStart": 312,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6083,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 35.586047,
+				"p95": 75.431935,
+				"p99": 80.084991,
+				"max": 117.178367
+			},
+			"writes": {
+				"completed": 291,
+				"rejections": 10,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 10,
+					"p50": 17.301503,
+					"p95": 56.524799,
+					"p99": 56.524799,
+					"max": 56.524799
+				},
+				"p50": 22.708223,
+				"p95": 62.324735,
+				"p99": 63.799295,
+				"max": 67.239935
+			},
+			"verdict": "unqualified",
+			"throughput": 202.28950562113977,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "highlights",
+			"concurrency": 32,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30190.74762499996,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 190.74762499995995,
+			"diagnosticRange": [3296, 3520],
+			"clientCpu": {
+				"user": 1914865,
+				"system": 345714
+			},
+			"serverCpuMicroseconds": {
+				"user": 42056534,
+				"system": 551994
+			},
+			"serverRssPeakBytes": 528547840,
+			"observedWorkerIds": [1],
+			"bucketStart": 395,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6163,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 144.179199,
+				"p95": 188.612607,
+				"p99": 200.671231,
+				"max": 287.047679
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 204.13538864789896,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "highlights",
+			"concurrency": 32,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30127.42062499997,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 127.42062499996973,
+			"diagnosticRange": [3520, 3768],
+			"clientCpu": {
+				"user": 1445354,
+				"system": 187506
+			},
+			"serverCpuMicroseconds": {
+				"user": 42198432,
+				"system": 1017319
+			},
+			"serverRssPeakBytes": 524648448,
+			"observedWorkerIds": [1],
+			"bucketStart": 558,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6120,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 145.489919,
+				"p95": 190.971903,
+				"p99": 200.015871,
+				"max": 258.211839
+			},
+			"writes": {
+				"completed": 200,
+				"rejections": 6,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 6,
+					"p50": 126.353407,
+					"p95": 169.213951,
+					"p99": 169.213951,
+					"max": 169.213951
+				},
+				"p50": 133.627903,
+				"p95": 177.733631,
+				"p99": 184.156159,
+				"max": 225.443839
+			},
+			"verdict": "unqualified",
+			"throughput": 203.1372043487047,
+			"source": "scale-1m-partial.json.gz"
+		},
+		{
+			"name": "exact",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30016.416708000004,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 16.41670800000429,
+			"diagnosticRange": [808, 1056],
+			"clientCpu": {
+				"user": 1281619,
+				"system": 156367
+			},
+			"serverCpuMicroseconds": {
+				"user": 40821556,
+				"system": 555255
+			},
+			"serverRssPeakBytes": 595935232,
+			"observedWorkerIds": [1],
+			"bucketStart": 8,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6247,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 33.914879,
+				"p95": 67.567615,
+				"p99": 72.220671,
+				"max": 112.590847
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 208.11944546115805,
+			"source": "scale-1m-continuation.json.gz"
+		},
+		{
+			"name": "exact",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30047.421499999997,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 47.42149999999674,
+			"diagnosticRange": [1056, 1304],
+			"clientCpu": {
+				"user": 1204617,
+				"system": 136643
+			},
+			"serverCpuMicroseconds": {
+				"user": 40816627,
+				"system": 992041
+			},
+			"serverRssPeakBytes": 621150208,
+			"observedWorkerIds": [1],
+			"bucketStart": 255,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6118,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 34.865151,
+				"p95": 70.385663,
+				"p99": 75.235327,
+				"max": 124.518399
+			},
+			"writes": {
+				"completed": 289,
+				"rejections": 10,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 10,
+					"p50": 21.217279,
+					"p95": 51.412991,
+					"p99": 51.412991,
+					"max": 51.412991
+				},
+				"p50": 12.967935,
+				"p95": 38.699007,
+				"p99": 50.167807,
+				"max": 58.392575
+			},
+			"verdict": "unqualified",
+			"throughput": 203.61148127136303,
+			"source": "scale-1m-continuation.json.gz"
+		},
+		{
+			"name": "exact",
+			"concurrency": 32,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30158.76804199998,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 158.7680419999815,
+			"diagnosticRange": [1304, 1512],
+			"clientCpu": {
+				"user": 903248,
+				"system": 115083
+			},
+			"serverCpuMicroseconds": {
+				"user": 40238310,
+				"system": 461724
+			},
+			"serverRssPeakBytes": 705445888,
+			"observedWorkerIds": [1],
+			"bucketStart": 373,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6140,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 143.392767,
+				"p95": 199.884799,
+				"p99": 224.133119,
+				"max": 552.075263
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 203.58921794979346,
+			"source": "scale-1m-continuation.json.gz"
+		},
+		{
+			"name": "exact",
+			"concurrency": 32,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30100.203540999995,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 100.20354099999531,
+			"diagnosticRange": [1512, 1720],
+			"clientCpu": {
+				"user": 887482,
+				"system": 118493
+			},
+			"serverCpuMicroseconds": {
+				"user": 39855354,
+				"system": 905342
+			},
+			"serverRssPeakBytes": 718209024,
+			"observedWorkerIds": [1],
+			"bucketStart": 513,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 5610,
+				"rejections": 33,
+				"timeouts": 0,
+				"unknownCounts": 30,
+				"failureLatency": {
+					"count": 33,
+					"p50": 39.616511,
+					"p95": 58.195967,
+					"p99": 320.339967,
+					"max": 320.339967
+				},
+				"p50": 157.679615,
+				"p95": 215.482367,
+				"p99": 252.444671,
+				"max": 543.686655
+			},
+			"writes": {
+				"completed": 284,
+				"rejections": 9,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 9,
+					"p50": 27.475967,
+					"p95": 168.034303,
+					"p99": 168.034303,
+					"max": 168.034303
+				},
+				"p50": 52.035583,
+				"p95": 106.495999,
+				"p99": 125.894655,
+				"max": 213.778431
+			},
+			"verdict": "unqualified",
+			"throughput": 186.37747722730592,
+			"source": "scale-1m-continuation.json.gz"
+		},
+		{
+			"name": "structured",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30014.851916000014,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 14.851916000014171,
+			"diagnosticRange": [1720, 1968],
+			"clientCpu": {
+				"user": 2097952,
+				"system": 397150
+			},
+			"serverCpuMicroseconds": {
+				"user": 35526530,
+				"system": 1035188
+			},
+			"serverRssPeakBytes": 639205376,
+			"observedWorkerIds": [1],
+			"bucketStart": 156,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6985,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 30.310399,
+				"p95": 87.425023,
+				"p99": 94.961663,
+				"max": 101.646335
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 232.71812299951767,
+			"source": "scale-1m-continuation.json.gz"
+		},
+		{
+			"name": "structured",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30098.535417000006,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 98.53541700000642,
+			"diagnosticRange": [1968, 2224],
+			"clientCpu": {
+				"user": 1793775,
+				"system": 288960
+			},
+			"serverCpuMicroseconds": {
+				"user": 35259162,
+				"system": 1097258
+			},
+			"serverRssPeakBytes": 638337024,
+			"observedWorkerIds": [1],
+			"bucketStart": 141,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6379,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 33.046527,
+				"p95": 91.947007,
+				"p99": 99.876863,
+				"max": 128.712703
+			},
+			"writes": {
+				"completed": 301,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 4.947967,
+				"p95": 36.929535,
+				"p99": 54.296575,
+				"max": 63.832063
+			},
+			"verdict": "qualified",
+			"throughput": 211.9372225798424,
+			"source": "scale-1m-continuation.json.gz"
+		},
+		{
+			"name": "structured",
+			"concurrency": 32,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 30086.500750000007,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 86.50075000000652,
+			"diagnosticRange": [2224, 2456],
+			"clientCpu": {
+				"user": 1850191,
+				"system": 383609
+			},
+			"serverCpuMicroseconds": {
+				"user": 35716269,
+				"system": 991580
+			},
+			"serverRssPeakBytes": 629800960,
+			"observedWorkerIds": [1],
+			"bucketStart": 520,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6882,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 125.239295,
+				"p95": 192.937983,
+				"p99": 197.263359,
+				"max": 205.520895
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 228.7404592905341,
+			"source": "scale-1m-continuation.json.gz"
+		},
+		{
+			"name": "structured",
+			"concurrency": 32,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 30141.028583000007,
+			"admissionWindowMilliseconds": 30000,
+			"drainMilliseconds": 141.02858300000662,
+			"diagnosticRange": [2456, 2696],
+			"clientCpu": {
+				"user": 1902301,
+				"system": 403320
+			},
+			"serverCpuMicroseconds": {
+				"user": 35257340,
+				"system": 1193360
+			},
+			"serverRssPeakBytes": 632848384,
+			"observedWorkerIds": [1],
+			"bucketStart": 402,
+			"bucketsAttempted": 1000,
+			"reads": {
+				"completed": 6016,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 148.504575,
+				"p95": 218.890239,
+				"p99": 229.244927,
+				"max": 250.478591
+			},
+			"writes": {
+				"completed": 290,
+				"rejections": 0,
+				"timeouts": 0,
+				"unknownCounts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 66.945023,
+				"p95": 129.368063,
+				"p99": 141.295615,
+				"max": 150.470655
+			},
+			"verdict": "qualified",
+			"throughput": 199.59504644752283,
+			"source": "scale-1m-continuation.json.gz"
+		}
+	],
+	"pilot100k": [
+		{
+			"name": "relevance",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 15000.925875,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 0.9258750000008149,
+			"diagnosticRange": [80, 216],
+			"clientCpu": {
+				"user": 11062958,
+				"system": 1232104
+			},
+			"serverCpuMicroseconds": {
+				"user": 24073307,
+				"system": 1602535
+			},
+			"serverRssPeakBytes": 536723456,
+			"observedWorkerIds": [2],
+			"bucketStart": 20,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 101034,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 1.064959,
+				"p95": 1.821695,
+				"p99": 3.278847,
+				"max": 7.524351
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"throughput": 6735.184270750888,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "relevance",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 15066.152499999997,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 66.15249999999651,
+			"diagnosticRange": [216, 360],
+			"clientCpu": {
+				"user": 10656184,
+				"system": 1269171
+			},
+			"serverCpuMicroseconds": {
+				"user": 23147804,
+				"system": 2080322
+			},
+			"serverRssPeakBytes": 536231936,
+			"observedWorkerIds": [2],
+			"bucketStart": 54,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 100965,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 1.044991,
+				"p95": 1.869823,
+				"p99": 3.327999,
+				"max": 9.592831
+			},
+			"writes": {
+				"completed": 152,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 1.345535,
+				"p95": 4.243455,
+				"p99": 6.266879,
+				"max": 7.061503
+			},
+			"throughput": 6701.445508400371,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "sort",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 15045.953375,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 45.95337499999914,
+			"diagnosticRange": [80, 216],
+			"clientCpu": {
+				"user": 1031634,
+				"system": 118530
+			},
+			"serverCpuMicroseconds": {
+				"user": 21192288,
+				"system": 256732
+			},
+			"serverRssPeakBytes": 575078400,
+			"observedWorkerIds": [2],
+			"bucketStart": 4,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 3245,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 32.948223,
+				"p95": 69.271551,
+				"p99": 73.662463,
+				"max": 111.738879
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"verdict": "qualified",
+			"throughput": 215.67260771868501,
+			"source": "pilot-sort-repeat.json.gz"
+		},
+		{
+			"name": "sort",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 15086.004541999995,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 86.00454199999513,
+			"diagnosticRange": [488, 616],
+			"clientCpu": {
+				"user": 707651,
+				"system": 93613
+			},
+			"serverCpuMicroseconds": {
+				"user": 20271937,
+				"system": 442363
+			},
+			"serverRssPeakBytes": 660766720,
+			"observedWorkerIds": [2],
+			"bucketStart": 49,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 3208,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 33.849343,
+				"p95": 70.254591,
+				"p99": 74.907647,
+				"max": 77.922303
+			},
+			"writes": {
+				"completed": 151,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 15.163391,
+				"p95": 45.154303,
+				"p99": 54.099967,
+				"max": 60.850175
+			},
+			"throughput": 212.6474237143976,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "highlights",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 15037.456124999997,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 37.45612499999697,
+			"diagnosticRange": [616, 752],
+			"clientCpu": {
+				"user": 847646,
+				"system": 94581
+			},
+			"serverCpuMicroseconds": {
+				"user": 20361088,
+				"system": 232007
+			},
+			"serverRssPeakBytes": 664666112,
+			"observedWorkerIds": [2],
+			"bucketStart": 57,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 3134,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 34.045951,
+				"p95": 69.664767,
+				"p99": 74.055679,
+				"max": 91.095039
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"throughput": 208.41291066443597,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "highlights",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 15089.285000000003,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 89.28500000000349,
+			"diagnosticRange": [752, 880],
+			"clientCpu": {
+				"user": 869032,
+				"system": 93936
+			},
+			"serverCpuMicroseconds": {
+				"user": 20455481,
+				"system": 472873
+			},
+			"serverRssPeakBytes": 671989760,
+			"observedWorkerIds": [2],
+			"bucketStart": 91,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 3079,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 35.094527,
+				"p95": 71.892991,
+				"p99": 78.249983,
+				"max": 90.308607
+			},
+			"writes": {
+				"completed": 151,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 22.085631,
+				"p95": 50.069503,
+				"p99": 61.079551,
+				"max": 61.800447
+			},
+			"throughput": 204.0520806651872,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "exact",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 15034.474791,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 34.47479100000055,
+			"diagnosticRange": [880, 1016],
+			"clientCpu": {
+				"user": 517607,
+				"system": 61013
+			},
+			"serverCpuMicroseconds": {
+				"user": 19738576,
+				"system": 207253
+			},
+			"serverRssPeakBytes": 673005568,
+			"observedWorkerIds": [2],
+			"bucketStart": 70,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 3201,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 33.079295,
+				"p95": 70.975487,
+				"p99": 74.907647,
+				"max": 109.903871
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"throughput": 212.9106632920889,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "exact",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 15058.590666999997,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 58.590666999996756,
+			"diagnosticRange": [1016, 1144],
+			"clientCpu": {
+				"user": 665948,
+				"system": 66365
+			},
+			"serverCpuMicroseconds": {
+				"user": 19754187,
+				"system": 503176
+			},
+			"serverRssPeakBytes": 674545664,
+			"observedWorkerIds": [2],
+			"bucketStart": 71,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 2881,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 37.158911,
+				"p95": 76.152831,
+				"p99": 84.475903,
+				"max": 106.102783
+			},
+			"writes": {
+				"completed": 150,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 13.606911,
+				"p95": 36.143103,
+				"p99": 46.956543,
+				"max": 70.909951
+			},
+			"throughput": 191.3193647207331,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "structured",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 15015.988083000004,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 15.988083000003826,
+			"diagnosticRange": [1144, 1280],
+			"clientCpu": {
+				"user": 1107108,
+				"system": 146677
+			},
+			"serverCpuMicroseconds": {
+				"user": 16751578,
+				"system": 254828
+			},
+			"serverRssPeakBytes": 674545664,
+			"observedWorkerIds": [2],
+			"bucketStart": 52,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 5822,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 16.441343,
+				"p95": 30.474239,
+				"p99": 62.357503,
+				"max": 86.179839
+			},
+			"writes": {
+				"completed": 0,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 0,
+				"p95": 0,
+				"p99": 0,
+				"max": 0
+			},
+			"throughput": 387.7200732858359,
+			"source": "pilot-100k.json.gz"
+		},
+		{
+			"name": "structured",
+			"concurrency": 8,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 15071.763000000006,
+			"admissionWindowMilliseconds": 15000,
+			"drainMilliseconds": 71.76300000000629,
+			"diagnosticRange": [1280, 1408],
+			"clientCpu": {
+				"user": 1059191,
+				"system": 147025
+			},
+			"serverCpuMicroseconds": {
+				"user": 16682161,
+				"system": 259029
+			},
+			"serverRssPeakBytes": 655261696,
+			"observedWorkerIds": [2],
+			"bucketStart": 74,
+			"bucketsAttempted": 100,
+			"reads": {
+				"completed": 5919,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 16.351231,
+				"p95": 30.228479,
+				"p99": 61.505535,
+				"max": 67.239935
+			},
+			"writes": {
+				"completed": 151,
+				"rejections": 0,
+				"timeouts": 0,
+				"failureLatency": {
+					"count": 0,
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"p50": 19.496959,
+				"p95": 37.945343,
+				"p99": 62.062591,
+				"max": 64.389119
+			},
+			"throughput": 392.7211435052421,
+			"source": "pilot-100k.json.gz"
+		}
+	],
+	"totals": {
+		"successfulQueries": 761915,
+		"readFailuresIncludingUnknownCounts": 153,
+		"unknownCounts": 30,
+		"writeFailures": 73
+	},
+	"baseline": {
+		"head": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
+		"scope": "Four35-second cells, relevance/structured32clients0/10writes. Failure-presence comparison, not matched-duration performance A/B.",
+		"source": "baseline-1m.json.gz",
+		"cells": [
+			{
+				"name": "relevance",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 35004.65295899999,
+				"admissionWindowMilliseconds": 35000,
+				"drainMilliseconds": 4.652958999991824,
+				"diagnosticRange": [808, 1104],
+				"clientCpu": {
+					"user": 22237026,
+					"system": 2514891
+				},
+				"serverCpuMicroseconds": {
+					"user": 67143717,
+					"system": 2894384
+				},
+				"serverRssPeakBytes": 531939328,
+				"observedWorkerIds": [1],
+				"bucketStart": 8,
+				"bucketsAttempted": 1000,
+				"reads": {
+					"completed": 205338,
+					"rejections": 12,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 12,
+						"p50": 6.975487,
+						"p95": 8.294399,
+						"p99": 8.445951,
+						"max": 8.445951
+					},
+					"p50": 5.091327,
+					"p95": 6.995967,
+					"p99": 13.549567,
+					"max": 21.004287
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"verdict": "unqualified",
+				"throughput": 5866.020161391312
+			},
+			{
+				"name": "relevance",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 35093.824167,
+				"admissionWindowMilliseconds": 35000,
+				"drainMilliseconds": 93.82416699999885,
+				"diagnosticRange": [1104, 1408],
+				"clientCpu": {
+					"user": 21775839,
+					"system": 2558315
+				},
+				"serverCpuMicroseconds": {
+					"user": 66106656,
+					"system": 3581568
+				},
+				"serverRssPeakBytes": 543408128,
+				"observedWorkerIds": [1],
+				"bucketStart": 358,
+				"bucketsAttempted": 1000,
+				"reads": {
+					"completed": 204996,
+					"rejections": 173,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 173,
+						"p50": 4.878335,
+						"p95": 10.944511,
+						"p99": 12.640255,
+						"max": 13.197311
+					},
+					"p50": 5.091327,
+					"p95": 7.049215,
+					"p99": 13.615103,
+					"max": 22.069247
+				},
+				"writes": {
+					"completed": 344,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 5.935103,
+						"p95": 13.893631,
+						"p99": 13.893631,
+						"max": 13.893631
+					},
+					"p50": 5.558271,
+					"p95": 9.723903,
+					"p99": 12.787711,
+					"max": 14.335999
+				},
+				"verdict": "unqualified",
+				"throughput": 5841.369667337799
+			},
+			{
+				"name": "structured",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 35084.17416699999,
+				"admissionWindowMilliseconds": 35000,
+				"drainMilliseconds": 84.17416699999012,
+				"diagnosticRange": [1408, 1688],
+				"clientCpu": {
+					"user": 1603256,
+					"system": 218115
+				},
+				"serverCpuMicroseconds": {
+					"user": 42271895,
+					"system": 1157100
+				},
+				"serverRssPeakBytes": 655179776,
+				"observedWorkerIds": [1],
+				"bucketStart": 527,
+				"bucketsAttempted": 1000,
+				"reads": {
+					"completed": 7917,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 128.122879,
+					"p95": 192.282623,
+					"p99": 200.015871,
+					"max": 220.463103
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"verdict": "qualified",
+				"throughput": 225.6572995651895
+			},
+			{
+				"name": "structured",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 35098.301917000004,
+				"admissionWindowMilliseconds": 35000,
+				"drainMilliseconds": 98.30191700000432,
+				"diagnosticRange": [1688, 1976],
+				"clientCpu": {
+					"user": 1547694,
+					"system": 209348
+				},
+				"serverCpuMicroseconds": {
+					"user": 41927780,
+					"system": 1113347
+				},
+				"serverRssPeakBytes": 534265856,
+				"observedWorkerIds": [1],
+				"bucketStart": 444,
+				"bucketsAttempted": 1000,
+				"reads": {
+					"completed": 7284,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 140.115967,
+					"p95": 203.948031,
+					"p99": 215.089151,
+					"max": 236.716031
+				},
+				"writes": {
+					"completed": 344,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 61.374463,
+					"p95": 116.719615,
+					"p99": 124.780543,
+					"max": 143.392767
+				},
+				"verdict": "qualified",
+				"throughput": 207.53140756567385
+			}
+		]
+	}
+}
