@@ -103,6 +103,74 @@ describe('git credential session', () => {
 		assert.strictEqual(translated.stdout, 'ghp_secret\n', 'a localized prompt still yields the password');
 	});
 
+	it('sets GIT_ASKPASS to a single executable file path that git can exec directly', async () => {
+		session = await startGitCredentialSession(
+			[{ host: 'github.com', token: 'ghp_secret' }],
+			GIT_CREDENTIAL_HELPER_PATH
+		);
+		const askpass = session.env.GIT_ASKPASS;
+		assert.strictEqual(typeof askpass, 'string');
+		assert.strictEqual(path.dirname(askpass), path.dirname(session.env[GIT_CREDENTIAL_SOCKET_ENV]));
+		if (!/\s/.test(os.tmpdir())) {
+			assert.doesNotMatch(askpass, /[\s"']/, 'GIT_ASKPASS must be a single path with no spaces or quotes');
+		} else {
+			assert.doesNotMatch(askpass, /["']/, 'GIT_ASKPASS must not contain quotes');
+		}
+		await fs.access(askpass, fs.constants.X_OK);
+
+		// Git execs GIT_ASKPASS directly (not through a shell) with the prompt as argv[1].
+		const execAskpass = (prompt) =>
+			new Promise((resolve, reject) => {
+				execFile(askpass, [prompt], { env: { ...process.env, ...session.env } }, (error, stdout, stderr) => {
+					if (error && typeof error.code !== 'number') return reject(error);
+					resolve({ stdout, stderr, code: error ? error.code : 0 });
+				});
+			});
+
+		const username = await execAskpass(`Username for 'https://github.com': `);
+		assert.strictEqual(username.code, 0);
+		assert.strictEqual(username.stdout, `${DEFAULT_GIT_USERNAME}\n`);
+
+		const password = await execAskpass(`Password for 'https://x-access-token@github.com': `);
+		assert.strictEqual(password.code, 0);
+		assert.strictEqual(password.stdout, 'ghp_secret\n');
+
+		const unmatched = await execAskpass(`Username for 'https://other.example.com': `);
+		assert.strictEqual(unmatched.code, 0);
+		assert.strictEqual(unmatched.stdout, '');
+
+		// Even when Harper itself lives under a path with spaces or shell metacharacters,
+		// GIT_ASKPASS points at the wrapper in socketDir and quotes the helper path for /bin/sh.
+		const spacedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-helper-space-'));
+		const spacedDir = path.join(spacedRoot, 'path with space & $var');
+		const spacedHelper = path.join(spacedDir, 'gitCredentialHelper.js');
+		await fs.mkdir(spacedDir);
+		await fs.copyFile(GIT_CREDENTIAL_HELPER_PATH, spacedHelper);
+		const spacedSession = await startGitCredentialSession([{ host: 'github.com', token: 'ghp_spaced' }], spacedHelper);
+		try {
+			assert.strictEqual(
+				path.dirname(spacedSession.env.GIT_ASKPASS),
+				path.dirname(spacedSession.env[GIT_CREDENTIAL_SOCKET_ENV])
+			);
+			await fs.access(spacedSession.env.GIT_ASKPASS, fs.constants.X_OK);
+			const spacedPassword = await new Promise((resolve, reject) => {
+				execFile(
+					spacedSession.env.GIT_ASKPASS,
+					[`Password for 'https://x-access-token@github.com': `],
+					{ env: { ...process.env, ...spacedSession.env } },
+					(error, stdout, stderr) => {
+						if (error) return reject(error);
+						resolve({ stdout, stderr });
+					}
+				);
+			});
+			assert.strictEqual(spacedPassword.stdout, 'ghp_spaced\n');
+		} finally {
+			await spacedSession.close();
+			await fs.rm(spacedRoot, { recursive: true, force: true });
+		}
+	});
+
 	it('last-write-wins on a duplicate host, and the session still serves the surviving token', async () => {
 		session = await startGitCredentialSession(
 			[
@@ -214,7 +282,7 @@ describe('git credential session', () => {
 		assert.strictEqual(session.env.GIT_TERMINAL_PROMPT, '0', 'git must fail rather than hang on a prompt');
 	});
 
-	it('keeps the token off disk: the socket dir is 0700 and holds only a socket', async () => {
+	it('keeps the token off disk: the socket dir is 0700 and holds only the socket and secret-free askpass wrapper', async () => {
 		session = await startGitCredentialSession(
 			[{ host: 'github.com', token: 'ghp_secret' }],
 			GIT_CREDENTIAL_HELPER_PATH
@@ -223,9 +291,11 @@ describe('git credential session', () => {
 		const socketDir = path.dirname(socketPath);
 
 		assert.strictEqual((await fs.stat(socketDir)).mode & 0o777, 0o700, 'socket dir is owner-only');
-		const entries = await fs.readdir(socketDir);
-		assert.deepStrictEqual(entries, ['credential.sock']);
-		assert.ok((await fs.stat(socketPath)).isSocket(), 'the only artifact is a socket, not a file with a token');
+		const entries = (await fs.readdir(socketDir)).sort();
+		assert.deepStrictEqual(entries, ['askpass', 'credential.sock']);
+		assert.ok((await fs.stat(socketPath)).isSocket(), 'credential.sock is a socket, not a file with a token');
+		const askpassContents = await fs.readFile(path.join(socketDir, 'askpass'), 'utf8');
+		assert.ok(!askpassContents.includes('ghp_secret'), 'askpass wrapper carries no token');
 	});
 
 	it('stops answering once the session is closed', async () => {
@@ -245,6 +315,7 @@ describe('git credential session', () => {
 		assert.strictEqual(stdout, '');
 		assert.strictEqual(code, 1, 'helper reports failure rather than silently succeeding');
 		await assert.rejects(fs.stat(socketPath), /ENOENT/, 'socket removed');
+		await assert.rejects(fs.stat(env.GIT_ASKPASS), /ENOENT/, 'askpass wrapper removed');
 	});
 
 	it('refuses to start on a git too old for the credential-helper reset', async () => {
