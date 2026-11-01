@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { record, target, verify, meter, runPhase, cellVerdict } from './model.mts';
+import { record, target, verify, meter, runPhase, cellVerdict, finalizeReport } from './model.mts';
 test('deterministic catalog keeps exactly 1000 rows per token and excludes writer', () => {
 	assert.strictEqual(record(0).category, record(999).category);
 	assert.notStrictEqual(record(999).category, record(1000).category);
@@ -69,4 +69,25 @@ test('cell verdict rejects read/write errors and empty successful sample populat
 		[{ completed: 0, rejections: 0 }, { rejections: 0 }],
 	])
 		assert.strictEqual(cellVerdict(reads, writes), 'unqualified');
+});
+
+test('cleanup failure still publishes unqualified evidence and preserves the primary failure', async () => {
+	const report = { cells: [], failure: { message: 'primary' } };
+	let published;
+	await assert.rejects(
+		() =>
+			finalizeReport(
+				report,
+				async () => {
+					throw new Error('cleanup');
+				},
+				async (value) => {
+					published = structuredClone(value);
+				}
+			),
+		/cleanup/
+	);
+	assert.strictEqual(published.verdict, 'unqualified');
+	assert.strictEqual(published.failure.message, 'primary');
+	assert.strictEqual(published.cleanupFailure.message, 'cleanup');
 });

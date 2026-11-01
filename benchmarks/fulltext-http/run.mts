@@ -17,13 +17,15 @@ import {
 	killHarper,
 	startHarper,
 } from '@harperfast/integration-testing';
-import { record, target, verify, meter, MATCHES, runPhase, cellVerdict } from './model.mts';
+import { record, target, verify, meter, MATCHES, runPhase, cellVerdict, finalizeReport } from './model.mts';
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const sizes = (process.env.FULLTEXT_HTTP_ROWS || '100000,1000000').split(',').map(Number);
 const clients = (process.env.FULLTEXT_HTTP_CLIENTS || '8,32').split(',').map(Number);
 const cases = (process.env.FULLTEXT_HTTP_CASES || 'relevance,sort,highlights,exact,structured').split(',');
 const duration = Number(process.env.FULLTEXT_HTTP_DURATION_MS || 60000);
+const expectedWorkers = Number(process.env.FULLTEXT_HTTP_EXPECTED_WORKERS || 2);
+assert([1, 2].includes(expectedWorkers));
 const writeRates = (process.env.FULLTEXT_HTTP_WRITES || '0,10').split(',').map(Number);
 const commonGitDirectory = (
 	await exec('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: resolve(here, '../..') })
@@ -87,7 +89,7 @@ await writeFile(
 			compiledHashes,
 			addons,
 			node: process.version,
-			options: { sizes, clients, cases, duration, writeRates },
+			options: { sizes, clients, cases, duration, writeRates, expectedWorkers },
 		},
 		null,
 		2
@@ -120,6 +122,9 @@ try {
 			node: process.version,
 			osCold: false,
 			defaultQueryLimits: true,
+			configuredWorkers: 2,
+			requiredObservedWorkers: expectedWorkers,
+			qualificationScope: expectedWorkers === 1 ? 'single-HTTP-worker' : 'two-HTTP-workers',
 			bucketSelection: 'deterministic round-robin across entire catalog',
 			cells: [],
 			firstQueries: [],
@@ -233,6 +238,28 @@ try {
 			await runPhase(
 				() => stopRequested,
 				() => startHarper(ctx, options)
+			);
+			const workerReadyStarted = performance.now(),
+				workerSampleStart = report.diagnostics.length;
+			let workerIds = [];
+			do {
+				await runPhase(
+					() => stopRequested,
+					() => diagnostics()
+				);
+				workerIds = [...new Set(report.diagnostics.slice(workerSampleStart).map((sample) => sample.threadId))];
+				if (workerIds.length >= expectedWorkers) break;
+				await delay(25);
+			} while (performance.now() - workerReadyStarted < 30000);
+			report.workerReadiness = {
+				milliseconds: performance.now() - workerReadyStarted,
+				requests: report.diagnostics.length - workerSampleStart,
+				workerIds,
+				pids: [...new Set(report.diagnostics.slice(workerSampleStart).map((sample) => sample.pid))],
+			};
+			assert(
+				workerIds.length >= expectedWorkers,
+				'did not observe required HTTP workers in the fresh process within30s'
 			);
 			for (const name of cases) {
 				report.firstQueries.push({
@@ -354,17 +381,23 @@ try {
 						await writeFile(resolve(output, `${rows}.json`), JSON.stringify(report, null, 2) + '\n');
 						assert(!fatal && !stopRequested, fatal?.message || 'interrupted');
 					}
-			assert(new Set(report.diagnostics.map((v) => v.threadId)).size === 2, 'did not observe both HTTP workers');
+			assert.strictEqual(report.workerReadiness.pids.length, 1, 'worker observations crossed process lifetimes');
 		} catch (error) {
 			report.failure = { message: error.message, stack: error.stack };
 			throw error;
 		} finally {
 			stopSampling = true;
-			if (sampling) await sampling;
-			if (ctx.harper?.dataRootDir) await teardownHarper(ctx);
-			report.verdict =
-				report.failure || report.cells.some((cell) => cell.verdict !== 'qualified') ? 'unqualified' : 'qualified';
-			await writeFile(resolve(output, `${rows}.json`), JSON.stringify(report, null, 2) + '\n');
+			await finalizeReport(
+				report,
+				async () => {
+					if (sampling) await sampling;
+					if (ctx.harper?.dataRootDir) await teardownHarper(ctx);
+				},
+				async (final) => {
+					if (final.verdict === 'unqualified') process.exitCode = 1;
+					await writeFile(resolve(output, `${rows}.json`), JSON.stringify(final, null, 2) + '\n');
+				}
+			);
 		}
 	}
 } finally {

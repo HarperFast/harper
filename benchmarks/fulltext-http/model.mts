@@ -85,3 +85,17 @@ export async function runPhase(isStopped, action) {
 export function cellVerdict(reads, writes) {
 	return reads.completed > 0 && reads.rejections === 0 && writes.rejections === 0 ? 'qualified' : 'unqualified';
 }
+
+export async function finalizeReport(report, cleanup, publish) {
+	try {
+		await cleanup();
+	} catch (error) {
+		report.cleanupFailure = { message: error.message };
+		report.failure ??= { message: error.message };
+		throw error;
+	} finally {
+		report.verdict =
+			report.failure || report.cells.some((cell) => cell.verdict !== 'qualified') ? 'unqualified' : 'qualified';
+		await publish(report);
+	}
+}
