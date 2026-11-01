@@ -545,20 +545,6 @@ describe.skip('Test schema module', function () {
 			expect(error.message).to.equal("'attribute' is required");
 		});
 
-		it('should throw cannot drop a hash attribute error', async function () {
-			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
-			let error;
-
-			try {
-				await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
-			} catch (err) {
-				error = err;
-			}
-
-			expect(error).to.be.instanceOf(Error);
-			expect(error.message).to.equal('You cannot drop a hash attribute');
-		});
-
 		it('should call all functions and return a success message', async function () {
 			bridge_drop_attr_stub.resolves();
 			global.hdb_schema = GLOBAL_SCHEMA_FAKE;

@@ -18,15 +18,19 @@ import { onMessageByType } from '../server/threads/manageThreads.ts';
 const SLOTS = 1024;
 // One bound word per 64-byte line: writers on neighbouring slots must not bounce a line between cores.
 const BOUND_STRIDE = 8;
-const WORD_PROPOSED = 0;
-const WORD_PUBLISHED = 1;
-const WORD_RATCHET = 2;
+export const WORD_PROPOSED = 0;
+export const WORD_PUBLISHED = 1;
+export const WORD_RATCHET = 2;
 // Non-zero once a key may have been issued from the ratchet rather than the native clock (the clock
 // was behind a recovered floor or a runtime claim); native keys then pass through it for the rest of
 // the process, since any later hand-back to load-only admission races a fallback still in flight.
-const WORD_STRICT = 3;
-const WORD_INITIAL_CEILING = 4;
-const HEADER_WORDS = 5;
+export const WORD_STRICT = 3;
+export const WORD_INITIAL_CEILING = 4;
+// One past the highest slot ever claimed: a bounds scan stops there. Raised when a slot is claimed, before
+// the claimer reads `proposed`; a sampler raises `proposed` before it loads this, so a claim the sampler's scan
+// misses admits only keys above the sampler's value.
+export const WORD_SLOT_LIMIT = 5;
+export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
 const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
@@ -62,13 +66,16 @@ export function timestampAbove(value: number): number {
 	return fromBits(toBits(value) + 1n);
 }
 
-function storeMax(words: BigInt64Array, index: number, value: number): number {
-	const bits = toBits(value);
+function storeMaxWord(words: BigInt64Array, index: number, bits: bigint): bigint {
 	for (;;) {
 		const current = Atomics.load(words, index);
-		if (current >= bits) return fromBits(current);
-		if (Atomics.compareExchange(words, index, current, bits) === current) return value;
+		if (current >= bits) return current;
+		if (Atomics.compareExchange(words, index, current, bits) === current) return bits;
 	}
+}
+
+function storeMax(words: BigInt64Array, index: number, value: number): number {
+	return fromBits(storeMaxWord(words, index, toBits(value)));
 }
 
 type Reservation = { registry: ThreadRegistry; key: number; released: boolean; aroundCallerValue: boolean };
@@ -91,7 +98,13 @@ class ThreadRegistry {
 
 	constructor(rootStore: RocksDatabase) {
 		this.rootStore = rootStore;
-		this.words = new BigInt64Array(rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES)));
+		const buffer = rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES));
+		// the buffer lives as long as the process: a thread running another layout would misread every slot
+		if (buffer.byteLength !== BUFFER_BYTES)
+			throw new Error(
+				`The origin-closed floor buffer has another layout (${buffer.byteLength} bytes); restart the process`
+			);
+		this.words = new BigInt64Array(buffer);
 		// a reservation's pending bound is `proposed` as it starts, so it must never be 0
 		if (Atomics.load(this.words, WORD_PROPOSED) === 0n)
 			storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());
@@ -105,6 +118,7 @@ class ThreadRegistry {
 			if (Atomics.compareExchange(this.words, index, 0n, owner) === 0n) {
 				Atomics.store(this.words, boundIndex(slot), INFINITY_BITS);
 				this.settledBound = Infinity;
+				storeMaxWord(this.words, WORD_SLOT_LIMIT, BigInt(slot + 1));
 				return slot;
 			}
 		}
@@ -278,15 +292,24 @@ class ThreadRegistry {
 		this.publish(this.minKey());
 	}
 
+	private slotLimit(): number {
+		return Math.min(Number(Atomics.load(this.words, WORD_SLOT_LIMIT)), SLOTS);
+	}
+
 	holders(): Array<{ threadId: number; bound: number }> {
 		const result = [];
-		for (let slot = 0; slot < SLOTS; slot++) {
+		const limit = this.slotLimit();
+		for (let slot = 0; slot < limit; slot++) {
 			const owner = Atomics.load(this.words, THREAD_WORDS_OFFSET + slot);
 			if (owner === 0n) continue;
 			const bound = Math.abs(fromBits(Atomics.load(this.words, boundIndex(slot))));
 			if (bound !== Infinity) result.push({ threadId: Number(owner & ~RETIRED_BIT) - 1, bound });
 		}
 		return result;
+	}
+
+	lowestOutstanding(): number {
+		return this.minKey();
 	}
 
 	/**
@@ -297,7 +320,8 @@ class ThreadRegistry {
 	minBound(): number {
 		let min = Infinity;
 		let pending = false;
-		for (let slot = 0; slot < SLOTS; slot++) {
+		const limit = this.slotLimit();
+		for (let slot = 0; slot < limit; slot++) {
 			if (Atomics.load(this.words, THREAD_WORDS_OFFSET + slot) === 0n) continue;
 			const bits = Atomics.load(this.words, boundIndex(slot));
 			if (bits > 0n) {
@@ -472,6 +496,21 @@ export function localStartBound(rootStore: RocksDatabase): { atOrAbove: number }
 	const closed = sampleClosedBounds(rootStore);
 	const bound = Math.max(closed.bound, published);
 	return bound <= closed.sample ? { atOrAbove: bound } : { above: closed.sample };
+}
+
+/**
+ * `localStartBound` for a reader that sees only this thread's commits: the bound is this thread's own lowest
+ * outstanding reservation, read without the shared scan; `proposed` is still raised, so a handle minted earlier
+ * cannot be admitted below the sample afterwards.
+ */
+export function threadStartBound(rootStore: RocksDatabase): { atOrAbove: number } | { above: number } | undefined {
+	if (rootStore.status === 'closed') return;
+	const registry = registryFor(rootStore);
+	const words = registry.words;
+	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
+	storeMax(words, WORD_PROPOSED, sample);
+	const bound = registry.lowestOutstanding();
+	return bound <= sample ? { atOrAbove: bound } : { above: sample };
 }
 
 function sampleClosedBounds(rootStore: RocksDatabase): { sample: number; bound: number; settled: boolean } {

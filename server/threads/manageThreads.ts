@@ -35,6 +35,7 @@ import { PACKAGE_ROOT, PRODUCT_NAME, RUNTIME_FILE_EXT } from '../../utility/pack
 import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
+import { compileCacheWorkerEnv } from './compileCache.ts';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { resolveWatchTarget } from '../../utility/watchPath.ts';
 import {
@@ -235,6 +236,7 @@ export {
 	requestFromMainThread,
 	answerMainThreadRequests,
 	poolMayHold,
+	onWorkerRelease,
 	failedClosedInMemory,
 	setCanaryVerdictTimeout,
 	setRootComponentsReload,
@@ -1439,6 +1441,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		},
 		transferList: portsToSend,
 		...options,
+		env: compileCacheWorkerEnv(options.env),
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
@@ -1493,6 +1496,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 				options.onRestartExhausted?.(worker);
 			}
 		}
+		notifyWorkerRelease();
 	});
 	workers.push(worker);
 	startMonitoring();
@@ -1577,7 +1581,25 @@ function withPoolFor(application?: string) {
 }
 
 function recordLoadedApplications(worker: any, message: any) {
-	if (Array.isArray(message.applications)) worker.loadedApplications = new Set(message.applications);
+	if (!Array.isArray(message.applications)) return;
+	worker.loadedApplications = new Set(message.applications);
+	notifyWorkerRelease();
+}
+
+const workerReleaseListeners: Array<() => void> = [];
+/** Told after a worker exits or reports what it loaded, the only events that narrow what a worker may hold. */
+function onWorkerRelease(listener: () => void) {
+	workerReleaseListeners.push(listener);
+}
+
+function notifyWorkerRelease() {
+	for (const listener of workerReleaseListeners) {
+		try {
+			listener();
+		} catch (error) {
+			harperLogger.error(error);
+		}
+	}
 }
 
 /** `withPool`: a named application's restart also replaces the pool workers, which may still hold that application. */

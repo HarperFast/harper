@@ -842,9 +842,15 @@ function branchDirectoriesFor(appName: string): {
  * In each `<app>` directory of an application's branches: a drop owes their removal. It is written, durably, before
  * that drop changes anything, so the debt outlives an answer the drop gives before the removal, and the process; only a
  * removal that completes, or a later drop that keeps them, clears it. A file, so `branchDirectoriesFor` never reads it
- * as a branch.
+ * as a branch. Its temp file counts too: only a drop that discards the branches writes one, and a crash can leave it
+ * unrenamed after that drop removed the application.
  */
 const REMOVAL_PENDING_MARKER = '`removal-pending`';
+const REMOVAL_PENDING_PARTIAL = `${REMOVAL_PENDING_MARKER}.partial`;
+
+function marksPendingRemoval(directory: string): boolean {
+	return pathPresent(join(directory, REMOVAL_PENDING_MARKER)) || pathPresent(join(directory, REMOVAL_PENDING_PARTIAL));
+}
 
 /** Refused when a directory the removal would cover cannot be read, since no marker could cover it. */
 export function recordPendingBranchRemoval(appName: string): void {
@@ -853,11 +859,7 @@ export function recordPendingBranchRemoval(appName: string): void {
 		throw new Error(`Could not record the owed removal of branch storage for '${appName}': ${failures.join('; ')}`);
 	}
 	for (const directory of directories) {
-		writeFileDurably(
-			join(directory, REMOVAL_PENDING_MARKER),
-			new Date().toISOString(),
-			`${REMOVAL_PENDING_MARKER}.partial`
-		);
+		writeFileDurably(join(directory, REMOVAL_PENDING_MARKER), new Date().toISOString(), REMOVAL_PENDING_PARTIAL);
 	}
 }
 
@@ -867,6 +869,8 @@ export async function clearPendingBranchRemoval(appName: string): Promise<void> 
 		throw new Error(`Could not clear the owed removal of branch storage for '${appName}': ${failures.join('; ')}`);
 	}
 	for (const directory of directories) {
+		// before the marker, which keeps the debt discoverable if this fails
+		removeFileDurably(join(directory, REMOVAL_PENDING_PARTIAL));
 		removeFileDurably(join(directory, REMOVAL_PENDING_MARKER));
 		await rmdir(directory).catch(() => {});
 	}
@@ -875,7 +879,7 @@ export async function clearPendingBranchRemoval(appName: string): Promise<void> 
 /** Throws when that cannot be established, rather than answering no. */
 export function hasPendingBranchRemoval(appName: string): boolean {
 	const { directories, failures } = branchDirectoriesFor(appName);
-	if (directories.some((directory) => pathPresent(join(directory, REMOVAL_PENDING_MARKER)))) return true;
+	if (directories.some(marksPendingRemoval)) return true;
 	if (failures.length) throw new Error(`Could not check branch storage for '${appName}': ${failures.join('; ')}`);
 	return false;
 }
@@ -898,11 +902,11 @@ export function applicationsWithPendingBranchRemoval(): { applications: string[]
 		}
 		for (const entry of entries) {
 			if (!entry.isDirectory()) continue;
-			const marker = join(root, entry.name, REMOVAL_PENDING_MARKER);
+			const directory = join(root, entry.name);
 			try {
-				if (pathPresent(marker)) applications.add(entry.name);
+				if (marksPendingRemoval(directory)) applications.add(entry.name);
 			} catch (error) {
-				warn(marker, error);
+				warn(directory, error);
 			}
 		}
 	}

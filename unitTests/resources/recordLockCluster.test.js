@@ -1102,9 +1102,13 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('reports the leader’s failure reason rather than inventing contention for the follower', async function () {
 			if (isLMDB) return this.skip();
-			// No agreed map fails the leader's round with a 503 that names why the guarantee could not be
-			// established. Nobody held the key, so the follower must end on that reason and not on a 423.
-			useSoloTransport({ mapless: true });
+			// A home that refuses this node fails the leader's round at once with a 503 that names why the
+			// guarantee could not be established. Nobody held the key, so the follower must end on that
+			// reason and not on a 423. (A withheld map is no longer immediate: it is ridden through.)
+			useSoloTransport({
+				homes: ['elsewhere'],
+				requestDelegation: async () => ({ granted: false, reason: 'unknown-node' }),
+			});
 			const recordId = id();
 			await transaction(async () => {
 				const leader = ClusterLockTest.lock(recordId, { lease: 5000, timeout: 5000 }).then(
@@ -1131,6 +1135,30 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 					'the follower answered with a fabricated 423 instead of the leader’s reason'
 				);
 			});
+		});
+
+		it('caps the cluster wait at what the native lease leaves (record-locks.md §4.5)', async function () {
+			if (isLMDB) return this.skip();
+			// A home that is still coming up is waited out — but only for as long as the native lease the
+			// handle already started can still be joined; a round landing after it could only fail.
+			let asked = 0;
+			useSoloTransport({
+				homes: ['elsewhere'],
+				requestDelegation: async () => {
+					asked++;
+					return { granted: false, reason: 'quarantine', recovering: true, retryAfterMs: 250 };
+				},
+			});
+			const startedAt = Date.now();
+			await assert.rejects(
+				() => ClusterLockTest.lock(id(), { lease: 400, timeout: 5000 }),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+			const elapsed = Date.now() - startedAt;
+			assert.ok(elapsed < 2_000, `waited ${elapsed}ms past a 400ms lease`);
+			// Backed off from 250ms, so 3 to 4 asks; a timer firing a millisecond early costs one more ask at
+			// the deadline. A 25ms retry loop would make 16.
+			assert.ok(asked >= 1 && asked <= 8, `${asked} requests inside a 400ms lease`);
 		});
 
 		it('releases the transaction’s other locks when one of them lapses at commit', async function () {

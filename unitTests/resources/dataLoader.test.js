@@ -3,6 +3,8 @@
 const assert = require('node:assert');
 const { mkdir, readFile, rm, stat, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
+const { createHash } = require('node:crypto');
+const { toBufferKey } = require('ordered-binary');
 const sinon = require('sinon');
 
 // Set up logger stub before importing dataLoader
@@ -12,6 +14,10 @@ const loggerStub = {
 	error: sinon.stub(),
 	debug: sinon.stub(),
 	trace: sinon.stub(),
+	// modules that first load under this stub (security/auth.ts when this file runs alone) tag their logger
+	withTag() {
+		return this;
+	},
 };
 const forComponentStub = sinon.stub(harperLogger, 'forComponent').returns(loggerStub);
 
@@ -33,6 +39,13 @@ const {
 
 // Restore the forComponent stub immediately after import to prevent it from affecting other modules
 forComponentStub.restore();
+
+function hashKey(database, table, id) {
+	return createHash('sha256')
+		.update(JSON.stringify([database, table]))
+		.update(toBufferKey(id))
+		.digest('hex');
+}
 
 // Helper function to create a mock record with getUpdatedTime method
 function createMockRecord(props) {
@@ -298,13 +311,13 @@ records:
 				put: sinon.stub().resolves({ inserted: 1 }),
 			};
 
-			mockTables.test_table_json = mockTable;
+			mockTables.test_yml = mockTable;
 
-			const result = await loadDataFile(await createFileEntry(jsonDataFile), mockTables, mockDatabases);
+			const result = await loadDataFile(await createFileEntry(ymlDataFile), mockTables, mockDatabases);
 
 			assert.ok(result instanceof DataLoaderResult);
 			assert.equal(result.status, 'success');
-			assert.equal(mockTable.put.callCount, 2);
+			assert.equal(mockTable.put.callCount, 1);
 		});
 
 		it('should handle empty records array', async function () {
@@ -353,10 +366,10 @@ records:
 			// Create mock hash tracking table with matching hashes
 			const mockHashTable = {
 				get: sinon.stub().callsFake((id) => {
-					if (id === 'dev:test_table_json:1') {
-						return Promise.resolve({ id: 'dev:test_table_json:1', hash: hash1 });
-					} else if (id === 'dev:test_table_json:2') {
-						return Promise.resolve({ id: 'dev:test_table_json:2', hash: hash2 });
+					if (id === hashKey('dev', 'test_table_json', 1)) {
+						return Promise.resolve({ id, hash: hash1 });
+					} else if (id === hashKey('dev', 'test_table_json', 2)) {
+						return Promise.resolve({ id, hash: hash2 });
 					}
 					return Promise.resolve(null);
 				}),
@@ -407,10 +420,10 @@ records:
 			// Create mock hash tracking table with database:table:id format
 			const mockHashTable = {
 				get: sinon.stub().callsFake((id) => {
-					if (id === 'dev:test_table_json:1') {
-						return Promise.resolve({ id: 'dev:test_table_json:1', hash: oldHash1 });
-					} else if (id === 'dev:test_table_json:2') {
-						return Promise.resolve({ id: 'dev:test_table_json:2', hash: oldHash2 });
+					if (id === hashKey('dev', 'test_table_json', 1)) {
+						return Promise.resolve({ id, hash: oldHash1 });
+					} else if (id === hashKey('dev', 'test_table_json', 2)) {
+						return Promise.resolve({ id, hash: oldHash2 });
 					}
 					return Promise.resolve(null);
 				}),
@@ -472,10 +485,10 @@ records:
 			// Create mock hash tracking table
 			const mockHashTable = {
 				get: sinon.stub().callsFake((id) => {
-					if (id === 'mixed_table:2') {
-						return Promise.resolve({ id: 'mixed_table:2', hash: oldHash2 });
-					} else if (id === 'mixed_table:3') {
-						return Promise.resolve({ id: 'mixed_table:3', hash: hash3 });
+					if (id === hashKey('data', 'mixed_table', 2)) {
+						return Promise.resolve({ id, hash: oldHash2 });
+					} else if (id === hashKey('data', 'mixed_table', 3)) {
+						return Promise.resolve({ id, hash: hash3 });
 					}
 					return Promise.resolve(null);
 				}),
@@ -561,10 +574,10 @@ records:
 			// Create mock hash tracking table with original hashes
 			const mockHashTable = {
 				get: sinon.stub().callsFake((id) => {
-					if (id === 'dev:test_table_json:1') {
-						return Promise.resolve({ id: 'dev:test_table_json:1', hash: originalHash1 });
-					} else if (id === 'dev:test_table_json:2') {
-						return Promise.resolve({ id: 'dev:test_table_json:2', hash: originalHash2 });
+					if (id === hashKey('dev', 'test_table_json', 1)) {
+						return Promise.resolve({ id, hash: originalHash1 });
+					} else if (id === hashKey('dev', 'test_table_json', 2)) {
+						return Promise.resolve({ id, hash: originalHash2 });
 					}
 					return Promise.resolve(null);
 				}),
@@ -638,10 +651,10 @@ records:
 			// Create mock hash tracking table with original hashes
 			const mockHashTable = {
 				get: sinon.stub().callsFake((id) => {
-					if (id === 'dev:test_table_json:1') {
-						return Promise.resolve({ id: 'dev:test_table_json:1', hash: originalHash1 });
-					} else if (id === 'dev:test_table_json:2') {
-						return Promise.resolve({ id: 'dev:test_table_json:2', hash: originalHash2 });
+					if (id === hashKey('dev', 'test_table_json', 1)) {
+						return Promise.resolve({ id, hash: originalHash1 });
+					} else if (id === hashKey('dev', 'test_table_json', 2)) {
+						return Promise.resolve({ id, hash: originalHash2 });
 					}
 					return Promise.resolve(null);
 				}),

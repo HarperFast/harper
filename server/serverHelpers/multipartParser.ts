@@ -18,7 +18,7 @@ const UNSAFE_FIELD_NAMES: ReadonlySet<string> = new Set(PROTOTYPE_POLLUTING_NAME
 // → the file Readable → the consumer, bounded by disk space rather than memory.
 // Long enough for the client to read its response before a still-arriving discarded upload is cut off
 // (closing at once risks a reset that loses it, RFC 9112 §9.6), short enough to bound the discard.
-const UNREAD_UPLOAD_GRACE_MS = 1_000;
+export const UNREAD_UPLOAD_GRACE_MS = 1_000;
 
 interface Upload {
 	// The parser's input can be a `preParsing` transform of this.

@@ -1,8 +1,8 @@
 import { streamAsJSON, stringify, parse } from './JSONStream.ts';
-import { pack, unpack, encodeIter } from 'msgpackr';
-import { decode, Encoder, EncoderStream } from 'cbor-x';
+import { pack, unpack, Packr } from 'msgpackr';
+import { decode, Encoder } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ReadSnapshotExpiredError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -96,21 +96,13 @@ mediaTypes.set('application/json', {
 });
 const cborEncoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
 mediaTypes.set('application/cbor', {
-	serializeStream(data) {
-		if (data[Symbol.asyncIterator]) data[Symbol.iterator] = null; // choose async iteration if possible
-		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
-	},
+	serializeStream: cborStream,
 	serialize: cborEncoder.encode,
 	deserialize: cborEncoder.decode,
 	q: 1,
 });
 mediaTypes.set('application/x-msgpack', {
-	serializeStream(data: any) {
-		if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
-		}
-		return pack(data);
-	},
+	serializeStream: msgpackStream,
 	serialize: pack,
 	deserialize: unpack,
 	q: 0.9,
@@ -132,7 +124,9 @@ mediaTypes.set('text/plain', {
 		return data.toString();
 	},
 	serializeStream(data: any) {
-		return Readable.from(data.map ? data.map((d) => d.toString()) : data);
+		return Readable.from(
+			openOnFirstStep(() => (data.map ? data.map((d) => d.toString()) : data), Boolean(data[Symbol.asyncIterator]))
+		);
 	},
 	deserialize(data: Buffer) {
 		return data.toString();
@@ -304,18 +298,11 @@ export function registerContentHandlers(app) {
 			},
 			{
 				regex: /^application\/cbor$/,
-				serializer: function (data) {
-					return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
-				},
+				serializer: cborStream,
 			},
 			{
 				regex: /^application\/(x-)?msgpack$/,
-				serializer: function (data) {
-					if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-						return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
-					}
-					return pack(data);
-				},
+				serializer: msgpackStream,
 			},
 			{
 				regex: /^text\/csv$/,
@@ -353,6 +340,21 @@ export function registerContentHandlers(app) {
 	app.addHook('onResponse', releaseUnreadUpload);
 }
 
+function recoversRowErrors(contentType: string): boolean {
+	return (
+		contentType !== 'application/x-ndjson' &&
+		contentType !== 'application/ndjson' &&
+		contentType !== 'text/event-stream'
+	);
+}
+
+/** A row's own failure becomes a row value; a lost read snapshot ends the whole read, so it must fail the stream. */
+function recoverRowError(error: any) {
+	if (error instanceof ReadSnapshotExpiredError) throw error;
+	error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+	return error;
+}
+
 const registerFastifySerializers = fp(
 	function (fastify, opts, done) {
 		fastify.addHook('preSerialization', async (request, reply) => {
@@ -380,14 +382,10 @@ const registerFastifySerializers = fp(
 					(data[Symbol.iterator] || data[Symbol.asyncIterator]) &&
 					serializer.serializeStream
 				) {
-					if (data.mapError) {
+					if (data.mapError && recoversRowErrors(type)) {
 						// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 						const getColumns = data.getColumns;
-						data = data.mapError((error) => {
-							// make errors serializable in a descriptive way
-							error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
-							return error;
-						});
+						data = data.mapError(recoverRowError);
 						data.getColumns = getColumns;
 					}
 					serialize = serializer.serializeStream;
@@ -541,19 +539,13 @@ export function serialize(responseData, request, responseObject) {
 			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (
-				responseData.mapError &&
-				contentType !== 'application/x-ndjson' &&
-				contentType !== 'application/ndjson' &&
-				contentType !== 'text/event-stream'
-			) {
+			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
 				responseData = responseData.mapError((error) => {
-					// make errors serializable in a descriptive way
-					error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
-					return error;
+					return row;
 				});
 				responseData.getColumns = getColumns;
 			}
@@ -564,9 +556,7 @@ export function serialize(responseData, request, responseObject) {
 			else {
 				responseObject.headers.set('Content-Encoding', 'br');
 				const source = typeof serialized.pipe === 'function' ? serialized : Readable.from(serialized);
-				// pipeline, not pipe: a source error must destroy the compressor (which the HTTP layer reports) rather
-				// than be emitted with no listener
-				const compressed = stream.pipeline(source, createBrotliCompress(brotliOptions(contentType)), () => {});
+				const compressed = pipelineOnRead(source, createBrotliCompress(brotliOptions(contentType)));
 				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
 				return compressed;
 			}
@@ -807,6 +797,121 @@ function deserializerUnknownType(contentType: ContentType): Deserialize {
 	}
 }
 
+const CBOR_STREAM_OPTIONS = { ...PUBLIC_ENCODE_OPTIONS, sequential: true };
+
+function cborStream(data) {
+	// an Encoder per stream: encodeAsAsyncIterable keeps its chunking state on the instance
+	return Readable.from(
+		openOnFirstStep(() => (new Encoder(CBOR_STREAM_OPTIONS) as any).encodeAsAsyncIterable(asyncPreferred(data)), true),
+		{ objectMode: false, highWaterMark: 16384 }
+	);
+}
+
+function msgpackStream(data) {
+	if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
+		let packr: Packr;
+		return Readable.from(
+			openOnFirstStep(
+				() => {
+					packr = new Packr(PUBLIC_ENCODE_OPTIONS);
+					return data;
+				},
+				Boolean(data[Symbol.asyncIterator]),
+				(value) => packr.pack(value)
+			)
+		);
+	}
+	return pack(data);
+}
+
+class AsyncIterableView {
+	source: any;
+	constructor(source) {
+		this.source = source;
+	}
+	[Symbol.asyncIterator]() {
+		return this.source[Symbol.asyncIterator]();
+	}
+}
+
+// cbor-x prefers Symbol.iterator, whose iteration of search results yields Promises for rows not yet loaded, and
+// encodes a plain-object async iterable as a map.
+function asyncPreferred(data) {
+	return data?.[Symbol.asyncIterator] ? new AsyncIterableView(data) : data;
+}
+
+// Readable.from() takes its source's iterator at construction; this one opens the source on the first next(). A sync
+// source keeps the sync protocol, under which Readable.from() awaits a value that is a Promise. mapValue applies to each
+// step as it comes, so an async source's steps that are already settled are not wrapped in a Promise.
+function openOnFirstStep(
+	open: () => any,
+	async: boolean,
+	mapValue?: (value: any) => any
+): Iterable<any> | AsyncIterable<any> {
+	let iterator;
+	let closed = false;
+	const mapStep =
+		mapValue &&
+		((step) => {
+			if (closed) return { value: undefined, done: true };
+			if (step.done) return step;
+			const { value } = step;
+			return {
+				value:
+					!async && typeof value?.then === 'function'
+						? value.then((settled) => (closed ? settled : mapValue(settled)))
+						: mapValue(value),
+				done: false,
+			};
+		});
+	const deferred: any = {
+		[async ? Symbol.asyncIterator : Symbol.iterator]() {
+			return this;
+		},
+		next() {
+			if (closed) return { value: undefined, done: true };
+			if (!iterator) {
+				const source = open();
+				iterator = async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
+				if (closed) {
+					const closing = iterator.return?.();
+					if (typeof closing?.then === 'function')
+						closing.then(null, (error) => logger.warn?.('Error closing a discarded stream source', error));
+					return { value: undefined, done: true };
+				}
+			}
+			const step = iterator.next();
+			if (!mapStep) return step;
+			return typeof step.then === 'function' ? step.then(mapStep) : mapStep(step);
+		},
+		return(value) {
+			closed = true;
+			return iterator?.return?.(value) ?? { value, done: true };
+		},
+	};
+	return deferred;
+}
+
+// pipe() reads the source on the next tick, past a discard in this one, and pipeline() destroys the source only on a
+// later tick. So connect on the first read, destroy the source synchronously with the transform, and until then
+// handle errors as pipeline() would: a source error fails the transform, which is what the HTTP layer reports.
+function pipelineOnRead(source: Readable, transform: Transform): Transform {
+	source.once('error', (error) => transform.destroy(error));
+	transform.on('error', () => {});
+	const read = transform._read;
+	transform._read = function (size) {
+		transform._read = read;
+		stream.pipeline(source, transform, () => {});
+		return read.call(this, size);
+	};
+	const destroy = transform._destroy;
+	transform._destroy = function (error, callback) {
+		source.destroy(error ?? undefined);
+		return destroy.call(this, error, callback);
+	};
+	return transform;
+}
+
 function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	const transformed = transformIterable(iterable, transform, serializeError, eager);
 	const readable = Readable.from(transformed);
@@ -971,8 +1076,8 @@ function transformIterable(iterable, transform, serializeError, eager) {
  * @returns stream
  */
 export function toCsvStream(data, columns?) {
-	// ensure that we pass it an iterable
-	const readStream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
+	const source = data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data];
+	const readStream = Readable.from(openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator])));
 
 	let headerWritten = false;
 	let fields = columns || null;
@@ -1016,8 +1121,7 @@ export function toCsvStream(data, columns?) {
 		},
 	});
 
-	// Pipe the data read stream through our CSV transform
-	return readStream.pipe(csvTransform);
+	return pipelineOnRead(readStream, csvTransform);
 }
 
 /**
