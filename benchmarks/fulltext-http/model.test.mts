@@ -91,3 +91,28 @@ test('cleanup failure still publishes unqualified evidence and preserves the pri
 	assert.strictEqual(published.failure.message, 'primary');
 	assert.strictEqual(published.cleanupFailure.message, 'cleanup');
 });
+
+test('known exact counts pass, unknown totals remain distinct degraded evidence and wrong data stays fatal', () => {
+	const rows = Array.from({ length: 20 }, (_, i) => record(i));
+	verify('exact', rows, 'items 0-19/1000');
+	assert.throws(
+		() => verify('exact', rows, 'items 0-19/*'),
+		(error) => error.code === 'QUALIFICATION_UNKNOWN_COUNT'
+	);
+	assert.throws(
+		() => verify('exact', rows, 'items 0-19/999'),
+		(error) => error.code === 'ERR_ASSERTION'
+	);
+	assert.throws(
+		() => verify('exact', [...rows.slice(0, 19), record(1000)], 'items 0-19/*'),
+		(error) => error.code === 'ERR_ASSERTION'
+	);
+	const m = meter();
+	m.add(1);
+	m.fail(1001, false, true);
+	const summary = m.summary();
+	assert.strictEqual(summary.unknownCounts, 1);
+	assert.strictEqual(summary.rejections, 1);
+	assert.strictEqual(summary.failureLatency.count, 1);
+	assert.strictEqual(cellVerdict(summary, { rejections: 0 }), 'unqualified');
+});

@@ -41,20 +41,28 @@ export function verify(name, rows, range, bucket = 0) {
 			rows.map((r) => r.id),
 			Array.from({ length: 20 }, (_, i) => record(bucket * MATCHES + i).id)
 		);
-	if (name === 'exact') assert.strictEqual(range, 'items 0-19/1000');
+	if (name === 'exact') {
+		if (range === 'items 0-19/*')
+			throw Object.assign(new Error('Bounded full-text count remained unknown'), {
+				code: 'QUALIFICATION_UNKNOWN_COUNT',
+			});
+		assert.strictEqual(range, 'items 0-19/1000');
+	}
 }
 export function meter() {
 	const histogram = createHistogram();
 	let failures = 0;
 	let timeouts = 0;
+	let unknownCounts = 0;
 	const failureLatency = createHistogram();
 	return {
 		add(ms) {
 			histogram.record(Math.max(1, Math.round(ms * 1e6)));
 		},
-		fail(ms, timeout = false) {
+		fail(ms, timeout = false, unknownCount = false) {
 			failures++;
 			if (timeout) timeouts++;
+			if (unknownCount) unknownCounts++;
 			if (ms !== undefined) failureLatency.record(Math.max(1, Math.round(ms * 1e6)));
 		},
 		summary() {
@@ -62,6 +70,7 @@ export function meter() {
 				completed: histogram.count,
 				rejections: failures,
 				timeouts,
+				unknownCounts,
 				failureLatency: {
 					count: failureLatency.count,
 					p50: failureLatency.percentile(50) / 1e6,

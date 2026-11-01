@@ -308,7 +308,11 @@ try {
 								try {
 									reads.add(await query(name));
 								} catch (error) {
-									reads.fail(performance.now() - requestStarted, error.name === 'TimeoutError');
+									reads.fail(
+										performance.now() - requestStarted,
+										error.name === 'TimeoutError',
+										error.code === 'QUALIFICATION_UNKNOWN_COUNT'
+									);
 									await errorRecord({
 										rows,
 										name,
@@ -316,6 +320,7 @@ try {
 										writesPerSecond,
 										at: Date.now(),
 										status: error.status,
+										code: error.code,
 										message: error.message,
 									});
 									if (error.code === 'ERR_ASSERTION') fatal = error;
@@ -347,6 +352,7 @@ try {
 										at: Date.now(),
 										message: error.message,
 										status: error.status,
+										code: error.code,
 									});
 								}
 								await delay(Math.max(0, 1000 / writesPerSecond - (performance.now() - start)));
