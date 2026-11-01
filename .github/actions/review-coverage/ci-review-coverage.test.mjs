@@ -1305,16 +1305,20 @@ test('urgency releases only the pending hold: short coverage, a blocked adjudica
 	}
 });
 
+const easyBody = (footer) => pr({ body: `Complexity: easy\n\n${footer}`, additions: 10, deletions: 2 });
+const easyPr = (ran, urgency) => easyBody(urgencyFooter(urgency, ran));
+
 test('the easy-diff waiver does not cover a pending late leg at fast or urgent urgency either', () => {
-	const easyPr = (ran, urgency) =>
-		pr({ body: `Complexity: easy\n\n${urgencyFooter(urgency, ran)}`, additions: 10, deletions: 2 });
 	for (const urgency of ['fast', 'urgent']) {
 		const r = evaluateCiCoverage(easyPr('gemini', urgency), { mode: 'enforce' });
 		assert.strictEqual(r.pass, false, urgency);
 		assert.strictEqual(r.exempt, '');
+		assert.strictEqual(r.pendingHeld, true, 'the pending leg is what fails it');
+		assert.strictEqual(r.lateNotice, '');
+		assert.match(r.summary, /late review leg pending/);
 		assert.match(
 			r.detail,
-			/`Complexity: easy` does not waive while late review leg `cursor-grok` is pending.*--fold-late/
+			/`Complexity: easy` does not waive while a late review leg is pending, at any urgency; late review leg `cursor-grok` is still pending.*--fold-late/
 		);
 		const full = evaluateCiCoverage(easyPr('codex,gemini', urgency), { mode: 'enforce' });
 		assert.strictEqual(full.pass, true, urgency);
@@ -1331,6 +1335,23 @@ test('the easy-diff waiver does not cover a pending late leg at fast or urgent u
 	);
 	assert.strictEqual(folded.pass, true);
 	assert.match(folded.exempt, /^Complexity: easy/);
+});
+
+test('an easy PR at fast urgency that a fold would not rescue is not told to fold', () => {
+	for (const [label, footerPr] of [
+		['no outside review', easyPr('none', 'fast')],
+		[
+			'blocked adjudicator',
+			easyBody(
+				`<sub>Review-Coverage: authored=claude; ran=gemini; late=cursor-grok:pending; blocked=domain(exit--1); urgency=fast; rounds=1 @ ${PIN}</sub>`
+			),
+		],
+	]) {
+		const r = evaluateCiCoverage(footerPr, { mode: 'enforce' });
+		assert.strictEqual(r.pass, false, label);
+		assert.strictEqual(r.pendingHeld, false, label);
+		assert.doesNotMatch(r.detail, /--fold-late|does not waive while/, label);
+	}
 });
 
 test('a draft with a pending late leg still passes; its note says whether urgency lets ready-for-review pass', () => {
@@ -1452,4 +1473,24 @@ test('the CLI fails a fast-urgency PR that is short on coverage with the coverag
 	assert.strictEqual(normal.status, 1);
 	assert.match(normal.stderr, /`cursor-grok` is still pending.*--fold-late/);
 	assert.doesNotMatch(normal.stdout, /::notice::/);
+});
+
+test('the CLI gives an easy fast-urgency PR held by its pending leg the fold remedy', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-easy-urgency-'));
+	const event = path.join(dir, 'event.json');
+	const summary = path.join(dir, 'summary.md');
+	writeFileSync(event, JSON.stringify({ pull_request: easyPr('gemini', 'fast') }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT, '--event', event, '--mode', 'enforce'], {
+			encoding: 'utf8',
+			env: { ...CLEAN_ENV, GITHUB_STEP_SUMMARY: summary },
+		});
+		assert.strictEqual(result.status, 1);
+		const error = result.stderr.split('\n').find((line) => line.startsWith('::error::'));
+		assert.match(error, /does not waive while a late review leg is pending.*--fold-late/);
+		assert.doesNotMatch(error, /report the reviews in the PR description/);
+		assert.match(readFileSync(summary, 'utf8'), /A late review leg \(`cursor-grok`\) is still pending/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

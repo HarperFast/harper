@@ -76,8 +76,6 @@ const SEGMENTS = new Map([
 	['rounds', positive('rounds')],
 	['full', positive('full')],
 ]);
-// A human may promote a PR at these urgencies before its late leg folds; the authoring session
-// addresses the leg's findings afterwards.
 const URGENCIES_READY_WHILE_PENDING = new Set(['fast', 'urgent']);
 export const PENDING_FIX =
 	'run the pre-push CLI with `--fold-late` (`--wait-late` while the leg still runs), which folds it and updates the PR body, or run another review round and re-materialize the footer with `pr-body-review-need.mjs --write`; a late leg that self-folds updates the PR body itself';
@@ -164,7 +162,6 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		]),
 	];
 	const urgency = footerRead.segments.get('urgency') ?? 'normal';
-	const pendingHeld = pendingLegs.length > 0 && !URGENCIES_READY_WHILE_PENDING.has(urgency);
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
@@ -196,12 +193,19 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const classification = classifyPullRequest(pr);
 	const waiver = easyDiffWaiver(pr, easy);
 	const aiAuthored = isAiAuthored(prose);
-	// Waives ONE leg, not "all but one": a consumer asking for three still gets two. `pendingLegs`, not
-	// `pendingHeld`: the waiver never covers a pending leg, at any urgency.
+	// Waives ONE leg, not "all but one": a consumer asking for three still gets two.
 	const easyWaived =
 		waiver.waived && !adjudicatorBlocked && !pendingLegs.length && enforceable >= Math.max(1, required - 1);
+	// One review short, the PR needs the easy waiver, which never covers a pending leg at any urgency.
+	const easyNeedsFold =
+		waiver.waived &&
+		!adjudicatorBlocked &&
+		pendingLegs.length > 0 &&
+		enforceable >= Math.max(1, required - 1) &&
+		enforceable < required;
+	const pendingHeld = pendingLegs.length > 0 && (!URGENCIES_READY_WHILE_PENDING.has(urgency) || easyNeedsFold);
 	const compliant = enforceable >= required && !adjudicatorBlocked && !pendingHeld;
-	const passesWhilePending = pendingLegs.length > 0 && !pendingHeld && compliant;
+	const passesWhilePending = pendingLegs.length > 0 && compliant;
 	const exempt =
 		classification.exempt ||
 		(classification.draft
@@ -222,8 +226,8 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const easyNote =
 		waiver.claimed && !waiver.waived
 			? `; \`Complexity: easy\` does not waive here — ${waiver.reason}`
-			: waiver.waived && pendingLegs.length && !pendingHeld && !compliant && !exempt
-				? `; \`Complexity: easy\` does not waive while late review leg ${pendingList} is pending, at any urgency — ${PENDING_FIX}`
+			: easyNeedsFold && !exempt
+				? '; `Complexity: easy` does not waive while a late review leg is pending, at any urgency'
 				: '';
 	const adjudicationNote = adjudicatorBlocked
 		? `; the Harper adjudicator (\`domain\`) is blocked (${adjudicatorBlocked}) in every round, so no outside finding was adjudicated — rerun the pre-push review until \`domain\` completes and re-materialize the footer`
