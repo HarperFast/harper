@@ -9,8 +9,8 @@
  *
  * Beyond A–F, three application workloads read a record's contents before they can answer
  * (benchmarks/ycsb/app/dependentReads.mjs): `inspect` (row-level owner check and a projection) and
- * `chain-N` (N dependent reads following each record's link). Every record carries that link and its
- * owner at the start of `field0` (see `buildRecord`).
+ * `chain-N` (N dependent reads following each record's link). Every record whose `field0` can hold
+ * it carries that link and its owner at the start of `field0` (see `buildRecord`).
  *
  * The distribution generators are ports of the reference YCSB Java generators
  * (Apache-2.0): ZipfianGenerator + ScrambledZipfianGenerator for hotspot

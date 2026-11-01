@@ -46,7 +46,9 @@ Key distributions: `uniform`, `zipfian` (scrambled hotspot, YCSB default), and
 `inspect` and `chain-N` are application endpoints (`app/resources.js`, sharing
 `app/dependentReads.mjs` with the Fastify stack in `../ycsb-vs-pg`) that must read a
 record's contents before answering. Every record's `field0` starts with
-`<next key>:<owner>:`, padded to the field length. `owner` is `owner00`..`owner19` by
+`<next key>:<owner>:`, padded to the field length, in every workload, A–F included;
+a `field0` too short for it (under 23 characters at the default key width) gets no
+link, and `inspect`/`chain-N` then refuse to start. `owner` is `owner00`..`owner19` by
 key index. The next key is a scrambled-zipfian draw taken from a hash of the key
 index, never the key itself, so every load of a keyspace has the same link graph and
 the most requested keys are also the most linked-to. Writes keep a record's link.

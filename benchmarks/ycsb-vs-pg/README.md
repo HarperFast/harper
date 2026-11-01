@@ -209,7 +209,9 @@ answer, with the same code on both sides (`../ycsb/app/dependentReads.mjs`; Harp
   Redis, as the read route does).
 - **`F`**: YCSB F as defined, a client-side `GET` then `PUT` of the record (non-atomic).
 
-The link graph is the same on every target and rep (see `../ycsb/README.md`). Before measuring an
+The link graph is the same on every target and rep (see `../ycsb/README.md`). Every workload's
+records carry the link now, C and B included; rows measured before 2026-11-01 had a random `field0`
+of the same length. Before measuring an
 `inspect` or `chain` sample, the harness checks the target: three chains of 4 hops must match the
 links computed independently, inspect must answer the owner with the projection and another owner
 with 403, a record without a link must answer 500 and leave the server serving, and under
