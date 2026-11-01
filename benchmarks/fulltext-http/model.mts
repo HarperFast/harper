@@ -115,7 +115,7 @@ export function cellVerdict(reads, writes) {
 	return reads.completed > 0 && reads.rejections === 0 && writes.rejections === 0 ? 'qualified' : 'unqualified';
 }
 
-export async function finalizeReport(report, cleanup, publish) {
+export async function finalizeReport(report, cleanup, publish, readFailure?: () => Error | undefined) {
 	try {
 		await cleanup();
 	} catch (error) {
@@ -123,6 +123,8 @@ export async function finalizeReport(report, cleanup, publish) {
 		report.failure ??= { message: error.message };
 		throw error;
 	} finally {
+		const failure = readFailure?.();
+		if (failure) report.failure ??= { message: failure.message, stack: failure.stack };
 		report.verdict =
 			report.failure || report.cells.some((cell) => cell.verdict !== 'qualified') ? 'unqualified' : 'qualified';
 		await publish(report);

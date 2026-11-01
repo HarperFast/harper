@@ -424,9 +424,11 @@ try {
 				async (final) => {
 					if (final.verdict === 'unqualified') process.exitCode = 1;
 					await writeFile(resolve(output, `${rows}.json`), JSON.stringify(final, null, 2) + '\n');
-				}
+				},
+				() => fatal
 			);
 		}
+		if (fatal) throw fatal;
 	}
 } finally {
 	errors.end();

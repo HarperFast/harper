@@ -1707,7 +1707,7 @@
 	},
 	"baseline": {
 		"head": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
-		"scope": "Four35-second cells, relevance/structured32clients0/10writes. Failure-presence comparison, not matched-duration performance A/B.",
+		"scope": "Four 35-second cells, relevance/structured at 32 clients with 0/10 writes. Failure-presence comparison, not matched-duration performance A/B.",
 		"source": "baseline-1m.json.gz",
 		"cells": [
 			{

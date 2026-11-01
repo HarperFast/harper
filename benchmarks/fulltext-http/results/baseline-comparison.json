@@ -25,6 +25,6 @@
 		"dist/resources/indexes/fullTextQueryProtocol.js": "24dac8642af5073e94f43fb8629bae9f4f17af92baec74b49547f4869fc07945"
 	},
 	"baselineBuild": "PASS",
-	"baselineVerdict": "unqualified:185 transport terminated read errors and10 DERIVED_INDEX_LAGGING writer503s;structured controls zero errors",
+	"baselineVerdict": "unqualified:185 transport terminated read errors and 10 DERIVED_INDEX_LAGGING writer 503s; structured controls zero errors",
 	"cleanup": "server lifecycle registry empty"
 }

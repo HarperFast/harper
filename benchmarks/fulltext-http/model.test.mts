@@ -93,7 +93,8 @@ test('cleanup failure still publishes unqualified evidence and preserves the pri
 				},
 				async (value) => {
 					published = structuredClone(value);
-				}
+				},
+				() => new Error('late guard')
 			),
 		/cleanup/
 	);
@@ -160,4 +161,35 @@ test('disk guard accepts only valid totals with vanished paths and rejects other
 		['9007199254740992\tfixture\n', '', 0],
 	])
 		assert.throws(() => diskUsageBytes(stdout, stderr, code));
+});
+
+test('an in-flight sampler guard failure during cleanup cannot publish a qualified report', async () => {
+	const guardFailure = new Error('server RSS exceeded 6 GiB');
+	let fatal;
+	let finishSample;
+	const sample = new Promise((resolve) => {
+		finishSample = resolve;
+	}).then(() => {
+		fatal = guardFailure;
+	});
+	const report = { cells: [{ verdict: 'qualified' }] };
+	let cleaned = false;
+	let published;
+	assert.strictEqual(fatal, undefined);
+	await finalizeReport(
+		report,
+		async () => {
+			finishSample();
+			await sample;
+			cleaned = true;
+		},
+		async (value) => {
+			assert.strictEqual(cleaned, true);
+			published = structuredClone(value);
+		},
+		() => fatal
+	);
+	assert.strictEqual(published.verdict, 'unqualified');
+	assert.strictEqual(published.failure.message, guardFailure.message);
+	assert.strictEqual(published.cleanupFailure, undefined);
 });
