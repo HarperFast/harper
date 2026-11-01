@@ -1,0 +1,9 @@
+{
+	"head": "c09243d1e4f9915a0e3b933dc01d45afa24faec0",
+	"actualChildExitCode": 1,
+	"actualChildErrorCodeType": "number",
+	"replayedBytes": 2477625344,
+	"permissionDeniedRejected": true,
+	"otherExitCodeRejected": true,
+	"scope": "Real Node execFile error boundary replay with diskUsageBytes; not an actual concurrent du walk."
+}

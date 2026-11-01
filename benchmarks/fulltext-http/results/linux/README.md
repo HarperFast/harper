@@ -41,7 +41,7 @@ Cgroup high-water marks were 1,432,571,904 bytes (feature) and 1,286,000,640 byt
 
 ## Provenance and sanitization
 
-Both runs report identical native runtime capabilities: fulltext 0.8.0, Tantivy 0.27.0, ABI 13 and query API 7. Native addon SHA-256 is identical: `fb2486eda7522fdfa5ac3844f43837dc7d40688c7f3817bccd67c451f659e103`. Every harness hash also matches. See each compressed provenance JSON for the Harper commit, compiled hashes and complete runtime limits.
+Both runs report identical native runtime capabilities: fulltext 0.8.0, Tantivy 0.27.0, ABI 13 and query API 7. Native addon SHA-256 is identical: `fb2486eda7522fdfa5ac3844f43837dc7d40688c7f3817bccd67c451f659e103`. Every harness hash also matches between these two runs, both measured at [b5f6659](https://github.com/HarperFast/harper/commit/b5f6659f7d1ed33670d63a31807aacf5c7d8e2d5). They are not current-harness measurements: later commits add the opt-in row ceiling and disk-walk race handling; original measured digests remain in the reports. See each compressed provenance JSON for the Harper commit, compiled hashes and complete runtime limits.
 
 Only host identity strings were eligible for redaction; none occurred in the selected artifacts. No metric or error record was removed. The manifest lists selected paths and raw-private, sanitized-payload and gzip SHA-256 hashes. Gzip payloads preserve original bytes. Excluded files: run/build logs, monitor logs/registry, configuration, authentication, environment and command lines.
 
@@ -50,3 +50,9 @@ Only host identity strings were eligible for redaction; none occurred in the sel
 Sources: [feature report](feature/1000000.json.gz), [errors](feature/errors.ndjson.gz), [provenance](feature/provenance.json.gz), [measurement receipt](feature/measurement-receipt.json); [baseline report](baseline/1000000.json.gz), [errors](baseline/errors.ndjson.gz), [provenance](baseline/provenance.json.gz), [measurement receipt](baseline/measurement-receipt.json); [summary](summary.json) and [sanitization manifest](sanitization-manifest.json).
 
 The complete matrix contains 544,401 validated responses; the baseline contains 274,011. Both retain all failures. These measurements demonstrate two observed HTTP workers, not balanced timed-query traffic. The first run stays below its memory allocation; its mid-run server read-byte counter did not increase, so it does not demonstrate query-driven disk pressure. Representative scale, active working sets above memory, OS-cold behavior, sustained memory and admission fairness remain open under [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
+
+The [larger-catalog flag smoke and failed 10M setup](setup-attempt/README.md) are retained separately. The setup failed on a disappearing temporary file during disk measurement; it produced no timed query cells.
+
+The disk classifier was also checked at [c09243d1e](https://github.com/HarperFast/harper/commit/c09243d1e4f9915a0e3b933dc01d45afa24faec0) through a [real Node child-process replay](disk-guard-verification.json) of the failed `du` output. Permission errors and exit 2 were rejected. A five-case 1,000-row HTTP smoke passed at that commit; it did not deliberately force filesystem retirement. Neither check is large-catalog performance qualification.
+
+The [completed 10M retry](retry-10m/README.md) returned 63,897 validated pages across five read-only/eight-client cells with no errors or unknown totals. It preserves per-case coverage and does not establish an above-memory working set.

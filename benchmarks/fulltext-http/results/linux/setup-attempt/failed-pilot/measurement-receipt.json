@@ -1,0 +1,376 @@
+{
+	"scope": "Failed pilot snapshots include setup/seed only; zero timed queries. Smoke snapshots include setup plus five 1-second cells and are harness plumbing validation only. Cgroup memory includes harness/server/pagecache. Proc I/O observed first-to-last interval is not whole-run I/O. io.stat unavailable. Setup-five-minute API metrics/footprint are not completed-catalog or query-cell statistics.",
+	"measurements": {
+		"cgroup-relative.txt": {
+			"content": "/user.slice/user-1000.slice/user@1000.service/app.slice/fulltext-linux-10m-8cpu6g.scope\n",
+			"rawPrivateSha256": "158e2af2e355416519ee9bee24bebd57053d87f717f5487119104413acae0e0c",
+			"sanitizedPayloadSha256": "158e2af2e355416519ee9bee24bebd57053d87f717f5487119104413acae0e0c",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.max.after.txt": {
+			"content": "800000 100000\n",
+			"rawPrivateSha256": "3dafc4b2d6a8bfd8c1910a28fd3bb15f053a47cebaff7b5cdd6cf42c39f8f880",
+			"sanitizedPayloadSha256": "3dafc4b2d6a8bfd8c1910a28fd3bb15f053a47cebaff7b5cdd6cf42c39f8f880",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.max.before.txt": {
+			"content": "800000 100000\n",
+			"rawPrivateSha256": "3dafc4b2d6a8bfd8c1910a28fd3bb15f053a47cebaff7b5cdd6cf42c39f8f880",
+			"sanitizedPayloadSha256": "3dafc4b2d6a8bfd8c1910a28fd3bb15f053a47cebaff7b5cdd6cf42c39f8f880",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.pressure.after.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1837529\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1742300\n",
+			"rawPrivateSha256": "370be2732d7521d1795c895345c268ed98fc71cf6b93722a6f39ef53020fdbe4",
+			"sanitizedPayloadSha256": "370be2732d7521d1795c895345c268ed98fc71cf6b93722a6f39ef53020fdbe4",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.pressure.before.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=333\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=333\n",
+			"rawPrivateSha256": "31f2b5c524968459d4e7b9b38c8bff52160ea51c50750b5195eaeebdb8c9fafb",
+			"sanitizedPayloadSha256": "31f2b5c524968459d4e7b9b38c8bff52160ea51c50750b5195eaeebdb8c9fafb",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.pressure.observed-first.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=211020\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=198891\n",
+			"rawPrivateSha256": "89c8d2a24fff01d6b6040555e08fab862d1be1b7c3dd30f5e780310970346954",
+			"sanitizedPayloadSha256": "89c8d2a24fff01d6b6040555e08fab862d1be1b7c3dd30f5e780310970346954",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.pressure.observed-last.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1829267\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1735132\n",
+			"rawPrivateSha256": "581a46de2fe8695bdaa5554579d91f782ac30866b3da19c88e5dc5944697dd9b",
+			"sanitizedPayloadSha256": "581a46de2fe8695bdaa5554579d91f782ac30866b3da19c88e5dc5944697dd9b",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.stat.after.txt": {
+			"content": "usage_usec 1065218513\nuser_usec 1021210158\nsystem_usec 44008355\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 5579\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+			"rawPrivateSha256": "87804a3ef4bdcc194b32c2d8d8b354107cffe7e8bed8b6fd2b86267bbd19e7ae",
+			"sanitizedPayloadSha256": "87804a3ef4bdcc194b32c2d8d8b354107cffe7e8bed8b6fd2b86267bbd19e7ae",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.stat.before.txt": {
+			"content": "usage_usec 12735\nuser_usec 3183\nsystem_usec 9551\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+			"rawPrivateSha256": "431ed796b54af72bae32657995499472216c520d2f661df0d683c68d2fb8700c",
+			"sanitizedPayloadSha256": "431ed796b54af72bae32657995499472216c520d2f661df0d683c68d2fb8700c",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.stat.observed-first.txt": {
+			"content": "usage_usec 113790782\nuser_usec 108707400\nsystem_usec 5083381\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 644\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+			"rawPrivateSha256": "0d825bb2cd06f13bcb0657ea56c15c8701a754613caff497117e90d5aa99fdfa",
+			"sanitizedPayloadSha256": "0d825bb2cd06f13bcb0657ea56c15c8701a754613caff497117e90d5aa99fdfa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.stat.observed-last.txt": {
+			"content": "usage_usec 1060306187\nuser_usec 1016728482\nsystem_usec 43577705\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 5546\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+			"rawPrivateSha256": "6fb87fa78d8cfeaa3cde7d9c7fcf8bf0804c7f8b48140771cbc19187eabcf9f9",
+			"sanitizedPayloadSha256": "6fb87fa78d8cfeaa3cde7d9c7fcf8bf0804c7f8b48140771cbc19187eabcf9f9",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"database-footprint-setup-5min-kib.txt": {
+			"content": "0\tdatabase/data/.fulltext-locks\n89260\tdatabase/data/b189877bb320ebf35cba6c62ce7fd52cf117f72bd500295f3f3779d45b44694f.fulltext\n308\tdatabase/data/transaction_logs/.append-boundaries/local\n308\tdatabase/data/transaction_logs/.append-boundaries\n1257744\tdatabase/data/transaction_logs/local\n1258052\tdatabase/data/transaction_logs\n1588600\tdatabase/data\n4\tdatabase/system/transaction_logs/.append-boundaries/local\n4\tdatabase/system/transaction_logs/.append-boundaries\n60\tdatabase/system/transaction_logs/local\n64\tdatabase/system/transaction_logs\n23924\tdatabase/system\n0\tdatabase/`restore`\n1612524\tdatabase\n",
+			"rawPrivateSha256": "24ef4e80fda72a3a560a00588109a8e56c1f8a32df966e5740f42f4fb281bb54",
+			"sanitizedPayloadSha256": "24ef4e80fda72a3a560a00588109a8e56c1f8a32df966e5740f42f4fb281bb54",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"harness-exit-status.txt": {
+			"content": "1\n",
+			"rawPrivateSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+			"sanitizedPayloadSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.pressure.after.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=13629\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=12932\n",
+			"rawPrivateSha256": "5b03fbff2770116257e96af14f9fc071a3df6bcdf5a7bb19344dbf9493e33c64",
+			"sanitizedPayloadSha256": "5b03fbff2770116257e96af14f9fc071a3df6bcdf5a7bb19344dbf9493e33c64",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.pressure.before.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+			"rawPrivateSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"sanitizedPayloadSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.pressure.observed-first.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1172\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1153\n",
+			"rawPrivateSha256": "cb47c986b2cbfd5486a188020c04fa61e4874390f07e13d71cd41fa32d00618e",
+			"sanitizedPayloadSha256": "cb47c986b2cbfd5486a188020c04fa61e4874390f07e13d71cd41fa32d00618e",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.pressure.observed-last.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=11886\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=11189\n",
+			"rawPrivateSha256": "e3ce7a7872cde085c74aa8f71c21667301cf601d03fbcfe488438384c35fd0df",
+			"sanitizedPayloadSha256": "e3ce7a7872cde085c74aa8f71c21667301cf601d03fbcfe488438384c35fd0df",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.stat.after.txt": {
+			"content": "unavailable\n",
+			"rawPrivateSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"sanitizedPayloadSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.stat.before.txt": {
+			"content": "unavailable\n",
+			"rawPrivateSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"sanitizedPayloadSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.current.after.txt": {
+			"content": "8474624\n",
+			"rawPrivateSha256": "92723d36a5e56f15ca0a81de2000d70734ca50852d988d3746d654eeef2df4be",
+			"sanitizedPayloadSha256": "92723d36a5e56f15ca0a81de2000d70734ca50852d988d3746d654eeef2df4be",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.current.before.txt": {
+			"content": "3944448\n",
+			"rawPrivateSha256": "66363a25ad4435fa557d071482f32913c73ccc7c25e038e29d8eb2b478f018bf",
+			"sanitizedPayloadSha256": "66363a25ad4435fa557d071482f32913c73ccc7c25e038e29d8eb2b478f018bf",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.current.observed-first.txt": {
+			"content": "1367777280\n",
+			"rawPrivateSha256": "e5db71ae8dec7b41372199ab1654ca274c7ec764616172ce6fafde745e30620f",
+			"sanitizedPayloadSha256": "e5db71ae8dec7b41372199ab1654ca274c7ec764616172ce6fafde745e30620f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.current.observed-last.txt": {
+			"content": "3852406784\n",
+			"rawPrivateSha256": "74d5da07f14b71cb4065422925b8430be58d8be95017b30f9d4ed1698764af3f",
+			"sanitizedPayloadSha256": "74d5da07f14b71cb4065422925b8430be58d8be95017b30f9d4ed1698764af3f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.events.after.txt": {
+			"content": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+			"rawPrivateSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"sanitizedPayloadSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.events.before.txt": {
+			"content": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+			"rawPrivateSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"sanitizedPayloadSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.events.observed-first.txt": {
+			"content": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+			"rawPrivateSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"sanitizedPayloadSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.events.observed-last.txt": {
+			"content": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+			"rawPrivateSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"sanitizedPayloadSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.max.after.txt": {
+			"content": "6442450944\n",
+			"rawPrivateSha256": "4ec6f2997edee06903a4e9016e3951ea175c801925fe151d5d5eea90dd9cd3d9",
+			"sanitizedPayloadSha256": "4ec6f2997edee06903a4e9016e3951ea175c801925fe151d5d5eea90dd9cd3d9",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.max.before.txt": {
+			"content": "6442450944\n",
+			"rawPrivateSha256": "4ec6f2997edee06903a4e9016e3951ea175c801925fe151d5d5eea90dd9cd3d9",
+			"sanitizedPayloadSha256": "4ec6f2997edee06903a4e9016e3951ea175c801925fe151d5d5eea90dd9cd3d9",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.peak.after.txt": {
+			"content": "3999924224\n",
+			"rawPrivateSha256": "fa8d8e45943a477356d67be594262e4a05066560bc042bdac7dc499740a693d8",
+			"sanitizedPayloadSha256": "fa8d8e45943a477356d67be594262e4a05066560bc042bdac7dc499740a693d8",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.peak.before.txt": {
+			"content": "4067328\n",
+			"rawPrivateSha256": "8767b763efb8a954109e66101afb3056fae423e1ffa4c6190337919d04e130c9",
+			"sanitizedPayloadSha256": "8767b763efb8a954109e66101afb3056fae423e1ffa4c6190337919d04e130c9",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.peak.observed-first.txt": {
+			"content": "1374281728\n",
+			"rawPrivateSha256": "46841cf07435ab3cf74263183240aa16e08fcbd15f0d9937b8545158b81ebee8",
+			"sanitizedPayloadSha256": "46841cf07435ab3cf74263183240aa16e08fcbd15f0d9937b8545158b81ebee8",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.peak.observed-last.txt": {
+			"content": "3999924224\n",
+			"rawPrivateSha256": "fa8d8e45943a477356d67be594262e4a05066560bc042bdac7dc499740a693d8",
+			"sanitizedPayloadSha256": "fa8d8e45943a477356d67be594262e4a05066560bc042bdac7dc499740a693d8",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.pressure.after.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+			"rawPrivateSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"sanitizedPayloadSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.pressure.before.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+			"rawPrivateSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"sanitizedPayloadSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.pressure.observed-first.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+			"rawPrivateSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"sanitizedPayloadSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.pressure.observed-last.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+			"rawPrivateSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"sanitizedPayloadSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.stat.after.txt": {
+			"content": "anon 1642496\nfile 3440640\nkernel 1290240\nkernel_stack 16384\npagetables 798720\nsec_pagetables 0\npercpu 2464\nsock 0\nvmalloc 0\nshmem 4096\nzswap 0\nzswapped 0\nfile_mapped 0\nfile_dirty 2428928\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 0\nactive_anon 1544192\ninactive_file 3260416\nactive_file 159744\nunevictable 0\nslab_reclaimable 180080\nslab_unreclaimable 305616\nslab 485696\nhugetlb 0\nworkingset_refault_anon 0\nworkingset_refault_file 180\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgpromote_success 0\npgscan 0\npgsteal 0\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 4501091\npgmajfault 7\npgrefill 0\npgactivate 0\npgdeactivate 507\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nzswpin 0\nzswpout 0\nzswpwb 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nnuma_pages_migrated 0\nnuma_pte_updates 0\nnuma_hint_faults 0\n",
+			"rawPrivateSha256": "994f626b039ac3310d9d1ac3e73481b9ed573161f7235b774de3a96a119fe32d",
+			"sanitizedPayloadSha256": "994f626b039ac3310d9d1ac3e73481b9ed573161f7235b774de3a96a119fe32d",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.stat.before.txt": {
+			"content": "anon 1634304\nfile 36864\nkernel 1277952\nkernel_stack 16384\npagetables 1007616\nsec_pagetables 0\npercpu 2112\nsock 0\nvmalloc 0\nshmem 0\nzswap 0\nzswapped 0\nfile_mapped 0\nfile_dirty 32768\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 0\nactive_anon 1511424\ninactive_file 32768\nactive_file 0\nunevictable 0\nslab_reclaimable 28952\nslab_unreclaimable 193080\nslab 222032\nhugetlb 0\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgpromote_success 0\npgscan 0\npgsteal 0\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 5107\npgmajfault 0\npgrefill 0\npgactivate 0\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nzswpin 0\nzswpout 0\nzswpwb 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nnuma_pages_migrated 0\nnuma_pte_updates 0\nnuma_hint_faults 0\n",
+			"rawPrivateSha256": "e2bfcce43085d5aeb5c7aad8b2d73bcafad33fede73b0ee25a79c0ec4d06576d",
+			"sanitizedPayloadSha256": "e2bfcce43085d5aeb5c7aad8b2d73bcafad33fede73b0ee25a79c0ec4d06576d",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.stat.observed-first.txt": {
+			"content": "anon 1003696128\nfile 330149888\nkernel 31166464\nkernel_stack 999424\npagetables 26251264\nsec_pagetables 0\npercpu 1760\nsock 53248\nvmalloc 0\nshmem 330067968\nzswap 0\nzswapped 0\nfile_mapped 3887104\nfile_dirty 8192\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 0\nactive_anon 1333587968\ninactive_file 81920\nactive_file 8192\nunevictable 0\nslab_reclaimable 1040000\nslab_unreclaimable 2485784\nslab 3525784\nhugetlb 0\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgpromote_success 0\npgscan 0\npgsteal 0\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 806518\npgmajfault 0\npgrefill 0\npgactivate 0\npgdeactivate 53\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nzswpin 0\nzswpout 0\nzswpwb 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nnuma_pages_migrated 0\nnuma_pte_updates 0\nnuma_hint_faults 0\n",
+			"rawPrivateSha256": "4a13fed307a838268ca77b05a2a4fa34c96c57b4a05e0e84eca1df66132abcb4",
+			"sanitizedPayloadSha256": "4a13fed307a838268ca77b05a2a4fa34c96c57b4a05e0e84eca1df66132abcb4",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.stat.observed-last.txt": {
+			"content": "anon 1339736064\nfile 2471596032\nkernel 37814272\nkernel_stack 1048576\npagetables 27365376\nsec_pagetables 0\npercpu 1408\nsock 53248\nvmalloc 0\nshmem 2470776832\nzswap 0\nzswapped 0\nfile_mapped 2301952\nfile_dirty 12288\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 0\nactive_anon 3810041856\ninactive_file 819200\nactive_file 8192\nunevictable 0\nslab_reclaimable 6112568\nslab_unreclaimable 2849488\nslab 8962056\nhugetlb 0\nworkingset_refault_anon 0\nworkingset_refault_file 180\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgpromote_success 0\npgscan 0\npgsteal 0\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 4475797\npgmajfault 0\npgrefill 0\npgactivate 0\npgdeactivate 507\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nzswpin 0\nzswpout 0\nzswpwb 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nnuma_pages_migrated 0\nnuma_pte_updates 0\nnuma_hint_faults 0\n",
+			"rawPrivateSha256": "0079e40586ab4647803e371ab80fd3082110603e16676d3b6697a52990dea94f",
+			"sanitizedPayloadSha256": "0079e40586ab4647803e371ab80fd3082110603e16676d3b6697a52990dea94f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.swap.max.after.txt": {
+			"content": "0\n",
+			"rawPrivateSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"sanitizedPayloadSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.swap.max.before.txt": {
+			"content": "0\n",
+			"rawPrivateSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"sanitizedPayloadSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"scope-ended-at.txt": {
+			"content": "2026-11-01T18:13:15Z\n",
+			"rawPrivateSha256": "2bcd522a8c5c868549edc9e95508dea78e70659ffb16ac957bab9ebc7b424687",
+			"sanitizedPayloadSha256": "2bcd522a8c5c868549edc9e95508dea78e70659ffb16ac957bab9ebc7b424687",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"scope-exit-status.txt": {
+			"content": "1\n",
+			"rawPrivateSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+			"sanitizedPayloadSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"scope-properties.txt": {
+			"content": "ActiveState=active\nRuntimeMaxUSec=45min\nCPUQuotaPerSecUSec=8s\nMemoryMax=6442450944\nMemorySwapMax=0\n",
+			"rawPrivateSha256": "e48265b3b97ddae99d1fef7e9589e163951573875173b078f692f28044008948",
+			"sanitizedPayloadSha256": "e48265b3b97ddae99d1fef7e9589e163951573875173b078f692f28044008948",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"scope-started-at.txt": {
+			"content": "2026-11-01T18:03:57Z\n",
+			"rawPrivateSha256": "94242f740cb85cc4038fa861ee2709a2b85b0788a6d35f9839ec0082e12ef0bd",
+			"sanitizedPayloadSha256": "94242f740cb85cc4038fa861ee2709a2b85b0788a6d35f9839ec0082e12ef0bd",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"server-proc-io.863853.first.txt": {
+			"content": "rchar: 346670833\nwchar: 437258228\nsyscr: 144601\nsyscw: 108235\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n",
+			"rawPrivateSha256": "e1aa34cbea1e9d703f41ec7d8089275a4101bb4c03571897d9112cca9ab61c44",
+			"sanitizedPayloadSha256": "e1aa34cbea1e9d703f41ec7d8089275a4101bb4c03571897d9112cca9ab61c44",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"server-proc-io.863853.last.txt": {
+			"content": "rchar: 2765597762\nwchar: 4149328712\nsyscr: 1857141\nsyscw: 904244\nread_bytes: 737280\nwrite_bytes: 0\ncancelled_write_bytes: 0\n",
+			"rawPrivateSha256": "51bd45db78407e11b538c05903c47a7fb692fa08859073ad1d5455aaec91eafe",
+			"sanitizedPayloadSha256": "51bd45db78407e11b538c05903c47a7fb692fa08859073ad1d5455aaec91eafe",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"server-proc-stat.863853.first.txt": {
+			"content": "863853 (MainThread) S 863831 863853 863853 0 -1 4194304 353093 0 0 0 10334 250 0 0 20 0 39 0 137160376 22884941824 226686 18446744073709551615 7544832 50333345 140722218060272 0 0 0 0 16781312 17926 0 0 0 17 10 0 0 0 0 0 109491696 109680576 360501248 140722218063714 140722218064283 140722218064283 140722218065821 0\n",
+			"rawPrivateSha256": "bab542c4d9772f658c80cdcb842595d6d151f3d2b6079d5af003acff88f372c7",
+			"sanitizedPayloadSha256": "bab542c4d9772f658c80cdcb842595d6d151f3d2b6079d5af003acff88f372c7",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"server-proc-stat.863853.last.txt": {
+			"content": "863853 (MainThread) S 863831 863853 863853 0 -1 4194304 893258 0 0 0 97254 1955 0 0 20 0 42 0 137160376 23442423808 302697 18446744073709551615 7544832 50333345 140722218060272 0 0 0 0 16781312 17926 0 0 0 17 8 0 0 0 0 0 109491696 109680576 360501248 140722218063714 140722218064283 140722218064283 140722218065821 0\n",
+			"rawPrivateSha256": "a7b3f73a04899bde0d539c2c9fb3fb5cdb8750489f210ad40df242857ce4cb84",
+			"sanitizedPayloadSha256": "a7b3f73a04899bde0d539c2c9fb3fb5cdb8750489f210ad40df242857ce4cb84",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"server-proc-status.863853.first.txt": {
+			"content": "Name:\tMainThread\nUmask:\t0002\nState:\tS (sleeping)\nTgid:\t863853\nNgid:\t0\nPid:\t863853\nPPid:\t863831\nTracerPid:\t0\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t512\nGroups:\t4 24 27 30 46 100 111 114 1000 \nNStgid:\t863853\nNSpid:\t863853\nNSpgid:\t863853\nNSsid:\t863853\nKthread:\t0\nVmPeak:\t22474660 kB\nVmSize:\t22348576 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t  915080 kB\nVmRSS:\t  909692 kB\nRssAnon:\t  831108 kB\nRssFile:\t   75096 kB\nRssShmem:\t    3488 kB\nVmData:\t 2688564 kB\nVmStk:\t     132 kB\nVmExe:\t   41788 kB\nVmLib:\t   24164 kB\nVmPTE:\t   19364 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffffff\nThreads:\t39\nSigQ:\t0/124792\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000100004606\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tconditional enabled\nCpus_allowed:\tfffff\nCpus_allowed_list:\t0-19\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t12853\nnonvoluntary_ctxt_switches:\t988\nx86_Thread_features:\t\nx86_Thread_features_locked:\t\n",
+			"rawPrivateSha256": "1a92d1d1195b1036231f1a6c9c7bcab3a42169dfeb0af1e198a067abe70e16bc",
+			"sanitizedPayloadSha256": "1a92d1d1195b1036231f1a6c9c7bcab3a42169dfeb0af1e198a067abe70e16bc",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"server-proc-status.863853.last.txt": {
+			"content": "Name:\tMainThread\nUmask:\t0002\nState:\tS (sleeping)\nTgid:\t863853\nNgid:\t0\nPid:\t863853\nPPid:\t863831\nTracerPid:\t0\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t1024\nGroups:\t4 24 27 30 46 100 111 114 1000 \nNStgid:\t863853\nNSpid:\t863853\nNSpgid:\t863853\nNSsid:\t863853\nKthread:\t0\nVmPeak:\t23077928 kB\nVmSize:\t22892992 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t 1425620 kB\nVmRSS:\t 1213996 kB\nRssAnon:\t 1136828 kB\nRssFile:\t   75228 kB\nRssShmem:\t    1940 kB\nVmData:\t 3089968 kB\nVmStk:\t     132 kB\nVmExe:\t   41788 kB\nVmLib:\t   24164 kB\nVmPTE:\t   20248 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffffff\nThreads:\t42\nSigQ:\t0/124792\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000100004606\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tconditional enabled\nCpus_allowed:\tfffff\nCpus_allowed_list:\t0-19\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t137560\nnonvoluntary_ctxt_switches:\t8081\nx86_Thread_features:\t\nx86_Thread_features_locked:\t\n",
+			"rawPrivateSha256": "6c3fe7ba460b53ad257f4cca0796f1c676bab14a04e47384698bdf5a7c772bd0",
+			"sanitizedPayloadSha256": "6c3fe7ba460b53ad257f4cca0796f1c676bab14a04e47384698bdf5a7c772bd0",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		}
+	}
+}

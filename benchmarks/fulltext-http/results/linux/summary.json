@@ -1133,6 +1133,6 @@
 		"sameNativeRuntime": true,
 		"sameNativeAddonHashes": true,
 		"sameHarnessHashes": true,
-		"limitations": "Feature cells30s and baseline35s, different matrix sizes/order and process runs. Baseline includes relevance/structured32clients only. OS cache warm; no cold claim. Rejections remain unqualified, baseline occurrence does not prove identical root cause."
+		"limitations": "Feature cells use 30 seconds and baseline cells 35 seconds, with different matrix sizes/order and process runs. Baseline includes relevance/structured at 32 clients only. Filesystem cache was not evicted; no OS-cold claim. Rejections remain unqualified; baseline occurrence does not prove identical root cause."
 	}
 }
