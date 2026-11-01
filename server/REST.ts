@@ -14,7 +14,7 @@ import { addAnalyticsListener, recordAction, recordActionBinary } from '../resou
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { Resources } from '../resources/Resources.ts';
-import { Resource, WRITE_CONDITION, missingMethod, allowedMethods } from '../resources/Resource.ts';
+import { Resource, WRITE_CONDITION, missingMethod, allowedMethods, cloneRequestTarget } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders, addVaryHeader } from '../server/serverHelpers/Headers.ts';
@@ -206,12 +206,18 @@ function conditionRecordId(resource, target: RequestTarget, request) {
 	if (target.isCollection || target.select || target.id == null) return;
 	if (resource.directURLMapping) return target.toString().slice(1);
 	if (typeof target.id !== 'string') return target.id;
-	// parsePath may read request state, and sets the content type from a `.json` id only for the verb's own parse
 	const { requestedContentType } = request;
 	try {
-		const parsed = resource.parsePath(target.id, request);
-		if (parsed?.property !== undefined || !parsed) return;
-		return resource.coerceId(parsed);
+		// The verb's own dispatch parses this target again (applyContext), so parsePath only sees a copy of the target;
+		// the built-in parsePath reads and writes nothing but `property` on its query
+		const probe: { property?: string } =
+			resource.parsePath === Resource.parsePath ? { property: target.property } : cloneRequestTarget(target);
+		const parsed = resource.parsePath(target.id, request, probe);
+		const structured = parsed?.id !== undefined;
+		const id = structured ? parsed.id : parsed;
+		const property = structured ? parsed.property : probe.property;
+		if (property !== undefined || id == null || id === '') return;
+		return resource.coerceId(id);
 	} catch {
 		return;
 	} finally {
