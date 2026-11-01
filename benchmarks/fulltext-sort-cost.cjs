@@ -122,6 +122,8 @@ describe('full-text stored scalar sort cost observation', () => {
 			} = require('../unitTests/resources/fullTextTestConfiguration');
 			let previousConfiguration;
 			let Product;
+			let highlightTraceRecords = 0;
+			let projectionCalls = 0;
 			before(async () => {
 				assert.notStrictEqual(process.env.HARPER_STORAGE_ENGINE, 'lmdb');
 				previousConfiguration = getFullTextTestConfiguration();
@@ -129,7 +131,18 @@ describe('full-text stored scalar sort cost observation', () => {
 				setMainIsWorker(true);
 				const binding = await loadFullTextNativeBinding();
 				setFullTextNativeBindingForTests({
-					binding,
+					binding: {
+						...binding,
+						openNativeFullTextReader: async (...args) => {
+							const reader = await binding.openNativeFullTextReader(...args);
+							const traceMatches = reader.traceMatches;
+							reader.traceMatches = function (condition, records, options) {
+								highlightTraceRecords += records.length;
+								return traceMatches.call(this, condition, records, options);
+							};
+							return reader;
+						},
+					},
 					closeTimeoutMilliseconds: 5000,
 					shutdownTimeoutMilliseconds: 10000,
 				});
@@ -140,7 +153,7 @@ describe('full-text stored scalar sort cost observation', () => {
 					runtime: await binding.runtimeInfo(),
 					policy: DEFAULT_FULL_TEXT_SEARCH_LIMITS,
 					scope:
-						'Real audited Table writes, published native binding and Product.search plus full consumption of the returned page. Warm resident corpus; highlights only in sort-1-highlights. No concurrency, cold storage, sustained-memory or peak-capacity qualification. RSS snapshots are not peak measurements.',
+						'Real audited Table writes, published native binding and Product.search plus full consumption of the returned page. Warm resident corpus; highlighted cases observe actual native trace record counts through a delegating reader observer. Includes final Table materialization and selected-page highlighting. No concurrency, cold storage, sustained-memory or peak-capacity qualification. RSS snapshots are not peak measurements.',
 				};
 				report.nativeQueryCases = [];
 				Product = table({
@@ -150,6 +163,7 @@ describe('full-text stored scalar sort cost observation', () => {
 					attributes: [
 						{ name: 'id', type: 'ID', isPrimaryKey: true },
 						{ name: 'title', type: 'String' },
+						{ name: 'projectionProbe', type: 'Float', computed: true },
 						...Array.from({ length: 32 }, (_, index) => ({
 							name: `key${index}`,
 							type: index === 31 ? 'Float' : 'String',
@@ -167,6 +181,10 @@ describe('full-text stored scalar sort cost observation', () => {
 							synonyms: [],
 						},
 					],
+				});
+				Product.setComputedAttribute('projectionProbe', (record) => {
+					projectionCalls++;
+					return record.key31;
 				});
 				for (let start = 0; start < report.native.rows; start += 250) {
 					await Product.put(
@@ -204,13 +222,20 @@ describe('full-text stored scalar sort cost observation', () => {
 				'sort-3',
 				'sort-32',
 				'sort-1-highlights',
+				'sort-1-highlights-deep',
+				'exact-count-projection',
+				'exact-count-projection-deep',
+				'exact-count-highlights-projection',
+				'exact-count-highlights-projection-deep',
 				'sort-1-filtered-exact-count',
 			]) {
 				it(name, async () => {
 					const width = name.startsWith('sort-') ? parseInt(name.slice(5), 10) : 0;
-					const highlights = name === 'sort-1-highlights';
+					const highlights = name.includes('highlights');
+					const offset = name.endsWith('-deep') ? 8800 : 0;
+					const projection = name.includes('projection');
 					const filtered = name === 'sort-1-filtered-exact-count';
-					const exactCount = name === 'exact-count' || filtered;
+					const exactCount = name.startsWith('exact-count') || filtered;
 					let sort;
 					for (const attribute of [
 						...Array.from({ length: Math.max(0, width - 1) }, (_, index) => `key${32 - width + index}`),
@@ -229,27 +254,63 @@ describe('full-text stored scalar sort cost observation', () => {
 							},
 							...(filtered ? [{ attribute: 'key31', comparator: 'lt', value: 90 }] : []),
 						],
+						offset,
 						limit: 20,
-						select: ['id', 'key31', ...(highlights ? ['$highlights'] : [])],
+						select: ['id', 'key31', ...(highlights ? ['$highlights'] : []), ...(projection ? ['projectionProbe'] : [])],
 						...(sort ? { sort } : {}),
 						...(exactCount ? { count: 'exact' } : {}),
 					};
 					const elapsed = [];
 					const countOutcomes = [];
+					const pageOutcomes = [];
 					const rssBeforeBytes = process.memoryUsage().rss;
 					for (let run = 0; run < report.native.warmups + report.native.samples; run++) {
+						highlightTraceRecords = 0;
+						projectionCalls = 0;
 						const started = performance.now();
 						const result = await Product.search(target);
 						const rows = [];
 						for await (const row of result) rows.push(row);
 						const milliseconds = performance.now() - started;
 						assert.strictEqual(rows.length, 20);
-						if (highlights) assert(rows.every((row) => row.$highlights.title.some((value) => value.spans.length > 0)));
+						if (projection) {
+							assert(rows.every((row) => row.projectionProbe === row.key31));
+							const expected = highlights ? report.native.rows - offset : report.native.rows;
+							if (result.recordCountExact) assert.strictEqual(projectionCalls, expected);
+							else assert(projectionCalls >= rows.length && projectionCalls <= expected);
+						}
+						if (highlights) {
+							assert(rows.every((row) => row.$highlights.title.some((value) => value.spans.length > 0)));
+							assert.strictEqual(
+								highlightTraceRecords,
+								rows.length,
+								'Only the visible page should reach native highlighting'
+							);
+						}
 						if (width)
 							assert.deepStrictEqual(
 								rows.map((row) => row.key31),
-								Array.from({ length: 20 }, (_, index) => index)
+								Array.from({ length: 20 }, (_, index) => offset + index)
 							);
+						assert.strictEqual(new Set(rows.map((row) => row.id)).size, rows.length);
+						assert(
+							rows.every(
+								(row) =>
+									/^\d{5}$/.test(row.id) &&
+									Number(row.id) < report.native.rows &&
+									row.key31 === (Number(row.id) * 7919) % report.native.rows
+							)
+						);
+						if (run >= report.native.warmups && (highlights || projection))
+							pageOutcomes.push({
+								ids: rows.map((row) => row.id),
+								keys: rows.map((row) => row.key31),
+								traceRecords: highlightTraceRecords,
+								projectionCalls,
+								...(projection
+									? { projectionCallsOnExactCount: highlights ? report.native.rows - offset : report.native.rows }
+									: {}),
+							});
 						if (exactCount) {
 							if (result.recordCountExact) assert.strictEqual(result.recordCount, filtered ? 90 : report.native.rows);
 							else assert.strictEqual(result.recordCount, null);
@@ -263,6 +324,10 @@ describe('full-text stored scalar sort cost observation', () => {
 						clauses: width,
 						highlights,
 						filtered,
+						projection,
+						offset,
+						limit: 20,
+						...(pageOutcomes.length ? { pageOutcomes } : {}),
 						...summarize(elapsed),
 						rssBeforeBytes,
 						rssAfterBytes: process.memoryUsage().rss,
@@ -274,7 +339,7 @@ describe('full-text stored scalar sort cost observation', () => {
 	}
 	after(() => {
 		assert.strictEqual(report.cases.length, 3, 'All cost cases must complete before publishing samples');
-		if (process.env.FULLTEXT_NATIVE_COST === '1') assert.strictEqual(report.nativeQueryCases?.length, 7);
+		if (process.env.FULLTEXT_NATIVE_COST === '1') assert.strictEqual(report.nativeQueryCases?.length, 12);
 		const json = JSON.stringify(report, null, 2) + '\n';
 		if (process.env.FULLTEXT_SORT_COST_REPORT) fs.writeFileSync(process.env.FULLTEXT_SORT_COST_REPORT, json);
 		console.log(json);

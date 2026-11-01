@@ -159,17 +159,17 @@ GET /Product/?catalogSearch=matches=trail%20shoes&sort(-id)&limit(0,20)
 Prefer: count=exact
 ```
 
-Highlight tracing precedes final Table materialization. If a selected row expires during that interval, a retained tail row can move into the visible page without highlights. This timing-dependent limitation is tracked in [Preserve full-text highlights when expiry changes the final visible page](https://github.com/HarperFast/harper/issues/3848).
+For highlighted sorted or exact-count requests, Harper finalizes page eligibility before tracing. Expired rows are removed, eligible tail rows fill the page, and native tracing receives the final source bytes in one bounded batch sequence. The selected page is reused without repeating expiry, source revalidation or projection. Caching tables retain their ordinary `onlyIfCached` expiry-message behavior. Final eligibility and visible-page projection share the search execution budget; a stalled source or projection returns 503 rather than an incompletely highlighted page. Offset rows are checked for eligibility without projecting them.
 
 Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. Ordinary bounded relevance searches retain up to `offset + limit` accepted records. Stored-field sorts and exact-count attempts can retain the complete eligible set up to the configured retained-result ceiling, so raising that ceiling can increase memory use. Stored-field sorts also retain precomputed sort keys for each row; wider linked sorts add memory in proportion to the number of clauses. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
 
 Search settings are under `storage.fullText`:
 
-| Setting                     | Default | Meaning                                                                                                           |
-| --------------------------- | ------: | ----------------------------------------------------------------------------------------------------------------- |
-| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits, including bounded prefix replay                                                              |
-| `maxResultsPerRequest`      |  10,000 | Maximum retained eligible rows; relevance pages need offset plus limit                                            |
-| `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks and highlight tracing, capped by the native execution limit |
+| Setting                     | Default | Meaning                                                                                                            |
+| --------------------------- | ------: | ------------------------------------------------------------------------------------------------------------------ |
+| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits, including bounded prefix replay                                                               |
+| `maxResultsPerRequest`      |  10,000 | Maximum retained eligible rows; relevance pages need offset plus limit                                             |
+| `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks, final-page materialization/projection and highlight tracing |
 
 The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Reader acquisition, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.
 

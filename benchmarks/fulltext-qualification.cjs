@@ -130,8 +130,14 @@ describe('isolated native full-text qualification cell', () => {
 				deadline = started + durationMilliseconds,
 				cpuStarted = process.cpuUsage(),
 				utilizationStarted = performance.eventLoopUtilization();
-			const sampleMemory = () =>
-				memory.push({ elapsedMilliseconds: performance.now() - started, ...process.memoryUsage() });
+			const sampledMemoryPeaks = {};
+			const observeMemory = () => {
+				const sample = { elapsedMilliseconds: performance.now() - started, ...process.memoryUsage() };
+				for (const name of ['rss', 'heapTotal', 'heapUsed', 'external', 'arrayBuffers'])
+					sampledMemoryPeaks[name] = Math.max(sampledMemoryPeaks[name] || 0, sample[name]);
+				return sample;
+			};
+			const sampleMemory = () => memory.push(observeMemory());
 			sampleMemory();
 			sampleTimer = setInterval(sampleMemory, 20);
 			loopDelay.enable();
@@ -141,7 +147,7 @@ describe('isolated native full-text qualification cell', () => {
 				while (performance.now() < deadline && !errors.length)
 					try {
 						queryMilliseconds.push(await query());
-						sampleMemory();
+						observeMemory();
 					} catch (error) {
 						recordError('query', error);
 					}
@@ -214,6 +220,8 @@ describe('isolated native full-text qualification cell', () => {
 					max: loopDelay.max / 1e6,
 				},
 				memory,
+				memorySampleMode: '20ms time series plus rolling query-boundary peaks; no per-query sample retention',
+				sampledMemoryPeaks,
 				lifetimeMaxRssBytesIncludingSetup: process.resourceUsage().maxRSS * 1024,
 				errors,
 			};
