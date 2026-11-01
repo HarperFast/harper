@@ -365,6 +365,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 		perToolBurst: number.min(0).optional(),
 		sessionConcurrency: number.min(0).optional(),
 		sessionPerSecond: number.min(0).optional(),
+		initializePerSecond: number.min(0).optional(),
+		initializeBurst: number.min(1).optional(),
 	});
 	const mcpOperationsSchema = Joi.object({
 		// `convert: false` — validateConfig() doesn't write coerced mcp values back, so a quoted
