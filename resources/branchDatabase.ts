@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { mkdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
@@ -27,7 +27,7 @@ import {
 } from './databases.ts';
 import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
 import { stampDatabaseDirectory } from './auditStore.ts';
-import { pathPresent, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
+import { fsyncDirectory, pathPresent, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Private per-application forks of a database, for running several variants of an application against
@@ -839,11 +839,11 @@ function branchDirectoriesFor(appName: string): {
 }
 
 /**
- * In each `<app>` directory of an application's branches: a drop owes their removal. It is written, durably, before
- * that drop changes anything, so the debt outlives an answer the drop gives before the removal, and the process; only a
- * removal that completes, or a later drop that keeps them, clears it. A file, so `branchDirectoriesFor` never reads it
- * as a branch. Its temp file counts too: only a drop that discards the branches writes one, and a crash can leave it
- * unrenamed after that drop removed the application.
+ * In each `<app>` directory of an application's branches, or the default database's while it has none: a drop owes
+ * their removal, wherever they land. It is written, durably, before that drop changes anything, so the debt outlives an
+ * answer the drop gives before the removal, and the process; only a removal that completes, or a later drop that keeps
+ * them, clears it. A file, so `branchDirectoriesFor` never reads it as a branch. Its temp file counts too: only a drop
+ * that discards the branches writes one, and a crash can leave it unrenamed after that drop removed the application.
  */
 const REMOVAL_PENDING_MARKER = '`removal-pending`';
 const REMOVAL_PENDING_PARTIAL = `${REMOVAL_PENDING_MARKER}.partial`;
@@ -858,7 +858,16 @@ export function recordPendingBranchRemoval(appName: string): void {
 	if (failures.length) {
 		throw new Error(`Could not record the owed removal of branch storage for '${appName}': ${failures.join('; ')}`);
 	}
+	if (!directories.length) {
+		const directory = join(resolveDatabaseStorageRoot(DEFAULT_DATABASE_NAME), BRANCH_ROOT_DIR, appName);
+		const firstCreated = mkdirSync(directory, { recursive: true });
+		if (firstCreated) fsyncDirectory(dirname(firstCreated));
+		directories.push(directory);
+	}
 	for (const directory of directories) {
+		// this drop or an earlier one that failed may have created it
+		fsyncDirectory(dirname(dirname(directory)));
+		fsyncDirectory(dirname(directory));
 		writeFileDurably(join(directory, REMOVAL_PENDING_MARKER), new Date().toISOString(), REMOVAL_PENDING_PARTIAL);
 	}
 }
