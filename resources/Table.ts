@@ -186,7 +186,12 @@ import {
 	validateFullTextFuzzyOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 } from './search.ts';
-import { FULL_TEXT_SEARCH_OPTIONS, type FullTextSearchEntry } from './indexes/fullTextQueryProtocol.ts';
+import {
+	FULL_TEXT_SEARCH_OPTIONS,
+	FULL_TEXT_PREPARED_RECORD,
+	type FullTextSearchOptions,
+	type FullTextSearchEntry,
+} from './indexes/fullTextQueryProtocol.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
@@ -1239,7 +1244,8 @@ interface TableResourceClass {
 		canSkip?: any,
 		rowFilter?: any,
 		includeExpired?: any,
-		sort?: any
+		sort?: any,
+		prepareSelection?: (record: any, entry: any, select: (entry?: any) => any) => any
 	): (entry: Entry) => any;
 	/**
 	 * Subscribe on one thread unless this is a per-thread subscription
@@ -7702,6 +7708,44 @@ export function makeTable(options): TableResourceClass {
 				boundRowFilter || typeof target.vectorFilter === 'function'
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
+			let prepareToRecord: any;
+			let prepareFullTextPage: FullTextSearchOptions['prepareResults'];
+			if (includeFullTextHighlights && exhaustiveFullText) {
+				const prepared = new Map<FullTextSearchEntry, { record: any; entry: any; select: (entry?: any) => any }>();
+				prepareFullTextPage = async (entries, { complete, trace, materialize }) => {
+					if (!prepareToRecord) throw new ServerError('Full-text page preparation started before Table selection', 500);
+					const offset = target.offset || 0;
+					const end = target.limit === undefined ? entries.length : offset + target.limit;
+					for (let index = 0; index < entries.length && index < end;) {
+						const candidate = entries[index];
+						if (!prepared.has(candidate)) {
+							freezeRecord(candidate.recordEntry.value);
+							const selected = await materialize(() =>
+								prepareToRecord.call({ isSync: false }, { ...candidate.recordEntry, $score: candidate.$score })
+							);
+							if (selected === SKIP) {
+								entries.splice(index, 1);
+								continue;
+							}
+							candidate.record = selected.record;
+							candidate.recordEntry = selected.entry;
+							prepared.set(candidate, selected);
+						}
+						index++;
+					}
+					if (!complete && entries.length < end) return false;
+					const prefix = entries.slice(0, end);
+					await trace(prefix.slice(offset));
+					for (const candidate of prefix) {
+						const selected = prepared.get(candidate)!;
+						candidate[FULL_TEXT_PREPARED_RECORD] = await materialize(() =>
+							selected.select({ ...selected.entry, $highlights: candidate.$highlights })
+						);
+					}
+					prepared.clear();
+					return entries.length >= end;
+				};
+			}
 			try {
 				const entries = executeConditions(
 					conditions,
@@ -7713,6 +7757,7 @@ export function makeTable(options): TableResourceClass {
 								[FULL_TEXT_SEARCH_OPTIONS]: {
 									exhaustive: true,
 									orderResults: fullTextOrder,
+									prepareResults: prepareFullTextPage,
 									...(!fullTextOrder
 										? {
 												countBudgetMilliseconds: MAX_EXACT_COUNT_MS,
@@ -7745,7 +7790,7 @@ export function makeTable(options): TableResourceClass {
 				// since those never run the ensureLoaded-gated freshness check this transform
 				// otherwise applies unconditionally to every read.
 				const includeExpired = (target as any).includeExpired === true;
-				const transformToRecord = TableResource.transformEntryForSelect(
+				const ordinaryTransform = TableResource.transformEntryForSelect(
 					select,
 					context,
 					readTxn,
@@ -7756,6 +7801,34 @@ export function makeTable(options): TableResourceClass {
 					includeExpired,
 					postOrdering
 				);
+				const transformToRecord = prepareFullTextPage
+					? Object.assign(
+							function (entry) {
+								return entry && Object.hasOwn(entry, FULL_TEXT_PREPARED_RECORD)
+									? entry[FULL_TEXT_PREPARED_RECORD]
+									: ordinaryTransform.call(this, entry);
+							},
+							{
+								return() {
+									(ordinaryTransform as any).return?.();
+									prepareToRecord?.return?.();
+								},
+							}
+						)
+					: ordinaryTransform;
+				if (prepareFullTextPage)
+					prepareToRecord = TableResource.transformEntryForSelect(
+						select,
+						context,
+						readTxn,
+						filtered,
+						ensure_loaded,
+						true,
+						boundRowFilter,
+						includeExpired,
+						postOrdering,
+						(record, entry, select) => ({ record, entry, select })
+					);
 				let results = TableResource.transformToOrderedSelect(
 					entries,
 					select,
@@ -8610,7 +8683,8 @@ export function makeTable(options): TableResourceClass {
 			canSkip?,
 			rowFilter?,
 			includeExpired?,
-			sort?
+			sort?,
+			prepareSelection?: (record: any, entry: any, select: (entry?: any) => any) => any
 		) {
 			let checkLoaded;
 			if (
@@ -8727,7 +8801,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				return selectRecord.call(this, record, entry);
 			};
-			const selectRecord = function (record, entry) {
+			const selectPreparedRecord = function (record, entry) {
 				if (
 					select &&
 					!(select[0] === '*' && select.length === 1 && !(select as any).asArray && !select[RELATIONSHIPS_LISTED])
@@ -8909,6 +8983,13 @@ export function makeTable(options): TableResourceClass {
 				}
 				return record;
 			};
+			const selectRecord = prepareSelection
+				? function (record, entry) {
+						return prepareSelection(record, entry, (selectedEntry = entry) =>
+							selectPreparedRecord.call(this, record, selectedEntry)
+						);
+					}
+				: selectPreparedRecord;
 			(transform as any).return = () => {
 				selectionStopped = true;
 				if (relationshipSelections)

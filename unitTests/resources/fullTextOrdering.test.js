@@ -192,6 +192,44 @@ describe('published full-text ordering and exact counts', () => {
 		assert(page[0].$highlights.title.length > 0);
 	});
 
+	for (const mode of ['sorted', 'exact', 'sorted exact']) {
+		it(`highlights the final ${mode} page after a previously accepted row expires`, async () => {
+			await seed(['a', 'b', 'c'].map((id, price) => ({ id, title: 'widget', price })));
+			const expiresAt = Date.now() + 1500;
+			await Product.put('a', { id: 'a', title: 'widget', price: 0 }, { expiresAt });
+			let crossedExpiry = false;
+			const originalTransform = Product.transformEntryForSelect;
+			Product.transformEntryForSelect = function (...args) {
+				const transform = originalTransform.apply(this, args);
+				const delayed = async function (entry) {
+					if (entry.key === 'a' && !crossedExpiry) {
+						assert(Date.now() < expiresAt, 'row reached final materialization before its real TTL');
+						await waitFor(() => Date.now() > expiresAt, 5000);
+						crossedExpiry = true;
+					}
+					return transform.call(this, entry);
+				};
+				delayed.return = () => transform.return?.();
+				return delayed;
+			};
+			const target = {
+				conditions: [condition({ includeHighlights: true })],
+				limit: 1,
+				...(mode.includes('sorted') ? { sort: { attribute: 'price' } } : {}),
+				...(mode.includes('exact') ? { count: 'exact' } : {}),
+			};
+			const result = await Product.search(target, { onlyIfCached: true });
+			const page = await collect(result);
+			assert.strictEqual(crossedExpiry, true);
+			assert.deepStrictEqual(ids(page), ['b']);
+			assert(page[0].$highlights?.title?.length > 0, 'promoted visible row receives native highlights');
+			if (mode.includes('exact')) {
+				assert.strictEqual(result.recordCount, 2);
+				assert.strictEqual(result.recordCountExact, true);
+			}
+		});
+	}
+
 	it('keeps narrowed selection without redispatching a spreading application override', async () => {
 		await seed(['a', 'b', 'c', 'd'].map((id, price) => ({ id, title: 'widget', price })));
 		let searches = 0;

@@ -31,6 +31,7 @@ import {
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
 import {
+	FULL_TEXT_PREPARED_RECORD,
 	fullTextComparatorMode,
 	fullTextSearchLimitError,
 	isFullTextSearchLimitError,
@@ -118,6 +119,7 @@ type CandidateGate = {
 type FullTextQueryHost = Pick<DerivedNativeIndexHost, 'readiness' | 'waitForCoverage' | 'requestRebuild'>;
 
 class FullTextReaderPublicationError extends Error {}
+class FullTextPreparationError extends Error {}
 
 const queryIndexesByPath = new Map<string, Set<FullTextQueryIndex>>();
 type QueryPauses = Map<string, bigint>;
@@ -293,6 +295,7 @@ export class FullTextQueryIndex {
 			return result;
 		};
 		const operation = execute().catch((error) => {
+			if (error instanceof FullTextPreparationError) throw error.cause;
 			if (context?.signal?.aborted && error === context.signal.reason) throw error;
 			if (nativeErrorNeedsRebuild(error)) {
 				this.#requestRebuild();
@@ -401,6 +404,7 @@ export class FullTextQueryIndex {
 					abortListener = () => reject(context.signal.reason ?? new Error('Full-text search aborted'));
 					if (context.signal.aborted) abortListener();
 					else context.signal.addEventListener('abort', abortListener, { once: true });
+					if (context.signal.aborted) abortListener();
 				})
 			: undefined;
 		let lease: Awaited<typeof acquisition>;
@@ -497,9 +501,51 @@ export class FullTextQueryIndex {
 				}
 				return remainingSearchBudget(deadline);
 			};
+			const prepareResults = async (complete: boolean) => {
+				options.assertTransactionActive?.();
+				context?.signal?.throwIfAborted();
+				remainingSearchBudget(deadline);
+				return options.prepareResults!(accepted, {
+					complete,
+					trace: (entries) =>
+						this.#addHighlights(reader, lease.definition, condition, entries, deadline, context?.signal),
+					materialize: async (operation) => {
+						let abortListener: (() => void) | undefined;
+						try {
+							options.assertTransactionActive?.();
+							context?.signal?.throwIfAborted();
+							const remaining = remainingSearchBudget(deadline);
+							let value = operation();
+							if (value && typeof (value as any).then === 'function') {
+								const pending = Promise.resolve(value);
+								const abort =
+									context?.signal &&
+									new Promise<never>((_resolve, reject) => {
+										abortListener = () => reject(context.signal.reason ?? new Error('Full-text search aborted'));
+										context.signal.addEventListener('abort', abortListener, { once: true });
+										if (context.signal.aborted) abortListener();
+									});
+								value = await withTimeout(abort ? Promise.race([pending, abort]) : pending, remaining, () =>
+									fullTextSearchLimitError('Full-text final page materialization budget exhausted', 503)
+								);
+							}
+							options.assertTransactionActive?.();
+							context?.signal?.throwIfAborted();
+							remainingSearchBudget(deadline);
+							return value;
+						} catch (cause) {
+							throw new FullTextPreparationError('Full-text final page preparation failed', { cause });
+						} finally {
+							if (abortListener) context.signal.removeEventListener('abort', abortListener);
+						}
+					},
+				});
+			};
 			const preservePage = async () => {
 				if (!optionalCount || pageReady || accepted.length < pageTarget) return;
-				if (condition.includeHighlights && accepted.length > 0)
+				if (options.prepareResults) {
+					if (!(await prepareResults(false))) return;
+				} else if (condition.includeHighlights && accepted.length > 0)
 					await this.#addHighlights(
 						reader,
 						lease.definition,
@@ -755,6 +801,7 @@ export class FullTextQueryIndex {
 					}
 				}
 			} catch (error) {
+				if (error instanceof FullTextPreparationError) throw error;
 				if (context?.signal?.aborted) throw context.signal.reason ?? error;
 				if (
 					!optionalCount ||
@@ -782,7 +829,8 @@ export class FullTextQueryIndex {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				remainingSearchBudget(deadline);
 			}
-			if (!highlightsDone && condition.includeHighlights && accepted.length > 0)
+			if (!highlightsDone && options.prepareResults) await prepareResults(true);
+			else if (!highlightsDone && condition.includeHighlights && accepted.length > 0)
 				await this.#addHighlights(
 					reader,
 					lease.definition,
@@ -796,6 +844,9 @@ export class FullTextQueryIndex {
 				key: entry.key,
 				$score: entry.$score,
 				loadedEntry: entry.recordEntry,
+				...(Object.hasOwn(entry, FULL_TEXT_PREPARED_RECORD)
+					? { [FULL_TEXT_PREPARED_RECORD]: entry[FULL_TEXT_PREPARED_RECORD] }
+					: null),
 				...(entry.$highlights ? { $highlights: entry.$highlights } : null),
 			}));
 		} finally {

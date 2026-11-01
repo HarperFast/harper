@@ -3,7 +3,10 @@ import type { NativeFullTextFuzzyOptions, NativeFullTextSearchMode } from './ful
 
 export const FULL_TEXT_SEARCH_OPTIONS = Symbol('full-text-search-options');
 
+export const FULL_TEXT_PREPARED_RECORD = Symbol('full-text-prepared-record');
+
 export type FullTextSearchEntry = {
+	[FULL_TEXT_PREPARED_RECORD]?: unknown;
 	key: unknown;
 	$score: number;
 	$highlights?: Record<string, unknown>;
@@ -13,6 +16,14 @@ export type FullTextSearchEntry = {
 };
 
 export type FullTextSearchOptions = {
+	prepareResults?: (
+		entries: FullTextSearchEntry[],
+		preparation: {
+			complete: boolean;
+			trace: (entries: FullTextSearchEntry[]) => Promise<void>;
+			materialize: <T>(operation: () => T | Promise<T>) => Promise<T>;
+		}
+	) => Promise<boolean>;
 	exhaustive?: boolean;
 	onIncompleteCount?: () => void;
 	countBudgetMilliseconds?: number;
