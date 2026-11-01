@@ -26,6 +26,12 @@ describe('isolated native full-text qualification cell', () => {
 		const width = Number(process.env.FULLTEXT_QUALIFICATION_WIDTH || 1);
 		const concurrency = Number(process.env.FULLTEXT_QUALIFICATION_CONCURRENCY || 1);
 		const writesPerSecond = Number(process.env.FULLTEXT_QUALIFICATION_WRITES || 0);
+		const freshness = process.env.FULLTEXT_QUALIFICATION_FRESHNESS || 'strict';
+		assert(['strict', 'bounded-lag'].includes(freshness));
+		const queryFreshness =
+			freshness === 'strict'
+				? { maxIndexLagMilliseconds: 0, waitForIndexMilliseconds: 30000 }
+				: { maxIndexLagMilliseconds: 5000, waitForIndexMilliseconds: 30000 };
 		const durationMilliseconds = Number(process.env.FULLTEXT_QUALIFICATION_DURATION_MS || 60000);
 		assert([0, 1, 32].includes(width));
 		assert([1, 4].includes(concurrency));
@@ -94,8 +100,7 @@ describe('isolated native full-text qualification cell', () => {
 						attribute: 'catalogSearch',
 						comparator: 'matches',
 						value: 'widget',
-						maxIndexLagMilliseconds: 0,
-						waitForIndexMilliseconds: 30000,
+						...queryFreshness,
 					},
 				],
 				...(sort ? { sort } : {}),
@@ -198,7 +203,8 @@ describe('isolated native full-text qualification cell', () => {
 				durationMilliseconds,
 				measurementWindowMilliseconds: durationMilliseconds,
 				drainMilliseconds: Math.max(0, elapsedMilliseconds - durationMilliseconds),
-				queryFreshness: { maxIndexLagMilliseconds: 0, waitForIndexMilliseconds: 30000 },
+				freshness,
+				queryFreshness,
 				elapsedMilliseconds,
 				firstQueryMilliseconds,
 				query: {
