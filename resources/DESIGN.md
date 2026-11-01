@@ -20,7 +20,7 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 - `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps a tombstone of unknown identity, as a version compare would let one write destroy another's.
 - An applied RocksDB write stores its received version, per write (`TransactionWrite.recordVersion`), under the origin's log key.
-- A ref states its kind: `additionalAuditRefs` holds log keys, `receivedIdentityRefs` received identities (bit 31, `RECEIVED_IDENTITY_REF`), an unaudited record's only re-delivery proof. An `identityIsNotKey` write records its head as a log-key ref even when key and version are equal. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
+- A ref states its kind: `additionalAuditRefs` holds log keys, `receivedIdentityRefs` received identities (bit 31, `RECEIVED_IDENTITY_REF`), which address no entry, never enter an audit entry, and are an unaudited record's only re-delivery proof. A branch's log key does not bound its version, so the walk reads every non-head branch. An `identityIsNotKey` write records its head as a log-key ref even when key and version are equal. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
 - An LMDB merge keeps the older version: it is `LMDBTransaction.commit`'s `ifVersion` token (`noAuditOutOfOrderPatch.test.js`).
 - Duplicates are judged by committed identity (read outside the transaction after a same-key relocate or publish restamps the base); only a minted key marks a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
 - `FULL_WRITE_HEAD`: the head replaced the whole record, unchanged since; any other write, a base-copy frame included, clears it. An older write skips the walk only while the floor is known and both it and `fullWriteHeadKey` are at or above it (`fullWriteHead.test.js`).
@@ -41,12 +41,12 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Sharding resolves fixed slots through an authoritative database map
 
-- Public `@sharded` hashes primary keys; `by`/`slotFrom` need the test switch `replication.experimentalAttributeSlots` plus native abort markers (`unsupportedResidencyPolicy`, harper-pro#1178); on that path a replicable transition outside the new owners needs one new-owner acknowledgement. RocksDB-only; needs auditing and replication; branches refuse it.
+- Public `@sharded` hashes primary keys; `by`/`slotFrom` need the test switch `replication.experimentalAttributeSlots` plus native abort markers (`unsupportedResidencyPolicy`, harper-pro#1178); on that path a replicable transition outside the new owners needs one new-owner acknowledgement (`requireConnectedResidencyOwner`). RocksDB-only; needs auditing and replication; branches refuse it.
 - The slot map (`residencyMaps.ts`) is authoritative, never rebuilt from config; policy and count are fixed after activation (`declareTable`).
 - Map writes and activation serialize on a native lock (`acquireResidencyMapFence`, 503 on contention). `installResidencyMap` imports lazily: an eager import reorders boot.
 - `captureResidencyOwners` pins owners for a commit and its retries; replicas never own. A LOCAL_ONLY transition excluding the writer is refused before submission, past any catch.
 - Main quarantines only classified failures, released only by restart. Live holds are retryable (`DatabaseShardingHeldError`); replay bypasses them, never a quarantine. Only `REPLICATION_APPLY` fills an incomplete owner (`databaseBaselineHoldReason`).
-- `blobReferenceGeneration` fences replica blob reclaim: captured before commit, compared before and after the claim, never cleared. The replica audit walk is capped at 32 reads and resumes after commit; files it cannot verify go to orphan cleanup; encoders bump it before checking a claim, and a claimed file returns 503 `BLOB_RECLAMATION_BUSY` (`declarativeResidency.test.js`).
+- `blobReferenceGeneration` fences replica blob reclaim: captured before commit, compared before and after the claim, never cleared. The replica audit walk is capped at 32 reads, then continues as tracked maintenance that yields, stops once maintenance closes and rereads the live row's files before release; files it cannot verify go to orphan cleanup; encoders bump it before checking a claim, and a claimed file returns 503 `BLOB_RECLAMATION_BUSY` (`declarativeResidency.test.js`).
 
 ## Full PUT resequencing
 
@@ -59,7 +59,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 - A copy stamps and flushes a new generation before it is readable (`stampDatabaseGeneration`); an open never repairs one. The resume floor never reads below a finite audit floor.
 - Cursors are progress-based: a snapshot's newest key can fall below a later floor.
 - An open ends earlier handles' subscriptions (`endSubscriptionsFromEarlierHandles`).
-- A resume is checked at registration and at every replay yield against the previous check's position, since a prune raises the floor before deleting. Read failures, undecodable entries and `reload` markers refuse it; a single-record resume pre-checks only the generation, and its own complete history walk overrides the floor (a missing version or the 10,000-version cap refuses). Checkpoint only after `resumeVerified` (`databaseGeneration.test.js`).
+- A resume is checked at registration and at every replay yield against the previous check's position, since a prune raises the floor before deleting. Read failures, undecodable entries and `reload` markers refuse it; a single-record resume pre-checks only the generation, and its own complete history walk overrides the floor (a missing version or the 10,000-version cap refuses; no entry, or a walk ending at a first version, falls back to the floor, since a pruned tombstone takes its history). Checkpoint only after `resumeVerified` (`databaseGeneration.test.js`).
 
 ## Origin-closed timestamp floor
 
@@ -146,7 +146,7 @@ Closing the owning handle releases a fill's lock, so `releaseRecordLock` ignores
 
 Pre-commit blob files land before a commit that can still skip the write.
 
-- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip). The skips: a duplicate tie, a newer put, a losing no-audit full update, a no-audit patch that ties the head, meets a head with no record, is already received or keeps nothing, a losing invalidate, relocate or delete, and a source version change. A skipped write's `replicatedConfirmation` falls back to the stored version (harper#3182), so an unmarked skip looks like a write that replicates nothing.
+- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip). Skips include a duplicate tie, a newer put, a losing no-audit full update, a no-audit patch that ties the head, meets a head with no record, is already received or keeps nothing, a losing invalidate, relocate or delete, and a source version change. A skipped write's `replicatedConfirmation` falls back to the stored version (harper#3182), so an unmarked skip looks like a write that replicates nothing.
 - Skips are cleaned after commit, never inline: a retry can make the skipped write win. Abort cleans all but files a durable log or audit entry owns (`hasDurableLog`, `blobsAuditReferenced`) and writes of another in-flight handle.
 - `cleanupUnusedBlobs(blobs, retainedFileIds)` spares the committed record's files. A deleted file tombstones its `Blob`, so `saveBlob` throws on it (#2062).
 - `cleanupOrphans` scans every retained audit value: history owns its files.
