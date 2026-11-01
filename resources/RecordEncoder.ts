@@ -1200,7 +1200,7 @@ export function recordUpdater(
 							},
 							{ transaction: options.transaction, nodeId, viaNodeId }
 						);
-						noteStagedAudit(options, extendedType);
+						noteStagedAudit(options, extendedType, type, previousVersion, previousAdditionalAuditRefs);
 						return result;
 					}
 				}
@@ -1234,7 +1234,13 @@ export function recordUpdater(
 						viaNodeId,
 					}
 				);
-				noteStagedAudit(options, extendedType);
+				noteStagedAudit(
+					options,
+					extendedType,
+					type,
+					isRocksDB ? existingEntry?.version : existingEntry?.localTime,
+					previousAdditionalAuditRefs
+				);
 			}
 			if (options?.tableToTrack && TRACKED_WRITE_TYPES.has(type)) {
 				recordAction(lastValueEncoding?.length ?? 1, 'db-write', options.tableToTrack, null);
@@ -1257,10 +1263,20 @@ export function recordUpdater(
 	};
 }
 // a coordinated retry's put appends nothing; its write keeps what the attempt it retries appended
-function noteStagedAudit(options: any, extendedType: number) {
+function noteStagedAudit(
+	options: any,
+	extendedType: number,
+	type: string,
+	previousVersion: number | undefined,
+	previousAdditionalAuditRefs: Array<{ version: number; nodeId: number }> | undefined
+) {
 	const write = options?.write;
-	if (write && write.stagedAudit !== 'replicable' && !options.transaction?.isRetry)
-		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
+	if (!write || options.transaction?.isRetry) return;
+	if (write.stagedAudit !== 'replicable') write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
+	// a retry restages from this entry's lineage (Table.ts withRefsMissedByLoggedEntry)
+	write.loggedType = type;
+	write.loggedPreviousVersion = previousVersion;
+	write.loggedPreviousRefs = previousAdditionalAuditRefs;
 }
 export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;

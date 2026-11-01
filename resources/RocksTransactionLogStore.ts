@@ -209,18 +209,25 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
-	get(key: any, tableId: number, recordId: any, nodeId: number) {
-		return this.getSync(key, tableId, recordId, nodeId);
+	get(key: any, tableId: number, recordId: any, nodeId: number, committedOnly?: boolean) {
+		return this.getSync(key, tableId, recordId, nodeId, committedOnly);
 	}
-	getSync(key: any, tableId: number, recordId: any, nodeId: number) {
+	/**
+	 * A numeric key reads the record's entry in the transaction keyed by it. Committed state can name an entry
+	 * past the log's committed watermark, which stays at the first entry whose transaction has not committed,
+	 * so the read goes past it unless `committedOnly`: such an entry may belong to a transaction that has not
+	 * committed, which a lookup asking whether a write was already applied must not count.
+	 */
+	getSync(key: any, tableId: number, recordId: any, nodeId: number, committedOnly?: boolean) {
 		if (typeof key === 'number') {
 			if (typeof tableId !== 'number') throw new Error('tableId must be a number');
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			// this a request for a transaction log entry by a timestamp
+			// this is a request for a transaction log entry by a timestamp
 			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
-			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
+			const readUncommitted = !committedOnly;
+			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId, readUncommitted })) {
 				if (entry.txnLogKey !== key) return; // no longer in this transaction
 				if (entry.recordId === recordId && entry.tableId === tableId && (!sharedLog || entry.nodeId === nodeId)) {
 					return entry;
