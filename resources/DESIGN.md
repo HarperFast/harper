@@ -41,7 +41,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Sharding resolves fixed slots through an authoritative database map
 
-- Public `@sharded` hashes primary keys; `by`/`slotFrom` need the test switch `replication_experimentalAttributeSlots` plus native abort markers (`unsupportedResidencyPolicy`, harper-pro#1178). RocksDB-only; needs auditing and replication; branches refuse it.
+- Public `@sharded` hashes primary keys; `by`/`slotFrom` need the test switch `replication.experimentalAttributeSlots` plus native abort markers (`unsupportedResidencyPolicy`, harper-pro#1178); on that path a replicable transition outside the new owners needs one new-owner acknowledgement. RocksDB-only; needs auditing and replication; branches refuse it.
 - The slot map (`residencyMaps.ts`) is authoritative, never rebuilt from config; policy and count are fixed after activation (`declareTable`).
 - Map writes and activation serialize on a native lock (`acquireResidencyMapFence`, 503 on contention). `installResidencyMap` imports lazily: an eager import reorders boot.
 - `captureResidencyOwners` pins owners for a commit and its retries; replicas never own. A LOCAL_ONLY transition excluding the writer is refused before submission, past any catch.
@@ -146,7 +146,7 @@ Closing the owning handle releases a fill's lock, so `releaseRecordLock` ignores
 
 Pre-commit blob files land before a commit that can still skip the write.
 
-- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip); an unmarked skip looks like a write that replicates nothing.
+- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip). The skips: a duplicate tie, a newer put, a losing no-audit full update, a no-audit patch that ties the head, meets a head with no record, is already received or keeps nothing, a losing invalidate, relocate or delete, and a source version change. A skipped write's `replicatedConfirmation` falls back to the stored version (harper#3182), so an unmarked skip looks like a write that replicates nothing.
 - Skips are cleaned after commit, never inline: a retry can make the skipped write win. Abort cleans all but files a durable log or audit entry owns (`hasDurableLog`, `blobsAuditReferenced`) and writes of another in-flight handle.
 - `cleanupUnusedBlobs(blobs, retainedFileIds)` spares the committed record's files. A deleted file tombstones its `Blob`, so `saveBlob` throws on it (#2062).
 - `cleanupOrphans` scans every retained audit value: history owns its files.
