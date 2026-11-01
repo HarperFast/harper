@@ -77,6 +77,51 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 			[[], [], []]
 		);
 	});
+	const productIds = (rows: { id: number; products: string[] | null }[]) =>
+		rows.map((row) => [row.id, [...(row.products ?? [])].sort()]).sort((a, b) => (a[0] as number) - (b[0] as number));
+	test('a products condition inside an OR picks brands but not which products they select', async () => {
+		for (const query of ['(products.name=Cable|id=44)', '(id=44|products.name=Cable)'])
+			assert.deepStrictEqual(productIds(await get(`/Brand/?${query}&select(id,products[select(id)])`)), [
+				[42, ['p1', 'p2', 'p3']],
+				[44, ['p5', 'p6']],
+			]);
+	});
+	test('a collection DELETE on two products conditions spares a brand whose products meet them separately', async () => {
+		for (const offset of [0, 10]) {
+			const split = 901 + offset;
+			const whole = 902 + offset;
+			const conditions = [`products.name=Split`, `products.id=ge=s${whole}`];
+			for (const query of [conditions.join('&'), conditions.reverse().join('&')]) {
+				await insert('Brand', [
+					{ id: split, name: 'Collection delete' },
+					{ id: whole, name: 'Collection delete' },
+				]);
+				await insert('Product', [
+					{ id: `s${split}`, brandId: split, name: 'Split', price: 1 },
+					{ id: `z${split}`, brandId: split, name: 'Other', price: 2 },
+					{ id: `s${whole}`, brandId: whole, name: 'Split', price: 2 },
+				]);
+				const response = await fetch(`${ctx.harper.httpURL}/Brand/?name==Collection%20delete&${query}`, {
+					method: 'DELETE',
+					headers: { Authorization: auth },
+					signal: AbortSignal.timeout(10_000),
+				});
+				assert.strictEqual(response.status, 200, await response.text());
+				assert.deepStrictEqual(
+					(await get('/Brand/?name==Collection%20delete&select(id,)')).map((brand: { id: number }) => brand.id),
+					[split],
+					query
+				);
+				await sendOperation(ctx.harper, { operation: 'delete', schema: 'data', table: 'Brand', ids: [split] });
+				await sendOperation(ctx.harper, {
+					operation: 'delete',
+					schema: 'data',
+					table: 'Product',
+					ids: [`s${split}`, `z${split}`, `s${whole}`],
+				});
+			}
+		}
+	});
 	test('both exact programmatic snippets produce their documented responses', async () => {
 		assert.deepStrictEqual(await get('/DocumentedQueries/'), {
 			single: examples.single,
