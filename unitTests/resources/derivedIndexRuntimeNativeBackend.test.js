@@ -1544,6 +1544,56 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('does not certify an inherited recovery tail when a quiet log read fails during close', async () => {
+		let clock = 1_000_000;
+		let failQuietRead = false;
+		let failureObserved = false;
+		let currentRange;
+		const records = new Map([['1:a', { version: clock + 1, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[clock, [audit({ timestamp: clock + 1, recordId: 'a' })]]]), {
+			onNext(entry) {
+				if (failQuietRead && entry === undefined) {
+					store.rootStore.status = 'closing';
+					currentRange.failedLogs.add('local');
+					failureObserved = true;
+				}
+			},
+		});
+		const getRange = store.getRange.bind(store);
+		store.getRange = (options) => (currentRange = getRange(options));
+		const policy = { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5, maxTransactionsPerTurn: 1 };
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const first = new SyncBackend('closing-inherited-tail', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => first.deliveries.length === 1);
+			clock += 401;
+			first.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			await owner.stop();
+			failQuietRead = true;
+			const second = new SyncBackend('closing-inherited-tail', cursor(1_000_000));
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => failureObserved);
+			assert.strictEqual(second.deliveries.length, 1);
+			assert.strictEqual(second.cursor.logs.local, 1_000_001);
+			assert.strictEqual(successor.getStatus(second.id).state, 'unavailable');
+			assert.notStrictEqual(
+				derivedIndexWriteRejection(store, 1),
+				undefined,
+				'a failed tail read cannot clear the shared lag trip'
+			);
+			assert.strictEqual(store.markers.size, 0, 'closing does not condemn the index');
+		} finally {
+			store.rootStore.status = 'open';
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
 	it('does not spend rebuild attempts on reload markers behind the captured tail', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const reloads = [8, 9, 10].map((timestamp) => ({ ...audit({ timestamp, type: 'reload' }), recordId: null }));
@@ -2111,6 +2161,385 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	for (const reacquire of [false, true]) {
+		it(`admits fresh accepted work after idle ${reacquire ? 'release and reacquisition' : 'with retained ownership'} and gates aging work on both workers`, async () => {
+			let clock = 1_000_000;
+			const entries = [];
+			const records = new Map();
+			const store = new FakeLogStore(new Map([[clock, entries]]), { live: true });
+			const peerStore = new FakeLogStore(new Map([[clock, entries]]), { live: true });
+			peerStore.sharedBuffers = store.sharedBuffers;
+			peerStore.locks = store.locks;
+			peerStore.waiters = store.waiters;
+			const backend = new SyncBackend('idle-then-accepted', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+			const peerBackend = new SyncBackend('idle-then-accepted', cursor(clock));
+			const options = { idleGraceMilliseconds: reacquire ? 10 : 60_000, now: () => clock };
+			const policy = { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 };
+			const owner = runtimeFor(store, records, options).runtime;
+			const peer = runtimeFor(peerStore, records, options).runtime;
+			owner.register(registration(backend, policy));
+			if (!reacquire) peer.register(registration(peerBackend, policy));
+			try {
+				await waitFor(() => owner.getStatus(backend.id)?.state === 'idle');
+				const initialEpoch = owner.getReadiness(backend.id).ownerEpoch;
+				clock += 5_000;
+				if (reacquire) await waitFor(() => store.locks.size === 0);
+				assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+				assert.strictEqual(derivedIndexWriteRejection(peerStore, 1), undefined);
+				records.set('1:a', { version: clock, value: { title: 'fresh' } });
+				entries.push(audit({ timestamp: clock, recordId: 'a' }));
+				store.rootStore.emit('committed');
+				await waitFor(() => owner.getMetrics(backend.id).acceptedMutations === 1);
+				if (reacquire) {
+					assert(owner.getReadiness(backend.id).ownerEpoch > initialEpoch);
+					peer.register(registration(peerBackend, policy));
+				}
+				assert.strictEqual(owner.getMetrics(backend.id).oldestAcceptedAgeMilliseconds, 0);
+				assert.strictEqual(owner.getMetrics(backend.id).cursorLagMilliseconds, 5_000);
+				assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'the idle gap is not pending-work age');
+				assert.strictEqual(derivedIndexWriteRejection(peerStore, 1), undefined, 'the peer admits fresh work too');
+				assert.strictEqual(peerBackend.deliveries.length, 0, 'only the owner processes the shared log');
+
+				clock += 401;
+				backend.stateChange();
+				await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+				assert.strictEqual(owner.getMetrics(backend.id).oldestAcceptedAgeMilliseconds, 401);
+				assert.match(derivedIndexWriteRejection(peerStore, 1), /more than 400 ms behind/);
+
+				backend.cursor = backend.deliveries[0].through;
+				backend.stateChange();
+				await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+				assert.strictEqual(derivedIndexWriteRejection(peerStore, 1), undefined);
+				assert.strictEqual(owner.getMetrics(backend.id).acceptedMutations, 0);
+				assert.strictEqual(owner.getMetrics(backend.id).cursorLagMilliseconds, 0);
+			} finally {
+				await peer.stop();
+				await owner.stop();
+			}
+		});
+	}
+
+	it('admits a new unrelated-table transaction after the indexed table has been idle', async () => {
+		let clock = 1_000_000;
+		const entries = [];
+		const store = new FakeLogStore(new Map([[clock, entries]]), { live: true });
+		const backend = new SyncBackend('idle-unrelated', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 60_000, now: () => clock });
+		runtime.register(registration(backend, { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 }));
+		try {
+			await waitFor(() => runtime.getStatus(backend.id)?.state === 'idle');
+			clock += 5_000;
+			entries.push(audit({ timestamp: clock, recordId: 'unrelated', tableId: 2 }));
+			store.rootStore.emit('committed');
+			await waitFor(() => backend.deliveries.length === 1);
+			assert.strictEqual(backend.deliveries[0].records.length, 0);
+			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 5_000);
+			assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		} finally {
+			await runtime.stop();
+		}
+	});
+
+	it('admits a fresh replicated commit from a quiet log while local commits remain current', async () => {
+		let clock = 1_000_000;
+		const entries = [];
+		const store = new FakeLogStore(new Map([[clock, entries]]), { live: true, logNames: ['local', 'remote'] });
+		const records = new Map();
+		const backend = new SyncBackend('quiet-remote', { format: 1, logs: { local: clock, remote: clock } });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => clock });
+		runtime.register(registration(backend, { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 }));
+		try {
+			await waitFor(() => runtime.getStatus(backend.id)?.state === 'idle');
+			for (let index = 0; index < 5; index++) {
+				clock += 100;
+				const id = `local-${index}`;
+				records.set(`1:${id}`, { version: clock, value: { title: id } });
+				entries.push(audit({ timestamp: clock, recordId: id }));
+				store.rootStore.emit('committed');
+				await waitFor(() => backend.cursor.logs.local === clock);
+				assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+			}
+			backend.deliverImpl = () => DERIVED_INDEX_ACCEPTED;
+			records.set('1:remote', { version: clock, value: { title: 'remote' } });
+			entries.push({ ...audit({ timestamp: clock, recordId: 'remote' }), logName: 'remote' });
+			store.rootStore.emit('committed');
+			await waitFor(() => backend.deliveries.length === 6);
+			assert.strictEqual(backend.deliveries.at(-1).through.logs.remote, clock);
+			assert.strictEqual(runtime.getMetrics(backend.id).oldestAcceptedAgeMilliseconds, 0);
+			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 500);
+			assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		} finally {
+			await runtime.stop();
+		}
+	});
+
+	it('keeps an inherited trip through a bounded continuously fed prefix until a healthy empty tail is read', async () => {
+		const base = 1_000_000;
+		let clock = base;
+		let endOfLogReads = 0;
+		const entries = [audit({ timestamp: base + 1, recordId: 'r1' })];
+		const records = new Map([['1:r1', { version: base + 1, value: { title: 'r1' } }]]);
+		const store = new FakeLogStore(new Map([[base, entries]]), {
+			live: true,
+			onNext: (entry) => {
+				if (entry === undefined) endOfLogReads++;
+			},
+		});
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const policy = {
+			maxLagMilliseconds: 400,
+			maxFlushAgeMilliseconds: 5,
+			maxTransactionsPerTurn: 1,
+			maxChunkRecords: 1,
+		};
+		const first = new SyncBackend('fed-inherited-prefix', cursor(base), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => first.deliveries.length === 1 && endOfLogReads > 0);
+			clock += 401;
+			first.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			await owner.stop();
+			const previousEndReads = endOfLogReads;
+			let parked = true;
+			const second = new SyncBackend('fed-inherited-prefix', cursor(base), (batch, backend) => {
+				const delivered = backend.deliveries.length;
+				if (parked && delivered >= 11) return DERIVED_INDEX_DEFERRED;
+				if (batch.through) backend.cursor = batch.through;
+				if (delivered <= 10) {
+					const index = delivered + 1;
+					const id = `r${index}`;
+					records.set(`1:${id}`, { version: base + index, value: { title: id } });
+					entries.push(audit({ timestamp: base + index, recordId: id }));
+				}
+				return DERIVED_INDEX_ACCEPTED;
+			});
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => successor.getStatus(second.id)?.state === 'deferred');
+			assert.strictEqual(second.deliveries.length, 11);
+			assert.strictEqual(second.cursor.logs.local, base + 10);
+			assert.strictEqual(endOfLogReads, previousEndReads, 'the fed successor has not observed an empty tail');
+			const metrics = successor.getMetrics(second.id);
+			assert.strictEqual(metrics.cursorLagMilliseconds, 1);
+			assert(metrics.cursorLagMilliseconds < policy.maxLagMilliseconds / 2);
+			assert.strictEqual(metrics.oldestAcceptedAgeMilliseconds, 0);
+			assert.strictEqual(metrics.stalledMilliseconds, 0);
+			assert.notStrictEqual(derivedIndexWriteRejection(store, 1), undefined);
+
+			parked = false;
+			second.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+			assert(endOfLogReads > previousEndReads);
+			assert.strictEqual(second.cursor.logs.local, base + 11);
+		} finally {
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
+	it('holds an inherited lag trip until the first complete successor tail is durable, despite later offered work', async () => {
+		let clock = 1_000_000;
+		let endOfLogReads = 0;
+		const entries = [1, 2, 3].map((index) => audit({ timestamp: clock + index, recordId: `r${index}` }));
+		const records = new Map(
+			entries.map((entry, index) => [`1:r${index + 1}`, { version: entry.version, value: { title: 'x' } }])
+		);
+		const store = new FakeLogStore(new Map([[clock, entries]]), {
+			live: true,
+			onNext: (entry) => {
+				if (entry === undefined) endOfLogReads++;
+			},
+		});
+		const policy = { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5, maxTransactionsPerTurn: 1 };
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const first = new SyncBackend('inherited-fast-tail', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => first.deliveries.length === 3 && endOfLogReads > 0);
+			clock += 401;
+			first.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			await owner.stop();
+			const previousEndReads = endOfLogReads;
+			const second = new SyncBackend('inherited-fast-tail', cursor(1_000_000), () => DERIVED_INDEX_ACCEPTED);
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => second.deliveries.length === 3 && endOfLogReads > previousEndReads);
+			assert.strictEqual(successor.getMetrics(second.id).oldestAcceptedAgeMilliseconds, 0);
+			second.cursor = second.deliveries[0].through;
+			second.stateChange();
+			await waitFor(() => successor.getMetrics(second.id).acceptedBatches === 2);
+			assert.notStrictEqual(
+				derivedIndexWriteRejection(store, 1),
+				undefined,
+				'a partial barrier cannot clear an inherited trip'
+			);
+
+			entries.push(audit({ timestamp: 1_000_004, recordId: 'later-unrelated', tableId: 2 }));
+			store.rootStore.emit('committed');
+			await waitFor(() => second.deliveries.length === 4);
+			second.cursor = second.deliveries[2].through;
+			second.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+			assert.strictEqual(second.cursor.logs.local, 1_000_003);
+			assert.strictEqual(second.deliveries.at(-1).through.logs.local, 1_000_004);
+			assert.strictEqual(successor.getMetrics(second.id).acceptedBatches, 1);
+		} finally {
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
+	it('starts an untripped successor residence clock without claiming end-to-end staleness', async () => {
+		let clock = 1_000_000;
+		const entries = [audit({ timestamp: clock + 1, recordId: 'a' })];
+		const records = new Map([['1:a', { version: clock + 1, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[clock, entries]]));
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const policy = { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 };
+		const first = new SyncBackend('untripped-handoff-age', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => owner.getMetrics(first.id).acceptedMutations === 1);
+			clock += 300;
+			assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+			await owner.stop();
+			clock += 5_000;
+			const second = new SyncBackend('untripped-handoff-age', cursor(1_000_000), () => DERIVED_INDEX_ACCEPTED);
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => successor.getMetrics(second.id).acceptedMutations === 1);
+			assert.strictEqual(successor.getMetrics(second.id).oldestAcceptedAgeMilliseconds, 0);
+			assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+			clock += 401;
+			second.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+		} finally {
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
+	it('preserves pending-work residence across repeated same-owner accepted-work-loss replays', async () => {
+		let clock = 1_000_000;
+		const entries = [];
+		const records = new Map();
+		const store = new FakeLogStore(new Map([[clock, entries]]), { live: true });
+		const backend = new SyncBackend('repeated-loss-age', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => clock });
+		runtime.register(registration(backend, { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 }));
+		try {
+			await waitFor(() => runtime.getStatus(backend.id)?.state === 'idle');
+			clock++;
+			records.set('1:a', { version: clock, value: { title: 'a' } });
+			entries.push(audit({ timestamp: clock, recordId: 'a' }));
+			store.rootStore.emit('committed');
+			await waitFor(() => backend.deliveries.length === 1);
+			for (let attempt = 0; attempt < 3; attempt++) {
+				clock += 150;
+				const id = `later-${attempt}`;
+				records.set(`1:${id}`, { version: clock, value: { title: id } });
+				entries.push(audit({ timestamp: clock, recordId: id }));
+				const previousDeliveries = backend.deliveries.length;
+				backend.stateChange('accepted-work-lost');
+				await waitFor(() => backend.deliveries.length > previousDeliveries);
+				if (attempt < 2) assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+			}
+			assert.strictEqual(backend.cursor.logs.local, 1_000_000);
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			backend.cursor = backend.deliveries.at(-1).through;
+			backend.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+		} finally {
+			await runtime.stop();
+		}
+	});
+
+	it('re-anchors inherited recovery after replay coalesces past the discarded target cursor', async () => {
+		let clock = 1_000_000;
+		let endOfLogReads = 0;
+		const entries = [1, 2, 3].map((index) => audit({ timestamp: clock + index, recordId: `r${index}` }));
+		const records = new Map(
+			entries.map((entry, index) => [`1:r${index + 1}`, { version: entry.version, value: { title: 'x' } }])
+		);
+		const store = new FakeLogStore(new Map([[clock, entries]]), {
+			live: true,
+			onNext: (entry) => {
+				if (entry === undefined) endOfLogReads++;
+			},
+		});
+		const policy = { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 };
+		const options = { idleGraceMilliseconds: 60_000, now: () => clock };
+		const first = new SyncBackend('lost-inherited-target', cursor(clock), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, options).runtime;
+		let successor;
+		owner.register(registration(first, policy));
+		try {
+			await waitFor(() => first.deliveries.length === 1 && endOfLogReads > 0);
+			clock += 401;
+			first.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+			await owner.stop();
+			const previousEndReads = endOfLogReads;
+			const second = new SyncBackend('lost-inherited-target', cursor(1_000_000), () => DERIVED_INDEX_ACCEPTED);
+			successor = runtimeFor(store, records, options).runtime;
+			successor.register(registration(second, policy));
+			await waitFor(() => second.deliveries.length === 1 && endOfLogReads > previousEndReads);
+			assert.strictEqual(second.deliveries[0].through.logs.local, 1_000_003);
+			records.set('1:new-tail', { version: 1_000_004, value: { title: 'new tail' } });
+			entries.push(audit({ timestamp: 1_000_004, recordId: 'new-tail' }));
+			second.stateChange('accepted-work-lost');
+			await waitFor(() => second.deliveries.length === 2);
+			assert.strictEqual(second.deliveries[1].through.logs.local, 1_000_004);
+			assert.notStrictEqual(derivedIndexWriteRejection(store, 1), undefined);
+			second.cursor = second.deliveries[1].through;
+			second.stateChange();
+			await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+			assert.strictEqual(successor.getMetrics(second.id).acceptedMutations, 0);
+		} finally {
+			if (successor) await successor.stop();
+			await owner.stop();
+		}
+	});
+
+	it('preserves effective unread age rather than a stale unread origin when replay starts', async () => {
+		let clock = 1_000_000;
+		const timestamp = clock + 5_000;
+		const entries = [audit({ timestamp, recordId: 'fresh' })];
+		const records = new Map([['1:fresh', { version: timestamp, value: { title: 'fresh' } }]]);
+		const store = new FakeLogStore(new Map([[clock, entries]]), {
+			onNext: (entry) => {
+				if (entry) clock = entry.txnLogKey;
+			},
+		});
+		let lost = false;
+		const backend = new SyncBackend('clamped-unread-replay', cursor(clock), (batch, target) => {
+			if (!lost) {
+				lost = true;
+				target.stateChange('accepted-work-lost');
+			}
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => clock });
+		runtime.register(registration(backend, { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 }));
+		try {
+			await waitFor(() => backend.deliveries.length === 2 && runtime.getMetrics(backend.id).acceptedMutations === 1);
+			assert.strictEqual(clock, timestamp);
+			assert.strictEqual(runtime.getMetrics(backend.id).oldestAcceptedAgeMilliseconds, 0);
+			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 5_000);
+			assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		} finally {
+			await runtime.stop();
+		}
+	});
+
 	it('keeps writes admitted when the registration sets no lag policy', async () => {
 		const records = new Map([['1:a', { version: 1, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 5_000_000, recordId: 'a' })]]]));
@@ -2344,6 +2773,63 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		await waitFor(() => derivedIndexWriteRejection(Gated.auditStore, Gated.tableId) === undefined, { timeout: 5000 });
 		await Gated.put('g2', { title: 'admitted' });
 		await gatedRuntime.stop();
+	});
+
+	it('admits a real audited write after idle while its fresh accepted mutation awaits durability', async () => {
+		const { table } = require('#src/resources/databases');
+		const Gated = table({
+			database: 'derived-index-idle-lag-rocks',
+			table: 'Gated',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		await Gated.put('seed', { title: 'seed' });
+		const anchor = [...Gated.auditStore.getRange({ start: 1 })]
+			.filter((entry) => entry.tableId === Gated.tableId)
+			.at(-1).txnLogKey;
+		let acceptFirst;
+		const firstAccepted = new Promise((resolve) => {
+			acceptFirst = resolve;
+		});
+		let accepted = false;
+		firstAccepted.then(() => {
+			accepted = true;
+		});
+		const backend = new SyncBackend('real-idle-then-accepted', { format: 1, logs: { local: anchor } }, (batch) => {
+			acceptFirst(batch);
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const idleRuntime = new DerivedIndexRuntime(
+			Gated.auditStore,
+			(tableId, recordId) => {
+				const entry = Gated.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{ idleGraceMilliseconds: 60_000 }
+		);
+		idleRuntime.register({
+			backend,
+			projections: new Map([[Gated.tableId, (record) => ({ title: record.title })]]),
+			options: { maxLagMilliseconds: 1000, maxFlushAgeMilliseconds: 5 },
+		});
+		try {
+			await waitFor(() => idleRuntime.getStatus(backend.id)?.state === 'idle');
+			await sleep(1200);
+			await Gated.put('fresh', { title: 'fresh' });
+			await waitFor(() => accepted, 5000);
+			await firstAccepted;
+			const metrics = idleRuntime.getMetrics(backend.id);
+			assert(metrics.cursorLagMilliseconds >= 1000, 'the real commit clock includes the idle interval');
+			assert(metrics.oldestAcceptedAgeMilliseconds < 1000, 'the actual pending mutation is fresh');
+			assert.strictEqual(derivedIndexWriteRejection(Gated.auditStore, Gated.tableId), undefined);
+			await Gated.put('next', { title: 'still admitted' });
+			await waitFor(() => backend.deliveries.length >= 2);
+			backend.cursor = backend.deliveries.at(-1).through;
+			backend.stateChange();
+			await waitFor(() => idleRuntime.getMetrics(backend.id).acceptedMutations === 0);
+		} finally {
+			await idleRuntime.stop();
+		}
 	});
 
 	it('rebuilds from the primary store on the retained log boundary and replays to the head', async () => {
