@@ -330,6 +330,17 @@ export function linkPrefixLength(keyWidth: number): number {
 	return formatKey(0, keyWidth).length + ownerOf(0).length + 2;
 }
 
+/** Throws when a selected workload follows links and `field0` is too short to carry one. */
+export function assertLinksFit(workloads: string[], shape: RecordShape, keyWidth: number): void {
+	const linked = workloads.filter((w) => usesDependentReads(WORKLOADS[w]));
+	const length = linkPrefixLength(keyWidth);
+	if (linked.length > 0 && (shape.fieldCount < 1 || shape.fieldLength < length)) {
+		throw new Error(
+			`${linked.join(', ')} need field0 to hold a ${length}-char link; --field-length is ${shape.fieldLength}`
+		);
+	}
+}
+
 /** A record with `link` written at the start of `field0`, unless `field0` is too short to hold it. */
 export function buildRecord(shape: RecordShape, link?: RecordLink): Record<string, string> {
 	const record: Record<string, string> = {};

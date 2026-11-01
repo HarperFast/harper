@@ -19,7 +19,7 @@ import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
-import { WORKLOADS, formatKey, recordReadsPerOp, usesDependentReads } from '../ycsb/workload.mts';
+import { WORKLOADS, assertLinksFit, formatKey, recordReadsPerOp, usesDependentReads } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
@@ -580,6 +580,8 @@ async function main(): Promise<void> {
 	const measureReads = argv.some((a) => a.startsWith('--ops=')) ? config.opsPerWorkload : 1_000_000;
 	const recordBytes = config.fieldCount * config.fieldLength;
 	const pointRecords = ratios.map((ratio) => recordsForRatio(ratio, MEMORY_BUDGET_BYTES, recordBytes));
+	// --cells picks workloads parseOptions never saw.
+	assertLinksFit(workloads, config, Math.max(10, String(Math.max(...pointRecords)).length));
 
 	const file = join(RESULTS_DIR, `memory-sweep-${meta.timestamp}.json`);
 	const runMeta = {

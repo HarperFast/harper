@@ -7,6 +7,7 @@ import { strictEqual, ok, notStrictEqual, rejects, throws } from 'node:assert';
 import {
 	WORKLOADS,
 	DENY_EVERY,
+	assertLinksFit,
 	makeKeyChooser,
 	formatKey,
 	buildRecord,
@@ -240,6 +241,9 @@ test('every written record carries its own link and owner, padded to the field l
 	const short = buildRecord({ fieldCount: 1, fieldLength: 10 }, { index: 0, keyCount: records, keyWidth });
 	strictEqual(short.field0.length, 10);
 	throws(() => parseLink({ id: 'x', ...short }), { statusCode: 500 }, 'a field too short for the link gets none');
+	assertLinksFit(['C', 'B'], { fieldCount: 1, fieldLength: 10 }, keyWidth);
+	throws(() => assertLinksFit(['C', 'chain-4'], { fieldCount: 1, fieldLength: 22 }, keyWidth), /chain-4 need/);
+	assertLinksFit(['inspect'], { fieldCount: 1, fieldLength: 23 }, keyWidth);
 
 	const writes: [string, Record<string, string>][] = [];
 	const capture = (key: string, value: Record<string, string>) => {
