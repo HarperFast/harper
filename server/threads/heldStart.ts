@@ -9,6 +9,8 @@ import {
 	type BootVerdictOutcome,
 } from '../../components/componentLoader.ts';
 import { liveDeploymentId } from '../../components/releaseCertification.ts';
+import { admitWorkerPools } from './workerPools.ts';
+import { getDatabases } from '../../resources/databases.ts';
 
 export type HeldStartRequest = { component: string; deploymentId: string };
 
@@ -65,6 +67,7 @@ export async function awaitAdmission(
 		const onMessage = (message: any) => {
 			if (message?.type !== ITC_EVENT_TYPES.CHILD_ADMITTED) return;
 			parentPort.off('message', onMessage);
+			admitWorkerPools(message.workerPools);
 			resolve();
 		};
 		parentPort.on('message', onMessage);
@@ -72,7 +75,21 @@ export async function awaitAdmission(
 			type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
 			components,
 			applications: applicationsPlacedOnThisThread(),
+			poolUnsupportedTables: poolUnsupportedTables(),
 		});
 		onReported?.();
 	});
+}
+
+/** Read from table state as the load ends, not from registration events. */
+function poolUnsupportedTables(): string[] {
+	const tables = [];
+	const databases = getDatabases();
+	for (const databaseName in databases) {
+		for (const tableName in databases[databaseName]) {
+			if (databases[databaseName][tableName]?.requiresApplicationCodeToReplicate?.())
+				tables.push(`${databaseName}.${tableName}`);
+		}
+	}
+	return tables;
 }

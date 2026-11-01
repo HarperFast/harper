@@ -398,6 +398,16 @@ function mirrorBindPath(socketPath?: any) {
 }
 
 const POOL_BIND_RETRY_MS = 60_000;
+/**
+ * A per-thread mirror skipped here was registered while its owning pool was still pending, so its metadata is
+ * retracted: a proxy reading the sockets directory must not route to it.
+ */
+export function bindsDomainSocketHere(port: string, server: any): boolean {
+	if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) return false;
+	if (shouldBindListenerHere(port)) return true;
+	if (server.isPerThreadSocket) httpComponent.markUdsBindFailed(port);
+	return false;
+}
 let listening;
 function listenOnPorts() {
 	if (isProcessShuttingDown()) return Promise.resolve([]);
@@ -412,8 +422,7 @@ function listenOnPorts() {
 		// ports (the kernel would hand it every application's connections) and not a global domain socket
 		// such as the operations API's, which it would take from the main thread.
 		if (port.includes?.('/')) {
-			if ((!thisThreadsIsolatedApplication() || server.isPerThreadSocket) && shouldBindListenerHere(port))
-				listening.push(listenOnDomainSocket(port, server));
+			if (bindsDomainSocketHere(port, server)) listening.push(listenOnDomainSocket(port, server));
 			continue;
 		}
 		if (thisThreadsIsolatedApplication() || !shouldBindListenerHere(port)) continue;
@@ -512,7 +521,11 @@ function listenOnPorts() {
 	if (uwsServeConfigs) {
 		for (const key in uwsServeConfigs) {
 			const cfg = uwsServeConfigs[key];
-			if (!shouldStartUwsListenerHere(cfg) || !shouldBindListenerHere(key)) continue; // dedicated worker: its own mirrors only
+			if (!shouldStartUwsListenerHere(cfg)) continue; // dedicated worker: its own mirrors only
+			if (!shouldBindListenerHere(key)) {
+				httpComponent.markUdsBindFailed(key);
+				continue;
+			}
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = uwsServerRuntimeModule;
 			listening.push(
@@ -694,11 +707,10 @@ async function listenOnPortsBun() {
 		// Skip Bun servers (they're already listening) and config objects
 		if (server?.stop || bunServeConfigs[port]) continue;
 		if (server?.listen) {
-			if (!shouldBindListenerHere(port)) continue;
 			if (port.includes?.('/')) {
-				if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) continue; // as in listenOnPorts
-				rawListeners.push(listenOnDomainSocket(port, server));
+				if (bindsDomainSocketHere(port, server)) rawListeners.push(listenOnDomainSocket(port, server));
 			} else {
+				if (!shouldBindListenerHere(port)) continue;
 				const lastColon = String(port).lastIndexOf(':');
 				const rawHostname = lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : null;
 				const portNum = lastColon > 0 ? +String(port).slice(lastColon + 1) : +port;
@@ -851,7 +863,10 @@ function onSocket(listener?: any, options?: any) {
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
+			const writeMetadata = () => {
+				if (!httpComponent.isUdsBindFailed(udsPath))
+					httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
+			};
 			SNICallback.ready.then(writeMetadata);
 			secureSocketServer.secureContextsListeners.push(writeMetadata);
 		}
