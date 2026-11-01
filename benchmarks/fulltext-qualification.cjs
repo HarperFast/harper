@@ -31,7 +31,7 @@ describe('isolated native full-text qualification cell', () => {
 		const queryFreshness =
 			freshness === 'strict'
 				? { maxIndexLagMilliseconds: 0, waitForIndexMilliseconds: 30000 }
-				: { maxIndexLagMilliseconds: 5000, waitForIndexMilliseconds: 30000 };
+				: { maxIndexLagMilliseconds: 5000 };
 		const durationMilliseconds = Number(process.env.FULLTEXT_QUALIFICATION_DURATION_MS || 60000);
 		assert([0, 1, 32].includes(width));
 		assert([1, 4].includes(concurrency));
@@ -125,6 +125,13 @@ describe('isolated native full-text qualification cell', () => {
 					);
 				return performance.now() - started;
 			};
+			if (freshness === 'bounded-lag') {
+				const readinessRows = await Product.search({
+					conditions: [{ ...target.conditions[0], maxIndexLagMilliseconds: 0, waitForIndexMilliseconds: 30000 }],
+					limit: 1,
+				});
+				for await (const row of readinessRows) assert(row.id !== 'writer');
+			}
 			const firstQueryMilliseconds = await query();
 			for (let i = 0; i < 3; i++) await query();
 			const queryMilliseconds = [],

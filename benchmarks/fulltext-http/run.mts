@@ -17,7 +17,7 @@ import {
 	killHarper,
 	startHarper,
 } from '@harperfast/integration-testing';
-import { record, target, verify, meter, MATCHES } from './model.mts';
+import { record, target, verify, meter, MATCHES, runPhase, cellVerdict } from './model.mts';
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const sizes = (process.env.FULLTEXT_HTTP_ROWS || '100000,1000000').split(',').map(Number);
@@ -25,7 +25,10 @@ const clients = (process.env.FULLTEXT_HTTP_CLIENTS || '8,32').split(',').map(Num
 const cases = (process.env.FULLTEXT_HTTP_CASES || 'relevance,sort,highlights,exact,structured').split(',');
 const duration = Number(process.env.FULLTEXT_HTTP_DURATION_MS || 60000);
 const writeRates = (process.env.FULLTEXT_HTTP_WRITES || '0,10').split(',').map(Number);
-const output = resolve(process.env.FULLTEXT_HTTP_OUTPUT || '/Users/kyle/WebstormProjects/tmp/fulltext-http');
+const commonGitDirectory = (
+	await exec('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: resolve(here, '../..') })
+).stdout.trim();
+const output = resolve(process.env.FULLTEXT_HTTP_OUTPUT || resolve(commonGitDirectory, '../../tmp/fulltext-http'));
 for (const n of sizes) assert(Number.isInteger(n) && n >= MATCHES && n % MATCHES === 0 && n <= 1000000);
 for (const n of clients) assert(Number.isInteger(n) && n >= 1 && n <= 32);
 for (const n of writeRates) assert([0, 10].includes(n));
@@ -99,14 +102,18 @@ const options = {
 	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
 	harperBinPath: resolve(here, '../../dist/bin/harper.js'),
 };
-let interrupted = false;
+let stopRequested = false;
 const onSignal = () => {
-	interrupted = true;
+	stopRequested = true;
 };
 process.on('SIGINT', onSignal);
 process.on('SIGTERM', onSignal);
 try {
 	for (const rows of sizes) {
+		await runPhase(
+			() => stopRequested,
+			() => Promise.resolve()
+		);
 		const ctx = createHarperContext(`fulltext-http-${rows}`);
 		const report = {
 			rows,
@@ -120,6 +127,7 @@ try {
 			started: new Date().toISOString(),
 		};
 		let auth, fatal, sampling;
+		let stopSampling = false;
 		async function request(path, init = {}) {
 			const response = await fetch(ctx.harper.httpURL + path, {
 				...init,
@@ -167,11 +175,14 @@ try {
 		}
 		try {
 			const setupStarted = performance.now();
-			await setupHarperWithFixture(ctx, resolve(here, 'fixture'), options);
+			await runPhase(
+				() => stopRequested,
+				() => setupHarperWithFixture(ctx, resolve(here, 'fixture'), options)
+			);
 			auth = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 			for (let start = 0; start < rows; start += 500) {
 				assert(
-					!interrupted && performance.now() - setupStarted < 15 * 60000,
+					!stopRequested && performance.now() - setupStarted < 15 * 60000,
 					'fixture setup exceeded 15 minutes or interrupted'
 				);
 				const batch = Array.from({ length: Math.min(500, rows - start) }, (_, offset) => record(start + offset));
@@ -193,6 +204,10 @@ try {
 			const readyDeadline = Date.now() + 120000;
 			for (const bucket of new Set([0, rows / MATCHES - 1])) {
 				while (true) {
+					await runPhase(
+						() => stopRequested,
+						() => Promise.resolve()
+					);
 					try {
 						const strict = target('relevance', bucket);
 						strict.limit = MATCHES;
@@ -205,27 +220,40 @@ try {
 						);
 						break;
 					} catch (error) {
-						if (interrupted || Date.now() > readyDeadline) throw error;
+						if (stopRequested || Date.now() > readyDeadline) throw error;
 						await delay(250);
 					}
 				}
 			}
 			report.setupMilliseconds = performance.now() - setupStarted;
-			await killHarper(ctx);
-			await startHarper(ctx, options);
+			await runPhase(
+				() => stopRequested,
+				() => killHarper(ctx)
+			);
+			await runPhase(
+				() => stopRequested,
+				() => startHarper(ctx, options)
+			);
 			for (const name of cases) {
 				report.firstQueries.push({
 					name,
-					milliseconds: await query(name),
+					milliseconds: await runPhase(
+						() => stopRequested,
+						() => query(name)
+					),
 					freshProcess: report.firstQueries.length === 0,
 					osCold: false,
 					order: report.firstQueries.length,
 				});
-				for (let i = 0; i < 3; i++) await query(name);
+				for (let i = 0; i < 3; i++)
+					await runPhase(
+						() => stopRequested,
+						() => query(name)
+					);
 			}
 			let ticks = 0;
 			sampling = (async () => {
-				while (!interrupted && !fatal) {
+				while (!stopSampling && !stopRequested && !fatal) {
 					try {
 						await diagnostics();
 						if (++ticks % 10 === 0) await guardDisk();
@@ -238,7 +266,7 @@ try {
 			for (const name of cases)
 				for (const concurrency of clients)
 					for (const writesPerSecond of writeRates) {
-						assert(!fatal && !interrupted, fatal?.message || 'interrupted');
+						assert(!fatal && !stopRequested, fatal?.message || 'interrupted');
 						const diagnosticStart = report.diagnostics.length;
 						await diagnostics();
 						const reads = meter(),
@@ -248,7 +276,7 @@ try {
 						const begin = performance.now(),
 							deadline = begin + duration;
 						const runReader = async () => {
-							while (performance.now() < deadline && !fatal && !interrupted) {
+							while (performance.now() < deadline && !fatal && !stopRequested) {
 								const requestStarted = performance.now();
 								try {
 									reads.add(await query(name));
@@ -270,7 +298,7 @@ try {
 						const runWriter = async () => {
 							if (!writesPerSecond) return;
 							let sequence = 0;
-							while (performance.now() < deadline && !fatal && !interrupted) {
+							while (performance.now() < deadline && !fatal && !stopRequested) {
 								const start = performance.now();
 								try {
 									await request(`/${name === 'structured' ? 'PlainProduct' : 'Product'}/writer`, {
@@ -320,21 +348,23 @@ try {
 							reads: reads.summary(),
 							writes: writes.summary(),
 						};
+						cell.verdict = cellVerdict(cell.reads, cell.writes);
 						cell.throughput = cell.reads.completed / (elapsed / 1000);
 						report.cells.push(cell);
 						await writeFile(resolve(output, `${rows}.json`), JSON.stringify(report, null, 2) + '\n');
-						assert(!fatal && !interrupted, fatal?.message || 'interrupted');
+						assert(!fatal && !stopRequested, fatal?.message || 'interrupted');
 					}
 			assert(new Set(report.diagnostics.map((v) => v.threadId)).size === 2, 'did not observe both HTTP workers');
 		} catch (error) {
 			report.failure = { message: error.message, stack: error.stack };
 			throw error;
 		} finally {
-			interrupted = true;
+			stopSampling = true;
 			if (sampling) await sampling;
-			await teardownHarper(ctx);
+			if (ctx.harper?.dataRootDir) await teardownHarper(ctx);
+			report.verdict =
+				report.failure || report.cells.some((cell) => cell.verdict !== 'qualified') ? 'unqualified' : 'qualified';
 			await writeFile(resolve(output, `${rows}.json`), JSON.stringify(report, null, 2) + '\n');
-			interrupted = false;
 		}
 	}
 } finally {

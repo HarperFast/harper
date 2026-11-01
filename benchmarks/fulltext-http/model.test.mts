@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { record, target, verify, meter } from './model.mts';
+import { record, target, verify, meter, runPhase, cellVerdict } from './model.mts';
 test('deterministic catalog keeps exactly 1000 rows per token and excludes writer', () => {
 	assert.strictEqual(record(0).category, record(999).category);
 	assert.notStrictEqual(record(999).category, record(1000).category);
@@ -25,4 +25,48 @@ test('histogram retains bounded latency distribution and explicit rejection coun
 	assert.strictEqual(s.failureLatency.count, 1);
 	assert(s.failureLatency.p95 >= 12 && s.failureLatency.p95 < 13);
 	assert(s.p95 >= 94 && s.p95 < 96);
+});
+
+test('stop after successful readiness prevents restart and later catalogs while finally cleanup runs', async () => {
+	let stopped = false;
+	const reached = [];
+	await assert.rejects(async () => {
+		try {
+			await runPhase(
+				() => stopped,
+				async () => {
+					reached.push('ready');
+					stopped = true;
+				}
+			);
+			await runPhase(
+				() => stopped,
+				async () => reached.push('restart')
+			);
+			await runPhase(
+				() => stopped,
+				async () => reached.push('next-catalog')
+			);
+		} finally {
+			reached.push('cleanup');
+		}
+	}, /interrupted/);
+	assert.deepStrictEqual(reached, ['ready', 'cleanup']);
+	await assert.rejects(
+		() =>
+			runPhase(
+				() => stopped,
+				() => reached.push('next-catalog')
+			),
+		/interrupted/
+	);
+});
+test('cell verdict rejects read/write errors and empty successful sample populations', () => {
+	assert.strictEqual(cellVerdict({ completed: 1, rejections: 0 }, { rejections: 0 }), 'qualified');
+	for (const [reads, writes] of [
+		[{ completed: 1, rejections: 1 }, { rejections: 0 }],
+		[{ completed: 1, rejections: 0 }, { rejections: 1 }],
+		[{ completed: 0, rejections: 0 }, { rejections: 0 }],
+	])
+		assert.strictEqual(cellVerdict(reads, writes), 'unqualified');
 });

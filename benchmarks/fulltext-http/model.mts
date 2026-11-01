@@ -77,3 +77,11 @@ export function meter() {
 		},
 	};
 }
+
+export async function runPhase(isStopped, action) {
+	assert(!isStopped(), 'qualification interrupted');
+	return action();
+}
+export function cellVerdict(reads, writes) {
+	return reads.completed > 0 && reads.rejections === 0 && writes.rejections === 0 ? 'qualified' : 'unqualified';
+}

@@ -42,6 +42,12 @@ All ten cells completed with zero recorded query/write errors. Rates use elapsed
 
 Verified configuration: queries set `maxIndexLagMilliseconds: 0` and `waitForIndexMilliseconds: 30000`. The [waiting query path](../resources/indexes/fullTextQueryIndex.ts) requests current coverage before searching. The [derived-index runner](../resources/derivedIndexRuntime.ts) defaults to a 1,000ms flush age. Observed write-cell median latency near one second, including the relevance-only control, supports publication waiting as the dominant cost. This control does not isolate every latency contributor or establish a before/after regression comparison. Increasing tolerated lag while retaining a positive wait does not bypass that waiting path.
 
+## Freshness control and sustained follow-up
+
+`FULLTEXT_QUALIFICATION_FRESHNESS` defaults to `strict` (lag 0, wait 30 seconds). `bounded-lag` performs an untimed strict readiness query, then measures lag 5 seconds with no wait option. Positive waits request current coverage regardless of the lag option. This control uses the same deterministic result oracle; it does not prove that concurrent writes are immediately visible. The native writer can catch up after stalls, unlike the paced HTTP writer.
+
+See the [sustained and HTTP observations](fulltext-http/results/README.md) for longer local measurements, retained raw reports and invalidated controls. These extend the evidence without replacing the release qualification gaps below.
+
 ## Final-page preparation check
 
 A separate [final-page observation](fulltext-final-page-cost.json) runs the current highlighted shallow/deep cases over 9,000 matches. It completed all 15 correctness cases while the broad unit/integration gates were also running. These timings measure bounded observed cost under uncontrolled competing load; they do not establish an isolated performance baseline or a before/after regression comparison.
