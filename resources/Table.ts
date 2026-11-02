@@ -12254,7 +12254,7 @@ export function makeTable(options): TableResourceClass {
 			if (context) {
 				context.transaction = transaction;
 				if (context.timestamp) transaction.timestamp = context.timestamp;
-				if (!context.sourceApply) transaction.requestSignal = context.signal;
+				if (!context.sourceApply) transaction.requestSignalSource = context;
 			}
 			return transaction;
 		}

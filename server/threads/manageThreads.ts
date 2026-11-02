@@ -339,6 +339,7 @@ function workersForApplication(application?: any) {
  * resolve once it has exited. Marked as shut down first so its exit does not start a replacement.
  */
 function stopWorker(worker?: any) {
+	worker.wasPermanentlyStopped = true;
 	worker.wasShutdown = true;
 	return new Promise<any>((resolve) => {
 		const armTerminate = (delay) =>
@@ -1478,12 +1479,14 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		const { ORIGIN_FLOOR_RETIRE, retireOriginFloorSlots } = loadRuntimeModule('resources/originClosedFloor');
 		retireOriginFloorSlots(exitedThreadId);
 		broadcast({ type: ORIGIN_FLOOR_RETIRE, threadId: exitedThreadId });
-		if (
-			!processShuttingDown &&
-			!worker.wasShutdown &&
-			options.autoRestart !== false &&
-			options.shouldAutoRestart?.(worker) !== false
-		) {
+		const unexpected = exitedUnexpectedly(worker);
+		// An option rather than a listener on the returned worker, so that `startCopy`'s replacement
+		// inherits it — see server/jobs/DESIGN.md.
+		if (unexpected) runExitHandler(options.onUnexpectedExit, 'onUnexpectedExit', worker, exitedThreadId);
+		else if (!processShuttingDown && worker.wasPermanentlyStopped)
+			runExitHandler(options.onPermanentStop, 'onPermanentStop', worker, exitedThreadId);
+		// Re-read: the handler may have begun process shutdown.
+		if (exitedUnexpectedly(worker) && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
@@ -1904,6 +1907,7 @@ async function replaceWorkers(
 				continue;
 			}
 			if (startReplacementThreads) await untilNoCertificationArmed();
+			else worker.wasPermanentlyStopped = true;
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			// the worker exited on its own while we were starting its replacement — nothing left to
 			// shut down (its overlapping replacement, if any, is already up). Skip to the next worker.
@@ -2155,6 +2159,7 @@ function heldReplacementTimeoutMs() {
  * @returns {Promise<boolean>} whether the worker reported that it started
  */
 function whenWorkerStarted(newWorker?: any) {
+	const newWorkerThreadId = newWorker.threadId;
 	return new Promise<any>((resolve) => {
 		const cleanup = () => {
 			clearTimeout(timeout);
@@ -2163,7 +2168,7 @@ function whenWorkerStarted(newWorker?: any) {
 		};
 		const timeout = setTimeout(
 			() => {
-				harperLogger.error('Replacement worker did not start in time', newWorker.threadId);
+				harperLogger.error('Replacement worker did not start in time', newWorkerThreadId);
 				cleanup();
 				// Its predecessor is already gone, so a replacement wedged in boot is a worker slot serving
 				// nothing until the process restarts. Stop it and let startWorker's exit handling replace it.
@@ -2184,7 +2189,7 @@ function whenWorkerStarted(newWorker?: any) {
 			}
 		};
 		const exitListener = () => {
-			harperLogger.warn('Replacement worker exited before starting', newWorker.threadId);
+			harperLogger.warn('Replacement worker exited before starting', newWorkerThreadId);
 			cleanup();
 			resolve(false);
 		};
@@ -2200,6 +2205,22 @@ function beginProcessShutdown() {
 }
 function isProcessShuttingDown() {
 	return processShuttingDown;
+}
+function exitedUnexpectedly(worker?: any) {
+	return !processShuttingDown && !worker.wasShutdown;
+}
+/**
+ * A caller's exit handler must not be able to take the process down with it: inside an 'exit'
+ * listener a synchronous throw is uncaught, and an async handler's rejection is unhandled.
+ */
+function runExitHandler(handler: any, handlerName: string, worker: any, threadId: number) {
+	if (!handler) return;
+	const failed = (error) => harperLogger.error(`${handlerName} handler failed for thread`, threadId, error);
+	try {
+		Promise.resolve(handler(worker)).catch(failed);
+	} catch (error) {
+		failed(error);
+	}
 }
 async function shutdownWorkersNow(name?: any) {
 	if (name == null) beginProcessShutdown();
