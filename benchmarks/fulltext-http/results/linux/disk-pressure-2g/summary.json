@@ -1,0 +1,48 @@
+{
+	"head": "c09243d1e4f9915a0e3b933dc01d45afa24faec0",
+	"classification": "Partial disk-backed memory-pressure run, interrupted by userspace systemd-oomd; four persisted cells; no fifth cell or final report verdict.",
+	"persistedCells": 4,
+	"totalCompletedReads": 43604,
+	"totalRejections": 79,
+	"unknownCountFailuresIncludedInRejections": 42,
+	"errorRecords": 79,
+	"errorClasses": [
+		{
+			"query": "sort",
+			"class": "terminated",
+			"count": 11
+		},
+		{
+			"query": "highlights",
+			"class": "terminated",
+			"count": 13
+		},
+		{
+			"query": "exact",
+			"class": "Bounded full-text count remained unknown",
+			"count": 42
+		},
+		{
+			"query": "exact",
+			"class": "ServerError",
+			"count": 13
+		}
+	],
+	"setupMilliseconds": 709208.5415340001,
+	"rawFinalVerdictPresent": false,
+	"cutoverVerifiedAt": "2026-11-01T19:09:55.313115+00:00",
+	"highAfterBytes": 805306368,
+	"sortStartsAt": "2026-11-01T19:09:53.532Z",
+	"mixedSortPrefixMilliseconds": 1781.115,
+	"serverReadBytesDeltaCell1ToLast": 14468247552,
+	"serverReadDeltaScope": {
+		"pid": 938815,
+		"start": "2026-11-01T19:09:54.115137+00:00",
+		"end": "2026-11-01T19:12:11.588021+00:00",
+		"attribution": "All server process I/O during interval, may include engine work; not pure query reads."
+	},
+	"lastBoundaryMemoryEvents": "low 0\nhigh 328655\nmax 2984\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 4061\n",
+	"lastBoundaryMemoryPressure": "some avg10=73.13 avg60=47.72 avg300=16.29 total=56868317\nfull avg10=72.43 avg60=47.17 avg300=16.12 total=56199411\n",
+	"rawVanishedFileWalkCounter": 4,
+	"diagnosticRecords": 9112
+}

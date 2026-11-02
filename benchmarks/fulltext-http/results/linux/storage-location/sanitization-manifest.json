@@ -1,0 +1,51 @@
+{
+	"sourceSelection": "Only filesystem/location evidence; no raw registry/log/config/env/cmdline content exported.",
+	"inputs": [
+		{
+			"sourceDirectoryBasename": "fulltext-linux-cleanup-audit",
+			"sourceRelativePath": "cleanup.json",
+			"rawPrivateWholeFileSha256": "034ecee96e815af0a1d425a447a47acb76b9aaf11540a5f0fe33a67ad8a4e997",
+			"selectedJsonPointers": ["/at", "/fixtureFilesystem", "/fixtureDirectories"],
+			"sanitizedPayloadSha256": "4c1dd1ebd6009e8c044ba092af04f3f3958ceef0b0e728fb55eb03bfa1c1b754",
+			"replacementCount": 0
+		},
+		{
+			"sourceDirectoryBasename": "fulltext-linux-10m-8cpu6g",
+			"sourceRelativePath": "10000000.json",
+			"rawPrivateSha256": "2988611b8039ab915af3f2707d0b30ed8ae86ddc7e462c1a4a45991046f58fed",
+			"selection": "Only fixture root prefix/location, occurrence count and private-root digest",
+			"replacementCount": 4,
+			"replacementCategories": {
+				"ephemeral-fixture-root": 4
+			}
+		},
+		{
+			"sourceDirectoryBasename": "fulltext-linux-10m-pressure-2g-high768m",
+			"sourceRelativePath": "database-footprint-setup-5min-kib.txt",
+			"rawPrivateSha256": "c5603c4587813b6c34924d336848cd1c5e2e2dfe923401f1045ec35fa44d816b",
+			"selection": "Only fixture root prefix/location, occurrence count and private-root digest",
+			"replacementCount": 14,
+			"replacementCategories": {
+				"ephemeral-fixture-root": 14
+			}
+		}
+	],
+	"generatedArtifacts": [
+		{
+			"path": "README.md",
+			"sha256": "6cf8f6ac7980962895f43a38d3b275539135b1c0fe739fa69135922aceff6836"
+		},
+		{
+			"path": "location-evidence.json",
+			"sha256": "6b6b9b459e646bf92618ed915c1509830a0e4ccd1a489accdab13466a8c2fe62"
+		},
+		{
+			"path": "run-location-scope.json",
+			"sha256": "495158273618ef0d5eda3cfc51ffe67d222f2b21efdf12d8f846462dd0d9259d"
+		},
+		{
+			"path": "selected-findmnt.json",
+			"sha256": "e236b4026435e6c3e5d686f618347d8623435334f348ce1f045d672d9fbe1901"
+		}
+	]
+}

@@ -1,0 +1,260 @@
+{
+	"scope": "Final harness smoke only: 1000-row corpus, five one-second cells, one client, no writes. Mount proof/control and cleanup snapshots retained. Nine pure-test output retained in pure-tests.txt entry. No scale, pressure, cold-cache or release qualification inference.",
+	"measurements": {
+		"actual-fixture-mount-proof.txt": {
+			"content": "2026-11-01T19:15:11Z\nfixture=<PRIVATE_HOME>/WebstormProjects/tmp/fulltext-linux-disk-fixtures/<HARPER_TEST_ROOT>\nTARGET SOURCE         FSTYPE OPTIONS\n/      /dev/nvme0n1p2 ext4   rw,relatime\n",
+			"rawPrivateSha256": "6c4ce613665d091e79ff7cecac7a7e39413f704c13ef63b6742b2a9d007c4e6f",
+			"sanitizedPayloadSha256": "ddda9840543f91c0b5ddbc2312e9956d0d27edd9aae877676c7ff7474c253854",
+			"replacementCount": 2,
+			"replacementCategories": {
+				"home": 1,
+				"fixtureRoot": 1
+			}
+		},
+		"cgroup-relative.txt": {
+			"content": "/user.slice/user-1000.slice/user@1000.service/app.slice/fulltext-linux-final-smoke-82d.scope\n",
+			"rawPrivateSha256": "2308eb87fe62937fc04e1605523d1b245c56c5c0dce9644729204e41f2f5f383",
+			"sanitizedPayloadSha256": "2308eb87fe62937fc04e1605523d1b245c56c5c0dce9644729204e41f2f5f383",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.max.after.txt": {
+			"content": "200000 100000\n",
+			"rawPrivateSha256": "07eb5019b2babb019fbbfe1cb328ec5b7affac5e07da4b94ebedb5e110dfab69",
+			"sanitizedPayloadSha256": "07eb5019b2babb019fbbfe1cb328ec5b7affac5e07da4b94ebedb5e110dfab69",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.max.before.txt": {
+			"content": "200000 100000\n",
+			"rawPrivateSha256": "07eb5019b2babb019fbbfe1cb328ec5b7affac5e07da4b94ebedb5e110dfab69",
+			"sanitizedPayloadSha256": "07eb5019b2babb019fbbfe1cb328ec5b7affac5e07da4b94ebedb5e110dfab69",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.max.observed.txt": {
+			"content": "200000 100000\n",
+			"rawPrivateSha256": "07eb5019b2babb019fbbfe1cb328ec5b7affac5e07da4b94ebedb5e110dfab69",
+			"sanitizedPayloadSha256": "07eb5019b2babb019fbbfe1cb328ec5b7affac5e07da4b94ebedb5e110dfab69",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.pressure.after.txt": {
+			"content": "some avg10=0.99 avg60=0.32 avg300=0.07 total=263322\nfull avg10=0.99 avg60=0.32 avg300=0.07 total=261524\n",
+			"rawPrivateSha256": "cb94eff08eb57698a699c05b9c3165844bb9f40e31447356a303f24c85a4de53",
+			"sanitizedPayloadSha256": "cb94eff08eb57698a699c05b9c3165844bb9f40e31447356a303f24c85a4de53",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.pressure.before.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=164\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=164\n",
+			"rawPrivateSha256": "3cb088273857c8fabb39ea2beb65223062c12825ecfffcd65f3083e48b107141",
+			"sanitizedPayloadSha256": "3cb088273857c8fabb39ea2beb65223062c12825ecfffcd65f3083e48b107141",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.stat.after.txt": {
+			"content": "usage_usec 17605465\nuser_usec 15654943\nsystem_usec 1950521\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 170\nnr_throttled 24\nthrottled_usec 1722492\nnr_bursts 0\nburst_usec 0\n",
+			"rawPrivateSha256": "364b4e1fb24abdd81a446b28efd25bf20ae9992cd84b50b7e4202fa8249b9ceb",
+			"sanitizedPayloadSha256": "364b4e1fb24abdd81a446b28efd25bf20ae9992cd84b50b7e4202fa8249b9ceb",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"cpu.stat.before.txt": {
+			"content": "usage_usec 13729\nuser_usec 6336\nsystem_usec 7392\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+			"rawPrivateSha256": "0a7d440dcbccb387e53365cfc3bc3e73931a57db7ff01d73a4d64c70f3aa90d3",
+			"sanitizedPayloadSha256": "0a7d440dcbccb387e53365cfc3bc3e73931a57db7ff01d73a4d64c70f3aa90d3",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"fixture-filesystem.txt": {
+			"content": "TARGET SOURCE         FSTYPE OPTIONS\n/      /dev/nvme0n1p2 ext4   rw,relatime\n",
+			"rawPrivateSha256": "cd2a03069998d8aa1be301dc5ae0ad605c2196291edf04377b1e2284110c0f3d",
+			"sanitizedPayloadSha256": "cd2a03069998d8aa1be301dc5ae0ad605c2196291edf04377b1e2284110c0f3d",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"harness-exit-status.txt": {
+			"content": "0\n",
+			"rawPrivateSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"sanitizedPayloadSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.pressure.after.txt": {
+			"content": "some avg10=0.06 avg60=0.02 avg300=0.00 total=67533\nfull avg10=0.06 avg60=0.02 avg300=0.00 total=67497\n",
+			"rawPrivateSha256": "d611f5855b8be2d89dcdeea5c7e04efcff125c1649186dea405bc5a0299b9ccf",
+			"sanitizedPayloadSha256": "d611f5855b8be2d89dcdeea5c7e04efcff125c1649186dea405bc5a0299b9ccf",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.pressure.before.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+			"rawPrivateSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"sanitizedPayloadSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.stat.after.txt": {
+			"content": "unavailable\n",
+			"rawPrivateSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"sanitizedPayloadSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"io.stat.before.txt": {
+			"content": "unavailable\n",
+			"rawPrivateSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"sanitizedPayloadSha256": "05a8087c5e42d4f63b7fb36de8ad93ec31a17722092b5eb6c12319f41b2ab759",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.current.after.txt": {
+			"content": "32763904\n",
+			"rawPrivateSha256": "862288c6124d827b9ab0510448cd7a6043577cdcef1d8f07f78fc0bd30ff4d65",
+			"sanitizedPayloadSha256": "862288c6124d827b9ab0510448cd7a6043577cdcef1d8f07f78fc0bd30ff4d65",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.current.before.txt": {
+			"content": "3973120\n",
+			"rawPrivateSha256": "9b498671a0778391d0b79ea605ed87f02e30ea922f8456a223f1bb80522e7593",
+			"sanitizedPayloadSha256": "9b498671a0778391d0b79ea605ed87f02e30ea922f8456a223f1bb80522e7593",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.events.after.txt": {
+			"content": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+			"rawPrivateSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"sanitizedPayloadSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.events.before.txt": {
+			"content": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+			"rawPrivateSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"sanitizedPayloadSha256": "0a2d4e7982066cc7dc914627e7b195ccba88b82a5a996201809e529142d2f380",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.high.observed.txt": {
+			"content": "max\n",
+			"rawPrivateSha256": "dbe7218fd3953d71eac340668b850fe4b57278326a462a0cf0ad506efbf8b02e",
+			"sanitizedPayloadSha256": "dbe7218fd3953d71eac340668b850fe4b57278326a462a0cf0ad506efbf8b02e",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.max.after.txt": {
+			"content": "2147483648\n",
+			"rawPrivateSha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e",
+			"sanitizedPayloadSha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.max.before.txt": {
+			"content": "2147483648\n",
+			"rawPrivateSha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e",
+			"sanitizedPayloadSha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.max.observed.txt": {
+			"content": "2147483648\n",
+			"rawPrivateSha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e",
+			"sanitizedPayloadSha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.peak.after.txt": {
+			"content": "557387776\n",
+			"rawPrivateSha256": "1ba050d5b07b9f861f7caede30bcfa48934be30a4cd8fd477f239d356690095e",
+			"sanitizedPayloadSha256": "1ba050d5b07b9f861f7caede30bcfa48934be30a4cd8fd477f239d356690095e",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.peak.before.txt": {
+			"content": "4141056\n",
+			"rawPrivateSha256": "3d7d7fe29e7cb5256bb90a9c49f6310a8a89e75f221d12cc1a5d7b36b68acb75",
+			"sanitizedPayloadSha256": "3d7d7fe29e7cb5256bb90a9c49f6310a8a89e75f221d12cc1a5d7b36b68acb75",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.pressure.after.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=13\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=13\n",
+			"rawPrivateSha256": "1e4aece63919ea81018f74d91316c5f4413d0e084a2cab06d854d0e0ff4c7065",
+			"sanitizedPayloadSha256": "1e4aece63919ea81018f74d91316c5f4413d0e084a2cab06d854d0e0ff4c7065",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.pressure.before.txt": {
+			"content": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+			"rawPrivateSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"sanitizedPayloadSha256": "412d920370f34151bf0ed4a09cb00c0495ef7d8f922049744e873bbc34c2f17f",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.stat.after.txt": {
+			"content": "anon 1650688\nfile 25509888\nkernel 1818624\nkernel_stack 16384\npagetables 802816\nsec_pagetables 0\npercpu 2112\nsock 0\nvmalloc 0\nshmem 0\nzswap 0\nzswapped 0\nfile_mapped 0\nfile_dirty 40960\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 0\nactive_anon 1495040\ninactive_file 25497600\nactive_file 0\nunevictable 0\nslab_reclaimable 140784\nslab_unreclaimable 895520\nslab 1036304\nhugetlb 0\nworkingset_refault_anon 0\nworkingset_refault_file 6190\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 9\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgpromote_success 0\npgscan 0\npgsteal 0\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 401505\npgmajfault 0\npgrefill 0\npgactivate 0\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nzswpin 0\nzswpout 0\nzswpwb 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nnuma_pages_migrated 0\nnuma_pte_updates 0\nnuma_hint_faults 0\n",
+			"rawPrivateSha256": "39ee165357a2d19582e4cef519b871aae15bdfd0252187e7953a1a434064b6c3",
+			"sanitizedPayloadSha256": "39ee165357a2d19582e4cef519b871aae15bdfd0252187e7953a1a434064b6c3",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.stat.before.txt": {
+			"content": "anon 1642496\nfile 32768\nkernel 1310720\nkernel_stack 16384\npagetables 1044480\nsec_pagetables 0\npercpu 1760\nsock 0\nvmalloc 0\nshmem 0\nzswap 0\nzswapped 0\nfile_mapped 0\nfile_dirty 32768\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 0\nactive_anon 1544192\ninactive_file 24576\nactive_file 0\nunevictable 0\nslab_reclaimable 35248\nslab_unreclaimable 194728\nslab 229976\nhugetlb 0\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgpromote_success 0\npgscan 0\npgsteal 0\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 5103\npgmajfault 0\npgrefill 0\npgactivate 0\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nzswpin 0\nzswpout 0\nzswpwb 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nnuma_pages_migrated 0\nnuma_pte_updates 0\nnuma_hint_faults 0\n",
+			"rawPrivateSha256": "00ba156a8468235dd426d918a0455daa85467a50fbeea7c93858f8b00cbd6184",
+			"sanitizedPayloadSha256": "00ba156a8468235dd426d918a0455daa85467a50fbeea7c93858f8b00cbd6184",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.swap.max.after.txt": {
+			"content": "0\n",
+			"rawPrivateSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"sanitizedPayloadSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.swap.max.before.txt": {
+			"content": "0\n",
+			"rawPrivateSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"sanitizedPayloadSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"memory.swap.max.observed.txt": {
+			"content": "0\n",
+			"rawPrivateSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"sanitizedPayloadSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"pure-tests.txt": {
+			"content": "\u2714 deterministic catalog keeps exactly 1000 rows per token and excludes writer (8.43429ms)\n\u2714 histogram retains bounded latency distribution and explicit rejection count (0.69075ms)\n\u2714 stop after successful readiness prevents restart and later catalogs while finally cleanup runs (0.672618ms)\n\u2714 cell verdict rejects read/write errors and empty successful sample populations (0.182984ms)\n\u2714 cleanup failure still publishes unqualified evidence and preserves the primary failure (0.376659ms)\n\u2714 known exact counts pass, unknown totals remain distinct degraded evidence and wrong data stays fatal (0.929689ms)\n\u2714 large catalog requires explicit opt-in and preserves integral 1000-match buckets and a finite ceiling (2.041079ms)\n\u2714 disk guard accepts only valid totals with vanished paths and rejects other measurement failures (0.800568ms)\n\u2714 an in-flight sampler guard failure during cleanup cannot publish a qualified report (0.386851ms)\n\u2139 tests 9\n\u2139 suites 0\n\u2139 pass 9\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 88.450981\n",
+			"rawPrivateSha256": "678b3305f12306fde96dc347ee62dbfc92ca5fc3cfb1a84a67b470eb395ffb01",
+			"sanitizedPayloadSha256": "678b3305f12306fde96dc347ee62dbfc92ca5fc3cfb1a84a67b470eb395ffb01",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"scope-ended-at.txt": {
+			"content": "2026-11-01T19:15:15Z\n",
+			"rawPrivateSha256": "b0860aaeee7fc566e5ab833581e7938fd0e5e76c5ed3246f9045db30eb9ea280",
+			"sanitizedPayloadSha256": "b0860aaeee7fc566e5ab833581e7938fd0e5e76c5ed3246f9045db30eb9ea280",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"scope-exit-status.txt": {
+			"content": "0\n",
+			"rawPrivateSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"sanitizedPayloadSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		"scope-started-at.txt": {
+			"content": "2026-11-01T19:14:57Z\n",
+			"rawPrivateSha256": "eac69157389dcb7d738968b125e5c7252b290a44abb97ccb7d859ec49803d2b0",
+			"sanitizedPayloadSha256": "eac69157389dcb7d738968b125e5c7252b290a44abb97ccb7d859ec49803d2b0",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		}
+	}
+}

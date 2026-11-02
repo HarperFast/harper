@@ -1,0 +1,15 @@
+{
+	"invalidCells": [
+		{
+			"name": "sort",
+			"concurrency": 8,
+			"writesPerSecond": 0,
+			"reason": "Overlapped separate native smoke 2026-11-01T16:24:57Z to16:25:05Z; excluded from performance claims until repeated.",
+			"supersededBy": "pilot-sort-repeat.json.gz"
+		}
+	],
+	"harnessRevision": "Pre persistent-stop/verdict patch; original harness hashes remain in provenance.json. No interruption occurred.",
+	"qualificationScope": "single-HTTP-worker",
+	"workerObservationCorrection": "Earlier union of thread IDs spans startup and restart PIDs and is not evidence of two active HTTP workers. Per-cell diagnostics support a single serving HTTP worker on macOS exclusive bind.",
+	"repeatScope": "Timing/oracle valid for single serving worker; overall repeat report is unqualified because its older worker guard required two."
+}

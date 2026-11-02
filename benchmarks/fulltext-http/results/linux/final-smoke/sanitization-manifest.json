@@ -1,0 +1,91 @@
+{
+	"format": 1,
+	"sourceDirectoryBasename": "fulltext-linux-final-smoke-82d",
+	"policy": "Preserve all selected metrics/report/errors/provenance and nine pure-test outcomes. Only private identity/path strings redacted. No run/monitor logs, registry contents, configuration/auth/environment/cmdline. TMPDIR text excluded. Cleanup provenance contains only summarized registry facts with paths redacted.",
+	"artifacts": [
+		{
+			"sourceRelativePath": "1000.json",
+			"publishedRelativePath": "1000.json.gz",
+			"rawPrivateSha256": "cfa8a28b503b5fdf263f1cb791a9daf3463cebfdf81cf449463c9137f6a9a7a7",
+			"sanitizedPayloadSha256": "cfa8a28b503b5fdf263f1cb791a9daf3463cebfdf81cf449463c9137f6a9a7a7",
+			"compressedSha256": "40b9a8ea7b080bc8b2923ec65bcb0ee75c1c6c505b1d7b53db9a6eb39e3de04d",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "errors.ndjson",
+			"publishedRelativePath": "errors.ndjson.gz",
+			"rawPrivateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"sanitizedPayloadSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"compressedSha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "provenance.json",
+			"publishedRelativePath": "provenance.json.gz",
+			"rawPrivateSha256": "a3fc60cb8dd72ef7c5338e34c7c0cdf1b5c27ab95abb7e7e82ac4f6b89b45f82",
+			"sanitizedPayloadSha256": "a3fc60cb8dd72ef7c5338e34c7c0cdf1b5c27ab95abb7e7e82ac4f6b89b45f82",
+			"compressedSha256": "86973ea420e83b9f07b10e94a4f3800f59c6667797965ad1486a4178929ec1de",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"sourceRelativePath": "cleanup-provenance.json",
+			"publishedRelativePath": "cleanup-provenance.json.gz",
+			"rawPrivateSha256": "1c350d1d1e35c19860b4d6f29ca886bc2fe7a25ba8bfc1918026ffdf09769d30",
+			"sanitizedPayloadSha256": "bba88ff63b65839322dd6770a4d30c80228ce132147c48c4cb4cf9191e98b395",
+			"compressedSha256": "175d6a126ae04719b86c80069aefe74fdae99b47fa7f5ec213e3b97dfb8411ef",
+			"replacementCount": 0,
+			"replacementCategories": {}
+		},
+		{
+			"publishedRelativePath": "measurement-receipt.json",
+			"sha256": "7ba793c907268b549a925993e0b4c5ea7c9bf79cdbd7bf572a7c19923a06d2b5",
+			"inputPaths": [
+				"actual-fixture-mount-proof.txt",
+				"cgroup-relative.txt",
+				"cpu.max.after.txt",
+				"cpu.max.before.txt",
+				"cpu.max.observed.txt",
+				"cpu.pressure.after.txt",
+				"cpu.pressure.before.txt",
+				"cpu.stat.after.txt",
+				"cpu.stat.before.txt",
+				"fixture-filesystem.txt",
+				"harness-exit-status.txt",
+				"io.pressure.after.txt",
+				"io.pressure.before.txt",
+				"io.stat.after.txt",
+				"io.stat.before.txt",
+				"memory.current.after.txt",
+				"memory.current.before.txt",
+				"memory.events.after.txt",
+				"memory.events.before.txt",
+				"memory.high.observed.txt",
+				"memory.max.after.txt",
+				"memory.max.before.txt",
+				"memory.max.observed.txt",
+				"memory.peak.after.txt",
+				"memory.peak.before.txt",
+				"memory.pressure.after.txt",
+				"memory.pressure.before.txt",
+				"memory.stat.after.txt",
+				"memory.stat.before.txt",
+				"memory.swap.max.after.txt",
+				"memory.swap.max.before.txt",
+				"memory.swap.max.observed.txt",
+				"pure-tests.txt",
+				"scope-ended-at.txt",
+				"scope-exit-status.txt",
+				"scope-started-at.txt"
+			]
+		}
+	],
+	"generatedArtifacts": [
+		{
+			"path": "README.md",
+			"sha256": "763e9d400ed7fc0c5bef0c87f73050d3163c6d1aeb37f8f67545c0dbe7a6aa96"
+		}
+	]
+}

@@ -1,0 +1,49 @@
+{
+	"baseline": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
+	"node": "v24.16.0",
+	"dependencyLocation": "<feature-worktree>/node_modules",
+	"records": [
+		{
+			"root": "<baseline-worktree>",
+			"package": "@harperfast/fulltext",
+			"installed": "0.8.0",
+			"locked": "0.8.0",
+			"lockIntegrity": "sha512-7T+i2PbdsyrXwb4V2mcE23Pk8DwOl12vgE8YodTe/KUeS7tzJp8I/uQOkD5YiW1ga4WasfLVbZrcTi5pULMjAg=="
+		},
+		{
+			"root": "<baseline-worktree>",
+			"package": "@harperfast/rocksdb-js",
+			"installed": "2.13.0",
+			"locked": "2.13.0",
+			"lockIntegrity": "sha512-dtWsJH8pYe+hoU0n7t8dR+6iRjut5HvyrQPjgfPjk/Ysw0HNqo/1zVv/xsnApRZXT7h6w3t+aBdkZ4zQ8BbMhg=="
+		},
+		{
+			"root": "<baseline-worktree>",
+			"package": "@harperfast/integration-testing",
+			"installed": "1.0.3",
+			"locked": "1.0.3",
+			"lockIntegrity": "sha512-MbINUiDgHuyQLCPDtFK6AxwIJLugcOB27Q9Q+lUr667Opw0pUVRB2rVNGA70RsCaua6mX0RTPULZqQyRHTvVPA=="
+		},
+		{
+			"root": "<feature-worktree>",
+			"package": "@harperfast/fulltext",
+			"installed": "0.8.0",
+			"locked": "0.8.0",
+			"lockIntegrity": "sha512-7T+i2PbdsyrXwb4V2mcE23Pk8DwOl12vgE8YodTe/KUeS7tzJp8I/uQOkD5YiW1ga4WasfLVbZrcTi5pULMjAg=="
+		},
+		{
+			"root": "<feature-worktree>",
+			"package": "@harperfast/rocksdb-js",
+			"installed": "2.13.0",
+			"locked": "2.13.0",
+			"lockIntegrity": "sha512-dtWsJH8pYe+hoU0n7t8dR+6iRjut5HvyrQPjgfPjk/Ysw0HNqo/1zVv/xsnApRZXT7h6w3t+aBdkZ4zQ8BbMhg=="
+		},
+		{
+			"root": "<feature-worktree>",
+			"package": "@harperfast/integration-testing",
+			"installed": "1.0.3",
+			"locked": "1.0.3",
+			"lockIntegrity": "sha512-MbINUiDgHuyQLCPDtFK6AxwIJLugcOB27Q9Q+lUr667Opw0pUVRB2rVNGA70RsCaua6mX0RTPULZqQyRHTvVPA=="
+		}
+	]
+}

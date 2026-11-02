@@ -1,0 +1,1268 @@
+{
+	"scope": "Local 9000-row single-process real-native qualification. Original eight sort cells and later matched relevance controls used different recorded harness commits. Strict freshness includes publication wait; not OS-cold, multiworker HTTP or catalog-scale release qualification. No 50ms release gate is claimed.",
+	"sourceArtifacts": [
+		{
+			"sha256": "de0e5a91cef5d328e70105db29cbe3168a2b0f148e80e389c3a8fe0959283068",
+			"commit": "d5e49215c9628ee9f3b5cc83f0f7a43b5b8eea3b",
+			"harnessSha256": null,
+			"cellCount": 8,
+			"localOriginalArtifactName": "fulltext-qualification-final-20261101/report.json",
+			"availability": "Original full memory series not bundled; raw query/write latency samples are committed separately."
+		},
+		{
+			"sha256": "1b49d623af5a128af0c815cc78f90ec79ae6da18eba7097480ae1d6806fc0570",
+			"commit": "f4551b4be26974f3944132d77c72e9d25c98addc",
+			"harnessSha256": {
+				"fulltext-qualification.cjs": "04a2ed193c982bf0e4b4d83fa4e86c8521c2ae11b59d3b8b09af9b81f7d424a9",
+				"run-fulltext-qualification.cjs": "1b63d70fcd4c19630b0ec5010ab3f12b258f7b6d2a8f26aad5c9bd3a4e0417a1"
+			},
+			"cellCount": 2,
+			"localOriginalArtifactName": "fulltext-qualification-relevance-20261101/report.json",
+			"availability": "Original full memory series not bundled; raw query/write latency samples are committed separately."
+		}
+	],
+	"latencyArtifact": {
+		"path": "benchmarks/fulltext-qualification-latencies.json.gz",
+		"encoding": "gzip JSON; mtime=0; array entries address sourceArtifact and cellIndex",
+		"sha256": "58a61373f2586ad95a2e49c612337d818d3d04caf355217e7beddebb1233f299",
+		"uncompressedSha256": "b6c0828b80450a7328ce03ff185c6758c77886b7d438285bf8b572bef122a193",
+		"bytes": 1209960
+	},
+	"cells": [
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 1,
+			"concurrency": 1,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60009.193083000006,
+			"firstQueryMilliseconds": 237.1405000000002,
+			"query": {
+				"p50Milliseconds": 23.073417000000518,
+				"p95Milliseconds": 29.147084000000177,
+				"p99Milliseconds": 33.53070899999875,
+				"p100Milliseconds": 172.31779200000005,
+				"operationsPerSecond": 41.993565827731324,
+				"sampleCount": 2520
+			},
+			"writes": {
+				"operationsPerSecond": 0,
+				"sampleCount": 0
+			},
+			"cpuMicroseconds": {
+				"user": 65009226,
+				"system": 997603
+			},
+			"eventLoopUtilization": {
+				"idle": 11414.858376,
+				"active": 48594.32599880926,
+				"utilization": 0.8097814777034072
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 10.338303,
+				"p95": 15.523839,
+				"p99": 17.907711,
+				"max": 139.067391
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 647348224,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 0,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 647331840,
+				"heapTotal": 463159296,
+				"heapUsed": 385501576,
+				"external": 37949106,
+				"arrayBuffers": 10571105
+			},
+			"memorySeriesSampleCount": 5180,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 9.193083000005572,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 1,
+			"concurrency": 1,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60056.881459,
+			"firstQueryMilliseconds": 1026.1730830000001,
+			"query": {
+				"p50Milliseconds": 1002.7802499999998,
+				"p95Milliseconds": 1030.2266670000008,
+				"p99Milliseconds": 1096.7186250000013,
+				"p100Milliseconds": 1096.7186250000013,
+				"operationsPerSecond": 0.9990528735822084,
+				"sampleCount": 60
+			},
+			"writes": {
+				"p50Milliseconds": 0.5721669999984442,
+				"p95Milliseconds": 3.27758299999914,
+				"p99Milliseconds": 4.671208000000206,
+				"p100Milliseconds": 7.581374999994296,
+				"operationsPerSecond": 9.990528735822084,
+				"sampleCount": 600
+			},
+			"cpuMicroseconds": {
+				"user": 4789621,
+				"system": 1381070
+			},
+			"eventLoopUtilization": {
+				"idle": 56860.806886,
+				"active": 3196.0806967789326,
+				"utilization": 0.05321755464556235
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 11.059199,
+				"p95": 12.230655,
+				"p99": 12.820479,
+				"max": 44.859391
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 419758080,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 1,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 419627008,
+				"heapTotal": 245186560,
+				"heapUsed": 153529392,
+				"external": 28558983,
+				"arrayBuffers": 1444609
+			},
+			"memorySeriesSampleCount": 2901,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 56.88145899999654,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 1,
+			"concurrency": 4,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60063.71975,
+			"firstQueryMilliseconds": 993.7568749999998,
+			"query": {
+				"p50Milliseconds": 76.1169170000012,
+				"p95Milliseconds": 115.7314580000002,
+				"p99Milliseconds": 123.049417000002,
+				"p100Milliseconds": 198.80091700000048,
+				"operationsPerSecond": 50.146744366427626,
+				"sampleCount": 3012
+			},
+			"writes": {
+				"operationsPerSecond": 0,
+				"sampleCount": 0
+			},
+			"cpuMicroseconds": {
+				"user": 79281960,
+				"system": 775667
+			},
+			"eventLoopUtilization": {
+				"idle": 2988.43736,
+				"active": 57075.2845571524,
+				"utilization": 0.950245551480775
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 10.395647,
+				"p95": 36.863999,
+				"p99": 46.596095,
+				"max": 107.610111
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 723386368,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 2,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 723386368,
+				"heapTotal": 546193408,
+				"heapUsed": 474848680,
+				"external": 38953036,
+				"arrayBuffers": 11313408
+			},
+			"memorySeriesSampleCount": 5335,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 63.719749999996566,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 1,
+			"concurrency": 4,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60928.411084,
+			"firstQueryMilliseconds": 1005.1689999999999,
+			"query": {
+				"p50Milliseconds": 996.2979589999959,
+				"p95Milliseconds": 1045.3030419999996,
+				"p99Milliseconds": 1111.8919580000002,
+				"p100Milliseconds": 1130.2592919999988,
+				"operationsPerSecond": 4.004699870863286,
+				"sampleCount": 244
+			},
+			"writes": {
+				"p50Milliseconds": 0.3724159999983385,
+				"p95Milliseconds": 3.827625000001717,
+				"p99Milliseconds": 5.578208999999333,
+				"p100Milliseconds": 50.457249999999476,
+				"operationsPerSecond": 9.847622633270376,
+				"sampleCount": 600
+			},
+			"cpuMicroseconds": {
+				"user": 8279796,
+				"system": 1312371
+			},
+			"eventLoopUtilization": {
+				"idle": 55183.022788999995,
+				"active": 5745.40954494623,
+				"utilization": 0.09429767556558614
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 11.042815,
+				"p95": 12.247039,
+				"p99": 31.637503,
+				"max": 66.748415
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 589168640,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 3,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 589135872,
+				"heapTotal": 368984064,
+				"heapUsed": 279764824,
+				"external": 31234291,
+				"arrayBuffers": 3832056
+			},
+			"memorySeriesSampleCount": 3064,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 928.4110839999994,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 32,
+			"concurrency": 1,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60038.217124999996,
+			"firstQueryMilliseconds": 1060.192667,
+			"query": {
+				"p50Milliseconds": 72.49150000000009,
+				"p95Milliseconds": 78.89112499999464,
+				"p99Milliseconds": 85.23708299999998,
+				"p100Milliseconds": 111.89266599999974,
+				"operationsPerSecond": 13.707935368675392,
+				"sampleCount": 823
+			},
+			"writes": {
+				"operationsPerSecond": 0,
+				"sampleCount": 0
+			},
+			"cpuMicroseconds": {
+				"user": 61895005,
+				"system": 439982
+			},
+			"eventLoopUtilization": {
+				"idle": 3889.7553209999996,
+				"active": 56148.438471343135,
+				"utilization": 0.9352119863156831
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 10.625023,
+				"p95": 65.404927,
+				"p99": 67.633151,
+				"max": 90.963967
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 626589696,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 4,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 626589696,
+				"heapTotal": 464994304,
+				"heapUsed": 391899744,
+				"external": 37494329,
+				"arrayBuffers": 10264996
+			},
+			"memorySeriesSampleCount": 1773,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 38.217124999995576,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 32,
+			"concurrency": 1,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60836.949833,
+			"firstQueryMilliseconds": 1081.4474169999999,
+			"query": {
+				"p50Milliseconds": 1002.4111249999987,
+				"p95Milliseconds": 1031.3685830000031,
+				"p99Milliseconds": 1049.1617910000004,
+				"p100Milliseconds": 1049.1617910000004,
+				"operationsPerSecond": 1.00268011738668,
+				"sampleCount": 61
+			},
+			"writes": {
+				"p50Milliseconds": 0.8853330000019923,
+				"p95Milliseconds": 3.8381250000020373,
+				"p99Milliseconds": 6.033332999999402,
+				"p100Milliseconds": 56.559416999999485,
+				"operationsPerSecond": 9.862427384131278,
+				"sampleCount": 600
+			},
+			"cpuMicroseconds": {
+				"user": 8543232,
+				"system": 1611725
+			},
+			"eventLoopUtilization": {
+				"idle": 53998.191328,
+				"active": 6838.748504687375,
+				"utilization": 0.11241111935437868
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 11.042815,
+				"p95": 12.255231,
+				"p99": 61.046783,
+				"max": 73.138175
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 413401088,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 5,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 413270016,
+				"heapTotal": 235356160,
+				"heapUsed": 148546072,
+				"external": 28133324,
+				"arrayBuffers": 1037077
+			},
+			"memorySeriesSampleCount": 2805,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 836.9498329999988,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 32,
+			"concurrency": 4,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60197.762166,
+			"firstQueryMilliseconds": 1063.281625,
+			"query": {
+				"p50Milliseconds": 255.62279200000194,
+				"p95Milliseconds": 276.22333400000207,
+				"p99Milliseconds": 288.58891700000095,
+				"p100Milliseconds": 329.5532080000012,
+				"operationsPerSecond": 15.482303103393406,
+				"sampleCount": 932
+			},
+			"writes": {
+				"operationsPerSecond": 0,
+				"sampleCount": 0
+			},
+			"cpuMicroseconds": {
+				"user": 66546929,
+				"system": 305324
+			},
+			"eventLoopUtilization": {
+				"idle": 884.4513890000001,
+				"active": 59313.31840260309,
+				"utilization": 0.9853075721565457
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 10.395647,
+				"p95": 217.841663,
+				"p99": 225.837055,
+				"max": 243.924991
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 683114496,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 6,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 683048960,
+				"heapTotal": 511393792,
+				"heapUsed": 427006240,
+				"external": 36097892,
+				"arrayBuffers": 9013272
+			},
+			"memorySeriesSampleCount": 1636,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 197.76216600000043,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 32,
+			"concurrency": 4,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 60000,
+			"elapsedMilliseconds": 60880.538167,
+			"firstQueryMilliseconds": 1088.168542,
+			"query": {
+				"p50Milliseconds": 1001.2247500000012,
+				"p95Milliseconds": 1034.3800000000047,
+				"p99Milliseconds": 1061.9757919999975,
+				"p100Milliseconds": 1063.7731249999997,
+				"operationsPerSecond": 3.9914233237136028,
+				"sampleCount": 243
+			},
+			"writes": {
+				"p50Milliseconds": 0.7061669999966398,
+				"p95Milliseconds": 3.942416000000321,
+				"p99Milliseconds": 5.6397500000020955,
+				"p100Milliseconds": 7.9331660000025295,
+				"operationsPerSecond": 9.822515010620307,
+				"sampleCount": 598
+			},
+			"cpuMicroseconds": {
+				"user": 20268719,
+				"system": 1621129
+			},
+			"eventLoopUtilization": {
+				"idle": 43340.415966,
+				"active": 17540.07082656439,
+				"utilization": 0.2881066126545269
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 11.042815,
+				"p95": 12.345343,
+				"p99": 212.074495,
+				"max": 241.565695
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 661684224,
+			"errors": [],
+			"sourceArtifact": 0,
+			"sourceCellIndex": 7,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 661667840,
+				"heapTotal": 474628096,
+				"heapUsed": 390206120,
+				"external": 33055080,
+				"arrayBuffers": 5436451
+			},
+			"memorySeriesSampleCount": 2551,
+			"memoryInterpretation": "Includes setup and retained latency/memory measurement arrays; not isolated product RAM.",
+			"posthocVerifiedConfiguration": {
+				"queryFreshness": {
+					"maxIndexLagMilliseconds": 0,
+					"waitForIndexMilliseconds": 30000
+				},
+				"measurementWindowMilliseconds": 60000,
+				"drainMilliseconds": 880.5381669999988,
+				"basis": "Verified against harness source at recorded commit; these fields were not emitted by the original run."
+			}
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 0,
+			"concurrency": 1,
+			"writesPerSecond": 0,
+			"durationMilliseconds": 60000,
+			"measurementWindowMilliseconds": 60000,
+			"drainMilliseconds": 0.20229200000176206,
+			"queryFreshness": {
+				"maxIndexLagMilliseconds": 0,
+				"waitForIndexMilliseconds": 30000
+			},
+			"elapsedMilliseconds": 60000.202292,
+			"firstQueryMilliseconds": 780.1560829999999,
+			"query": {
+				"p50Milliseconds": 0.18383300000095915,
+				"p95Milliseconds": 0.20908300000155577,
+				"p99Milliseconds": 0.26170799999817973,
+				"p100Milliseconds": 38.59366600000067,
+				"operationsPerSecond": 5237.382341990855,
+				"sampleCount": 314244
+			},
+			"writes": {
+				"operationsPerSecond": 0,
+				"sampleCount": 0
+			},
+			"cpuMicroseconds": {
+				"user": 59791911,
+				"system": 4442375
+			},
+			"eventLoopUtilization": {
+				"idle": 30440.108242,
+				"active": 29560.076008831606,
+				"utilization": 0.49266642057723187
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 10.002431,
+				"p95": 10.133503,
+				"p99": 10.199039,
+				"max": 40.959999
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 810106880,
+			"errors": [],
+			"sourceArtifact": 1,
+			"sourceCellIndex": 0,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 795131904,
+				"heapTotal": 548241408,
+				"heapUsed": 459417216,
+				"external": 41884577,
+				"arrayBuffers": 14786813
+			},
+			"memorySeriesSampleCount": 317243,
+			"memoryInterpretation": "Includes setup and retained measurement arrays; relevance-only high-throughput cell is measurement-storage-confounded and cannot compare product RAM."
+		},
+		{
+			"scope": "Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.",
+			"node": "v24.16.0",
+			"platform": "darwin",
+			"architecture": "arm64",
+			"cpu": "Apple M4 Pro",
+			"memoryBytes": 25769803776,
+			"package": "0.8.0",
+			"runtime": {
+				"packageVersion": "0.8.0",
+				"tantivyVersion": "0.27.0",
+				"nativeAbiVersion": 13,
+				"queryApiVersion": 7,
+				"queryClassIsolationMinimumSearchThreads": 2,
+				"lifecycleApiVersion": 1,
+				"mutationBatchApiVersion": 5,
+				"storageBackends": ["native"],
+				"limits": {
+					"maxConfiguredQueryTerms": 1024,
+					"maxConfiguredQueryClauses": 4096,
+					"maxAggregationDepth": 32,
+					"maxAggregationBuckets": 1024,
+					"maxAggregationMemoryBytes": 16777216,
+					"maxSortKeyBytes": 67108864,
+					"maxTermKeyBytes": 16777216,
+					"maxCommitPayloadBytes": 65536,
+					"maxQueryTextBytes": 65536,
+					"maxQueryTerms": 64,
+					"maxQueryClauses": 256,
+					"maxCandidateIds": 1024,
+					"maxCandidateBytes": 1048576,
+					"maxRecordIdBytes": 4096,
+					"maxRecordVersionBytes": 4096,
+					"maxPrefixExpansions": 50,
+					"maxFuzzyTerms": 16,
+					"maxFuzzyDistance": 2,
+					"maxSearchWindow": 10000,
+					"maxSearchPageSize": 10000,
+					"maxFilterStringBytes": 65530,
+					"maxAutocompleteResults": 100,
+					"maxSearchRequestBytes": 8388608,
+					"maxSearchResponseBytes": 8388608,
+					"maxSearchBudgetMilliseconds": 30000,
+					"maxTraceRecords": 100,
+					"maxTraceSourceBytes": 1048576,
+					"maxTraceSpans": 1024,
+					"maxSynonymRules": 1024,
+					"maxSynonymReplacements": 16,
+					"maxSynonymBytes": 1048576
+				}
+			},
+			"policy": {
+				"requestBudgetMilliseconds": 5000,
+				"maxRawHitsPerRequest": 10000,
+				"maxResultsPerRequest": 10000,
+				"runtime": {
+					"maxResidentIndexes": 128,
+					"maxIndexingThreads": 128,
+					"maxSearchThreads": 256,
+					"maxWriterMemoryBytes": 4294967296,
+					"maxQueuedBytes": 8589934592,
+					"maxExpensiveSearches": 8
+				}
+			},
+			"rows": 9000,
+			"seed": 7919,
+			"clauses": 0,
+			"concurrency": 1,
+			"writesPerSecond": 10,
+			"durationMilliseconds": 60000,
+			"measurementWindowMilliseconds": 60000,
+			"drainMilliseconds": 45.705457999996725,
+			"queryFreshness": {
+				"maxIndexLagMilliseconds": 0,
+				"waitForIndexMilliseconds": 30000
+			},
+			"elapsedMilliseconds": 60045.705458,
+			"firstQueryMilliseconds": 974.166333,
+			"query": {
+				"p50Milliseconds": 1003.9425829999964,
+				"p95Milliseconds": 1032.0320829999982,
+				"p99Milliseconds": 1037.645875000002,
+				"p100Milliseconds": 1037.645875000002,
+				"operationsPerSecond": 1.0658547436796444,
+				"sampleCount": 64
+			},
+			"writes": {
+				"p50Milliseconds": 0.34766700000182027,
+				"p95Milliseconds": 3.2710839999999735,
+				"p99Milliseconds": 4.156082999999853,
+				"p100Milliseconds": 5.02520800000093,
+				"operationsPerSecond": 9.992388221996663,
+				"sampleCount": 600
+			},
+			"cpuMicroseconds": {
+				"user": 1343238,
+				"system": 1073124
+			},
+			"eventLoopUtilization": {
+				"idle": 59188.703664,
+				"active": 856.9707935500511,
+				"utilization": 0.014271982141792679
+			},
+			"eventLoopDelayMilliseconds": {
+				"p50": 11.272191,
+				"p95": 12.173311,
+				"p99": 12.566527,
+				"max": 23.576575
+			},
+			"lifetimeMaxRssBytesIncludingSetup": 423264256,
+			"errors": [],
+			"sourceArtifact": 1,
+			"sourceCellIndex": 1,
+			"derivedSampledMemoryPeaksBytes": {
+				"rss": 423133184,
+				"heapTotal": 226836480,
+				"heapUsed": 144290536,
+				"external": 28295806,
+				"arrayBuffers": 1899497
+			},
+			"memorySeriesSampleCount": 2900,
+			"memoryInterpretation": "Includes setup and retained measurement arrays; relevance-only high-throughput cell is measurement-storage-confounded and cannot compare product RAM."
+		}
+	],
+	"futureHarnessChange": "After these runs, memory instrumentation retains only the 20ms time series and rolling query-boundary peaks. That later change was not used for these observations."
+}

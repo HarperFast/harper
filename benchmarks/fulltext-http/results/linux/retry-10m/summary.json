@@ -1,0 +1,25 @@
+{
+	"harperHead": "c09243d1e4f9915a0e3b933dc01d45afa24faec0",
+	"setupMilliseconds": 582278.276287,
+	"totalCompletedReads": 63897,
+	"totalReadRejections": 0,
+	"totalReadTimeouts": 0,
+	"totalUnknownCounts": 0,
+	"errorRecords": 0,
+	"distinctBucketsAttemptedByCase": {
+		"relevance": 10000,
+		"sort": 4644,
+		"highlights": 3878,
+		"exact": 4470,
+		"structured": 5850
+	},
+	"cgroupPeakBytes": 4761116672,
+	"sampledTimedCellProcessRssMaximumBytes": 1916555264,
+	"diagnosticRecords": 9264,
+	"vanishedFileWalkObservation": {
+		"rawCounterPresent": false,
+		"derivedAcceptedWalkCount": 0,
+		"basis": "Exact guardDisk harness increments report.diskSamplesWithVanishedFiles when an exit-1 vanished-file walk is accepted; absent counter therefore records no accepted vanished-file walk. This is code-traced derivation, not an explicit raw zero or natural-path exercise.",
+		"harnessRunSha256": "7e2760e9eb7398c5894cc1b65f176e7c45635ef9d272d6a97afe660c6795fbd5"
+	}
+}

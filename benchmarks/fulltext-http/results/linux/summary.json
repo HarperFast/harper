@@ -1,0 +1,1138 @@
+{
+	"feature": {
+		"harperHead": "b5f6659f7d1ed33670d63a31807aacf5c7d8e2d5",
+		"cells": [
+			{
+				"name": "relevance",
+				"concurrency": 8,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30003.237266000004,
+				"reads": {
+					"completed": 105387,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 2.013183,
+					"p95": 4.624383,
+					"p99": 7.737343,
+					"max": 22.790143
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 3512.520967843217,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 495378432
+			},
+			{
+				"name": "relevance",
+				"concurrency": 8,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30024.65441399999,
+				"reads": {
+					"completed": 105059,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 2.084863,
+					"p95": 4.567039,
+					"p99": 7.217151,
+					"max": 22.216703
+				},
+				"writes": {
+					"completed": 292,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 2.390015,
+						"p95": 11.370495,
+						"p99": 11.370495,
+						"max": 11.370495
+					},
+					"p50": 2.578431,
+					"p95": 5.472255,
+					"p99": 8.675327,
+					"max": 13.303807
+				},
+				"throughput": 3499.091065341713,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 569344000
+			},
+			{
+				"name": "relevance",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30009.398978000012,
+				"reads": {
+					"completed": 125803,
+					"rejections": 8,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 8,
+						"p50": 14.147583,
+						"p95": 17.711103,
+						"p99": 17.711103,
+						"max": 17.711103
+					},
+					"p50": 7.483391,
+					"p95": 14.950399,
+					"p99": 19.611647,
+					"max": 33.439743
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 4192.119945228713,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 543580160
+			},
+			{
+				"name": "relevance",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30026.377760000003,
+				"reads": {
+					"completed": 124636,
+					"rejections": 6,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 6,
+						"p50": 6.447103,
+						"p95": 8.237055,
+						"p99": 8.237055,
+						"max": 8.237055
+					},
+					"p50": 7.524351,
+					"p95": 14.835711,
+					"p99": 19.546111,
+					"max": 35.651583
+				},
+				"writes": {
+					"completed": 290,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 3.231743,
+						"p95": 11.952127,
+						"p99": 11.952127,
+						"max": 11.952127
+					},
+					"p50": 8.118271,
+					"p95": 16.244735,
+					"p99": 21.708799,
+					"max": 30.883839
+				},
+				"throughput": 4150.883632924759,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 598622208
+			},
+			{
+				"name": "sort",
+				"concurrency": 8,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30056.033582999982,
+				"reads": {
+					"completed": 4619,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 57.180159,
+					"p95": 102.629375,
+					"p99": 115.802111,
+					"max": 156.237823
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 153.67962599737567,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 694149120
+			},
+			{
+				"name": "sort",
+				"concurrency": 8,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30098.006032999983,
+				"reads": {
+					"completed": 5338,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 41.418751,
+					"p95": 84.344831,
+					"p99": 100.335615,
+					"max": 171.966463
+				},
+				"writes": {
+					"completed": 292,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 8.880127,
+						"p95": 38.502399,
+						"p99": 38.502399,
+						"max": 38.502399
+					},
+					"p50": 12.673023,
+					"p95": 43.352063,
+					"p99": 58.523647,
+					"max": 113.049599
+				},
+				"throughput": 177.35394145869074,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 718094336
+			},
+			{
+				"name": "sort",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30134.413426000014,
+				"reads": {
+					"completed": 5555,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 171.966463,
+					"p95": 222.822399,
+					"p99": 241.827839,
+					"max": 278.659071
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 184.34073766331016,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 716111872
+			},
+			{
+				"name": "sort",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30214.02636800002,
+				"reads": {
+					"completed": 5402,
+					"rejections": 2,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 2,
+						"p50": 35.127295,
+						"p95": 161.480703,
+						"p99": 161.480703,
+						"max": 161.480703
+					},
+					"p50": 176.160767,
+					"p95": 283.377663,
+					"p99": 302.514175,
+					"max": 331.350015
+				},
+				"writes": {
+					"completed": 175,
+					"rejections": 7,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 7,
+						"p50": 130.809855,
+						"p95": 171.835391,
+						"p99": 171.835391,
+						"max": 171.835391
+					},
+					"p50": 170.262527,
+					"p95": 228.458495,
+					"p99": 235.667455,
+					"max": 238.813183
+				},
+				"throughput": 178.79113277405864,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 730865664
+			},
+			{
+				"name": "highlights",
+				"concurrency": 8,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30045.436800999974,
+				"reads": {
+					"completed": 4450,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 62.193663,
+					"p95": 104.202239,
+					"p99": 113.770495,
+					"max": 135.004159
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 148.10901334115053,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 712998912
+			},
+			{
+				"name": "highlights",
+				"concurrency": 8,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30085.210424999997,
+				"reads": {
+					"completed": 4899,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 49.610751,
+					"p95": 98.631679,
+					"p99": 114.687999,
+					"max": 160.169983
+				},
+				"writes": {
+					"completed": 292,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 10.412031,
+						"p95": 77.070335,
+						"p99": 77.070335,
+						"max": 77.070335
+					},
+					"p50": 12.451839,
+					"p95": 44.990463,
+					"p99": 62.586879,
+					"max": 78.512127
+				},
+				"throughput": 162.83748495669698,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 741576704
+			},
+			{
+				"name": "highlights",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30185.66054699995,
+				"reads": {
+					"completed": 5217,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 183.631871,
+					"p95": 267.255807,
+					"p99": 304.611327,
+					"max": 359.661567
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 172.83040706950837,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 741449728
+			},
+			{
+				"name": "highlights",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30178.908785999985,
+				"reads": {
+					"completed": 5146,
+					"rejections": 1,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 1,
+						"p50": 38.797311,
+						"p95": 38.797311,
+						"p99": 38.797311,
+						"max": 38.797311
+					},
+					"p50": 186.253311,
+					"p95": 234.487807,
+					"p99": 257.032191,
+					"max": 322.699263
+				},
+				"writes": {
+					"completed": 197,
+					"rejections": 6,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 6,
+						"p50": 130.285567,
+						"p95": 194.248703,
+						"p99": 194.248703,
+						"max": 194.248703
+					},
+					"p50": 141.819903,
+					"p95": 193.855487,
+					"p99": 216.793087,
+					"max": 247.070719
+				},
+				"throughput": 170.51643704185992,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 743649280
+			},
+			{
+				"name": "exact",
+				"concurrency": 8,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30030.68665499997,
+				"reads": {
+					"completed": 5162,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 42.926079,
+					"p95": 85.196799,
+					"p99": 104.726527,
+					"max": 148.111359
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 171.8908415016395,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 726872064
+			},
+			{
+				"name": "exact",
+				"concurrency": 8,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30099.12575200002,
+				"reads": {
+					"completed": 4042,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 66.125823,
+					"p95": 114.163711,
+					"p99": 124.518399,
+					"max": 179.437567
+				},
+				"writes": {
+					"completed": 293,
+					"rejections": 9,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 9,
+						"p50": 15.089663,
+						"p95": 63.668223,
+						"p99": 63.668223,
+						"max": 63.668223
+					},
+					"p50": 18.022399,
+					"p95": 48.037887,
+					"p99": 59.703295,
+					"max": 78.708735
+				},
+				"throughput": 134.2896146985737,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 720891904
+			},
+			{
+				"name": "exact",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30164.453865000047,
+				"reads": {
+					"completed": 5292,
+					"rejections": 2,
+					"timeouts": 0,
+					"unknownCounts": 2,
+					"failureLatency": {
+						"count": 2,
+						"p50": 11.091967,
+						"p95": 11.542527,
+						"p99": 11.542527,
+						"max": 11.542527
+					},
+					"p50": 179.044351,
+					"p95": 258.998271,
+					"p99": 293.076991,
+					"max": 467.927039
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 175.4382832085792,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 719642624
+			},
+			{
+				"name": "exact",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30157.60881299997,
+				"reads": {
+					"completed": 4816,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 199.622655,
+					"p95": 260.046847,
+					"p99": 332.136447,
+					"max": 456.916991
+				},
+				"writes": {
+					"completed": 264,
+					"rejections": 8,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 8,
+						"p50": 96.206847,
+						"p95": 155.713535,
+						"p99": 155.713535,
+						"max": 155.713535
+					},
+					"p50": 59.539455,
+					"p95": 185.991167,
+					"p99": 233.832447,
+					"max": 306.970623
+				},
+				"throughput": 159.69435872263116,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 767852544
+			},
+			{
+				"name": "structured",
+				"concurrency": 8,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30053.152003000025,
+				"reads": {
+					"completed": 5724,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 46.432255,
+					"p95": 99.155967,
+					"p99": 114.884607,
+					"max": 257.556479
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 190.4625511303642,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 856109056
+			},
+			{
+				"name": "structured",
+				"concurrency": 8,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30069.404294000007,
+				"reads": {
+					"completed": 5659,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 44.204031,
+					"p95": 96.665599,
+					"p99": 116.523007,
+					"max": 136.839167
+				},
+				"writes": {
+					"completed": 298,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 54.722559,
+					"p95": 110.231551,
+					"p99": 125.894655,
+					"max": 128.974847
+				},
+				"throughput": 188.1979418238487,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 846618624
+			},
+			{
+				"name": "structured",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 30158.180741000106,
+				"reads": {
+					"completed": 6113,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 156.499967,
+					"p95": 219.021311,
+					"p99": 241.041407,
+					"max": 305.922047
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 202.69790318251407,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 843849728
+			},
+			{
+				"name": "structured",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 30234.86193200003,
+				"reads": {
+					"completed": 6082,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 153.223167,
+					"p95": 223.215615,
+					"p99": 244.318207,
+					"max": 361.234431
+				},
+				"writes": {
+					"completed": 191,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 149.291007,
+					"p95": 222.167039,
+					"p99": 241.434623,
+					"max": 245.366783
+				},
+				"throughput": 201.15851739884818,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 855719936
+			}
+		],
+		"errorClasses": [
+			{
+				"operation": "write",
+				"class": "DERIVED_INDEX_LAGGING",
+				"count": 70
+			},
+			{
+				"operation": "read",
+				"class": "terminated",
+				"count": 17
+			},
+			{
+				"operation": "read",
+				"class": "Bounded full-text count remained unknown",
+				"count": 2
+			}
+		],
+		"diagnosticRecords": 5680,
+		"cgroupPeakBytes": 1432571904,
+		"oomEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+		"firstQueries": [
+			{
+				"name": "relevance",
+				"milliseconds": 9.162408999996842,
+				"freshProcess": true,
+				"osCold": false,
+				"order": 0
+			},
+			{
+				"name": "sort",
+				"milliseconds": 16.55439699999988,
+				"freshProcess": false,
+				"osCold": false,
+				"order": 1
+			},
+			{
+				"name": "highlights",
+				"milliseconds": 15.177425000001676,
+				"freshProcess": false,
+				"osCold": false,
+				"order": 2
+			},
+			{
+				"name": "exact",
+				"milliseconds": 17.03045099999872,
+				"freshProcess": false,
+				"osCold": false,
+				"order": 3
+			},
+			{
+				"name": "structured",
+				"milliseconds": 18.86779299999762,
+				"freshProcess": false,
+				"osCold": false,
+				"order": 4
+			}
+		]
+	},
+	"baseline": {
+		"harperHead": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
+		"cells": [
+			{
+				"name": "relevance",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 35013.75941099999,
+				"reads": {
+					"completed": 128730,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 8.003583,
+					"p95": 15.810559,
+					"p99": 22.183935,
+					"max": 40.501247
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 3676.5546506713563,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 497627136
+			},
+			{
+				"name": "relevance",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 35077.698768,
+				"reads": {
+					"completed": 130867,
+					"rejections": 2,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 2,
+						"p50": 7.995391,
+						"p95": 9.338879,
+						"p99": 9.338879,
+						"max": 9.338879
+					},
+					"p50": 7.827455,
+					"p95": 16.007167,
+					"p99": 23.543807,
+					"max": 52.887551
+				},
+				"writes": {
+					"completed": 340,
+					"rejections": 10,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 10,
+						"p50": 14.147583,
+						"p95": 26.443775,
+						"p99": 26.443775,
+						"max": 26.443775
+					},
+					"p50": 8.806399,
+					"p95": 17.367039,
+					"p99": 23.724031,
+					"max": 29.179903
+				},
+				"throughput": 3730.7749537830223,
+				"verdict": "unqualified",
+				"serverRssPeakBytes": 595595264
+			},
+			{
+				"name": "structured",
+				"concurrency": 32,
+				"writesPerSecond": 0,
+				"durationMilliseconds": 35223.42459899999,
+				"reads": {
+					"completed": 7149,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 202.768383,
+					"p95": 300.154879,
+					"p99": 318.504959,
+					"max": 370.933759
+				},
+				"writes": {
+					"completed": 0,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 0,
+					"p95": 0,
+					"p99": 0,
+					"max": 0
+				},
+				"throughput": 202.96152578539917,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 735055872
+			},
+			{
+				"name": "structured",
+				"concurrency": 32,
+				"writesPerSecond": 10,
+				"durationMilliseconds": 35187.62687199999,
+				"reads": {
+					"completed": 7265,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 147.718143,
+					"p95": 206.962687,
+					"p99": 253.755391,
+					"max": 348.913663
+				},
+				"writes": {
+					"completed": 226,
+					"rejections": 0,
+					"timeouts": 0,
+					"unknownCounts": 0,
+					"failureLatency": {
+						"count": 0,
+						"p50": 0,
+						"p95": 0,
+						"p99": 0,
+						"max": 0
+					},
+					"p50": 144.834559,
+					"p95": 206.045183,
+					"p99": 261.226495,
+					"max": 280.231935
+				},
+				"throughput": 206.46461969224217,
+				"verdict": "qualified",
+				"serverRssPeakBytes": 721072128
+			}
+		],
+		"errorClasses": [
+			{
+				"operation": "write",
+				"class": "DERIVED_INDEX_LAGGING",
+				"count": 10
+			},
+			{
+				"operation": "read",
+				"class": "terminated",
+				"count": 2
+			}
+		],
+		"diagnosticRecords": 1968,
+		"cgroupPeakBytes": 1286000640,
+		"oomEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+		"firstQueries": [
+			{
+				"name": "relevance",
+				"milliseconds": 9.295000000012806,
+				"freshProcess": true,
+				"osCold": false,
+				"order": 0
+			},
+			{
+				"name": "structured",
+				"milliseconds": 24.021754000001238,
+				"freshProcess": false,
+				"osCold": false,
+				"order": 1
+			}
+		]
+	},
+	"comparison": {
+		"sameNativeRuntime": true,
+		"sameNativeAddonHashes": true,
+		"sameHarnessHashes": true,
+		"limitations": "Feature cells use 30 seconds and baseline cells 35 seconds, with different matrix sizes/order and process runs. Baseline includes relevance/structured at 32 clients only. Filesystem cache was not evicted; no OS-cold claim. Rejections remain unqualified; baseline occurrence does not prove identical root cause."
+	}
+}

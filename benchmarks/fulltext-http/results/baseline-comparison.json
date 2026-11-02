@@ -1,0 +1,30 @@
+{
+	"featureHead": "027daf35a636ad59665927a4e89776c0d58c10c6",
+	"baselineHead": "3e8a2fa199c9b0ba920cf25e7e1bcea5a49a0548",
+	"nativeRuntimeEqual": true,
+	"featureAddons": [
+		{
+			"path": "<feature-worktree>/node_modules/@harperfast/fulltext-darwin-arm64/fulltext.darwin-arm64.node",
+			"sha256": "1be756e4ab8ad471d29dc6d2f2af97eb44ddb0d0fc85aa389a52eb8cec3c0849"
+		}
+	],
+	"baselineAddons": [
+		{
+			"path": "<feature-worktree>/node_modules/@harperfast/fulltext-darwin-arm64/fulltext.darwin-arm64.node",
+			"sha256": "1be756e4ab8ad471d29dc6d2f2af97eb44ddb0d0fc85aa389a52eb8cec3c0849"
+		}
+	],
+	"featureCompiled": {
+		"dist/resources/Table.js": "b1f4e73fe26f9bfa935f99aa3b5a3a2e7bf98cf5540c4292e09a8d5820b4d82b",
+		"dist/resources/indexes/fullTextQueryIndex.js": "5e95d1ae637da249395c97b04a2456dcbdc94e1ab2d28d900c746ce4c6243990",
+		"dist/resources/indexes/fullTextQueryProtocol.js": "411fa91a650224c4a1465f78d24d7404932d9fa8189f796d7f421e25577d4d59"
+	},
+	"baselineCompiled": {
+		"dist/resources/Table.js": "1928261d124616fe22ed5cde4ecc1a6a6b266a5cd5c94fff3ab3e5db0ba0d86a",
+		"dist/resources/indexes/fullTextQueryIndex.js": "c629428dd4a784ac74e6903be4efc48d7c06bc2cf901762b823f48b7f43445e4",
+		"dist/resources/indexes/fullTextQueryProtocol.js": "24dac8642af5073e94f43fb8629bae9f4f17af92baec74b49547f4869fc07945"
+	},
+	"baselineBuild": "PASS",
+	"baselineVerdict": "unqualified:185 transport terminated read errors and 10 DERIVED_INDEX_LAGGING writer 503s; structured controls zero errors",
+	"cleanup": "server lifecycle registry empty"
+}

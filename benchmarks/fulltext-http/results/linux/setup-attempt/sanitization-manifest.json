@@ -1,0 +1,191 @@
+{
+	"format": 1,
+	"policy": "Redact only private host/user/home/IP/test-root paths. Preserve every metric, error record and harness hash. No run/build logs, config/auth/environment/cmdline or monitor registry included.",
+	"runs": {
+		"failed-pilot": {
+			"sourceDirectoryBasename": "fulltext-linux-10m-8cpu6g",
+			"artifacts": [
+				{
+					"sourceRelativePath": "10000000.json",
+					"publishedRelativePath": "failed-pilot/10000000.json.gz",
+					"rawPrivateSha256": "2988611b8039ab915af3f2707d0b30ed8ae86ddc7e462c1a4a45991046f58fed",
+					"sanitizedPayloadSha256": "34f63669dbe51d85102879d2b61874ff174b7c970cb864d11ad35f39c6f2539e",
+					"compressedSha256": "07ffd418ea261343d4d58230c07dde0d689f22715efcc3328d027ffeeb0e1bf7",
+					"replacementCount": 4,
+					"replacementCategories": {
+						"ephemeral-test-root": 4
+					}
+				},
+				{
+					"sourceRelativePath": "errors.ndjson",
+					"publishedRelativePath": "failed-pilot/errors.ndjson.gz",
+					"rawPrivateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+					"sanitizedPayloadSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+					"compressedSha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"sourceRelativePath": "provenance.json",
+					"publishedRelativePath": "failed-pilot/provenance.json.gz",
+					"rawPrivateSha256": "b8192056f328590aba738c3e92544ff0a3866a322697751e29101fc688326621",
+					"sanitizedPayloadSha256": "b8192056f328590aba738c3e92544ff0a3866a322697751e29101fc688326621",
+					"compressedSha256": "a713a1e77d32470701be132b2ae61ba4508cfee8f4be0e7f68165f6e6663278d",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"sourceRelativePath": "system-information-setup-5min.json",
+					"publishedRelativePath": "failed-pilot/system-information-setup-5min.json.gz",
+					"rawPrivateSha256": "bf10bf332b4b5068a65c208e30c6b6d7f965166366df33ec584d3f6d8af2a759",
+					"sanitizedPayloadSha256": "bf10bf332b4b5068a65c208e30c6b6d7f965166366df33ec584d3f6d8af2a759",
+					"compressedSha256": "39424abcf61958c52119c68ff6092b8a470b87fdbf8d395f9634259199bb626d",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"sourceRelativePath": "summary-private.json",
+					"publishedRelativePath": "failed-pilot/setup-summary.json.gz",
+					"rawPrivateSha256": "f69de76d3b9f5906949aea5006b617e8e58b2e104bda86fd3fc01e9e061ef6c8",
+					"sanitizedPayloadSha256": "f69de76d3b9f5906949aea5006b617e8e58b2e104bda86fd3fc01e9e061ef6c8",
+					"compressedSha256": "39601976811896079f7a92d60c7b8577a1f8c521899ac083405c728c398c2d37",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"sourceRelativePath": "external-observation.json",
+					"publishedRelativePath": "failed-pilot/external-observation.json.gz",
+					"rawPrivateSha256": "091e406a3f04aeff2cee3ae0615899a768738b070a8a3e6c9e789351b95f2a08",
+					"sanitizedPayloadSha256": "091e406a3f04aeff2cee3ae0615899a768738b070a8a3e6c9e789351b95f2a08",
+					"compressedSha256": "d595ada8d5693d2f8d8cda1cda6b3dd81e82ebdff69cec98199747e7cf5848ba",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"publishedRelativePath": "failed-pilot/measurement-receipt.json",
+					"sha256": "aaf7492e7db0bb2fab3e7027e90d75130e3c8441bfd7df9e65cb114fe388ecb8",
+					"inputPaths": [
+						"cgroup-relative.txt",
+						"cpu.max.after.txt",
+						"cpu.max.before.txt",
+						"cpu.pressure.after.txt",
+						"cpu.pressure.before.txt",
+						"cpu.pressure.observed-first.txt",
+						"cpu.pressure.observed-last.txt",
+						"cpu.stat.after.txt",
+						"cpu.stat.before.txt",
+						"cpu.stat.observed-first.txt",
+						"cpu.stat.observed-last.txt",
+						"database-footprint-setup-5min-kib.txt",
+						"harness-exit-status.txt",
+						"io.pressure.after.txt",
+						"io.pressure.before.txt",
+						"io.pressure.observed-first.txt",
+						"io.pressure.observed-last.txt",
+						"io.stat.after.txt",
+						"io.stat.before.txt",
+						"memory.current.after.txt",
+						"memory.current.before.txt",
+						"memory.current.observed-first.txt",
+						"memory.current.observed-last.txt",
+						"memory.events.after.txt",
+						"memory.events.before.txt",
+						"memory.events.observed-first.txt",
+						"memory.events.observed-last.txt",
+						"memory.max.after.txt",
+						"memory.max.before.txt",
+						"memory.peak.after.txt",
+						"memory.peak.before.txt",
+						"memory.peak.observed-first.txt",
+						"memory.peak.observed-last.txt",
+						"memory.pressure.after.txt",
+						"memory.pressure.before.txt",
+						"memory.pressure.observed-first.txt",
+						"memory.pressure.observed-last.txt",
+						"memory.stat.after.txt",
+						"memory.stat.before.txt",
+						"memory.stat.observed-first.txt",
+						"memory.stat.observed-last.txt",
+						"memory.swap.max.after.txt",
+						"memory.swap.max.before.txt",
+						"scope-ended-at.txt",
+						"scope-exit-status.txt",
+						"scope-properties.txt",
+						"scope-started-at.txt",
+						"server-proc-io.863853.first.txt",
+						"server-proc-io.863853.last.txt",
+						"server-proc-stat.863853.first.txt",
+						"server-proc-stat.863853.last.txt",
+						"server-proc-status.863853.first.txt",
+						"server-proc-status.863853.last.txt"
+					]
+				}
+			]
+		},
+		"flag-smoke": {
+			"sourceDirectoryBasename": "fulltext-linux-large-flag-smoke",
+			"artifacts": [
+				{
+					"sourceRelativePath": "1000.json",
+					"publishedRelativePath": "flag-smoke/1000.json.gz",
+					"rawPrivateSha256": "c36e0fa918e5b3adcd19d088ad3629c52128b038d5b5ae28e919ca461bea9d5b",
+					"sanitizedPayloadSha256": "c36e0fa918e5b3adcd19d088ad3629c52128b038d5b5ae28e919ca461bea9d5b",
+					"compressedSha256": "35089f4107b1860322fb59400e0804caa12b3694fc01642b474271622c97a154",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"sourceRelativePath": "errors.ndjson",
+					"publishedRelativePath": "flag-smoke/errors.ndjson.gz",
+					"rawPrivateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+					"sanitizedPayloadSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+					"compressedSha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"sourceRelativePath": "provenance.json",
+					"publishedRelativePath": "flag-smoke/provenance.json.gz",
+					"rawPrivateSha256": "bd9c587e63d9c4e64a065f7cab3835ba388805a2b3c1ae714680a712fbd6b8ab",
+					"sanitizedPayloadSha256": "bd9c587e63d9c4e64a065f7cab3835ba388805a2b3c1ae714680a712fbd6b8ab",
+					"compressedSha256": "bb871e8a9a8f6d0793a46cd5ed98c746cfd9447fe8c730b89b748a5dde0c5203",
+					"replacementCount": 0,
+					"replacementCategories": {}
+				},
+				{
+					"publishedRelativePath": "flag-smoke/measurement-receipt.json",
+					"sha256": "5f00d5c74217eb5a8b1359d11f2b4f39bdcd909634fd98bef11312da2e28fc80",
+					"inputPaths": [
+						"cgroup-relative.txt",
+						"cpu.max.after.txt",
+						"cpu.max.before.txt",
+						"cpu.pressure.after.txt",
+						"cpu.pressure.before.txt",
+						"cpu.stat.after.txt",
+						"cpu.stat.before.txt",
+						"harness-exit-status.txt",
+						"io.pressure.after.txt",
+						"io.pressure.before.txt",
+						"io.stat.after.txt",
+						"io.stat.before.txt",
+						"memory.current.after.txt",
+						"memory.current.before.txt",
+						"memory.events.after.txt",
+						"memory.events.before.txt",
+						"memory.max.after.txt",
+						"memory.max.before.txt",
+						"memory.peak.after.txt",
+						"memory.peak.before.txt",
+						"memory.pressure.after.txt",
+						"memory.pressure.before.txt",
+						"memory.stat.after.txt",
+						"memory.stat.before.txt",
+						"memory.swap.max.after.txt",
+						"memory.swap.max.before.txt"
+					]
+				}
+			]
+		}
+	},
+	"measurementReceiptFormatting": "Normalized receipt JSON uses repository formatting; embedded input snapshots and their hashes are unchanged."
+}
