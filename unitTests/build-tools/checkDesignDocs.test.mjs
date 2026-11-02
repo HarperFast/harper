@@ -168,10 +168,10 @@ describe('build-tools/check-design-docs.mjs', function () {
 			});
 
 			it('registers the target of an entry written with any list marker', async function () {
-				for (const marker of ['-', '*', '+', '1.', '2)'])
+				for (const marker of ['- ', '* ', '+ ', '1. ', '2) ', '-\t'])
 					await fails(
 						{
-							'DESIGN.md': `${INDEX}${marker} [Part](lib/topic.md#part) — x\n`,
+							'DESIGN.md': `${INDEX}${marker}[Part](lib/topic.md#part) — x\n`,
 							'lib/topic.md': `${TOPIC}\n## Other\n`,
 						},
 						/lib\/topic\.md section "Other" is not indexed/

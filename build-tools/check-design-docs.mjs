@@ -59,8 +59,7 @@ const slug = (s) =>
 		.replace(/[^\p{L}\p{N}\p{M} \-_]/gu, '')
 		.replace(/ /g, '-');
 
-// Lines outside code fences, as [line number, text] pairs. A fence left open hides the rest of the text
-// from every check, so its line is returned as `unclosed`.
+// A fence left open hides the rest of the text from every check, so its line is returned as `unclosed`.
 function proseLines(text) {
 	const lines = [];
 	let fence;
@@ -304,7 +303,7 @@ function checkLinks(root, design, errors) {
 		for (const [line, text] of prose(file))
 			for (const match of text.replace(CODE_SPAN, '').matchAll(LINK)) {
 				if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(match[1])) continue;
-				yield { line, target: match[1], anchor: match[2], listItem: /^\s*(?:[-*+]|\d+[.)]) /.test(text) };
+				yield { line, target: match[1], anchor: match[2], listItem: /^\s*(?:[-*+]|\d+[.)])[ \t]/.test(text) };
 			}
 	}
 	const resolve = (from, { line, target, anchor }, level) => {
