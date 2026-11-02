@@ -179,3 +179,31 @@ describe('threadServer listenOnDomainSocket — per-thread mirrors survive the p
 		assert.strictEqual(fs.existsSync(operationsPath), false);
 	});
 });
+
+describe('threadServer bindsDomainSocketHere — a mirror its pool owns', () => {
+	const { claimListener, setActiveWorkerPools } = require('#src/server/threads/workerPools');
+	const { bindsDomainSocketHere } = require('#src/server/threads/threadServer');
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-pool-mirror-'));
+	after(() => {
+		setActiveWorkerPools([]);
+		fs.rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('skips a per-thread mirror owned by an active pool and retracts its metadata', () => {
+		const socketPath = path.join(dir, '1-19939.sock');
+		const yamlPath = path.join(dir, '1-19939.yaml');
+		fs.writeFileSync(yamlPath, 'port: 19939\n');
+		registerUdsCleanupPaths(socketPath, yamlPath);
+		claimListener(socketPath, 'replication');
+		setActiveWorkerPools(['replication']);
+		assert.strictEqual(bindsDomainSocketHere(socketPath, { isPerThreadSocket: true }), false);
+		assert.ok(!fs.existsSync(yamlPath), 'a proxy reading the sockets directory finds no dead mirror');
+	});
+
+	it('binds the same kind of mirror when its pool is not running', () => {
+		const socketPath = path.join(dir, '1-19940.sock');
+		claimListener(socketPath, 'replication');
+		setActiveWorkerPools([]);
+		assert.strictEqual(bindsDomainSocketHere(socketPath, { isPerThreadSocket: true }), true);
+	});
+});
