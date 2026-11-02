@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { INVALIDATED } = require('#src/resources/Table');
+const { getAuditFloor } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -9,6 +10,10 @@ const { waitFor } = require('../waitFor');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 let nextTimestamp = Date.now() + 1_000_000;
+
+function timestampAfterBootstrap(auditStore, candidate) {
+	return Math.max(candidate, getAuditFloor(auditStore) + 1_000_000);
+}
 
 const writes = {
 	put50: (T, id, base) =>
@@ -64,6 +69,7 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 				{ name: 'counter', type: 'Int' },
 			],
 		});
+		nextTimestamp = timestampAfterBootstrap(T.auditStore, nextTimestamp);
 	});
 
 	async function idsWithTag(Table, value) {
@@ -104,6 +110,26 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 			assert.strictEqual(T.primaryStore.getEntry(id).version, base + headVersion, 'the head version is not rewound');
 		});
 	}
+
+	it('replaces an invalidated head when its timestamp seed predates table bootstrap', async function () {
+		if (isLMDB) return this.skip();
+		const base = timestampAfterBootstrap(T.auditStore, getAuditFloor(T.auditStore) - 200_000);
+		const id = 'inv-aged-seed';
+		await writes.put50(T, id, base);
+		await writes.invalidate150(T, id, base);
+		await writes.patch200(T, id, base);
+		await T.put(id, { indexedTag: 'tag-175', secretBody: 'replacement', counter: 100 }, { timestamp: base + 175 });
+		assert.strictEqual(T.primaryStore.getEntry(id).metadataFlags & INVALIDATED, 0);
+		assert.deepStrictEqual(
+			{ ...(await T.get(id)) },
+			{
+				id,
+				indexedTag: 'tag-200',
+				secretBody: 'replacement',
+				counter: 105,
+			}
+		);
+	});
 
 	it('replaces a stub that an older invalidation produced', async () => {
 		const base = (nextTimestamp += 10_000);
