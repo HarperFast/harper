@@ -2286,13 +2286,15 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 		let misses = 0;
 		let filteredSoFar = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
+		// an array's Date elements are indexed as epoch numbers, which is what the comparators and condition values hold
+		const elementFilter = (element) => filter(element instanceof Date ? element.getTime() : element);
 		function recordFilter(record: any) {
 			// `record` may be null/undefined when called via a nested-path filter
 			// where an intermediate property is missing.
 			const value = record == null ? undefined : record[attribute];
 			let matches: boolean;
 			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);
-			else if (Array.isArray(value)) matches = value.some(filter);
+			else if (Array.isArray(value)) matches = value.some(elementFilter);
 			else if (value instanceof Date) matches = filter(value.getTime());
 			//else matches = false;
 			// As we are filtering, we can lazily/reactively switch to indexing if we are getting a low match rate, allowing use to load

@@ -394,6 +394,23 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 					assert.deepStrictEqual(found.sort(), expected, JSON.stringify(request.conditions));
 				}
 		});
+
+	it('matches Date array elements by epoch number for every comparator, led or filtered', async () => {
+		const x = dayOf('x'.charCodeAt(0));
+		for (const [condition, expected] of [
+			[{ attribute: 'days', value: x }, ['x', 'xx', 'xy']],
+			[{ attribute: 'days', comparator: 'gt', value: x }, ['xy', 'y']],
+			[{ attribute: 'days', comparator: 'le', value: x }, ['x', 'xx', 'xy']],
+		])
+			for (const request of [
+				{ conditions: [condition] },
+				{ conditions: [{ attribute: 'c', value: 'hot' }, condition], enforceExecutionOrder: true },
+			]) {
+				const found = [];
+				for await (const record of Table.search(request)) found.push(record.id);
+				assert.deepStrictEqual(found.sort(), expected, JSON.stringify(request.conditions));
+			}
+	});
 });
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
