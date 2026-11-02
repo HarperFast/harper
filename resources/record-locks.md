@@ -71,6 +71,17 @@ Consequences that shape the code:
   `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
   returns the existing live handle. A handle expired by its lease timer is pruned on next re-lock lookup
   so a stale holder's write gets 409.
+- **The registry outlives the link that holds it.** Hold handles, and an `ImmediateTransaction`'s live
+  scoped ones, survive the commit that drops their link from the chain — `txnForContext`'s unlink of a
+  spent self-committing link (#2323) and `completeMidScopeCommit`'s cut of the chain. Each drop hands the
+  link's `recordLocks` to the chain root (`retainRecordLocksOf`, keyed by database path) and the next link
+  `txnForContext` creates for that database adopts them (`adoptDetachedRecordLocks`), so every lookup
+  through `txnForContext` — re-entrant `lock()`, `unlock()`, `#bindWriteLock`'s holder stamp and the
+  expired-lease 409 — still finds the handle (harper#3872). The closed link itself is never reused, so
+  #2323 stays fixed. A `lock()` whose wait outlives its self-committing link registers on the link that
+  replaced it. `abort()` still drops the chain without handing anything over: it releases scoped handles
+  link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js` and
+  `recordLockChainedMidScopeCommit.test.js`.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
@@ -106,6 +117,14 @@ Consequences that shape the code:
   replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
   the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
   into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
+  The same holds for the locked instance's own pre-lock write (harper#3896): that write reads the
+  instance's `#changes`, lazily or by identity, so `#reloadLocked` keeps them while `#stagedWrite()` exists,
+  and `unlock()` keeps a joined write as the instance's saving operation. Changes made under a lock that
+  `unlock()` abandons are cleared, unless a kept write reads them. The pre-lock write carries the
+  instance's write generation, so saving it closes that generation. A closed generation is not enforced
+  while the instance is lock-writable (`ASSERT_TRACKED_WRITABLE`, `update()`): a hold takes repeated
+  saves, and nested tracked objects keep the generation identity they captured. After `unlock()` the
+  closed generation applies again. Covered by `recordLockSameInstancePreLockStaging.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
   (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
   than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that

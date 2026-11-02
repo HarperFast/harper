@@ -1040,6 +1040,10 @@ export class DatabaseTransaction implements Transaction {
 	declare commitChainHead?: DatabaseTransaction;
 	// O(1) lookup in recordLockFor; only lock() handles are registered here (no gate handles).
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
+	// On the chain root: the recordLocks of committed links that left the chain, by database path,
+	// until txnForContext links that database again. Hold handles outlive the commit that drops a link.
+	declare detachedRecordLocks?: Map<string, Map<any, Map<unknown, RecordLockHandle>>>;
+	declare leftChain?: boolean;
 	/**
 	 * Whether any staged write was made through a record lock handle. The commit-time lease fence
 	 * below is skipped entirely when this is false, which is every transaction in a core-only
@@ -1521,6 +1525,25 @@ export class DatabaseTransaction implements Transaction {
 		if (storeMap.size > 0) return;
 		this.recordLocks!.delete(store);
 		if (this.recordLocks!.size === 0) this.recordLocks = undefined;
+	}
+
+	/** Called on the chain root for a link leaving its chain. */
+	retainRecordLocksOf(link: DatabaseTransaction): void {
+		link.leftChain = true;
+		const recordLocks = link.recordLocks;
+		if (!recordLocks) return;
+		link.recordLocks = undefined;
+		(this.detachedRecordLocks ??= new Map()).set(link.db.path, recordLocks);
+	}
+
+	/** Called on the chain root for a link just created for `link.db`. */
+	adoptDetachedRecordLocks(link: DatabaseTransaction): void {
+		const detached = this.detachedRecordLocks;
+		const recordLocks = detached?.get(link.db.path);
+		if (!recordLocks) return;
+		detached.delete(link.db.path);
+		if (detached.size === 0) this.detachedRecordLocks = undefined;
+		link.recordLocks = recordLocks;
 	}
 
 	registerPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
@@ -3712,7 +3735,8 @@ export class DatabaseTransaction implements Transaction {
 	 * Finish a commit: the chain goes with it, then the scope may rotate. A link left attached and CLOSED
 	 * would be reused by txnForContext for the next write to that database and commit itself, surviving a
 	 * rollback of the rotated head — the cross-store leftover this rotation exists to prevent. Every
-	 * commit path must run this, and none may do one half without the other.
+	 * commit path must run this, and none may do one half without the other. The links' record locks
+	 * stay with the root (retainRecordLocksOf).
 	 */
 	/** Both scope flags leave together, so no exit can clear one and keep the other. */
 	protected endScopeOwnership(): void {
@@ -3722,6 +3746,8 @@ export class DatabaseTransaction implements Transaction {
 
 	private completeMidScopeCommit(options: CommitOptions, committedTransaction?: RocksTransaction | null): void {
 		if ((committedTransaction as RocksTransactionWithRetry | null | undefined)?.immediateCommit) return;
+		const root = this.root ?? this;
+		for (let link = this.next; link; link = link.next) root.retainRecordLocksOf(link);
 		this.next = null;
 		if (this.saveCommits && this.hasActiveCommitHandle()) return;
 		this.rotateAfterMidScopeCommit(options);

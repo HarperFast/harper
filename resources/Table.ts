@@ -2146,7 +2146,8 @@ export function makeTable(options): TableResourceClass {
 		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
 			if (!generation) return;
 			if (generation.internalWrites > 0) return;
-			if (generation !== this.#writeGeneration || generation.closed)
+			// a lock-writable instance takes further writes; its pre-lock write's generation stays its identity
+			if (generation !== this.#writeGeneration || (generation.closed && !this.#lockWritable))
 				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
 		}
 		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
@@ -4366,7 +4367,7 @@ export function makeTable(options): TableResourceClass {
 			} else {
 				id = requestTargetToId(target);
 			}
-			if (this.#writeGeneration?.closed) {
+			if (this.#writeGeneration?.closed && !this.#lockWritable) {
 				this.#changes = undefined;
 				this.#writeGeneration = undefined;
 			}
@@ -4425,6 +4426,12 @@ export function makeTable(options): TableResourceClass {
 			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
 			const recordRoot = updates === undefined ? this.#changes : updates;
 			return this.#whenStaged(this._writeUpdate(id, recordRoot, fullUpdate));
+		}
+		/** This instance's unsaved staged write, which reads #changes when it is saved. */
+		#stagedWrite() {
+			const operation = this.#savingOperation;
+			if (!operation || operation.saved || operation.dropped || operation instanceof ConditionLockWait) return;
+			return operation;
 		}
 		#whenStaged(staging: any) {
 			const updated = when(staging, () => this);
@@ -5236,6 +5243,7 @@ export function makeTable(options): TableResourceClass {
 			const clusterStart = performance.now();
 			// One read for both the floor and the reload: a write landing between two reads would be uncovered.
 			let admittedEntry: any;
+			let lockLink = link;
 			let previousTimestamp: number | undefined;
 			let raisedTimestamp: number | undefined;
 			let pinnedTimestamp: number | undefined;
@@ -5351,7 +5359,10 @@ export function makeTable(options): TableResourceClass {
 				}
 				if (admitted)
 					handle.noteCandidateFloor(admitted.stamp, !admitted.claimed && admitted.floor > handle.acquiredAt);
-				link.registerRecordLock(handle);
+				// A self-committing link can leave the chain while this call waits; the handle belongs on the
+				// link that replaced it, or no later lookup through txnForContext finds it.
+				if (link.leftChain) lockLink = txnForContext(context);
+				lockLink.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
 					// Explicit transaction() (not ImmediateTransaction): pin the clock to
@@ -5406,8 +5417,8 @@ export function makeTable(options): TableResourceClass {
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
 					const releaseAfterReloadFailure = (error) => {
-						detachScopedUpgradeWrite(link, keyId, handle, true, true);
-						link.unregisterRecordLock(handle);
+						detachScopedUpgradeWrite(lockLink, keyId, handle, true, true);
+						lockLink.unregisterRecordLock(handle);
 						handle.release();
 						if (
 							timestampChanged &&
@@ -5490,8 +5501,9 @@ export function makeTable(options): TableResourceClass {
 				return this;
 			}
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
-			// set() calls made under the scoped lock survive the reload.
-			if (!preserveChanges) this.#changes = undefined;
+			// set() calls made under the scoped lock survive the reload, and whenever a write this
+			// instance staged before lock() reads them.
+			if (!preserveChanges && !this.#stagedWrite()) this.#changes = undefined;
 			this.#lockWritable = true;
 			// Scoped (not hold): stage now, same as update() would.  Skip if a write from an earlier
 			// lock() cycle on this instance is still pending (re-entrant call before its save()).
@@ -5511,12 +5523,19 @@ export function makeTable(options): TableResourceClass {
 			const handle = this.#lockHandle;
 			this.#lockHandle = undefined;
 			this.#lockWritable = false;
-			if (!handle || handle.released) return Promise.resolve(false);
+			if (!handle) return Promise.resolve(false);
+			const staged = this.#stagedWrite();
+			// Changes made under the lock are abandoned with it, unless a staged write still reads them.
+			if (handle.released) {
+				if (!staged) this.#changes = undefined;
+				return Promise.resolve(false);
+			}
 			const link = txnForContext(this.getContext());
 			// A scoped lock staged its write at lock() time; released before commit, that write must not
-			// run into the released-handle guard at the sweep.
-			if (this.#savingOperation && !this.#savingOperation.saved && this.#savingOperation.lockHandle === handle)
-				this.#savingOperation = null;
+			// run into the released-handle guard at the sweep. A joined write is the caller's own and
+			// stays, as an ordinary write (detachScopedUpgradeWrite).
+			if (staged?.lockHandle === handle && !staged.lockJoined) this.#savingOperation = null;
+			if (!staged || !this.#savingOperation) this.#changes = undefined;
 			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
@@ -12207,8 +12226,9 @@ export function makeTable(options): TableResourceClass {
 				// A self-committing link is CLOSED once it has committed, and a further write through it
 				// commits on a native handle nothing awaits (#2323). Spent — closed, handle detached, none of
 				// its OWN writes left (hasPendingWrites walks successors, which is not this question) — it
-				// holds nothing, so drop it. A run of them can be spent, hence the loop. A timeout-poisoned
-				// link is kept: reusing it is what makes the rest of the operation fail atomically (#1411).
+				// holds no writes, so drop it; its record locks pass to the link that replaces it. A run of
+				// them can be spent, hence the loop. A timeout-poisoned link is kept: reusing it is what
+				// makes the rest of the operation fail atomically (#1411).
 				while (
 					nextTxn?.saveCommits &&
 					nextTxn.open !== TRANSACTION_STATE.OPEN &&
@@ -12216,6 +12236,7 @@ export function makeTable(options): TableResourceClass {
 					!nextTxn.transaction &&
 					!nextTxn.writes.some((write) => write)
 				) {
+					(transaction.root ?? transaction).retainRecordLocksOf(nextTxn);
 					transaction.next = nextTxn.next;
 					nextTxn = transaction.next;
 				}
@@ -12267,6 +12288,7 @@ export function makeTable(options): TableResourceClass {
 					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
+					transaction.root.adoptDetachedRecordLocks(transaction);
 					return transaction;
 				}
 				transaction = nextTxn;
