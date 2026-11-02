@@ -12,6 +12,8 @@ const cliCredentialsModule = require('#src/bin/cliCredentials');
 const processMgmtModule = require('#src/utility/processManagement/processManagement');
 const rocksdbBackupModule = require('#src/dataLayer/rocksdbBackup');
 const configUtilsModule = require('#src/config/configUtils');
+const envMgr = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
 
 describe('backup.ts get_backup download (atomic write)', () => {
 	let tmpDir;
@@ -194,9 +196,39 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 		assert.ok(!calls.offline);
 	});
 
+	// a fixed port the test install does not serve, and the test install's own port pinned to another
+	const OTHER_PORT = 19925;
+	const OWN_PORT = 19926;
+	function pinOperationsApiPorts() {
+		const keys = [terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT];
+		const saved = keys.map((key) => envMgr.get(key));
+		envMgr.setProperty(keys[0], OWN_PORT);
+		envMgr.setProperty(keys[1], null);
+		return () => keys.forEach((key, i) => envMgr.setProperty(key, saved[i]));
+	}
+
 	for (const command of ['delete_backup', 'purge_backups', 'restore_backup']) {
-		for (const lastTarget of ['http://localhost:9925/', 'http://127.0.0.2:9925/', 'http://[::1]:9925/']) {
-			it(`refuses ${command} with a saved loopback last_target ${lastTarget} and the server stopped`, async () => {
+		it(`runs ${command} offline when the saved loopback last_target is this install's own port`, async () => {
+			const restorePorts = pinOperationsApiPorts();
+			try {
+				cliCredentialsModule.loadCredentials = () => ({ last_target: `http://localhost:${OWN_PORT}/` });
+				processMgmtModule.getHdbPid = () => null;
+				process.argv = ['node', 'harper', command, 'backup_id=1'];
+				const calls = trackRouting();
+				await runBackupCommand(command);
+				assert.ok(calls.offline && !calls.api, 'this install, stopped, is restored from its own files');
+			} finally {
+				restorePorts();
+			}
+		});
+
+		for (const lastTarget of [
+			`http://localhost:${OTHER_PORT}/`,
+			`http://127.0.0.2:${OTHER_PORT}/`,
+			`http://[::1]:${OTHER_PORT}/`,
+		]) {
+			it(`refuses ${command} with a saved loopback last_target ${lastTarget} on another port and the server stopped`, async () => {
+				const restorePorts = pinOperationsApiPorts();
 				cliCredentialsModule.loadCredentials = () => ({ last_target: lastTarget });
 				processMgmtModule.getHdbPid = () => null;
 				process.argv = ['node', 'harper', command, 'operation=list_backups', 'backup_id=1'];
@@ -209,6 +241,7 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 				});
 				assert.ok(!calls.offline, 'must not touch local files');
 				assert.ok(!calls.api, 'must not forward to the API');
+				restorePorts();
 			});
 		}
 	}
@@ -240,14 +273,19 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 	});
 
 	it('does not echo credentials embedded in a saved last_target', async () => {
-		cliCredentialsModule.loadCredentials = () => ({ last_target: 'http://admin:secret@localhost:9925/' });
-		processMgmtModule.getHdbPid = () => null;
-		trackRouting();
-		await assert.rejects(runBackupCommand('delete_backup'), (error) => {
-			assert.ok(error.message.includes('target="http://localhost:9925/"'), error.message);
-			assert.ok(!error.message.includes('secret'), error.message);
-			return true;
-		});
+		const restorePorts = pinOperationsApiPorts();
+		try {
+			cliCredentialsModule.loadCredentials = () => ({ last_target: `http://admin:secret@localhost:${OTHER_PORT}/` });
+			processMgmtModule.getHdbPid = () => null;
+			trackRouting();
+			await assert.rejects(runBackupCommand('delete_backup'), (error) => {
+				assert.ok(error.message.includes(`target="http://localhost:${OTHER_PORT}/"`), error.message);
+				assert.ok(!error.message.includes('secret'), error.message);
+				return true;
+			});
+		} finally {
+			restorePorts();
+		}
 	});
 
 	it('passes immutable_source through to the offline restore', async () => {
