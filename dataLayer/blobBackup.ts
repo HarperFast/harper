@@ -1,10 +1,12 @@
 'use strict';
 
 import { existsSync } from 'node:fs';
-import { copyFile, link, mkdir, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, open, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { isUnsupportedSyncError } from '../utility/fsync.ts';
+import { fsyncDirectoryAsync } from '../utility/durableFile.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -391,7 +393,8 @@ export async function restoreBlobSnapshot(
 	backupDir: string,
 	backupId: number,
 	databaseName: string,
-	blobRoots: string[]
+	blobRoots: string[],
+	{ durable = false }: { durable?: boolean } = {}
 ): Promise<void> {
 	const snapshotDir = blobSnapshotDir(backupDir, backupId);
 	if (!existsSync(snapshotDir)) {
@@ -409,7 +412,59 @@ export async function restoreBlobSnapshot(
 		await rm(root, { recursive: true, force: true });
 	}
 	for (const index of indexDirs) {
+		const existing = nearestExistingAncestor(blobRoots[index]);
 		await copyTree(join(snapshotDir, String(index)), blobRoots[index]);
+		if (durable) await fsyncTree(blobRoots[index], existing);
+	}
+}
+
+/** The closest ancestor of `path` that exists now; what a copy into `path` creates lies below it. */
+export function nearestExistingAncestor(path: string): string {
+	let ancestor = dirname(path);
+	while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
+	return ancestor;
+}
+
+/**
+ * Flush every file under `root`, every directory holding one, and the ancestors of `root` up to and
+ * including `through` — the ones the copy created, plus the entry that names them — so a restore that
+ * is about to be declared committed cannot outlive its blobs across a power loss. Asynchronous: a job
+ * worker runs it on a large snapshot and must keep answering restore broadcasts meanwhile.
+ */
+export async function fsyncTree(root: string, through: string = dirname(root)): Promise<void> {
+	if (!existsSync(root)) return;
+	const directories: string[] = [];
+	const visit = async (directory: string) => {
+		directories.push(directory);
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			const path = join(directory, entry.name);
+			if (entry.isDirectory()) await visit(path);
+			else if (entry.isFile()) await fsyncPath(path);
+		}
+	};
+	await visit(root);
+	// children before parents, so each directory's entry is flushed after what it names
+	for (const directory of directories.reverse()) await fsyncDirectoryAsync(directory);
+	for (let ancestor = dirname(root); ; ancestor = dirname(ancestor)) {
+		await fsyncDirectoryAsync(ancestor);
+		if (ancestor === through || dirname(ancestor) === ancestor) break;
+	}
+}
+
+async function fsyncPath(path: string): Promise<void> {
+	let handle;
+	try {
+		handle = await open(path, 'r');
+	} catch (error) {
+		if (isUnsupportedSyncError(error)) return;
+		throw error;
+	}
+	try {
+		await handle.sync();
+	} catch (error) {
+		if (!isUnsupportedSyncError(error)) throw error;
+	} finally {
+		await handle.close();
 	}
 }
 

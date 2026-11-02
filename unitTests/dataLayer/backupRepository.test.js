@@ -5,6 +5,7 @@ const { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } =
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
+const { fileLockRelease, tryFileLock } = require('@harperfast/rocksdb-js');
 const {
 	assertBackupsUnpinned,
 	backupPinsDir,
@@ -13,6 +14,7 @@ const {
 	readBackupPins,
 	unpinBackup,
 	withBackupRepositoryLock,
+	withBackupRepositoryReadAccess,
 } = require('#src/dataLayer/backupRepository');
 const { abandonRestore, beginRestore, completeRestore } = require('#src/dataLayer/restoreMarker');
 
@@ -26,7 +28,7 @@ describe('backupRepository', function () {
 	});
 
 	afterEach(function () {
-		rmSync(tempDir, { recursive: true, force: true });
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	describe('withBackupRepositoryLock', function () {
@@ -79,7 +81,44 @@ describe('backupRepository', function () {
 			try {
 				await assert.rejects(
 					withBackupRepositoryLock(backupDir, 'somedb', async () => 'unreachable'),
-					(error) => error.statusCode === 409 && /is not writable \(E(ACCES|PERM|ROFS)\)/.test(error.message)
+					(error) =>
+						error.statusCode === 409 &&
+						/is not writable \(E(ACCES|PERM|ROFS)\)/.test(error.message) &&
+						/immutable_source=true/.test(error.message)
+				);
+			} finally {
+				chmodSync(backupDir, 0o700);
+			}
+		});
+	});
+
+	describe('withBackupRepositoryReadAccess', function () {
+		it('runs the operation without taking or creating the management lock', async function () {
+			mkdirSync(backupDir, { recursive: true });
+			const token = tryFileLock(managementLockPath(backupDir));
+			try {
+				assert.strictEqual(await withBackupRepositoryReadAccess(backupDir, 'somedb', async () => 'read'), 'read');
+			} finally {
+				fileLockRelease(token);
+			}
+			rmSync(managementLockPath(backupDir));
+			await withBackupRepositoryReadAccess(backupDir, 'somedb', async () => {});
+			assert.ok(!existsSync(managementLockPath(backupDir)));
+		});
+
+		it('creates nothing for a repository that does not exist', async function () {
+			assert.strictEqual(await withBackupRepositoryReadAccess(backupDir, 'somedb', async () => 'done'), 'done');
+			assert.ok(!existsSync(backupDir));
+		});
+
+		it('refuses a repository it cannot read, by name rather than by errno', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			mkdirSync(backupDir, { recursive: true });
+			chmodSync(backupDir, 0o000);
+			try {
+				await assert.rejects(
+					withBackupRepositoryReadAccess(backupDir, 'somedb', async () => 'unreachable'),
+					(error) => error.statusCode === 409 && /is not readable \(E(ACCES|PERM)\)/.test(error.message)
 				);
 			} finally {
 				chmodSync(backupDir, 0o700);

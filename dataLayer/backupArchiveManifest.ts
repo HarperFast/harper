@@ -14,8 +14,11 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 /** Tar entry name of the manifest. First entry in the archive. */
 export const ARCHIVE_MANIFEST_ENTRY = 'harper-backup.json';
 
-/** Bumped only when the document shape changes incompatibly; a reader refuses a version above its own. */
+/** The schema's major: bumped only when the document shape changes incompatibly; a reader refuses a major above its own. */
 export const ARCHIVE_SCHEMA_VERSION = 1;
+
+/** Bumped for additive fields. Written for operators; no reader gates on it. */
+const ARCHIVE_SCHEMA_MINOR = 0;
 
 /** Capability tokens this build can satisfy when reading an archive. */
 export const SUPPORTED_ARCHIVE_CAPABILITIES: readonly string[] = [
@@ -29,7 +32,9 @@ export const SUPPORTED_ARCHIVE_CAPABILITIES: readonly string[] = [
 ];
 
 export interface BackupArchiveManifest {
+	/** The schema major. */
 	archive_schema_version: number;
+	archive_schema_minor?: number;
 	/** Harper release that produced the archive. Recorded for operators and logs, never gated on. */
 	harper_version: string;
 	/** Binding version, which is what actually fixes the engine and transaction-log formats. */
@@ -142,6 +147,7 @@ export function buildArchiveManifest({
 	if (blobs) requires.push('blob-root-index', 'blob-deflate');
 	return {
 		archive_schema_version: ARCHIVE_SCHEMA_VERSION,
+		archive_schema_minor: ARCHIVE_SCHEMA_MINOR,
 		harper_version: packageJson.version,
 		rocksdb_js_version: rocksdbJsVersion(),
 		database: databaseName,
@@ -189,13 +195,26 @@ export function assertArchiveManifestShape(parsed: any): BackupArchiveManifest {
 	return parsed as BackupArchiveManifest;
 }
 
-/** Refuse an archive this build cannot read. Both checks fail closed on the unknown. */
-export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
+/**
+ * Refuse an archive this build cannot read. Both checks fail closed on the unknown.
+ * `acceptIncompatible` waives only the newer-major refusal, never a missing capability: a token this
+ * build lacks names a format it cannot read, whatever the operator accepts. Returns what was waived.
+ */
+export function assertArchiveRestorable(
+	manifest: BackupArchiveManifest,
+	{ acceptIncompatible = false }: { acceptIncompatible?: boolean } = {}
+): string[] {
 	assertArchiveManifestShape(manifest);
+	const waived: string[] = [];
 	if (manifest.archive_schema_version > ARCHIVE_SCHEMA_VERSION) {
-		throw new ClientError(
-			`This archive uses manifest schema version ${manifest.archive_schema_version}, but this Harper understands up to ${ARCHIVE_SCHEMA_VERSION}. ` +
-				`It was produced by Harper ${manifest.harper_version ?? 'unknown'}; restore it with that version or newer.`
+		if (!acceptIncompatible) {
+			throw new ClientError(
+				`This archive uses manifest schema version ${manifest.archive_schema_version}, but this Harper understands up to ${ARCHIVE_SCHEMA_VERSION}. ` +
+					`It was produced by Harper ${manifest.harper_version ?? 'unknown'}; restore it with that version or newer, or set accept_incompatible_backup to restore it anyway.`
+			);
+		}
+		waived.push(
+			`archive_schema_version ${manifest.archive_schema_version} is newer than the supported ${ARCHIVE_SCHEMA_VERSION}`
 		);
 	}
 	const unsupported = manifest.requires.filter((capability) => !SUPPORTED_ARCHIVE_CAPABILITIES.includes(capability));
@@ -205,6 +224,7 @@ export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
 				`It was produced by Harper ${manifest.harper_version ?? 'unknown'} with rocksdb-js ${manifest.rocksdb_js_version ?? 'unknown'}.`
 		);
 	}
+	return waived;
 }
 
 /** How an archive's provenance should be reported back to the operator. */

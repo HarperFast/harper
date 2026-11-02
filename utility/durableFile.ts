@@ -1,6 +1,7 @@
 'use strict';
 
 import { closeSync, fsyncSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fsyncTolerantSync, isUnsupportedSyncError } from './fsync.ts';
 
@@ -41,6 +42,24 @@ export function pathPresent(path: string): boolean {
  * "failed" live in `./fsync.ts`, so this cannot drift from the other callers making that same
  * distinction; `restoreMarker.ts` used that set before this helper existed.
  */
+/** `fsyncDirectory` for a caller that must keep its event loop free, such as a job worker flushing a tree. */
+export async function fsyncDirectoryAsync(directory: string): Promise<void> {
+	let handle: FileHandle;
+	try {
+		handle = await open(directory, 'r');
+	} catch (error: any) {
+		if (isUnsupportedSyncError(error)) return;
+		throw error;
+	}
+	try {
+		await handle.sync();
+	} catch (error) {
+		if (!isUnsupportedSyncError(error)) throw error;
+	} finally {
+		await handle.close();
+	}
+}
+
 export function fsyncDirectory(directory: string): void {
 	let directoryFd: number;
 	try {
@@ -59,7 +78,8 @@ export function fsyncDirectory(directory: string): void {
 /**
  * Write `contents` to `path` atomically and durably. `tempName` must be a name no reader of the
  * directory will mistake for real state, and callers holding a lock on the target may reuse a fixed
- * one — a temp left by an earlier crash is then their own debris and is simply overwritten.
+ * one — a temp left by an earlier crash is then their own debris and is simply overwritten. Fixed per
+ * target, not per directory: a writer of another file in the same directory holds a different lock.
  */
 export function writeFileDurably(path: string, contents: string, tempName: string): void {
 	const directory = dirname(path);

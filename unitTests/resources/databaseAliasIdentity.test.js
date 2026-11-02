@@ -2,9 +2,13 @@
 
 require('../testUtils');
 const assert = require('node:assert');
-const { existsSync, mkdirSync } = require('node:fs');
+const { randomUUID } = require('node:crypto');
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
+const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
+const { signalSchemaChange } = require('#src/utility/signalling');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
@@ -86,12 +90,25 @@ function assertStableIdentity({ aliases, expectedIdentity, tableName, passes = 3
 	}
 }
 
-function startFixtureWorker(aliases) {
+function restoreEvent(restorePhase, { databaseName, databaseDir, restoreToken }) {
+	return {
+		originator: process.pid,
+		operation: terms.OPERATIONS_ENUM.RESTORE_BACKUP,
+		schema: databaseName,
+		restorePhase,
+		databaseDir,
+		restoreToken,
+		generationReplaced: true,
+	};
+}
+
+function startFixtureWorker(aliases, loadOnly) {
 	const queued = [];
 	const waiting = [];
 	let failure;
 	let closing = false;
 	const unregisterAliases = registerWorkerDataProvider('databaseAliasIdentityAliases', () => aliases);
+	const unregisterLoadOnly = registerWorkerDataProvider('databaseAliasIdentityLoadOnly', () => loadOnly);
 	let worker;
 	let resolveExit;
 	const exited = new Promise((resolve) => (resolveExit = resolve));
@@ -123,6 +140,7 @@ function startFixtureWorker(aliases) {
 		});
 	} finally {
 		unregisterAliases();
+		unregisterLoadOnly();
 	}
 	const next = () => {
 		if (failure) return Promise.reject(failure);
@@ -131,8 +149,8 @@ function startFixtureWorker(aliases) {
 	};
 	return {
 		worker,
-		send(command) {
-			worker.postMessage({ type: CONTROL_TYPE, command });
+		send(command, details = {}) {
+			worker.postMessage({ type: CONTROL_TYPE, command, ...details });
 		},
 		async expect(event) {
 			const message = await next();
@@ -480,5 +498,136 @@ describe('shared root-store database identity', function () {
 		});
 		await fixture.close();
 		fixture = undefined;
+	});
+
+	describe('a restore close on a thread that loaded only a sibling alias', function () {
+		const tableName = 'SiblingOnly';
+		let storageRoot;
+		let databaseDir;
+		let restoreLock;
+		const handlesOn = () => getRegistryStatus().find((db) => db.path === databaseDir)?.refCount ?? 0;
+
+		async function startSiblingOnlyWorker(name) {
+			storageRoot = join(testRoot, name);
+			databaseDir = join(storageRoot, 'physicalalias');
+			await createPhysicalStore(storageRoot, 'physicalalias', tableName, [{ name: 'blob', type: 'Blob' }]);
+			loadAliases(storageRoot, { configured: [] });
+			loadedAliases = ['physicalalias'];
+			fixture = startFixtureWorker(['physicalalias', 'configuredalias'], {
+				storagePath: join(testRoot, `${name}-empty`),
+				database: 'configuredalias',
+				table: tableName,
+				path: storageRoot,
+			});
+			const booted = await fixture.expect('booted');
+			assert.deepStrictEqual(booted.aliases, { physicalalias: false, configuredalias: true });
+			assert.strictEqual(booted.blobIdentity, 'configuredalias', "the worker's blob identity is the sibling's");
+			// what an online restore holds across both broadcasts: it keeps every rescan from reopening the root
+			restoreLock = beginRestore(databaseDir);
+			return { databaseName: 'physicalalias', databaseDir, restoreToken: randomUUID() };
+		}
+
+		async function reload(restore) {
+			completeRestore(restoreLock);
+			restoreLock = undefined;
+			await signalSchemaChange(restoreEvent('reload', restore));
+		}
+
+		afterEach(() => {
+			if (restoreLock) completeRestore(restoreLock);
+			restoreLock = undefined;
+		});
+
+		before(function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			mkdirSync(testRoot, { recursive: true });
+		});
+
+		it('closes the sibling, so no handle on the directory remains', async function () {
+			const restore = await startSiblingOnlyWorker('restore-sibling-only');
+			assert(handlesOn() > 0);
+
+			await signalSchemaChange(restoreEvent('close', restore));
+
+			assert.strictEqual(handlesOn(), 0, 'a thread holding only the sibling alias kept the directory open');
+			fixture.send('inspect');
+			assert.deepStrictEqual((await fixture.expect('inspected')).aliases, {
+				physicalalias: false,
+				configuredalias: false,
+			});
+
+			await reload(restore);
+			fixture.send('inspect');
+			assert.strictEqual((await fixture.expect('inspected')).aliases.configuredalias, true);
+		});
+
+		it('closes a root that a rescan detached from the catalog while the restore held it', async function () {
+			storageRoot = join(testRoot, 'restore-detached-root');
+			databaseDir = join(storageRoot, 'physicalalias');
+			await createPhysicalStore(storageRoot, 'physicalalias', tableName);
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, join(testRoot, 'restore-detached-root-empty'));
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, { configuredalias: { path: storageRoot } });
+			resetDatabases();
+			loadedAliases = ['configuredalias'];
+			assert(handlesOn() > 0);
+			restoreLock = beginRestore(databaseDir);
+			// any schema event's rescan now skips the held directory and drops its tables from the catalog
+			resetDatabases();
+			assert.strictEqual(databases.configuredalias?.[tableName], undefined);
+			assert(handlesOn() > 0, 'the rescan cannot close the handles it detached');
+
+			const restore = { databaseName: 'physicalalias', databaseDir, restoreToken: randomUUID() };
+			await signalSchemaChange(restoreEvent('close', restore));
+
+			assert.strictEqual(handlesOn(), 0, 'the detached root stayed open');
+			await reload(restore);
+			assert.ok(getDatabases().configuredalias[tableName]);
+		});
+
+		it("fences the sibling's blob work: an unfinished stream holds the close, and a queued deletion never runs", async function () {
+			const restore = await startSiblingOnlyWorker('restore-sibling-blobs');
+			const deletionDelay = 500;
+			fixture.send('queue-deletion', { deletionDelay });
+			const { condemnedPath } = await fixture.expect('deletion-queued');
+			assert(existsSync(condemnedPath));
+			fixture.send('start-blob-stream');
+			await fixture.expect('blob-stream-started');
+
+			let closed = false;
+			const closing = signalSchemaChange(restoreEvent('close', restore)).then(() => (closed = true));
+			try {
+				const refused = await waitFor(
+					async () => {
+						fixture.send('try-save');
+						const attempt = await fixture.expect('save-attempted');
+						return !attempt.admitted && attempt;
+					},
+					{ timeout: 5000, message: "the restore never fenced blob saves under the worker's own blob identity" }
+				);
+				assert.strictEqual(refused.statusCode, 503, refused.message);
+				// past the deletion deadline: a fenced reclamation must not run
+				await sleep(deletionDelay * 3);
+				assert(existsSync(condemnedPath), 'a queued deletion ran while the restore held the fence');
+				assert.strictEqual(closed, false, 'the close was acknowledged before the in-flight save drained');
+			} finally {
+				fixture.send('fail-blob-stream');
+				assert.strictEqual((await fixture.expect('blob-stream-settled')).outcome, 'failed');
+				await closing;
+			}
+			assert.strictEqual(handlesOn(), 0);
+
+			// stand in for the restore writing the backup's bytes at the condemned path
+			writeFileSync(condemnedPath, 'restored-bytes');
+			await reload(restore);
+			await sleep(deletionDelay * 3);
+			assert.strictEqual(
+				readFileSync(condemnedPath, 'utf8'),
+				'restored-bytes',
+				'a deletion queued against the replaced generation removed the restored file'
+			);
+			fixture.send('try-save', { reloaded: true });
+			const afterReload = await fixture.expect('save-attempted');
+			assert.strictEqual(afterReload.admitted, true, afterReload.message);
+		});
 	});
 });

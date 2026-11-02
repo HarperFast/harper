@@ -361,7 +361,7 @@ A read transaction belongs to one database, so a related read uses the related t
 
 ## Closing an LMDB database closes its environment, never its dbis
 
-Closing a dbi after its environment is a use-after-free, so `closeDatabase` closes an LMDB root once, skipping dbis. Only `closed` counts: lmdb-js resolves `close()` early during a read (`lmdbCloseCompletion.test.js`). A rescan (`getDatabases`) opens every `.mdb` under the storage paths, and lmdb-js double-frees on a failed open, so **every `.mdb` there must be LMDB** (harper#2669).
+Closing a dbi after its environment is a use-after-free, so an LMDB root closes once, skipping dbis. Only `closed` counts: lmdb-js resolves `close()` early during a read. `closeDatabase` closes every alias sharing a root, disposes tables (`cleanup`) past the last resumable point, and fences blobs under every name a restore closes (`databaseAliasIdentity`, `closeLoadedDatabases`).
 
 ## RocksDB teardown closes every wrapper the database opened
 

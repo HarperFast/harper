@@ -36,7 +36,7 @@ describe('backup.ts get_backup download (atomic write)', () => {
 		cliOperationsModule.resolveRequestOptions = originalResolveRequestOptions;
 		commonUtilsModule.httpRequest = originalHttpRequest;
 		console.log = originalConsoleLog;
-		fs.removeSync(tmpDir);
+		if (tmpDir) fs.removeSync(tmpDir);
 	});
 
 	// A fake server response: a Readable body plus the statusCode/headers httpRequest normally attaches.
@@ -139,6 +139,7 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 	});
 
 	afterEach(() => {
+		if (!saved) return;
 		process.argv = saved.argv;
 		cliCredentialsModule.loadCredentials = saved.loadCredentials;
 		processMgmtModule.getHdbPid = saved.getHdbPid;
@@ -247,5 +248,20 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 			assert.ok(!error.message.includes('secret'), error.message);
 			return true;
 		});
+	});
+
+	it('passes immutable_source through to the offline restore', async () => {
+		cliCredentialsModule.loadCredentials = () => null;
+		processMgmtModule.getHdbPid = () => null;
+		trackRouting();
+		let args;
+		rocksdbBackupModule.restoreBackupOffline = async (...received) => {
+			args = received;
+			return {};
+		};
+		process.argv = ['node', 'harper', 'restore_backup', 'database=dev', 'immutable_source=true'];
+		await runBackupCommand('restore_backup');
+		assert.strictEqual(args[0], 'dev');
+		assert.strictEqual(args[5], true);
 	});
 });

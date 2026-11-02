@@ -19,6 +19,8 @@ import {
 	databases,
 	resetDatabases,
 	closeDatabase as _closeDatabase,
+	closeDetachedDatabaseRoots as _closeDetachedDatabaseRoots,
+	restoreCloseTargets as _restoreCloseTargets,
 	prepareDatabaseDrop,
 	completeDatabaseDropPreparation,
 	reloadBranchAt,
@@ -26,13 +28,15 @@ import {
 } from '../../resources/databases.ts';
 import {
 	blockBlobSavesForRestore as _blockBlobSavesForRestore,
-	resumeBlobSavesAfterRestore as _resumeBlobSavesAfterRestore,
+	resumeBlobSavesForRestore as _resumeBlobSavesForRestore,
 } from '../../resources/blob.ts';
 
 const cleanLmdbMap = _cleanLmdbMap;
 const closeDatabase = _closeDatabase;
+const closeDetachedDatabaseRoots = _closeDetachedDatabaseRoots;
+const restoreCloseTargets = _restoreCloseTargets;
 const blockBlobSavesForRestore = _blockBlobSavesForRestore;
-const resumeBlobSavesAfterRestore = _resumeBlobSavesAfterRestore;
+const resumeBlobSavesForRestore = _resumeBlobSavesForRestore;
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*)}}
@@ -113,38 +117,38 @@ async function schemaHandler(event?: any) {
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
-	let resumeBlobSavesFor;
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
 		if (event.message.restorePhase === 'reload') {
-			resumeBlobSavesFor = {
-				database: event.message.schema,
-				token: event.message.restoreToken,
-				generationReplaced: event.message.generationReplaced !== false,
-			};
+			// before the rescan: opening the published generation replays its log, which saves blobs, and
+			// whatever that replay queues for reclamation belongs to the new generation, not the replaced one
+			resumeBlobSavesForRestore(event.message.restoreToken, event.message.generationReplaced !== false);
 		} else {
+			const { schema, databaseDir, restoreToken } = event.message;
 			// Stop and drain blob writes before releasing the handles: closing a database is not a
 			// write barrier on its own, because a save's file pipeline outlives the handle it started from.
-			await blockBlobSavesForRestore(event.message.schema, event.message.restoreToken);
-			try {
-				await closeDatabase(event.message.schema);
-			} catch (error) {
-				// Let the originator's process-wide closure check fail the restore immediately instead of
-				// withholding this worker's acknowledgement until the broadcast timeout.
-				hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+			const { blobDatabaseNames } = restoreCloseTargets(schema, databaseDir);
+			await Promise.all(blobDatabaseNames.map((name) => blockBlobSavesForRestore(name, restoreToken)));
+			// resolved again: a rescan during the drain can load another alias over the still-open root
+			for (const name of restoreCloseTargets(schema, databaseDir).databaseNames) {
+				try {
+					await closeDatabase(name);
+				} catch (error) {
+					// Let the originator's process-wide closure check fail the restore immediately instead of
+					// withholding this worker's acknowledgement until the broadcast timeout.
+					hdbLogger.error(`Could not release database '${name}' for restore`, error);
+				}
+			}
+			if (databaseDir) {
+				try {
+					await closeDetachedDatabaseRoots(databaseDir);
+				} catch (error) {
+					hdbLogger.error(`Could not release database '${schema}' for restore`, error);
+				}
 			}
 		}
 	}
-	try {
-		await cleanLmdbMap(event.message);
-		await syncSchemaMetadata(event.message);
-	} finally {
-		if (resumeBlobSavesFor)
-			resumeBlobSavesAfterRestore(
-				resumeBlobSavesFor.database,
-				resumeBlobSavesFor.token,
-				resumeBlobSavesFor.generationReplaced
-			);
-	}
+	await cleanLmdbMap(event.message);
+	await syncSchemaMetadata(event.message);
 	for (let listener of schemaListeners) {
 		try {
 			listener(event?.message);
