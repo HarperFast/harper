@@ -1051,6 +1051,7 @@ function stripPermissionControls(select: any) {
 	for (const property of Array.isArray(select) ? select : [select]) {
 		if (!property || typeof property !== 'object') continue;
 		delete property.checkPermission;
+		normalizeConditionAttributes(property.conditions);
 		stripPermissionControls(property.select);
 	}
 }
@@ -1177,6 +1178,7 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 			const path = prefix ? [...prefix, name] : [name];
 			checkRelationshipPath(state, path);
 			checkSelectPaths(state, property?.select, path, relatedTable);
+			checkConditionPaths(state, property?.conditions, path, relatedTable);
 			checkSortPaths(state, property?.sort, path);
 			continue;
 		}
@@ -1185,11 +1187,19 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 	}
 }
 
-function checkConditionPaths(state: RelationshipReadCheck, conditions: any) {
+function checkConditionPaths(
+	state: RelationshipReadCheck,
+	conditions: any,
+	prefix?: any[],
+	currentTable = state.tableClass
+) {
 	if (!Array.isArray(conditions)) return;
 	for (const condition of conditions) {
-		if (condition?.conditions) checkConditionPaths(state, condition.conditions);
-		else if (condition?.attribute !== undefined) checkRelationshipPath(state, condition.attribute);
+		if (condition?.conditions) checkConditionPaths(state, condition.conditions, prefix, currentTable);
+		else {
+			const attribute = condition?.[0] ?? condition?.attribute ?? currentTable.primaryKey;
+			checkRelationshipPath(state, prefix ? prefix.concat(attribute) : attribute);
+		}
 	}
 }
 
