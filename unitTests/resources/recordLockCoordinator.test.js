@@ -4948,18 +4948,23 @@ describe('record locks across a node restart (harper#3768, #2582, #3268)', () =>
 				round.catch(() => {});
 				return round;
 			};
+			const realRecall = gamma.transport.recallDelegation;
+			let recalled;
+			gamma.transport.recallDelegation = (...args) => {
+				gamma.transport.recallDelegation = realRecall;
+				return (recalled = realRecall(...args));
+			};
 			const realRequest = alpha.transport.requestDelegation;
 			let copy;
 			let contender;
 			alpha.transport.requestDelegation = async (target, database, table, request) => {
 				alpha.transport.requestDelegation = realRequest;
-				// The first copy mints the grant; its reply goes nowhere.
 				copy = await gamma.onDelegationRequest({ ...request });
-				// A contender reaches the home between the copies, and the recall reaches alpha while its
-				// request is still outstanding, so alpha confirms it.
 				contender = lock('beta', beta, 3_000);
-				await waitFor(() => cluster.recalls.length > 0, 2_000);
-				await delayMs(20);
+				await waitFor(() => recalled !== undefined, 2_000);
+				await recalled;
+				// A macrotask turn, so the home has latched the confirmation before the awaited delivery.
+				await new Promise((resolve) => setImmediate(resolve));
 				cluster.node('gamma').mono += 1_000;
 				return realRequest(target, database, table, request);
 			};
