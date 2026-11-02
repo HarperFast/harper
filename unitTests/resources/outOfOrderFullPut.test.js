@@ -33,7 +33,9 @@ function permutations(values) {
 let nextTimestamp = Date.now() + 1_000_000;
 
 function timestampAfterBootstrap(auditStore, candidate) {
-	return Math.max(candidate, getAuditFloor(auditStore) + 1_000_000);
+	const floor = getAuditFloor(auditStore);
+	assert.ok(Number.isFinite(floor), 'fixture audit floor must be initialized');
+	return Math.max(candidate, floor + 1_000_000);
 }
 
 const cases = [
@@ -109,8 +111,7 @@ for (const loadAsInstance of [true, false]) {
 			nextTimestamp = timestampAfterBootstrap(T.auditStore, nextTimestamp);
 		});
 
-		it('reconciles replacements when its timestamp seed predates table bootstrap', async function () {
-			if (isLMDB) return this.skip();
+		it('clamps a pre-bootstrap seed before reconciling replacements', async () => {
 			const timestamp = timestampAfterBootstrap(T.auditStore, getAuditFloor(T.auditStore) - 200_000);
 			const id = 'aged-seed';
 			await T.put(id, { a: 'old', c: 'stale', counter: 10 }, { timestamp });
