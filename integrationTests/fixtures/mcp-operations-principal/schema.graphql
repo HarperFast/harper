@@ -1,4 +1,4 @@
-type Product @table(audit: true) @export {
+type Product @table(audit: true) {
 	id: ID @primaryKey
 	title: String
 	description: String

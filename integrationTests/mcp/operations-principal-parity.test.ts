@@ -1,17 +1,11 @@
 /**
- * MCP operations-profile tools answer like the operations HTTP API for the same principal and body:
- * the data (iterable results are collected before serialization, #3754) and the permission decision
- * (full-text sources and read:false attributes, resources/FULL_TEXT.md; reference/mcp/tools-and-resources.md
- * "attribute_permissions is enforced when the tool runs").
- *
- * `operations-iterable-results.test.ts` (#3754's own anchor) pins the collect step for the super user.
- * This file adds the legs it does not drive: a non-super_user role on every arm (denial parity on
- * `read_audit_log`; a denied full-text SOURCE refused before serialization; a multi-field index with one
- * denied field narrowed by `fields`; an all-sources role as the over-redaction control), `get_status` key
- * parity, and the official SDK client as the transport. Red before #3754: M0b, M2, M3 (`Can not serialize
- * async iterables…`), A2, A2b (`{}`), A3 (`[{}]`).
- *
- * Promoted from qa-explorer SQA-101 / SQA-104 (SP-74, SP-77).
+ * MCP operations-profile tools answer like the operations HTTP API for the same principal and body, over the
+ * official SDK client. `operations-iterable-results.test.ts` pins result collection (#3754) and attribute denial
+ * for the super user and a role with an operations allowlist; this file covers what it does not: a role with table
+ * permissions and no allowlist is refused a full-text search over a source it cannot read, gets a `fields`-narrowed
+ * full-text search without its read:false attribute (collected, not a serialization error), and is refused
+ * `read_audit_log` on both surfaces; an all-sources role proves the narrowing is not over-redaction; `get_status`
+ * returns the same keys on both surfaces.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -23,11 +17,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/mcp-operations-principal');
 const OPTIONS = {
-	config: {
-		threads: { count: 2 },
-		mcp: { operations: { mountPath: '/mcp' } },
-		analytics: { aggregatePeriod: 1 },
-	},
+	config: { threads: { count: 2 }, mcp: { operations: { mountPath: '/mcp' } } },
 	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
 };
 const PASSWORD = 'McpParity-4418!';
@@ -57,11 +47,11 @@ function hasDenied(records: any[]): string[] {
 function searchArgs(conditions: unknown[], get_attributes: unknown = ['*']) {
 	return { database: 'data', table: 'Product', get_attributes, conditions };
 }
-const sortedIds = (rows: any[]) => rows.map((r: any) => r.id).sort((a: number, b: number) => a - b);
 
 suite('MCP operations tools answer like the operations HTTP API for the principal', (ctx: ContextWithHarper) => {
 	let admin: string;
 	let reader: string;
+	let all: string;
 	const clients: Record<string, { client: Client; transport: StreamableHTTPClientTransport }> = {};
 
 	async function op(body: Record<string, unknown>, auth = admin) {
@@ -139,6 +129,7 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, OPTIONS);
 		admin = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 		reader = `Basic ${Buffer.from(`${READER}:${PASSWORD}`).toString('base64')}`;
+		all = `Basic ${Buffer.from(`${ALL}:${PASSWORD}`).toString('base64')}`;
 		await expectOp(
 			{
 				operation: 'insert',
@@ -197,8 +188,6 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		await teardownHarper(ctx);
 	});
 
-	// ---------- search_by_conditions: full-text sources and attribute permissions ----------
-
 	test('M0 control: a plain equals search_by_conditions as super_user is answered over MCP as over HTTP', async () => {
 		const equals = [{ attribute: 'category', comparator: 'equals', value: 'shoes' }];
 		const http = await expectOp({ operation: 'search_by_conditions', ...searchArgs(equals, ['id']) }, admin, 200);
@@ -213,22 +202,6 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		assert.deepStrictEqual(ids(result.rows), ['one', 'two']);
 	});
 
-	test('M0b: the same full-text search as super_user is collected and delivered, not a serialization error', async () => {
-		const http = await expectOp(
-			{ operation: 'search_by_conditions', ...searchArgs([ft(SENTINEL)], ['id']) },
-			admin,
-			200
-		);
-		assert.deepStrictEqual(ids(http.body), ['hidden-desc', 'private']);
-		const result = await mcpSearch('admin', searchArgs([ft(SENTINEL)], ['id']));
-		assert.strictEqual(
-			result.isError,
-			false,
-			`MCP full-text search_by_conditions as super_user errored: ${result.text}`
-		);
-		assert.deepStrictEqual(ids(result.rows), ['hidden-desc', 'private']);
-	});
-
 	test('M0c: a plain equals search as the reader with get_attributes * is delivered without the denied attribute', async () => {
 		const result = await mcpSearch(
 			'reader',
@@ -240,6 +213,7 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 	});
 
 	test('M1 reader: a denied full-text source and an explicit denied attribute are refused with a permission error', async () => {
+		await expectOp({ operation: 'search_by_conditions', ...searchArgs([ft(SENTINEL)], ['id']) }, reader, 403);
 		const denied = await mcpSearch('reader', searchArgs([ft(SENTINEL)], ['id']));
 		assert.strictEqual(denied.isError, true, `denied-source search answered: ${denied.text}`);
 		assert.match(denied.text, DENIAL, denied.text);
@@ -248,21 +222,25 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		assert.match(explicit.text, DENIAL, explicit.text);
 	});
 
-	test('M2 reader: a full-text search narrowed to a readable field is delivered without the denied attribute', async () => {
-		const narrowed = await mcpSearch('reader', searchArgs([ft('waterproof', { fields: ['title'] })]));
+	test('M2 reader: a full-text search narrowed to a readable field is collected and delivered without the denied attribute', async () => {
+		const args = searchArgs([ft('waterproof', { fields: ['title'] })]);
+		const http = await expectOp({ operation: 'search_by_conditions', ...args }, reader, 200);
+		assert.deepStrictEqual(ids(http.body), ['one', 'two']);
+		assert.deepStrictEqual(hasDenied(http.body), [], `HTTP delivered ${DENIED}: ${http.text}`);
+		const narrowed = await mcpSearch('reader', args);
 		assert.strictEqual(narrowed.isError, false, narrowed.text);
 		assert.deepStrictEqual(ids(narrowed.rows), ['one', 'two']);
 		assert.deepStrictEqual(hasDenied(narrowed.rows), [], `MCP delivered ${DENIED}: ${narrowed.text}`);
 	});
 
-	test('M3 positive control: the all-sources role gets the sentinel rows WITH the attribute over MCP', async () => {
-		const all = await mcpSearch('all', searchArgs([ft(SENTINEL)]));
-		assert.strictEqual(all.isError, false, all.text);
-		assert.deepStrictEqual(ids(all.rows), ['hidden-desc', 'private']);
-		assert.deepStrictEqual(hasDenied(all.rows).sort(), ['hidden-desc', 'private']);
+	test('M3 positive control: the all-sources role gets the sentinel rows WITH the attribute on both surfaces', async () => {
+		const http = await expectOp({ operation: 'search_by_conditions', ...searchArgs([ft(SENTINEL)]) }, all, 200);
+		assert.deepStrictEqual(hasDenied(http.body).sort(), ['hidden-desc', 'private']);
+		const result = await mcpSearch('all', searchArgs([ft(SENTINEL)]));
+		assert.strictEqual(result.isError, false, result.text);
+		assert.deepStrictEqual(ids(result.rows), ['hidden-desc', 'private']);
+		assert.deepStrictEqual(hasDenied(result.rows).sort(), ['hidden-desc', 'private']);
 	});
-
-	// ---------- read_audit_log / get_analytics / get_status: payload parity ----------
 
 	test('A0 reader: read_audit_log is refused for a non-super_user role over MCP as over HTTP', async () => {
 		const body = {
@@ -278,99 +256,6 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		const result = await mcp('reader', 'read_audit_log', args);
 		assert.strictEqual(result.isError, true, `MCP answered the reader's read_audit_log: ${result.text}`);
 		assert.match(result.text, DENIAL, result.text);
-	});
-
-	test('A1 control: read_audit_log search_type hash_value gives the MCP tool the same payload as HTTP', async () => {
-		const body = {
-			operation: 'read_audit_log',
-			schema: 'data',
-			table: 'Product',
-			search_type: 'hash_value',
-			search_values: ['one', 'two'],
-		};
-		const http = await expectOp(body, admin, 200);
-		assert.ok(Array.isArray(http.body.one) && http.body.one.length >= 1, http.text);
-		const { operation: _o, ...args } = body;
-		const result = await mcp('admin', 'read_audit_log', args);
-		assert.strictEqual(result.isError, false, result.text);
-		assert.deepStrictEqual(Object.keys(result.parsed ?? {}).sort(), ['one', 'two'], result.text);
-		assert.deepStrictEqual(
-			result.parsed.one.map((e: any) => e.operation),
-			http.body.one.map((e: any) => e.operation)
-		);
-	});
-
-	test('A2 read_audit_log by timestamp (an async generator): the MCP tool delivers the entries HTTP streams', async () => {
-		const body = {
-			operation: 'read_audit_log',
-			schema: 'data',
-			table: 'Product',
-			search_type: 'timestamp',
-			search_values: [0, Date.now() + 60_000],
-		};
-		const http = await expectOp(body, admin, 200);
-		assert.ok(Array.isArray(http.body) && http.body.length >= 1, `HTTP delivered no entries: ${http.text}`);
-		const httpIds = http.body.flatMap((e: any) => e.ids).sort();
-		assert.ok(httpIds.includes('one'), http.text);
-		const { operation: _o, ...args } = body;
-		const result = await mcp('admin', 'read_audit_log', args);
-		assert.strictEqual(result.isError, false, result.text);
-		assert.ok(Array.isArray(result.parsed), `MCP read_audit_log(timestamp) is not an array: ${result.text}`);
-		assert.deepStrictEqual(result.parsed.flatMap((e: any) => e.ids).sort(), httpIds);
-	});
-
-	test('A2b read_audit_log with no search_type (the default branch): same payload over MCP as over HTTP', async () => {
-		const body = { operation: 'read_audit_log', schema: 'data', table: 'Product' };
-		const http = await op(body, admin);
-		const { operation: _o, ...args } = body;
-		const result = await mcp('admin', 'read_audit_log', args);
-		if (http.status === 200) {
-			assert.strictEqual(result.isError, false, result.text);
-			assert.ok(Array.isArray(result.parsed), `MCP is not an array: ${result.text}`);
-			assert.deepStrictEqual(
-				result.parsed.flatMap((e: any) => e.ids).sort(),
-				http.body.flatMap((e: any) => e.ids).sort()
-			);
-		} else {
-			assert.strictEqual(result.isError, true, `HTTP ${http.status} but MCP answered: ${result.text}`);
-		}
-	});
-
-	test('A3 get_analytics resource-usage over a bounded window (an async-mapped iterable): rows match HTTP', async () => {
-		const deadline = Date.now() + 90_000;
-		let rows: any[] = [];
-		for (;;) {
-			const http = await op({ operation: 'get_analytics', metric: 'resource-usage' }, admin);
-			if (http.status === 200 && Array.isArray(http.body) && http.body.length >= 1) {
-				rows = http.body;
-				break;
-			}
-			assert.ok(
-				Date.now() < deadline,
-				`no resource-usage rows after 90 s: HTTP ${http.status} ${http.text.slice(0, 200)}`
-			);
-			await delay(500);
-		}
-		const times = rows.map((r) => r.id).sort((a, b) => a - b);
-		// the stored key is [time, nodeId], so an `end_time` equal to the newest time excludes that row
-		// (read.ts: `id between [start, end]`); pad the window by 1 ms on both ends (ids are ms floats)
-		const body = {
-			operation: 'get_analytics',
-			metric: 'resource-usage',
-			start_time: times[0] - 1,
-			end_time: times[times.length - 1] + 1,
-		};
-		const http = await expectOp(body, admin, 200);
-		assert.ok(http.body.length >= 1, http.text);
-		for (const row of http.body) assert.strictEqual(row.metric, 'resource-usage', http.text.slice(0, 300));
-		const { operation: _o, ...args } = body;
-		const result = await mcp('admin', 'get_analytics', args);
-		assert.strictEqual(result.isError, false, result.text);
-		assert.ok(Array.isArray(result.parsed), `MCP get_analytics is not an array: ${result.text}`);
-		assert.strictEqual(result.parsed.length, http.body.length, `row count: ${result.text.slice(0, 300)}`);
-		for (const row of result.parsed)
-			assert.strictEqual(row?.metric, 'resource-usage', `MCP row without metric: ${JSON.stringify(row)}`);
-		assert.deepStrictEqual(sortedIds(result.parsed), sortedIds(http.body));
 	});
 
 	test('A4 get_status with no id: the MCP tool returns the same keys HTTP does', async () => {
