@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const fs = require('node:fs');
+const YAML = require('yaml');
 
 async function run() {
 	const phase = process.argv[2];
@@ -22,6 +23,14 @@ async function run() {
 			if (template) fs.renameSync(`${template}.loading`, template);
 		}
 		for (const [key, value] of Object.entries(held)) if (value !== undefined) process.env[key] = value;
+		if (phase === 'pending') {
+			const config = YAML.parse(fs.readFileSync(template, 'utf8'));
+			const staged = require('#src/config/harperConfigEnvVars').prepareRuntimeEnvConfig(config, process.env.ROOTPATH);
+			assert.strictEqual(staged.saveState(), true);
+			fs.writeFileSync(template, YAML.stringify(staged.config));
+			console.log('install-destination-guard-ok');
+			return;
+		}
 		installer.setIgnoreExisting(process.env.GUARD_OVERRIDE === 'true');
 		await installer.install();
 	}

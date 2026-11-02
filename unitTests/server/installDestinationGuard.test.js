@@ -275,7 +275,9 @@ describe('effective installation destination protection', function () {
 					const blockedHome = path.join(temp, 'blocked-home');
 					fs.writeFileSync(blockedHome, 'preserve this file');
 					env.HOME = env.USERPROFILE = blockedHome;
-					assert.doesNotMatch(run('install', env, 1), /installation was successful/);
+					const failure = run('install', env, 1);
+					assert.doesNotMatch(failure, /installation was successful/);
+					assert.match(failure, /blocked-home[\\/]+\.harperdb[\\/]+hdb_boot_properties\.file/);
 					assert.deepStrictEqual(fs.readFileSync(env.HDB_CONFIG), before);
 					if (preserveEmpty) {
 						assert.deepStrictEqual(fs.readdirSync(leaf), [], 'new database artifacts survived inside the empty mount');
@@ -290,4 +292,36 @@ describe('effective installation destination protection', function () {
 			});
 		}
 	}
+	it('preserves pending recovery evidence on CLI refusal and retires it after successful publication', function () {
+		const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-pending-'));
+		try {
+			const env = installEnv(temp, 'root', 'rocksdb');
+			env.GUARD_SNAPSHOT = path.join(temp, 'admin.json');
+			env.HARPER_DEFAULT_CONFIG = JSON.stringify({ authentication: { cacheTTL: 45000 } });
+			assert.match(run('seed', env), /install-destination-guard-ok/);
+			env.HARPER_DEFAULT_CONFIG = JSON.stringify({ authentication: { cacheTTL: 60000 } });
+			assert.match(run('pending', env), /install-destination-guard-ok/);
+			const backup = path.join(env.ROOTPATH, 'backup');
+			const pendingNames = () =>
+				fs.readdirSync(backup).filter((name) => name.startsWith('.harper-config-state.pending.'));
+			assert.strictEqual(pendingNames().length, 1);
+			const beforeState = fingerprint(backup);
+			const beforeConfig = fs.readFileSync(env.HDB_CONFIG);
+			assert.match(run('cli', env), /already installed/);
+			assert.deepStrictEqual(fingerprint(backup), beforeState, 'refusal consumed interrupted-commit evidence');
+			assert.deepStrictEqual(fs.readFileSync(env.HDB_CONFIG), beforeConfig);
+			assert.match(run('boot', env), /install-destination-guard-ok/);
+			env.HARPER_DEFAULT_CONFIG = JSON.stringify({ authentication: { cacheTTL: 70000 } });
+			assert.match(run('boot', env), /install-destination-guard-ok/);
+			assert.strictEqual(YAML.parse(fs.readFileSync(env.HDB_CONFIG, 'utf8')).authentication.cacheTTL, 70000);
+			env.HARPER_DEFAULT_CONFIG = JSON.stringify({ authentication: { cacheTTL: 80000 } });
+			assert.match(run('pending', env), /install-destination-guard-ok/);
+			assert.strictEqual(pendingNames().length, 1);
+			env.GUARD_OVERRIDE = 'true';
+			assert.match(run('install', env), /install-destination-guard-ok/);
+			assert.deepStrictEqual(pendingNames(), []);
+		} finally {
+			fs.rmSync(temp, { recursive: true, force: true });
+		}
+	});
 });

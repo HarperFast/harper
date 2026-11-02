@@ -1147,7 +1147,7 @@ export function prepareRuntimeEnvConfig(
 	// Load existing state. Only the main thread persists, so only the main thread has wreckage to
 	// clear - and a worker shares its pid, so letting one scan would delete the main thread's
 	// in-flight sidecar as if it were last boot's.
-	const interruptedCommit = isMainThread && takeInterruptedCommit(rootPath);
+	const interruptedCommit = isMainThread && !options.isInstall && takeInterruptedCommit(rootPath);
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
@@ -1195,10 +1195,21 @@ export function prepareRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
+	const retireInterruptedCommit = () => {
+		if (options.isInstall && isMainThread) takeInterruptedCommit(rootPath);
+	};
 	return {
 		config: fileConfig,
 		saveState: () => (configStateMatchesDisk(rootPath, state) ? false : stageConfigState(rootPath, state)),
-		confirmConfigWritten: () => commitStagedConfigState(rootPath),
-		commitState: () => saveConfigState(rootPath, state),
+		confirmConfigWritten: () => {
+			const committed = commitStagedConfigState(rootPath);
+			if (committed) retireInterruptedCommit();
+			return committed;
+		},
+		commitState: () => {
+			const changed = saveConfigState(rootPath, state);
+			retireInterruptedCommit();
+			return changed;
+		},
 	};
 }
