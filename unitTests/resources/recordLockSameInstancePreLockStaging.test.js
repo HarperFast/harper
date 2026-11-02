@@ -28,7 +28,7 @@ describe('Record locks: same-instance pre-lock staging, post-lock mutations, and
 				{ name: 'n' },
 				{ name: 'label' },
 				{ name: 'tag' },
-				{ name: 'profile' },
+				{ name: 'items' },
 			],
 		});
 		Audited.loadAsInstance = true;
@@ -303,21 +303,27 @@ describe('Record locks: same-instance pre-lock staging, post-lock mutations, and
 		);
 	});
 
-	it('a nested object tracked before lock() stays writable under the lock', async function () {
+	it('a nested array tracked before lock() stays writable under the lock until its write saves', async function () {
 		if (SKIP_ON_LMDB) return this.skip();
 		const recordId = makeId('nested');
-		await Audited.put({ id: recordId, n: 1, profile: { city: 'a', zip: '1' } });
+		await Audited.put({ id: recordId, n: 1, items: ['a'] });
 		const rec = await Audited.get(recordId);
 		rec.update();
-		const profile = rec.profile;
-		profile.city = 'b';
+		const items = rec.items;
+		items.push('b');
 		await rec.lock({ hold: true, lease: 5000 });
 		cleanups.push(() => rec.unlock());
-		profile.zip = '2';
+		items.push('c');
 		await rec.save();
-		const after = await Audited.get(recordId);
-		assert.strictEqual(after.profile.city, 'b');
-		assert.strictEqual(after.profile.zip, '2');
+		assert.deepStrictEqual([...(await Audited.get(recordId)).items], ['a', 'b', 'c']);
+		// the saved write took the array it was captured in; the instance itself stays writable
+		assert.throws(
+			() => items.push('d'),
+			(err) => err.statusCode === 409
+		);
+		rec.set('n', 9);
+		await rec.save();
+		assert.strictEqual((await Audited.get(recordId)).n, 9);
 	});
 
 	it('a joined write kept by unlock() still closes the instance once saved', async function () {

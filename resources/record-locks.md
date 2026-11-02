@@ -121,10 +121,10 @@ Consequences that shape the code:
   instance's `#changes`, lazily or by identity, so `#reloadLocked` keeps them while `#stagedWrite()` exists,
   and `unlock()` keeps a joined write as the instance's saving operation. Changes made under a lock that
   `unlock()` abandons are cleared, unless a kept write reads them. The pre-lock write carries the
-  instance's write generation, so saving it closes that generation. A closed generation is not enforced
-  while the instance is lock-writable (`ASSERT_TRACKED_WRITABLE`, `update()`): a hold takes repeated
-  saves, and nested tracked objects keep the generation identity they captured. After `unlock()` the
-  closed generation applies again. Covered by `recordLockSameInstancePreLockStaging.test.js`.
+  instance's write generation, so saving it closes that generation; a lock-writable instance then moves
+  to a new one (`#liveGeneration`), so a hold takes further writes while nested tracked objects captured
+  in the closed generation still get 409. After `unlock()` a closed generation applies again.
+  Covered by `recordLockSameInstancePreLockStaging.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
   (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
   than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that

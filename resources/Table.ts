@@ -2143,15 +2143,23 @@ export function makeTable(options): TableResourceClass {
 				condition.checked = true;
 			}
 		}
-		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
+		[ASSERT_TRACKED_WRITABLE](generation = this.#liveGeneration()): void {
 			if (!generation) return;
 			if (generation.internalWrites > 0) return;
-			// a lock-writable instance takes further writes; its pre-lock write's generation stays its identity
-			if (generation !== this.#writeGeneration || (generation.closed && !this.#lockWritable))
+			if (generation !== this.#liveGeneration() || generation.closed)
 				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
 		}
 		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
-			return (this.#writeGeneration ??= { closed: false, internalWrites: 0 });
+			return this.#liveGeneration() ?? (this.#writeGeneration = { closed: false, internalWrites: 0 });
+		}
+		/**
+		 * A lock-writable instance keeps taking writes after the write it staged before lock() saved and
+		 * closed its generation, so it moves to a new one; nested objects captured in the closed one are
+		 * still refused.
+		 */
+		#liveGeneration(): WriteGeneration | undefined {
+			if (this.#lockWritable && this.#writeGeneration?.closed) this.#writeGeneration = undefined;
+			return this.#writeGeneration;
 		}
 
 		/**
@@ -4367,7 +4375,7 @@ export function makeTable(options): TableResourceClass {
 			} else {
 				id = requestTargetToId(target);
 			}
-			if (this.#writeGeneration?.closed && !this.#lockWritable) {
+			if (this.#liveGeneration()?.closed) {
 				this.#changes = undefined;
 				this.#writeGeneration = undefined;
 			}

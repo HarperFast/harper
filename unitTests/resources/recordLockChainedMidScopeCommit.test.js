@@ -116,7 +116,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 
 		let holderA;
 		try {
-			// (a) Mid-scope await txn.commit() releases chained dbB scoped lock while rotating head dbA with { hold: true } holderA intact
 			const ctxMid = makeContext();
 			await transaction(ctxMid, async (txn) => {
 				holderA = trackHolder(await TableAAudited.lock(idAHold, { hold: true, lease: 5000 }, ctxMid));
@@ -130,17 +129,14 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 
 				await txn.commit();
 
-				// Head dbA rotated in place and retained its { hold: true } recordLocks entry
 				assert.equal(txn.open, 1);
 				assert.ok(txn.recordLocks?.get(TableAAudited.primaryStore)?.get(idAHold));
 
-				// External contender immediately acquires idBMid after mid-scope commit cascaded to dbB.releaseRecordLocks()
 				const contenderMid = trackHolder(await TableBAudited.lock(idBMid, { hold: true, timeout: 150 }, makeContext()));
 				assert.equal(contenderMid.id, idBMid);
 				await unlockSafe(contenderMid);
 			});
 
-			// (b) Scope-exit commit releases chained dbB scoped lock even with zero dbB mutations
 			const ctxCommit = makeContext();
 			await transaction(ctxCommit, async () => {
 				await new TableAAudited('pc1-a-write-2', ctxCommit).put('pc1-a-write-2', {
@@ -157,7 +153,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 			assert.equal(contenderCommit.id, idBExitCommit);
 			await unlockSafe(contenderCommit);
 
-			// (c) Scope-exit abort releases chained dbB scoped lock via dbA.abort() cascading to dbB.abort()
 			const ctxAbort = makeContext();
 			await assert.rejects(
 				async () =>
@@ -211,7 +206,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 		await TableBAudited.put(idExp, { id: idExp, n: 1 });
 
 		const immCtx = makeContext();
-		// Touch head store dbA first so immCtx.transaction is bound to dbA (open === 1)
 		await TableAAudited.getResource({ id: 'head-init' }, immCtx, {});
 		assert.equal(immCtx.transaction.open, 1);
 
@@ -221,7 +215,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 		let holderDelU;
 		let holderExp;
 		try {
-			// Acquire { hold: true } locks on chained dbB with zero writes on immCtx
 			immCtx.timestamp = futureStamp + 5;
 			holderPut = trackHolder(await TableBAudited.lock(idPut, { hold: true, lease: 5000 }, immCtx));
 			holderDel = trackHolder(await TableBAudited.lock(idDel, { hold: true, lease: 5000 }, immCtx));
@@ -230,7 +223,7 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 			delete immCtx.timestamp;
 			holderExp = trackHolder(await TableBAudited.lock(idExp, { hold: true, lease: 180 }, immCtx));
 
-			// Seed idPut and idDel at futureStamp using a separate seedCtx so immCtx itself has zero writes on dbB
+			// seeded through another context, so the dbB link stays write-free
 			const seedCtx = makeContext();
 			await transaction(seedCtx, async (seedTxn) => {
 				seedCtx.timestamp = futureStamp;
@@ -244,17 +237,14 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 				await new TableBUnaudited(idDel, seedCtx).put(idDel, { id: idDel, n: 10 });
 			});
 
-			// Assert BEFORE dbA commits: dbB link is OPEN (open === 1) with zero writes and holds recordLocks
 			const dbBLinkBefore = immCtx.transaction.next;
 			assert.ok(dbBLinkBefore);
 			assert.equal(dbBLinkBefore.open, 1);
 			assert.equal(dbBLinkBefore.writes?.length ?? 0, 0);
 			assert.ok(dbBLinkBefore.recordLocks?.get(TableBAudited.primaryStore)?.get(idPut));
 
-			// Commit a single write on HEAD store dbA
 			await new TableAAudited('head-1', immCtx).put('head-1', { id: 'head-1', n: 1 });
 
-			// Perform ordinary immCtx writes on dbB across audit: true and audit: false
 			await new TableBAudited(idPut, immCtx).put(idPut, { id: idPut, n: 20 });
 			await new TableBAudited(idPut, immCtx).patch(idPut, { n: 21 });
 			await new TableBAudited(idDel, immCtx).delete(idDel);
@@ -319,7 +309,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 		try {
 			const ctx = makeContext();
 			await transaction(ctx, async (txn) => {
-				// Segment 1: stamp at futureStamp on both head dbA and chained dbB
 				ctx.timestamp = futureStamp;
 				txn.timestamp = futureStamp;
 
@@ -343,24 +332,19 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 
 				await txn.commit();
 
-				// Segment 2: clear explicit timestamp and rely on held recordLocks floor
 				delete ctx.timestamp;
 				txn.timestamp = 0;
 
-				// Head dbA positive control: rotateAfterMidScopeCommit kept txn.recordLocks on dbA
 				await new TableAAudited(idA, ctx).put(idA, { id: idA, n: 20 });
 				await new TableAAudited(idA, ctx).patch(idA, { n: 21 });
 
-				// Chained dbB: completeMidScopeCommit set this.next = null, severing dbB recordLocks
 				await new TableBAudited(idPut, ctx).put(idPut, { id: idPut, n: 20 });
 				await new TableBAudited(idPut, ctx).patch(idPut, { n: 21 });
 				await new TableBAudited(idDel, ctx).delete(idDel);
 
-				if (!isLMDB) {
-					await new TableBUnaudited(idPut, ctx).put(idPut, { id: idPut, n: 20 });
-					await new TableBUnaudited(idPut, ctx).patch(idPut, { n: 21 });
-					await new TableBUnaudited(idDel, ctx).delete(idDel);
-				}
+				await new TableBUnaudited(idPut, ctx).put(idPut, { id: idPut, n: 20 });
+				await new TableBUnaudited(idPut, ctx).patch(idPut, { n: 21 });
+				await new TableBUnaudited(idDel, ctx).delete(idDel);
 			});
 
 			const afterA = await TableAAudited.get(idA);
@@ -425,7 +409,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 		try {
 			const ctx = makeContext();
 			await transaction(ctx, async (txn) => {
-				// Segment 1: acquire { hold: true } locks across head dbA, chained dbB (txn.next), and 3rd store dbC (txn.next.next)
 				holderExpA = trackHolder(await TableAAudited.lock(idExpA, { hold: true, lease: 180 }, ctx));
 				holderLockA = trackHolder(await TableAAudited.lock(idLockA, { hold: true, lease: 5000 }, ctx));
 				await new TableAAudited('arm3-a-init', ctx).put('arm3-a-init', {
@@ -441,7 +424,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 
 				await txn.commit();
 
-				// Segment 2: head dbA re-entrant lock succeeds (200)
 				const reentrantA = await TableAAudited.lock(idLockA, { hold: true, timeout: 120 }, ctx);
 				assert.equal(reentrantA.id, idLockA);
 
@@ -458,7 +440,6 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 					2000
 				);
 
-				// Head dbA expired-lease write rejects with 409 Conflict because rotateAfterMidScopeCommit preserved dbA.recordLocks
 				await assert.rejects(
 					async () => await new TableAAudited(idExpA, ctx).put(idExpA, { id: idExpA, n: 999 }),
 					(err) => {
