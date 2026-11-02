@@ -20,6 +20,7 @@ export function requestJson(url: string, options: JsonRequestOptions = {}) {
 		text: string;
 		body: any;
 	}>((resolve, reject) => {
+		const serialized = options.body === undefined ? undefined : JSON.stringify(options.body);
 		let responded = false;
 		let settled = false;
 		const fail = (error: unknown) => {
@@ -60,6 +61,6 @@ export function requestJson(url: string, options: JsonRequestOptions = {}) {
 		request.on('error', (error) => {
 			if (signal.aborted || !responded) fail(error);
 		});
-		request.end(options.body === undefined ? undefined : JSON.stringify(options.body));
+		request.end(serialized);
 	});
 }
