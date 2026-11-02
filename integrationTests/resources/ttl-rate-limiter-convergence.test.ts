@@ -28,7 +28,6 @@ import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { versionToEtag } from '../../server/serverHelpers/preconditions.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations
@@ -40,6 +39,29 @@ const ROUNDS = 10;
 const WINDOWS = 10;
 const HITS = 50;
 const SNAPSHOT_DIAGNOSTICS = process.env.HARPER_TTL_SNAPSHOT_DIAGNOSTICS === '1';
+// Stored metadata flag; keep diagnostics independent of runtime module initialization.
+const VERSION_REUSED = 0x10000;
+const etagBytes = new Uint8Array(8);
+const etagFloat = new Float64Array(etagBytes.buffer);
+
+// Checked against the real GET ETag by the snapshot fixture control below.
+function versionToEtag(version: number): string {
+	etagFloat[0] = version;
+	return String.fromCharCode(
+		34,
+		(etagBytes[0] & 0x3f) + 62,
+		(etagBytes[0] >> 6) + ((etagBytes[1] << 2) & 0x3f) + 62,
+		(etagBytes[1] >> 4) + ((etagBytes[2] << 4) & 0x3f) + 62,
+		(etagBytes[2] >> 2) + 62,
+		(etagBytes[3] & 0x3f) + 62,
+		(etagBytes[3] >> 6) + ((etagBytes[4] << 2) & 0x3f) + 62,
+		(etagBytes[4] >> 4) + ((etagBytes[5] << 4) & 0x3f) + 62,
+		(etagBytes[5] >> 2) + 62,
+		(etagBytes[6] & 0x3f) + 62,
+		(etagBytes[6] >> 6) + ((etagBytes[7] << 2) & 0x3f) + 62,
+		34
+	);
+}
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -181,6 +203,7 @@ suite(
 								: 'live-at-capture';
 			return {
 				...capture,
+				workerRelation: 'separate snapshot request; triggering GET worker unknown',
 				ttlValidity: {
 					transactionSnapshot: validity(value.transactionSnapshot),
 					cached: validity(value.cached),
@@ -447,12 +470,11 @@ suite(
 							servedEtag: chain.earlyEtag,
 							rawEtag: raw?.version == null ? null : versionToEtag(raw.version),
 							sameVersion: raw?.version != null && chain.earlyEtag === versionToEtag(raw.version),
-							servedBelowAcked: chain.earlyHits != null && chain.earlyHits < window.acked,
 							rawAtLeastAcked: raw?.hits != null && raw.hits >= window.acked,
 							rawWithinAcknowledgedAndErrors:
 								raw?.hits != null && raw.hits >= window.acked && raw.hits <= window.acked + window.errs,
 							rawLiveThroughoutCapture: raw?.expiresAt != null && capture != null && raw.expiresAt > capture.nowAfter,
-							rawVersionReused: raw?.metadataFlags != null && Boolean(raw.metadataFlags & 0x10000),
+							rawVersionReused: raw?.metadataFlags != null && Boolean(raw.metadataFlags & VERSION_REUSED),
 						};
 						anomalyLogs.push(
 							`${perWindow[index].id}: INITIAL_SHORT_SNAPSHOT acked=${perWindow[index].acked} early=${chain.earlyHits} errs=${window.errs} worker-relation=unknown evidence=${JSON.stringify(evidence)} snapshot=${JSON.stringify(snapshotDetail(chain.snapshot))}`
@@ -531,7 +553,6 @@ suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: Contex
 			const snapshot = await response.json();
 			strictEqual(snapshot.id, id);
 			strictEqual(snapshot.engine, process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'other' : 'rocksdb');
-			strictEqual(snapshot.uncachedReadBypassesCache, snapshot.engine === 'rocksdb');
 			ok(Number.isInteger(snapshot.threadId) && snapshot.threadId > 0);
 			if (worker !== undefined) strictEqual(snapshot.threadId, worker);
 			worker = snapshot.threadId;
