@@ -51,8 +51,10 @@ test(
 				const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
 				return existsSync(logPath) ? readFileSync(logPath, 'utf8').split('DerivedIndexLagError').length - 1 : 0;
 			}
-			function request(path: string, method = 'GET', body?: unknown) {
-				return requestJson(`${ctx.harper.httpURL}${path}`, { method, headers, body });
+			async function request(path: string, method = 'GET', body?: unknown) {
+				const response = await requestJson<any>(`${ctx.harper.httpURL}${path}`, { method, headers, body });
+				const coverage = response.headers['harper-index-coverage'];
+				return { ...response, coverage: typeof coverage === 'string' ? coverage : null };
 			}
 			const query = (tolerance?: unknown, wait?: unknown, queryTarget = target, path = '/PlaneProbe/') =>
 				request(path, 'QUERY', {

@@ -464,20 +464,24 @@ suite(
 			assertCleanCompletion(cap);
 		});
 
-		test('Node HTTP request helper distinguishes interrupted JSON arrays from complete responses', async () => {
-			const headers = { Authorization: authHeader, Accept: 'application/json', Connection: 'close' };
-			for (const path of ['/IterDelayedError/', '/IterMidStream/']) {
-				const response = await requestJson(`${restBase}${path}`, { headers });
+		test(
+			'Node HTTP request helper distinguishes interrupted JSON arrays from complete responses',
+			{ timeout: 20_000 },
+			async () => {
+				const headers = { Authorization: authHeader, Accept: 'application/json', Connection: 'close' };
+				for (const path of ['/IterDelayedError/', '/IterMidStream/']) {
+					const response = await requestJson(`${restBase}${path}`, { headers });
+					strictEqual(response.status, 200);
+					strictEqual(response.aborted, true);
+					strictEqual(response.body, undefined);
+					throws(() => JSON.parse(response.text), SyntaxError);
+				}
+				const response = await requestJson(`${restBase}/IterHealth/`, { headers });
 				strictEqual(response.status, 200);
-				strictEqual(response.aborted, true);
-				strictEqual(response.body, undefined);
-				throws(() => JSON.parse(response.text), SyntaxError);
+				strictEqual(response.aborted, false);
+				deepStrictEqual(response.body, [{ n: 0 }, { n: 1 }, { n: 2 }]);
 			}
-			const response = await requestJson(`${restBase}/IterHealth/`, { headers });
-			strictEqual(response.status, 200);
-			strictEqual(response.aborted, false);
-			deepStrictEqual(response.body, [{ n: 0 }, { n: 1 }, { n: 2 }]);
-		});
+		);
 
 		test('control: IterHealth ndjson clean completion', { timeout: 20_000 }, async () => {
 			const cap = await captureWithLifecycle('iterHealth', () =>
@@ -719,31 +723,35 @@ suite(
 	}
 );
 
-test('Node HTTP request helper rejects complete invalid JSON and preserves client aborts', async () => {
-	const controller = new AbortController();
-	const reason = new Error('caller cancelled request');
-	const server = http.createServer((request, response) => {
-		if (request.url === '/invalid') return response.end('[invalid');
-		if (request.url === '/abort') {
-			controller.abort(reason);
-			return;
+test(
+	'Node HTTP request helper rejects complete invalid JSON and preserves client aborts',
+	{ timeout: 20_000 },
+	async () => {
+		const controller = new AbortController();
+		const reason = new Error('caller cancelled request');
+		const server = http.createServer((request, response) => {
+			if (request.url === '/invalid') return response.end('[invalid');
+			if (request.url === '/abort') {
+				controller.abort(reason);
+				return;
+			}
+			response.writeHead(200, { 'Content-Type': 'application/json' });
+			response.write('[');
+			const timer = setInterval(() => response.write(' '), 5);
+			response.on('close', () => clearInterval(timer));
+		});
+		await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+		try {
+			const address = server.address();
+			ok(address && typeof address !== 'string');
+			const base = `http://127.0.0.1:${address.port}`;
+			await rejects(requestJson(`${base}/invalid`), SyntaxError);
+			await rejects(requestJson(`${base}/abort`, { signal: controller.signal }), (error) => error === reason);
+			const deadline = AbortSignal.timeout(40);
+			await rejects(requestJson(`${base}/trickle`, { signal: deadline }), (error) => error === deadline.reason);
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 		}
-		response.writeHead(200, { 'Content-Type': 'application/json' });
-		response.write('[');
-		const timer = setInterval(() => response.write(' '), 5);
-		response.on('close', () => clearInterval(timer));
-	});
-	await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-	try {
-		const address = server.address();
-		ok(address && typeof address !== 'string');
-		const base = `http://127.0.0.1:${address.port}`;
-		await rejects(requestJson(`${base}/invalid`), SyntaxError);
-		await rejects(requestJson(`${base}/abort`, { signal: controller.signal }), (error) => error === reason);
-		const deadline = AbortSignal.timeout(40);
-		await rejects(requestJson(`${base}/trickle`, { signal: deadline }), (error) => error === deadline.reason);
-	} finally {
-		server.closeAllConnections();
-		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 	}
-});
+);
