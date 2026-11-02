@@ -1206,7 +1206,7 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 			const path = prefix ? [...prefix, name] : [name];
 			checkRelationshipPath(state, path);
 			checkSelectPaths(state, property?.select, path, relatedTable);
-			checkConditionPaths(state, property?.conditions, path);
+			checkConditionPaths(state, property?.conditions, path, true);
 			checkSortPaths(state, property?.sort, path);
 			continue;
 		}
@@ -1216,17 +1216,25 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 }
 
 // a same-record group (`{ attribute: relationship, conditions }`) holds conditions relative to its relationship path
-function checkConditionPaths(state: RelationshipReadCheck, conditions: any, prefix: any[] = []) {
+function checkConditionPaths(state: RelationshipReadCheck, conditions: any, prefix?: any[], inSelect = false) {
 	if (!Array.isArray(conditions)) return;
 	for (const condition of conditions) {
 		const attribute = condition?.attribute;
-		const path = attribute == null ? prefix : prefix.concat(attribute);
 		if (condition?.conditions) {
+			const path = attribute == null ? prefix : (prefix ?? []).concat(attribute);
 			if (attribute != null) checkRelationshipPath(state, path);
-			checkConditionPaths(state, condition.conditions, path);
-		} else if (prefix.length > 0) checkRelationshipPath(state, path);
-		else if (attribute !== undefined) checkRelationshipPath(state, attribute);
+			checkConditionPaths(state, condition.conditions, path, inSelect);
+		} else {
+			const leaf = (inSelect ? condition?.[0] : undefined) ?? attribute;
+			if (prefix) checkRelationshipPath(state, prefix.concat(leaf ?? relatedKeyOf(state.tableClass, prefix)));
+			else if (leaf !== undefined) checkRelationshipPath(state, leaf);
+		}
 	}
+}
+function relatedKeyOf(tableClass: any, path: any[]) {
+	let related = tableClass;
+	for (const name of path) related = relatedTableOf(related, name);
+	return related?.primaryKey;
 }
 
 /**

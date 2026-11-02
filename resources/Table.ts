@@ -8330,7 +8330,7 @@ export function makeTable(options): TableResourceClass {
 				return conditions;
 			}
 			function prepareRelationshipGroup(group: any) {
-				const attributeName = group.attribute ?? group[0];
+				const attributeName = group.attribute;
 				const path = Array.isArray(attributeName) ? attributeName : [attributeName];
 				const label = path.join('.');
 				if (group.comparator !== undefined || (group.value ?? group[1]) !== undefined || group.negated)
@@ -8377,8 +8377,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			function throughRelationship(condition: any, name: string, relatedKey: string) {
 				if (isRelationshipGroup(condition)) {
-					const attribute = condition.attribute ?? condition[0];
-					return { ...condition, attribute: [name, ...(Array.isArray(attribute) ? attribute : [attribute])] };
+					return { ...condition, attribute: [name].concat(condition.attribute) };
 				}
 				if (condition.conditions)
 					return {
@@ -12108,22 +12107,27 @@ export function makeTable(options): TableResourceClass {
 		target: RequestTarget,
 		user: User,
 		checkDenial: boolean,
-		prefix: any[] = []
+		prefix?: any[]
 	): boolean {
 		for (const condition of conditions) {
 			if (condition?.conditions) {
-				// read as `isRelationshipGroup` reads it
-				const attribute = condition.attribute ?? condition[0];
-				const path = attribute == null ? prefix : prefix.concat(attribute);
+				const attribute = condition.attribute;
+				const path = attribute == null ? prefix : (prefix ?? []).concat(attribute);
 				if (attribute != null && relationshipPathMatches(path, target, user, checkDenial)) return true;
 				if (someConditionPath(condition.conditions, target, user, checkDenial, path)) return true;
 				continue;
 			}
 			const attribute = condition?.[0] ?? condition?.attribute;
-			const path = prefix.length === 0 ? attribute : attribute == null ? prefix : prefix.concat(attribute);
+			// a condition without an attribute is on the related table's primary key
+			const path = prefix ? prefix.concat(attribute ?? relatedPrimaryKey(prefix)) : attribute;
 			if (relationshipPathMatches(path, target, user, checkDenial)) return true;
 		}
 		return false;
+	}
+	function relatedPrimaryKey(path: any[]) {
+		let related: any = TableResource;
+		for (const name of path) related = related?.propertyResolvers?.[name]?.definition?.tableClass;
+		return related?.primaryKey;
 	}
 	function someRelationshipPath(target: RequestTarget, user: User, checkDenial: boolean): boolean {
 		let conditions: any = target.conditions;

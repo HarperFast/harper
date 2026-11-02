@@ -544,6 +544,11 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			deepStrictEqual(allowed.body, [{ id: EMP.id }]);
 			strictEqual((await rest('restricted', `/Emp/?dept[budget=${DEPT.budget}]&select(id)`)).status, 403);
 			strictEqual((await rest('empOnly', `/Emp/?dept[name=${DEPT.name}]&select(id)`)).status, 403);
+			// only `attribute` makes a group a same-record group, so another spelling stays on the root table
+			const spelled = await byConditions('restricted', [
+				{ operator: 'and', conditions: [{ 0: 'dept', conditions: [{ attribute: 'budget', value: DEPT.budget }] }] },
+			]);
+			ok(spelled.status !== 200 || spelled.body.length === 0, JSON.stringify(spelled));
 			const restAllowed = await rest('restricted', `/Emp/?dept[name=${DEPT.name}]&select(id)`);
 			strictEqual(restAllowed.status, 200, JSON.stringify(restAllowed.body));
 			deepStrictEqual(restAllowed.body, [{ id: EMP.id }]);

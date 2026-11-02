@@ -403,7 +403,7 @@ describe('Queries read related records asynchronously', () => {
 				);
 			});
 
-			it('a leading same-record group join reads only the children its key condition keeps', async function () {
+			it('a leading same-record group with a key condition reads no child: the primary scan carries the records', async function () {
 				const results = await collect(
 					ColdParent.search({
 						enforceExecutionOrder: true,
@@ -422,7 +422,7 @@ describe('Queries read related records asynchronously', () => {
 				);
 				assert.deepEqual(results, [{ id: 'parent-2' }]);
 				assert.equal(childReads.sync, 0);
-				assert(childReads.async <= 1, `${childReads.async} background reads`);
+				assert.equal(childReads.async, 0);
 			});
 
 			it('a joined filter that switches to an id filter mid-scan rejects the later children by key', async function () {

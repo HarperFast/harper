@@ -963,11 +963,10 @@ export function searchByIndex(
 		leaseHost,
 	} = options;
 	const leaseContext = options.leaseContext ?? context;
-	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
+	const group: any = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
+	let attribute_name = group ? [].concat(group.attribute) : (searchCondition[0] ?? searchCondition.attribute);
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
-	const group: any = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
-	if (group && !Array.isArray(attribute_name)) attribute_name = [attribute_name];
 	const fullTextMode = fullTextComparatorMode(comparator);
 	if (fullTextMode && typeof attribute_name !== 'string')
 		throw new ClientError('Full-text comparator requires an index directly on the queried table', 400);
@@ -1617,7 +1616,6 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 	}
 }
 class RelationshipSelection {
-	// the related-level predicates of the conditions this selection unions
 	filters: any[];
 	fromRecord: (record: any, sync?: boolean) => any;
 	constructor(filters: any[], fromRecord: (record: any, sync?: boolean) => any) {
@@ -1638,10 +1636,11 @@ export function restrictRelationship(filtered, name: string, restriction: Map<an
 }
 /**
  * A same-record relationship condition: `{ attribute: relationship, operator, conditions }`, whose conditions are
- * relative to the related table and must all be met by one related record.
+ * relative to the related table and are met by one related record. It is identified by `attribute` alone, which every
+ * walker of conditions reads.
  */
 export function isRelationshipGroup(condition): boolean {
-	return Boolean(condition?.conditions) && (condition.attribute ?? condition[0]) != null;
+	return Boolean(condition?.conditions) && condition.attribute != null;
 }
 /**
  * Compile conditions on `table` into one record predicate (with a `maybeAsync` form when a leg has one). Each
@@ -1942,10 +1941,9 @@ export function getNestedValue(record: any, path: string | string[]): any {
 export function filterByType(searchCondition, Table, context, filtered, isPrimaryKey?, estimatedIncomingCount?) {
 	const comparator = searchCondition.comparator;
 	const negated = searchCondition.negated;
-	let attribute = searchCondition[0] ?? searchCondition.attribute;
-	let value = searchCondition[1] ?? searchCondition.value;
 	const group = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
-	if (group && !Array.isArray(attribute)) attribute = [attribute];
+	let attribute = group ? [].concat(group.attribute) : (searchCondition[0] ?? searchCondition.attribute);
+	let value = searchCondition[1] ?? searchCondition.value;
 	if (attribute == null && Table?.primaryKey != null) {
 		attribute = Table.primaryKey;
 		isPrimaryKey = true;
@@ -1986,21 +1984,33 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
 			// the conditions of one scope on this relationship share the row's related entries
 			let lastLoad;
-			if (filtered && resolver?.loadEntries) {
+			if (filtered && resolver) {
 				const loads = (filtered[LOADS] ??= new Map());
 				lastLoad = loads.get(firstAttributeName);
-				if (!lastLoad) loads.set(firstAttributeName, (lastLoad = { record: undefined, loaded: undefined }));
+				if (!lastLoad)
+					loads.set(
+						firstAttributeName,
+						(lastLoad = { record: undefined, loaded: undefined, syncRecord: undefined, resolved: undefined })
+					);
 			}
 			const loadEntries =
 				resolver?.loadEntries &&
 				((record, context) => {
 					if (!lastLoad) return resolver.loadEntries(record, context);
 					if (lastLoad.record !== record) {
-						lastLoad.record = record;
 						lastLoad.loaded = resolver.loadEntries(record, context);
+						lastLoad.record = record;
 					}
 					return lastLoad.loaded;
 				});
+			const resolveEntries = (record, entry) => {
+				if (!lastLoad) return resolver(record, context, entry, true);
+				if (lastLoad.syncRecord !== record) {
+					lastLoad.resolved = resolver(record, context, entry, true);
+					lastLoad.syncRecord = record;
+				}
+				return lastLoad.resolved;
+			};
 			const getSubObject = (record, entry) => {
 				let subObject, subEntry, subEntries;
 				if (resolver) {
@@ -2009,7 +2019,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 						subObject = resolver(record, context, entry);
 						subEntry = lastMetadata;
 					} else {
-						subEntry = resolver(record, context, entry, true);
+						subEntry = resolveEntries(record, entry);
 						if (Array.isArray(subEntry)) {
 							subEntries = subEntry.filter((related) => related?.value != null);
 							subObject = subEntries.map((related) => related.value);
