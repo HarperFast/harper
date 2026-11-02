@@ -451,6 +451,19 @@ jobs:
 				unverified: [],
 				unsafe: [unverified('git checkout "$REF"')],
 			});
+			for (const [script, gitLine] of [
+				['cat .pr-sha |\n            xargs git checkout', 'xargs git checkout'],
+				['git fetch --stdin origin < .pr-refs', 'git fetch --stdin origin < .pr-refs'],
+				['git checkout "\n          $SHA"', 'git checkout "'],
+				['git checkout main\n          ./deploy.sh "$APP_DIR"', 'git checkout main'],
+			]) {
+				const elsewhere = withDeployStep(`      - run: |\n          ${script}\n`);
+				assert.deepStrictEqual(
+					check(elsewhere),
+					{ problems: [], unverified: [], unsafe: [unverified(gitLine)] },
+					script
+				);
+			}
 			const fromGithubEnv = withDeployStep(
 				'      - run: echo "BRANCH_NAME=$(cat .pr-branch)" >> "$GITHUB_ENV"\n      - run: git checkout ${{ env.BRANCH_NAME }}\n        env:\n          BRANCH_NAME: main\n'
 			);
