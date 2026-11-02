@@ -4,7 +4,7 @@
 
 `alasqlFunctionImporter.ts` imports the CommonJS date-helper object by default; native namespace imports did not expose its object-literal properties in [#562](https://github.com/HarperFast/harper/pull/562). `unitTests/sqlTranslator/alasqlFunctionImporter.test.js` verifies the registered date functions in both test runtimes.
 
-## SQL authorization attributes every column with the engine's own resolution rules (`sql_statement_bucket.ts`, `sqlEngine/binder/columnScope.ts`)
+## SQL column attribution
 
 `verifyPermsAST` checks attribute permissions only for the attributes `sqlStatementBucket` records per table, and it runs once, before the router picks legacy or v2, so the bucket alone decides what every engine may read. A column the bucket misses, or records against the wrong table, is read unchecked.
 
@@ -22,7 +22,7 @@ Row accessors that name no column, AlaSQL's `_`, JavaScript expressions and a JS
 
 Enforced by `unitTests/sqlTranslator/column-attribution.test.js`, `unitTests/sqlEngine/columnScope.test.js` and `integrationTests/security/sql-attribute-perms.test.ts`.
 
-## Legacy SQL runs the re-parse of the authorized statement's text (`legacySqlText.ts`)
+## Legacy SQL text round trip
 
 Legacy SQL writes the authorized AST back out with `toString()` and AlaSQL parses that text again (`dataLayer/SQLSearch.ts` `_buildSQL()`, `dataLayer/update.ts`, `deleteTranslator.ts`, and the compiled SET and INSERT expressions), so the permission check holds only if the text parses back to the same statement. AlaSQL writes string and JSON literals unescaped, so `'x'', ssn, ''y'` came back as three columns, and numbers as `1e+25` or `Infinity`, which read back as columns. `installLegacySqlText()`, run by `alasqlFunctionImporter`, replaces the `StringValue`, `Json` and `NumValue` writers with ones that read back as the same value. `assertLegacySqlText()` refuses, with a 400 on the legacy path only, what has no spelling: a name containing `` ` ``, `[`, `]` or `'`, which backticks and brackets cannot escape, an `@variable`, `$param` or `->`/`!` member name other than letters, digits and `_`, which AlaSQL writes unquoted, a string ending in an odd run of backslashes, or a number that overflows. It then re-parses the backticked text legacy runs and refuses it unless it is one statement that reads each table-qualified column, function and variable no more often than the authorized statement does, so an AlaSQL writer not replaced here fails closed. v2 binds the AST directly.
 
