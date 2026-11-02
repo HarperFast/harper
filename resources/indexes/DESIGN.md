@@ -473,42 +473,13 @@ does not silently omit the declared index.
 
 ### Full-text query plane
 
-Each declared full-text index can lazily open a read-only native handle beside its derived-index writer. Readers
-are keyed by native path, readiness id and owner epoch. A process-wide atomic publication generation
-invalidates stale handles and notifies peer workers. A warm reader reloads in the background after a
-notification, while every query still samples the generation and reloads on mismatch; notification
-delivery is an optimization, not a correctness dependency. Workers that never query an index open no
-reader or publication subscription. The shared derived-index runtime allocates this publication state
-only for backends with external reader snapshots; HNSW does not pay for it. A waiting query samples the
-generation after its coverage wait, so the data-publication bump that precedes the covering watermark
-is included in reader acquisition. The wrapper refreshes the reader's committed payload with the
-searcher, and Harper keeps that decoded checkpoint on the reader slot so coverage always describes the
-snapshot being searched.
-Coverage-only publications do not change the document set: the runtime permits them only after every
-accepted index mutation through that capture is durable. The shared live watermark may therefore wake a
-waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
-and the later publication notification reloads its checkpoint. Catalog-scale qualification measures this
-metadata-only reload cadence so unrelated write traffic cannot become a hidden query-plane cost.
-Missing, cursorless or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
-cold worker can return retryable lag while it opens the reader; retrying, or using
-`waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
-inspection. An epoch or query-configuration change requires a replacement handle. A publication reload
-uses the existing handle only while it has no active lease; otherwise Harper opens a replacement and
-retires the old handle after its search finishes. One logical query therefore uses one native snapshot
-across all result pages and highlight tracing. The wrapper's reported query budget bounds that whole
-query, including page fetches, source Blob reads and tracing, rather than restarting for each native
-call. Highlight source materialization is bounded by both the wrapper's trace-record count and source-byte
-limit before Blob reads start. Query leaves with the same field set reuse that materialization; distinct
-field sets remain independently bounded. Requesting highlights from an index that did not enable them is rejected.
-A retired handle accepts no new leases but remains open until its active searches finish.
-Rejected closes remain tracked and are retried during the next pause or close; a fulfilled native
-cleanup warning is logged. Neither replaces an otherwise successful query response.
-One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
-consecutive reload failures retire that handle so the next query reopens from native storage.
-Table close, drop and schema replacement never force-close an active native handle. They stop waiting
-after the wrapper's query budget plus a small settlement grace and report a retryable teardown failure;
-the retired handle remains registered for reset fencing and closes when the query eventually releases
-its lease. It unregisters only after that drain settles.
+Readers open lazily beside the writer, keyed by native path, readiness id and owner epoch. Workers that never query open neither readers nor publication subscriptions. Shared publication state exists only for external-snapshot backends; HNSW pays nothing. Atomic process-wide publication generation invalidates handles and notifies peers. Warm readers reload in background; queries check generation, including after coverage waits, regardless of notification delivery. The wrapper refreshes committed payload with its searcher; the cached checkpoint describes it.
+
+Coverage-only publication requires all accepted mutations through the capture durable. Its live watermark may wake queries before Tantivy commits a newer restart checkpoint: data is current, and notification later reloads the checkpoint. Qualification measures reload costs under unrelated writes. Missing, cursorless or malformed payloads fail closed and request one rebuild. A cold, strict non-waiting query may return retryable lag during async open; retry or `waitForIndexMilliseconds` permits alignment without synchronous filesystem inspection.
+
+Epoch/query-config changes replace handles. Publication reload reuses an unleased handle; otherwise a replacement retires it after active searches finish. One lease fixes the snapshot across pages and highlighting. The wrapper's query budget covers all calls, source Blob reads and tracing, without restarting per call. Highlight materialization enforces trace-record/source-byte limits before Blob reads, reuses identical field sets and bounds distinct sets separately; undeclared highlights reject.
+
+Retired handles accept no leases. Failed closes retry on pause/close; cleanup warnings log, without overriding query success. Reload failure retains the aligned snapshot and returns retryable lag; three consecutive failures retire it. Close/drop/schema changes never force-close active handles: after the query budget plus settlement grace they report retryable teardown failure. Retired handles remain registered for reset fencing until leases and close drain.
 
 Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
 active leases to drain. Harper does not force-close a handle that native code may still be using; a
@@ -561,15 +532,25 @@ Keep the first batch on `reader.search` so a filled bounded ordinary query stays
 
 When more hits are needed, switch to `searchPage` on the same reader. Ordinary search supplies no continuation, so validate and skip its bounded prefix before processing new hits. Native order is descending score then ascending native document-ID UTF-8 bytes; disagreement, repeated boundaries or empty pages claiming continuations fail closed. The real-addon regression verifies the collectors agree across modes and page sizes.
 
-Byte-aware batch sizes adapt to filter yield. Oversized responses retry the unchanged boundary at a smaller size under the same deadline. Exhausting the snapshot returns remaining eligible rows. `maxRawHitsPerRequest` caps fetched hits including bounded replay; `maxResultsPerRequest` independently caps retained offset plus limit. Both default to 10,000. Before replay, the first page total supplies a lower bound on the new hits needed to fill or exhaust the request; reject immediately if even that work plus replay cannot fit. Use the smaller of the remaining target and remaining native total so a shorter exhausted result remains valid. A lower-bound total equal to the first batch does not prove that additional hits exist, so only replay can be reserved; traversal must distinguish actual exhaustion from more matches before rejecting. Hitting a bound before exhaustion or filling the requested page throws an explicit error. These are not bounds on Tantivy scorer visits or uninterrupted query construction. Unbounded queries that reach a result/work ceiling must use a limit; they never silently return the retained prefix.
+Batch sizes follow filter yield and encoded bytes. Oversized responses retry the same boundary smaller,
+under the same deadline; exhaustion returns remaining eligible rows. `maxRawHitsPerRequest` counts fetched
+hits including prefix replay; `maxResultsPerRequest` caps retained offset plus limit (both default 10,000).
+Before replay, use the first total's lower bound and the smaller of remaining target/native total to
+reject work that cannot fit, while allowing shorter exhausted results. A lower-bound total equal to
+the first batch does not prove further hits, so reserve only replay and establish exhaustion before rejecting.
+Reaching a bound before exhaustion or page completion throws; unbounded queries must add a limit, never
+silently receive a retained prefix. These limits do not bound scorer visits or uninterrupted native
+query construction.
 
 Harper requires Fulltext 0.8.0, native ABI 13 and Query API 7. Traversal response capacity reserves 93 bytes before hits plus 13 bytes per versioned hit before ID/version strings; advertised page and response limits determine the batch ceiling.
 
-Stored-field full-text ordering and bounded exact counts use exhaustive source-validated retrieval via `FULL_TEXT_SEARCH_OPTIONS`; `fullTextOrdering.test.js` enforces complete-set ordering, unknown-count fallback and tracing only the visible page. Default relevance traversal stays bounded by the requested page. The [stored scalar sort cost probe](../../benchmarks/fulltext-sort-cost.md) records production-closure and warm single-client native query timings; the [qualification matrix](../../benchmarks/fulltext-qualification.md) adds scoped concurrency and memory observations; catalog-scale, OS-cold and multiworker qualification remain open. Sorting precomputes comparable keys once per retained row and clause; removing that matrix would repeat resolver/conversion work inside comparisons. Cancellation is checked before each source/highlight trace batch and after candidate planning; native calls already in flight finish before the reader lease is released.
+Stored-field ordering and bounded exact counts exhaustively source-validate via `FULL_TEXT_SEARCH_OPTIONS`; `fullTextOrdering.test.js` checks complete-set ordering, unknown counts and visible-page tracing. Default relevance remains page-bounded. Comparable sort keys are computed once per row/clause, avoiding resolver and conversion work inside comparisons. Cancellation checks precede source/highlight batches and follow candidate planning; in-flight native calls finish before lease release. The [sort cost probe](../../benchmarks/fulltext-sort-cost.md) covers production-closure and warm single-client native timings; the [qualification matrix](../../benchmarks/fulltext-qualification.md) adds concurrency/memory evidence; catalog-scale, OS-cold and multiworker qualification remain open.
 
-Read request policy from its three registered leaf parameters and runtime policy from `storage_fullText_runtime`. The legacy flattener does not retain camel-case aggregate containers such as `storage_fullText`; using that aggregate silently selects defaults. HTTP request settings follow normal worker-restart semantics; native runtime settings remain captured for the full process. Generated configuration omits `storage.fullText.query`; the resolver supplies defaults and preserves partial overrides. `storage.fullText.query` uses that same snapshot for reader term/clause policy and the fuzzy preview maximum; writer limits and persisted identity stay unchanged. Retrieval and highlighting retain the same fuzzy leaf controls.
+Read request policy from its three registered leaves and runtime policy from `storage_fullText_runtime`: the legacy flattener drops camel-case aggregates (`storage_fullText`), silently selecting defaults. Request settings update on worker restart; native runtime settings last for the process. Generated config omits `storage.fullText.query`; resolution supplies defaults and partial overrides. That snapshot also governs reader term/clause and fuzzy-preview limits, including retrieval/highlighting fuzzy leaves. Writer limits and persisted identity do not change.
 
-REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Stored-field sorts require complete source-validated enumeration. Bounded exact counts preserve and highlight the page first, then attempt the remaining source-validated enumeration in the same reader lease. Count-only work, time or native admission limits preserve that page with an unknown total; cancellation and other failures still propagate. Estimated counts may use the planner unless an opaque row/vector filter suppresses them. Native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. Highlighted exhaustive requests prepare final eligibility through Table before native tracing and cache only request-local selected page records. This preserves relationship restrictions and final-source row guards while keeping tracing under the original reader identity and deadline; offset rows are not projected. Source/projection waits are bounded, application errors preserve their identity, and abandoned late selections cannot publish results. Each request releases its reader lease in `finally`. Separate limit/offset requests execute independently and may see different publications; Harper retains no search state between requests.
+REST exposes index coverage; current-coverage callers use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Stored-field sorts require complete source validation. Exact counts first preserve/highlight the page, then drain in the same lease. Count-only work/time/native-admission limits return that page with unknown total; cancellation and other failures propagate. Estimates may use the planner unless opaque row/vector filters suppress them. Native totals cannot prove Harper counts after authorization, structured filters and source-version checks.
+
+For highlighted exhaustive requests, Table prepares final eligibility before tracing and caches only request-local selected page records. Relationship restrictions and final-source guards apply; tracing retains the original reader identity/deadline, and offset rows are not projected. Source/projection waits are bounded, application errors retain identity, and abandoned selections cannot publish. Leases release in `finally`; separate limit/offset requests may see different publications, with no retained search state.
 
 A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial
@@ -779,28 +760,13 @@ generation for that turn.
 
 ### Lag policy
 
-Opt-in per registration (`maxLagMilliseconds`; zero disables shedding), at least two flush ages.
-Admission uses actual unread, deferred, capped or accepted-but-not-durable work ages per ownership epoch.
-`cursorLagMilliseconds` is diagnostic clock distance, including idle gaps and replicated-clock spans.
+Opt-in per registration (`maxLagMilliseconds`; zero disables shedding), at least two flush ages. Admission tracks actual unread, deferred, capped and accepted-but-not-durable work ages per ownership epoch. `cursorLagMilliseconds` is diagnostic clock distance, including idle/replicated-clock spans.
 
-Past the budget the owner sets the shared flag; every worker's `derivedIndexWriteRejection`
-(`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) rejects local
-user writes with retryable `DerivedIndexLagError` / `DERIVED_INDEX_LAGGING` (503). Checks run at staging
-(`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`), never canonical-source applies,
-crash recovery or replication: rejecting canonical work could skip a write that never landed.
+Past budget, the owner's shared flag makes `derivedIndexWriteRejection` reject local writes with retryable `DerivedIndexLagError` / `DERIVED_INDEX_LAGGING` (503). `resources/derivedIndexRegistry.ts` costs unindexed tables one `WeakMap` miss. Checks run at `_writeUpdate`, `_writeDelete`, `_writeInvalidate` and `_writeRelocate` staging, never canonical-source applies, crash recovery or replication: rejection there could skip a write that never landed.
 
-An owner clears its trip after a durable advance and an end-of-log pass, with actual work age below
-half the budget. A successor inheriting a trip additionally captures its first observed log tail and
-holds admission closed until that fixed target is durable; a partial barrier cannot clear inherited
-backlog, and later unrelated-table writes cannot move the target. A successor without an inherited
-trip starts age accounting at acquisition, so this policy is not an end-to-end staleness guarantee
-across owner crashes. A lost-work rewind preserves the oldest pending work age and recaptures its
-fixed target from the replayed log tail. Query coverage certification remains separate.
+Clearing requires durable advance, an end-of-log pass and actual age below half-budget. An inheriting successor also captures its first observed log tail and keeps admission closed until that fixed target is durable: partial barriers cannot clear backlog, and unrelated writes cannot move the target. Without an inherited trip, ages start at acquisition, not before an owner crash; this is no end-to-end staleness guarantee. Lost-work rewind preserves oldest pending age and recaptures a fixed replay-tail target. Query coverage certification is separate.
 
-Entering rebuild, unavailable, an unrecoverable `needs-rebuild`, a failed condemnation marker or a held
-lock admits writes; ordinary handoff preserves the shared flag. Shedding does not pin
-retention: rocksdb-js has no protected-position registration, so the budget belongs inside effective
-retention and every worker must run admission-aware code.
+Rebuild, unavailable, unrecoverable `needs-rebuild`, failed condemnation marker and held-lock states admit writes; ordinary handoff preserves the flag. Shedding does not pin retention (rocksdb-js has no protected-position registration): budget inside effective retention, with admission-aware code on all workers.
 
 ### Failure flow
 
