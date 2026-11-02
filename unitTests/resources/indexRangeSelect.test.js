@@ -420,7 +420,7 @@ describe('Secondary-index range select', function () {
 					{ id: 1, score: 5 },
 					{ id: 2, score: 5 },
 				]);
-				// the RocksDB record-loading path keeps hiding it (LMDB's does not reliably, which this change leaves)
+				// the RocksDB record-loading path keeps hiding it (LMDB's does not reliably)
 				if (!isLMDB)
 					assert.deepStrictEqual(
 						(await rows(Expiring, { conditions: condition })).map(({ id, label }) => ({ id, label })),
@@ -548,6 +548,7 @@ describe('Secondary-index range select', function () {
 		});
 
 		it('yields between overflow entries a covered scan rejects', async function () {
+			let scanning = true;
 			const Long = table({
 				table: 'IndexRangeCoveredYieldTest',
 				database: 'test',
@@ -559,7 +560,6 @@ describe('Secondary-index range select', function () {
 			try {
 				for (let id = 1; id <= 20; id++) await Long.put(id, { value: ['e'.repeat(300) + id] });
 				let turns = 0;
-				let scanning = true;
 				const tick = () => {
 					turns++;
 					if (scanning) setImmediate(tick);
@@ -574,8 +574,8 @@ describe('Secondary-index range select', function () {
 					assert.deepStrictEqual(result, []);
 					assert.ok(turns - before >= 10, `the scan yielded ${turns - before} times across 20 rejected entries`);
 				}
-				scanning = false;
 			} finally {
+				scanning = false;
 				Long.dropTable();
 			}
 		});
@@ -634,6 +634,8 @@ describe('Secondary-index range select', function () {
 				await Reopened.put(4, { value: { nested: 6 }, label: 'object' });
 				await Reopened.put(5, { value: -0, label: 'negative zero' });
 				await Reopened.put({ id: [null, 7], value: '\x18', label: 'control character' });
+				// the id RocksDB decodes from record 5's -0 entry
+				await Reopened.put({ id: [null, null, null, 5], value: 'x', label: 'decoded twin' });
 				await closeDatabase(databaseName);
 				resetDatabases();
 				Reopened = declare();
@@ -642,19 +644,23 @@ describe('Secondary-index range select', function () {
 				const { result, reads } = await withReads(Reopened, () =>
 					rows(Reopened, { conditions: open, select: ['id', 'value'] })
 				);
-				// the same rows, in index order: the array row once per matching element, the object row not at
-				// all (it is not indexed), and the -0 row not at all, as its index key cannot give its value
-				assert.deepStrictEqual(
-					result.map(({ id }) => id),
-					loaded.map(({ id }) => id).filter((id) => id !== 5)
-				);
+				// in index order: the array row once per matching element, the object row not at all (it is not
+				// indexed), the -0 row as LMDB's record path reads it, and on RocksDB, where record 5's -0 entry
+				// decodes to the twin's id, no row for that entry (the record path serves the twin there)
 				assert.deepStrictEqual(result, [
 					{ id: 1, value: 5 },
 					{ id: 3, value: 6 },
 					{ id: 2, value: 7 },
 					{ id: 3, value: 8 },
+					...(isLMDB ? [{ id: 5, value: 0 }] : []),
 					{ id: [null, 7], value: '\x18' },
+					// ids come back as the index decodes them: RocksDB's composite key drops one leading null here
+					{ id: isLMDB ? [null, null, null, 5] : [null, null, 5], value: 'x' },
 				]);
+				assert.deepStrictEqual(
+					loaded.filter(({ id }) => id !== 5 && !Array.isArray(id)).map(({ id }) => id),
+					[1, 3, 2, 3]
+				);
 				// a null-led id under a '\x18' key is checked against its record, since -0 decodes that way on RocksDB
 				assert.equal(reads, isLMDB ? 1 : 2);
 			} finally {

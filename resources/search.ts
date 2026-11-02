@@ -928,44 +928,50 @@ interface CoveredSelect {
 function coverIndexEntries(
 	entries: any,
 	Table: any,
-	attributeName: string | undefined,
+	scannedAttribute: string,
+	coverAttribute: boolean,
 	covered: CoveredSelect,
 	transaction: any
 ) {
 	const primaryKeyName = Table.primaryKey;
 	const decodePrimaryKey = declaredTypeDecoder(findAttribute(Table.attributes, primaryKeyName));
-	const decodeValue = attributeName && declaredTypeDecoder(findAttribute(Table.attributes, attributeName));
+	const decodeValue = coverAttribute && declaredTypeDecoder(findAttribute(Table.attributes, scannedAttribute));
 	const recordRead = covered.recordRead;
-	return entries.map((entry) => {
-		const { key, value: primaryKey } = entry;
-		let value = key;
-		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB, and on RocksDB as key '\x18'
-		// with a null-led primary key that a real [null, …] id can also produce, so only its record tells them apart
-		if (typeof key === 'object' && key !== null) return SKIP;
-		if (key === '\x18' && primaryKey?.[0] === null) {
-			if (!Table.primaryStore.getEntry(primaryKey, { transaction })?.value) return SKIP;
-		} else if (attributeName && typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
-			value = entry.overflowed;
-			if (value === undefined) {
-				const record = Table.primaryStore.getEntry(primaryKey, { transaction })?.value;
-				value = record && overflowedValue(record[attributeName], key, attributeName);
-				if (value === undefined) return SKIP;
-			}
-		} else if (decodeValue) value = decodeValue(key);
+	const project = (entry, primaryKey, value) => {
 		recordRead?.();
 		const id = decodePrimaryKey ? decodePrimaryKey(primaryKey) : primaryKey;
 		entry.key = id;
-		entry.value = attributeName ? { [primaryKeyName]: id, [attributeName]: value } : { [primaryKeyName]: id };
+		entry.value = coverAttribute ? { [primaryKeyName]: id, [scannedAttribute]: value } : { [primaryKeyName]: id };
 		return entry;
+	};
+	return entries.map(function (entry) {
+		const { key, value: primaryKey } = entry;
+		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB (whose record stores 0), and on
+		// RocksDB as key '\x18' with a null-led primary key that a real [null, …] id can also produce
+		if (typeof key === 'object' && key !== null) return project(entry, primaryKey, 0);
+		const confirm = key === '\x18' && primaryKey?.[0] === null;
+		const overflow = typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH;
+		if (!confirm && !(overflow && coverAttribute))
+			return project(entry, primaryKey, decodeValue ? decodeValue(key) : key);
+		if (overflow && entry.overflowed !== undefined) return project(entry, primaryKey, entry.overflowed);
+		const fromRecord = (record) => {
+			const value = record && overflowedValue(record[scannedAttribute], key, scannedAttribute);
+			return value === undefined ? SKIP : project(entry, primaryKey, value);
+		};
+		const loaded = Table.primaryStore.getEntry(primaryKey, { transaction, async: !this?.isSync });
+		return typeof loaded?.then === 'function'
+			? loaded.then((loaded) => fromRecord(loaded?.value))
+			: fromRecord(loaded?.value);
 	});
 }
 
+// the stored value (or array element) an index key was made from: a truncated overflow key matches by prefix
 function overflowedValue(stored: any, key: string, attributeName: string, filter?: (record: any) => boolean) {
 	const prefix = key.slice(0, MAX_SEARCH_KEY_LENGTH);
+	const overflow = key.length > MAX_SEARCH_KEY_LENGTH;
 	const indexed = (value: any) =>
 		typeof value === 'string' &&
-		value.length > MAX_SEARCH_KEY_LENGTH &&
-		value.startsWith(prefix) &&
+		(overflow ? value.length > MAX_SEARCH_KEY_LENGTH && value.startsWith(prefix) : value === key) &&
 		(!filter || filter({ [attributeName]: value }));
 	return Array.isArray(stored) ? stored.find(indexed) : indexed(stored) ? stored : undefined;
 }
@@ -1514,7 +1520,7 @@ export function searchByIndex(
 				? scanned
 				: distinctRecords(scanned, coverEntries ? (entry) => entry.value : undefined);
 		return coverEntries
-			? coverIndexEntries(distinct, Table, coverAttribute ? attribute_name : undefined, covered, transaction)
+			? coverIndexEntries(distinct, Table, attribute_name, coverAttribute, covered, transaction)
 			: distinct;
 	} else {
 		return Table.primaryStore
