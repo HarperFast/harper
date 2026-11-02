@@ -8868,6 +8868,8 @@ export function makeTable(options): TableResourceClass {
 										if (value !== SKIP) return { value };
 										continue;
 									}
+									// prepareForSort skipped every row of this group
+									if (!dbDone) continue;
 									if (results.onDone) results.onDone();
 									return iteration;
 								}

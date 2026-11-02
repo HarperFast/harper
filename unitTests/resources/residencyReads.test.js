@@ -365,19 +365,30 @@ describe('Reads of residency stubs', function () {
 		);
 	});
 
-	for (const [leadingRow, found] of [
-		[false, false],
-		[true, false],
-		[false, true],
-		[true, true],
+	// a sort on record content reloads the stubs before ordering, so it closes during that reload; a sort led by the
+	// primary key does not, so it closes while materializing a later row
+	for (const [keyLed, leadingRow, found] of [
+		[false, false, false],
+		[false, true, false],
+		[false, false, true],
+		[false, true, true],
+		[true, true, false],
+		[true, true, true],
 	]) {
-		it(`stops sorted materialization after closure (${leadingRow ? 'subsequent' : 'first'} row, ${found ? 'present' : 'absent'})`, async () => {
+		const phase = keyLed
+			? 'materialization of a subsequent row'
+			: leadingRow
+				? 'pre-sort reload beside a cached row'
+				: 'pre-sort reload';
+		it(`stops a sorted read closed during ${phase} (${found ? 'present' : 'absent'})`, async () => {
 			const Rows = table({
 				database: 'test',
-				table: `ClosedSortedRead${leadingRow}${found}`,
+				table: `ClosedSortedRead${keyLed}${leadingRow}${found}`,
 				audit: true,
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
 			});
+			// the first stub each ordering reaches: index order for the content sort, descending keys for the key-led one
+			const gated = keyLed ? 'b' : 'a';
 			let resolveLoad, reportStarted;
 			const load = new Promise((resolve) => {
 				resolveLoad = resolve;
@@ -389,7 +400,7 @@ describe('Reads of residency stubs', function () {
 			Rows.sourcedFrom({
 				get(id) {
 					loads.push(id);
-					if (id === 'a') {
+					if (id === gated) {
 						reportStarted();
 						return load;
 					}
@@ -406,20 +417,22 @@ describe('Reads of residency stubs', function () {
 			if (leadingRow) await Rows.put('local', { id: 'local', name: 'indexed', body: 'complete' });
 			const target = {
 				conditions: [{ attribute: 'name', value: 'indexed' }],
-				sort: { attribute: 'body', descending: true },
+				sort: keyLed
+					? { attribute: 'id', descending: true, next: { attribute: 'body' } }
+					: { attribute: 'body', descending: true },
 			};
 			assert.ok(Rows.search({ ...target, explain: true }).postOrdering);
 			const iterator = Rows.search(target)[Symbol.asyncIterator]();
-			if (leadingRow) assert.equal((await iterator.next()).value.id, 'local');
+			if (keyLed) assert.equal((await iterator.next()).value.id, 'local');
 			const pending = iterator.next();
 			await started;
 			try {
 				await iterator.return();
 			} finally {
-				resolveLoad(found ? { id: 'a', name: 'indexed', body: 'loaded' } : undefined);
+				resolveLoad(found ? { id: gated, name: 'indexed', body: 'loaded' } : undefined);
 			}
 			assert.equal((await pending).done, true);
-			assert.deepStrictEqual(loads, ['a']);
+			assert.deepStrictEqual(loads, [gated]);
 		});
 	}
 
