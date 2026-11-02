@@ -193,6 +193,13 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(v2Like('a__b', 'a\r\nb'), true);
 	});
 
+	it('rejects a pattern too large to compile with a client error', () => {
+		assert.throws(
+			() => v2Like('a'.repeat(100_000) + '_', 'a'),
+			(error) => error instanceof ClientError && error.statusCode === 400
+		);
+	});
+
 	it('is case-sensitive', () => {
 		assert.strictEqual(v2Like('abc', 'ABC'), false);
 		assert.strictEqual(v2Like('%B%', 'abc'), false);
@@ -307,6 +314,20 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.utils.like('a[!]]', 'a!]', '!'), false);
 		assert.strictEqual(alasql.utils.like('[a!-c]', 'b', '!'), false);
 		assert.strictEqual(alasql.utils.like('[a!-c]', '-', '!'), true);
+		assert.strictEqual(alasql.utils.like('[^_]', 'a', '^'), true);
+		assert.strictEqual(alasql.utils.like('[^_]', '_', '^'), false);
+		assert.strictEqual(alasql.utils.like('[^^]]', 'a', '^'), true);
+		assert.strictEqual(alasql.utils.like('[^^]]', ']', '^'), false);
+	});
+
+	it('folds case per code unit in every segment position', () => {
+		assert.strictEqual(alasql.utils.like('%AbC%', 'xxabcxx'), true);
+		assert.strictEqual(alasql.utils.like('%a.c%', 'xxA.Cxx'), true);
+		assert.strictEqual(alasql.utils.like('%a.c%', 'xxabcxx'), false);
+		assert.strictEqual(alasql.utils.like('%s%', 'x\u017fx'), false);
+		assert.strictEqual(alasql.utils.like('%\u00e9%', 'x\u00c9x'), true);
+		assert.strictEqual(alasql.utils.like('%[a-c]b%', 'xxBBxx'), true);
+		assert.strictEqual(alasql.utils.like('%ab%ab', 'ab'), false);
 	});
 
 	it('rejects a malformed pattern or escape with a client error', () => {
@@ -317,8 +338,9 @@ describe('legacy alasql LIKE', () => {
 	});
 
 	it('tokenizes unclosed [ in linear time', () => {
+		assert.strictEqual(alasql.utils.like('['.repeat(5_000) + '%', '['.repeat(5_001)), true);
 		const start = performance.now();
-		assert.strictEqual(alasql.utils.like('['.repeat(100_000) + '%', '['.repeat(100_000)), true);
+		assert.throws(() => alasql.utils.like('['.repeat(200_000) + '%', 'x'), ClientError);
 		assert.ok(performance.now() - start < 1_000);
 	});
 });

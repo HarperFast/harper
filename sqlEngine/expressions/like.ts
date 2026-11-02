@@ -4,24 +4,19 @@
  * always safe: any match that places the segment further right still matches with it shifted left.
  */
 
+import { ClientError } from '../../utility/errors/hdbError.ts';
 import { EngineRuntimeError } from '../errors.ts';
 
 export type LikeToken =
-	| { kind: 'literal'; char: string }
-	| { kind: 'one' }
-	| { kind: 'any' }
-	| { kind: 'class'; test: (char: string) => boolean };
+	{ kind: 'literal'; char: string } | { kind: 'one' } | { kind: 'any' } | { kind: 'class'; source: string };
 
 export type LikeMatcher = (value: string) => boolean;
 
 export interface LikeMatchOptions {
-	/** RegExp `i` comparison, as alasql's LIKE. */
 	caseInsensitive?: boolean;
-	/** `_` as a RegExp `.`, as alasql's LIKE. */
 	oneExcludesLineTerminators?: boolean;
 }
 
-/** An escape followed by any character is that character literally. */
 export function tokenizeLike(pattern: string, escape?: string): LikeToken[] {
 	const tokens: LikeToken[] = [];
 	for (let i = 0; i < pattern.length; i++) {
@@ -50,105 +45,84 @@ export function compileLike(pattern: string, escape?: string): LikeMatcher {
 
 interface Segment {
 	width: number;
-	/** Set when every unit is a literal, so the segment can be found with `indexOf`. */
+	/** Literal text, matched with `startsWith`/`indexOf` when the comparison is case-sensitive. */
 	text: string | undefined;
-	units: (string | ((char: string) => boolean))[];
+	sticky: RegExp | undefined;
+	global: RegExp | undefined;
 }
 
-const anyChar = () => true;
-const notLineTerminator = (char: string) => char !== '\n' && char !== '\r' && char !== '\u2028' && char !== '\u2029';
-
 export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions = {}): LikeMatcher {
-	const caseInsensitive = options.caseInsensitive === true;
-	const one = options.oneExcludesLineTerminators ? notLineTerminator : anyChar;
+	const flags = options.caseInsensitive ? 'i' : '';
+	const one = options.oneExcludesLineTerminators ? '.' : '[\\s\\S]';
 	const segments: Segment[] = [];
-	let current: Segment = { width: 0, text: '', units: [] };
+	let width = 0;
+	let text: string | undefined = '';
+	let source = '';
+	const endSegment = () => {
+		const literal = text !== undefined && (!flags || width === 0);
+		// V8 fails to compile a RegExp of roughly 50k atoms, and only on its first match.
+		if (!literal && width > MAX_REGEXP_SEGMENT) {
+			throw new ClientError(`LIKE pattern has a ${width}-character run between %s; the limit is ${MAX_REGEXP_SEGMENT}`);
+		}
+		segments.push({
+			width,
+			text: literal ? text : undefined,
+			sticky: literal ? undefined : new RegExp(source, flags + 'y'),
+			global: literal ? undefined : new RegExp(source, flags + 'g'),
+		});
+		width = 0;
+		text = '';
+		source = '';
+	};
 	for (const token of tokens) {
 		if (token.kind === 'any') {
-			segments.push(current);
-			current = { width: 0, text: '', units: [] };
+			endSegment();
 			continue;
 		}
-		current.width++;
+		width++;
 		if (token.kind === 'literal') {
-			const char = caseInsensitive ? canonicalizeCase(token.char) : token.char;
-			current.units.push(char);
-			if (current.text !== undefined) current.text += char;
+			if (text !== undefined) text += token.char;
+			source += token.char.replace(REGEXP_SYNTAX, '\\$&');
 		} else {
-			current.units.push(token.kind === 'one' ? one : token.test);
-			current.text = undefined;
+			text = undefined;
+			source += token.kind === 'one' ? one : token.source;
 		}
 	}
-	segments.push(current);
+	endSegment();
 
 	if (segments.length === 1) {
 		const only = segments[0];
-		return (value) => value.length === only.width && segmentMatchesAt(only, value, 0, caseInsensitive);
+		return (value) => value.length === only.width && segmentMatchesAt(only, value, 0);
 	}
 	const first = segments[0];
 	const last = segments[segments.length - 1];
 	const middle = segments.slice(1, -1).filter((segment) => segment.width > 0);
 	return (value) => {
 		const end = value.length - last.width;
-		if (end < first.width) return false;
-		if (!segmentMatchesAt(first, value, 0, caseInsensitive) || !segmentMatchesAt(last, value, end, caseInsensitive)) {
-			return false;
-		}
-		if (middle.length === 0) return true;
-		const folded = caseInsensitive ? canonicalizeString(value) : value;
+		if (end < first.width || !segmentMatchesAt(first, value, 0) || !segmentMatchesAt(last, value, end)) return false;
 		let position = first.width;
 		for (const segment of middle) {
-			const found = findSegment(segment, folded, position, end - segment.width);
-			if (found < 0) return false;
+			const found = findSegment(segment, value, position);
+			if (found < 0 || found > end - segment.width) return false;
 			position = found + segment.width;
 		}
 		return true;
 	};
 }
 
-function segmentMatchesAt(segment: Segment, value: string, start: number, fold: boolean): boolean {
-	const units = segment.units;
-	for (let i = 0; i < units.length; i++) {
-		const unit = units[i];
-		const char = value[start + i];
-		if (typeof unit === 'string') {
-			if (unit !== (fold ? canonicalizeCase(char) : char)) return false;
-		} else if (!unit(char)) return false;
-	}
-	return true;
+// Segment RegExps hold no quantifier or alternation, so they cannot backtrack.
+const MAX_REGEXP_SEGMENT = 10_000;
+const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
+
+function segmentMatchesAt(segment: Segment, value: string, start: number): boolean {
+	if (segment.text !== undefined) return value.startsWith(segment.text, start);
+	segment.sticky!.lastIndex = start;
+	return segment.sticky!.test(value);
 }
 
-function findSegment(segment: Segment, value: string, from: number, lastStart: number): number {
-	if (segment.text !== undefined) {
-		const found = value.indexOf(segment.text, from);
-		return found <= lastStart ? found : -1;
-	}
-	for (let start = from; start <= lastStart; start++) {
-		if (segmentMatchesAt(segment, value, start, false)) return start;
-	}
-	return -1;
-}
-
-function isAscii(value: string): boolean {
-	for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) > 127) return false;
-	return true;
-}
-
-/**
- * Canonicalize of a non-Unicode case-insensitive RegExp, per code unit: the length never changes, and a
- * non-ASCII unit never folds to ASCII (U+017F stays distinct from `s`), unlike `toUpperCase` on the whole string.
- */
-function canonicalizeString(value: string): string {
-	if (isAscii(value)) return value.toUpperCase();
-	let folded = '';
-	for (let i = 0; i < value.length; i++) folded += canonicalizeCase(value[i]);
-	return folded;
-}
-
-function canonicalizeCase(char: string): string {
-	const code = char.charCodeAt(0);
-	if (code < 128) return code >= 97 && code <= 122 ? String.fromCharCode(code - 32) : char;
-	const upper = char.toUpperCase();
-	if (upper.length !== 1 || upper.charCodeAt(0) < 128) return char;
-	return upper;
+function findSegment(segment: Segment, value: string, from: number): number {
+	if (segment.text !== undefined) return value.indexOf(segment.text, from);
+	const regex = segment.global!;
+	regex.lastIndex = from;
+	return regex.test(value) ? regex.lastIndex - segment.width : -1;
 }

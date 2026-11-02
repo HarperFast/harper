@@ -497,7 +497,7 @@ function normalizeLike(node: AlaSqlNode, negated: boolean): ExprNode {
 		assertLikeEscape(escape.value);
 		like.escape = escape.value;
 	}
-	// Past normalization, scan validation can turn this error into a legacy fallback.
+	// Past this point scan validation can turn the error into a legacy fallback.
 	if (like.pattern.kind === 'literal' && typeof like.pattern.value === 'string') {
 		tokenizeLike(like.pattern.value, like.escape);
 	}

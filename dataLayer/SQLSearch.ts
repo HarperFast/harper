@@ -19,7 +19,7 @@ import log from '../utility/logging/harper_logger.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import harperBridge from './harperBridge/harperBridge.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import { DatabaseClosingError, DatabaseShardingHeldError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { ClientError, DatabaseClosingError, DatabaseShardingHeldError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
@@ -1272,6 +1272,7 @@ class SQLSearch {
 			}
 			log.trace(`Final AlaSQL results data included ${finalResults.length} rows`);
 		} catch (err) {
+			if (err instanceof ClientError) throw err;
 			log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
 			log.error(err);
 			throw new Error('There was a problem running the generated sql.');
