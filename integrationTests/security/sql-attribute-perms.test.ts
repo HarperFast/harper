@@ -283,6 +283,14 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 				const m = await asReader(member);
 				strictEqual(m.status, 400, `${member} -> ${m.status} ${JSON.stringify(m.body).slice(0, 300)}`);
 				ok(!JSON.stringify(m.body).includes(RIGHT_PK), JSON.stringify(m.body));
+
+				// Legacy names an unaliased function column after its text, in brackets.
+				const call = `SELECT UPPER('x], id, [y') FROM data.ColPermRight WHERE label = 'shared'`;
+				const c = await asReader(call);
+				const callResult = `${call} -> ${c.status} ${JSON.stringify(c.body).slice(0, 300)}`;
+				if (sqlEngine === 'legacy') strictEqual(c.status, 400, callResult);
+				else ok(c.status === 200 || c.status === 400, callResult);
+				ok(!JSON.stringify(c.body).includes(RIGHT_PK), callResult);
 			});
 
 			test('super user is unaffected', async () => {

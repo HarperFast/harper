@@ -135,9 +135,42 @@ describe('legacy SQL text', function () {
 			assertUnwritable("UPDATE dev.t SET ssn = '1', label = CONCAT('x'', ssn, ''y') WHERE id = 1");
 			assertUnwritable("SELECT COUNT(*) AS c, 'x'', *, ''y' AS v FROM dev.t");
 			assertUnwritable("SELECT 'x''; SELECT ssn FROM dev.t; SELECT ''y' AS v FROM dev.t");
+			assertUnwritable("INSERT INTO dev.t (id, label) VALUES (1, CONCAT('x'', ssn, ''y'))");
 		} finally {
 			alasql.yy.StringValue.prototype.toString = writer;
 		}
+	});
+
+	it('refuses an unaliased function column whose text holds a closing bracket', function () {
+		assertUnwritable("SELECT UPPER('x], id, [y') FROM dev.t");
+		assertLegacySqlText(parse("SELECT UPPER('x], id, [y') AS u FROM dev.t"));
+		assertLegacySqlText(parse("SELECT geoArea('[[0,0],[1,1]]')"));
+	});
+
+	it('checks only the INSERT values legacy SQL writes as text', function () {
+		// Literal values are data, so one with no SQL spelling is still accepted.
+		assertLegacySqlText(parse("INSERT INTO dev.t (id, path) VALUES (1, 'a\\')"));
+		assertLegacySqlText(parse("INSERT INTO dev.t (id, label) VALUES (1, CONCAT('x'', ssn, ''y'))"));
+		assertUnwritable("INSERT INTO dev.t (id, label) VALUES (1, CONCAT('x', 'a\\'))");
+	});
+
+	it('leaves the statement as it was', function () {
+		for (const sql of [
+			"INSERT INTO dev.t (id, `count`) VALUES (1, {'columnid':'a'})",
+			'SELECT `count` AS c FROM dev.t AS d WHERE d.id = 1',
+			"DELETE FROM dev.t WHERE label = 'a'",
+		]) {
+			const statement = parse(sql);
+			const before = statement.toString();
+			assertLegacySqlText(statement);
+			assert.strictEqual(statement.toString(), before, sql);
+			assert.ok(!Object.hasOwn(statement, 'columns') || statement.columns !== undefined, sql);
+		}
+		const insert = parse('INSERT INTO dev.t (id) VALUES (1)');
+		assertLegacySqlText(insert);
+		assert.strictEqual(insert.into.tableid, 't');
+		assert.strictEqual(insert.columns[0].columnid, 'id');
+		assert.ok(!Object.hasOwn(insert.into, 'tableid_orig'));
 	});
 
 	it('refuses a string literal that has no spelling', function () {

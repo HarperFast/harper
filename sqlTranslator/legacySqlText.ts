@@ -4,7 +4,6 @@
  * escaping, and numbers in a form it reads back as a column.
  */
 import alasql from 'alasql';
-import clone from 'clone';
 import { backtickASTSchemaItems } from '../utility/common_utils.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { astNodes } from './sql_statement_bucket.ts';
@@ -162,9 +161,34 @@ function* statementNodes(statement: any): Generator<any> {
 	}
 }
 
-/** Throws a 400 for a statement whose SQL text would not parse back to what it reads. */
+/** Throws a 400 for a statement whose SQL text, as legacy SQL runs it, would not parse back to what it reads. */
 export function assertLegacySqlText(statement: any) {
-	for (const node of statementNodes(statement)) {
+	if (statement instanceof yy.Insert) {
+		// INSERT takes literal values as data, and runs each other value as `SELECT <value> AS [...] FROM ?`.
+		for (const row of statement.values ?? []) {
+			for (const value of row) {
+				if ('value' in value) continue;
+				assertWritableNodes(value);
+				const authorized = referenceCounts(value);
+				authorized.set('param=0', (authorized.get('param=0') ?? 0) + 1);
+				assertReparse(`SELECT ${value} AS [v] FROM ?`, authorized);
+			}
+		}
+		return;
+	}
+	assertWritableNodes(statement);
+	// SQLSearch names an unaliased function column `[<its text>]` when the statement reads a table.
+	for (const column of statement instanceof yy.Select && statement.from?.length ? statement.columns : []) {
+		if (column.funcid && column.args && !column.aggregatorid && !column.as && column.toString().includes(']')) {
+			throw unwritable('A function column holding `]` without an alias');
+		}
+	}
+	const authorized = referenceCounts(statement);
+	assertReparse(legacyText(statement), authorized);
+}
+
+function assertWritableNodes(root: any) {
+	for (const node of statementNodes(root)) {
 		if (node instanceof yy.StringValue && quoteString(String(node.value)) === undefined) {
 			throw unwritable('A string literal');
 		}
@@ -188,20 +212,39 @@ export function assertLegacySqlText(statement: any) {
 			}
 		}
 	}
-	// Catches any writer not replaced here: the text legacy runs, with Harper's backticks, may read nothing new.
-	const written = clone(statement);
-	// `SELECT *` for a role that may read no column leaves no columns, which does not parse.
-	if (written instanceof yy.Select && written.columns?.length === 0) written.columns = [new yy.NumValue({ value: 1 })];
-	backtickASTSchemaItems(written);
+}
+
+// Catches any writer not replaced here: the text legacy runs may read nothing the statement does not.
+function assertReparse(text: string, authorized: Map<string, number>) {
 	let statements: any[];
 	try {
-		statements = (alasql as any).parse(written.toString()).statements;
+		statements = (alasql as any).parse(text).statements;
 	} catch {
 		throw unwritable('The statement');
 	}
 	if (statements.length !== 1) throw unwritable('The statement');
-	const authorized = referenceCounts(statement);
 	for (const [reference, count] of referenceCounts(statements[0])) {
 		if (count > (authorized.get(reference) ?? 0)) throw unwritable('The statement');
+	}
+}
+
+// The statement's text with Harper's backticks, leaving the statement as it was.
+function legacyText(statement: any): string {
+	const columns = statement.columns;
+	// `SELECT *` for a role that may read no column leaves no columns, which does not parse.
+	const placeholder = statement instanceof yy.Select && columns?.length === 0;
+	if (placeholder) statement.columns = [new yy.NumValue({ value: 1 })];
+	backtickASTSchemaItems(statement);
+	try {
+		return statement.toString();
+	} finally {
+		for (const node of astNodes(statement)) {
+			for (const key of ['columnid', 'tableid', 'databaseid', 'as']) {
+				if (!Object.hasOwn(node, `${key}_orig`)) continue;
+				node[key] = node[`${key}_orig`];
+				delete node[`${key}_orig`];
+			}
+		}
+		if (placeholder) statement.columns = columns;
 	}
 }
