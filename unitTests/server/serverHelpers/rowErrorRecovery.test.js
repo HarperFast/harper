@@ -6,19 +6,19 @@ testUtils.preTestPrep();
 
 const Fastify = require('fastify');
 const { decode } = require('cbor-x');
-const { unpackMultiple } = require('msgpackr');
+const { unpackMultiple } = require('../../packageBindings.mts').packageBindings('msgpackr');
 const { ExtendedIterable } = require('@harperfast/extended-iterable');
 const { serialize, registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
 const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
 const { ReadSnapshotExpiredError, ServerError } = require('#src/utility/errors/hdbError');
 
-function rowsFailingAt(failingId, error, { asynchronous = false, columns } = {}) {
+function rowsFailingAt(failingId, error, { asynchronous = false, columns, withName = false } = {}) {
 	const perRow = (id) => {
 		if (id === failingId) {
 			if (asynchronous) return Promise.reject(error);
 			throw error;
 		}
-		return { id };
+		return withName ? { id, name: `n${id}` } : { id };
 	};
 	const iterable = new ExtendedIterable([1, 2, 3]).map(perRow);
 	if (columns) iterable.getColumns = () => columns;
@@ -86,8 +86,10 @@ for (const asynchronous of [false, true]) {
 			]);
 		});
 
-		it('keeps a row-local error as an in-band CSV row carrying error, message, and the primary key', async function () {
-			const firstRowFailed = await drain(respond(rowsFailingAt(1, ordinary(1), { asynchronous }), 'text/csv'));
+		it('keeps a row-local error as an in-band CSV row carrying the primary key and error columns when present', async function () {
+			const firstRowFailed = await drain(
+				respond(rowsFailingAt(1, ordinary(1), { asynchronous, withName: true }), 'text/csv')
+			);
 			assert.strictEqual(firstRowFailed.failure, undefined);
 			assert.deepStrictEqual(firstRowFailed.body.trim().split('\n'), [
 				'"error","message","id"',
@@ -96,15 +98,35 @@ for (const asynchronous of [false, true]) {
 				',,3',
 			]);
 
-			const withColumns = await drain(
-				respond(rowsFailingAt2(ordinary(), { asynchronous, columns: ['id', 'error', 'message'] }), 'text/csv')
+			const defaultColumns = await drain(
+				respond(rowsFailingAt2(ordinary(), { asynchronous, withName: true, columns: ['id', 'name'] }), 'text/csv')
 			);
-			assert.strictEqual(withColumns.failure, undefined);
-			assert.deepStrictEqual(withColumns.body.trim().split('\n'), [
-				'"id","error","message"',
-				'1,,',
-				'2,"Error","row 2 failed"',
-				'3,,',
+			assert.strictEqual(defaultColumns.failure, undefined);
+			assert.deepStrictEqual(defaultColumns.body.trim().split('\n'), ['"id","name"', '1,"n1"', '2,', '3,"n3"']);
+
+			const withErrorColumns = await drain(
+				respond(
+					rowsFailingAt2(ordinary(), { asynchronous, withName: true, columns: ['id', 'name', 'error', 'message'] }),
+					'text/csv'
+				)
+			);
+			assert.strictEqual(withErrorColumns.failure, undefined);
+			assert.deepStrictEqual(withErrorColumns.body.trim().split('\n'), [
+				'"id","name","error","message"',
+				'1,"n1",,',
+				'2,,"Error","row 2 failed"',
+				'3,"n3",,',
+			]);
+		});
+
+		it('recovers a thrown non-Error object with default error name and stringified message', async function () {
+			const nonError = { toString: () => 'row 2 non-Error fault', partialObject: { id: 2 } };
+			const { body, failure } = await drain(respond(rowsFailingAt2(nonError, { asynchronous }), 'application/json'));
+			assert.strictEqual(failure, undefined);
+			assert.deepStrictEqual(JSON.parse(body), [
+				{ id: 1 },
+				{ id: 2, error: 'Error', message: 'row 2 non-Error fault' },
+				{ id: 3 },
 			]);
 		});
 
@@ -193,7 +215,7 @@ describe('the operations API serializer hook with a per-row map that throws', fu
 	});
 
 	it('keeps a row-local error as an in-band CSV row', async function () {
-		await serve(rowsFailingAt(1, ordinary(1)));
+		await serve(rowsFailingAt(1, ordinary(1), { withName: true }));
 		const res = await post('text/csv');
 		assert.strictEqual(res.statusCode, 200);
 		assert.deepStrictEqual(res.body.trim().split('\n'), [

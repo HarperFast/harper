@@ -351,7 +351,7 @@ function recoversRowErrors(contentType: string): boolean {
 /** A row's own failure becomes a row value; a lost read snapshot ends the whole read, so it must fail the stream. */
 function recoverRowError(error: any) {
 	if (error instanceof ReadSnapshotExpiredError) throw error;
-	return { error: error.name, message: error.message, ...error.partialObject };
+	return { error: error?.name ?? 'Error', message: error?.message ?? String(error), ...error?.partialObject };
 }
 
 const registerFastifySerializers = fp(
