@@ -4324,6 +4324,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
 	}
+	// A re-declaration persists these to the catalog, where a negative value would fail every later load, and
+	// nothing it changes before then (index builds included) is rolled back. A create rejects them in makeTable.
+	if (Table && origin !== 'cluster') {
+		if (+expiration < 0 || +eviction < 0)
+			throw new ClientError(`Expiration and eviction of '${databaseName}.${tableName}' can not be negative`);
+		if (replicaExpiration != null) replicaExpirationMsOf(replicaExpiration);
+		if (replicaRefreshFraction != null) replicaRefreshFractionOf(replicaRefreshFraction);
+	}
 	let primaryKey;
 	let primaryKeyAttribute;
 	let attributesDbi;
@@ -5583,7 +5591,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
-		// a declaration of a keyless table has no primary key attribute for the loop above to visit
 		if (!deferredPrimaryRow && !attributes.some((attribute) => attribute.isPrimaryKey))
 			persistTableSettings({}, primaryDescriptorKey());
 		if (
@@ -5789,9 +5796,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
 				attribute.type !== attributeDescriptor.type)
 		) {
-			// before the row is written: a persisted negative value would fail every later load of the table
-			if (+expiration < 0 || +eviction < 0)
-				throw new ClientError(`Expiration and eviction of '${databaseName}.${tableName}' can not be negative`);
 			exclusiveLock();
 			const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
 			if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) return;

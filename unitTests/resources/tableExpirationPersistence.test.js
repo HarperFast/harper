@@ -170,6 +170,26 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.strictEqual(Loaded.expirationMS, 120000);
 	});
 
+	it('rejects a negative value before a keyless re-declaration changes anything', async function () {
+		const tableName = 'ExpiryRejectedKeyless';
+		const Loaded = keyless(tableName);
+		assert.throws(
+			() =>
+				keyless(tableName, {
+					expiration: -5,
+					attributes: [
+						{ name: 'cacheControl', type: 'String' },
+						{ name: 'tag', type: 'String', indexed: true },
+					],
+				}),
+			/negative/
+		);
+		await commitCatalog(Loaded);
+		assert.strictEqual(Loaded.dbisDB.getSync(`${tableName}/tag`), undefined, 'no attribute row or index build');
+		assert(!Loaded.attributes.some((attribute) => attribute.name === 'tag'));
+		assert.deepStrictEqual(catalogExpiration(Loaded), {});
+	});
+
 	it('keeps a TTL application code set on this thread', async function () {
 		const tableName = 'ExpiryConfiguredByApplication';
 		const Configured = keyed(tableName);
