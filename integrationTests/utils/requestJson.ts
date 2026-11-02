@@ -1,5 +1,5 @@
 import http from 'node:http';
-import type { OutgoingHttpHeaders } from 'node:http';
+import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
 
 interface JsonRequestOptions {
 	method?: string;
@@ -8,17 +8,19 @@ interface JsonRequestOptions {
 	signal?: AbortSignal;
 }
 
-/** Keep interrupted HTTP messages distinct from complete responses containing invalid JSON. */
-export function requestJson(url: string, options: JsonRequestOptions = {}) {
+/**
+ * Server truncation resolves with aborted=true; malformed complete JSON, client abort and deadline reject.
+ */
+export function requestJson<T = unknown>(url: string, options: JsonRequestOptions = {}) {
 	const signal = options.signal
 		? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)])
 		: AbortSignal.timeout(30_000);
 	return new Promise<{
 		status: number;
-		coverage: string | null;
+		headers: IncomingHttpHeaders;
 		aborted: boolean;
 		text: string;
-		body: any;
+		body: T | undefined;
 	}>((resolve, reject) => {
 		const serialized = options.body === undefined ? undefined : JSON.stringify(options.body);
 		let responded = false;
@@ -47,7 +49,7 @@ export function requestJson(url: string, options: JsonRequestOptions = {}) {
 						settled = true;
 						resolve({
 							status: response.statusCode!,
-							coverage: (response.headers['harper-index-coverage'] as string | undefined) ?? null,
+							headers: response.headers,
 							aborted: !response.complete,
 							text,
 							body,

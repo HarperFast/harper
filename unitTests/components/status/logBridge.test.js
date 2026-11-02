@@ -181,7 +181,7 @@ describe('logBridge', function () {
 		const key = 'test.refresh-expiry';
 		try {
 			logger.status({ problem: key, expires: 0.06 }).error('first');
-			await delay(10);
+			await delay(30);
 			logger.status({ problem: key, expires: 0.06 }).error('still failing');
 			const renewed = componentStatusRegistry.getStatus(key);
 			assert.equal(renewed.status, COMPONENT_STATUS_LEVELS.ERROR);
