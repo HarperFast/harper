@@ -4,16 +4,16 @@
  * burst (cold reads re-seed the VerificationTable), and per-window convergence classification —
  * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (unconverged acknowledged increments).
  *
- * A short window also captures a same-request raw/cache snapshot alongside the audit chain.
- * Neither read proves durability; TTL validity and the snapshot worker are retained as diagnostics.
- * The extra cached read can refresh that worker’s cache and affect subsequent observations.
- * Different raw/cache versions can be legitimate snapshot/latest views, not evidence of lost writes.
- * The chain is requested from
- * inside the key's own burst worker, behind a GET that already reads short, and nothing in that
- * sequence is awaited before the round is measured: the record expires 500 ms after its last write
- * and the windows are measured one after another, so by a later window's turn its record is often
- * gone, while any wait ahead of a measurement can expire the keys still to be read. The round's
- * timestamp read runs after every window has been measured.
+ * Set HARPER_TTL_SNAPSHOT_DIAGNOSTICS=1 to capture a request-transaction snapshot and cached
+ * view alongside the audit chain for initial short reads. This opt-in run is diagnostic and is
+ * not equivalent to the default workload: the extra cached read can refresh the snapshot worker's
+ * cache. That worker may differ from the worker serving the short GET. The transaction snapshot
+ * is pinned, not a latest-commit view; different versions can be legitimate. Neither proves durability.
+ *
+ * The chain is requested inside the key's own burst worker, behind a GET that already reads short.
+ * Nothing in that sequence is awaited before round measurements: records expire 500 ms after their
+ * last write, so a wait ahead of a measurement can expire keys still to be read. The round's
+ * timestamp read and diagnostic logging run after every window has been measured.
  *
  * EXPIRED_RECREATED: the record was evicted at its TTL and recreated by a late increment, proven from
  * the live chain alone — seed PUT succeeded, no `upsert`, first entry a `patch` stamped after the
@@ -22,7 +22,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -36,6 +36,7 @@ const WORKERS = 4;
 const ROUNDS = 10;
 const WINDOWS = 10;
 const HITS = 50;
+const SNAPSHOT_DIAGNOSTICS = process.env.HARPER_TTL_SNAPSHOT_DIAGNOSTICS === '1';
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -137,12 +138,11 @@ suite(
 			threadId: number;
 			nowBefore: number;
 			nowAfter: number;
-			rawBefore: SnapshotEntry | null;
+			transactionSnapshot: SnapshotEntry | null;
 			cached: SnapshotEntry | null;
-			rawAfter: SnapshotEntry | null;
 		};
 		type SnapshotCapture = { status?: number; value?: Snapshot; error?: string };
-		type Chain = { chain: AuditEntry[]; error?: string; snapshot?: SnapshotCapture };
+		type Chain = { chain: AuditEntry[]; error?: string; snapshot?: SnapshotCapture; earlyHits?: number | null };
 
 		async function readSnapshot(id: string): Promise<SnapshotCapture> {
 			try {
@@ -173,9 +173,8 @@ suite(
 			return {
 				...capture,
 				ttlValidity: {
-					rawBefore: validity(value.rawBefore),
+					transactionSnapshot: validity(value.transactionSnapshot),
 					cached: validity(value.cached),
-					rawAfter: validity(value.rawAfter),
 				},
 			};
 		}
@@ -229,7 +228,6 @@ suite(
 			const windows: Array<ShortWindow & { recreated: boolean }> = [];
 			for (const [index, window] of shortWindows.entries()) {
 				let { chain, error } = chains[index];
-				const initialSnapshot = chains[index].snapshot;
 				// an increment applied after the capture (a client-side abort the server still applied)
 				// is missing from it; the key may still be live for one more read, and an expired key's
 				// empty answer must not replace the captured evidence
@@ -256,7 +254,7 @@ suite(
 				const detail =
 					`${window.detail} chain=[${operations(chain)}] ` +
 					`round-range=[${operations(rangeForKey)}] patches=${rangePatches}/${window.acked}${truncated ? ' (range truncated, see harper#3164)' : rangeError ? ' (range unavailable)' : ''} ` +
-					`slowest=[${slowest.join(' ')}] snapshot=${JSON.stringify(snapshotDetail(initialSnapshot))}` +
+					`slowest=[${slowest.join(' ')}]` +
 					(errors.length ? ` chain-error=${JSON.stringify(errors)}` : '');
 				windows.push({ ...window, recreated, detail });
 			}
@@ -298,7 +296,7 @@ suite(
 			let expiredRecreated = 0;
 			let over = 0;
 			let inconclusive = 0;
-			let initialShortSnapshots = 0;
+			let initialShortSnapshotAttempts = 0;
 			const anomalyLogs: string[] = [];
 
 			for (let round = 0; round < ROUNDS; round++) {
@@ -325,7 +323,13 @@ suite(
 							errs: results.filter((s) => s === 'error').length,
 							pendingChain: getHits(id).then((early) =>
 								early.status === 200 && early.hits! < acked
-									? Promise.all([readChain(id), readSnapshot(id)]).then(([chain, snapshot]) => ({ ...chain, snapshot }))
+									? SNAPSHOT_DIAGNOSTICS
+										? Promise.all([readChain(id), readSnapshot(id)]).then(([chain, snapshot]) => ({
+												...chain,
+												snapshot,
+												earlyHits: early.hits,
+											}))
+										: readChain(id)
 									: { chain: [] }
 							),
 						};
@@ -419,9 +423,9 @@ suite(
 				const initialChains = await Promise.all(perWindow.map((window) => window.pendingChain));
 				for (const [index, chain] of initialChains.entries()) {
 					if ('snapshot' in chain) {
-						initialShortSnapshots++;
+						initialShortSnapshotAttempts++;
 						anomalyLogs.push(
-							`${perWindow[index].id}: INITIAL_SHORT_SNAPSHOT ${JSON.stringify(snapshotDetail(chain.snapshot))}`
+							`${perWindow[index].id}: INITIAL_SHORT_SNAPSHOT acked=${perWindow[index].acked} early=${chain.earlyHits} worker-relation=unknown ${JSON.stringify(snapshotDetail(chain.snapshot))}`
 						);
 					}
 				}
@@ -430,7 +434,7 @@ suite(
 
 			console.log(
 				`\n[QA-431-CONVERGENCE] ${ROUNDS}×${WINDOWS}×${HITS} (${WORKERS} workers)\n` +
-					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} expired-recreated=${expiredRecreated} over=${over} inconclusive=${inconclusive} initial-short-snapshots=${initialShortSnapshots}\n` +
+					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} expired-recreated=${expiredRecreated} over=${over} inconclusive=${inconclusive} snapshot-diagnostics=${SNAPSHOT_DIAGNOSTICS} initial-short-snapshot-attempts=${initialShortSnapshotAttempts}\n` +
 					(anomalyLogs.length
 						? `  ${anomalyLogs.join('\n  ')}\n  server log: ${ctx.harper.logDir ?? '(not kept: HARPER_INTEGRATION_TEST_LOG_DIR unset)'}`
 						: '  (no anomalies)')
@@ -486,6 +490,8 @@ suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: Contex
 		await seeded.text();
 		strictEqual(seeded.status, 204);
 		let worker: number | undefined;
+		let previousVersion: number | undefined;
+		let previousExpiry: number | undefined;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const response = await fetch(`${httpURL}/RateSnapshot/${id}`, {
 				headers: { Authorization: auth },
@@ -500,7 +506,7 @@ suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: Contex
 			if (worker !== undefined) strictEqual(snapshot.threadId, worker);
 			worker = snapshot.threadId;
 			ok(snapshot.nowBefore <= snapshot.nowAfter);
-			for (const entry of [snapshot.rawBefore, snapshot.cached, snapshot.rawAfter]) {
+			for (const entry of [snapshot.transactionSnapshot, snapshot.cached]) {
 				strictEqual(entry.hits, 17);
 				ok(typeof entry.version === 'number' && entry.version > 0);
 				ok(typeof entry.localTime === 'number');
@@ -509,8 +515,14 @@ suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: Contex
 				ok(Array.isArray(entry.additionalAuditRefs));
 				ok(Array.isArray(entry.receivedIdentityRefs));
 			}
-			deepStrictEqual(snapshot.rawBefore, snapshot.rawAfter);
-			strictEqual(snapshot.cached.version, snapshot.rawBefore.version);
+			if (previousVersion !== undefined) {
+				strictEqual(snapshot.transactionSnapshot.version, previousVersion);
+				strictEqual(snapshot.transactionSnapshot.expiresAt, previousExpiry);
+			}
+			previousVersion = snapshot.transactionSnapshot.version;
+			previousExpiry = snapshot.transactionSnapshot.expiresAt;
+			strictEqual(snapshot.cached.version, snapshot.transactionSnapshot.version);
+			strictEqual(snapshot.cached.expiresAt, snapshot.transactionSnapshot.expiresAt);
 		}
 		const unchanged = await fetch(`${httpURL}/RateCounter/${id}`, {
 			headers: { Authorization: auth },
@@ -518,5 +530,23 @@ suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: Contex
 		});
 		strictEqual(unchanged.status, 200);
 		strictEqual((await unchanged.json()).hits, 17);
+		const updated = await fetch(`${httpURL}/RateCounter/${id}`, {
+			method: 'PUT',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id, hits: 18 }),
+			signal: AbortSignal.timeout(5_000),
+		});
+		await updated.text();
+		strictEqual(updated.status, 204);
+		const advanced = await fetch(`${httpURL}/RateSnapshot/${id}`, {
+			headers: { Authorization: auth },
+			signal: AbortSignal.timeout(5_000),
+		});
+		strictEqual(advanced.status, 200);
+		const snapshot = await advanced.json();
+		for (const entry of [snapshot.transactionSnapshot, snapshot.cached]) {
+			strictEqual(entry.hits, 18);
+			ok(entry.version > previousVersion!);
+		}
 	});
 });
