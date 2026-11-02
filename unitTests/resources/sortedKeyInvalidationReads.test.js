@@ -339,16 +339,22 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 				.map((row) => row.id)
 				.sort();
 		assert.deepStrictEqual(await parentIds([byId]), ['p1', 'p2']);
-		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'name'], comparator: 'ne', value: 'x' }]), [
-			'p2',
-		]);
-		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'id'], comparator: 'ne', value: 'x' }]), [
-			'p1',
-			'p2',
-		]);
-		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'id'], comparator: 'ne', value: 'c2' }]), [
-			'p2',
-		]);
+		const sameChild = (condition) => ({
+			attribute: 'children',
+			conditions: [{ attribute: 'id', comparator: 'in', value: ['c2', 'c3'] }, condition],
+		});
+		for (const [condition, separately, together] of [
+			[{ attribute: 'name', comparator: 'ne', value: 'x' }, ['p1', 'p2'], ['p2']],
+			[{ attribute: 'id', comparator: 'ne', value: 'x' }, ['p1', 'p2'], ['p1', 'p2']],
+			[{ attribute: 'id', comparator: 'ne', value: 'c2' }, ['p1', 'p2'], ['p2']],
+		]) {
+			assert.deepStrictEqual(
+				await parentIds([byId, { ...condition, attribute: ['children', condition.attribute] }]),
+				separately,
+				JSON.stringify(condition)
+			);
+			assert.deepStrictEqual(await parentIds([sameChild(condition)]), together, JSON.stringify(condition));
+		}
 
 		const readTxn = Parent._readTxnForContext({});
 		const scan = (filters) => {

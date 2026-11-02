@@ -149,7 +149,7 @@ export function executeConditions(
 	}
 	function executeCondition(condition) {
 		const branchScope = operator === 'or' ? Object.create(null) : scope;
-		if (condition.conditions)
+		if (condition.conditions && !isRelationshipGroup(condition))
 			return executeConditions(
 				condition.conditions,
 				condition.operator,
@@ -178,7 +178,7 @@ export function executeConditions(
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, scope) {
 		return conditions
 			.map((condition, index) => {
-				if (condition.conditions) {
+				if (condition.conditions && !isRelationshipGroup(condition)) {
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
 					// an OR's conditions are judged one by one; an AND inside it meets its own related records
@@ -292,6 +292,7 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 
 function containsFullTextCondition(conditions: any[], table: any): boolean {
 	for (const condition of conditions) {
+		if (isRelationshipGroup(condition)) continue;
 		if (condition.conditions) {
 			if (containsFullTextCondition(condition.conditions, table)) return true;
 			continue;
@@ -322,6 +323,7 @@ function compileFullTextExpression(
 			remaining?: any[];
 	  }
 	| undefined {
+	if (isRelationshipGroup(condition)) return;
 	if (condition.conditions) {
 		validateFullTextFuzzyOptions(condition);
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
@@ -716,6 +718,10 @@ function planCandidateKeys(
 function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[], includePointProbe: boolean): boolean {
 	let complete = true;
 	for (const condition of conditions) {
+		if (isRelationshipGroup(condition)) {
+			complete = false;
+			continue;
+		}
 		if (condition.conditions) {
 			if (condition.operator === 'or') {
 				// A union is only sound in full: dropping one branch would exclude the records only
@@ -960,11 +966,13 @@ export function searchByIndex(
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
+	const group: any = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
+	if (group && !Array.isArray(attribute_name)) attribute_name = [attribute_name];
 	const fullTextMode = fullTextComparatorMode(comparator);
 	if (fullTextMode && typeof attribute_name !== 'string')
 		throw new ClientError('Full-text comparator requires an index directly on the queried table', 400);
 	if (!fullTextMode) Table.assertFullTextRecordField?.(attribute_name);
-	if (value === undefined && (comparator as any) !== 'sort') {
+	if (value === undefined && (comparator as any) !== 'sort' && !group) {
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
 	let needFullScan;
@@ -977,7 +985,7 @@ export function searchByIndex(
 		const attribute = findAttribute(Table.attributes, firstAttributeName);
 		if (attribute?.relationship) {
 			// it is a join/relational query
-			if (attribute_name.length < 2)
+			if (attribute_name.length < 2 && !group)
 				throw new ClientError(
 					'Can not directly query a relational attribute, must query an attribute within the target table'
 				);
@@ -987,19 +995,29 @@ export function searchByIndex(
 				relatedTable.primaryStore.path === Table.primaryStore.path
 					? transaction
 					: leaseRelatedReadTxn(relatedTable, leaseContext, holderTable, holderReadTxn, disableSnapshot, leaseHost);
+			const relatedOptions = {
+				allowFullScan,
+				filtered: joined,
+				holderTable,
+				holderReadTxn,
+				disableSnapshot,
+				leaseHost,
+				leaseContext,
+			};
+			const rest = attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1];
 			// search the related table
-			let results = searchByIndex(
-				{
-					attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
-					value,
-					comparator,
-					negated: searchCondition.negated,
-				},
-				relatedTxn,
-				reverse,
-				relatedTable,
-				{ allowFullScan, filtered: joined, holderTable, holderReadTxn, disableSnapshot, leaseHost, leaseContext }
-			);
+			let results =
+				group && attribute_name.length === 1
+					? searchRelatedGroup(searchCondition, relatedTxn, reverse, relatedTable, joined, relatedOptions, context)
+					: searchByIndex(
+							group
+								? ({ attribute: rest, conditions: group.conditions, operator: group.operator } as any)
+								: { attribute: rest, value, comparator, negated: searchCondition.negated },
+							relatedTxn,
+							reverse,
+							relatedTable,
+							relatedOptions
+						);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
 				restrictRelationship(filtered, attribute_name[0], joined);
@@ -1024,11 +1042,15 @@ export function searchByIndex(
 					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
-					if (attribute_name.length > 2 && filtered) siblingFilters(filtered, attribute_name[0], joined);
+					// (a same-record group on it is a plain group of paths by now: this join applies no `joined.filters`)
+					if ((joined as any).filters)
+						throw new Error(`A same-record group on ${firstAttributeName} reached a many-to-one join`);
 					results = (results as any).flatMap(searchEntry);
 				}
 			}
 			return results;
+		} else if (group) {
+			throw new ClientError(`${firstAttributeName}[...] requires a relationship attribute`, 400);
 		} else if (attribute_name.length === 1) {
 			attribute_name = attribute_name[0];
 		} else {
@@ -1594,18 +1616,8 @@ async function scanRelated(rightIterable, readRecord, joined, add, scan: JoinSca
 			} catch {}
 	}
 }
-interface SiblingFilters {
-	filters: any[];
-	selection?: RelationshipSelection;
-	scope: any;
-	registered?: boolean;
-}
-const SIBLING_FILTERS = Symbol('siblingFilters');
-function everyFilter(filters, value, entry) {
-	for (let i = 0; i < filters.length; i++) if (!filters[i](value, entry)) return false;
-	return true;
-}
 class RelationshipSelection {
+	// the related-level predicates of the conditions this selection unions
 	filters: any[];
 	fromRecord: (record: any, sync?: boolean) => any;
 	constructor(filters: any[], fromRecord: (record: any, sync?: boolean) => any) {
@@ -1614,6 +1626,7 @@ class RelationshipSelection {
 	}
 }
 const RESTRICTIONS = Symbol('relationshipRestrictions');
+const UNIONS = Symbol('relationshipUnions');
 // A query's `filtered` map holds, per relationship name, a leading join's Map or a selection with `fromRecord`.
 // They are keyed by symbol because a relationship can be named like the maps' own members (`filters`, `get`).
 export function relationshipRestriction(filtered, name: string) {
@@ -1622,12 +1635,41 @@ export function relationshipRestriction(filtered, name: string) {
 export function restrictRelationship(filtered, name: string, restriction: Map<any, any> | RelationshipSelection) {
 	(filtered[RESTRICTIONS] ??= new Map()).set(name, restriction);
 }
-// The filters of every condition on one relationship within one scope, which must be met by the same related record.
-function siblingFilters(filtered, name: string, scope?: any): SiblingFilters | undefined {
-	const scopes = (filtered[SIBLING_FILTERS] ??= new Map());
-	let siblings = scopes.get(name);
-	if (!siblings && scope) scopes.set(name, (siblings = { filters: [], scope }));
-	return siblings;
+/**
+ * A same-record relationship condition: `{ attribute: relationship, operator, conditions }`, whose conditions are
+ * relative to the related table and must all be met by one related record.
+ */
+export function isRelationshipGroup(condition): boolean {
+	return Boolean(condition?.conditions) && (condition.attribute ?? condition[0]) != null;
+}
+/**
+ * Compile conditions on `table` into one record predicate (with a `maybeAsync` form when a leg has one). Each
+ * relationship condition is met by some related record of its own; `scope` collects their select() restrictions,
+ * which an OR never contributes to.
+ */
+export function compileConditions(conditions: any[], operator: string, table, context, scope) {
+	const any = operator === 'or';
+	const legScope = any ? undefined : scope;
+	const predicates = conditions.map((condition) => {
+		if (condition.conditions && !isRelationshipGroup(condition))
+			return compileConditions(condition.conditions, condition.operator, table, context, legScope);
+		const predicate = filterByType(
+			condition,
+			table,
+			context,
+			legScope,
+			(condition.attribute ?? condition[0]) === table.primaryKey
+		);
+		if (!predicate) throw new ClientError('This predicate is not supported in a relationship condition', 400);
+		return predicate;
+	});
+	if (predicates.length === 1) return predicates[0];
+	const combined: any = any
+		? (record, entry) => predicates.some((predicate) => predicate(record, entry))
+		: (record, entry) => predicates.every((predicate) => predicate(record, entry));
+	if (predicates.some((predicate) => predicate.maybeAsync))
+		combined.maybeAsync = (record, entry) => matchesFilters(predicates, record, entry, any);
+	return combined;
 }
 function someRelatedMatch(entries, match, start: number) {
 	for (let i = start; i < entries.length; i++) {
@@ -1901,21 +1943,24 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	const negated = searchCondition.negated;
 	let attribute = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
+	const group = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
+	if (group && !Array.isArray(attribute)) attribute = [attribute];
 	if (attribute == null && Table?.primaryKey != null) {
 		attribute = Table.primaryKey;
 		isPrimaryKey = true;
 	}
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
-		if (attribute.length === 1) {
+		if (attribute.length === 1 && !group) {
 			attribute = attribute[0] ?? Table?.primaryKey;
 			isPrimaryKey = attribute === Table?.primaryKey;
-		} else if (attribute.length > 1) {
+		} else {
 			const firstAttributeName = attribute[0];
 			// get the relationship attribute (may be undefined for plain JSON paths)
 			const firstAttribute = findAttribute(Table?.attributes, firstAttributeName);
 			const relatedTable = firstAttribute?.definition?.tableClass || firstAttribute?.elements?.definition?.tableClass;
 			if (!relatedTable) {
+				if (group) throw new ClientError(`${firstAttributeName}[...] requires a relationship attribute`, 400);
 				// Plain JSON nested path — walk the path on each record. Array
 				// intermediates use `some` semantics (match if any element matches).
 				const restAttribute = attribute.length > 2 ? attribute.slice(1) : attribute[1];
@@ -1935,10 +1980,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					return leafFilter(subObject, entry);
 				};
 			}
-			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
-			// and retrieving the set of matching ids first
-			const filterMap = relationshipRestriction(filtered, firstAttributeName);
-			const join: any = filterMap instanceof Map ? filterMap : undefined;
+			const restriction = relationshipRestriction(filtered, firstAttributeName);
+			const join: any = restriction instanceof Map ? restriction : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
 			const loadEntries = resolver?.loadEntries;
 			const getSubObject = (record, entry) => {
@@ -1961,20 +2004,33 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				} else subObject = record[firstAttributeName];
 				return { subObject, subEntry, subEntries };
 			};
-			const relatedSelection = (filters: any[]) =>
-				new RelationshipSelection(filters, (record, sync?: boolean) => {
-					// this is called when selecting the fields to include in results
+			// an AND scope selects the related records that a leading join on this relationship matched, or that
+			// meet any of its other conditions on it
+			const unionSelection = (join?: Map<any, any>) => {
+				const units = [];
+				const relatedKey = (entry) => entry.key ?? entry.value[relatedTable.primaryKey];
+				const joinedKeys = (record) => {
+					if (!join) return;
+					const keys = (join as any).hasMappings
+						? (join.get(resolver.from ? record[resolver.from] : flattenKey(record[Table.primaryKey])) || []).map(
+								(entry) => entry?.key ?? entry
+							)
+						: (join as any).fromRecord?.(record);
+					return new Set(keys);
+				};
+				const selection = new RelationshipSelection(units, (record, sync?: boolean) => {
+					const joined = joinedKeys(record);
 					if (loadEntries && !sync) {
 						return when(loadEntries(record, context), (loaded) => {
 							if (!resolver.toMany || !loaded) return loaded?.value;
 							const matches = mapSettlingOnThrow(
 								loaded,
-								(entry) => entry?.value != null && matchesFilters(filters, entry.value, entry, false)
+								(entry) =>
+									entry?.value != null &&
+									(joined?.has(relatedKey(entry)) || matchesFilters(units, entry.value, entry, true))
 							);
 							const matchingKeys = (matches) =>
-								loaded
-									.filter((_entry, i) => matches[i])
-									.map((entry) => entry.key ?? entry.value[relatedTable.primaryKey]);
+								loaded.filter((_entry, i) => matches[i]).map((entry) => relatedKey(entry));
 							return matches.some((matches) => matches?.then)
 								? Promise.all(matches).then(matchingKeys)
 								: matchingKeys(matches);
@@ -1986,110 +2042,91 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					for (let i = 0; i < subObject.length; i++) {
 						const value = subObject[i];
 						const entry = subEntries?.[i];
-						if (filters.every((filter) => filter(value, entry)))
-							keys.push(entry?.key ?? value[relatedTable.primaryKey]);
+						const key = entry?.key ?? value[relatedTable.primaryKey];
+						if (joined?.has(key) || units.some((unit) => unit(value, entry))) keys.push(key);
 					}
 					return keys;
 				});
-			let siblings: SiblingFilters;
-			if (!join && filtered) {
-				siblings = siblingFilters(filtered, firstAttributeName);
-				if (!siblings) {
-					const selection = firstAttribute.elements ? relatedSelection([]) : undefined;
-					siblings = siblingFilters(filtered, firstAttributeName, selection ?? Object.create(null));
-					if (selection) Object.assign(siblings, { filters: selection.filters, selection, scope: selection });
+				if (join) {
+					// the other conditions' deeper hops register beside the leading join's own
+					selection[RESTRICTIONS] = join[RESTRICTIONS] ??= new Map();
+					selection[UNIONS] = join[UNIONS] ??= new Map();
 				}
+				return selection;
+			};
+			let selection: RelationshipSelection;
+			if (filtered && firstAttribute.elements) {
+				const unions = (filtered[UNIONS] ??= new Map());
+				selection = unions.get(firstAttributeName);
+				if (!selection) unions.set(firstAttributeName, (selection = unionSelection(join)));
 			}
-			// a to-one relationship has one related record, so only its inner scope is shared
-			const shared = firstAttribute.elements ? siblings : undefined;
-			const nextFilter = filterByType(
-				{
-					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
-					value,
-					comparator,
-					negated,
-				},
-				relatedTable,
-				context,
-				join ?? siblings?.scope,
-				attribute[1] === relatedTable.primaryKey,
-				estimatedIncomingCount
-			);
+			// where this condition's deeper hops register their select() restrictions
+			const nestedScope = filtered ? (join ?? selection) : undefined;
+			const rest = attribute.length > 2 ? attribute.slice(1) : attribute[1];
+			const nextFilter =
+				group && attribute.length === 1
+					? compileConditions(group.conditions, group.operator, relatedTable, context, nestedScope)
+					: filterByType(
+							group
+								? { attribute: rest, conditions: group.conditions, operator: group.operator }
+								: { attribute: rest, value, comparator, negated },
+							relatedTable,
+							context,
+							nestedScope,
+							rest === relatedTable.primaryKey,
+							estimatedIncomingCount
+						);
 			if (!nextFilter) return;
-			if (join) {
-				if (!join.filters) join.filters = [];
-				join.filters.push(nextFilter);
-				return;
-			}
-			if (shared) {
-				if (resolver?.to) nextFilter.to = resolver.to;
-				// the first checks the whole set so the conditions meet one related record, as a leading join does
-				shared.filters.push(nextFilter);
-				if (shared.registered) return;
-				shared.registered = true;
-				if (shared.selection) restrictRelationship(filtered, firstAttributeName, shared.selection);
+			if (selection) {
+				selection.filters.push(nextFilter);
+				restrictRelationship(filtered, firstAttributeName, selection);
 			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
 			// a condition on the related key tests this record's `from` (or key) without loading the related record:
 			// a `to` relationship's id filter must be mapped through `to`
-			const idSource = () => {
-				if (!resolver) return;
-				if (!shared)
-					return nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo) ? nextFilter : undefined;
-				for (const filter of shared.filters)
-					if (filter.idFilter && (!resolver.to || filter.idFilter.mappedTo)) return filter;
-			};
-			const keyTest = (source) => {
+			const usesIdFilter = () => resolver && nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
+			const keyTest = () => {
 				if (!subIdFilter) {
 					// an array of foreign keys is tested per element; a single key (which may be a composite array) whole
 					const allowObjectMatching = Boolean(resolver.to) || !resolver.toMany;
-					if (source.idFilter.idSet?.size === 1) {
+					if (nextFilter.idFilter.idSet?.size === 1) {
 						// if there is a single id we are looking for, we can create a new search condition that the
 						// attribute comparator could eventually use to create a recursive id set
 						// TODO: Eventually we should be able to handle multiple ids by creating a union
 						searchCondition = {
 							attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-							value: source.idFilter.onlyId,
+							value: nextFilter.idFilter.onlyId,
 						};
 						subIdFilter = attributeComparator(
 							resolver.from ?? Table.primaryKey,
-							source.idFilter,
+							nextFilter.idFilter,
 							true,
 							allowObjectMatching
 						);
 					} else
 						subIdFilter = attributeComparator(
 							resolver.from ?? Table.primaryKey,
-							source.idFilter,
+							nextFilter.idFilter,
 							false,
 							allowObjectMatching
 						);
 				}
 				return subIdFilter;
 			};
-			// with sibling conditions the key test only rejects; the whole set still decides
-			const decidedByKey = () => !shared || shared.filters.length === 1;
-			const matchesRelated = shared ? (value, entry) => everyFilter(shared.filters, value, entry) : nextFilter;
 			const recordFilter = (record, entry) => {
-				const source = idSource();
-				if (source) {
-					const test = keyTest(source);
+				if (usesIdFilter()) {
+					const test = keyTest();
 					const matches = test(record);
-					if (decidedByKey()) {
-						if ((test as any).idFilter) (recordFilter as any).idFilter = (test as any).idFilter;
-						return matches;
-					}
-					if (!matches) return false;
+					if ((test as any).idFilter) (recordFilter as any).idFilter = (test as any).idFilter;
+					return matches;
 				}
 				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
-				if (!Array.isArray(subObject)) return matchesRelated(subObject, subEntry);
-				return subObject.some((value, i) => matchesRelated(value, subEntries?.[i]));
+				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
+				return subObject.some((value, i) => nextFilter(value, subEntries?.[i]));
 			};
-			const nextMatch = shared
-				? (value, entry) => matchesFilters(shared.filters, value, entry, false)
-				: (nextFilter.maybeAsync ?? nextFilter);
+			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
 			if (loadEntries) {
 				const matchLoaded = (loaded) => {
 					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
@@ -2097,11 +2134,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					return someRelatedMatch(loaded, nextMatch, 0);
 				};
 				(recordFilter as any).maybeAsync = (record, entry) => {
-					const source = idSource();
-					if (source) {
-						if (decidedByKey()) return recordFilter(record, entry);
-						if (!keyTest(source)(record)) return false;
-					}
+					if (usesIdFilter()) return recordFilter(record, entry);
 					const loaded = loadEntries(record, context);
 					return loaded?.then ? loaded.then(matchLoaded) : matchLoaded(loaded);
 				};
@@ -2428,19 +2461,81 @@ function usableIndex(table, attributeName): any {
 	return index?.isIndexing ? undefined : index;
 }
 
-function relationshipScanRuns(table, path: any[], offset: number, comparator, value): boolean {
+/**
+ * The related records a leading same-record group matches: one inner condition drives the scan and the rest go on
+ * the join's `filters`, which the join applies to each related record; an OR unions its branches' scans.
+ */
+function searchRelatedGroup(group, transaction, reverse: boolean, table, joined, options, context) {
+	const inner = group.conditions;
+	if (group.operator === 'or') {
+		if (inner.every((condition) => innerConditionDrives(table, condition))) {
+			let results;
+			for (const branch of inner) {
+				// a condition inside an OR decides rows only, so its joins register nowhere
+				const branchResults = searchByIndex(branch, transaction, reverse, table, {
+					...options,
+					filtered: Object.create(null),
+				});
+				results = results ? results.concat(branchResults) : branchResults;
+			}
+			return distinctKeys(results);
+		}
+	} else {
+		// the narrowest condition that drives an index scan, else the narrowest one searchByIndex can run (or refuse)
+		const estimate = estimateCondition(table);
+		let lead;
+		let leadDrives = false;
+		for (const condition of inner) {
+			if (condition.conditions && !isRelationshipGroup(condition)) continue;
+			const drives = conditionDrivesIndex(table, condition);
+			if (!lead || (drives && !leadDrives) || (drives === leadDrives && estimate(condition) < estimate(lead))) {
+				lead = condition;
+				leadDrives = drives;
+			}
+		}
+		if (lead) {
+			const results = searchByIndex(lead, transaction, reverse, table, options);
+			// built after the lead, so a relationship condition sees the lead's join on it
+			const filters = (joined.filters ??= []);
+			for (const condition of inner)
+				if (condition !== lead) filters.push(compileConditions([condition], 'and', table, context, joined));
+			return results;
+		}
+	}
+	if (options.allowFullScan === false)
+		throw new ClientError(`Can not search ${group.attribute}[...] without a condition in it that uses an index`, 403);
+	(joined.filters ??= []).push(compileConditions(inner, group.operator, table, context, joined));
+	return searchByIndex(
+		{ attribute: null, comparator: 'prefix', value: [] } as any,
+		transaction,
+		reverse,
+		table,
+		options
+	);
+}
+// a plain group inside a same-record group is applied as a filter, never as the scan
+function innerConditionDrives(table, condition): boolean {
+	return !(condition.conditions && !isRelationshipGroup(condition)) && conditionDrivesIndex(table, condition);
+}
+function relationshipScanRuns(table, path: any[], offset: number, comparator, value, group?): boolean {
 	const relationship = findAttribute(table.attributes, path[offset]);
 	const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
 	if (!relationship?.relationship || !relatedTable) return false;
 	const from = relationship.relationship.from;
 	if (from && from !== table.primaryKey && !usableIndex(table, from)) return false;
-	return offset < path.length - 2
-		? relationshipScanRuns(relatedTable, path, offset + 1, comparator, value)
-		: scanDrivesIndex(relatedTable, path[offset + 1], comparator, value);
+	if (offset < path.length - (group ? 1 : 2))
+		return relationshipScanRuns(relatedTable, path, offset + 1, comparator, value, group);
+	if (!group) return scanDrivesIndex(relatedTable, path[offset + 1], comparator, value);
+	const drives = (condition) => innerConditionDrives(relatedTable, condition);
+	return group.operator === 'or' ? group.conditions.every(drives) : group.conditions.some(drives);
 }
 // must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)
 export function conditionDrivesIndex(table, condition): boolean {
 	if (condition.negated) return false;
+	if (isRelationshipGroup(condition)) {
+		const path = condition.attribute ?? condition[0];
+		return relationshipScanRuns(table, Array.isArray(path) ? path : [path], 0, undefined, undefined, condition);
+	}
 	if (condition.conditions) {
 		const branches = condition.conditions;
 		if (branches.length === 0) return false;
@@ -2503,9 +2598,32 @@ function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): bo
 	return !!relatedTable && drivesRebuildingIndex(relatedTable, attributeName, relationshipOffset + 1);
 }
 
+// a same-record group is estimated as the join of its inner conditions, like an equality on a relationship path
+function estimateRelationshipGroup(table, group): number {
+	const path = Array.isArray(group.attribute) ? group.attribute : [group.attribute];
+	const attribute = findAttribute(table.attributes, path[0]);
+	const relatedTable = attribute?.definition?.tableClass || attribute?.elements?.definition?.tableClass;
+	if (!relatedTable) return Infinity;
+	const estimate = estimateCondition(relatedTable)(
+		path.length > 1
+			? { attribute: path.slice(1), conditions: group.conditions, operator: group.operator }
+			: { conditions: group.conditions, operator: group.operator }
+	);
+	const fromIndex = table.indices[attribute.relationship?.from];
+	return (
+		estimate +
+		(fromIndex
+			? (estimate * estimatedEntryCount(fromIndex)) / (estimatedEntryCount(relatedTable.primaryStore) || 1)
+			: estimate)
+	);
+}
 export function estimateCondition(table) {
 	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
+			if (isRelationshipGroup(condition)) {
+				condition.estimated_count = estimateRelationshipGroup(table, condition);
+				return condition.estimated_count;
+			}
 			if (condition.conditions) {
 				// for a group of conditions, we can estimate the count by combining the estimates of the sub-conditions
 				let estimatedCount;
@@ -2865,9 +2983,11 @@ function parseBlock(query, expectedEnd) {
 			case '[':
 				QUERY_PARSER.lastIndex = lastIndex;
 				if (value) {
-					// this is interpreted as propertyWithArray[name=value&anotherOtherConditions...]
+					// in a select, `relationship[...]` is a nested selection; among conditions, `relationship[conditions]`
+					// must be met by one related record
 					entry = parseBlock(new Query(), ']');
-					entry.name = value;
+					if (query.conditions) entry.attribute = decodeProperty(value);
+					else entry.name = value;
 				} else {
 					// this is interpreted a property list that can be used within other lists
 					entry = parseBlock(query.conditions ? new Query() : [], ']');

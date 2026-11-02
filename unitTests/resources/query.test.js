@@ -572,20 +572,29 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 2);
 		});
 		it('Query by join with one-to-many with multiple conditions', async function () {
-			let results = [];
-			for await (let record of RelatedTable.search({
-				conditions: [
-					{ attribute: ['relatedToMany', 'id'], comparator: 'greater_than', value: 'id-2' },
-					{ attribute: ['relatedToMany', 'name'], comparator: 'less_than', value: 'name-3' },
-				],
-				select: ['id', 'relatedToMany', 'name'],
-			})) {
-				results.push(record);
-			}
+			const search = async (conditions) => {
+				const results = [];
+				for await (let record of RelatedTable.search({ conditions, select: ['id', 'relatedToMany', 'name'] }))
+					results.push(record);
+				return results;
+			};
+			const id = { attribute: 'id', comparator: 'greater_than', value: 'id-2' };
+			const name = { attribute: 'name', comparator: 'less_than', value: 'name-3' };
+			let results = await search([{ attribute: 'relatedToMany', conditions: [id, name] }]);
 			assert.equal(results.length, 5);
 			let related = await results[0].relatedToMany;
 			assert.equal(related.length, 2);
 			assert.equal(related[0].name, 'name-20');
+			results = await search([
+				{ ...id, attribute: ['relatedToMany', 'id'] },
+				{ ...name, attribute: ['relatedToMany', 'name'] },
+			]);
+			assert(results.length >= 5);
+			for (const result of results) {
+				related = await result.relatedToMany;
+				assert(related.length > 0);
+				assert(related.every((record) => record.id > 'id-2' || record.name < 'name-3'));
+			}
 		});
 		it('Query by join with one-to-many with relational condition as filter', async function () {
 			let results = [];
@@ -653,21 +662,32 @@ describe('Querying through Resource API', () => {
 		});
 
 		it('Query by joined condition with many-to-many and multiple joined condition', async function () {
-			let results = [];
-			for await (let record of QueryTable.search({
-				conditions: [
-					{ attribute: ['manyToMany', 'name'], comparator: 'greater_than', value: 'many-to-many entry 4' },
-					{ attribute: ['manyToMany', 'id'], comparator: 'less_than', value: 8 },
-				],
-				select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
-			})) {
-				results.push(record);
-			}
+			const search = async (conditions) => {
+				const results = [];
+				for await (let record of QueryTable.search({
+					conditions,
+					select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
+				}))
+					results.push(record);
+				return results;
+			};
+			const name = { attribute: 'name', comparator: 'greater_than', value: 'many-to-many entry 4' };
+			const id = { attribute: 'id', comparator: 'less_than', value: 8 };
+			let results = await search([{ attribute: 'manyToMany', conditions: [name, id] }]);
 			assert.equal(results.length, 14);
 			for (let result of results) {
 				const related = await result.manyToMany;
 				assert(related.every((record) => record.name > 'many-to-many entry 4'));
 				assert(related.every((record) => record.id < 8));
+			}
+			results = await search([
+				{ ...name, attribute: ['manyToMany', 'name'] },
+				{ ...id, attribute: ['manyToMany', 'id'] },
+			]);
+			assert(results.length >= 14);
+			for (let result of results) {
+				const related = await result.manyToMany;
+				assert(related.every((record) => record.name > 'many-to-many entry 4' || record.id < 8));
 			}
 		});
 

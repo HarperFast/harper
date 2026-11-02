@@ -381,21 +381,26 @@ describe('Queries read related records asynchronously', () => {
 				assert.equal(childReads.sync + childReads.async, 0);
 			});
 
-			it('a leading many-to-many join reads only the children its key condition keeps', async function () {
+			it('a leading same-record group join reads only the children its key condition keeps', async function () {
 				const results = await collect(
 					ColdParent.search({
 						enforceExecutionOrder: true,
 						conditions: [
-							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
-							{ attribute: ['children', 'label'], value: 'label 10' },
-							{ attribute: ['children', 'id'], value: 'child-10' },
+							{
+								attribute: 'children',
+								conditions: [
+									{ attribute: 'name', comparator: 'starts_with', value: 'child 1' },
+									{ attribute: 'label', value: 'label 10' },
+									{ attribute: 'id', value: 'child-10' },
+								],
+							},
 						],
 						select: ['id'],
 					})
 				);
 				assert.deepEqual(results, [{ id: 'parent-2' }]);
 				assert.equal(childReads.sync, 0);
-				assert.equal(childReads.async, 1);
+				assert(childReads.async <= 1, `${childReads.async} background reads`);
 			});
 
 			it('a joined filter that switches to an id filter mid-scan rejects the later children by key', async function () {

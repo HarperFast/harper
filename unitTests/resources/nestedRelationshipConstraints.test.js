@@ -261,14 +261,25 @@ describe('nested relationship constraints', function () {
 			ids(
 				await get('/Parent/?children.state=open&children.score=ge=number:30&select(id,children[limit(1)&select(id,)])')
 			),
+			[['c1'], ['c6']]
+		);
+		assert.deepStrictEqual(
+			ids(await get('/Parent/?children[state=open&score=ge=number:30]&select(id,children[limit(1)&select(id,)])')),
 			[['c3'], ['c6']]
 		);
 	});
 	it('retains the outer relationship predicate control', async function () {
 		assert.deepStrictEqual(
 			ids(await get('/Parent/?children.state=open&children.score=ge=number:30&select(id,children{id})')),
-			[['c3', 'c4'], ['c6']]
+			[
+				['c1', 'c3', 'c4'],
+				['c6', 'c7'],
+			]
 		);
+		assert.deepStrictEqual(ids(await get('/Parent/?children[state=open&score=ge=number:30]&select(id,children{id})')), [
+			['c3', 'c4'],
+			['c6'],
+		]);
 	});
 	it('retains the child endpoint control', async function () {
 		assert.deepStrictEqual(

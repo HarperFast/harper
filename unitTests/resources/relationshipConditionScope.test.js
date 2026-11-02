@@ -5,7 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { filterByType } = require('#src/resources/search');
 
-describe('A condition inside an OR decides which rows match, not which related records they select', function () {
+describe('Relationship conditions: existential AND, same-record groups, and OR conditions that decide rows only', function () {
 	this.timeout(60000);
 	let Parent;
 
@@ -97,7 +97,7 @@ describe('A condition inside an OR decides which rows match, not which related r
 				}
 			});
 
-			it('matches two AND conditions against one related record, whichever leads', async () => {
+			it('lets two AND conditions be met by different related records, whichever leads', async () => {
 				const nested = () => ({ operator: 'and', conditions: [name(), label()] });
 				for (const order of [
 					[name, label],
@@ -107,6 +107,28 @@ describe('A condition inside an OR decides which rows match, not which related r
 					[nested],
 					[parents, nested],
 				]) {
+					const conditions = order.map((condition) => condition());
+					for (const enforceExecutionOrder of [true, false])
+						assert.deepStrictEqual(
+							selected(await search({ conditions, select, enforceExecutionOrder })),
+							[
+								['p1', ['c1', 'c2']],
+								['p2', ['c3']],
+							],
+							JSON.stringify({ conditions, enforceExecutionOrder })
+						);
+				}
+			});
+
+			it('matches a same-record group against one related record, whichever leads', async () => {
+				const group = () => ({
+					attribute: relationship,
+					conditions: [
+						{ attribute: 'name', value: 'a' },
+						{ attribute: 'label', value: 'y' },
+					],
+				});
+				for (const order of [[group], [parents, group], [group, parents], [name, group], [group, label]]) {
 					const conditions = order.map((condition) => condition());
 					for (const enforceExecutionOrder of [true, false])
 						assert.deepStrictEqual(
@@ -203,7 +225,26 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 		assert.deepStrictEqual(planned[0].attribute, ['kids', 'name']);
 		const parents = [];
 		for await (const row of Parent.search({ conditions, allowFullScan: true })) parents.push(row.id);
-		assert.deepStrictEqual(parents, [], 'no single child meets both conditions');
+		assert.deepStrictEqual(parents, ['p1'], 'different children meet the two conditions');
+		const sameChild = [
+			{ attribute: 'group', value: 'g1' },
+			{
+				attribute: 'kids',
+				conditions: [
+					{ attribute: 'name', value: 'a' },
+					{ attribute: 'label', value: 'y' },
+				],
+			},
+		];
+		const { conditions: plannedGroup } = await Parent.search({
+			conditions: sameChild,
+			explain: true,
+			allowFullScan: false,
+		});
+		assert.deepStrictEqual(plannedGroup[0].attribute, ['kids'], 'the group leads through its indexed name');
+		const none = [];
+		for await (const row of Parent.search({ conditions: sameChild, allowFullScan: false })) none.push(row.id);
+		assert.deepStrictEqual(none, [], 'no single child meets both conditions');
 		const grouped = [
 			{ attribute: 'group', value: 'g1' },
 			{ operator: 'and', conditions: [{ attribute: 'b', comparator: 'in', value: [3] }, conditions[1]] },
@@ -252,13 +293,13 @@ describe('A relationship condition that leads by estimate keeps the lead', funct
 				],
 				true
 			),
-			[],
-			'no single child meets both conditions, however they are grouped'
+			['p1'],
+			'different children meet the conditions, however they are grouped'
 		);
 	});
 });
 
-describe('AND-joined conditions on one relationship meet one related record whichever condition leads', function () {
+describe('Each AND condition on a relationship is met by some related record of its own, whichever leads', function () {
 	this.timeout(60000);
 	let Parent;
 	let Grand;
@@ -362,31 +403,70 @@ describe('AND-joined conditions on one relationship meet one related record whic
 			? [items]
 			: items.flatMap((item, i) => permutations(items.filter((_, j) => j !== i)).map((rest) => [item, ...rest]));
 
-	it('selects only the parent whose one child meets both conditions, in every order', async () => {
-		for (const order of permutations([name, label, localGroup])) {
-			for (const enforceExecutionOrder of [true, false]) {
-				const conditions = order.map((condition) => condition());
-				assert.deepStrictEqual(
-					await search(conditions, { enforceExecutionOrder }),
-					[['pm', ['m1']]],
-					JSON.stringify({ conditions, enforceExecutionOrder })
-				);
+	const kidsGroup =
+		(...conditions) =>
+		() => ({ attribute: 'kids', conditions });
+	const sameKid = kidsGroup({ attribute: 'name', value: 'a' }, { attribute: 'label', value: 'y' });
+	const both = [
+		['pm', ['m1']],
+		['pw', ['w1', 'w2']],
+	];
+
+	it('matches each condition against its own child, and a group against one child, in every order', async () => {
+		for (const [members, expected] of [
+			[[name, label, localGroup], both],
+			[[sameKid, localGroup], [['pm', ['m1']]]],
+			[[sameKid, name, localGroup], [['pm', ['m1']]]],
+		]) {
+			for (const order of permutations(members)) {
+				for (const enforceExecutionOrder of [true, false]) {
+					const conditions = order.map((condition) => condition());
+					assert.deepStrictEqual(
+						await search(conditions, { enforceExecutionOrder }),
+						expected,
+						JSON.stringify({ conditions, enforceExecutionOrder })
+					);
+				}
 			}
 		}
 	});
 
-	it('does not widen a query whose local group estimates finite (the group would otherwise lead)', async () => {
+	it('gives the same rows under synchronous iteration', () => {
+		for (const [conditions, expected] of [
+			[
+				[label(), name(), localGroup()],
+				['pm', 'pw'],
+			],
+			[[sameKid(), localGroup()], ['pm']],
+		]) {
+			for (const enforceExecutionOrder of [true, false]) {
+				const ids = Array.from(Parent.search({ conditions, select: ['id'], enforceExecutionOrder }))
+					.map((row) => row.id)
+					.sort();
+				assert.deepStrictEqual(ids, expected, JSON.stringify(conditions));
+			}
+		}
+	});
+
+	it('does not narrow or widen a query whose local group estimates finite (the group would otherwise lead)', async () => {
 		const conditions = [name(), label(), localGroup()];
 		const { conditions: planned } = await Parent.search({ conditions, explain: true, allowFullScan: true });
 		assert.ok(planned.length > 0);
-		assert.deepStrictEqual(await search(conditions), [['pm', ['m1']]]);
+		assert.deepStrictEqual(await search(conditions), both);
 		const ids = [];
 		for await (const row of Parent.search({ conditions, select: ['id'], allowFullScan: true })) ids.push(row.id);
-		assert.deepStrictEqual(ids, ['pm']);
+		assert.deepStrictEqual(ids.sort(), ['pm', 'pw']);
+		const grouped = [];
+		for await (const row of Parent.search({
+			conditions: [sameKid(), localGroup()],
+			select: ['id'],
+			allowFullScan: true,
+		}))
+			grouped.push(row.id);
+		assert.deepStrictEqual(grouped, ['pm']);
 	});
 
 	it('applies the rule to conditions in a nested AND group and in several groups of one AND', async () => {
-		const both = [['pm', ['m1']]];
 		for (const conditions of [
 			[rare(), relationshipGroup()],
 			[relationshipGroup(), rare()],
@@ -403,23 +483,30 @@ describe('AND-joined conditions on one relationship meet one related record whic
 				JSON.stringify(conditions)
 			);
 		}
+		for (const conditions of [
+			[rare(), { operator: 'and', conditions: [sameKid(), needle()] }],
+			[{ operator: 'and', conditions: [needle(), sameKid()] }, rare()],
+		])
+			assert.deepStrictEqual(await search(conditions, { enforceExecutionOrder: true }), [['pm', ['m1']]]);
 	});
 
-	it('applies the rule inside an AND that is a branch of an OR, without restricting that branch', async () => {
+	it('restricts nothing for an AND that is a branch of an OR', async () => {
 		const onlyP1 = () => ({ attribute: 'id', value: 'p1' });
-		for (const branches of [
-			[relationshipGroup, onlyP1],
-			[onlyP1, relationshipGroup],
+		for (const [inner, matched] of [
+			[relationshipGroup, ['pm', 'pw']],
+			[sameKid, ['pm']],
 		]) {
-			assert.deepStrictEqual(
-				await search([{ operator: 'or', conditions: branches.map((branch) => branch()) }], {
-					enforceExecutionOrder: true,
-				}),
-				[
-					['p1', []],
-					['pm', ['m1']],
-				]
-			);
+			for (const branches of [
+				[inner, onlyP1],
+				[onlyP1, inner],
+			]) {
+				assert.deepStrictEqual(
+					await search([{ operator: 'or', conditions: branches.map((branch) => branch()) }], {
+						enforceExecutionOrder: true,
+					}),
+					[['p1', []], ...both.filter(([id]) => matched.includes(id))]
+				);
+			}
 		}
 	});
 
@@ -449,7 +536,7 @@ describe('AND-joined conditions on one relationship meet one related record whic
 			const found = [];
 			for await (const row of Parent.search({ conditions, select: ['id'], enforceExecutionOrder: true }))
 				found.push(row.id);
-			return found;
+			return found.sort();
 		};
 		for (const attribute of ['filters', 'fromRecord', 'hasMappings', 'get']) {
 			const via = [
@@ -458,43 +545,77 @@ describe('AND-joined conditions on one relationship meet one related record whic
 				localGroup(),
 			];
 			for (const conditions of [via, [...via].reverse()])
+				assert.deepStrictEqual(await ids(conditions), ['pm', 'pw'], attribute);
+			const group = {
+				attribute,
+				conditions: [
+					{ attribute: 'name', value: 'a' },
+					{ attribute: 'label', value: 'y' },
+				],
+			};
+			for (const conditions of [
+				[group, localGroup()],
+				[localGroup(), group],
+			])
 				assert.deepStrictEqual(await ids(conditions), ['pm'], attribute);
 		}
 	});
 
-	it('applies the rule two hops deep through relationships named like the maps that track them', async () => {
+	it('applies the rule two hops deep, and binds only the hop a group names', async () => {
 		const code = () => ({ attribute: ['kids', 'filters', 'code'], value: 'on' });
 		const tag = () => ({ attribute: ['kids', 'filters', 'tag'], value: 'wanted' });
 		const inSeven = () => ({ attribute: 'n', comparator: 'in', value: [7] });
 		const kidLabel = () => ({ attribute: ['kids', 'label'], value: 'y' });
-		for (const order of [
-			[code, kidLabel],
-			[kidLabel, code],
-			[code, tag, kidLabel],
+		const leafOn = { attribute: 'code', value: 'on' };
+		const leafWanted = { attribute: 'tag', value: 'wanted' };
+		const oneLeaf = kidsGroup({ attribute: 'filters', conditions: [leafOn, leafWanted] });
+		const oneKidAnyLeaves = kidsGroup(
+			{ attribute: ['filters', 'code'], value: 'on' },
+			{ attribute: ['filters', 'tag'], value: 'wanted' }
+		);
+		const labelledKidWithLeaf = kidsGroup(
+			{ attribute: 'label', value: 'y' },
+			{ attribute: ['filters', 'code'], value: 'on' }
+		);
+		const leafPath = () => ({ attribute: ['kids', 'filters'], conditions: [leafOn, leafWanted] });
+		for (const [orders, expected] of [
+			[
+				[
+					[code, kidLabel],
+					[kidLabel, code],
+					[code, tag, kidLabel],
+				],
+				['pm', 'pw'],
+			],
+			[
+				[
+					[code, tag],
+					[tag, code],
+					[inSeven, code, tag],
+					[code, tag, inSeven],
+				],
+				['pm', 'pw'],
+			],
+			[
+				[[oneKidAnyLeaves], [inSeven, oneKidAnyLeaves]],
+				['pm', 'pw'],
+			],
+			[[[oneLeaf], [inSeven, oneLeaf], [oneLeaf, code], [leafPath], [tag, leafPath]], ['pm']],
+			[[[labelledKidWithLeaf], [code, labelledKidWithLeaf]], ['pm']],
 		]) {
-			const found = [];
-			const conditions = order.map((condition) => condition());
-			for await (const row of Parent.search({ conditions, select: ['id'], enforceExecutionOrder: true }))
-				found.push(row.id);
-			assert.deepStrictEqual(found, ['pm'], JSON.stringify(conditions));
-		}
-		for (const order of [
-			[code, tag],
-			[tag, code],
-			[inSeven, code, tag],
-			[code, tag, inSeven],
-		]) {
-			for (const enforceExecutionOrder of [true, false]) {
-				const found = [];
-				const conditions = order.map((condition) => condition());
-				for await (const row of Parent.search({
-					conditions,
-					select: ['id'],
-					enforceExecutionOrder,
-					allowFullScan: true,
-				}))
-					found.push(row.id);
-				assert.deepStrictEqual(found, ['pm'], JSON.stringify({ conditions, enforceExecutionOrder }));
+			for (const order of orders) {
+				for (const enforceExecutionOrder of [true, false]) {
+					const found = [];
+					const conditions = order.map((condition) => condition());
+					for await (const row of Parent.search({
+						conditions,
+						select: ['id'],
+						enforceExecutionOrder,
+						allowFullScan: true,
+					}))
+						found.push(row.id);
+					assert.deepStrictEqual(found.sort(), expected, JSON.stringify({ conditions, enforceExecutionOrder }));
+				}
 			}
 		}
 	});
@@ -505,72 +626,166 @@ describe('AND-joined conditions on one relationship meet one related record whic
 			{ attribute: ['owner', 'kids', 'name'], value: 'a' },
 			{ attribute: ['owner', 'kids', 'label'], value: 'y' },
 		];
-		for (const conditions of [
-			[tag(), ...viaOwner()],
-			[viaOwner()[0], tag(), viaOwner()[1]],
-			[...viaOwner().reverse(), tag()],
+		const kidCondition = [
+			{ attribute: 'name', value: 'a' },
+			{ attribute: 'label', value: 'y' },
+		];
+		for (const [conditions, expected] of [
+			[
+				[tag(), ...viaOwner()],
+				['gm', 'gw'],
+			],
+			[
+				[viaOwner()[0], tag(), viaOwner()[1]],
+				['gm', 'gw'],
+			],
+			[
+				[...viaOwner().reverse(), tag()],
+				['gm', 'gw'],
+			],
+			[[tag(), { attribute: ['owner', 'kids'], conditions: kidCondition }], ['gm']],
+			[[{ attribute: 'owner', conditions: [{ attribute: 'kids', conditions: kidCondition }] }, tag()], ['gm']],
+			[
+				[
+					{
+						attribute: 'owner',
+						conditions: [
+							{ attribute: 'group', value: 'rare' },
+							...viaOwner().map(({ attribute, value }) => ({ attribute: attribute.slice(1), value })),
+						],
+					},
+				],
+				['gm', 'gw'],
+			],
 		]) {
 			const found = [];
 			for await (const row of Grand.search({ conditions, select: ['id'], enforceExecutionOrder: true }))
 				found.push(row.id);
-			assert.deepStrictEqual(found, ['gm'], JSON.stringify(conditions));
+			assert.deepStrictEqual(found.sort(), expected, JSON.stringify(conditions));
 		}
 	});
 
-	it('keeps a filter per condition on a to-one relationship, so its id shortcut stays available', () => {
+	it('keeps a filter per condition on a relationship, so each keeps its id shortcut', () => {
 		const scope = Object.create(null);
-		const [byId, byGroup] = [
-			{ attribute: ['owner', 'id'], value: 'p1' },
-			{ attribute: ['owner', 'group'], value: 'common' },
-		].map((condition) => filterByType(condition, Grand, null, scope, false, 100));
-		assert.strictEqual(typeof byId, 'function');
-		assert.strictEqual(typeof byGroup, 'function');
-		const toMany = [
-			{ attribute: ['kids', 'name'], value: 'a' },
-			{ attribute: ['kids', 'label'], value: 'y' },
-		].map((condition) => filterByType(condition, Parent, null, scope, false, 100));
-		assert.strictEqual(typeof toMany[0], 'function');
-		assert.strictEqual(toMany[1], undefined, 'the second to-many condition joins the first one');
+		for (const [table, conditions] of [
+			[
+				Grand,
+				[
+					{ attribute: ['owner', 'id'], value: 'p1' },
+					{ attribute: ['owner', 'group'], value: 'common' },
+				],
+			],
+			[
+				Parent,
+				[
+					{ attribute: ['kids', 'name'], value: 'a' },
+					{ attribute: ['kids', 'label'], value: 'y' },
+				],
+			],
+		])
+			for (const condition of conditions)
+				assert.strictEqual(typeof filterByType(condition, table, null, scope, false, 100), 'function');
 	});
 
-	it('selects through a nested select only the children whose one leaf meets both conditions', async () => {
+	it('selects through a nested select the children with a leaf per condition, or one leaf meeting a group', async () => {
 		const leafConditions = [
 			{ attribute: ['filters', 'code'], value: 'on' },
 			{ attribute: ['filters', 'tag'], value: 'wanted' },
 		];
-		for (const conditions of [leafConditions, [...leafConditions].reverse()]) {
+		const leafGroup = [
+			{
+				attribute: 'filters',
+				conditions: [
+					{ attribute: 'code', value: 'on' },
+					{ attribute: 'tag', value: 'wanted' },
+				],
+			},
+		];
+		for (const [conditions, expected] of [
+			[
+				leafConditions,
+				[
+					['pm', ['m1']],
+					['pw', ['w1']],
+				],
+			],
+			[
+				[...leafConditions].reverse(),
+				[
+					['pm', ['m1']],
+					['pw', ['w1']],
+				],
+			],
+			[
+				leafGroup,
+				[
+					['pm', ['m1']],
+					['pw', []],
+				],
+			],
+		]) {
 			const rows = [];
 			for await (const row of Parent.search({
 				conditions: [{ attribute: 'group', value: 'rare' }],
 				select: ['id', { name: 'kids', conditions, select: ['id'] }],
 			}))
 				rows.push([row.id, (row.kids ?? []).map((kid) => kid.id)]);
-			assert.deepStrictEqual(rows.sort(), [
-				['pm', ['m1']],
-				['pw', []],
-			]);
+			assert.deepStrictEqual(rows.sort(), expected, JSON.stringify(conditions));
 		}
 	});
 
-	it('deletes only the parent whose one child meets both conditions', async () => {
-		await Parent.put({ id: 'dw', group: 'del', text: 'needle', n: 0 });
-		await Parent.put({ id: 'dm', group: 'del', text: 'needle', n: 0 });
+	it('deletes the same parents whichever condition leads, under both forms', async () => {
 		const Child = Parent.attributes.find((attribute) => attribute.name === 'kids').elements.definition.tableClass;
-		await Child.put({ id: 'dw1', parentId: 'dw', name: 'a', label: 'x' });
-		await Child.put({ id: 'dw2', parentId: 'dw', name: 'b', label: 'y' });
-		await Child.put({ id: 'dm1', parentId: 'dm', name: 'a', label: 'y' });
-		const del = () => ({ operator: 'and', conditions: [{ attribute: 'group', value: 'del' }, needle()] });
-		await Parent.delete({ conditions: [name(), label(), del()] });
-		assert.strictEqual(await Parent.get('dw').then((record) => record?.id), 'dw', 'split children: not deleted');
-		assert.ok((await Parent.get('dm')) == null, 'one child meets both: deleted');
+		const seed = async (prefix) => {
+			await Parent.put({ id: `${prefix}w`, group: `del-${prefix}`, text: 'needle', n: 0 });
+			await Parent.put({ id: `${prefix}m`, group: `del-${prefix}`, text: 'needle', n: 0 });
+			await Child.put({ id: `${prefix}w1`, parentId: `${prefix}w`, name: 'a', label: 'x' });
+			await Child.put({ id: `${prefix}w2`, parentId: `${prefix}w`, name: 'b', label: 'y' });
+			await Child.put({ id: `${prefix}m1`, parentId: `${prefix}m`, name: 'a', label: 'y' });
+		};
+		const local = (prefix) => () => ({
+			operator: 'and',
+			conditions: [{ attribute: 'group', value: `del-${prefix}` }, needle()],
+		});
+		let round = 0;
+		for (const [members, deleted] of [
+			[
+				[name, label],
+				['m', 'w'],
+			],
+			[[sameKid], ['m']],
+		]) {
+			for (const order of permutations([...members, 'local'])) {
+				for (const enforceExecutionOrder of [true, false]) {
+					const prefix = `d${round++}`;
+					await seed(prefix);
+					const conditions = order.map((condition) => (condition === 'local' ? local(prefix) : condition)());
+					await Parent.delete({ conditions, enforceExecutionOrder });
+					const remaining = [];
+					for (const suffix of ['m', 'w']) if (await Parent.get(`${prefix}${suffix}`)) remaining.push(suffix);
+					assert.deepStrictEqual(
+						remaining,
+						['m', 'w'].filter((suffix) => !deleted.includes(suffix)),
+						JSON.stringify({ conditions, enforceExecutionOrder })
+					);
+				}
+			}
+		}
 	});
 
 	it('promotes a runnable relationship scan past an `in` that would full-scan, so allowFullScan: false still answers', async () => {
-		const conditions = [{ attribute: 'n', comparator: 'in', value: [7] }, name(), label()];
-		const planned = (await Parent.search({ conditions, explain: true, allowFullScan: false })).conditions;
-		assert.ok(Array.isArray(planned[0].attribute), 'a relationship scan leads');
-		const found = [];
-		for await (const row of Parent.search({ conditions, select: ['id'], allowFullScan: false })) found.push(row.id);
-		assert.deepStrictEqual(found, ['pm']);
+		for (const [conditions, expected] of [
+			[
+				[{ attribute: 'n', comparator: 'in', value: [7] }, name(), label()],
+				['pm', 'pw'],
+			],
+			[[{ attribute: 'n', comparator: 'in', value: [7] }, sameKid()], ['pm']],
+		]) {
+			const planned = (await Parent.search({ conditions, explain: true, allowFullScan: false })).conditions;
+			assert.ok(Array.isArray(planned[0].attribute), 'a relationship scan leads');
+			const found = [];
+			for await (const row of Parent.search({ conditions, select: ['id'], allowFullScan: false })) found.push(row.id);
+			assert.deepStrictEqual(found.sort(), expected);
+		}
 	});
 });

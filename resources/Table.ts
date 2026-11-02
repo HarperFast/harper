@@ -180,9 +180,9 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 	resolveComparator,
-	filterByType,
-	matchesFilters,
 	relationshipRestriction,
+	isRelationshipGroup,
+	compileConditions,
 	fullTextComparatorMode,
 	validateFullTextFuzzyOptions,
 	ALTERNATE_COMPARATOR_NAMES,
@@ -1493,6 +1493,7 @@ function appendSelectProperty(select: any, propertyName: string): any[] {
 
 function conditionsContainFullText(entries: any[], definitions: readonly FullTextDefinition[]): boolean {
 	for (const entry of entries) {
+		if (isRelationshipGroup(entry)) continue;
 		if (entry.conditions) {
 			if (conditionsContainFullText(entry.conditions, definitions)) return true;
 		} else if (
@@ -2326,7 +2327,7 @@ export function makeTable(options): TableResourceClass {
 			else delete property.checkPermission;
 			if (
 				Array.isArray(property.conditions) &&
-				someConditionPath(property.conditions, property, user, true, relatedTable)
+				someConditionPath(property.conditions, property, user, true, [property.name])
 			)
 				throw new AccessViolation(user);
 			for (let sort = typeof property.sort === 'object' && property.sort; sort; sort = sort.next) {
@@ -7541,7 +7542,9 @@ export function makeTable(options): TableResourceClass {
 			function orderConditions(conditions: Condition[], operator: string) {
 				if (target.enforceExecutionOrder) return conditions; // don't rearrange conditions
 				for (const condition of conditions) {
-					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
+					// a same-record group picks its own lead from the related table (searchRelatedGroup)
+					if (condition.conditions && !isRelationshipGroup(condition))
+						condition.conditions = orderConditions(condition.conditions, condition.operator);
 				}
 				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering.
 				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
@@ -7789,7 +7792,7 @@ export function makeTable(options): TableResourceClass {
 					// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
 					const touchesCustomIndex = (conds: any[]): boolean =>
 						conds.some((c: any) => {
-							if (!c) return false;
+							if (!c || isRelationshipGroup(c)) return false;
 							if (c.conditions) return touchesCustomIndex(c.conditions);
 							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
 							if (typeof attr !== 'string') return false;
@@ -7933,37 +7936,9 @@ export function makeTable(options): TableResourceClass {
 			).conditions;
 			for (let sort = typeof attribute.sort === 'object' && attribute.sort; sort; sort = sort.next)
 				targetTable._assertNestedReadAccess(sort.attribute, context, attribute);
-			// conditions of one AND on a relationship meet the same related record, as in a top-level query
-			const compile = (conditions, operator, scope: any = operator === 'or' ? null : Object.create(null)) => {
-				const predicates = [];
-				for (const condition of conditions) {
-					if (condition.conditions) {
-						const union = condition.operator === 'or';
-						predicates.push(
-							compile(condition.conditions, condition.operator, union ? null : (scope ?? Object.create(null)))
-						);
-						continue;
-					}
-					const predicate = filterByType(
-						condition,
-						targetTable,
-						context,
-						scope,
-						(condition.attribute ?? condition[0]) === targetTable.primaryKey
-					);
-					if (predicate) predicates.push(predicate);
-					else if (!scope || !Array.isArray(condition.attribute ?? condition[0]))
-						throw new ClientError('This predicate is not supported in a relationship selection');
-				}
-				const any = operator === 'or';
-				const combined: any = any
-					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
-					: (record, entry) => predicates.every((predicate) => predicate(record, entry));
-				if (predicates.some((predicate) => predicate.maybeAsync))
-					combined.maybeAsync = (record, entry) => matchesFilters(predicates, record, entry, any);
-				return combined;
-			};
-			const predicate = conditions.length ? compile(conditions, attribute.operator) : undefined;
+			const predicate = conditions.length
+				? compileConditions(conditions, attribute.operator, targetTable, context, Object.create(null))
+				: undefined;
 			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
 			if (limit === 0)
 				return (record) => {
@@ -8221,7 +8196,12 @@ export function makeTable(options): TableResourceClass {
 					default:
 						throw new QueryError('Invalid operator ' + operator);
 				}
-				for (const condition of conditions) {
+				for (let index = 0; index < conditions.length; index++) {
+					const condition = conditions[index];
+					if (isRelationshipGroup(condition)) {
+						conditions[index] = prepareRelationshipGroup(condition);
+						continue;
+					}
 					if (condition.conditions) {
 						validateFullTextFuzzyOptions(condition);
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
@@ -8337,6 +8317,64 @@ export function makeTable(options): TableResourceClass {
 					}
 				}
 				return conditions;
+			}
+			// `rel[...]`: conditions relative to the related table that one related record must meet
+			function prepareRelationshipGroup(group: any) {
+				const attributeName = group.attribute ?? group[0];
+				const path = Array.isArray(attributeName) ? attributeName : [attributeName];
+				const label = path.join('.');
+				if (group.comparator !== undefined || (group.value ?? group[1]) !== undefined)
+					throw new ClientError(`${label}[...] takes conditions, not a comparator or value`, 400);
+				if (!Array.isArray(group.conditions) || group.conditions.length === 0)
+					throw new ClientError(`${label}[...] requires at least one condition`, 400);
+				const relationship = findAttribute(attributes, path[0]);
+				const relatedTable = relationship?.relationship
+					? relationship.definition?.tableClass || relationship.elements?.definition?.tableClass
+					: undefined;
+				if (!relatedTable) throw new ClientError(`${label}[...] requires a relationship attribute`, 400);
+				if (nested) TableResource._assertNestedReadAccess(path, context, target);
+				rejectFullTextInGroup(group.conditions);
+				// a path's earlier hops are existential, so `a.b[...]` is `a[b[...]]`
+				const inner =
+					path.length > 1
+						? [{ attribute: path.slice(1), operator: group.operator, conditions: group.conditions }]
+						: group.conditions;
+				const prepared = relatedTable._prepareQueryConditions(
+					inner,
+					path.length > 1 ? undefined : group.operator,
+					target,
+					context,
+					true
+				).conditions;
+				const operator = path.length > 1 ? undefined : group.operator;
+				// a to-one relationship has one related record, so its group is a plain group of paths through it
+				if (!relationship.elements)
+					return { operator, conditions: prepared.map((condition) => throughRelationship(condition, path[0])) };
+				return { attribute: [path[0]], operator, conditions: prepared };
+			}
+			function throughRelationship(condition: any, name: string) {
+				if (isRelationshipGroup(condition)) {
+					const attribute = condition.attribute ?? condition[0];
+					return { ...condition, attribute: [name, ...(Array.isArray(attribute) ? attribute : [attribute])] };
+				}
+				if (condition.conditions)
+					return {
+						...condition,
+						conditions: condition.conditions.map((child) => throughRelationship(child, name)),
+					};
+				const attribute = condition[0] ?? condition.attribute;
+				const copy = Array.isArray(condition) ? { ...condition, value: condition[1] } : { ...condition };
+				delete copy[0];
+				delete copy[1];
+				copy.attribute = [name, ...(attribute == null ? [] : Array.isArray(attribute) ? attribute : [attribute])];
+				return copy;
+			}
+			function rejectFullTextInGroup(conditions: any[]) {
+				for (const condition of conditions) {
+					if (condition.conditions) rejectFullTextInGroup(condition.conditions);
+					else if (fullTextComparatorMode(condition.comparator))
+						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
+				}
 			}
 			function coerceTypedValues(value: any, attribute: Attribute) {
 				if (Array.isArray(value)) {
@@ -12038,29 +12076,21 @@ export function makeTable(options): TableResourceClass {
 		if (!checkDenial) return true;
 		return TableResource._readDenial(Array.isArray(attribute) ? attribute : [attribute], user, target) !== undefined;
 	}
+	// `prefix` is the relationship path of the same-record groups around these conditions, which are relative to it
 	function someConditionPath(
 		conditions: Iterable<any>,
 		target: RequestTarget,
 		user: User,
 		checkDenial: boolean,
-		relatedTable?: TableResourceClass
+		prefix: any[] = []
 	): boolean {
 		for (const condition of conditions) {
-			if (condition?.conditions) {
-				if (someConditionPath(condition.conditions, target, user, checkDenial, relatedTable)) return true;
-				continue;
-			}
 			const attribute = condition?.[0] ?? condition?.attribute;
-			if (
-				relatedTable
-					? relatedTable._readDenial(
-							Array.isArray(attribute) ? attribute : [attribute ?? relatedTable.primaryKey],
-							user,
-							target
-						) !== undefined
-					: relationshipPathMatches(attribute, target, user, checkDenial)
-			)
-				return true;
+			const path = attribute == null ? prefix : prefix.concat(Array.isArray(attribute) ? attribute : [attribute]);
+			if (condition?.conditions) {
+				if (attribute != null && relationshipPathMatches(path, target, user, checkDenial)) return true;
+				if (someConditionPath(condition.conditions, target, user, checkDenial, path)) return true;
+			} else if (relationshipPathMatches(prefix.length ? path : attribute, target, user, checkDenial)) return true;
 		}
 		return false;
 	}
@@ -12564,7 +12594,8 @@ export function makeTable(options): TableResourceClass {
 					const idFilter = filters[i].idFilter;
 					if (idFilter && !idFilter(idOrEntry)) return SKIP; // didn't match filters
 				}
-				return loadLocalRecord(idOrEntry, context, loadOptions, false, process);
+				// a synchronous iteration cannot take the Promise an LMDB prefetch returns
+				return loadLocalRecord(idOrEntry, context, loadOptions, Boolean(this?.isSync), process);
 			});
 			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);
 			results.hasEntries = true;
