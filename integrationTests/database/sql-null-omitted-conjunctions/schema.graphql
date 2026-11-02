@@ -3,5 +3,6 @@ type Item @table @export {
 	c: String @indexed
 	a: Int @indexed
 	b: Int @indexed
+	u: Int
 	flag: String
 }
