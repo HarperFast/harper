@@ -159,6 +159,7 @@ describe('legacy SQL text', function () {
 			"INSERT INTO dev.t (id, `count`) VALUES (1, {'columnid':'a'})",
 			'SELECT `count` AS c FROM dev.t AS d WHERE d.id = 1',
 			"DELETE FROM dev.t WHERE label = 'a'",
+			"UPDATE dev.t SET label = {'columnid_orig':'v1','columnid':'c','as':'a'} WHERE `count` = 1",
 		]) {
 			const statement = parse(sql);
 			const before = statement.toString();

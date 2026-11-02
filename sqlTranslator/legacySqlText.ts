@@ -120,10 +120,9 @@ export function installLegacySqlText() {
 	};
 }
 
-// What a statement reads or calls by name.
 const NAME_KEYS = ['databaseid', 'tableid', 'columnid', 'funcid', 'aggregatorid', 'variable', 'param'];
 
-// How many times each node reads or calls each name; a column counts with its table, as one reference.
+// A column counts together with its table and database, as one reference.
 function referenceCounts(statement: any): Map<string, number> {
 	const counts = new Map<string, number>();
 	for (const node of statementNodes(statement)) {
@@ -144,7 +143,7 @@ function referenceCounts(statement: any): Map<string, number> {
 	return counts;
 }
 
-// AST nodes, without the plain objects and arrays that are a JSON literal's data.
+// Skips the plain objects and arrays that are a JSON literal's data.
 function* statementNodes(statement: any): Generator<any> {
 	const literalData = new Set();
 	for (const node of astNodes(statement)) {
@@ -228,22 +227,31 @@ function assertReparse(text: string, authorized: Map<string, number>) {
 	}
 }
 
+const BACKTICKED_KEYS = ['columnid', 'tableid', 'databaseid', 'as'];
+
 // The statement's text with Harper's backticks, leaving the statement as it was.
 function legacyText(statement: any): string {
 	const columns = statement.columns;
 	// `SELECT *` for a role that may read no column leaves no columns, which does not parse.
 	const placeholder = statement instanceof yy.Select && columns?.length === 0;
 	if (placeholder) statement.columns = [new yy.NumValue({ value: 1 })];
+	// backtickASTSchemaItems rewrites these keys on every object it reaches, JSON literal data included.
+	const saved = [];
+	for (const node of astNodes(statement)) {
+		for (const key of BACKTICKED_KEYS) {
+			if (!Object.hasOwn(node, key)) continue;
+			const orig = `${key}_orig`;
+			saved.push({ node, key, value: node[key], hadOrig: Object.hasOwn(node, orig), origValue: node[orig] });
+		}
+	}
 	backtickASTSchemaItems(statement);
 	try {
 		return statement.toString();
 	} finally {
-		for (const node of astNodes(statement)) {
-			for (const key of ['columnid', 'tableid', 'databaseid', 'as']) {
-				if (!Object.hasOwn(node, `${key}_orig`)) continue;
-				node[key] = node[`${key}_orig`];
-				delete node[`${key}_orig`];
-			}
+		for (const { node, key, value, hadOrig, origValue } of saved) {
+			node[key] = value;
+			if (hadOrig) node[`${key}_orig`] = origValue;
+			else delete node[`${key}_orig`];
 		}
 		if (placeholder) statement.columns = columns;
 	}
