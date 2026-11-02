@@ -257,7 +257,7 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## The RocksDB codec is a deployment setting, resolved once per process
 
-`DB::Open` opens every column family at once, and a family's codec cannot change while open, so `getRocksCompression()` resolves one codec before the first open and freezes it; opens pass `compressionForAllColumnFamilies`, and per-table `compression` selects nothing. A fresh install stages the full composed config in `flatConfigObj` via `stageInstallConfig()` before `mountHdb()`, validates before `createTables()`, and writes the same document without worker overrides; see [install composition](../config/DESIGN.md). Existing files keep their codec until rewritten (`compact({ bottommost: true })`). Native WAL stays on for the root and `__dbis__` (`rocksCompressionOpen.test.js`).
+`DB::Open` opens families together, so `getRocksCompression()` freezes one codec; `compressionForAllColumnFamilies` applies it, ignoring per-table `compression`. Install stages the full config with `stageInstallConfig()` before `mountHdb()`, validates before `createTables()`, and persists it without worker overrides. Existing files retain codecs until rewritten (`compact({ bottommost: true })`). Native WAL stays on for root and `__dbis__` (`rocksCompressionOpen.test.js`).
 
 ## Schema migration and `runIndexing` internals
 
