@@ -6595,7 +6595,7 @@ export function makeTable(options): TableResourceClass {
 							};
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
-									const auditIdentity = `${nodeId ?? 0}:${localTime}`;
+									const auditIdentity = `${nodeId ?? (isRocksDB ? 'unknown' : 0)}:${localTime}`;
 									if (visitedAuditRefs.has(auditIdentity)) break;
 									visitedAuditRefs.add(auditIdentity);
 									// An earlier same-key write in this transaction is not in the committed log yet; an uncommitted read
@@ -6660,6 +6660,11 @@ export function makeTable(options): TableResourceClass {
 									if (!auditRecord) {
 										auditHistoryMissing = true;
 										break;
+									}
+									if (isRocksDB && nodeId == null) {
+										const resolvedAuditIdentity = `${auditRecord.nodeId ?? 0}:${auditRecord.txnLogKey ?? localTime}`;
+										if (visitedAuditRefs.has(resolvedAuditIdentity)) break;
+										visitedAuditRefs.add(resolvedAuditIdentity);
 									}
 									isAdditionalAuditRef = false;
 									if (!auditRecord.type || !Number.isFinite(auditRecord.version)) auditHistoryMissing = true;
