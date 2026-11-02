@@ -16,7 +16,8 @@ export function resolveAbortMarkersSetting(configured: unknown): boolean {
 }
 
 export function resolveWriteIntentsSetting(configured: unknown): boolean {
-	return configured != null && configured !== '' && !isFalse(configured);
+	if (configured === true || configured === 1) return true;
+	return typeof configured === 'string' && ['true', '1', 'yes', 'on'].includes(configured.trim().toLowerCase());
 }
 
 /**

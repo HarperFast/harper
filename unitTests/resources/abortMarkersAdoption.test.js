@@ -168,7 +168,7 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			assert.equal(resolveAbortMarkersSetting(configured), true, String(configured));
 		for (const configured of [false, 'false', 'FALSE', 0, '0', 'off'])
 			assert.equal(resolveAbortMarkersSetting(configured), false, String(configured));
-		for (const configured of [undefined, null, '', false, 'false', 0])
+		for (const configured of [undefined, null, '', false, 'false', 0, 'maybe'])
 			assert.equal(resolveWriteIntentsSetting(configured), false, `write intents ${configured}`);
 		for (const configured of [true, 'true', 1])
 			assert.equal(resolveWriteIntentsSetting(configured), true, `write intents ${configured}`);
