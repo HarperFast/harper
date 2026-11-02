@@ -169,10 +169,15 @@ for (const threadCount of [1, 0]) {
 			deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
 			ok(exit.afterMs < 5000, `idle stop took ${exit.afterMs} ms`);
 			ok((await hdbLog(ctx)).includes('Shutdown complete'), 'the graceful path logged its end');
+			const stoppedBootLog = hdbLogPath(ctx);
 			await startHarper(ctx, { config: { threads: { count: threadCount } }, env: {} });
-			const log = await hdbLog(ctx);
-			ok(log.includes('successfully started'), `${hdbLogPath(ctx)} holds the restarted boot`);
-			ok(!/Replayed \d+ records/.test(log), 'no transaction-log replay after a clean stop');
+			// a restarted boot may keep writing to the first boot's log, so read both
+			const logs = await Promise.all(
+				[...new Set([stoppedBootLog, hdbLogPath(ctx)])].map((path) => readFile(path, 'utf8').catch(() => ''))
+			);
+			const boots = logs.join('').match(/Harper successfully started/g)?.length ?? 0;
+			ok(boots >= 2, `the logs read hold the restarted boot (${boots} starts found)`);
+			ok(!/Replayed \d+ records/.test(logs.join('')), 'no transaction-log replay after a clean stop');
 		});
 	});
 }

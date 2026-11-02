@@ -38,6 +38,7 @@ export function createTerminationHandler({
 	shutdown: (exitDeadline: number) => Promise<unknown>;
 	exit: () => void;
 }): (signal: string) => void {
+	// Exit-time lines use notify: it writes synchronously, and a buffered line would be lost to exit().
 	let shuttingDown = false;
 	let exited = false;
 	const exitOnce = () => {
@@ -47,7 +48,7 @@ export function createTerminationHandler({
 	};
 	return (signal) => {
 		if (shuttingDown) {
-			harperLogger.warn(`Received ${signal} during shutdown; exiting without waiting for it to finish`);
+			harperLogger.notify(`Received ${signal} during shutdown; exiting without waiting for it to finish`);
 			return exitOnce();
 		}
 		shuttingDown = true;
@@ -56,7 +57,7 @@ export function createTerminationHandler({
 		const exitDeadline = Date.now() + timeoutMs;
 		setTimeout(() => {
 			if (exited) return;
-			harperLogger.warn(
+			harperLogger.notify(
 				`Shutdown did not finish within ${timeoutMs} ms (threads.shutdownTimeout); exiting with ${workers.length} worker thread(s) still running`
 			);
 			exitOnce();
