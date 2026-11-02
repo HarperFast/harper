@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Enforces the design-doc layout described in the root DESIGN.md: the root is an index only, every
-// per-directory DESIGN.md section is indexed there and every index link resolves; each DESIGN.md and
-// MAP.md stays within its byte budget, or its ceiling in CEILINGS_FILE; and each MAP.md has a
-// `@MAP.md` CLAUDE.md, is listed in AGENTS.md and names only symbols and files that exist.
+// section of a note the index registers is indexed there and every relative link and anchor in the
+// index and the notes resolves; each DESIGN.md and MAP.md stays within its byte budget, or its ceiling
+// in CEILINGS_FILE; and each MAP.md has a `@MAP.md` CLAUDE.md, is listed in AGENTS.md and names only
+// symbols and files that exist.
 //   --base <ref>       also reject a raised or new ceiling, and hold only files changed since <ref> to their budget
 //   --update-ceilings  rewrite CEILINGS_FILE from current sizes
 //   --stale            report-only: dead backticked paths and symbols, and files over ceiling (markdown, exit 0)
@@ -57,29 +58,30 @@ const slug = (s) =>
 		.toLowerCase()
 		.replace(/[^\p{L}\p{N}\p{M} \-_]/gu, '')
 		.replace(/ /g, '-');
-const headings = (root, file) =>
-	readText(root, file)
-		.split('\n')
-		.filter((l) => l.startsWith('## '))
-		.map((l) => l.slice(3).trim());
 
-export function codeSpans(text) {
-	const spans = [];
+// The lines of a markdown text outside code fences, as [line number, text] pairs. A fence left open hides
+// the rest of the text from every check, so its line is returned as `unclosed`.
+function proseLines(text) {
+	const lines = [];
 	let fence;
 	text.split('\n').forEach((line, i) => {
 		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
 		if (fence) {
-			if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim())
+			if (marker && marker[1][0] === fence.marker[0] && marker[1].length >= fence.marker.length && !marker[2].trim())
 				fence = undefined;
-			return;
-		}
-		if (marker) {
-			fence = marker[1];
-			return;
-		}
-		for (const match of line.matchAll(/(`+)(?!`)(.+?)(?<!`)\1(?!`)/g))
-			spans.push({ text: match[2].trim(), line: i + 1 });
+		} else if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) fence = { marker: marker[1], line: i + 1 };
+		else lines.push([i + 1, line]);
 	});
+	return { lines, unclosed: fence?.line };
+}
+
+// A code span opens and closes with backtick runs of the same length (CommonMark).
+const CODE_SPAN = /(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g;
+
+export function codeSpans(text) {
+	const spans = [];
+	for (const [line, content] of proseLines(text).lines)
+		for (const match of content.matchAll(CODE_SPAN)) spans.push({ text: match[2].trim(), line });
 	return spans;
 }
 
@@ -262,34 +264,99 @@ function budgetFor(file) {
 	return path.posix.basename(file) === 'MAP.md' ? MAP_BUDGET : DESIGN_BUDGET;
 }
 
+const LINK = /\]\(([^)#\s]*)(?:#([^)\s]*))?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)/g;
+const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
+
+// Resolves every relative link in the root index and the notes: the file must exist inside the repository
+// and an anchor must match a heading there. A root list entry must link to a `##` heading and registers
+// each markdown file it links to as a note, whose `##` sections must all be indexed; a link in the root's
+// prose may target any heading and registers nothing.
+function checkLinks(root, design, errors) {
+	const proseCache = new Map();
+	const prose = (file) => {
+		if (!proseCache.has(file)) {
+			const { lines, unclosed } = proseLines(readText(root, file));
+			if (unclosed) errors.push(`${file}:${unclosed} opens a code fence that is never closed`);
+			proseCache.set(file, lines);
+		}
+		return proseCache.get(file);
+	};
+	const anchorCache = new Map();
+	// GitHub de-duplicates a repeated slug with `-1`, `-2`, skipping slugs already taken.
+	const anchors = (file) => {
+		if (anchorCache.has(file)) return anchorCache.get(file);
+		const taken = new Map();
+		const found = [];
+		for (const [, line] of prose(file)) {
+			const heading = HEADING.exec(line);
+			if (!heading) continue;
+			const base = slug(heading[2]);
+			let anchor = base;
+			while (taken.has(anchor)) {
+				taken.set(base, taken.get(base) + 1);
+				anchor = `${base}-${taken.get(base)}`;
+			}
+			taken.set(anchor, 0);
+			found.push({ anchor, level: heading[1].length, text: heading[2] });
+		}
+		anchorCache.set(file, found);
+		return found;
+	};
+	function* links(file) {
+		for (const [line, text] of prose(file))
+			for (const match of text.replace(CODE_SPAN, '').matchAll(LINK)) {
+				if (/^[a-z][a-z0-9+.-]*:/i.test(match[1])) continue;
+				yield { line, target: match[1], anchor: match[2], listItem: /^\s*[-*] /.test(text) };
+			}
+	}
+	// Returns the file a link resolves to, or undefined after reporting why it does not.
+	const resolve = (from, { line, target, anchor }, level) => {
+		const file = target
+			? path.posix.normalize(
+					target.startsWith('/') ? target.slice(1) : path.posix.join(path.posix.dirname(from), target)
+				)
+			: from;
+		const at = `${from}:${line}`;
+		if (file === '..' || file.startsWith('../')) {
+			errors.push(`${at} links outside the repository: ${target}`);
+			return;
+		}
+		if (!fs.existsSync(path.join(root, file))) {
+			errors.push(`${at} links to missing file ${target}`);
+			return;
+		}
+		if (
+			anchor &&
+			file.endsWith('.md') &&
+			!anchors(file).some((h) => h.anchor === anchor && (!level || h.level === level))
+		)
+			errors.push(
+				`${at} links to ${target}#${anchor}, which no ${level ? `${'#'.repeat(level)} ` : ''}heading there produces`
+			);
+		return file;
+	};
+
+	const indexed = new Map();
+	for (const link of links('DESIGN.md')) {
+		const file = resolve('DESIGN.md', link, link.listItem ? 2 : undefined);
+		if (file && link.listItem) (indexed.get(file) ?? indexed.set(file, new Set()).get(file)).add(link.anchor);
+	}
+	const notes = new Set(design);
+	for (const file of indexed.keys()) if (file.endsWith('.md')) notes.add(file);
+	notes.delete('DESIGN.md');
+	for (const file of [...notes].sort()) {
+		const seen = indexed.get(file) ?? new Set();
+		for (const { anchor, level, text } of anchors(file))
+			if (level === 2 && !seen.has(anchor)) errors.push(`${file} section "${text}" is not indexed in DESIGN.md`);
+		for (const link of links(file)) resolve(file, link);
+	}
+}
+
 export async function checkDesignDocs({ root, base } = {}) {
 	const errors = [];
 	const warnings = [];
 	const { design, maps } = docFiles(root);
-	const rootLines = readText(root, 'DESIGN.md').split('\n');
-
-	const linked = new Map();
-	for (const line of rootLines) {
-		for (const m of line.matchAll(/\]\(([^)#\s]+)(?:#([^)\s]+))?\)/g)) {
-			const [, file, anchor] = m;
-			if (/^https?:/.test(file)) continue;
-			if (!fs.existsSync(path.join(root, file))) {
-				errors.push(`DESIGN.md links to missing file ${file}`);
-				continue;
-			}
-			if (!anchor) continue;
-			const anchors = headings(root, file).map(slug);
-			if (!anchors.includes(anchor))
-				errors.push(`DESIGN.md links to ${file}#${anchor}, which no ## heading there produces`);
-			(linked.get(file) ?? linked.set(file, new Set()).get(file)).add(anchor);
-		}
-	}
-	for (const file of design) {
-		if (file === 'DESIGN.md') continue;
-		const seen = linked.get(file) ?? new Set();
-		for (const h of headings(root, file))
-			if (!seen.has(slug(h))) errors.push(`${file} section "${h}" is not indexed in DESIGN.md`);
-	}
+	checkLinks(root, design, errors);
 
 	const ceilings = readCeilings(root);
 	const baseline = base ? baseState(root, base) : undefined;

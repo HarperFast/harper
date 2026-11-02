@@ -113,6 +113,169 @@ describe('build-tools/check-design-docs.mjs', function () {
 		assert.deepStrictEqual(await errorsOf(), []);
 	});
 
+	describe('links and anchors', function () {
+		const note = (extra) => `${NOTE}\n${extra}\n`;
+		const TOPIC = '# Topic\n\n## Part\n\nBody.\n';
+		const withTopic = { 'DESIGN.md': `${INDEX}- [Part](lib/topic.md#part) — x\n`, 'lib/topic.md': TOPIC };
+		const errorsFor = async (files) => {
+			if (dir) rmSync(dir, { recursive: true, force: true });
+			dir = createTree(files);
+			return (await errorsOf()).join('\n');
+		};
+		const passes = async (files) => assert.strictEqual(await errorsFor(files), '');
+		const fails = async (files, message) => assert.match(await errorsFor(files), message);
+
+		describe('the index', function () {
+			it('rejects a section of a note that the index does not link', async function () {
+				await fails(
+					{ 'lib/DESIGN.md': note('## Other') },
+					/lib\/DESIGN\.md section "Other" is not indexed in DESIGN\.md/
+				);
+			});
+
+			it('rejects an index link to a missing file, and to a heading that is not ##', async function () {
+				await fails(
+					{ 'DESIGN.md': `${INDEX}- [Gone](lib/gone.md#x) — x\n` },
+					/^DESIGN\.md:2 links to missing file lib\/gone\.md/
+				);
+				await fails(
+					{ 'DESIGN.md': `${INDEX}- [Sub](lib/DESIGN.md#sub) — x\n`, 'lib/DESIGN.md': note('### Sub') },
+					/^DESIGN\.md:2 links to lib\/DESIGN\.md#sub, which no ## heading there produces/
+				);
+			});
+
+			it('requires every ## section of a markdown file that an index entry links to', async function () {
+				await passes(withTopic);
+				await fails(
+					{ ...withTopic, 'lib/topic.md': `${TOPIC}\n## Other\n` },
+					/lib\/topic\.md section "Other" is not indexed in DESIGN\.md/
+				);
+			});
+
+			it('checks a link in the index prose without registering its target, but registers the target of an entry', async function () {
+				await passes({
+					'DESIGN.md': `See [the guide](GUIDE.md#guide).\n${INDEX}`,
+					'GUIDE.md': '# Guide\n\n## Unindexed section\n',
+				});
+				await fails(
+					{ 'DESIGN.md': `See [the guide](GONE.md).\n${INDEX}` },
+					/^DESIGN\.md:1 links to missing file GONE\.md/
+				);
+				await fails(
+					{ 'DESIGN.md': `${INDEX.trimEnd()} See [the guide](GUIDE.md).\n`, 'GUIDE.md': '# Guide\n\n## Part\n' },
+					/GUIDE\.md section "Part" is not indexed/
+				);
+			});
+
+			it('indexes a repeated ## heading by its de-duplicated anchor', async function () {
+				const repeated = note('## Note');
+				await fails({ 'lib/DESIGN.md': repeated }, /section "Note" is not indexed/);
+				await passes({ 'DESIGN.md': `${INDEX}- [Note again](lib/DESIGN.md#note-1) — x\n`, 'lib/DESIGN.md': repeated });
+			});
+		});
+
+		describe('inside the notes', function () {
+			it('accepts links to files, anchors at any heading level, the same file, and the web', async function () {
+				await passes({
+					'DESIGN.md': `## lib/\n\n${INDEX}`,
+					'lib/DESIGN.md': note(
+						'### Sub heading\n[root](../DESIGN.md#lib) [self](#sub-heading) [sibling](./other.ts) [line](other.ts#L10) [web](https://example.com/x#y)'
+					),
+					'lib/other.ts': 'export {};\n',
+				});
+			});
+
+			it('rejects a stale anchor, naming the file and line', async function () {
+				await fails(
+					{ 'lib/DESIGN.md': note('[root](../DESIGN.md#renamed-away)') },
+					/lib\/DESIGN\.md:5 links to \.\.\/DESIGN\.md#renamed-away, which no heading there produces/
+				);
+				await fails(
+					{ 'lib/DESIGN.md': note('[self](#nope)') },
+					/lib\/DESIGN\.md:5 links to #nope, which no heading there produces/
+				);
+			});
+
+			it('rejects a link to a missing file, resolved against the directory of the note that carries it', async function () {
+				await fails(
+					{ 'lib/DESIGN.md': note('[gone](./gone.ts)') },
+					/lib\/DESIGN\.md:5 links to missing file \.\/gone\.ts/
+				);
+				await fails(
+					{ 'lib/DESIGN.md': note('[wrong](lib/other.ts)'), 'lib/other.ts': 'export {};\n' },
+					/links to missing file lib\/other\.ts/
+				);
+			});
+
+			it('rejects a link that leaves the repository, and reads a leading slash from the repository root', async function () {
+				await fails(
+					{ 'lib/DESIGN.md': note('[out](../../outside.md)') },
+					/lib\/DESIGN\.md:5 links outside the repository: \.\.\/\.\.\/outside\.md/
+				);
+				await passes({ 'lib/DESIGN.md': note('[root](/lib/other.ts)'), 'lib/other.ts': 'export {};\n' });
+			});
+
+			it('checks a titled link in each of its three forms, and a heading indented up to three spaces', async function () {
+				for (const title of ['"the title"', "'t'", '(t)'])
+					await fails({ 'lib/DESIGN.md': note(`[gone](./gone.ts ${title})`) }, /links to missing file \.\/gone\.ts/);
+				await passes({ 'lib/DESIGN.md': `${NOTE}\n   ### Indented\n\n[ok](#indented "title")\n` });
+			});
+
+			it('reads headings and fences in a file with CRLF line endings', async function () {
+				const crlf = (text) => text.replaceAll('\n', '\r\n');
+				await passes({
+					'DESIGN.md': crlf(INDEX),
+					'lib/DESIGN.md': crlf(note('```md\n[x](./gone.ts)\n```\n\n[self](#note)')),
+				});
+			});
+
+			it('checks the notes under test directories and the files an index entry registers', async function () {
+				await fails(
+					{
+						'DESIGN.md': `${INDEX}- [Lanes](unitTests/DESIGN.md#lanes) — x\n`,
+						'unitTests/DESIGN.md': '# Unit tests\n\n## Lanes\n\n[gone](./gone.js)\n',
+					},
+					/unitTests\/DESIGN\.md:5 links to missing file \.\/gone\.js/
+				);
+				await fails(
+					{ ...withTopic, 'lib/topic.md': `${TOPIC}\n[stale](DESIGN.md#nope)\n` },
+					/lib\/topic\.md:\d+ links to DESIGN\.md#nope/
+				);
+			});
+
+			it('ignores links in code spans and fenced blocks, and headings in fenced blocks', async function () {
+				await passes({
+					'lib/DESIGN.md': note('`[x](./gone.ts)`\n\n```md\n[y](./gone.ts)\n## Fake\n```\n\n~~~\n[z](./gone.ts)\n~~~'),
+				});
+				await fails(
+					{ 'lib/DESIGN.md': note('```md\n### Fake\n```\n\n[into the fence](#fake)') },
+					/links to #fake, which no heading there produces/
+				);
+			});
+
+			it('ignores a link in a nested code span, and a code span that opens a line is not a fence', async function () {
+				await passes({ 'lib/DESIGN.md': note('`` `[x](./gone.ts)` ``') });
+				await fails(
+					{ 'lib/DESIGN.md': note('```inline``` text\n\n## Unindexed') },
+					/section "Unindexed" is not indexed/
+				);
+			});
+
+			it('reports a code fence that is never closed', async function () {
+				await fails(
+					{ 'lib/DESIGN.md': note('```md\n[x](./gone.ts)') },
+					/lib\/DESIGN\.md:5 opens a code fence that is never closed/
+				);
+			});
+
+			it('de-duplicates heading anchors across levels as GitHub does', async function () {
+				const headings = '# a\n\n## Note\n\n### Note\n\n### Note 1\n\n### Note\n';
+				await passes({ 'lib/DESIGN.md': `${headings}\n[a](#note-1) [b](#note-1-1) [c](#note-2)\n` });
+				await fails({ 'lib/DESIGN.md': `${headings}\n[d](#note-3)\n` }, /links to #note-3/);
+			});
+		});
+	});
+
 	describe('byte budgets', function () {
 		it('fails a two-line DESIGN.md over 40 KiB that the old 1000-line budget let through', async function () {
 			dir = createTree({ 'lib/DESIGN.md': sized(DESIGN_BUDGET + 1) });
