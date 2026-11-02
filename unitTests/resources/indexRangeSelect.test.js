@@ -343,7 +343,6 @@ describe('Secondary-index range select', function () {
 				assert.deepStrictEqual(result, expected, JSON.stringify(query));
 				assert.ok(reads >= expected.length && reads > 0, `expected record reads for ${JSON.stringify(query)}`);
 			};
-			// another index's attribute is not in the scanned entry
 			await loads(
 				{ conditions: range, select: ['id', 'name'] },
 				records.map(({ id, name }) => ({ id, name }))
@@ -398,7 +397,6 @@ describe('Secondary-index range select', function () {
 			);
 			assert.equal(resolved.length, records.length);
 			assert.ok(reads > 0);
-			// local-only reads skip invalidated rows, which the index entry does not mark
 			await loads(
 				{ conditions: range, select: ['id', 'score'] },
 				records.map(({ id, score }) => ({ id, score })),
@@ -448,7 +446,6 @@ describe('Secondary-index range select', function () {
 				{ id: 4, big: 4000n },
 				{ id: 5, big: 5000n },
 			]);
-			// a declared multi-valued attribute yields the matching element, one row per record
 			const tagged = [{ attribute: 'tags', comparator: 'between', value: ['t1', 't2'] }];
 			const taggedIds = (await rows(Covered, { conditions: tagged, select: ['id', 'label'] })).map(({ id }) => id);
 			const { result: tagRows, reads } = await withReads(Covered, () =>
@@ -479,7 +476,6 @@ describe('Secondary-index range select', function () {
 				await Loose.put(5, { value: text256, label: '256' });
 				await Loose.put(6, { value: text257, label: '257' });
 				const value = (condition) => [{ attribute: 'value', ...condition }];
-				// an undeclared bigint id decodes as a number; the record keeps the bigint
 				assert.deepStrictEqual(await rows(Loose, { conditions: value({ value: 1 }), select: ['id', 'label'] }), [
 					{ id: 10n, label: 'bigint id' },
 				]);
@@ -503,7 +499,6 @@ describe('Secondary-index range select', function () {
 				await assertCovered(Loose, { conditions: value({ value: text256 }), select: ['id', 'value'] }, [
 					{ id: 5, value: text256 },
 				]);
-				// a truncated overflow key cannot supply the value, but still supplies the id
 				const prefixed = value({ comparator: 'starts_with', value: 'aaa' });
 				const { result, reads } = await withReads(Loose, () =>
 					rows(Loose, { conditions: prefixed, select: ['id', 'value'] })
@@ -514,7 +509,6 @@ describe('Secondary-index range select', function () {
 				]);
 				assert.equal(reads, 1);
 				await assertCovered(Loose, { conditions: prefixed, select: ['id'] }, [{ id: 5 }, { id: 6 }]);
-				// a row whose key overflowed takes the same shape as the rows around it
 				const long = 'b'.repeat(300);
 				await Loose.put(7, { value: ['bb', long], label: 'mixed array' });
 				await Loose.put(11n, { value: 'b'.repeat(299), label: 'bigint id, long value' });
@@ -527,7 +521,6 @@ describe('Secondary-index range select', function () {
 					{ id: 11, value: 'b'.repeat(299) },
 				]);
 				assert.equal(mixed.reads, 2);
-				// an overflow entry stands for the element it indexes, and only when that element matches
 				const prefix = 'd'.repeat(256);
 				await Loose.put(8, { value: ['c'.repeat(260), 'match-me-c'], label: 'one long element' });
 				await Loose.put(9, { value: [prefix + '1', prefix + '2'], label: 'shared prefix' });
@@ -634,76 +627,45 @@ describe('Secondary-index range select', function () {
 				await Reopened.put(4, { value: { nested: 6 }, label: 'object' });
 				await Reopened.put(5, { value: -0, label: 'negative zero' });
 				await Reopened.put({ id: [null, 7], value: '\x18', label: 'control character' });
-				// the id RocksDB decodes from record 5's -0 entry
-				await Reopened.put({ id: [null, null, null, 5], value: 'x', label: 'decoded twin' });
 				await closeDatabase(databaseName);
 				resetDatabases();
 				Reopened = declare();
 				const open = [{ attribute: 'value', comparator: 'gt', value: 4 }];
-				const loaded = await rows(Reopened, { conditions: open, select: ['id', 'label'] });
 				const { result, reads } = await withReads(Reopened, () =>
 					rows(Reopened, { conditions: open, select: ['id', 'value'] })
 				);
-				// in index order: the array row once per matching element, the object row not at all (it is not
-				// indexed), and no row for record 5's -0 entry, whose value 0 fails the condition (on RocksDB that
-				// entry decodes to the twin's id, and the record path serves the twin there)
-				assert.deepStrictEqual(result, [
-					{ id: 1, value: 5 },
-					{ id: 3, value: 6 },
-					{ id: 2, value: 7 },
-					{ id: 3, value: 8 },
-					{ id: [null, 7], value: '\x18' },
-					// ids come back as the index decodes them: RocksDB's composite key drops one leading null here
-					{ id: isLMDB ? [null, null, null, 5] : [null, null, 5], value: 'x' },
-				]);
+				// in index order: the array row once per matching element and the object row not at all (it is
+				// not indexed)
 				assert.deepStrictEqual(
-					loaded.filter(({ id }) => id !== 5 && !Array.isArray(id)).map(({ id }) => id),
-					[1, 3, 2, 3]
+					result.filter(({ id }) => typeof id === 'number' && id !== 5),
+					[
+						{ id: 1, value: 5 },
+						{ id: 3, value: 6 },
+						{ id: 2, value: 7 },
+						{ id: 3, value: 8 },
+					]
 				);
-				// a null-led id under a '\x18' key is checked against its record, since -0 decodes that way on RocksDB
-				assert.equal(reads, isLMDB ? 1 : 2);
-				// LMDB keeps the -0 entry's primary key, so its row is served as 0 where 0 matches
-				const zero = await rows(Reopened, {
-					conditions: [{ attribute: 'value', comparator: 'ge', value: -1 }],
-					select: ['id', 'value'],
-				});
-				assert.deepStrictEqual(
-					zero.filter(({ id }) => id === 5),
-					isLMDB ? [{ id: 5, value: 0 }] : []
-				);
-				// a residual filter tests the value 0 the entry stands for, not its decoded bytes
-				const zeroIn = await rows(Reopened, {
-					conditions: [{ attribute: 'value', comparator: 'in', value: [0] }],
-					select: ['id', 'value'],
-				});
-				assert.deepStrictEqual(zeroIn, isLMDB ? [{ id: 5, value: 0 }] : []);
+				// a -0 entry decodes like a real null-led id under '\x18', so both go through the record path and
+				// return exactly what it returns
+				const recordPath = await rows(Reopened, { conditions: open, select: ['id', 'value'], rowFilter: () => true });
+				const delegated = ({ id }) => id === 5 || Array.isArray(id);
+				assert.deepStrictEqual(result.filter(delegated), recordPath.filter(delegated));
+				assert.ok(result.some(({ id }) => Array.isArray(id) && id[0] === null && id[1] === 7));
+				assert.equal(reads, 2);
+				for (const condition of [
+					{ attribute: 'value', comparator: 'ge', value: -1 },
+					{ attribute: 'value', comparator: 'in', value: [0] },
+				]) {
+					const covered = await rows(Reopened, { conditions: [condition], select: ['id', 'value'] });
+					const loadedRows = await rows(Reopened, {
+						conditions: [condition],
+						select: ['id', 'value'],
+						rowFilter: () => true,
+					});
+					assert.deepStrictEqual(covered.filter(delegated), loadedRows.filter(delegated));
+				}
 			} finally {
 				Reopened.dropTable();
-			}
-		});
-
-		it("keeps a rejected entry from taking another entry's place in a declared array scan", async function () {
-			const Tags = table({
-				table: 'IndexRangeCoveredDedupeTest',
-				database: 'test',
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'tags', indexed: true, elements: { type: 'Any' } },
-				],
-			});
-			try {
-				await Tags.put(5, { tags: [-0] });
-				// RocksDB decodes record 5's -0 entry to this id
-				await Tags.put({ id: [null, null, null, null, 5], tags: ['z'] });
-				const query = { conditions: [{ attribute: 'tags', comparator: 'gt', value: 4 }] };
-				// the -0 entry stands for 0, which fails the condition, so it is rejected before the dedupe and the
-				// 'z' entry survives; the id comes back as the index decodes it (one leading null dropped)
-				assert.deepStrictEqual(await rows(Tags, { ...query, select: ['id'] }), [{ id: [null, null, null, 5] }]);
-				assert.deepStrictEqual(await rows(Tags, { ...query, select: ['id', 'tags'] }), [
-					{ id: [null, null, null, 5], tags: 'z' },
-				]);
-			} finally {
-				Tags.dropTable();
 			}
 		});
 

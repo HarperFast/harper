@@ -914,7 +914,6 @@ describe('nested relationship constraints', function () {
 		assert.deepStrictEqual(rows[0].children, [{ id: 'a', score: 100 }]);
 		await C.put('a', { id: 'a', score: 0 }, { expiresAt: 1 });
 		await C.put('b', { id: 'b', score: 10 }, { expiresAt: 1 });
-		// a covered select answers from the index, so the expired row keeps its indexed score
 		const covered = [];
 		for await (const row of C.search({ sort: { attribute: 'score' }, limit: 1, select: ['id', 'score'] }))
 			covered.push(row);

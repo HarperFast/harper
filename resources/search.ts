@@ -940,18 +940,12 @@ function admitCoveredEntries(
 	let condition = filter;
 	const matches = (record: any) => (condition ??= filterByType(searchCondition, Table, null, filtered, false))(record);
 	const recover = (entry, record) => {
-		entry.recovered =
-			typeof entry.key === 'object'
-				? matches({ [attributeName]: 0 })
-					? 0
-					: undefined
-				: record && overflowedValue(record[attributeName], entry.key, attributeName, matches);
+		entry.recovered = record && overflowedValue(record[attributeName], entry.key, attributeName, matches);
 		return entry.recovered === undefined ? SKIP : entry;
 	};
-	const admitExceptional = (sync: boolean, entry, corrupt: boolean) => {
-		const read = () =>
-			recover(entry, corrupt ? undefined : Table.primaryStore.getEntry(entry.value, { transaction })?.value);
-		if (sync || (corrupt && !filter)) return read();
+	const admitOverflow = (sync: boolean, entry) => {
+		const read = () => recover(entry, Table.primaryStore.getEntry(entry.value, { transaction })?.value);
+		if (sync) return read();
 		if (!filter)
 			return when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
 				recover(entry, loaded?.value)
@@ -968,18 +962,17 @@ function admitCoveredEntries(
 	};
 	return range.map(function (entry) {
 		const { key, value: primaryKey } = entry;
-		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB (whose record stores 0), and on
-		// RocksDB as key '\x18' with a null-led primary key that a real [null, …] id can also produce
-		const corrupt = typeof key === 'object' && key !== null;
-		if (
-			corrupt ||
-			(key === '\x18' && primaryKey?.[0] === null) ||
-			(typeof key === 'string' &&
-				key.length > MAX_SEARCH_KEY_LENGTH &&
-				!sorting &&
-				(coverAttribute || filter !== undefined))
+		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB and as key '\x18' with a null-led
+		// primary key on RocksDB (as a real [null, …] id can too): such an entry is left to the record path
+		if ((typeof key === 'object' && key !== null) || (key === '\x18' && primaryKey?.[0] === null))
+			entry.uncovered = true;
+		else if (
+			typeof key === 'string' &&
+			key.length > MAX_SEARCH_KEY_LENGTH &&
+			!sorting &&
+			(coverAttribute || filter !== undefined)
 		)
-			return admitExceptional(this?.isSync, entry, corrupt);
+			return admitOverflow(this?.isSync, entry);
 		if (!filter) return entry;
 		if (this?.isSync) return filter({ [attributeName]: key }) ? entry : SKIP;
 		// for filter operations, we intentionally yield the event turn so that scanning queries do not hog resources
@@ -1008,6 +1001,7 @@ function coverIndexEntries(
 	const recordRead = covered.recordRead;
 	return entries.map((entry) => {
 		const { key, value: primaryKey, recovered } = entry;
+		if (entry.uncovered) return primaryKey;
 		recordRead?.();
 		const id = decodePrimaryKey ? decodePrimaryKey(primaryKey) : primaryKey;
 		entry.key = id;
