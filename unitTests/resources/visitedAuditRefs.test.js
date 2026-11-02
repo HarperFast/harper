@@ -3,6 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { publishOriginFloor } = require('#src/resources/originClosedFloor');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -87,4 +88,39 @@ describe('Resolved audit references fold once', function () {
 			assert.deepStrictEqual(snapshots[2], snapshots[0]);
 		});
 	}
+
+	it('does not charge an already visited local frame against the walk budget again', async function () {
+		if (isLMDB) return this.skip();
+		const T = table({
+			table: 'LargeFrame',
+			database: 'visitedAuditRefsLargeFrame',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			audit: true,
+		});
+		publishOriginFloor(T.primaryStore.rootStore, Date.now() + 3_600_000);
+		await T.put('key-0', { count: 0, omitted: true });
+		const seed = T.primaryStore.getEntry('key-0').version;
+		publishOriginFloor(T.primaryStore.rootStore, seed + 4000);
+		await transaction({}, async () => {
+			await T.patch('key-0', { count: add(5), label: 'newest' });
+			for (let index = 1; index < 600; index++) await T.put(`filler-${index}`, { count: index });
+		});
+		const head = T.primaryStore.getEntry('key-0');
+		assert.strictEqual(head.nodeId ?? 0, 0);
+		assert.strictEqual(T.auditStore.get(head.version, T.tableId, 'key-0', 0).txnLogKey, head.version);
+		assert.ok(!head.additionalAuditRefs?.length);
+		const middleOrigin = getIdOfRemoteNode('large-frame-middle', T.auditStore);
+		const olderOrigin = getIdOfRemoteNode('large-frame-older', T.auditStore);
+		async function deliver(record, nodeId, timestamp, fullUpdate) {
+			const context = { source: {}, sourceApply: true, timestamp };
+			await transaction(context, async () => {
+				const resource = await T.getResource('key-0', context);
+				await resource._writeUpdate('key-0', record, fullUpdate, { isNotification: true, nodeId, version: timestamp });
+			});
+		}
+		await deliver({ count: add(3), label: 'middle' }, middleOrigin, seed + 3000, false);
+		assert.strictEqual((await T.get('key-0')).count, 8);
+		await deliver({ id: 'key-0', count: 100 }, olderOrigin, seed + 2000, true);
+		assert.deepStrictEqual({ ...(await T.get('key-0')) }, { id: 'key-0', count: 108, label: 'newest' });
+	});
 });
