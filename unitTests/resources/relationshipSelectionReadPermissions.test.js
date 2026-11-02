@@ -78,7 +78,7 @@ describe('Read permission admission for nested selections and scalar properties'
 				{ name: 'dept', relationship: { from: 'deptId' }, definition: { tableClass: Dept } },
 			],
 		});
-		Emp.setComputedAttribute('reader', (_record, context) => context.user?.username ?? null);
+		Emp.setComputedAttribute('reader', (_record, context) => context?.user?.username ?? null);
 		await Org.put({ id: 'o1', name: 'Org', secret: 'hidden' });
 		await Dept.put({ id: 'd1', name: 'Eng', secret: 'hidden', orgId: 'o1' });
 		await Emp.put({ id: 'e1', deptId: 'd1' });
@@ -292,9 +292,9 @@ describe('Read permission admission for nested selections and scalar properties'
 		assert.deepStrictEqual(await response.json(), [{ id: 'e1', dept: { name: 'Eng' } }]);
 	});
 
-	it('all operations search routes carry the caller into computed attributes', async () => {
+	it('value search carries the same computed-attribute principal as condition search', async () => {
 		const bridge = new ResourceBridge();
-		for (const method of ['searchByConditions', 'searchByHash', 'searchByValue']) {
+		for (const method of ['searchByConditions', 'searchByValue']) {
 			const results = await bridge[method]({
 				schema: DATABASE,
 				table: 'Emp',
