@@ -86,7 +86,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## A relationship read is authorized against the related table
 
-`Table._readDenial` gates relationship steps and scalar properties. `_authorizeRelatedSelection` denies nested predicates at admission; `verifyPerms` normalizes nested aliases before read/describe checks. Enumerable defaults use `_readableInFull` per admission/permission source. Relationship subscriptions skip shared verdicts (`_referencesRelationship`). SQL, delivery projection and root scalar predicates remain separate. Tests: `relationshipSelectionReadPermissions.test.js`.
+Search has no general read gate: REST `_authorizeRelatedSelection`, `verifyPerms` and `ResourceBridge.getSelect` use `Table._readDenial` for nested predicates and scalar properties. Root operations use normalized `attribute`; nested selectors use `[0] ?? attribute`, as executed. `_readableInFull` lasts one admission/principal; relationship subscriptions skip shared verdicts (`_referencesRelationship`). Uncovered: delivery, [SQL](https://github.com/HarperFast/harper/issues/3509) and [root scalar predicates](https://github.com/HarperFast/harper/issues/3903). Test: `relationshipSelectionReadPermissions.test.js`.
 
 ## Typed, discoverable resources
 
