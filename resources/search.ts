@@ -1869,11 +1869,7 @@ export function matchesFilters(filters, record, entry, any: boolean, start = 0) 
 	}
 	return !any;
 }
-/**
- * The test that decides a filter from a row's primary key alone, so it can admit a cache stub with no record:
- * `keyFilter` is on primary-key comparators and their negations and all-key groups, `idFilter` also on a content
- * filter that switched to an index mid-scan. Relationship id mapping reads only `idFilter`.
- */
+// decides a filter from the primary key alone; relationship id mapping reads only `idFilter`, never `keyFilter`
 export function keyPredicate(filter): ((key: any) => boolean) | undefined {
 	return filter.idFilter ?? filter.keyFilter;
 }

@@ -372,14 +372,14 @@ describe('Reads of residency stubs', function () {
 		[false, true, false],
 		[false, false, true],
 		[false, true, true],
+		[true, false, false],
+		[true, false, true],
 		[true, true, false],
 		[true, true, true],
 	]) {
 		const phase = keyLed
-			? 'materialization of a subsequent row'
-			: leadingRow
-				? 'pre-sort reload beside a cached row'
-				: 'pre-sort reload';
+			? `materialization of the ${leadingRow ? 'second' : 'first'} row`
+			: `pre-sort reload${leadingRow ? ' beside a cached row' : ''}`;
 		it(`stops a sorted read closed during ${phase} (${found ? 'present' : 'absent'})`, async () => {
 			const Rows = table({
 				database: 'test',
@@ -423,7 +423,7 @@ describe('Reads of residency stubs', function () {
 			};
 			assert.ok(Rows.search({ ...target, explain: true }).postOrdering);
 			const iterator = Rows.search(target)[Symbol.asyncIterator]();
-			if (keyLed) assert.equal((await iterator.next()).value.id, 'local');
+			if (keyLed && leadingRow) assert.equal((await iterator.next()).value.id, 'local');
 			const pending = iterator.next();
 			await started;
 			try {

@@ -7,7 +7,6 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { INVALIDATED } = require('#src/resources/Table');
 const { waitFor } = require('../waitFor');
 
-// harper#3783 (negated and grouped primary-key conditions) and harper#3786 (sort order of a reloaded stub)
 describe('Invalidated cache rows under negated, grouped and sorted primary-key reads', function () {
 	this.timeout(20_000);
 	const database = 'test_invalidated_stub_key_sort';
@@ -66,7 +65,7 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 	const inAC = { attribute: 'id', comparator: 'in', value: ['a', 'c'] };
 	const geA = { attribute: 'id', comparator: 'ge', value: 'a' };
 
-	describe('a negated or grouped primary-key condition keeps and reloads the stub (#3783)', () => {
+	describe('a negated or grouped primary-key condition keeps and reloads the stub', () => {
 		const cases = [
 			['id in (a, c) + id ne b', [inAC, { attribute: 'id', comparator: 'ne', value: 'b' }]],
 			['id in (a, c) + id not_equals b', [inAC, { attribute: 'id', comparator: 'not_equals', value: 'b' }]],
@@ -156,7 +155,7 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 		}
 	});
 
-	describe('a sorted read places a reloaded stub by its fresh value (#3786)', () => {
+	describe('a sorted read places a reloaded stub by its fresh value', () => {
 		const inABC = { attribute: 'id', comparator: 'in', value: ['a', 'b', 'c'] };
 		const cases = [
 			['id in (a, b, c)', inABC, undefined, ['b:aaa', 'c:fresh c', 'a:zzz']],
@@ -216,6 +215,30 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 				['a:fresh a', 'b:fresh b']
 			);
 			assert.strictEqual(source.loads, 2);
+		});
+
+		it('a one-element primary-key path reads a stub by its key', async () => {
+			assert.deepStrictEqual(await rowsOf({ ...or, sort: { attribute: ['id'], descending: true }, limit: 1 }), [
+				'c:fresh c',
+			]);
+		});
+
+		it('does not resolve a clause after the primary key on a stub', async () => {
+			let resolved = 0;
+			const { propertyResolvers } = Rows;
+			propertyResolvers.bodyLength = (record) => {
+				resolved++;
+				return record.body.length;
+			};
+			try {
+				assert.deepStrictEqual(
+					await rowsOf({ ...or, sort: { attribute: 'id', next: { attribute: 'bodyLength' } }, limit: 1 }),
+					['a:zzz']
+				);
+				assert.strictEqual(resolved, 0);
+			} finally {
+				delete propertyResolvers.bodyLength;
+			}
 		});
 
 		for (const attribute of ['$updatedtime', '$updatedTime']) {
@@ -337,7 +360,7 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 			assert.strictEqual(hook.calls, 1);
 		});
 
-		it('applies the row filter to the reloaded record', async () => {
+		it('still applies the row filter to the reloaded record', async () => {
 			const rowFilter = (record) => record.body !== 'fresh c';
 			assert.deepStrictEqual(await rowsOf({ ...byTag, rowFilter }, undefined, Partial), ['b:aaa', 'a:zzz']);
 			assert.strictEqual(source.loads, 1);
