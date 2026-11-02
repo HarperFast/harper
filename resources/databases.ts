@@ -5789,6 +5789,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
 				attribute.type !== attributeDescriptor.type)
 		) {
+			// before the row is written: a persisted negative value would fail every later load of the table
+			if (+expiration < 0 || +eviction < 0)
+				throw new ClientError(`Expiration and eviction of '${databaseName}.${tableName}' can not be negative`);
 			exclusiveLock();
 			const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
 			if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) return;

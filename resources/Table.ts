@@ -1827,7 +1827,6 @@ export function makeTable(options): TableResourceClass {
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
 	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
 	let ttlConfiguredByApplication = false;
-	// Set when a schema declaration on this thread configured the TTL, so the catalog does not override it.
 	let ttlDeclaredBySchema = false;
 	let ttlFromLoad = false; // true only around a catalog load's setTTLExpiration call
 	evictionMs ??= 0;

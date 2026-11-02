@@ -153,6 +153,9 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		const tableName = 'ExpiryRejectedDeclaration';
 		const Loaded = keyed(tableName);
 		assert.throws(() => keyed(tableName, { expiration: -5 }), /negative/);
+		await commitCatalog(Loaded);
+		assert.strictEqual(primaryRow(Loaded).value.expiration, undefined, 'the rejected value must not reach the catalog');
+		assert.strictEqual(Loaded.expirationMS, undefined);
 		await writeCatalogSettings(Loaded, { expiration: 120 });
 
 		resetDatabases();
