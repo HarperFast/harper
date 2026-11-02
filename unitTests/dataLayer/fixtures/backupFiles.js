@@ -17,16 +17,19 @@ function crc32c(buffer) {
 // binding's table format looks like to this one — with its checksum re-recorded, so only a
 // check that opens the table can refuse it.
 function writeUnsupportedTableFormat(backupDir, backupId) {
-	const sst = readdirSync(join(backupDir, 'shared_checksum')).find((name) => name.endsWith('.sst'));
-	assert.ok(sst, 'precondition: the backup holds a table file');
+	// a table file this backup records, not merely one in the shared directory: an incremental
+	// backup lists only the files its own generation holds
+	const metaPath = join(backupDir, 'meta', String(backupId));
+	const meta = readFileSync(metaPath, 'utf8');
+	const listed = meta.match(/^shared_checksum\/(\S+\.sst) crc32 \d+$/m);
+	assert.ok(listed, 'precondition: the backup holds a table file');
+	const sst = listed[1];
+	assert.ok(readdirSync(join(backupDir, 'shared_checksum')).includes(sst), `precondition: ${sst} is in the repository`);
 	const sstPath = join(backupDir, 'shared_checksum', sst);
 	const contents = readFileSync(sstPath);
 	contents.writeUInt32LE(99, contents.length - 12);
 	writeFileSync(sstPath, contents);
-	const metaPath = join(backupDir, 'meta', String(backupId));
-	const meta = readFileSync(metaPath, 'utf8');
 	const entry = new RegExp(`^(shared_checksum/${sst} crc32 )\\d+$`, 'm');
-	assert.match(meta, entry);
 	writeFileSync(metaPath, meta.replace(entry, `$1${crc32c(contents)}`));
 	return sst;
 }

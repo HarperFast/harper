@@ -38,6 +38,8 @@ export interface RestoreReceipt {
 	job_id?: string;
 	/** The pin protecting `backup_id`; absent when the restore pinned nothing (`immutable_source`). */
 	source_pin_id?: string;
+	/** Pins of the interrupted attempts this one took over; retired only once this attempt's source has proved. */
+	superseded_pin_ids?: string[];
 	options: RestoreReceiptOptions;
 	requested_by?: string;
 	requested_at: number;

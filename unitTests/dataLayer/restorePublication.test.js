@@ -213,15 +213,15 @@ describeUnlessLmdb('restore publication', function () {
 	}
 
 	/** Makes a backup fail verification (a table format this build cannot open); returns the undo. */
-	function breakBackup(fixture) {
+	function breakBackup(fixture, backupId = fixture.backupId) {
 		const saved = new Map();
 		for (const name of readdirSync(join(fixture.backupDir, 'shared_checksum'))) {
 			const path = join(fixture.backupDir, 'shared_checksum', name);
 			saved.set(path, readFileSync(path));
 		}
-		const metaPath = join(fixture.backupDir, 'meta', String(fixture.backupId));
+		const metaPath = join(fixture.backupDir, 'meta', String(backupId));
 		saved.set(metaPath, readFileSync(metaPath));
-		writeUnsupportedTableFormat(fixture.backupDir, fixture.backupId);
+		writeUnsupportedTableFormat(fixture.backupDir, backupId);
 		return () => {
 			for (const [path, contents] of saved) writeFileSync(path, contents);
 		};
@@ -375,6 +375,54 @@ describeUnlessLmdb('restore publication', function () {
 				rmSync(pinFile, { recursive: true, force: true });
 			}
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
+		});
+	});
+
+	describe('a rerun from another backup', function () {
+		it("keeps the interrupted attempt's source pinned until its own source proves, then retires it", async function () {
+			const fixture = await seededDatabase();
+			const first = fixture.backupId;
+			const second = (await createBackup({ database: fixture.name })).backup_id;
+			await closeDatabase(fixture.name);
+			// an attempt from the first backup dies after its marker: the target is destroyed and blocked
+			const died = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, args, options) => {
+				options.beforeDestruction();
+				throw new Error('the restoring process died after the purge');
+			});
+			try {
+				await assert.rejects(restoreBackupOffline(fixture.name, first), /died after the purge/);
+			} finally {
+				died();
+			}
+			assert.strictEqual(checkRestoreState(fixture.dir), 'incomplete');
+			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: restorePinId(fixture.dir), backup_id: first }]);
+
+			// a rerun from a backup that fails verification must not cost the blocked database its first source
+			const repair = breakBackup(fixture, second);
+			try {
+				await assert.rejects(restoreBackupOffline(fixture.name, second), /failed verification/);
+			} finally {
+				repair();
+			}
+			assert.deepStrictEqual(
+				pinsOf(fixture),
+				[{ pin_id: restorePinId(fixture.dir), backup_id: first }],
+				'the first source stays pinned while the target is blocked; the refused one, never applied, is not'
+			);
+			const receipt = receiptOf(fixture.dir);
+			assert.deepStrictEqual(receipt.superseded_pin_ids, [restorePinId(fixture.dir)]);
+			assert.strictEqual(receipt.source_pin_id, undefined);
+			assert.strictEqual(receipt.backup_id, second, 'the rerun owns the claim it inherited');
+
+			// a rerun that proves retires every pin
+			await restoreBackupOffline(fixture.name, second);
+			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(
+				await snapshot(loadedItems(fixture.name)),
+				fixture.live,
+				'the second backup holds the live data'
+			);
 		});
 	});
 

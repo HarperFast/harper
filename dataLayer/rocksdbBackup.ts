@@ -1375,7 +1375,9 @@ export function assertTargetClaimable(
 		const recorded = readRestoreReceipt(target.databaseDir);
 		const ours =
 			markerSource === undefined
-				? readBackupPins(backupDir).some((pin) => pin.pin_id === restorePinId(target.databaseDir))
+				? readBackupPins(backupDir).some(
+						(pin) => pin.database_path && resolve(pin.database_path) === resolve(target.databaseDir)
+					)
 				: markerSource === restoreSourceId(backupDir) ||
 					(recorded.kind === 'valid' && resolve(recorded.receipt.backup_dir) === resolve(backupDir));
 		if (ours) return;

@@ -110,11 +110,13 @@ async function settleCommittedRestore(lock: RestoreLock, receipt: RestoreReceipt
 
 function releaseReceiptPins(receipt: RestoreReceipt): void {
 	const sourcePinId = receipt.source_pin_id;
-	if (!sourcePinId) return; // immutable_source: nothing was pinned, and the repository is not ours to write
+	// immutable_source pins nothing of its own, but still retires what the attempts it took over pinned
+	if (!sourcePinId && !receipt.superseded_pin_ids?.length) return;
 	try {
 		// Only a pin this receipt's backup holds: another restore of the same target pins the same id.
-		const pin = readBackupPins(receipt.backup_dir).find((candidate) => candidate.pin_id === sourcePinId);
-		if (pin && pin.backup_id === receipt.backup_id) unpinBackup(receipt.backup_dir, sourcePinId);
+		const pin = sourcePinId && readBackupPins(receipt.backup_dir).find((candidate) => candidate.pin_id === sourcePinId);
+		if (pin && pin.backup_id === receipt.backup_id) unpinBackup(receipt.backup_dir, sourcePinId!);
+		for (const superseded of receipt.superseded_pin_ids ?? []) unpinBackup(receipt.backup_dir, superseded);
 	} catch (error) {
 		logger.error(`Could not release the source pin of the restore of '${receipt.database}'`, error);
 	}
@@ -167,10 +169,10 @@ export async function finishOutstandingRestore(databaseDir: string): Promise<voi
 	}
 }
 
-/** Under the claim: what an earlier receipt on this target allows. */
-function admitOverEarlierReceipt(databaseDir: string, databaseName: string): void {
+/** Under the claim: what an earlier receipt on this target allows; returns the attempt taken over. */
+function admitOverEarlierReceipt(databaseDir: string, databaseName: string): RestoreReceipt | undefined {
 	const read = readRestoreReceipt(databaseDir);
-	if (read.kind === 'absent') return;
+	if (read.kind === 'absent') return undefined;
 	if (read.kind === 'unreadable') {
 		throw new ClientError(
 			`Database '${databaseName}' has a restore record that cannot be read (${read.reason}); remove ${restoreReceiptPath(databaseDir)} before restoring again`,
@@ -186,6 +188,7 @@ function admitOverEarlierReceipt(databaseDir: string, databaseName: string): voi
 	}
 	// A failed online or offline attempt: its marker (kept by the claim) blocks the target, and this
 	// claim takes it over exactly as a rerun took over the marker before receipts existed.
+	return earlier;
 }
 
 /** The backup a restore reads: the requested id, or the latest complete one, with its blob snapshot restorable here. */
@@ -220,7 +223,8 @@ export async function publishRestore(request: PublishRestoreRequest): Promise<Re
 
 async function publishUnderFence(request: PublishRestoreRequest): Promise<Record<string, unknown>> {
 	const { backupDir, databaseDir, targetDatabase, sourceDatabase } = request;
-	const pinId = request.immutableSource ? undefined : restorePinId(databaseDir);
+	let pinId = request.immutableSource ? undefined : restorePinId(databaseDir);
+	let minted = false;
 	if (request.immutableSource) warnImmutableSource(targetDatabase, backupDir);
 	let receipt!: RestoreReceipt;
 	const { lock, backupId, manifest, waived } = await withRepository(request.immutableSource)(
@@ -233,33 +237,47 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 				allowEngineOnly: request.allowEngineOnly,
 			});
 			const claimed = beginRestoreForDatabase(databaseDir, targetDatabase, backupDir, (preexisting, claimLock) => {
-				admitOverEarlierReceipt(databaseDir, targetDatabase);
+				const earlier = admitOverEarlierReceipt(databaseDir, targetDatabase);
 				assertTargetClaimable(
 					{ databaseDir, databaseName: targetDatabase, inPlace: request.inPlace },
 					backupDir,
 					preexisting
 				);
+				const fresh = newRestoreReceipt({
+					route: request.route,
+					state: 'applying',
+					database: targetDatabase,
+					database_path: databaseDir,
+					source_database: sourceDatabase,
+					backup_dir: backupDir,
+					backup_id: selected.backupId,
+					job_id: request.jobId,
+					requested_by: request.requestedBy,
+					options: {
+						accept_unverified_blobs: request.acceptUnverifiedBlobs,
+						allow_engine_only: request.allowEngineOnly,
+						accept_incompatible_backup: request.acceptIncompatible,
+					},
+				});
+				// An interrupted attempt's source stays pinned until this one proves its own: until then the
+				// earlier backup may be the blocked database's only usable recovery source. A pin on this
+				// attempt's own backup is reused; the rest are retired once this attempt commits.
+				const inherited = new Set(
+					[restorePinId(databaseDir), earlier?.source_pin_id, ...(earlier?.superseded_pin_ids ?? [])].filter(Boolean)
+				);
+				const held = preexisting ? readBackupPins(backupDir).filter((pin) => inherited.has(pin.pin_id)) : [];
+				const same = pinId ? held.find((pin) => pin.backup_id === selected.backupId) : undefined;
+				const supersededPinIds = held.filter((pin) => pin !== same).map((pin) => pin.pin_id);
 				if (pinId) {
+					if (same) pinId = same.pin_id;
+					else if (held.length > 0) pinId = `${pinId}-${fresh.operation_id}`;
+					minted = !same;
 					pinBackup(backupDir, pinId, selected.backupId, `restore of database '${targetDatabase}'`, databaseDir);
 				}
 				receipt = writeRestoreReceipt(claimLock, {
-					...newRestoreReceipt({
-						route: request.route,
-						state: 'applying',
-						database: targetDatabase,
-						database_path: databaseDir,
-						source_database: sourceDatabase,
-						backup_dir: backupDir,
-						backup_id: selected.backupId,
-						...(pinId !== undefined ? { source_pin_id: pinId } : {}),
-						job_id: request.jobId,
-						requested_by: request.requestedBy,
-						options: {
-							accept_unverified_blobs: request.acceptUnverifiedBlobs,
-							allow_engine_only: request.allowEngineOnly,
-							accept_incompatible_backup: request.acceptIncompatible,
-						},
-					}),
+					...fresh,
+					...(pinId !== undefined ? { source_pin_id: pinId } : {}),
+					...(supersededPinIds.length > 0 ? { superseded_pin_ids: supersededPinIds } : {}),
 					attempts: 1,
 				});
 			});
@@ -290,7 +308,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 			evidence: { ...evidence, ...(waived.length > 0 ? { compatibility_waived: waived } : {}) },
 		});
 	} catch (error: any) {
-		await abandonOrRelease(lock, receipt, request, pinId, destructionStarted, error);
+		await abandonOrRelease(lock, receipt, request, minted ? pinId : undefined, destructionStarted, error);
 		if (destructionStarted || lock.preexisting) {
 			throw new Error(
 				`Restore of database '${targetDatabase}' from ${describeRestoreSource({ backup_id: backupId })} failed (rerun restore_backup to recover): ${error.message}`,
@@ -380,6 +398,11 @@ async function abandonOrRelease(
 ): Promise<void> {
 	if (destructionStarted || lock.preexisting) {
 		try {
+			// a pin minted for a backup that never touched the target protects nothing the rerun needs
+			if (!destructionStarted && pinId && receipt.source_pin_id === pinId) {
+				unpinBackup(request.backupDir, pinId);
+				receipt = { ...receipt, source_pin_id: undefined };
+			}
 			writeRestoreReceipt(lock, { ...receipt, last_error: error?.message ?? String(error) });
 		} catch (recordError) {
 			logger.error(`Could not record the failed restore of '${request.targetDatabase}'`, recordError);

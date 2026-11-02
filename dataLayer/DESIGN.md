@@ -139,6 +139,10 @@ lock blocks a claim until it has.
   admitted claim re-publishes the marker with its own source, and an in-place restore is always
   admitted. The lock is taken before the pin; pin ids derive from the target, and the receipt records
   its own (`source_pin_id`); the existence check and the pin are one step under the management lock.
+  A rerun that takes over an interrupted attempt pins its source under its own operation id, unless
+  an inherited pin already names that backup, and retires the inherited pins (`superseded_pin_ids`)
+  only once its source has proved: until then the earlier backup may be the blocked database's only
+  usable recovery source.
 - **The restoring marker is an exclusion, not a check.** `withRestoreExclusion` holds the restore lock
   shared across the marker check and the open; `checkRestoreState` probes shared, so concurrent
   rescans never read each other as `in-progress`. On an unwritable root it degrades to the marker check
