@@ -8,8 +8,9 @@ import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
 
 const STOP_MSG = `Stopping ${PRODUCT_NAME}.`;
-// Beyond threads.shutdownTimeout, the storage flush at exit; its close is not bounded (rocksdb-js#1001)
-const STORAGE_CLOSE_ALLOWANCE_MS = 30000;
+// Beyond threads.shutdownTimeout: harper dev's 30 s default (this separate process cannot see DEV_MODE)
+// and the storage close at exit, which nothing bounds yet (rocksdb-js#1001)
+const EXIT_ALLOWANCE_MS = 60000;
 const EXIT_POLL_INTERVAL_MS = 100;
 
 export default stop;
@@ -29,7 +30,7 @@ async function stop() {
 			if (error.code !== 'ESRCH') throw error;
 		}
 	}
-	const giveUpAt = Date.now() + getProcessShutdownTimeoutMs() + STORAGE_CLOSE_ALLOWANCE_MS;
+	const giveUpAt = Date.now() + getProcessShutdownTimeoutMs() + EXIT_ALLOWANCE_MS;
 	while (signalled.some(isProcessRunning)) {
 		if (Date.now() >= giveUpAt)
 			throw new Error(`${PRODUCT_NAME} (pid ${signalled.filter(isProcessRunning).join(', ')}) is still shutting down`);

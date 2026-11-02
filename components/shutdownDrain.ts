@@ -121,11 +121,7 @@ export function shutdownDrainDeadline(now: number, ceilingMs: number, exitDeadli
 
 let tightenRunningDrains: ((deadlineMs: number) => void) | undefined;
 
-/**
- * Pull the deadline of a {@link runShutdownDrains} already in progress earlier (never later), so a worker
- * that began shutting down for a restart still yields to a process exit's tighter budget. Drains past the
- * new deadline are abandoned exactly as they are at the original one.
- */
+/** Pull a running {@link runShutdownDrains}'s deadline earlier (never later): a restart's drain yields to a process exit's. */
 export function tightenShutdownDrains(deadlineMs: number): void {
 	tightenRunningDrains?.(deadlineMs);
 }

@@ -207,6 +207,7 @@ export {
 	workersForApplication,
 	stopWorker,
 	stopWorkersForExit,
+	getProcessExitDeadline,
 	whenWorkersStoppedForExit,
 	runLocalShutdownListeners,
 	encodeRestartScope,
@@ -363,7 +364,11 @@ function stopWorker(worker?: any, exitDeadline?: number) {
 			resolve(undefined);
 		});
 		try {
-			worker.postMessage({ restartNumber: restartNumber, type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, exitDeadline });
+			worker.postMessage({
+				restartNumber: restartNumber,
+				type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
+				exitDeadline: exitDeadline ?? (processExitDeadline || undefined),
+			});
 		} catch {
 			clearTimeout(worker.terminateTimer);
 			resolve(undefined); // already gone
@@ -395,15 +400,18 @@ function armWorkerTerminate(worker: any, delay: number) {
 
 let workersStoppedForExit: Promise<unknown> = Promise.resolve();
 /**
- * Process exit: send SHUTDOWN, carrying the exit deadline, to every live worker — including one a restart
- * is already retiring or booting (`wasShutdown` is set before such a worker is sent SHUTDOWN, so it cannot
- * say who still needs one; a repeated SHUTDOWN is harmless on the worker side) — and resolve once all have
- * exited.
+ * Process exit: SHUTDOWN with the exit deadline to every live worker, resolving once all have exited. Not
+ * filtered by `wasShutdown`: a restart sets it before it sends SHUTDOWN, and a repeat is harmless.
  */
 function stopWorkersForExit(exitDeadline: number) {
 	processExitDeadline = exitDeadline;
 	workersStoppedForExit = Promise.all([...workers].map((worker) => stopWorker(worker, exitDeadline)));
 	return workersStoppedForExit;
+}
+
+/** The exit deadline this thread was given (epoch ms), or undefined when the process is not exiting on a signal. */
+function getProcessExitDeadline(): number | undefined {
+	return processExitDeadline || undefined;
 }
 
 /** Resolves once the workers {@link stopWorkersForExit} stopped have exited; at once if it has not run. */
@@ -2118,9 +2126,11 @@ function postShutdown(worker) {
 	// An exited worker can still accept a message without complaint, and its exit would never come again.
 	if (!workers.includes(worker)) return false;
 	try {
+		// a restart still retiring workers after a process exit began must not close their scopes early
 		worker.postMessage({
 			restartNumber: restartNumber,
 			type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
+			exitDeadline: processExitDeadline || undefined,
 		});
 	} catch (err) {
 		if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') return false;

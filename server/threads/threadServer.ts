@@ -28,6 +28,7 @@ import {
 	isProcessShuttingDown,
 	whenWorkersStoppedForExit,
 	runLocalShutdownListeners,
+	getProcessExitDeadline,
 } from './manageThreads.ts';
 import {
 	runShutdownDrains,
@@ -140,7 +141,7 @@ let serversClosing = false;
 function closeServers() {
 	serversClosing = true;
 	if (isBun) {
-		// Bun.serve's stop() settles once its pending requests finish; a close() callback once its connections end
+		// Bun.serve's stop() settles when its pending requests finish
 		const stopped: Promise<unknown>[] = [];
 		for (let port in SERVERS) {
 			const server = SERVERS[port];
@@ -210,7 +211,7 @@ let shutdownPromise: Promise<void>;
  * The thread's shutdown sequence, run once; a later call with a process `exitDeadline` only tightens the
  * drain deadline of the run already in progress. A phase that fails is logged and the next still runs.
  */
-function shutdownServers(exitDeadline?: number) {
+function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadline()) {
 	if (shutdownPromise) {
 		if (exitDeadline)
 			tightenShutdownDrains(shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline));
@@ -242,7 +243,18 @@ function shutdownServers(exitDeadline?: number) {
 				startDeferredScopeCloses();
 			})
 		)
-		.then(phase('closing scopes', whenScopesClosed))
+		.then(
+			phase('closing scopes', async () => {
+				// closes deferred for a process exit start once the servers, the last ref'd handles, are gone;
+				// an empty event loop would end the worker mid-disposal
+				const holdOpen = exitDeadline ? setInterval(() => {}, 60_000) : undefined;
+				try {
+					await whenScopesClosed();
+				} finally {
+					clearInterval(holdOpen);
+				}
+			})
+		)
 		.then(
 			phase('closing branch databases', async () => {
 				const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
@@ -271,7 +283,7 @@ function shutdownServers(exitDeadline?: number) {
 }
 
 let componentsLoading: Promise<unknown> | undefined;
-/** Shut this thread down for a process exit, once its components have finished loading (if they are loading). */
+/** After components finish loading, if they are, so no scope is created past the disposal boundary. */
 function shutdownForExit(exitDeadline: number) {
 	const shutdown = () => shutdownServers(exitDeadline);
 	return Promise.resolve(componentsLoading).then(shutdown, shutdown);

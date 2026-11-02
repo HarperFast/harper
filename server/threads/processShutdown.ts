@@ -41,9 +41,11 @@ export function createTerminationHandler({
 	// Exit-time lines use notify: it writes synchronously, and a buffered line would be lost to exit().
 	let shuttingDown = false;
 	let exited = false;
+	let deadlineTimer: NodeJS.Timeout | undefined;
 	const exitOnce = () => {
 		if (exited) return;
 		exited = true;
+		clearTimeout(deadlineTimer);
 		exit();
 	};
 	return (signal) => {
@@ -55,7 +57,7 @@ export function createTerminationHandler({
 		const timeoutMs = getTimeoutMs();
 		if (timeoutMs === 0) return exitOnce();
 		const exitDeadline = Date.now() + timeoutMs;
-		setTimeout(() => {
+		deadlineTimer = setTimeout(() => {
 			if (exited) return;
 			harperLogger.notify(
 				`Shutdown did not finish within ${timeoutMs} ms (threads.shutdownTimeout); exiting with ${workers.length} worker thread(s) still running`
