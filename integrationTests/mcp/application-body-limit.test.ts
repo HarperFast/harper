@@ -456,6 +456,7 @@ suite('http.maxRequestBodySize on the MCP application endpoint', (ctx: ContextWi
 		const rpc = await session(anon);
 		const tools = await rpc('tools/list', {}, 2);
 		strictEqual(tools.status, 200, `tools/list for the anonymous session: ${tools.status} ${tools.text.slice(0, 160)}`);
+		ok(Array.isArray(tools.json?.result?.tools), `tools/list did not answer with a list: ${tools.text.slice(0, 160)}`);
 		deepStrictEqual(toolNames(tools), [], `an anonymous session sees tools: ${tools.text.slice(0, 160)}`);
 		const get = await rpc('tools/call', { name: 'get_LimitDoc', arguments: { id: 'seeded-row' } }, 5);
 		const create = await rpc(
