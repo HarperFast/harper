@@ -271,7 +271,7 @@ function shellCommands(script: string): string[] {
 		} else if (
 			substitutions === 0 &&
 			/[\n;&|]/.test(character) &&
-			script[index - 1] !== '>' &&
+			!/[<>]/.test(script[index - 1] ?? '') &&
 			script[index + 1] !== '>'
 		) {
 			commands.push(command);
@@ -343,7 +343,8 @@ function checkPullRequestCheckout(name: string, job: any, workflow: any, problem
 			for (const field of ['ref', 'repository']) {
 				const value = step.with?.[field];
 				if (value === undefined) continue;
-				const naming = valueNaming(value);
+				// A secret or variable can stand in a git command, but what `ref` checks out cannot be read from here.
+				const naming = /\b(?:vars|secrets)\./.test(String(value)) ? 'unknown' : valueNaming(value);
 				if (naming === 'head') {
 					problems.push(
 						`job "${name}" holds an identity token and checks out the pull request's head (${field}: ${value}), so a ` +
