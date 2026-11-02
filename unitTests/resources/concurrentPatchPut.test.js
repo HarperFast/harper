@@ -10,6 +10,7 @@ describe('Concurrent PATCH/PUT with a pending audit frame', function () {
 	let nextId = 0;
 
 	before(function () {
+		// This fixture requires RocksDB's coordinated native retry and pending audit watermark.
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		RETRY_NOW = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 		setupTestDBPath();
@@ -97,7 +98,7 @@ describe('Concurrent PATCH/PUT with a pending audit frame', function () {
 				assert.strictEqual(entriesAt(key).filter((entry) => entry.recordId === id).length, pending ? 0 : 1);
 			});
 			assert.ok(native.retries > 0, 'the target writes must really conflict');
-			const record = await Docs.get(id);
+			const record = await transaction({}, () => Docs.get(id));
 			assert.strictEqual(record.body, 'put-body');
 			assert.strictEqual(record.title, first === 'put' ? 'patch-title' : undefined);
 			assert.strictEqual(record.notes, extraPatch ? 'new-notes' : undefined);
