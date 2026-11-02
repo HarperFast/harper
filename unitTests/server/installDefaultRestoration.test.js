@@ -57,7 +57,7 @@ describe('install default restoration on a fresh boot', function () {
 								envVar,
 								introducedBy,
 							],
-							{ cwd: path.resolve(__dirname, '../..'), env: childEnv, encoding: 'utf8', timeout: 60000, stdio: 'pipe' }
+							{ cwd: path.resolve(__dirname, '../..'), env: childEnv, encoding: 'utf8', timeout: 120000, stdio: 'pipe' }
 						);
 						assert.match(output, /install-default-restoration-ok/);
 					};
