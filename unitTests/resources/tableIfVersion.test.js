@@ -84,18 +84,9 @@ describe('Table.put ifVersion (internal IF_VERSION symbol)', () => {
 		// and compared against that instead would still pass every other test in this file, since
 		// none of them give the base read and the commit-time read a reason to disagree.
 		//
-		// A real two-writer race was tried twice here and dropped both times: staging the guarded
-		// and a concurrent write under one shared, explicit transaction leaked a RocksDB read
-		// snapshot into later, unrelated test files once the guard rejected; interposing a genuine
-		// concurrent `put()` via `Transaction.prototype.commit` (the technique
-		// unitTests/resources/immediateTransactionConflictRetry.test.js uses) left RocksDB's native
-		// conflict/retry bookkeeping desynced for that same file's own tests, run afterward in the
-		// same process. Both are real, pre-existing issues outside this change's scope (noted
-		// alongside the single-write-transaction limit in resources/DESIGN.md), not something to
-		// paper over by shipping a test that reproduces them. This uses the same `getEntry`
-		// interception technique as unitTests/security/userRecordLookups.test.js instead: no real
-		// transaction, no leak, and it drives `write.commit`'s actual `existingEntry` argument
-		// directly rather than hoping a race lands in the right window.
+		// `getEntry` interception (as in unitTests/security/userRecordLookups.test.js) drives that
+		// argument directly. A real race under one shared transaction leaked a RocksDB read snapshot
+		// into later files (harper#2991); the interposed-commit race is the logged-retry test below.
 		const id = 'race';
 		await Rows.put({ id, name: 'a' });
 		const entry = Rows.primaryStore.getEntry(id);
@@ -221,5 +212,44 @@ describe('Table.put ifVersion (internal IF_VERSION symbol)', () => {
 		);
 		// A fresh re-read still sees the same (reused) version: retrying with it is futile, not transient.
 		assert.strictEqual(Rows.primaryStore.getEntry('reused').version, entry.version);
+	});
+
+	it('lands rather than rejects on a conflict retry after its log entry is durable (harper#3236)', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const { Transaction, constants } = require('@harperfast/rocksdb-js');
+		const Logged = table({
+			table: 'IfVersionLoggedRows',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: true,
+		});
+		const now = Date.now();
+		await Logged.put({ id: 'logged', name: 'read' }, { timestamp: now - 10_000 });
+		const readVersion = Logged.primaryStore.getEntry('logged').version;
+
+		// A same-key write committed inside the guarded write's first native commit, after the guard
+		// passed on its snapshot: the native commit then conflicts with its log entry already written.
+		const targetDb = Logged.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const outcomes = [];
+		let guardedTxn;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb || (guardedTxn !== undefined && this.id !== guardedTxn))
+				return originalCommit.apply(this, args);
+			if (guardedTxn === undefined) {
+				guardedTxn = this.id;
+				await Logged.put({ id: 'logged', name: 'interposed' }, { timestamp: now - 5_000 });
+			}
+			const outcome = await originalCommit.apply(this, args);
+			outcomes.push(outcome);
+			return outcome;
+		};
+		try {
+			await Logged.put({ id: 'logged', name: 'guarded' }, { [IF_VERSION]: readVersion });
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		assert.deepStrictEqual(outcomes, [constants.RETRY_NOW_VALUE, undefined], 'conflicted once, then committed');
+		assert.strictEqual(Logged.primaryStore.getEntry('logged').value.name, 'guarded');
 	});
 });

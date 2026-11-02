@@ -86,6 +86,7 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 	confirmingOwnerNames,
+	hasDurableLog,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -7166,6 +7167,11 @@ export function makeTable(options): TableResourceClass {
 					// read-to-put window rather than closing it. `transaction` is the outer
 					// DatabaseTransaction (`txnForContext(context)`); `nativeTxn` is the per-attempt native
 					// handle.
+					//
+					// Once this write's log entry is durable (a native conflict retry), it must commit:
+					// aborting it orphans an entry that replay and replication still apply (harper#3236).
+					// Last-write-wins then orders it against the write it conflicted with.
+					if (hasDurableLog(nativeTxn)) return plainCommit(txnTime, existingEntry, retry, nativeTxn, committedBy);
 					if ((nativeTxn as any)?.snapshotDisabled || (transaction as any).snapshotFree) {
 						return Promise.reject(
 							new VersionConflictError(tableName, ifVersion, existingEntry?.version, false, 'snapshot-free transaction')

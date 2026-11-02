@@ -85,7 +85,8 @@ export interface Session {
 	 * compare-and-set: a concurrent write on another node (e.g. a logout) that hasn't replicated
 	 * here yet is invisible to this check, and the two writes still resolve by last-write-wins once
 	 * replication catches up. A successful conditional write means nothing else committed on this
-	 * node since the read — it does not mean nothing happened anywhere.
+	 * node between the read and the start of its own commit; a write that lands during that commit
+	 * is ordered by last-write-wins instead. It does not mean nothing happened anywhere.
 	 */
 	update: (updatedSession: any, options?: { ifVersion: number }) => unknown;
 	delete: (id: any) => Promise<void>;
