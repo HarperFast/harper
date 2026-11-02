@@ -15,7 +15,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `replayLogs.ts`, `replayLogsGuards.ts` — crash replay of the transaction logs
 - `transactionBroadcast.ts`, `IterableEventQueue.ts` — commit notification fan-out; subscription queues
 - `subscriptionCheckpoint.ts`, `originClosedFloor.ts` — per-origin subscription checkpoints; the certified local log floor
-- `transactionLogAbortMarkers.ts` — the process-latched `storage.rocks.transactionLogAbortMarkers` setting
+- `transactionLogAbortMarkers.ts` — the process-latched abort-marker setting (`latchAbortMarkers`, `abortMarkersEnabled`)
 - `search.ts` — FIQL parsing, condition planning and estimation, index scans, joins
 - `blob.ts` — file-backed blobs: saving, compression, cleanup, reclamation
 - `tracked.ts`, `crdt.ts` — tracked-instance changes; CRDT operations and history reconstruction
