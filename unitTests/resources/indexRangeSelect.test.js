@@ -535,6 +535,9 @@ describe('Secondary-index range select', function () {
 				assert.equal(shared.reads, 1);
 				const sorted = (await rows(Loose, { sort: { attribute: 'value' } })).map(({ id }) => ({ id: Number(id) }));
 				await assertCovered(Loose, { sort: { attribute: 'value' }, select: ['id'] }, sorted);
+				const sortedValues = await rows(Loose, { sort: { attribute: 'value' }, select: ['id', 'value'] });
+				assert.ok(sortedValues.some(({ id, value }) => id === 6 && value === text257));
+				assert.ok(!sortedValues.some(({ value }) => typeof value === 'string' && value.endsWith('\uffff')));
 			} finally {
 				Loose.dropTable();
 			}
