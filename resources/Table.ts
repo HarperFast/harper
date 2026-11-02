@@ -6142,8 +6142,9 @@ export function makeTable(options): TableResourceClass {
 					// (risking a missed dedup), so LMDB falls back to the normal audited apply. Replication targets
 					// RocksDB anyway. (harper-pro#480)
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
-					// Ahead of the version comparison, which an LMDB merge's older stored version (#3388) can invert. Why
-					// only the committed list counts, and only with no earlier staged body: resources/DESIGN.md.
+					// Ahead of the version comparison, which an LMDB merge's older stored version (#3388) can invert.
+					// Only the committed list counts, and only with no earlier staged body: a same-transaction write
+					// shares this identity and a body it staged was replaced, so a re-delivery's patches apply again.
 					if (!audit && !fullUpdate && !priorChange) {
 						// A first attempt has staged nothing but unchanged publishes, whose list is the committed one
 						const committedRefs = (
