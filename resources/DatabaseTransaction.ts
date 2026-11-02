@@ -1054,7 +1054,8 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
-	// unlike `snapshotFree`, which lock() also sets on a scope that committed nothing
+	// unlike `snapshotFree`, which lock() also sets on a scope that committed nothing; sticky, since a
+	// scope can end while its later segment is still committing
 	rotatedAfterCommit = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
 	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
@@ -3791,11 +3792,10 @@ export class DatabaseTransaction implements Transaction {
 	 * rollback of the rotated head — the cross-store leftover this rotation exists to prevent. Every
 	 * commit path must run this, and none may do one half without the other.
 	 */
-	/** The scope flags leave together, so no exit can clear one and keep another. */
+	/** Both scope flags leave together, so no exit can clear one and keep the other. */
 	protected endScopeOwnership(): void {
 		this.#scopeOwned = false;
 		this.snapshotFree = false;
-		this.rotatedAfterCommit = false;
 	}
 
 	private completeMidScopeCommit(options: CommitOptions, committedTransaction?: RocksTransaction | null): void {
