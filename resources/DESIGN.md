@@ -86,7 +86,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## A relationship read is authorized against the related table
 
-Relationship steps need table/attribute `read`; scalar property reads use `Table._readDenial` too. REST `allowRead` checks nested predicates through `_authorizeRelatedSelection` before loading parents. Operations `verifyPerms` normalizes nested aliases and reports read/describe denials; `ResourceBridge.getSelect` narrows related records, and all search contexts carry the caller. Default `@enumerable` reads are narrowed unless `_readableInFull`, whose proof lasts one admission and permission source. Relationship subscriptions skip shared verdicts (`_referencesRelationship`). SQL, subscription deliveries and root scalar predicates remain separate. Tests: `permissions.test.js`, `relationshipSelectionReadPermissions.test.js`.
+`Table._readDenial` gates relationship steps and scalar properties. `_authorizeRelatedSelection` denies nested predicates at admission; `verifyPerms` normalizes nested aliases before read/describe checks. Enumerable defaults use `_readableInFull` per admission/permission source. Relationship subscriptions skip shared verdicts (`_referencesRelationship`). SQL, delivery projection and root scalar predicates remain separate. Tests: `relationshipSelectionReadPermissions.test.js`.
 
 ## Typed, discoverable resources
 
