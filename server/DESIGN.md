@@ -93,10 +93,10 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.                                                                                                                                                                                              |
 
 Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.ts`.
-Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
-calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN makes that worker terminal. HTTP startup checks the flag after startup/component awaits and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, registered drains, scope disposal and branch-database closure before exit. Main startup and rolling reloads also check resumed awaits before starting replacements.
-A termination signal runs `shutdownProcess()` (`threads/processShutdown.ts`): every live worker gets SHUTDOWN with `exitDeadline` (`wasShutdown` precedes a restart's SHUTDOWN); repeats only tighten drains. Scopes then close after servers drain, main disposes after workers exit, backstops wait for it, and `process.exit` runs once. Storage close at exit stays unbounded (rocksdb-js#1001).
-`shutdownWorkersNow()` remains an immediate teardown: best-effort shutdown messages, then force-termination without drain hooks.
+Once set, it blocks every worker replacement path and makes new `startWorker()`
+calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN is terminal. HTTP startup checks the flag after each await and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, drains, scope disposal and branch-database closure. Main startup and rolling reloads recheck it before starting replacements.
+A signal runs `shutdownProcess()`: SHUTDOWN with `exitDeadline` reaches every live worker (`wasShutdown` precedes a restart's SHUTDOWN). Scopes close after servers drain, main disposes after workers exit, and `process.exit` runs once; the storage close stays unbounded (rocksdb-js#1001).
+`shutdownWorkersNow()` stays immediate: best-effort SHUTDOWN, then force-termination.
 
 A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
 `SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a

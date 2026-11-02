@@ -170,13 +170,18 @@ for (const threadCount of [1, 0]) {
 			ok((await hdbLog(ctx)).includes('Shutdown complete'), 'the graceful path logged its end');
 			const stoppedBootLog = hdbLogPath(ctx);
 			await startHarper(ctx, { config: { threads: { count: threadCount } }, env: {} });
-			// a restarted boot may keep writing to the first boot's log, so read both
-			const logs = await Promise.all(
-				[...new Set([stoppedBootLog, hdbLogPath(ctx)])].map((path) => readFile(path, 'utf8').catch(() => ''))
+			// a restarted boot may keep writing to the first boot's log, so read both; the harness returns on
+			// the stdout "started" line, which can land before the same notice reaches hdb.log
+			const bootLogs = [...new Set([stoppedBootLog, hdbLogPath(ctx)])];
+			let logs = '';
+			await waitFor(
+				async () => {
+					logs = (await Promise.all(bootLogs.map((path) => readFile(path, 'utf8').catch(() => '')))).join('');
+					return (logs.match(/Harper successfully started/g)?.length ?? 0) >= 2;
+				},
+				{ timeout: 15_000, message: () => `the restarted boot never logged its start in ${bootLogs.join(', ')}` }
 			);
-			const boots = logs.join('').match(/Harper successfully started/g)?.length ?? 0;
-			ok(boots >= 2, `the logs read hold the restarted boot (${boots} starts found)`);
-			ok(!/Replayed \d+ records/.test(logs.join('')), 'no transaction-log replay after a clean stop');
+			ok(!/Replayed \d+ records/.test(logs), 'no transaction-log replay after a clean stop');
 		});
 	});
 }
