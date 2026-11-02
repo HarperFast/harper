@@ -354,6 +354,11 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 							},
 						],
 					};
+					for (const as of ['full', 'super'] as const) {
+						const unchanged = await op(as, body);
+						strictEqual(unchanged.status, 400, `${as}: ${JSON.stringify(unchanged.body)}`);
+						ok(unchanged.body.error.includes('conditions are not allowed in get_attributes'));
+					}
 					assertRefused(await op('restricted', body), `${operation} ${attributeKey}`, 'Dept.budget');
 					const denied = await op('budgetWriter', body);
 					assertRefused(denied, `${operation} visible budget`);
@@ -405,6 +410,15 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				}),
 			});
 			strictEqual(response.status, 403, await response.text());
+			const allowed = await fetch(`${restURL}/Emp/`, {
+				method: 'QUERY',
+				headers: { ...headers.restricted, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({
+					select: ['id', { name: 'dept', select: ['name'], conditions: [{ attribute: 'name', value: DEPT.name }] }],
+				}),
+			});
+			strictEqual(allowed.status, 200, await allowed.clone().text());
+			deepStrictEqual(await allowed.json(), [{ id: EMP.id, dept: { name: DEPT.name } }]);
 		});
 
 		test('REST property reads require permission on the returned scalar', async () => {
