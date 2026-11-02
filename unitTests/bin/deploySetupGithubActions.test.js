@@ -410,9 +410,10 @@ jobs:
 				'      - run: git -C $(cd .; pwd) fetch origin "$SHA"\n',
 				'      - run: git -C `cd .; pwd` fetch origin "$SHA"\n',
 				'      - run: git fetch 2>&1 origin "$SHA"\n',
-				'      - run: git fetch origin "a;b" refs/pull/7/head\n',
-				'      - run: git fetch origin "a\\";b" refs/pull/7/head\n',
-				'      - run: git fetch origin a\\;b refs/pull/7/head\n',
+				'      - run: git fetch origin "a;b" "$SHA"\n',
+				'      - run: git fetch origin "a\\";b" "$SHA"\n',
+				'      - run: git fetch origin a\\;b "$SHA"\n',
+				'      - run: git fetch <&- origin "$SHA"\n',
 				'      - run: |\n          REF=${{ github.event.pull_request.head.sha }}\n          git checkout "$REF"\n',
 				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ env.SHA }}\n',
 			]) {
@@ -500,6 +501,10 @@ jobs:
 			assert.deepStrictEqual(check(expression).unsafe, [
 				'that job "deploy"\'s checkout ref (${{ inputs.ref }}) is not the pull request\'s head',
 			]);
+			for (const ref of ['${{ vars.PR_REF }}', '${{ secrets.PR_REF }}']) {
+				const hidden = withDeployStep(`      - uses: actions/checkout@v5\n        with:\n          ref: ${ref}\n`);
+				assert.strictEqual(check(hidden).unsafe.length, 1, ref);
+			}
 		});
 
 		it('writes the options it is given into the deploy, and still passes', () => {
