@@ -1101,6 +1101,20 @@ export function catalogCreatedTime(table: { dbisDB: any; tableName: string; prim
 	return Number.isFinite(createdTime) ? createdTime : undefined;
 }
 /**
+ * The table-level expiration and eviction (seconds) on disk, each present only when set. A class on a thread
+ * that application code configured can hold a TTL the catalog does not.
+ */
+export function catalogExpiration(table: { dbisDB: any; tableName: string; primaryKey?: string }): {
+	expiration?: number;
+	eviction?: number;
+} {
+	const row = primaryCatalogRowFor(table)?.value;
+	const settings: { expiration?: number; eviction?: number } = {};
+	if (row?.expiration > 0) settings.expiration = row.expiration;
+	if (row?.eviction > 0) settings.eviction = row.eviction;
+	return settings;
+}
+/**
  * Backfills the stamp of a generation created on a build that stored none, once a peer's stamped definition
  * proves which generation it is. Only an absent stamp is written; false when one exists or the table is gone.
  */
@@ -2279,6 +2293,7 @@ function initStores(
 			if (!destination) requestComputedIndexRepair(table);
 			if (replicaExpiration !== undefined || replicaRefreshFraction !== undefined)
 				table.setTTLExpiration({ replicaExpiration, replicaRefreshFraction, fromSchema: true });
+			table._adoptCatalogExpiration(expiration, eviction);
 		} else {
 			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
@@ -5321,54 +5336,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
-				if (deferredPrimaryRow) continue;
-				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
-				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
-				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
-				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
-				// but other workers' next disk-load re-reads the stale value. The whole settings update is
-				// gated off for cluster-origin callers: their values come from this worker's (possibly
-				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
-				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
-				// primary key can't change indexing, but settings can change
-				if (
-					origin !== 'cluster' &&
-					(schemaDefinedMismatch ||
-						(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
-						(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
-						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
-						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-						(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
-						(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
-						attribute.type !== attributeDescriptor.type)
-				) {
-					exclusiveLock();
-					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
-					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
-					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
-					if (typeof audit === 'boolean') {
-						if (audit) Table.enableAuditing();
-						updatedPrimaryAttribute.audit = audit;
-					}
-					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
-					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
-					if (replicaExpiration != null) {
-						replicaExpirationMsOf(replicaExpiration);
-						updatedPrimaryAttribute.replicaExpiration = replicaExpiration;
-					}
-					if (replicaRefreshFraction != null) {
-						replicaRefreshFractionOf(replicaRefreshFraction);
-						updatedPrimaryAttribute.replicaRefreshFraction = replicaRefreshFraction;
-					}
-					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
-					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
-					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
-					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
-					hasChanges = true; // send out notification of the change
-					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
-				}
-
+				if (!deferredPrimaryRow) persistTableSettings(attribute, attributeDescriptor ? dbiKey : tableName + '/');
 				continue;
 			}
 
@@ -5613,6 +5581,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		// a declaration of a keyless table has no primary key attribute for the loop above to visit
+		if (!deferredPrimaryRow && !attributes.some((attribute) => attribute.isPrimaryKey))
+			persistTableSettings({}, primaryDescriptorKey());
 		if (
 			!deferredPrimaryRow &&
 			(fullTextPersistencePending ||
@@ -5760,6 +5731,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
+	// A peer's expiration reaches a table this call created through makeTable, as a catalog load. It never
+	// configures an existing table, and applying it here would mark the TTL as this thread's own declaration.
+	if (origin === 'cluster') expiration = eviction = undefined;
 	if (
 		expiration ||
 		eviction ||
@@ -5790,6 +5764,54 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// has one, and the bare table row otherwise.
 	function primaryDescriptorKey() {
 		return persistedPrimaryDescriptor(attributesDbi).key;
+	}
+	function persistTableSettings(attribute: any, dbiKey: string) {
+		const attributeDescriptor = attributesDbi.getSync(dbiKey) || {};
+		// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
+		// a stale `false` (from a v4-era write or replicated event) survives every reload: the
+		// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
+		// but other workers' next disk-load re-reads the stale value. The whole settings update is
+		// gated off for cluster-origin callers: their values come from this worker's (possibly
+		// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
+		const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
+		// primary key can't change indexing, but settings can change
+		if (
+			origin !== 'cluster' &&
+			(schemaDefinedMismatch ||
+				(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
+				(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
+				(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
+				(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
+				(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+				(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
+				(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
+				attribute.type !== attributeDescriptor.type)
+		) {
+			exclusiveLock();
+			const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
+			if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) return;
+			const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
+			if (typeof audit === 'boolean') {
+				if (audit) Table.enableAuditing();
+				updatedPrimaryAttribute.audit = audit;
+			}
+			if (expiration) updatedPrimaryAttribute.expiration = +expiration;
+			if (eviction) updatedPrimaryAttribute.eviction = +eviction;
+			if (replicaExpiration != null) {
+				replicaExpirationMsOf(replicaExpiration);
+				updatedPrimaryAttribute.replicaExpiration = replicaExpiration;
+			}
+			if (replicaRefreshFraction != null) {
+				replicaRefreshFractionOf(replicaRefreshFraction);
+				updatedPrimaryAttribute.replicaRefreshFraction = replicaRefreshFraction;
+			}
+			if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
+			if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
+			if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+			if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
+			hasChanges = true; // send out notification of the change
+			attributesDbi.put(dbiKey, updatedPrimaryAttribute);
+		}
 	}
 	// The catalog of a published table stays, but a class the registration never accepted is
 	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers
