@@ -98,6 +98,8 @@ describe('legacy SQL text', function () {
 			"SELECT {'k':1} AS [x`,ssn,`y] FROM dev.t",
 			'SELECT @`x,ssn` AS v FROM dev.t',
 			'SELECT $[x,ssn] AS v FROM dev.t',
+			'SELECT label->[x, ssn] AS v FROM dev.t',
+			'SELECT label![x, ssn] AS v FROM dev.t',
 		]) {
 			assertUnwritable(sql);
 		}
@@ -119,14 +121,20 @@ describe('legacy SQL text', function () {
 		assertUnwritable(`SELECT {'a':${'9'.repeat(400)}} AS v FROM dev.t`);
 	});
 
-	it('refuses a statement whose text reads a name the statement does not', function () {
-		assertUnwritable('SELECT label->[x, ssn] AS v FROM dev.t');
+	it('refuses a statement whose text reads a column the statement does not, or reads it more often', function () {
 		const writer = alasql.yy.StringValue.prototype.toString;
 		alasql.yy.StringValue.prototype.toString = function () {
 			return "'" + this.value + "'";
 		};
 		try {
 			assertUnwritable("SELECT 'x'', ssn, ''y' AS v FROM dev.t");
+			// `r` and `id` each appear elsewhere; `r.id` does not.
+			assertUnwritable(
+				"SELECT l.label, 'x'', r.id, ''y' AS v FROM dev.l AS l INNER JOIN dev.r AS r ON l.label = r.label WHERE l.id = 1"
+			);
+			assertUnwritable("UPDATE dev.t SET ssn = '1', label = CONCAT('x'', ssn, ''y') WHERE id = 1");
+			assertUnwritable("SELECT COUNT(*) AS c, 'x'', *, ''y' AS v FROM dev.t");
+			assertUnwritable("SELECT 'x''; SELECT ssn FROM dev.t; SELECT ''y' AS v FROM dev.t");
 		} finally {
 			alasql.yy.StringValue.prototype.toString = writer;
 		}

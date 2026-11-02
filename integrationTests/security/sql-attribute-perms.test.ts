@@ -277,6 +277,12 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 					else ok(n.status === 200 || n.status === 400, result);
 					ok(!JSON.stringify(n.body).includes('111'), result);
 				}
+
+				// Legacy writes the name after `->` unquoted; v2 has no `->`.
+				const member = `SELECT l.label->[x, r.id] AS v FROM data.ColPermLeft l JOIN data.ColPermRight r ON l.label = r.label WHERE l.id = 'l1'`;
+				const m = await asReader(member);
+				strictEqual(m.status, 400, `${member} -> ${m.status} ${JSON.stringify(m.body).slice(0, 300)}`);
+				ok(!JSON.stringify(m.body).includes(RIGHT_PK), JSON.stringify(m.body));
 			});
 
 			test('super user is unaffected', async () => {

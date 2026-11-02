@@ -13,7 +13,7 @@ const yy = (alasql as any).yy;
 
 // Harper writes names inside backticks, and AlaSQL inside brackets; neither can escape these.
 const UNQUOTABLE_NAME = /[`[\]']/;
-// AlaSQL writes `@variable` and `$param` with no quoting at all.
+// AlaSQL writes `@variable`, `$param` and the name after `->` or `!` with no quoting at all.
 const BARE_NAME = /^\w+$/;
 
 /**
@@ -122,12 +122,13 @@ export function installLegacySqlText() {
 }
 
 // What a statement reads or calls by name.
-const NAME_KEYS = ['columnid', 'tableid', 'databaseid', 'funcid', 'aggregatorid', 'variable', 'param'];
+const NAME_KEYS = ['databaseid', 'tableid', 'columnid', 'funcid', 'aggregatorid', 'variable', 'param'];
 
-function referencedNames(statement: any): Set<string> {
-	const names = new Set<string>();
+// How many times each node reads or calls each name; a column counts with its table, as one reference.
+function referenceCounts(statement: any): Map<string, number> {
+	const counts = new Map<string, number>();
 	for (const node of statementNodes(statement)) {
-		if (node instanceof yy.JavaScript) names.add(`javascript=${node.value}`);
+		const parts = node instanceof yy.JavaScript ? [`javascript=${node.value}`] : [];
 		for (const key of NAME_KEYS) {
 			if (!Object.hasOwn(node, key)) continue;
 			// `?` is param 0, written back as `$0`.
@@ -135,10 +136,13 @@ function referencedNames(statement: any): Set<string> {
 			if (typeof name !== 'string') continue;
 			if (name.length > 1 && name.startsWith('`') && name.endsWith('`')) name = name.slice(1, -1);
 			// AlaSQL writes function names upper-cased.
-			names.add(`${key}=${key === 'funcid' || key === 'aggregatorid' ? name.toUpperCase() : name}`);
+			parts.push(`${key}=${key === 'funcid' || key === 'aggregatorid' ? name.toUpperCase() : name}`);
 		}
+		if (parts.length === 0) continue;
+		const reference = parts.join('\u0000');
+		counts.set(reference, (counts.get(reference) ?? 0) + 1);
 	}
-	return names;
+	return counts;
 }
 
 // AST nodes, without the plain objects and arrays that are a JSON literal's data.
@@ -165,7 +169,8 @@ export function assertLegacySqlText(statement: any) {
 			throw unwritable('A string literal');
 		}
 		if (node instanceof yy.Json) jsonText(node.value);
-		for (const key of ['variable', 'param']) {
+		const bareKeys = node instanceof yy.Op && (node.op === '->' || node.op === '!') ? ['right'] : ['variable', 'param'];
+		for (const key of bareKeys) {
 			const value = node[key];
 			if (Object.hasOwn(node, key) && typeof value === 'string' && !BARE_NAME.test(value)) {
 				throw unwritable(`The name ${JSON.stringify(value)}`);
@@ -188,14 +193,15 @@ export function assertLegacySqlText(statement: any) {
 	// `SELECT *` for a role that may read no column leaves no columns, which does not parse.
 	if (written instanceof yy.Select && written.columns?.length === 0) written.columns = [new yy.NumValue({ value: 1 })];
 	backtickASTSchemaItems(written);
-	let reparsed: any;
+	let statements: any[];
 	try {
-		reparsed = (alasql as any).parse(written.toString()).statements[0];
+		statements = (alasql as any).parse(written.toString()).statements;
 	} catch {
 		throw unwritable('The statement');
 	}
-	const names = referencedNames(statement);
-	for (const name of referencedNames(reparsed)) {
-		if (!names.has(name)) throw unwritable('The statement');
+	if (statements.length !== 1) throw unwritable('The statement');
+	const authorized = referenceCounts(statement);
+	for (const [reference, count] of referenceCounts(statements[0])) {
+		if (count > (authorized.get(reference) ?? 0)) throw unwritable('The statement');
 	}
 }
