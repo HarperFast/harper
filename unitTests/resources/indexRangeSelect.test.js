@@ -645,14 +645,13 @@ describe('Secondary-index range select', function () {
 					rows(Reopened, { conditions: open, select: ['id', 'value'] })
 				);
 				// in index order: the array row once per matching element, the object row not at all (it is not
-				// indexed), the -0 row as LMDB's record path reads it, and on RocksDB, where record 5's -0 entry
-				// decodes to the twin's id, no row for that entry (the record path serves the twin there)
+				// indexed), and no row for record 5's -0 entry, whose value 0 fails the condition (on RocksDB that
+				// entry decodes to the twin's id, and the record path serves the twin there)
 				assert.deepStrictEqual(result, [
 					{ id: 1, value: 5 },
 					{ id: 3, value: 6 },
 					{ id: 2, value: 7 },
 					{ id: 3, value: 8 },
-					...(isLMDB ? [{ id: 5, value: 0 }] : []),
 					{ id: [null, 7], value: '\x18' },
 					// ids come back as the index decodes them: RocksDB's composite key drops one leading null here
 					{ id: isLMDB ? [null, null, null, 5] : [null, null, 5], value: 'x' },
@@ -663,8 +662,48 @@ describe('Secondary-index range select', function () {
 				);
 				// a null-led id under a '\x18' key is checked against its record, since -0 decodes that way on RocksDB
 				assert.equal(reads, isLMDB ? 1 : 2);
+				// LMDB keeps the -0 entry's primary key, so its row is served as 0 where 0 matches
+				const zero = await rows(Reopened, {
+					conditions: [{ attribute: 'value', comparator: 'ge', value: -1 }],
+					select: ['id', 'value'],
+				});
+				assert.deepStrictEqual(
+					zero.filter(({ id }) => id === 5),
+					isLMDB ? [{ id: 5, value: 0 }] : []
+				);
+				// a residual filter tests the value 0 the entry stands for, not its decoded bytes
+				const zeroIn = await rows(Reopened, {
+					conditions: [{ attribute: 'value', comparator: 'in', value: [0] }],
+					select: ['id', 'value'],
+				});
+				assert.deepStrictEqual(zeroIn, isLMDB ? [{ id: 5, value: 0 }] : []);
 			} finally {
 				Reopened.dropTable();
+			}
+		});
+
+		it("keeps a rejected entry from taking another entry's place in a declared array scan", async function () {
+			const Tags = table({
+				table: 'IndexRangeCoveredDedupeTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'tags', indexed: true, elements: { type: 'Any' } },
+				],
+			});
+			try {
+				await Tags.put(5, { tags: [-0] });
+				// RocksDB decodes record 5's -0 entry to this id
+				await Tags.put({ id: [null, null, null, null, 5], tags: ['z'] });
+				const query = { conditions: [{ attribute: 'tags', comparator: 'gt', value: 4 }] };
+				// the -0 entry stands for 0, which fails the condition, so it is rejected before the dedupe and the
+				// 'z' entry survives; the id comes back as the index decodes it (one leading null dropped)
+				assert.deepStrictEqual(await rows(Tags, { ...query, select: ['id'] }), [{ id: [null, null, null, 5] }]);
+				assert.deepStrictEqual(await rows(Tags, { ...query, select: ['id', 'tags'] }), [
+					{ id: [null, null, null, 5], tags: 'z' },
+				]);
+			} finally {
+				Tags.dropTable();
 			}
 		});
 

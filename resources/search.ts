@@ -924,44 +924,100 @@ interface CoveredSelect {
 	recordRead?: () => void;
 }
 
-// resources/DESIGN.md, Per-row read work on RocksDB index scans
-function coverIndexEntries(
-	entries: any,
+// resources/DESIGN.md, Per-row read work on RocksDB index scans: an entry's admission, and the stored value
+// of one whose key cannot give it, are settled before distinctRecords collapses a record onto one entry
+function admitCoveredEntries(
+	range: any,
 	Table: any,
-	scannedAttribute: string,
+	searchCondition: any,
+	attributeName: string,
 	coverAttribute: boolean,
-	covered: CoveredSelect,
+	filter: ((record: any) => boolean) | undefined,
+	sorting: boolean,
+	filtered: any,
 	transaction: any
 ) {
-	const primaryKeyName = Table.primaryKey;
-	const decodePrimaryKey = declaredTypeDecoder(findAttribute(Table.attributes, primaryKeyName));
-	const decodeValue = coverAttribute && declaredTypeDecoder(findAttribute(Table.attributes, scannedAttribute));
-	const recordRead = covered.recordRead;
-	const project = (entry, primaryKey, value) => {
-		recordRead?.();
-		const id = decodePrimaryKey ? decodePrimaryKey(primaryKey) : primaryKey;
-		entry.key = id;
-		entry.value = coverAttribute ? { [primaryKeyName]: id, [scannedAttribute]: value } : { [primaryKeyName]: id };
-		return entry;
+	let condition = filter;
+	const matches = (record: any) => (condition ??= filterByType(searchCondition, Table, null, filtered, false))(record);
+	const recover = (entry, record) => {
+		entry.recovered =
+			typeof entry.key === 'object'
+				? matches({ [attributeName]: 0 })
+					? 0
+					: undefined
+				: record && overflowedValue(record[attributeName], entry.key, attributeName, matches);
+		return entry.recovered === undefined ? SKIP : entry;
 	};
-	return entries.map(function (entry) {
+	const admitExceptional = (sync: boolean, entry, corrupt: boolean) => {
+		const read = () =>
+			recover(entry, corrupt ? undefined : Table.primaryStore.getEntry(entry.value, { transaction })?.value);
+		if (sync || (corrupt && !filter)) return read();
+		if (!filter)
+			return when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
+				recover(entry, loaded?.value)
+			);
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(read());
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	};
+	return range.map(function (entry) {
 		const { key, value: primaryKey } = entry;
 		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB (whose record stores 0), and on
 		// RocksDB as key '\x18' with a null-led primary key that a real [null, …] id can also produce
-		if (typeof key === 'object' && key !== null) return project(entry, primaryKey, 0);
-		const confirm = key === '\x18' && primaryKey?.[0] === null;
-		const overflow = typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH;
-		if (!confirm && !(overflow && coverAttribute))
-			return project(entry, primaryKey, decodeValue ? decodeValue(key) : key);
-		if (overflow && entry.overflowed !== undefined) return project(entry, primaryKey, entry.overflowed);
-		const fromRecord = (record) => {
-			const value = record && overflowedValue(record[scannedAttribute], key, scannedAttribute);
-			return value === undefined ? SKIP : project(entry, primaryKey, value);
-		};
-		const loaded = Table.primaryStore.getEntry(primaryKey, { transaction, async: !this?.isSync });
-		return typeof loaded?.then === 'function'
-			? loaded.then((loaded) => fromRecord(loaded?.value))
-			: fromRecord(loaded?.value);
+		const corrupt = typeof key === 'object' && key !== null;
+		if (
+			corrupt ||
+			(key === '\x18' && primaryKey?.[0] === null) ||
+			(typeof key === 'string' &&
+				key.length > MAX_SEARCH_KEY_LENGTH &&
+				!sorting &&
+				(coverAttribute || filter !== undefined))
+		)
+			return admitExceptional(this?.isSync, entry, corrupt);
+		if (!filter) return entry;
+		if (this?.isSync) return filter({ [attributeName]: key }) ? entry : SKIP;
+		// for filter operations, we intentionally yield the event turn so that scanning queries do not hog resources
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(filter({ [attributeName]: key }) ? entry : SKIP);
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	});
+}
+
+function coverIndexEntries(
+	entries: any,
+	Table: any,
+	attributeName: string,
+	coverAttribute: boolean,
+	covered: CoveredSelect
+) {
+	const primaryKeyName = Table.primaryKey;
+	const decodePrimaryKey = declaredTypeDecoder(findAttribute(Table.attributes, primaryKeyName));
+	const decodeValue = coverAttribute && declaredTypeDecoder(findAttribute(Table.attributes, attributeName));
+	const recordRead = covered.recordRead;
+	return entries.map((entry) => {
+		const { key, value: primaryKey, recovered } = entry;
+		recordRead?.();
+		const id = decodePrimaryKey ? decodePrimaryKey(primaryKey) : primaryKey;
+		entry.key = id;
+		entry.value = coverAttribute
+			? {
+					[primaryKeyName]: id,
+					[attributeName]: recovered !== undefined ? recovered : decodeValue ? decodeValue(key) : key,
+				}
+			: { [primaryKeyName]: id };
+		return entry;
 	});
 }
 
@@ -1475,41 +1531,41 @@ export function searchByIndex(
 		}
 		const coverAttribute = covered?.attribute === attribute_name;
 		const coverEntries = coverAttribute || (covered !== undefined && covered.attribute === Table.primaryKey);
-		// a covered overflow entry stands for the one stored value it indexes, so it matches only through that value
-		const entryMatches = (entry, recordMatcher, overflowEntry: boolean) => {
-			if (!overflowEntry) return filter(recordMatcher);
-			entry.overflowed =
-				recordMatcher && overflowedValue(recordMatcher[attribute_name], entry.key, attribute_name, filter);
-			return entry.overflowed !== undefined;
-		};
-		const range = index.getRange(rangeOptions);
-		const scanned = filter
-			? range.map(function (entry) {
-					const { key, value } = entry;
-					const matched = coverEntries ? entry : value;
-					let recordMatcher: any;
-					let overflowEntry = false;
-					if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH && resolvedComparator !== 'sort') {
-						// if it is an overflow string, need to get the actual value from the database (a sort matches every entry)
-						recordMatcher = Table.primaryStore.getEntry(value, { transaction })?.value;
-						overflowEntry = coverEntries;
-					} else recordMatcher = { [attribute_name]: key };
-					if (this.isSync) return entryMatches(entry, recordMatcher, overflowEntry) ? matched : SKIP;
-					// for filter operations, we intentionally yield the event turn so that scanning queries
-					// do not hog resources
-					return new Promise((resolve, reject) =>
-						setImmediate(() => {
-							try {
-								resolve(entryMatches(entry, recordMatcher, overflowEntry) ? matched : SKIP);
-							} catch (error) {
-								reject(error);
+		const scanned = coverEntries
+			? admitCoveredEntries(
+					index.getRange(rangeOptions),
+					Table,
+					searchCondition,
+					attribute_name,
+					coverAttribute,
+					filter,
+					resolvedComparator === 'sort',
+					filtered,
+					transaction
+				)
+			: index.getRange(rangeOptions).map(
+					filter
+						? function ({ key, value }) {
+								let recordMatcher: any;
+								if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
+									// if it is an overflow string, need to get the actual value from the database
+									recordMatcher = Table.primaryStore.getSync(value);
+								} else recordMatcher = { [attribute_name]: key };
+								if (this.isSync) return filter(recordMatcher) ? value : SKIP;
+								// for filter operations, we intentionally yield the event turn so that scanning queries
+								// do not hog resources
+								return new Promise((resolve, reject) =>
+									setImmediate(() => {
+										try {
+											resolve(filter(recordMatcher) ? value : SKIP);
+										} catch (error) {
+											reject(error);
+										}
+									})
+								);
 							}
-						})
-					);
-				})
-			: coverEntries
-				? range
-				: range.map(({ value }) => value);
+						: ({ value }) => value
+				);
 		// Collapsing AFTER the map is required, not incidental: the condition's own filter tests one
 		// element at a time, so a record whose first entry fails it and whose second passes must
 		// still be reached. Collapsing first would settle that record on the failing entry and drop
@@ -1519,9 +1575,7 @@ export function searchByIndex(
 			scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
 				? scanned
 				: distinctRecords(scanned, coverEntries ? (entry) => entry.value : undefined);
-		return coverEntries
-			? coverIndexEntries(distinct, Table, attribute_name, coverAttribute, covered, transaction)
-			: distinct;
+		return coverEntries ? coverIndexEntries(distinct, Table, attribute_name, coverAttribute, covered) : distinct;
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
