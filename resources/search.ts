@@ -2113,7 +2113,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			return recordFilter;
 		}
 	}
-	if (value instanceof Date) value = value.getTime();
+	const dateValue = value instanceof Date;
+	if (dateValue) value = value.getTime();
 
 	let baseFilter;
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
@@ -2240,7 +2241,9 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			} else
 				baseFilter = attributeComparator(
 					attribute,
-					(recordValue) => compareKeys(asIndexKey(recordValue) ?? null, value) !== 0,
+					dateValue
+						? (recordValue) => compareKeys(dateAsIndexKey(recordValue) ?? null, value) !== 0
+						: (recordValue) => compareKeys(recordValue ?? null, value) !== 0,
 					false,
 					true
 				);
@@ -2446,11 +2449,14 @@ function relationshipScanRuns(table, path: any[], offset: number, comparator, va
 }
 // `ne` compares the whole value, so a Date, alone or in an array, becomes the epoch number its index key and the
 // condition value hold
-function asIndexKey(value) {
+function dateAsIndexKey(value) {
 	if (value instanceof Date) return value.getTime();
-	if (Array.isArray(value) && value.some((element) => element instanceof Date))
-		return value.map((element) => (element instanceof Date ? element.getTime() : element));
-	return value;
+	if (!Array.isArray(value)) return value;
+	let converted;
+	for (let i = 0; i < value.length; i++) {
+		if (value[i] instanceof Date) (converted ??= value.slice())[i] = value[i].getTime();
+	}
+	return converted ?? value;
 }
 
 /**

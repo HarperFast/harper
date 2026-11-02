@@ -1,6 +1,4 @@
-/**
- * harper#3731, harper#3400. `b` is indexed and `u` is an unindexed copy of it, so every search path sees the same values.
- */
+// harper#3731, harper#3400
 
 require('../testUtils');
 const assert = require('node:assert');
@@ -155,7 +153,6 @@ describe('null and omitted values match the same way on every search path', func
 		it('applies the next sort key under a primary-store lead', async () => {
 			const conditions = [condition('g', 'ne', 7)];
 			const sort = { attribute: 'g', next: { attribute: 'b', descending: true } };
-			// g alternates 0/1 in ROWS order: g 0 holds b 0, 5 and null; g 1 holds b 1, -2 and the omitted one
 			assert.deepStrictEqual(sortKeys(await ids({ conditions, sort })), [5, 0, 'none', 1, -2, 'none']);
 		});
 
@@ -250,7 +247,6 @@ describe('null and omitted values match the same way on every search path', func
 			);
 		}
 
-		// three-valued logic: no row matches `<>` with a null or omitted value, or any range against NULL
 		for (const [operator, value, expected] of [
 			['<>', 0, ['v1', 'v5', 'vneg']],
 			['<', 3, ['v0', 'v1', 'vneg']],
