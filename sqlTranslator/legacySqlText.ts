@@ -75,6 +75,13 @@ function numberText(value: number): string {
 	return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
 }
 
+/** A generated result name AlaSQL reads as one name: in brackets, or in double quotes when it holds `]`. */
+export function generatedName(name: string): string {
+	if (!name.includes(']')) return `[${name}]`;
+	if (!name.includes('"')) return `"${name}"`;
+	throw unwritable(`The name ${JSON.stringify(name)}`);
+}
+
 function unwritable(what: string) {
 	return new ClientError(
 		`${what} cannot be written back to SQL text for the legacy SQL engine. Remove the quotes, backticks, brackets or backslashes, or use the new SQL engine.`

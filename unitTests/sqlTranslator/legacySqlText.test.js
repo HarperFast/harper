@@ -7,7 +7,12 @@
 const assert = require('assert');
 const alasql = require('alasql');
 
-const { assertLegacySqlText, installLegacySqlText, quoteString } = require('#src/sqlTranslator/legacySqlText');
+const {
+	assertLegacySqlText,
+	generatedName,
+	installLegacySqlText,
+	quoteString,
+} = require('#src/sqlTranslator/legacySqlText');
 const { backtickASTSchemaItems } = require('#src/utility/common_utils');
 
 installLegacySqlText();
@@ -172,6 +177,21 @@ describe('legacy SQL text', function () {
 		assert.strictEqual(insert.into.tableid, 't');
 		assert.strictEqual(insert.columns[0].columnid, 'id');
 		assert.ok(!Object.hasOwn(insert.into, 'tableid_orig'));
+	});
+
+	it('writes a generated result name as one name', function () {
+		assert.strictEqual(generatedName('r.id'), '[r.id]');
+		assert.strictEqual(generatedName('x", r.id, "y.id'), '[x", r.id, "y.id]');
+		assert.strictEqual(generatedName('r.key]part'), '"r.key]part"');
+		assert.throws(
+			() => generatedName('x"y.key]part'),
+			(err) => err.statusCode === 400
+		);
+		for (const name of ['r.id', 'x", r.id, "y.id', 'r.key]part']) {
+			const columns = parse(`SELECT t.a AS ${generatedName(name)} FROM dev.t AS t`).columns;
+			assert.strictEqual(columns.length, 1, name);
+			assert.strictEqual(columns[0].as, name, name);
+		}
 	});
 
 	it('leaves the statement as it was when writing it throws', function () {
