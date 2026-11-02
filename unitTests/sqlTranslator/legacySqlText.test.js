@@ -5,12 +5,8 @@
  */
 
 const assert = require('assert');
-const sinon = require('sinon');
 const alasql = require('alasql');
 
-const sqlTranslator = require('#js/sqlTranslator/index');
-const opAuth = require('#src/utility/operation_authorization');
-const sqlEngineRouter = require('#src/sqlEngine/router');
 const { assertLegacySqlText, installLegacySqlText, quoteString } = require('#src/sqlTranslator/legacySqlText');
 const { backtickASTSchemaItems } = require('#src/utility/common_utils');
 
@@ -73,6 +69,8 @@ describe('legacy SQL text', function () {
 			`{'x",ssn,"y':1}`,
 			`{"k":'a"b', "n":@[1,'x''y',{"z":id}], "o":@{"p":'q'}}`,
 			`@['x'', ssn, ''y']`,
+			`{'a"", ssn, ""b':1}`,
+			`{'a"", ssn, ""b''c':1}`,
 		]) {
 			const before = parse(`SELECT ${json} AS v FROM dev.t`).columns;
 			const after = reparsed(`SELECT ${json} AS v FROM dev.t`).columns;
@@ -81,13 +79,18 @@ describe('legacy SQL text', function () {
 		}
 	});
 
-	it('refuses a name that backticks or brackets cannot hold', function () {
+	it('refuses a name that backticks, brackets or a bare name cannot hold', function () {
 		for (const sql of [
 			'SELECT [x`,ssn,`y] FROM dev.t',
 			'SELECT `x],ssn,[y` FROM dev.t',
 			'SELECT label AS [x`,ssn,`y] FROM dev.t',
 			'SELECT label AS `[x` FROM dev.t',
 			"SELECT label FROM dev.t WHERE [x`,ssn,`y] = 'a'",
+			"SELECT 'x' AS [x`,ssn,`y] FROM dev.t",
+			"SELECT 'x' AS `x],ssn,[y` FROM dev.t",
+			"SELECT {'k':1} AS [x`,ssn,`y] FROM dev.t",
+			'SELECT @`x,ssn` AS v FROM dev.t',
+			'SELECT $[x,ssn] AS v FROM dev.t',
 		]) {
 			assertUnwritable(sql);
 		}
@@ -103,22 +106,11 @@ describe('legacy SQL text', function () {
 			"SELECT d.name, COUNT(*) AS c FROM dev.t AS d INNER JOIN dev.u AS u ON d.id = u.tid WHERE d.x LIKE 'a%' GROUP BY d.name",
 			"UPDATE dev.t SET label = CONCAT('a', id), meta = {'k':@[1,2]} WHERE id IN (1, 2) AND name IS NOT NULL",
 			"DELETE FROM dev.t WHERE [first name] = 'O''Brien'",
+			'SELECT DISTINCT lower(a) AS l FROM dev.t WHERE EXISTS (SELECT 1 FROM dev.u WHERE u.id = t.id) ORDER BY l DESC LIMIT 2',
+			"SELECT CASE WHEN a = 1 THEN 'x' ELSE 'y' END AS c, CAST(b AS INT) AS n FROM dev.t WHERE b NOT IN (1, 2)",
+			'SELECT @x AS v, $1 AS w, ? AS z FROM dev.t',
 		]) {
 			assertLegacySqlText(parse(sql));
 		}
-	});
-
-	describe('engine routing', function () {
-		const sandbox = sinon.createSandbox();
-		afterEach(() => sandbox.restore());
-
-		it('refuses an unwritable statement on the legacy path before it runs', async function () {
-			sandbox.stub(opAuth, 'verifyPermsAST').returns(null);
-			sandbox.stub(sqlEngineRouter, 'route').callsFake((opts, cb) => opts.legacy(opts.statement, cb));
-			const err = await new Promise((resolve) =>
-				sqlTranslator.evaluateSQL({ sql: 'SELECT [x`,ssn,`y] FROM dev.dog', hdb_user: { username: 'u' } }, resolve)
-			);
-			assert.strictEqual(err?.statusCode, 400);
-		});
 	});
 });

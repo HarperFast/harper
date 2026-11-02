@@ -265,11 +265,16 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 						.expect(200);
 				}
 
-				// Legacy SQL cannot write this name back out and refuses it; v2 reads it as one name.
-				const name = "SELECT label AS [x`,ssn,`y] FROM data.ColPermLeft WHERE id = 'l1'";
-				const n = await asReader(name);
-				ok(n.status === 200 || n.status === 400, `${name} -> ${n.status} ${JSON.stringify(n.body).slice(0, 300)}`);
-				ok(!JSON.stringify(n.body).includes('111'), 'the response must not carry the read-denied value');
+				// Legacy SQL cannot write these names back out and refuses them; v2 reads each as one name.
+				for (const name of [
+					"SELECT label AS [x`,ssn,`y] FROM data.ColPermLeft WHERE id = 'l1'",
+					"SELECT 'x' AS [x`,ssn,`y] FROM data.ColPermLeft WHERE id = 'l1'",
+				]) {
+					const n = await asReader(name);
+					const result = `${name} -> ${n.status} ${JSON.stringify(n.body).slice(0, 300)}`;
+					if (sqlEngine === 'legacy') strictEqual(n.status, 400, result);
+					ok(!JSON.stringify(n.body).includes('111'), result);
+				}
 			});
 
 			test('super user is unaffected', async () => {

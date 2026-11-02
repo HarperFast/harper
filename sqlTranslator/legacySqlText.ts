@@ -1,18 +1,18 @@
 /**
  * Legacy SQL authorizes the parsed statement but runs AlaSQL's re-parse of its `toString()` text, so that text
- * must parse back to the same statement. AlaSQL writes string and JSON literals without escaping, and
- * identifiers inside backticks or brackets that cannot hold every character. The serializers below quote
- * literals so they decode to the same value, and `assertLegacySqlText` refuses whatever cannot be written.
+ * must keep every literal a literal and every name one name. AlaSQL writes string and JSON literals without
+ * escaping.
  */
 import alasql from 'alasql';
-import { handleHDBError } from '../utility/errors/hdbError.ts';
-import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { astNodes } from './sql_statement_bucket.ts';
 
 const yy = (alasql as any).yy;
 
 // Harper writes names inside backticks, and AlaSQL inside brackets; neither can escape these.
 const UNQUOTABLE_NAME = /[`[\]']/;
+// AlaSQL writes `@variable` and `$param` with no quoting at all.
+const BARE_NAME = /^\w+$/;
 
 /**
  * Single-quoted text that AlaSQL decodes back to `value`, or undefined when there is none. AlaSQL lexes a
@@ -61,10 +61,8 @@ function lexesInside(body: string, quote: string): boolean {
 }
 
 function unwritable(what: string) {
-	return handleHDBError(
-		new Error(),
-		`${what} cannot be written back to SQL text for the legacy SQL engine. Remove the quotes, backticks, brackets or backslashes, or use the new SQL engine.`,
-		HTTP_STATUS_CODES.BAD_REQUEST
+	return new ClientError(
+		`${what} cannot be written back to SQL text for the legacy SQL engine. Remove the quotes, backticks, brackets or backslashes, or use the new SQL engine.`
 	);
 }
 
@@ -103,31 +101,44 @@ export function installLegacySqlText() {
 	};
 }
 
-/** Throws a 400 for a statement whose SQL text would not parse back to it. */
-export function assertLegacySqlText(statement: any) {
+// AST nodes, without the plain objects and arrays that are a JSON literal's data.
+function* statementNodes(statement: any): Generator<any> {
 	const literalData = new Set();
 	for (const node of astNodes(statement)) {
 		if (literalData.has(node)) continue;
-		if (node instanceof yy.StringValue) {
-			if (quoteString(String(node.value)) === undefined) throw unwritable('A string literal');
-			continue;
+		yield node;
+		if (!(node instanceof yy.Json)) continue;
+		const pending = [node.value];
+		while (pending.length > 0) {
+			const value = pending.pop();
+			if (value === null || typeof value !== 'object' || literalData.has(value) || !isJsonData(value)) continue;
+			literalData.add(value);
+			for (const child of Object.values(value)) pending.push(child);
 		}
-		if (node instanceof yy.Json) {
-			jsonText(node.value);
-			const pending = [node.value];
-			while (pending.length > 0) {
-				const value = pending.pop();
-				if (value === null || typeof value !== 'object' || literalData.has(value) || !isJsonData(value)) continue;
-				literalData.add(value);
-				pending.push(...Object.values(value));
+	}
+}
+
+/** Throws a 400 for a statement whose SQL text would not parse back to what it reads. */
+export function assertLegacySqlText(statement: any) {
+	for (const node of statementNodes(statement)) {
+		if (node instanceof yy.StringValue && quoteString(String(node.value)) === undefined) {
+			throw unwritable('A string literal');
+		}
+		if (node instanceof yy.Json) jsonText(node.value);
+		for (const key of ['variable', 'param']) {
+			const value = node[key];
+			if (Object.hasOwn(node, key) && typeof value === 'string' && !BARE_NAME.test(value)) {
+				throw unwritable(`The name ${JSON.stringify(value)}`);
 			}
-			continue;
 		}
-		// Its text is written verbatim by design.
-		if (node instanceof yy.JavaScript) continue;
 		for (const key in node) {
 			const value = node[key];
-			if (Object.hasOwn(node, key) && typeof value === 'string' && UNQUOTABLE_NAME.test(value)) {
+			if (
+				Object.hasOwn(node, key) &&
+				typeof value === 'string' &&
+				UNQUOTABLE_NAME.test(value) &&
+				!(key === 'value' && (node instanceof yy.StringValue || node instanceof yy.JavaScript))
+			) {
 				throw unwritable(`The name ${JSON.stringify(value)}`);
 			}
 		}
