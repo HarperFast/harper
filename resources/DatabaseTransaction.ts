@@ -1625,8 +1625,6 @@ export class DatabaseTransaction implements Transaction {
 			if (relog) {
 				(transaction as any).logEntries = undefined;
 				(transaction as any).pendingStructureWatermarks = undefined;
-				// no entry references them until the retry stages one again
-				for (const write of this.writes) if (write?.appendedTo === transaction) write.blobsAuditReferenced = false;
 				this.rekeyRefusedRetry(transaction);
 			}
 		}
@@ -1650,7 +1648,6 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	private mustRetryLoggedCommit(transaction: RocksTransaction, error?: { hasLog?: boolean }): boolean {
 		if (!abortMarkersEnabled()) return hasDurableLog(transaction, error);
-		// whether or not this attempt wrote its batch: a link refused before the write still must land
 		return (
 			(Boolean(this.root) || this.rotatedAfterCommit) &&
 			(error?.hasLog === true || Boolean((transaction as RocksTransactionWithRetry).hasStagedLog))

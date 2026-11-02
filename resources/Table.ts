@@ -6202,10 +6202,9 @@ export function makeTable(options): TableResourceClass {
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard. Never when this write may read its own orphan
-							// (`mayReadOwnOrphan`): the lookup would find it and skip the write as "already applied" when
-							// the record was never committed. A recommit of the same transaction survived that skip only
-							// because the old write batch still carried the put; a fresh-transaction replay would drop it.
+							// check above remains the read-your-writes guard. Not when `mayReadOwnOrphan`: a recommit of the
+							// same transaction survived skipping its own orphan only because the old write batch still carried
+							// the put; a fresh-transaction replay would drop it.
 							// For a write whose identity is not its key this finds an entry keyed at its explicit value: one
 							// written before every local key was minted, or one whose minted key equals it. A hit still needs
 							// both stored clocks to match.

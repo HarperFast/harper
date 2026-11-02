@@ -17,8 +17,7 @@ const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().cons
 // awaited transaction() promise on both native conflict-signaling paths (ERR_BUSY/ERR_TRY_AGAIN
 // rejection, and the coordinatedRetry RETRY_NOW sentinel), (b) does so after exactly
 // MAX_RETRIES + 1 attempts, and (c) never leaks an unhandled rejection. The forced conflicts never reach
-// RocksDB, so they run with abort markers off, where every retry counts; abortMarkersAdoption.test.js
-// covers the cap with markers on.
+// RocksDB, so they run with abort markers off, where every retry counts.
 describe('request-path commit retry exhaustion rejects the awaited chain', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const MAX_RETRIES = 40; // mirrors resources/DatabaseTransaction.ts
