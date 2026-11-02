@@ -184,7 +184,6 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			target ??= this.id;
 			if (this.id !== target) return originalCommit.apply(this, args);
 			keys.push(this.getTimestamp());
-			console.log('refused', keys.length, this.isRetry, this.relogOnRetry, this.retries, this.commitConflicts);
 			this.lastConflictKind = () => ConflictKind.intentBeforeLog;
 			this.logWritten = () => false;
 			await delay(5);
@@ -343,21 +342,23 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 	}
 
 	describe('history certification', function () {
-		it('certifies a database created with markers on, and not one opened with markers off', function () {
-			assert.equal(auditHistoryAbortMarked(Audited.auditStore), true);
+		it('trusts a log only once the files that predate this process are purged', async function () {
+			const store = Audited.auditStore;
+			const prior = store.abortMarkedHistory;
+			restores.push(() => (store.abortMarkedHistory = prior));
+			assert.equal(auditHistoryAbortMarked(store, undefined), true, 'a log created in this process');
+			establishAbortMarkedHistory(store); // as a restart would
+			const local = store.rootStore.useLog('local').getStats();
+			assert.equal(store.abortMarkedHistory.baseline.get('local'), local.currentSequenceNumber);
+			assert.equal(auditHistoryAbortMarked(store, undefined), false, 'earlier files may hold unmarked orphans');
 			const priorMarkers = setAbortMarkersForTests(false);
 			try {
-				establishAbortMarkedHistory(Audited.auditStore);
-				assert.equal(auditHistoryAbortMarked(Audited.auditStore), false);
+				establishAbortMarkedHistory(store);
+				assert.equal(store.abortMarkedHistory, undefined);
+				assert.equal(auditHistoryAbortMarked(store, undefined), false);
 			} finally {
 				setAbortMarkersForTests(priorMarkers ?? true);
 			}
-			// the markers-off open forgot every log, so each must outlive its current file
-			establishAbortMarkedHistory(Audited.auditStore);
-			const history = Audited.auditStore.abortMarkedHistory;
-			const rootStore = Audited.auditStore.rootStore;
-			assert.equal(history.logs.local, rootStore.useLog('local').getStats().currentSequenceNumber);
-			assert.equal(auditHistoryAbortMarked(Audited.auditStore), false);
 		});
 	});
 });

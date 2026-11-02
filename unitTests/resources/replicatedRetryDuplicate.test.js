@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
-const { raiseAuditFloor } = require('#src/resources/auditStore');
+const { auditHistoryAbortMarked, establishAbortMarkedHistory, raiseAuditFloor } = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const {
 	createBlob,
@@ -656,10 +656,9 @@ for (const markers of [true, false])
 			}
 			assert.ok(T.auditStore.get(version, T.tableId, 'counter', originId), 'the markers-off abort leaves an orphan');
 			assert.equal((await T.get('counter')).count, 10);
-			const rootStore = T.auditStore.rootStore;
-			const logs = {};
-			for (const name of rootStore.listLogs()) logs[name] = rootStore.useLog(name).getStats().currentSequenceNumber;
-			T.auditStore.abortMarkedHistory = { logs, certified: false, checkedAt: -Infinity };
+			// a restart: the files the earlier run wrote predate this process's markers
+			establishAbortMarkedHistory(T.auditStore);
+			assert.equal(auditHistoryAbortMarked(T.auditStore, originId), false);
 			const { write } = await conflict(state, add(1), { version }, { version: version + 1 }, add(100));
 			assert.deepEqual(
 				{ skipped: write.skipped, count: (await T.get('counter')).count },

@@ -1,6 +1,8 @@
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { getEnvironmentData, isMainThread, setEnvironmentData } from 'node:worker_threads';
 
-let latched: boolean | undefined;
+const LATCH_KEY = 'harper.transactionLogAbortMarkers';
+let latched = getEnvironmentData(LATCH_KEY) as boolean | undefined;
 
 /** `storage.rocks.transactionLogAbortMarkers`: on unless configured false. */
 export function resolveAbortMarkersSetting(configured: unknown): boolean {
@@ -10,14 +12,17 @@ export function resolveAbortMarkersSetting(configured: unknown): boolean {
 }
 
 /**
- * The value every RocksDB `config()` call passes. Latched at the first call: the native setting is
- * process-global, so every worker resolves the same startup config, and a later change needs a restart.
+ * The value every RocksDB `config()` call passes. The native setting is process-global, so the main
+ * thread's first resolution is handed to every worker it starts; a later change needs a restart.
  */
 export function latchAbortMarkers(configured: unknown): boolean {
-	return (latched ??= resolveAbortMarkersSetting(configured));
+	if (latched === undefined) {
+		latched = resolveAbortMarkersSetting(configured);
+		if (isMainThread) setEnvironmentData(LATCH_KEY, latched);
+	}
+	return latched;
 }
 
-/** Whether rocksdb-js marks an aborted transaction's log batch, so committed readers skip it. */
 export function abortMarkersEnabled(): boolean {
 	return latched === true;
 }

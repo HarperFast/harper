@@ -1057,6 +1057,8 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
+	// this scope reopened after a mid-scope commit, which already landed some of its writes
+	rotatedAfterCommit = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
 	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
 	// commit, so this is core's own I/O rather than an application holding a transaction open, which is
@@ -1648,7 +1650,9 @@ export class DatabaseTransaction implements Transaction {
 	 * committed, so giving up would land the transaction in part.
 	 */
 	private mustRetryLoggedCommit(transaction: RocksTransaction, error?: { hasLog?: boolean }): boolean {
-		return hasDurableLog(transaction, error) && (!abortMarkersEnabled() || Boolean(this.root) || this.snapshotFree);
+		return (
+			hasDurableLog(transaction, error) && (!abortMarkersEnabled() || Boolean(this.root) || this.rotatedAfterCommit)
+		);
 	}
 
 	private getHandleStagedTxnTime(txn?: RocksTransaction | null): number | undefined {
@@ -3814,6 +3818,7 @@ export class DatabaseTransaction implements Transaction {
 			return;
 		this.open = TRANSACTION_STATE.OPEN;
 		this.snapshotFree = true;
+		this.rotatedAfterCommit = true;
 		this.writesAbandoned = false;
 		if (this.#context && (this.#context.transaction === this || this.#context.transaction === RELEASED_TRANSACTION)) {
 			this.#context.transaction = this;
@@ -4037,14 +4042,15 @@ export class DatabaseTransaction implements Transaction {
 			);
 		}
 		this.abortChainAfterRetries(headTransaction);
+		// an abort rocksdb-js could not mark leaves the batch for crash replay to apply, so the outcome is unknown
 		throw new TransactionCommitConflictTimeoutError(
 			`Commit was in conflict with ongoing writes for ${elapsed}ms, exceeding the ${budget}ms limit; transaction abandoned after ${retries} retries`,
-			retryable
+			retryable && abortedWithoutLog(headTransaction)
 		);
 	}
 
 	/**
-	 * A durably logged commit past its conflict budget cannot be aborted; release its deferred
+	 * A logged commit past its conflict budget that must not be aborted (`mustRetryLoggedCommit`); release its deferred
 	 * record-lock holds (`holdBudgetSpent` prevents re-retaining them) and log once per chain/cooldown.
 	 */
 	private noteOverdueLoggedCommit(headTransaction: RocksTransaction, elapsedMs: number): void {

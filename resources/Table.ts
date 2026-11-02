@@ -5910,10 +5910,12 @@ export function makeTable(options): TableResourceClass {
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					// Only an entry appended with abort markers off can be this write's own orphan: with markers a
-					// committed reader skips an aborted batch and stops before an unresolved one. Until the
-					// audit store's retained history is all marker-era, another write's orphan can still match.
+					// committed reader skips an aborted batch and stops before an unresolved one. Until the log
+					// holding this write's identity is all marker-era, another attempt's orphan can still match it,
+					// which a first attempt that ran in order never looked up.
 					const mayReadOwnOrphan =
-						stagedOwnAuditEntry && (write.appendedUnmarkedAuditEntry === true || !auditHistoryAbortMarked(auditStore));
+						stagedOwnAuditEntry &&
+						(write.appendedUnmarkedAuditEntry === true || !auditHistoryAbortMarked(auditStore, options?.nodeId));
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.completeResidencyRecord = undefined;
