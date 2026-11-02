@@ -3791,10 +3791,11 @@ export class DatabaseTransaction implements Transaction {
 	 * rollback of the rotated head — the cross-store leftover this rotation exists to prevent. Every
 	 * commit path must run this, and none may do one half without the other.
 	 */
-	/** Both scope flags leave together, so no exit can clear one and keep the other. */
+	/** The scope flags leave together, so no exit can clear one and keep another. */
 	protected endScopeOwnership(): void {
 		this.#scopeOwned = false;
 		this.snapshotFree = false;
+		this.rotatedAfterCommit = false;
 	}
 
 	private completeMidScopeCommit(options: CommitOptions, committedTransaction?: RocksTransaction | null): void {
