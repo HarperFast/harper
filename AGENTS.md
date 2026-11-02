@@ -140,7 +140,15 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ## Detailed navigation
 
-For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
+Find code by symbol instead of reading files top-to-bottom:
+
+- **Symbols:** `npm run outline -- <file|dir>` prints a file's nested declarations (classes, functions, methods, and the declarations inside factories such as `makeTable()`) and its `// #section:` markers, with line ranges; `npm run outline -- resources/Table.ts` takes under a second. In Claude sessions the LSP tool's document and workspace symbol lookups do the same.
+- **Concepts:** a directory's `MAP.md` points each file and each question a reader brings at the symbols that answer it. Claude Code loads it through that directory's `CLAUDE.md`; Codex and Gemini do not, so read the directory's map from the list below before its source.
+- **Invariants:** the directory's `DESIGN.md`, indexed from [DESIGN.md](DESIGN.md): why the code is the way it is, kept within the byte budgets that file sets.
+
+Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked here): none yet.
+
+For megafiles and complex subsystems, the design notes to read first:
 
 | If you are touching…                                   | Read first                                                 |
 | ------------------------------------------------------ | ---------------------------------------------------------- |

@@ -62,6 +62,7 @@
 		"lint:required": "oxlint --format stylish --quiet .",
 		"check:design-docs": "node build-tools/check-design-docs.mjs",
 		"check:unit-partition": "node build-tools/check-unit-partition.mjs",
+		"outline": "node build-tools/outline.mjs",
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
