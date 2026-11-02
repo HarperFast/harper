@@ -10970,7 +10970,6 @@ export function makeTable(options): TableResourceClass {
 			primaryStore.encoder.resolvedAttributeNamesList = resolvedAttributeNames;
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
-		/** Pool workers lack any hook only application code installs. */
 		static requiresApplicationCodeToReplicate(): boolean {
 			if (TableResource.getResidency !== defaultGetResidency || TableResource.getResidencyById) return true;
 			for (const attribute of attributes) {
@@ -14334,13 +14333,13 @@ function noop() {
 	// prefetch callback
 }
 
+// Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
+const schemaExpressionResolvers = new WeakSet<Function>();
 /**
  * Recreate a computed "from" function from a stored expression string. This is used when a table
  * is loaded from metadata on a thread that hasn't loaded the GraphQL schema, so the computed
  * function needs to be reconstructed from the persisted expression.
  */
-// Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
-const schemaExpressionResolvers = new WeakSet<Function>();
 function createComputedFrom(computedFromExpression: string, attributesFallback?: any) {
 	const script = new Script(
 		attributesFallback

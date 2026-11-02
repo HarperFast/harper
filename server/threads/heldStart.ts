@@ -81,7 +81,6 @@ export async function awaitAdmission(
 	});
 }
 
-/** Read from table state as the load ends, not from registration events. */
 function poolUnsupportedTables(): string[] {
 	const tables = [];
 	const databases = getDatabases();
