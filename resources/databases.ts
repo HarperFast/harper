@@ -1115,8 +1115,8 @@ export function catalogExpiration(table: { dbisDB: any; tableName: string; prima
 	const expiration = Number(row?.expiration);
 	const eviction = Number(row?.eviction);
 	const settings: { expiration?: number; eviction?: number } = {};
-	if (expiration > 0) settings.expiration = expiration;
-	if (eviction > 0) settings.eviction = eviction;
+	if (expiration > 0 && Number.isFinite(expiration)) settings.expiration = expiration;
+	if (eviction > 0 && Number.isFinite(eviction)) settings.eviction = eviction;
 	return settings;
 }
 /**
@@ -4327,7 +4327,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
 	}
-	// A re-declaration persists these to the catalog, where a negative value would fail every later load, and
+	// A re-declaration persists these to the catalog, where a negative expiration fails every later load, and
 	// nothing it changes before then (index builds included) is rolled back.
 	if (Table && origin !== 'cluster') {
 		if (+expiration < 0 || +eviction < 0)

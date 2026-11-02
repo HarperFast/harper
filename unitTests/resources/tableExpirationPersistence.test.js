@@ -111,6 +111,9 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		Legacy.dbisDB.putSync(`${tableName}/id`, { ...value, name: 'id', isPrimaryKey: true, expiration: 77 });
 		await commitCatalog(Legacy);
 		assert.deepStrictEqual(catalogExpiration(Legacy), { expiration: 77 });
+		Legacy.dbisDB.putSync(`${tableName}/id`, { ...value, name: 'id', isPrimaryKey: true, expiration: 'Infinity' });
+		await commitCatalog(Legacy);
+		assert.deepStrictEqual(catalogExpiration(Legacy), {}, 'a non-finite value is not a TTL');
 	});
 
 	it('reports a numeric-string expiration that a create persisted as given', async function () {
