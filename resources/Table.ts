@@ -189,6 +189,7 @@ import {
 	fullTextComparatorMode,
 	validateFullTextFuzzyOptions,
 	ALTERNATE_COMPARATOR_NAMES,
+	keyPredicate,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -377,6 +378,10 @@ const ABSENT_ENTRY = Object.freeze({
 		return callback(undefined);
 	},
 });
+// a stale-while-revalidate decision already made for a query row, so ensureLoadedFromSource only starts the reload
+const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
+// sort attributes read from the entry rather than its record (`$distance` can fall back to the record)
+const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
@@ -8699,6 +8704,7 @@ export function makeTable(options): TableResourceClass {
 				const clauses: Sort[] = [];
 				for (let order = sort; order; order = order.next) clauses.push(order);
 				const clauseCount = clauses.length;
+				const prepareForSort = sortReadsRecord(clauses) ? (transformToRecord as any).prepareForSort : undefined;
 				// if we are doing post-ordering, we need to get records first, then sort them
 				results.iterate = function (options: { async: boolean }) {
 					let ordered: any[];
@@ -8725,6 +8731,18 @@ export function makeTable(options): TableResourceClass {
 					let lastGroupingValue: any;
 					let firstEntry = true;
 					function collect(entry): Promise<unknown> | undefined {
+						if (prepareForSort && entry.metadataFlags & (INVALIDATED | EVICTED)) {
+							const prepared = prepareForSort(entry);
+							if (prepared?.then)
+								return prepared.then((prepared) => {
+									if (!stopped()) return collectKeys(prepared);
+								});
+							return collectKeys(prepared);
+						}
+						return collectKeys(entry);
+					}
+					function collectKeys(entry): Promise<unknown> | undefined {
+						if (entry === SKIP) return;
 						ordered.push(entry);
 						let pending: Promise<void>[];
 						try {
@@ -8995,6 +9013,28 @@ export function makeTable(options): TableResourceClass {
 			const syncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded };
 			// loadLocalRecord sets `async` on the options of an async load, so sync loads need their own
 			const asyncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded, async: true };
+			// Stale-while-revalidate is an instance method, but a query has no per-row resource
+			// instance to consult (the single-record `get` path passes `this`). Construct one for this
+			// row — via the same `new constructor(id, context)` the framework's getResource uses — so
+			// the hook sees the current row's identity (this.getId()) and record state, matching the
+			// single-record path. It must be a real instance, not the bare class prototype: every
+			// resource prototype chain ends in a tracked-property Proxy, so reading an absent property
+			// (probing for an undefined `allowStaleWhileRevalidate`, or a hook touching `this.x`) on a
+			// non-instance invokes getChanges() with no backing state and throws (harper#1578). We also
+			// load the stale entry into it (as the single-record path does via _updateResource) so a
+			// hook consulting this.getRecord()/this.<field> sees the stale row, not undefined. `entry`
+			// here may be lazy (its `.value` is a GC-able deref, undefined once collected), so we set the
+			// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
+			// only for the expired/invalidated rows already headed to source, so the cost is negligible.
+			const staleResource = (entry: Entry, record) => {
+				const resource = new resourceClass(entry.key ?? entry, context);
+				if (resourceClass !== TableResource) recordOwnBaseline(resource);
+				resourceClass._updateResource(resource, entry);
+				resource.setRecord(record);
+				return resource;
+			};
+			// entries prepareForSort kept stale under stale-while-revalidate, so the hook is not consulted twice
+			let staleKept: WeakSet<Entry>;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				if (selectionStopped) return SKIP;
@@ -9030,23 +9070,7 @@ export function makeTable(options): TableResourceClass {
 								message: 'This entry has expired',
 							};
 						}
-						// Stale-while-revalidate is an instance method, but a query has no per-row resource
-						// instance to consult (the single-record `get` path passes `this`). Construct one for this
-						// row — via the same `new constructor(id, context)` the framework's getResource uses — so
-						// the hook sees the current row's identity (this.getId()) and record state, matching the
-						// single-record path. It must be a real instance, not the bare class prototype: every
-						// resource prototype chain ends in a tracked-property Proxy, so reading an absent property
-						// (probing for an undefined `allowStaleWhileRevalidate`, or a hook touching `this.x`) on a
-						// non-instance invokes getChanges() with no backing state and throws (harper#1578). We also
-						// load the stale entry into it (as the single-record path does via _updateResource) so a
-						// hook consulting this.getRecord()/this.<field> sees the stale row, not undefined. `entry`
-						// here may be lazy (its `.value` is a GC-able deref, undefined once collected), so we set the
-						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
-						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
-						const swrResource = new resourceClass(entry.key ?? entry, context);
-						if (resourceClass !== TableResource) recordOwnBaseline(swrResource);
-						resourceClass._updateResource(swrResource, entry);
-						swrResource.setRecord(record);
+						const swrResource = staleKept?.has(entry) ? KEEP_STALE : staleResource(entry, record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform.bind(this));
@@ -9254,6 +9278,24 @@ export function makeTable(options): TableResourceClass {
 					for (const child of Object.values(relationshipSelections)) (child as any).return?.();
 				if (transformCache) for (const child of transformCache.values()) (child as any).return?.();
 			};
+			if (ensure_loaded && (hasSourceGet || sourceLoad))
+				// loads a stub before a sort reads its content, whatever the select needs, so it sorts by the record the
+				// materializer returns; that fresh entry then needs no second load
+				(transform as any).prepareForSort = (entry: Entry) => {
+					if (selectionStopped || !(entry.metadataFlags & (INVALIDATED | EVICTED)) || context?.onlyIfCached)
+						return entry;
+					const id = entry.key;
+					if (hasSourceGet && !context?.noCache && !needsResidentLoad(entry, context)) {
+						const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(id)?.value;
+						if (record && (staleResource(entry, record) as any).allowStaleWhileRevalidate?.(entry, id)) {
+							(staleKept ??= new WeakSet()).add(entry);
+							return entry;
+						}
+					}
+					return when(ensureLoadedFromSource(source, id, entry, context), (loaded: Entry) =>
+						!loaded ? entry : loaded.value == null && canSkip ? SKIP : loaded
+					);
+				};
 			return transform;
 		}
 
@@ -12848,11 +12890,23 @@ export function makeTable(options): TableResourceClass {
 		if (TableResource.loadAsInstance === false) freezeRecord(entry?.value);
 		return entry;
 	}
+	/** Whether an ordering reads record content: a clause before the first primary-key clause that is not entry metadata */
+	function sortReadsRecord(clauses: Sort[]) {
+		for (const clause of clauses) {
+			let attribute = clause.attribute;
+			if (Array.isArray(attribute) && attribute.length === 1) attribute = attribute[0];
+			if (attribute === primaryKey) return false;
+			if (!ENTRY_SORT_ATTRIBUTES.has(attribute as string)) return true;
+		}
+		return false;
+	}
 	function getAttributeValue(entry, attribute_name, context, sort?, stopped?: () => boolean) {
 		if (!entry) {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
+		// a cache stub has no record, but its key still sorts
+		if (record == null && attribute_name === primaryKey) return entry.key;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort, stopped);
@@ -12963,8 +13017,8 @@ export function makeTable(options): TableResourceClass {
 			const key = id === undefined ? entry.key : id;
 			for (let i = 0; i < filtersLength; i++) {
 				const filter = filters[i];
-				const idFilter = filter.idFilter;
-				if (idFilter ? !idFilter(key) : !record || !filter(record, entry)) return SKIP;
+				const keyTest = keyPredicate(filter);
+				if (keyTest ? !keyTest(key) : !record || !filter(record, entry)) return SKIP;
 			}
 			if (id !== undefined) entry.key = id;
 			return entry;
@@ -12976,9 +13030,9 @@ export function makeTable(options): TableResourceClass {
 		}
 		function applyFilters(record, entry: Entry, id, key, start: number) {
 			for (let i = start; i < filtersLength; i++) {
-				const idFilter = filters[i].idFilter;
-				if (idFilter) {
-					if (!idFilter(key)) return SKIP;
+				const keyTest = keyPredicate(filters[i]);
+				if (keyTest) {
+					if (!keyTest(key)) return SKIP;
 					continue;
 				}
 				if (!record) return SKIP;
@@ -13001,8 +13055,8 @@ export function makeTable(options): TableResourceClass {
 				// it is an id, so any id filters that are available can rule it out before loading the record (note that
 				// these can come into existence later, during the query)
 				for (let i = 0; i < filtersLength; i++) {
-					const idFilter = filters[i].idFilter;
-					if (idFilter && !idFilter(idOrEntry)) return SKIP; // didn't match filters
+					const keyTest = keyPredicate(filters[i]);
+					if (keyTest && !keyTest(idOrEntry)) return SKIP; // didn't match filters
 				}
 				// a synchronous iteration cannot take the Promise an async entry read can return
 				return loadLocalRecord(idOrEntry, context, loadOptions, Boolean(this?.isSync), process);
