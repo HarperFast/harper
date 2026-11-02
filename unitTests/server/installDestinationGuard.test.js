@@ -22,20 +22,21 @@ function fingerprint(directory) {
 	return result;
 }
 
-function run(phase, env) {
+function run(phase, env, expectedStatus = 0) {
 	const child = spawnSync(
 		process.execPath,
 		[
 			...process.execArgv.filter((arg) => arg.startsWith('--conditions=')),
-			path.join(__dirname, 'fixtures/installDestinationGuard.cjs'),
-			phase,
+			...(phase === 'cli'
+				? [require.resolve('#src/bin/harper'), env.GUARD_CLI_SERVICE || 'install']
+				: [path.join(__dirname, 'fixtures/installDestinationGuard.cjs'), phase]),
 			...(env.GUARD_STORAGE_ARG ? ['--STORAGE_PATH', env.GUARD_STORAGE_ARG] : []),
 		],
 		{ cwd: path.resolve(__dirname, '../..'), env, encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'] }
 	);
 	const output = `${child.stdout}\n${child.stderr}`;
 	assert.ifError(child.error);
-	assert.strictEqual(child.status, 0, output);
+	assert.strictEqual(child.status, expectedStatus, output);
 	return output;
 }
 
@@ -68,6 +69,19 @@ function installEnv(temp, name, engine) {
 		DEFAULTS_MODE: 'prod',
 		HARPER_STORAGE_ENGINE: engine,
 	};
+}
+
+function cliEnv(temp, name, engine) {
+	const env = installEnv(temp, name, engine);
+	const config = YAML.parse(fs.readFileSync(path.join(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
+	config.rootPath = env.ROOTPATH;
+	config.http.port = config.http.securePort = null;
+	config.operationsApi.network.port = config.operationsApi.network.securePort = null;
+	config.operationsApi.network.domainSocket = false;
+	config.analytics.aggregatePeriod = -1;
+	for (const dir of ['database', 'backup', 'keys', 'log', 'components']) fs.mkdirSync(path.join(env.ROOTPATH, dir));
+	fs.writeFileSync(env.HDB_CONFIG, YAML.stringify(config));
+	return env;
 }
 
 describe('effective installation destination protection', function () {
@@ -187,5 +201,93 @@ describe('effective installation destination protection', function () {
 				fs.rmSync(temp, { recursive: true, force: true });
 			}
 		});
+	}
+	for (const engine of ['rocksdb', 'lmdb']) {
+		it(`preserves config at the real ${engine} CLI import boundary and commits state on success`, function () {
+			const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-cli-install-guard-'));
+			try {
+				const storage = path.join(temp, 'existing');
+				fs.mkdirSync(storage);
+				const seed = installEnv(temp, 'seed', engine);
+				seed.STORAGE_PATH = storage;
+				seed.GUARD_SNAPSHOT = path.join(temp, 'admin.json');
+				assert.match(run('seed', seed), /install-destination-guard-ok/);
+				const originalStore = fingerprint(storage);
+				for (const key of ['HARPER_CONFIG', 'HARPER_SET_CONFIG']) {
+					const env = cliEnv(temp, key, engine);
+					env[key] = JSON.stringify({ storage: { path: storage } });
+					if (key === 'HARPER_SET_CONFIG') {
+						env.GUARD_CLI_SERVICE = 'INSTALL';
+						const template = YAML.parse(fs.readFileSync(env.HDB_CONFIG, 'utf8'));
+						delete template.storage.path;
+						delete template.logging.rotation.path;
+						delete template.authentication;
+						delete template.analytics;
+						fs.writeFileSync(env.HDB_CONFIG, YAML.stringify(template));
+					}
+					const before = fs.readFileSync(env.HDB_CONFIG);
+					const output = run('cli', env);
+					assert.match(output, /already installed/);
+					assert.deepStrictEqual(
+						fs.readFileSync(env.HDB_CONFIG),
+						before,
+						'CLI import rewrote the template before refusal'
+					);
+					assert.strictEqual(fs.existsSync(path.join(env.ROOTPATH, 'backup/.harper-config-state.json')), false);
+					assert.deepStrictEqual(fingerprint(storage), originalStore, 'CLI refusal opened the occupied store');
+				}
+				assert.match(run('verify', seed), /install-destination-guard-ok/);
+				const fresh = cliEnv(temp, 'fresh', engine);
+				const freshStorage = path.join(temp, 'fresh-storage');
+				fs.mkdirSync(freshStorage);
+				const template = YAML.parse(fs.readFileSync(fresh.HDB_CONFIG, 'utf8'));
+				template.storage.path = freshStorage;
+				fs.writeFileSync(fresh.HDB_CONFIG, YAML.stringify(template));
+				fresh.HARPER_CONFIG = JSON.stringify({ authentication: { cacheTTL: 60000 } });
+				assert.match(run('cli', fresh), /installation was successful/);
+				const state = JSON.parse(fs.readFileSync(path.join(fresh.ROOTPATH, 'backup/.harper-config-state.json')));
+				assert.strictEqual(state.originalValues['authentication.cacheTTL'], 30000);
+				assert.strictEqual(YAML.parse(fs.readFileSync(fresh.HDB_CONFIG, 'utf8')).authentication.cacheTTL, 60000);
+				delete fresh.HARPER_CONFIG;
+				assert.match(run('boot', fresh), /install-destination-guard-ok/);
+				assert.strictEqual(YAML.parse(fs.readFileSync(fresh.HDB_CONFIG, 'utf8')).authentication.cacheTTL, 30000);
+			} finally {
+				fs.rmSync(temp, { recursive: true, force: true });
+			}
+		});
+
+		for (const mount of ['system', 'table', 'absent']) {
+			const perTable = mount === 'table';
+			const preserveEmpty = mount !== 'absent';
+			it(`rolls back a failed ${engine} install in an empty ${mount} mount and permits retry`, function () {
+				const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-empty-retry-'));
+				try {
+					const env = installEnv(temp, 'root', engine);
+					const parent = perTable ? path.join(temp, 'table-storage') : path.join(env.ROOTPATH, 'database');
+					const leaf = path.join(parent, perTable ? 'hdb_user' : 'system');
+					fs.mkdirSync(preserveEmpty ? leaf : parent, { recursive: true });
+					if (perTable) {
+						const template = YAML.parse(fs.readFileSync(env.HDB_CONFIG, 'utf8'));
+						template.databases = { system: { tables: { hdb_user: { path: parent } } } };
+						fs.writeFileSync(env.HDB_CONFIG, YAML.stringify(template));
+					}
+					const before = fs.readFileSync(env.HDB_CONFIG);
+					const blockedHome = path.join(temp, 'blocked-home');
+					fs.writeFileSync(blockedHome, 'preserve this file');
+					env.HOME = env.USERPROFILE = blockedHome;
+					assert.doesNotMatch(run('install', env, 1), /installation was successful/);
+					assert.deepStrictEqual(fs.readFileSync(env.HDB_CONFIG), before);
+					if (preserveEmpty) {
+						assert.deepStrictEqual(fs.readdirSync(leaf), [], 'new database artifacts survived inside the empty mount');
+					} else assert.strictEqual(fs.existsSync(leaf), false);
+					assert.deepStrictEqual(fs.readdirSync(parent), preserveEmpty ? [path.basename(leaf)] : []);
+					assert.strictEqual(fs.readFileSync(blockedHome, 'utf8'), 'preserve this file');
+					env.HOME = env.USERPROFILE = path.join(temp, 'valid-home');
+					assert.match(run('install', env), /install-destination-guard-ok/);
+				} finally {
+					fs.rmSync(temp, { recursive: true, force: true });
+				}
+			});
+		}
 	}
 });

@@ -928,7 +928,8 @@ export function initConfig(force = false) {
 			);
 		}
 
-		checkForUpdatedConfig(configDoc, configFilePath);
+		const installing = process.argv[2]?.toLowerCase() === hdbTerms.SERVICE_ACTIONS_ENUM.INSTALL;
+		checkForUpdatedConfig(configDoc, installing ? undefined : configFilePath);
 
 		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
 		// warn loudly instead of silently no-opping (#1513; components must not shape instance config)
@@ -951,7 +952,7 @@ export function initConfig(force = false) {
 		}
 
 		// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables
-		applyRuntimeEnvVarConfig(configDoc, configFilePath);
+		applyRuntimeEnvVarConfig(configDoc, installing ? null : configFilePath, { deferStateCommit: installing });
 
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(configDoc);
@@ -1011,7 +1012,7 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 		updateFile = true;
 	}
 
-	if (updateFile) {
+	if (updateFile && configFilePath) {
 		logger.trace('Updating config file with missing config params');
 		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}

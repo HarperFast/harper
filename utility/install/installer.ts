@@ -88,6 +88,7 @@ let preExistingRootEntries: Set<string> | null = null;
 let preExistingStorageDirEntries: Map<string, Set<string>> | null = null;
 let candidateSystemDbPaths: string[] | null = null;
 let preExistingSystemDbPaths: Set<string> | null = null;
+let systemStoreExistedBeforeInstall = false;
 let ignoreExisting = false;
 let bootPropsCreated = true;
 
@@ -177,7 +178,7 @@ function isOccupiedStore(storePath: string): boolean {
 	}
 }
 
-function hasOccupiedInstallDestination(rootDir: string): boolean {
+function getInstallSystemStorePaths(rootDir: string): string[] {
 	const paths = new Set(getCandidateSystemDbPaths(rootDir));
 	const addStore = (parent: string, name: string) => {
 		paths.add(path.join(parent, name));
@@ -189,7 +190,6 @@ function hasOccupiedInstallDestination(rootDir: string): boolean {
 	for (const [name, config] of Object.entries(tableConfigs || {})) {
 		if ((config as { path?: string })?.path) addStore(resolveDatabaseStorageRoot(system, name), name);
 	}
-	// Mount can apply raw install args after staging; validation can select either default parent.
 	const args = assignCMDENVVariables(['DATABASES', 'STORAGE_PATH']);
 	if (args.STORAGE_PATH) addStore(args.STORAGE_PATH, system);
 	if (args.DATABASES) {
@@ -204,7 +204,7 @@ function hasOccupiedInstallDestination(rootDir: string): boolean {
 			}
 		}
 	}
-	return [...paths].some(isOccupiedStore);
+	return [...paths];
 }
 
 function isPreseededRootConfig(rootDir: string | undefined): boolean {
@@ -279,7 +279,7 @@ async function install() {
 	}
 
 	// Check for an existing installation of Harper.
-	await checkForExistingInstall(isRootNamedHdbConfig(hdbConfigPath, promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH]));
+	await checkForExistingInstall(isRootNamedHdbConfig(hdbConfigPath, hdbConfigPath && path.dirname(hdbConfigPath)));
 
 	// Prompt the user with params needed for install.
 	const installParams = await installPrompts(promptOverride);
@@ -317,7 +317,9 @@ async function install() {
 	}
 	envManager.setHdbBasePath(hdbRoot);
 	const stagedInstall = stageInstallConfig(installParams);
-	if (!ignoreExisting && isRootNamedHdbConfig(hdbConfigPath, hdbRoot) && hasOccupiedInstallDestination(hdbRoot)) {
+	const rootTemplate = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
+	const systemStorePaths = rootTemplate ? getInstallSystemStorePaths(hdbRoot) : [];
+	if (!ignoreExisting && systemStorePaths.some(isOccupiedStore)) {
 		spinner.stop();
 		console.error(HDB_EXISTS_MSG);
 		process.exit(0);
@@ -326,9 +328,14 @@ async function install() {
 	rootExistedBeforeInstall = fs.existsSync(hdbRoot);
 	preExistingRootEntries = rootExistedBeforeInstall ? new Set(fs.readdirSync(hdbRoot)) : null;
 	const stagedJson = stagedInstall.configDoc.toJSON();
-	const baseCandidatePaths = getCandidateSystemDbPaths(hdbRoot, configFromFile, stagedJson);
+	const baseCandidatePaths = [
+		...new Set([...getCandidateSystemDbPaths(hdbRoot, configFromFile, stagedJson), ...systemStorePaths]),
+	];
 	candidateSystemDbPaths = baseCandidatePaths.flatMap((p) => (p.endsWith('.mdb') ? [p, `${p}-lock`] : [p]));
 	preExistingSystemDbPaths = new Set(candidateSystemDbPaths.filter((p) => fs.existsSync(p)));
+	systemStoreExistedBeforeInstall = rootTemplate
+		? systemStorePaths.some(isOccupiedStore)
+		: preExistingSystemDbPaths.size > 0;
 	preExistingStorageDirEntries = new Map();
 	const storageDirs = new Set<string>([path.join(hdbRoot, hdbTerms.DATABASES_DIR_NAME)]);
 	for (const cfg of [configFromFile, stagedJson]) {
@@ -337,6 +344,10 @@ async function install() {
 			hdbRoot
 		);
 		if (resolved) storageDirs.add(resolved);
+	}
+	for (const storePath of systemStorePaths) {
+		storageDirs.add(path.dirname(storePath));
+		if (!isOccupiedStore(storePath)) storageDirs.add(storePath);
 	}
 	for (const dirPath of storageDirs) {
 		try {
@@ -347,18 +358,23 @@ async function install() {
 	}
 
 	try {
-		// Creates the Harper project folder structure and the LMDB environments/dbis.
-		await mountHdb(hdbRoot, () => {
-			try {
-				configUtils.validateStagedInstallConfig(stagedInstall);
-			} catch (configErr) {
-				rollbackInstall(configErr);
-				throw configErr;
+		try {
+			await mountHdb(hdbRoot, () => {
+				try {
+					configUtils.validateStagedInstallConfig(stagedInstall);
+				} catch (configErr) {
+					if (!rootTemplate) rollbackInstall(configErr);
+					throw configErr;
+				}
+			});
+			await createBootPropertiesFile();
+		} catch (error) {
+			if (rootTemplate) {
+				await closeCreatedSystemDatabaseForRollback();
+				rollbackInstall(error);
 			}
-		});
-
-		// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
-		await createBootPropertiesFile();
+			throw error;
+		}
 
 		// Create the harperdb-config.yaml file
 		await createConfigFile(stagedInstall);
@@ -369,6 +385,7 @@ async function install() {
 		preExistingStorageDirEntries = null;
 		candidateSystemDbPaths = null;
 		preExistingSystemDbPaths = null;
+		systemStoreExistedBeforeInstall = false;
 	}
 
 	// At this point there should be config and Harper folders so re-init log settings to update
@@ -902,7 +919,7 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 }
 
 async function closeCreatedSystemDatabaseForRollback() {
-	if (preExistingSystemDbPaths && preExistingSystemDbPaths.size > 0) return;
+	if (systemStoreExistedBeforeInstall) return;
 	try {
 		const systemTables = databases[hdbTerms.SYSTEM_SCHEMA_NAME];
 		if (!systemTables) return;
