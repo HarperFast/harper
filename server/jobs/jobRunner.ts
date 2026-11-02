@@ -5,6 +5,7 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import * as jobs from './jobs.ts';
+import { settleAbandonedJob } from './jobOwnership.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
@@ -155,11 +156,7 @@ async function runJob(runnerMessage: any, operation: any) {
 async function launchJobThread(job_id: any, transient?: Record<string, unknown>) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
-		threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
-			autoRestart: false,
-			name: 'job',
-			env: jobEnv(job_id, transient),
-		});
+		startJobWorker(job_id, transient);
 	} else {
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.START_JOB,
@@ -168,14 +165,30 @@ async function launchJobThread(job_id: any, transient?: Record<string, unknown>)
 		});
 	}
 }
+
+function jobWorkerOptions(jobId: any, transient?: Record<string, unknown>) {
+	const settleOnUnownedExit = () =>
+		settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error));
+	return {
+		autoRestart: false,
+		name: hdbTerms.THREAD_TYPES.JOB,
+		env: jobEnv(jobId, transient),
+		onUnexpectedExit: settleOnUnownedExit,
+		onPermanentStop: settleOnUnownedExit,
+	};
+}
+
+function startJobWorker(jobId: any, transient?: Record<string, unknown>) {
+	return threadsStart.startWorker(
+		join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`),
+		jobWorkerOptions(jobId, transient)
+	);
+}
+
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.START_JOB, async (message) => {
 		try {
-			threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
-				autoRestart: false,
-				name: 'job',
-				env: jobEnv(message.jobId, message.transient),
-			});
+			startJobWorker(message.jobId, message.transient);
 		} catch (e) {
 			log.error(`Failed to start worker for job ${message.jobId}:`, e);
 			try {
@@ -192,4 +205,4 @@ if (isMainThread) {
 	});
 }
 
-export { parseMessage, RunnerMessage };
+export { parseMessage, RunnerMessage, jobWorkerOptions };

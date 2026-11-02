@@ -53,10 +53,10 @@
 			"matchPackageNames": ["!alasql"]
 		},
 		{
-			"description": "Keep the historical fulltext 0.5.0 upgrade fixture fixed; remove this rule with the fixture alias.",
+			"description": "Keep the historical fulltext 0.5.0 and 0.7.0 upgrade fixtures fixed; remove this rule with the fixture alias.",
 			"matchManagers": ["npm"],
 			"matchDepTypes": ["devDependencies"],
-			"matchDepNames": ["@harperfast/fulltext-previous"],
+			"matchDepNames": ["@harperfast/fulltext-previous", "@harperfast/fulltext-v07"],
 			"enabled": false
 		}
 	]

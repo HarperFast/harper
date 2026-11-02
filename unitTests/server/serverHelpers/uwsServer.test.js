@@ -37,10 +37,12 @@ function chunkStream(chunks) {
 }
 
 let createUwsServer;
+let HarperHeaders;
 let uwsAvailable = true;
 try {
 	require('uWebSockets.js');
 	({ createUwsServer } = require('#src/server/serverHelpers/uwsServer'));
+	({ Headers: HarperHeaders } = require('#src/server/serverHelpers/Headers'));
 } catch {
 	uwsAvailable = false;
 }
@@ -117,6 +119,7 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 					status: res.statusCode,
 					statusMessage: res.statusMessage,
 					headers: res.headers,
+					rawHeaders: res.rawHeaders,
 					body: Buffer.concat(chunks),
 				})
 			);
@@ -221,6 +224,27 @@ function readBody(request) {
 					headers: { 'content-type': 'application/json' },
 					body: JSON.stringify(request.headers.get('x-dup')),
 				};
+			case '/header-names':
+			case '/header-names-stream': {
+				const headers = new HarperHeaders();
+				headers.set('Vary', 'Accept, Authorization');
+				headers.set('Content-Length', '999');
+				headers.set('X-Ten-Char', 'ten');
+				headers.set('Set-Cookie', ['a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT', 'b=2']);
+				headers.set('Cache-Control', 'private, no-cache');
+				const body = request.pathname === '/header-names' ? 'hello' : chunkStream(['hel', 'lo']);
+				return { status: 200, headers, body };
+			}
+			case '/header-names-whatwg': {
+				const headers = new globalThis.Headers();
+				headers.set('X-Ten-Char', 'ten');
+				headers.set('Content-Length', '999');
+				headers.append('Set-Cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT');
+				headers.append('Set-Cookie', 'b=2');
+				return { status: 200, headers, body: 'hello' };
+			}
+			case '/header-names-object':
+				return { status: 200, headers: { 'CONTENT-LENGTH': '999', 'X-Ten-Char': 'ten' }, body: 'hello' };
 			case '/sse':
 				return {
 					status: 200,
@@ -440,6 +464,63 @@ function readBody(request) {
 		assert.strictEqual(res.status, 200);
 		assert.strictEqual(res.body.toString(), '203.0.113.7');
 	});
+
+	function appHeaders(rawHeaders) {
+		const pairs = [];
+		for (let i = 0; i < rawHeaders.length; i += 2) {
+			const name = rawHeaders[i].toLowerCase();
+			if (name !== 'date' && name !== 'uwebsockets') pairs.push([rawHeaders[i], rawHeaders[i + 1]]);
+		}
+		return pairs;
+	}
+
+	for (const [pathName, expected] of [
+		[
+			'/header-names',
+			[
+				['Vary', 'Accept, Authorization'],
+				['X-Ten-Char', 'ten'],
+				['Set-Cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT'],
+				['Set-Cookie', 'b=2'],
+				['Cache-Control', 'private, no-cache'],
+				['Content-Length', '5'],
+			],
+		],
+		[
+			'/header-names-stream',
+			[
+				['Vary', 'Accept, Authorization'],
+				['X-Ten-Char', 'ten'],
+				['Set-Cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT'],
+				['Set-Cookie', 'b=2'],
+				['Cache-Control', 'private, no-cache'],
+				['Transfer-Encoding', 'chunked'],
+			],
+		],
+		[
+			'/header-names-whatwg',
+			[
+				['x-ten-char', 'ten'],
+				['set-cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT'],
+				['set-cookie', 'b=2'],
+				['Content-Length', '5'],
+			],
+		],
+		[
+			'/header-names-object',
+			[
+				['X-Ten-Char', 'ten'],
+				['Content-Length', '5'],
+			],
+		],
+	]) {
+		it(`writes response headers by name, dropping Content-Length and splitting cookies (${pathName})`, async function () {
+			const res = await udsRequest(socketPath, { pathName });
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(res.body.toString(), 'hello');
+			assert.deepStrictEqual(appHeaders(res.rawHeaders), expected);
+		});
+	}
 
 	it('streams a text/event-stream (SSE) body, flushing headers up front', async function () {
 		const res = await udsRequest(socketPath, { pathName: '/sse' });

@@ -636,6 +636,31 @@
 							"default": 10000,
 							"description": "Maximum offset plus limit retained by a full-text request, independent of fetched-hit work."
 						},
+						"query": {
+							"type": "object",
+							"description": "Host query policy captured for all reader handles at process startup; restart the full Harper process to change it. Distance two requires preview qualification.",
+							"additionalProperties": false,
+							"properties": {
+								"maxQueryTerms": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 1024,
+									"default": 64
+								},
+								"maxQueryClauses": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4096,
+									"default": 256
+								},
+								"maxFuzzyDistance": {
+									"type": "integer",
+									"minimum": 0,
+									"maximum": 2,
+									"default": 1
+								}
+							}
+						},
 						"runtime": {
 							"type": "object",
 							"additionalProperties": false,

@@ -134,7 +134,7 @@ function main(mode, formatMode, framingMode) {
 			? `_${r.exempt}_`
 			: r.compliant
 				? ''
-				: r.pendingLegs.length
+				: r.pendingHeld
 					? `A late review leg (${r.pendingLegs.map((leg) => `\`${leg}\``).join(', ')}) is still pending, so its findings were never adjudicated: ${PENDING_FIX}.`
 					: r.adjudicatorBlocked
 						? `Per team policy, outside-model findings reach a human only after the Harper adjudicator (\`domain\`) has ruled on them. Every review round on this branch lost that leg (${r.adjudicatorBlocked}). Rerun the pre-push review until \`domain\` completes, then re-materialize the footer with \`pr-body-review-need.mjs --write\`.`
@@ -178,13 +178,14 @@ function main(mode, formatMode, framingMode) {
 		);
 	if (framingPaths.length > 0 || framingConfigurationProblem)
 		console.log(`framing-verdict [${framingMode}]: ${framing.exempt ? `exempt: ${framing.exempt}` : framing.detail}`);
+	if (r.lateNotice) console.log(`::notice::${r.lateNotice}`);
 	if (r.pass && !r.exempt && !r.compliant)
 		console.error(
 			`::warning::${r.detail} — the dispatch gate will block at review time if the fleet's review finds issues`
 		);
 	if (!r.pass) {
 		console.error(
-			`::error::${r.detail} — ${r.adjudicatorBlocked || r.pendingLegs.length ? '' : 'report the reviews in the PR description to pass; '}the dispatch gate will block at review time if the fleet's review also finds issues`
+			`::error::${r.detail} — ${r.adjudicatorBlocked || r.pendingHeld ? '' : 'report the reviews in the PR description to pass; '}the dispatch gate will block at review time if the fleet's review also finds issues`
 		);
 		process.exitCode = 1;
 	}

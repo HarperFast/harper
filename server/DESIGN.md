@@ -1,20 +1,12 @@
 # server/ — Navigation Guide
 
-This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer.
-
-**Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior.
-
-> **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
+This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer. **Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior. **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
 
 ---
 
 ## Three HTTP stacks coexist — know which one
 
-| Stack                         | File                  | Used for                                                                                                                                                                                        |
-| ----------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Native**                    | `http.ts`             | Direct socket handling for application-level HTTP/1.1, HTTPS, HTTP/2, and WebSockets. Highest performance. This is the path most user requests take (REST, GraphQL, custom resource endpoints). |
-| **Operations API**            | `operationsServer.ts` | Fastify-based JSON operations API (`{operation: 'create_table', ...}`). Internal/admin surface — not on the hot path for application data.                                                      |
-| **Custom Functions (legacy)** | `fastifyRoutes.ts`    | Legacy custom functions only. Wraps Fastify with autoload. Don't add new code here.                                                                                                             |
+Native `http.ts`, the Fastify operations API (`operationsServer.ts`) and legacy custom functions (`fastifyRoutes.ts`); [AGENTS.md](../AGENTS.md) (Server) says what each serves.
 
 A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Of the two Fastify files only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`. Its `preValidation` chain (`reqBodyValidationHandler`, then `authHandler`) needs each hook to signal completion exactly once: Fastify's hook runner does not make `done` single-use, and the async `onSend` hooks keep `reply.sent` false long enough for a second call to reach `authHandler`. `unitTests/server/serverHelpers/reqBodyValidationHandler.test.js` pins it.
 
@@ -242,7 +234,7 @@ Consequences worth knowing:
 
 ## Operations authorization boundary
 
-Operations request bodies are untrusted data. `serverHelpers/serverHandlers.js → handlePostRequest()` rejects
+Operations request bodies are untrusted data. `serverHelpers/serverHandlers.ts → handlePostRequest()` rejects
 prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
 `serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
 internal callers pass bypass state as a separate argument and expose it to operation handlers only
@@ -636,7 +628,7 @@ through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` f
 registration, including Fastify's non-function listener) and cascade to Fastify via the
 `status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
 on the **main thread**, and the main thread loads components with `resources.isWorker = false`
-(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+(`server/loadRootComponents.ts`), so the componentLoader's `resources.isWorker &&
 extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
 `handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
 `universalHeaders` is per-thread module state, populated only where the http component loads.
@@ -826,7 +818,7 @@ the bare message until harper#2703, so the same error carried an error code on t
 REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
 close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.
 
-## `serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.js`)
+## `serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.ts`)
 
 `handlePostRequest` logs every error it throws, at error level or the error's own higher `fatal`/`notify`, and records it against its request; `serverErrorHandler`, which Fastify calls next with the same request, skips that error. Keep the log in `handlePostRequest` rather than moving it to the handler: `serverErrorHandler` logs an error with no `logLevel` of its own at info, below the default `warn`, so most operation errors would disappear from a default log; and a custom-function route that catches `hdbCore.request()`'s rejection never reaches the handler at all. The record is keyed by request, not by error, so an error object that surfaces again in another request is still logged there.
 
@@ -874,43 +866,19 @@ Not covered: only the finally selected candidate is resolved, so a vanished dire
 
 uWS force-closes a completed `Connection: close` response while an upload is still arriving, which can lose its status to EPIPE. `uwsServer.ts` flushes a non-empty coarse-limit 413 chunk before discarding bytes until body end or a one-second deadline; that absolute resource bound guarantees early status, not complete framing for a sender that ignores it. Destroying a paused Readable does not clear its queue, so teardown removes data listeners and reads out queued bytes in bounded chunks before retaining the response. Native abort disarms the finisher independently of handler cancellation. "uWS oversized TCP uploads" in `unitTests/server/serverHelpers/uwsServer.test.js` pins these paths and unchanged immediate keep-alive rejection. Other rejection sites, including downstream responses from `contentTypes.ts`'s default 10 MB limit, still end immediately and remain outside this coarse-cap correction.
 
+## uWS and PROXY v2 peer-address text is Node's `socket.remoteAddress` text (`server/serverHelpers/peerAddress.ts`)
+
+uWS and PROXY v2 TCP6 headers hand Harper raw address bytes. `formatPeerAddress` writes them as libuv's `inet_ntop` does, so a uWS peer's `request.ip` reads as the same peer's does on Node (`::1`; `::ffff:127.0.0.1` for an IPv4 client of a dual-stack listener), and so does a PROXY v2 TCP6 source. PROXY v1 passes the proxy's own text through. `unitTests/server/serverHelpers/peerAddress.test.js` pins it against `net.SocketAddress`. One gap: Node appends `%<zone>` to a link-local peer, and raw bytes carry no scope id. Local trust compares exact forms through `isLocalPeerAddress` (`127.0.0.x`, `::ffff:127.0.0.x`, `::1`), never a substring, because the Node form of IPv4-compatible `::7f00:1` is `::127.0.0.1`.
+
 ## Dedicated worker pools own their listeners and load no applications (`server/threads/workerPools.ts`)
 
-A dedicated pool (today only `replication`, sized by `replication.threads` in `server/threads/socketRouter.ts`) is a set of workers of
-a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0
-and last-worker duties never land on one. The invariants:
+A dedicated pool (today only `replication`, sized by `replication.threads` in `server/threads/socketRouter.ts`) is a set of workers of a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0 and last-worker duties never land on one. The invariants:
 
-- **Default sizing and port admission.** When `replication.threads` is unset (`undefined`, `null`, or
-  `''`), `replicationThreadCount(n)` defaults it to `Math.floor(n / 2)` for `n >= 2` and `0` for
-  `n < 2`, where `n` is the effective HTTP worker count after `DEV_MODE` (`bin/run.ts`) and the `win32`
-  single-worker clamp (`effectiveHttpThreadCount`). An explicit non-negative integer (`0` or positive)
-  is honored as-is. A `replication` pool requires a dedicated `replication.port` or
-  `replication.securePort` that is not shared with `http` or `operationsApi.network`; when
-  `replication.threads` was explicitly set, a missing or shared replication port throws in
-  `admittedWorkerPools`, whereas a defaulted pool logs a warning and falls back to `0` (`[]`). With
-  `threads.count: 0` there is no pool, and an explicit `replication.threads > 0` is logged and ignored.
-- **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted
-  built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
-  Anything an application installs per thread (for example `Table.setResidency`,
-  `Table.setResidencyById`, or a `setComputedAttribute` resolver) is absent there. Registering
-  `Table.setResidency`, `Table.setResidencyById`, or an indexed `Table.setComputedAttribute` function
-  while `isWorkerPoolActive('replication')` is true logs a once-per-table-per-thread error naming
-  `replication.threads: 0` in `harper-config.yaml` as the opt-out; `Table.unresolvedComputedIndexes()`
-  names the indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly,
-  and a pool worker that resolves one anyway throws instead of indexing `undefined`.
-- **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
-  `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
-  that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.
-  Without `SO_REUSEPORT` only pool member 0 binds, and it retries `EADDRINUSE` for up to a minute
-  because its restarted predecessor keeps the port through its shutdown drain. A pool worker then fails
-  startup on `EADDRINUSE` rather than reporting ready with no listener; a drain longer than that minute
-  costs auto-restarts of the replacement until the port frees.
-- **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup and passed to every
-  worker in `workerData.workerPools`, so an owned port is never handed back to HTTP workers while the
-  pool restarts. Changing the pool size needs a full restart.
-- **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` (an
-  operator restart) restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts
-  overlap like HTTP ones.
+- **Default sizing and port admission.** When `replication.threads` is unset (`undefined`, `null`, or `''`), `replicationThreadCount(n)` defaults it to `Math.floor(n / 2)` for `n >= 2` and `0` for `n < 2`, where `n` is the effective HTTP worker count after `DEV_MODE` (`bin/run.ts`) and the `win32` single-worker clamp (`effectiveHttpThreadCount`). An explicit non-negative integer (`0` or positive) is honored as-is. A `replication` pool requires a dedicated `replication.port` or `replication.securePort` that is not shared with `http` or `operationsApi.network`; when `replication.threads` was explicitly set, a missing or shared replication port throws in `admittedWorkerPools`, whereas a defaulted pool logs a warning and falls back to `0` (`[]`). With `threads.count: 0` there is no pool, and an explicit `replication.threads > 0` is logged and ignored.
+- **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage. Anything an application installs per thread (for example `Table.setResidency`, `Table.setResidencyById`, or a `setComputedAttribute` resolver) is absent there. Registering `Table.setResidency`, `Table.setResidencyById`, or an indexed `Table.setComputedAttribute` function while `isWorkerPoolActive('replication')` is true logs a once-per-table-per-thread error naming `replication.threads: 0` in `harper-config.yaml` as the opt-out; `Table.unresolvedComputedIndexes()` names the indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly, and a pool worker that resolves one anyway throws instead of indexing `undefined`.
+- **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/ `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic. Without `SO_REUSEPORT` only pool member 0 binds, and it retries `EADDRINUSE` for up to a minute because its restarted predecessor keeps the port through its shutdown drain. A pool worker then fails startup on `EADDRINUSE` rather than reporting ready with no listener; a drain longer than that minute costs auto-restarts of the replacement until the port frees.
+- **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup and passed to every worker in `workerData.workerPools`, so an owned port is never handed back to HTTP workers while the pool restarts. Changing the pool size needs a full restart.
+- **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` (an operator restart) restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts overlap like HTTP ones.
 
 ## An unread multipart upload is discarded once its response has finished (`server/serverHelpers/multipartParser.ts`)
 
@@ -994,7 +962,7 @@ The default is on only from the Node release, per line, listed in `server/thread
 
 ## HTTP request preconditions (`REST.ts`, `Table.ts`)
 
-`preconditions.test.js` and `http-preconditions.test.ts` enforce RFC 9110 ordering: successful GET/HEAD responses use strong `If-Match`, weak `If-None-Match`, and whole-second HTTP dates; 304 retains validators, closes the producer and skips serialization when validators describe materialized data. Lazy GET and HEAD reads settle their startup authorization/error gate first. A lazy read's `ETag`/`Last-Modified` come from `context.lastModified` after that startup (a producer may set its version on its first step), set only where the resource supplied none; JSON, CBOR, msgpack and CSV streams have no startup phase and start after headers, and SSE is a CONNECT subscription rather than a read, so for those only a version known before serialization reaches the validators. Validators describe the read when headers commit, not rows streamed later. Every discarded read (HEAD, 304, 412) goes through `discardReadResponse` exactly once — HEAD evaluates deferred preconditions first and skips only a 304 a precondition check built after discarding (a resource's own 304 still gets discarded) — which closes the source: its `onDone()`, or else `return()` on a fresh, unstepped iterator unless the body is a startup stream (NDJSON, SSE), whose own `return()` closes the source opened or not (`closesSourceOnDiscard`). That fresh close is the only one a JSON/CBOR/msgpack HEAD's never-started serializer leaves, and how a `.map()` of search results releases their read snapshot. Cleanup failures it sees, thrown or rejected, are logged, never the response status; extended-iterable's `map().return()` drops its source's close promise, so a rejection there reaches the process handler instead. An async generator runs `return()` only after a pending first step settles — the same lifetime as a GET discarded after startup (`deferred-read-preconditions.test.ts`, `REST-deferred-reads.test.js`). Errors take precedence. The ETag encoding is unchanged. `rest.preconditions: false` leaves conditional handling to application code.
+`preconditions.test.js` and `http-preconditions.test.ts` enforce RFC 9110 ordering: successful GET/HEAD responses use strong `If-Match`, weak `If-None-Match`, and whole-second HTTP dates; 304 retains validators, closes the producer and skips serialization when validators describe materialized data. Lazy GET and HEAD reads settle their startup authorization/error gate first. A lazy read's `ETag`/`Last-Modified` come from `context.lastModified` after that startup (a producer may set its version on its first step), set only where the resource supplied none; JSON, CBOR, msgpack, CSV and plain-text streams have no startup phase and start after headers (the last four open their source on the first read, through `openOnFirstStep`, and connect their CSV and brotli pipe hops then, `pipelineOnRead`, whose destroy reaches the source in the same turn, so a discard finds the source unopened: `REST-discard-cbor-csv.test.js`), and SSE is a CONNECT subscription rather than a read, so for those only a version known before serialization reaches the validators. Validators describe the read when headers commit, not rows streamed later. Every discarded read (HEAD, 304, 412) goes through `discardReadResponse` exactly once — HEAD evaluates deferred preconditions first and skips only a 304 a precondition check built after discarding (a resource's own 304 still gets discarded) — which closes the source: its `onDone()`, or else `return()` on a fresh, unstepped iterator unless the body is a startup stream (NDJSON, SSE), whose own `return()` closes the source opened or not (`closesSourceOnDiscard`). That fresh close is the only one a JSON/CBOR/msgpack HEAD's never-started serializer leaves, and how a `.map()` of search results releases their read snapshot. Cleanup failures it sees, thrown or rejected, are logged, never the response status; extended-iterable's `map().return()` drops its source's close promise, so a rejection there reaches the process handler instead. An async generator runs `return()` only after a pending first step settles — the same lifetime as a GET discarded after startup (`deferred-read-preconditions.test.ts`, `REST-deferred-reads.test.js`). Errors take precedence. The ETag encoding is unchanged. `rest.preconditions: false` leaves conditional handling to application code.
 
 Conditional table PUT/PATCH/DELETE carries a transient `WRITE_CONDITION` on the request context. `Table.getResource` binds it to the parsed/coerced single-record target. Mutation authorization and body resolution precede `_writeUpdate`/`_writeDelete`. By default (`rest.preconditionLocks: true`), RocksDB acquires a default-scope **hold** lock (`table.lock(id, { hold: true })`), drops any pre-lock read snapshot when no prior writes are staged, reloads the record under the lock, and evaluates `If-Match` / `If-None-Match` / `If-Unmodified-Since` **once** before staging any write. A false predicate throws 412 immediately with no write staged or logged; an accepted write stages normally and any native commit retries proceed unconditionally. REST releases the hold after the transaction commits or aborts. Lock failures retain the existing 423 timeout, 409 expired-lease and 503 unavailable statuses. The lock takes the default scope, never a forced `scope: 'node'`. Among conditional contenders that saw the same validator there is one winner: cluster-wide when cluster record locks are available, node-local on core-only Harper (where no lock transport is registered). On `harper-pro` without `replication.recordLocks`, conditional writes fail with the lock's 503 (`rest.preconditionLocks: false` is the opt-out). There is deliberately no fallback to node scope there, since a node-local winner would silently weaken the guarantee on a cluster. This is not a general compare-and-swap: plain writes are never gated and still resolve last-write-wins, and the version checked under a cluster lock is only as fresh as `lock()`'s exclusion-only contract promises ([`record-locks.md` §10](../resources/record-locks.md#10-cost-and-the-guarantee-decision)). The lock is taken through the target record's own `lock()`, but it changes only what the predicate needs: `lockConditionalWrite` marks the condition `acquiring`, and the same-key `#reloadLocked` it runs refreshes the entry and stores the handle; a pending tracked write keeps its changes and the record view it was made against (a full replacement's cleared one too), and the record does not become lock-writable. While the lock is pending, the deferred write holds the record's `#savingOperation` slot as a `ConditionLockWait`, so `save()` waits for it and `addTo()` treats it as the write in flight — a tracked `loadAsInstance` handler (`this.addTo(...); return this.save()`) behaves as on the unlocked path, closing after `save()` included (`preconditions.test.js` › "conditional writes through a tracked record instance").
 
