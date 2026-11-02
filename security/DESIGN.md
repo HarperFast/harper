@@ -27,9 +27,9 @@ Four constraints that look like choices but are not:
 1. **Every rejection returns the same message.** The endpoint is unauthenticated; a caller told which check failed can enumerate a policy one claim at a time. Reasons go to the `oidc-trust` logger.
 2. **A GitHub policy must gate the ref.** `githubActionsProfile.assertPolicyIsSpecific` rejects a policy pinning only repository + workflow, because anyone who can push a branch could then add that workflow to it and mint a token. Stricter than npm's trusted-publishing model, which mitigates the same hole with environment protection instead — and profile-scoped, so it never constrains another issuer.
 3. **`createOperationToken`, not `createTokens`.** `createTokens` overwrites `hdb_user.refresh_token` as a side effect, so minting for CI would silently revoke whatever credential that user already held (#2018) — the exact problem this feature removes.
-4. **The role is the boundary; the per-policy `operations` allowlist only narrows it.** Least privilege is primarily the role of the user the policy names. A policy may _optionally_ carry an `operations` scope, which can only subtract from that role — never add to it. It is deliberately not merged into `permission.operations`: gate 2 in `operation_authorization.ts` treats an explicit listing of an SU-only operation as a deliberate grant, so reusing that field would _widen_ where this must only narrow. The scope is carried as a separate `tokenOperations` claim and intersected ahead of every early return, including the super_user bypass.
+4. **The role is the boundary; the per-policy `operations` allowlist only narrows it.** Least privilege is primarily the role of the user the policy names. A policy may _optionally_ carry an `operations` scope (#2173), which can only subtract from that role — never add to it. It is deliberately not merged into `permission.operations`: gate 2 in `operation_authorization.ts` treats an explicit listing of an SU-only operation as a deliberate grant, so reusing that field would _widen_ where this must only narrow. The scope is carried as a separate `tokenOperations` claim and intersected ahead of every early return, including the super_user bypass.
 
-   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is tracked in #2201. The scope shipped with #2173 and is documented in the operations API reference; whether to keep a second authorization mechanism beside roles at all — one more place for the two to disagree — was left open there.
+   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is tracked in #2201.
 
    Naming `sql` in a scope grants the SQL interface, not unrestricted DML through it: a write statement additionally requires its matching data operation (`insert`/`update`/`delete`) in scope. That is what keeps `read_only` — which expands to include `sql` — from admitting a DELETE, given that `verifyPermsAST` returns early for a super_user before any table check runs.
 
@@ -76,9 +76,7 @@ Which name the allowlist is checked against: `verifyPerms` is handed the handler
 operation, so gate 1 checks the registered entry's `api_name`, and never the handler's own name —
 only a name with no registration at all (`sql`) is checked as given. The `permission` constructor
 requires that argument: an API name, or `null` when no allowlist may grant the operation. Leaving it
-out is a compile error, which closes the old failure where an omitted name made gate 1 fall back to
-the handler name — refusing every role that listed the operation, unless the handler name happened
-to equal the API name, when it silently granted it instead.
+out is a compile error, so gate 1 cannot fall back to the handler name.
 Aliases share a handler, so listing the canonical name grants both spellings and the alias spelling
 grants neither. `get_backup`, `read_transaction_log` and `catchup` are registered with `null`: gate 2
 would grant `get_backup` ahead of its READ check on a whole-database copy, `read_transaction_log`
@@ -89,9 +87,8 @@ holds every dispatched operation to this.
 The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
 `permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
 further by `__updatedtime__` + schema). A synthetic role must therefore never carry a constant
-name or a per-request timestamp — two different permission sets would alias one cache slot (a
-same-millisecond `Date.now()` was enough), leaking one principal's translated permissions to
-another. `syntheticRoleName()` derives the name from a hash of the post-downgrade permission
+name or a per-request timestamp — two different permission sets would alias one cache slot,
+leaking one principal's translated permissions to another. `syntheticRoleName()` derives the name from a hash of the post-downgrade permission
 content with `__updatedtime__: 0`, so identical sets share a slot and distinct sets can't collide;
 `applyImpersonation` re-keys all three impersonation modes the same way. Synthetic translations live in a separate
 256-entry LRU (`syntheticRolePermsMap`), not the permanent `rolePermsMap` — so >256 concurrently
@@ -118,8 +115,7 @@ live maps in place only after the pass completes (their identity is load-bearing
 table but fails to build (`ERR_OSSL_X509_KEY_VALUES_MISMATCH` when the table's cert outruns the
 on-disk key, a missing key on this thread) keeps every live entry it owns _and_ its default
 candidacy — a record can be serving as the default with no hostname entries at all — so a transient
-mismatch never downgrades serving below last-good (the pre-fix behavior served the self-signed
-default for days). Retention is trust-aware: a context froze its `ca:` list at build time, so when
+mismatch never downgrades serving below last-good. Retention is trust-aware: a context froze its `ca:` list at build time, so when
 the CA set has changed since, the retained pair is rebuilt against the current trust material —
 new handshakes never see revoked client-CA trust; established sessions and outstanding session
 tickets are unaffected, exactly as on a fresh build (ticket keys are process-wide and never rotate
@@ -236,8 +232,7 @@ Two consequences that are easy to miss:
   only `await chainCompletion` and discard its resolved value, so an in-place decision has to be recorded
   on the request (`markAuthenticationRejectedInPlace`) for `assertNoDeferredCredentialRejection` — which
   both already call — to fail the upgrade closed. Converting a throw into a returned descriptor without
-  that record turns a fail-closed upgrade into one that proceeds with no principal. The certificate
-  revocation exit is the case that was missed first.
+  that record turns a fail-closed upgrade into one that proceeds with no principal.
 - **A deferred rejection outranks a later success.** Route owners call
   `settleDeferredCredentialRejection` _before_ they read `request.user`, so once a credential is deferred,
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
@@ -251,46 +246,12 @@ field is still overwritten), and they work detached or copied, as the closures t
 must not go back to `request.login = async function …`: V8's parser pretenures a function literal assigned
 to a property (`CheckAssigningFunctionLiteralToProperty`, `deps/v8/src/parsing/parser.h`), so the closure is
 born in old space and keeps its young function context, and everything that context reaches (the request,
-its headers, the response), alive across every scavenge until the next major GC. On a warm REST GET those
-two closures promoted ~1.8 KB per request and nearly tripled major GCs. The same holds for any per-request
+its headers, the response), alive across every scavenge until the next major GC. The same holds for any per-request
 or per-write path: assign a function literal to a local first, or bind a module function. The helpers' behavior is covered by `unitTests/security/authSessions.test.js`.
 
-## `session.update(data, { ifVersion })` guards a maintenance write, not the hot path (`security/auth.ts`, harper#2983)
+## `session.update(data, { ifVersion })` is a compare-and-set on this node only (`security/auth.ts`, harper#2983)
 
-`request.session.update(data)` is an unconditional full-replace `put` on `hdb_session`. The optional
-second argument conditions it on the version `request.session.version` was read at. A mismatch
-writes nothing and rejects with `VersionConflictError` (`.code === 'VERSION_CONFLICT'`, 409) —
-distinct from a storage failure, so a maintenance writer that reads-then-awaits-then-writes-back
-(HarperFast/oauth#212: a refreshed token, a detected-invalid-session logout) can tell whether
-something else won the race, instead of blindly overwriting a more authoritative concurrent write.
-`.retryable` tells it whether a fresh read is worth another attempt. `options.ifVersion` present
-but not a finite number throws rather than falling back to unconditional — a caller building it
-from `.version` on a session that turned out missing/deleted must not silently recreate what it
-meant to guard. The guard lives in `Table.ts`'s own write-commit path (see its `DESIGN.md` entry,
-including the single-write-transaction scope this call relies on), not here; `auth.ts` only
-validates the option shape and defers the `X-Hdb-Session: Secure` response header until the
-conditional write actually confirms (the unconditional path sets it synchronously, unchanged).
-
-`request.session.version` is a lazily-evaluated, non-enumerable getter, defined only when the
-loaded session has no own `version` key already — an app's own enumerable `version` field in
-session data survives untouched (and keeps working with `update()`, which only ever persists own
-enumerable fields), at the cost of no `ifVersion` support for that one session. Lazy because the
-version read (`getUpdatedTime()`, a `WeakMap` lookup) then only costs a caller that uses it, not
-every cookie-session request.
-
-**Rollout**: an old core silently ignores `update()`'s second argument and writes unconditionally
-— there is no capability negotiation here. A component that raises its peer `harper` minimum for
-this feature (HarperFast/oauth#212's plan) must not run against a mixed-version cluster where an
-older node could still serve the request; that gate is the component's responsibility, not core's.
-
-**Cross-node scope**: the guard is atomic against writes already applied on the local node, not
-against the cluster. `hdb_session` replicates (it is not in `NON_REPLICATING_SYSTEM_TABLES`,
-`resources/databases.ts`), so a logout committed on node A is invisible to node B's conditional
-write until it replicates — a maintenance write on B can pass `ifVersion` and commit locally before
-A's logout arrives. Last-write-wins keeps the later version on every node regardless of arrival
-order, so a refresh committed after the logout reverts it cluster-wide. A successful conditional
-write proves only "nothing else committed on this node since I read", never "nothing happened
-anywhere". No cross-node compare-and-set exists here or in this PR.
+`hdb_session` replicates, so `ifVersion` sees only writes applied here: a logout committed on another node and not yet replicated is invisible, and last-write-wins lets a refresh committed after it revert the logout on every node. A component needing more defends across nodes itself (HarperFast/oauth#212); an older core ignores the argument. `updateSession` sets `X-Hdb-Session` for a conditional write only once it lands, and throws on an `options` without a finite `ifVersion`. Enforced by `unitTests/security/sessionUpdateIfVersion.test.js`.
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
@@ -344,7 +305,7 @@ Enforced by `unitTests/security/localPrincipal.test.js` and `integrationTests/se
 
 To prevent adopting or signaling recycled PIDs or reusing zombies ([#2968](https://github.com/HarperFast/harper/issues/2968)), a `pids/<name>.pid` record contains the positive PID, version (zero when omitted), and OS birth identity. Linux uses boot ID/PID/start ticks and excludes zombies and thread IDs; macOS uses PID/`ps lstart` in UTC/C locale (one-second resolution); Windows uses PID/`Win32_Process.CreationDate` ticks. Adoption, version replacement, wrapper kill and exit observation compare the recorded identity. A Linux record from a different boot is retired before probing its potentially inaccessible recycled PID. PID records publish through write-then-rename so readers only see a complete record; a crash before publication can still leave an unrecorded surviving child. Probe failure is unknown, never permission to retire a record or emit exit. Same-boot hidden PIDs under hidepid/ProtectProc and permission-denied probes can require operator verification/record repair or process departure; permission denial does not prove identity change. macOS/Windows wrapper probes are asynchronous and never overlap. Synchronous spawn/adoption probes run under the lock, adding serialized startup time per worker to keep the identity check fresh after lock waits. Polling is once per second on Linux/macOS and once per five seconds on Windows to bound recurring PowerShell cost; exit notification can lag by that interval plus probe time. A signal-zero fast path with infrequent birth checks was rejected because a reused live PID would keep an exited wrapper open until that longer check interval. Legacy records are retired without signaling their unverified PID, with a warning: a surviving legacy child may coexist with the replacement once during upgrade. Older builds ignore the third line, so mixed-version access does not gain this safety guarantee.
 
-Synchronous spawning uses a filesystem bakery lock: contenders atomically publish choosing/ticket states at their own UUID filenames; stale removal targets only that UUID. Ticket ordering is shared with `componentPreparationLock.ts`. Only successfully matching foreign owner identities are cached, for one second; a stale positive can delay reclamation but cannot authorize reclaiming a live claim. PID record and claim operations retry transient Windows sharing errors. An owner whose claim cannot be unlinked publishes a unique release marker; scans honor the marker before reading the retired claim and clean up both when possible. Acquisition, publication and conditional exit cleanup use the same claim protocol, preventing a stale checker or an older child's exit from removing a newer record. Waits sleep for 50 ms with `Atomics.wait` and fail after 60 seconds without queue progress, renewing only as the original predecessor cohort assigns tickets or retires; later arrivals cannot renew a stalled wait; they never steal from a live process. External identity probes have a 30-second deadline. Exit cleanup makes one non-waiting attempt using the cached own identity and conservatively live foreign claims, without launching identity probes; a busy record is left for the next verified spawn to retire. Metadata file operations retain their bounded retries. Release failures are reported separately so they do not replace the spawn result or native error; if both claim removal and marker publication fail, operator repair/restart is still required. A claim abandoned by a terminated worker while Harper still lives can block until Harper restarts; OS identity cannot establish worker-thread liveness synchronously. A main-thread exit sweep is feasible for managed workers, but adding thread identities and another lifecycle cleanup path is deferred: constrained spawning also runs in standalone workers and main-thread scopes without that manager. This protocol keeps conservative process-lifetime reclamation as the common fallback. Unreadable owners also fail rather than permit concurrent spawning. Native PID handles would be required to eliminate the remaining identity-check-to-signal race and OS timestamp-resolution limits. The spawning thread cannot reap its fresh child while synchronous identity capture is running, so no wall-clock spawn bound is needed. Enforced by `unitTests/components/spawnPidIdentity.test.js`, `unitTests/components/spawnPidFile.test.js` (both unit suites are Windows-gated), and `integrationTests/components/named-process.test.ts`.
+Synchronous spawning uses a filesystem bakery lock: contenders atomically publish choosing/ticket states at their own UUID filenames; stale removal targets only that UUID. Ticket ordering is shared with `componentPreparationLock.ts`. Only successfully matching foreign owner identities are cached, for one second; a stale positive can delay reclamation but cannot authorize reclaiming a live claim. PID record and claim operations retry transient Windows sharing errors. An owner whose claim cannot be unlinked publishes a unique release marker; scans honor the marker before reading the retired claim and clean up both when possible. Acquisition, publication and conditional exit cleanup use the same claim protocol, preventing a stale checker or an older child's exit from removing a newer record. Waits sleep for 50 ms with `Atomics.wait` and fail after 60 seconds without queue progress, renewing only as the original predecessor cohort assigns tickets or retires; later arrivals cannot renew a stalled wait; they never steal from a live process. External identity probes have a 30-second deadline. Exit cleanup makes one non-waiting attempt using the cached own identity and conservatively live foreign claims, without launching identity probes; a busy record is left for the next verified spawn to retire. Metadata file operations retain their bounded retries. Release failures are reported separately so they do not replace the spawn result or native error; if both claim removal and marker publication fail, operator repair/restart is still required. A claim abandoned by a terminated worker while Harper still lives can block until Harper restarts; OS identity cannot establish worker-thread liveness synchronously. This protocol keeps conservative process-lifetime reclamation as the common fallback. Unreadable owners also fail rather than permit concurrent spawning. Native PID handles would be required to eliminate the remaining identity-check-to-signal race and OS timestamp-resolution limits. The spawning thread cannot reap its fresh child while synchronous identity capture is running, so no wall-clock spawn bound is needed. Enforced by `unitTests/components/spawnPidIdentity.test.js`, `unitTests/components/spawnPidFile.test.js` (both unit suites are Windows-gated), and `integrationTests/components/named-process.test.ts`.
 
 Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
 
@@ -360,8 +321,7 @@ Overwriting an existing property is still allowed: it is mostly a denial of serv
 
 Never make prototype properties read-only in a seal mode, whether by `Object.freeze`, `writable: false` or
 getter/setter accessors. A read-only elements kind on `Object.prototype` or `Array.prototype` moves every store
-into an array hole off V8's fast path, process-wide (about 45× for `new Array(n)` fills, about 3× for msgpackr
-decode). Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
+into an array hole off V8's fast path, process-wide. Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
 shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
 accessors.
 
