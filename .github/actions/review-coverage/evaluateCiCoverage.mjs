@@ -147,8 +147,8 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	// A footer with no recognized `authored=` cannot exclude that family either, so `ran=claude,codex`
 	// would score two on a Claude-authored PR. Materialized footers always carry it.
 	const enforceable = structured?.generator && !grammarProblem ? structured.count : 0;
-	// The helper lists a leg under `blocked=` only when it delivered in no round of the branch, so no
-	// outside finding was ever ruled on. `declined=` is a policy choice and does not fail.
+	// A validated completion clears historical blocked adjudication. Without one, a blocked domain
+	// fails regardless of outside coverage; `declined=` is a policy choice and does not fail.
 	const adjudicatorBlocked = footerRead.segments.has('adjudicated')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');

@@ -413,7 +413,9 @@ test('a footer that names no authoring family cannot be counted', () => {
 
 const PIN = HEAD.slice(0, 12);
 // Each shape formatReviewCoverage in skills-internal prepush-policy.mjs emits.
+const CURRENT_HELPER_FOOTER = `<sub>Review-Coverage: authored=codex; ran=cursor-composer,claude,cursor-grok; late=cursor-grok:adjudicated; adjudicated=domain,domain(claude); blocked=gemini(auth); declined=muse; rounds=10; full=5 @ ${PIN}</sub>`;
 const HELPER_FOOTERS = [
+	CURRENT_HELPER_FOOTER,
 	`<sub>Review-Coverage: authored=claude; ran=none; rounds=1 @ ${PIN}</sub>`,
 	`Review-Coverage: authored=unknown; ran=none; rounds=1 @ ${PIN}`,
 	`<sub>Review-Coverage: authored=claude; ran=codex,gemini; declined=cursor-grok,cursor-composer,domain; rounds=2 @ ${PIN}</sub>`,
@@ -438,7 +440,6 @@ test('every helper-shaped Review-Coverage footer is enforceable', () => {
 	}
 });
 
-const CURRENT_HELPER_FOOTER = `<sub>Review-Coverage: authored=codex; ran=cursor-composer,claude,cursor-grok; late=cursor-grok:adjudicated; adjudicated=domain,domain(claude); blocked=gemini(auth); declined=muse; rounds=10; full=5 @ ${PIN}</sub>`;
 const QUALIFIED_ADJUDICATORS = ['domain(claude)', 'domain(codex)', 'domain,domain(claude),domain(codex)'];
 const adjudicatedFooter = (adjudicated, ran = 'claude,gemini', extra = '') =>
 	`<sub>Review-Coverage: authored=codex; ran=${ran}; adjudicated=${adjudicated}; ${extra}rounds=3; full=1 @ ${PIN}</sub>`;
