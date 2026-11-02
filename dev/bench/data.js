@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793524905654,
+  "lastUpdate": 1793604281953,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8660,6 +8660,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 923.53,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5f2c4c729727a02fd2d7fa0cfcdd8b597a45cffc",
+          "message": "Hold design docs to byte budgets that only shrink, and print a file's symbol outline on demand (#3857)\n\n* Bind the design-doc gate in bytes and add a symbol outline\n\ncheck-design-docs budgets every DESIGN.md (the root index included) at\n40 KiB and MAP.md at 8 KiB / 80 lines. Files already over budget get a\nceiling in build-tools/design-docs-ceilings.json that only falls: CI\ncompares it against the change's base and fails a raised or new entry,\nand a trim more than 1 KiB below its ceiling must lower it. With --base,\nbyte checks cover only the files a change touches, so a stale-CI merge\nover a ceiling does not fail unrelated PRs. A MAP.md needs a CLAUDE.md\nof exactly @MAP.md, a link from AGENTS.md, and only names that its\ndirectory's source declares. --stale reports backticked paths, symbols\nand section markers the repository once had and no longer does.\n\nbuild-tools/outline.mjs (npm run outline -- <file|dir>) prints the nested\ndeclaration tree, including declarations inside factories such as\nmakeTable(), with line ranges and // #section: markers, using a\nparse-only TypeScript pass.\n\nA weekly workflow keeps the --stale findings in one design-docs issue.\n\nDispatch-Task: harper-design-docs-budgets-outline\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Close the ceiling-removal and lookup-failure holes found in review\n\nDropping a ceiling entry, or the whole ceilings file, while its doc is\nstill over budget now fails under --base, and --update-ceilings never\nraises an entry. The lint job fails when a push's old tip cannot be\nfetched instead of skipping the ratchet. The tracking-issue step runs\nwith pipefail and reads up to 1000 labelled issues, so a failed lookup\ncannot create a duplicate. MAP.md checks skip JS keywords, accept file\nnames, and require a dotted name's last qualifier to be the direct\nparent. An arrow-function factory lists its locals like a function\ndeclaration does. --stale streams the history diff, caps its output only\nwith --limit, and lists MAP.md errors under their own heading.\n\nDispatch-Task: harper-design-docs-budgets-outline\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Check the symbol in file:symbol spans and hold test-directory design docs\n\nA `file:symbol` span in a MAP.md must name a symbol declared in that\nfile, and --stale reports one whose symbol was removed. A call span such\nas `delete()` is a symbol even though its name is a keyword. The doc walk\nnow includes unitTests/ and integrationTests/ (skipping fixtures/), so\nunitTests/DESIGN.md is budgeted and index-checked like every other note.\n\nDispatch-Task: harper-design-docs-budgets-outline\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Classify file-qualified calls and any directory path, list interface members\n\n`store.ts:missing()` now checks `missing` in store.ts, and a path with a\ndirectory or a `:line` suffix is a file whatever its extension, so a\nMAP.md cannot name a missing `.graphql` file or a line number unnoticed.\nThe outline lists interface members and `export * as ns`. --base reads\ngit's NUL-separated names so quoted paths stay in scope. The root\nDESIGN.md says a MAP.md's backticked names must be declared symbols or\nfiles.\n\nDispatch-Task: harper-design-docs-budgets-outline\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Read deleted paths NUL-separated and treat hyphenated name.ext spans as files\n\nDispatch-Task: harper-design-docs-budgets-outline\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Let the tracking-issue lookup skip labelled issues with an empty body\n\njq's `contains` errors on a null body, which would fail the weekly sync\nfor as long as any design-docs issue had no description.\n\nDispatch-Task: harper-design-docs-budgets-outline\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Report a deleted bare name.ext file and ignore trailing comment words in --stale\n\nA DESIGN.md naming `schema.graphql` after the file is deleted is now listed\nas a dead path: the span parses as a dotted name, so it is checked against\ndeleted basenames before the symbol check. Words in a trailing `//` or an\ninline `/* */` on a removed line no longer count as removed code. A `#L1`\ninside call arguments no longer marks a `file:symbol(...)` span as a line\nnumber.\n\nDispatch-Task: late-review-kriszyp_harper_3857-ce5f5baa99f9-9f06f90f\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Tokenize removed lines for --stale, and never list an existing bare file\n\nThe regex comment stripping kept `1// c` and erased words inside a string\nholding `/* */`. Removed lines now go through the TypeScript scanner, which\ntreats comments as trivia and resumes a template after each `${…}`; it\ncosts about 1.4 µs a line. A bare `name.graphql` that exists is no longer\nchecked as a symbol.\n\nDispatch-Task: late-review-kriszyp_harper_3857-ce5f5baa99f9-9f06f90f\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-02T05:30:20Z",
+          "url": "https://github.com/HarperFast/harper/commit/5f2c4c729727a02fd2d7fa0cfcdd8b597a45cffc"
+        },
+        "date": 1793604279546,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5836.58,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8259.51,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8091.46,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6308.92,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4525.66,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8073.68,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 936.31,
             "unit": "ops/sec"
           }
         ]
