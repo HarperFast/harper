@@ -2,9 +2,13 @@
  * QA-431 companion — same fixture as ttl-rate-limiter-concurrent.test.ts, with the two
  * ingredients that make version-reuse cache staleness reproducible: GET pressure DURING each
  * burst (cold reads re-seed the VerificationTable), and per-window convergence classification —
- * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (a durably lost increment).
+ * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (unconverged acknowledged increments).
  *
- * A short window also prints the audit evidence harper#3163 needs. Its live chain is requested from
+ * A short window also captures a same-request raw/cache snapshot alongside the audit chain.
+ * Neither read proves durability; TTL validity and the snapshot worker are retained as diagnostics.
+ * The extra cached read can refresh that worker’s cache and affect subsequent observations.
+ * Different raw/cache versions can be legitimate snapshot/latest views, not evidence of lost writes.
+ * The chain is requested from
  * inside the key's own burst worker, behind a GET that already reads short, and nothing in that
  * sequence is awaited before the round is measured: the record expires 500 ms after its last write
  * and the windows are measured one after another, so by a later window's turn its record is often
@@ -18,8 +22,10 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations
@@ -114,7 +120,65 @@ suite(
 		}
 		const operations = (entries: AuditEntry[]) => entries.map((entry) => entry.operation).join(',');
 
-		type Chain = { chain: AuditEntry[]; error?: string };
+		type SnapshotEntry = {
+			hits: number | null;
+			version: number | null;
+			localTime: number | null;
+			expiresAt: number | null;
+			metadataFlags: number | null;
+			nodeId: number | null;
+			additionalAuditRefs: Array<{ version: number; nodeId?: number }>;
+			receivedIdentityRefs: Array<{ version: number; nodeId?: number }>;
+		};
+		type Snapshot = {
+			id: string;
+			engine: string;
+			uncachedReadBypassesCache: boolean;
+			threadId: number;
+			nowBefore: number;
+			nowAfter: number;
+			rawBefore: SnapshotEntry | null;
+			cached: SnapshotEntry | null;
+			rawAfter: SnapshotEntry | null;
+		};
+		type SnapshotCapture = { status?: number; value?: Snapshot; error?: string };
+		type Chain = { chain: AuditEntry[]; error?: string; snapshot?: SnapshotCapture };
+
+		async function readSnapshot(id: string): Promise<SnapshotCapture> {
+			try {
+				const response = await fetch(`${httpURL}/RateSnapshot/${encodeURIComponent(id)}`, {
+					headers: { Authorization: auth },
+					signal: AbortSignal.timeout(5_000),
+				});
+				if (response.status !== 200) return { status: response.status, error: await response.text() };
+				return { status: response.status, value: (await response.json()) as Snapshot };
+			} catch (error) {
+				return { error: (error as Error).message };
+			}
+		}
+
+		function snapshotDetail(capture?: SnapshotCapture) {
+			const value = capture?.value;
+			if (!value) return capture ?? { error: 'initial short-read snapshot not captured' };
+			const validity = (entry: SnapshotEntry | null) =>
+				!entry
+					? 'missing'
+					: entry.expiresAt === null
+						? 'unknown-expiry'
+						: entry.expiresAt <= value.nowBefore
+							? 'expired-before-capture'
+							: entry.expiresAt <= value.nowAfter
+								? 'expired-during-capture'
+								: 'live-at-capture';
+			return {
+				...capture,
+				ttlValidity: {
+					rawBefore: validity(value.rawBefore),
+					cached: validity(value.cached),
+					rawAfter: validity(value.rawAfter),
+				},
+			};
+		}
 		async function readChain(id: string): Promise<Chain> {
 			try {
 				const result = (await readAuditLog({ search_type: 'hash_value', search_values: [id] })) as Record<
@@ -165,6 +229,7 @@ suite(
 			const windows: Array<ShortWindow & { recreated: boolean }> = [];
 			for (const [index, window] of shortWindows.entries()) {
 				let { chain, error } = chains[index];
+				const initialSnapshot = chains[index].snapshot;
 				// an increment applied after the capture (a client-side abort the server still applied)
 				// is missing from it; the key may still be live for one more read, and an expired key's
 				// empty answer must not replace the captured evidence
@@ -191,7 +256,7 @@ suite(
 				const detail =
 					`${window.detail} chain=[${operations(chain)}] ` +
 					`round-range=[${operations(rangeForKey)}] patches=${rangePatches}/${window.acked}${truncated ? ' (range truncated, see harper#3164)' : rangeError ? ' (range unavailable)' : ''} ` +
-					`slowest=[${slowest.join(' ')}]` +
+					`slowest=[${slowest.join(' ')}] snapshot=${JSON.stringify(snapshotDetail(initialSnapshot))}` +
 					(errors.length ? ` chain-error=${JSON.stringify(errors)}` : '');
 				windows.push({ ...window, recreated, detail });
 			}
@@ -233,6 +298,7 @@ suite(
 			let expiredRecreated = 0;
 			let over = 0;
 			let inconclusive = 0;
+			let initialShortSnapshots = 0;
 			const anomalyLogs: string[] = [];
 
 			for (let round = 0; round < ROUNDS; round++) {
@@ -258,7 +324,9 @@ suite(
 							acked,
 							errs: results.filter((s) => s === 'error').length,
 							pendingChain: getHits(id).then((early) =>
-								early.status === 200 && early.hits! < acked ? readChain(id) : { chain: [] }
+								early.status === 200 && early.hits! < acked
+									? Promise.all([readChain(id), readSnapshot(id)]).then(([chain, snapshot]) => ({ ...chain, snapshot }))
+									: { chain: [] }
 							),
 						};
 					})
@@ -348,19 +416,27 @@ suite(
 					}
 				}
 				// let the round's records expire so rounds stay independent, with no chain read still in flight
-				await Promise.all(perWindow.map((window) => window.pendingChain));
+				const initialChains = await Promise.all(perWindow.map((window) => window.pendingChain));
+				for (const [index, chain] of initialChains.entries()) {
+					if ('snapshot' in chain) {
+						initialShortSnapshots++;
+						anomalyLogs.push(
+							`${perWindow[index].id}: INITIAL_SHORT_SNAPSHOT ${JSON.stringify(snapshotDetail(chain.snapshot))}`
+						);
+					}
+				}
 				await sleep(700);
 			}
 
 			console.log(
 				`\n[QA-431-CONVERGENCE] ${ROUNDS}×${WINDOWS}×${HITS} (${WORKERS} workers)\n` +
-					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} expired-recreated=${expiredRecreated} over=${over} inconclusive=${inconclusive}\n` +
+					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} expired-recreated=${expiredRecreated} over=${over} inconclusive=${inconclusive} initial-short-snapshots=${initialShortSnapshots}\n` +
 					(anomalyLogs.length
 						? `  ${anomalyLogs.join('\n  ')}\n  server log: ${ctx.harper.logDir ?? '(not kept: HARPER_INTEGRATION_TEST_LOG_DIR unset)'}`
 						: '  (no anomalies)')
 			);
 
-			ok(stuckShort === 0, `QA-431-CONVERGENCE: ${stuckShort} window(s) with durably lost increments`);
+			ok(stuckShort === 0, `QA-431-CONVERGENCE: ${stuckShort} window(s) with unconverged acknowledged increments`);
 			ok(over === 0, `QA-431-CONVERGENCE: ${over} window(s) over-counted (double-apply)`);
 			const measurable = clean + convergedLate + stuckShort + expiredRecreated + over;
 			ok(
@@ -370,3 +446,77 @@ suite(
 		});
 	}
 );
+
+suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+	let httpURL: string;
+	let auth: string;
+	let controlFixture: string;
+	before(async () => {
+		controlFixture = await mkdtemp(resolve(tmpdir(), 'harper-ttl-snapshot-control-'));
+		await cp(FIXTURE_PATH, controlFixture, { recursive: true });
+		const schemaPath = resolve(controlFixture, 'schema.graphql');
+		const schema = await readFile(schemaPath, 'utf8');
+		ok(schema.includes('@table(expiration: 0.5)'));
+		await writeFile(schemaPath, schema.replace('@table(expiration: 0.5)', '@table(expiration: 3600)'));
+		await setupHarperWithFixture(ctx, controlFixture, {
+			config: { threads: { count: 1 } },
+			env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
+		});
+		httpURL = ctx.harper.httpURL;
+		auth = createApiClient(ctx.harper).headers.Authorization;
+	});
+	after(async () => {
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (controlFixture) await rm(controlFixture, { recursive: true, force: true });
+		}
+	});
+	test('requires authentication and copies stored/cache metadata within one worker', async () => {
+		const id = 'snapshot-control';
+		const anonymous = await fetch(`${httpURL}/RateSnapshot/${id}`, { signal: AbortSignal.timeout(5_000) });
+		await anonymous.text();
+		ok([401, 403].includes(anonymous.status));
+		const seeded = await fetch(`${httpURL}/RateCounter/${id}`, {
+			method: 'PUT',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id, hits: 17 }),
+			signal: AbortSignal.timeout(5_000),
+		});
+		await seeded.text();
+		strictEqual(seeded.status, 204);
+		let worker: number | undefined;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const response = await fetch(`${httpURL}/RateSnapshot/${id}`, {
+				headers: { Authorization: auth },
+				signal: AbortSignal.timeout(5_000),
+			});
+			strictEqual(response.status, 200);
+			const snapshot = await response.json();
+			strictEqual(snapshot.id, id);
+			strictEqual(snapshot.engine, process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'other' : 'rocksdb');
+			strictEqual(snapshot.uncachedReadBypassesCache, snapshot.engine === 'rocksdb');
+			ok(Number.isInteger(snapshot.threadId) && snapshot.threadId > 0);
+			if (worker !== undefined) strictEqual(snapshot.threadId, worker);
+			worker = snapshot.threadId;
+			ok(snapshot.nowBefore <= snapshot.nowAfter);
+			for (const entry of [snapshot.rawBefore, snapshot.cached, snapshot.rawAfter]) {
+				strictEqual(entry.hits, 17);
+				ok(typeof entry.version === 'number' && entry.version > 0);
+				ok(typeof entry.localTime === 'number');
+				ok(typeof entry.metadataFlags === 'number');
+				ok(entry.expiresAt > snapshot.nowAfter);
+				ok(Array.isArray(entry.additionalAuditRefs));
+				ok(Array.isArray(entry.receivedIdentityRefs));
+			}
+			deepStrictEqual(snapshot.rawBefore, snapshot.rawAfter);
+			strictEqual(snapshot.cached.version, snapshot.rawBefore.version);
+		}
+		const unchanged = await fetch(`${httpURL}/RateCounter/${id}`, {
+			headers: { Authorization: auth },
+			signal: AbortSignal.timeout(5_000),
+		});
+		strictEqual(unchanged.status, 200);
+		strictEqual((await unchanged.json()).hits, 17);
+	});
+});
