@@ -336,6 +336,16 @@ describe('A relationship condition is existential; `relationship[conditions]` is
 			'cable-whole',
 			'keyboard',
 		]);
+		assert.deepStrictEqual(
+			await brands([
+				{
+					attribute: 'products',
+					operator: 'or',
+					conditions: [either, { attribute: 'price', comparator: 'ge', value: 40 }],
+				},
+			]),
+			['both', 'cable-split', 'cable-whole', 'keyboard']
+		);
 	});
 
 	it("reads a group's condition without an attribute as the related primary key", async () => {

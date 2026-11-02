@@ -2082,13 +2082,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				return selection;
 			};
 			let selection: RelationshipSelection;
-			if (filtered && firstAttribute.elements) {
+			// where this condition's deeper hops register their select() restrictions and share their loads; a to-one
+			// hop's restrictions are not read yet (harper#3762)
+			let nestedScope = join;
+			if (filtered) {
 				const unions = (filtered[UNIONS] ??= new Map());
-				selection = unions.get(firstAttributeName);
-				if (!selection) unions.set(firstAttributeName, (selection = unionSelection(join)));
+				let shared = unions.get(firstAttributeName);
+				if (!shared)
+					unions.set(
+						firstAttributeName,
+						(shared = firstAttribute.elements ? unionSelection(join) : Object.create(null))
+					);
+				if (firstAttribute.elements) selection = shared;
+				nestedScope ??= shared;
 			}
-			// where this condition's deeper hops register their select() restrictions
-			const nestedScope = filtered ? (join ?? selection) : undefined;
 			const rest = attribute.length > 2 ? attribute.slice(1) : attribute[1];
 			const nextFilter =
 				group && attribute.length === 1
@@ -2537,10 +2544,10 @@ function unionScan(branches, transaction, reverse: boolean, table, options) {
 	let results;
 	for (const branch of branches) {
 		// a condition inside an OR decides rows only, so its joins register nowhere
-		const branchResults = searchByIndex(branch, transaction, reverse, table, {
-			...options,
-			filtered: Object.create(null),
-		});
+		const branchResults =
+			branch.conditions && !isRelationshipGroup(branch)
+				? unionScan(branch.conditions, transaction, reverse, table, options)
+				: searchByIndex(branch, transaction, reverse, table, { ...options, filtered: Object.create(null) });
 		results = results ? results.concat(branchResults) : branchResults;
 	}
 	return distinctKeys(results);
@@ -2549,12 +2556,7 @@ function unionScan(branches, transaction, reverse: boolean, table, options) {
 // it is prepared, and a plain OR scans as the union of its branches
 function scansRelated(table, condition): boolean {
 	if (!condition.conditions || isRelationshipGroup(condition)) return conditionDrivesIndex(table, condition);
-	return (
-		condition.operator === 'or' &&
-		condition.conditions.every(
-			(branch) => !(branch.conditions && !isRelationshipGroup(branch)) && conditionDrivesIndex(table, branch)
-		)
-	);
+	return condition.operator === 'or' && condition.conditions.every((branch) => scansRelated(table, branch));
 }
 function relationshipScanRuns(table, path: any[], offset: number, comparator, value, group?): boolean {
 	const relationship = findAttribute(table.attributes, path[offset]);
