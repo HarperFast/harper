@@ -26,12 +26,17 @@ import {
 	restoreShutdownDeadline,
 	beginProcessShutdown,
 	isProcessShuttingDown,
+	whenWorkersStoppedForExit,
+	runLocalShutdownListeners,
 } from './manageThreads.ts';
 import {
 	runShutdownDrains,
 	shutdownDrainsHaveWork,
 	getShutdownDrainCeilingMs,
+	shutdownDrainDeadline,
+	tightenShutdownDrains,
 } from '../../components/shutdownDrain.ts';
+import { registerMainThreadShutdown } from './processShutdown.ts';
 import { realExit } from './workerProcessGuard.ts';
 import {
 	thisThreadsIsolatedApplication,
@@ -53,7 +58,7 @@ import { SERVERS, setPortServerMap, portServer, socketOptionDefaults } from '../
 import * as httpComponent from '../http.ts';
 import { withProxyProtocol } from '../serverHelpers/proxyProtocol.ts';
 import * as globals from '../../globals.js';
-import { whenScopesClosed } from '../../components/scopeShutdown.ts';
+import { whenScopesClosed, startDeferredScopeCloses } from '../../components/scopeShutdown.ts';
 import { getComponentName } from '../../components/componentLoader.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
 
@@ -129,22 +134,23 @@ export { listenOnDomainSocket };
 export { listenOnPorts };
 export { startServers };
 export { closeServers };
+export { shutdownForExit };
 
 let serversClosing = false;
 function closeServers() {
 	serversClosing = true;
 	if (isBun) {
-		// Bun servers use .stop() for graceful shutdown
+		// Bun.serve's stop() settles once its pending requests finish; a close() callback once its connections end
+		const stopped: Promise<unknown>[] = [];
 		for (let port in SERVERS) {
 			const server = SERVERS[port];
 			if (server?.stop) {
-				server.stop();
+				stopped.push(Promise.resolve(server.stop()).catch(() => {}));
 			} else if (server?.close) {
-				server.close();
+				stopped.push(new Promise((resolve) => server.close(resolve)));
 			}
 		}
-		// Give pending requests time to finish, then exit
-		return new Promise<any>((resolve) => setTimeout(resolve, 5000).unref());
+		return Promise.race([Promise.all(stopped), new Promise<any>((resolve) => setTimeout(resolve, 5000).unref())]);
 	}
 	const promises: any = [];
 	for (let port in SERVERS) {
@@ -200,11 +206,23 @@ function closeServers() {
 }
 
 let shutdownPromise: Promise<void>;
-function shutdownServers() {
-	if (shutdownPromise) return shutdownPromise;
-	const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
+/**
+ * The thread's shutdown sequence, run once; a later call with a process `exitDeadline` only tightens the
+ * drain deadline of the run already in progress. A phase that fails is logged and the next still runs.
+ */
+function shutdownServers(exitDeadline?: number) {
+	if (shutdownPromise) {
+		if (exitDeadline)
+			tightenShutdownDrains(shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline));
+		return shutdownPromise;
+	}
+	const drainDeadline = shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline);
 	const extendedForDrain = shutdownDrainsHaveWork();
 	if (extendedForDrain) extendShutdownDeadline(drainDeadline);
+	const phase = (name: string, run: () => unknown) => () =>
+		Promise.resolve()
+			.then(run)
+			.catch((error) => harperLogger.error(`Error during shutdown (${name})`, threadId, error));
 	// Wait for application scopes to finish closing before exiting — some dispose a native
 	// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
 	// worker while that runtime is still live crashes the process. The manageThreads backstop
@@ -213,18 +231,30 @@ function shutdownServers() {
 		.then(() => {
 			if (extendedForDrain) restoreShutdownDeadline();
 		})
-		.then(() => closeServers())
-		.then(() => whenScopesClosed())
-		.then(async () => {
-			const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
-			if (!branchDatabasesHaveWork()) return closeBranchDatabases();
-			extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
-			try {
-				await closeBranchDatabases();
-			} finally {
-				restoreShutdownDeadline();
-			}
-		})
+		.then(phase('closing servers', closeServers))
+		.then(
+			phase('starting scope close', async () => {
+				if (isMainThread) {
+					// main's scopes and branch databases outlive every worker, and no SHUTDOWN message reaches main
+					await whenWorkersStoppedForExit();
+					runLocalShutdownListeners({ type: terms.ITC_EVENT_TYPES.SHUTDOWN, restartNumber, exitDeadline });
+				}
+				startDeferredScopeCloses();
+			})
+		)
+		.then(phase('closing scopes', whenScopesClosed))
+		.then(
+			phase('closing branch databases', async () => {
+				const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
+				if (!branchDatabasesHaveWork()) return closeBranchDatabases();
+				extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
+				try {
+					await closeBranchDatabases();
+				} finally {
+					restoreShutdownDeadline();
+				}
+			})
+		)
 		.then(() => {
 			if (!isMainThread) realExit(0);
 		});
@@ -239,6 +269,14 @@ function shutdownServers() {
 	}
 	return shutdownPromise;
 }
+
+let componentsLoading: Promise<unknown> | undefined;
+/** Shut this thread down for a process exit, once its components have finished loading (if they are loading). */
+function shutdownForExit(exitDeadline: number) {
+	const shutdown = () => shutdownServers(exitDeadline);
+	return Promise.resolve(componentsLoading).then(shutdown, shutdown);
+}
+if (isMainThread) registerMainThreadShutdown(shutdownForExit);
 
 function startServers() {
 	if (isProcessShuttingDown()) return shutdownServers();
@@ -276,11 +314,10 @@ function startServers() {
 		if (message.type !== terms.ITC_EVENT_TYPES.SHUTDOWN) return;
 		beginProcessShutdown();
 		harperLogger.trace('received shutdown request', threadId);
-		void loaded
-			.then(shutdownServers, shutdownServers)
-			.catch((error) => harperLogger.error('Error shutting down HTTP worker', error));
+		const shutdown = () => shutdownServers(message.exitDeadline);
+		void loaded.then(shutdown, shutdown).catch((error) => harperLogger.error('Error shutting down HTTP worker', error));
 	});
-	loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor)).then(async (loadedGenerations) => {
+	loaded = componentsLoading = Promise.resolve(heldStart?.beginHeldStart(heldFor)).then(async (loadedGenerations) => {
 		await loadRootComponentsRuntimeModule.loadRootComponents(true);
 		loadRuntimeModule('components/deployLifecycle').deployLifecycle._componentsLoaded();
 		if (heldStart) {

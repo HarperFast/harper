@@ -27,6 +27,8 @@ import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
+import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
+import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
@@ -68,14 +70,16 @@ function addExitListeners() {
 			beginProcessShutdown();
 			removeHdbPid();
 		});
-		const exit = () => {
-			beginProcessShutdown();
-			removeHdbPid();
-			process.exit(0);
-		};
-		process.on('SIGINT', exit);
-		process.on('SIGQUIT', exit);
-		process.on('SIGTERM', exit);
+		// The pid file stays until 'exit': while draining, the instance is still running and a repeated
+		// `harper stop` is the second signal.
+		const onSignal = createTerminationHandler({
+			getTimeoutMs: getProcessShutdownTimeoutMs,
+			shutdown: shutdownProcess,
+			exit: () => process.exit(0),
+		});
+		process.on('SIGINT', onSignal);
+		process.on('SIGQUIT', onSignal);
+		process.on('SIGTERM', onSignal);
 	}
 }
 

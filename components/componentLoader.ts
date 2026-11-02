@@ -30,7 +30,7 @@ import * as dataLoader from '../resources/dataLoader.ts';
 import * as scheduler from '../resources/scheduler/scheduler.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
-import { trackScopeClose } from './scopeShutdown.ts';
+import { closeScopeOnShutdown } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases, assertIsolationConfig } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
@@ -1155,7 +1155,9 @@ export async function loadComponent(
 
 					// Track the close so the worker's shutdown path waits for it (and thus for any async
 					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
-					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
+					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, (message) =>
+						closeScopeOnShutdown(() => scope.close(), message?.exitDeadline !== undefined)
+					);
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 

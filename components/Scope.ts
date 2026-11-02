@@ -73,6 +73,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#restartRequestedDuringDeploy: boolean = false;
 	#optionsReady: boolean = false;
 	#closed: boolean = false;
+	#closing: Promise<this> | undefined;
 	#bearerValidatorsDisposed: boolean = false;
 	#bearerValidatorDisposers: Array<() => void> = [];
 	applicationScope?: ApplicationScope;
@@ -291,7 +292,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		else this.#logger.error?.('Error in component scope:', error);
 	}
 
-	async close(): Promise<this> {
+	/** Idempotent: a repeated close (a second SHUTDOWN reaching a worker already stopping) awaits the first. */
+	close(): Promise<this> {
+		return (this.#closing ??= this.#close());
+	}
+
+	async #close(): Promise<this> {
 		this.#closed = true;
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
