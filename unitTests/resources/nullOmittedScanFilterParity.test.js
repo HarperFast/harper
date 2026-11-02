@@ -378,6 +378,7 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 		for (const ne of [
 			{ attribute: 'tags', comparator: 'ne', value: 'x' },
 			{ attribute: 'days', comparator: 'ne', value: dayOf('x'.charCodeAt(0)) },
+			{ attribute: 'days', comparator: 'ne', value: dayOf('x'.charCodeAt(0)).getTime() },
 		])
 			for (const request of [
 				{ conditions: [ne] },

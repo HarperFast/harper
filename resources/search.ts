@@ -2113,8 +2113,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			return recordFilter;
 		}
 	}
-	const dateValue = value instanceof Date;
-	if (dateValue) value = value.getTime();
+	if (value instanceof Date) value = value.getTime();
 
 	let baseFilter;
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
@@ -2241,9 +2240,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			} else
 				baseFilter = attributeComparator(
 					attribute,
-					dateValue
-						? (recordValue) => compareKeys(dateAsIndexKey(recordValue) ?? null, value) !== 0
-						: (recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+					(recordValue) => compareKeys(dateAsIndexKey(recordValue) ?? null, value) !== 0,
 					false,
 					true
 				);
