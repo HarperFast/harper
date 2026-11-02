@@ -26,6 +26,8 @@ Added 2026-10-31:
 
 Added 2026-11-01: [the record cache's weak tier](#the-record-caches-weak-tier-2026-11-01), counted inside `WeakLRUCache.get()`, with a V8 GC timing test and a strong-only A/B.
 
+Added 2026-11-02: [a Redis-sized record cache](#a-redis-sized-record-cache-2026-11-02). Giving the record cache Redis's 3 GiB on 4 threads does not pay at 2x: hit rate +7–10 points, throughput flat to −7%, because the memory comes out of the page and block caches. Two threads with twice the cache use only 2.7 of 4 cores. The section has the per-record heap cost, GC by phase, a recommendation for a byte-sized cache, and two rocksdb-js read-path gaps.
+
 ## Ranked optimization candidates
 
 Estimates are CPU µs/op at the point named, from the bucket and frame costs below; only 8 is measured as a change. All are proposals for separate work: this PR changes no product code.
@@ -191,6 +193,98 @@ The differences are smaller than the rep-to-rep spread (3–8% in instructions/o
 **What this benchmark can show.** Only the reach past the strong set. Every handler here drops its records once the response is written, so nothing holds a record when it is evicted, and the identity benefit never comes up.
 
 **Recommendation: keep the weak tier.** On these workloads it costs about 0.5 µs/op and saves about 0.3 µs/op, both under the noise. Its identity benefit applies where application code holds records, which this benchmark does not measure. The levers that move the warm hit rate are the strong set's size and the per-thread caches (items 1 and 2 above).
+
+## A Redis-sized record cache (2026-11-02)
+
+**Question.** In the sweep, Redis gets 3 GiB of the stack's 8 GiB (`maxmemory 3gb`). Harper's record cache holds about 13k records per thread, tens of MB in total, and almost all of Harper's 8 GiB goes to the RocksDB block cache and the page cache. Does a record cache with Redis's share pay off at the 2x point (17.2M records), and on how many threads? Harper at `f916e39`: main with header assembly (#3837), the request-pipeline reductions (#3850), uWS client addresses (#3855) and weak-lru-cache 1.2.3. Same 8 GiB cgroup and 4-core cpuset for every configuration, uWS HTTP.
+
+| configuration    | target                      | threads | `HARPER_RECORD_CACHE_SIZE` | records held per thread | `threads.maxHeapMemory` | block cache |  verification table |
+| ---------------- | --------------------------- | ------: | -------------------------: | ----------------------: | ----------------------: | ----------: | ------------------: |
+| A, control       | `harper-uws`                |       4 |           32,768 (default) |                    ~13k |        744 MB (derived) | 2 GiB (25%) |          128K slots |
+| B                | `harper-uws-rc3g-4t`        |       4 |                    820,000 |          410k = 768 MiB |                 1152 MB |     512 MiB | 16M slots (128 MiB) |
+| C                | `harper-uws-rc3g-2t`        |       2 |                  1,640,000 |          820k = 1.5 GiB |                 2240 MB |     512 MiB |           16M slots |
+| B, default table | `harper-uws-rc3g-4t-vt128k` |       4 |                    820,000 |                    410k |                 1152 MB |     512 MiB |          128K slots |
+| A, large table   | `harper-uws-vt16m`          |       4 |                     32,768 |                    ~13k |                  744 MB |       2 GiB |           16M slots |
+| A, 2 threads     | `harper-uws-2t`             |       2 |                     32,768 |                    ~13k |        780 MB (derived) |       2 GiB |          128K slots |
+
+**Bytes per cached record: 1,965.** Measured in a real Harper (warm, 200k records, B's and C's `cacheSize`). A temporary probe forced two full GCs every 2 s and logged each thread's used heap against its strongly held entries, counted by scanning the LRFU ring. While the cache filled from ~20k to ~190k entries per thread, the heap rose 1,960–1,966 bytes per entry on every thread (R² 0.9997–0.9998). That covers the decoded record (10 one-byte strings of 100 chars and the object), its `WeakRef` entry with its fields, the `FinalizationRegistry` cell, the Map entry and the `Entry` held in `entryMap`. The intercept, 42 MiB per thread at B's size and 48–53 MiB at C's, is Harper's baseline heap plus the ring arrays, which are allocated up front at 8 bytes per position. A ~1 KiB record has expiration priority 1, so it takes 2 ring positions: 768 MiB is 410k records and a `cacheSize` of 820k. The stock cache's slope, 2,084–2,126 bytes, is noisier because its Map also holds weak entries.
+
+**The memory trade inside 8 GiB.** At 2x, A fills its cap: about 2.8 GiB anon (the block cache's 2 GiB, four heaps and native memory) and 5.3 GiB of page cache. The block cache is only 2 GiB, so it cannot give up 3 GB. B and C cut it to 512 MiB (−1.5 GiB), and the rest of the cache, its heap headroom and the 128 MiB table come out of the page cache. The heap limit is the cache plus the ~50 MiB baseline plus 40% for garbage between major GCs.
+
+**A cache hit is only cheap when the verification table vouches for it.** A record-cache hit passes the cached version to rocksdb-js. If the process-wide verification table (VT) slot for that key still holds the version, the answer is FRESH with no RocksDB read. If the slot was overwritten, rocksdb-js reads the record and still answers FRESH when the version matches: no decode, but a full RocksDB read, and through the thread pool when the block is not cached. The VT is direct-mapped, its default is 131,072 slots, and every cold read overwrites one. Harper has no setting for its size, so `vtPreload.mjs` sets it from Harper's main thread before the first database opens. A worker-thread test confirmed the setting reaches the workers: 64 slots sent all 2,000 worker lookups to RocksDB, 16M sent none.
+
+Two findings from counting this:
+
+- rocksdb-js's `Store.get()` passes `POPULATE_VERSION_FLAG` only to its in-memory attempt. When the block cache misses and it repeats the read on its thread pool (`context.get(keyParam, resolve, reject, txnId, expectedVersion)`, `dist/index.mjs:2008-2011`), the flag is gone, so a cold read from disk or page cache never seeds the VT. The record's first cache hit then costs a second RocksDB read, which does populate the slot. Standalone, with a 1 MiB block cache and a 16M-slot table, 6,855 of 20,000 cold reads went to the pool and the first expected-version pass found 13,134 immediate hits; the second found 19,974. With a 512 MiB block cache that misses most reads, nearly every record entering B's or C's cache pays this once.
+- Inside a transaction, as Harper reads, a lookup that misses the block cache makes three RocksDB lookups. They are `Store.get()`'s in-memory attempt, the transaction's own in-memory attempt (a repeat, `transaction_handle.cpp:703-712`), then the thread-pool read. `rocksdb.number.keys.read` counts all three, so immediate VT hits = lookups − (RocksDB Gets − 2 × thread-pool reads). The probe counts the thread-pool reads (`getEntry` got a promise back). Standalone: 2.00 extra Gets per thread-pool read with a transaction, 1.00 without.
+
+**Probe overhead.** Every Harper row here ran with the probe: counters inside `getEntry`, RocksDB tickers, heap and GC per thread every 100 ms, and a ring scan every 30 s (7–15 ms per thread at B's and C's sizes). Measured on harper-uws, warm C, 1M ops, 3 interleaved reps against the stock build: 207.1k instructions/op stock and 207.8k with the probe (+0.3%). The stock reps alone spread 1.0%. ops/s −0.5%.
+
+**Warm row (200k records, everything fits), 3 reps, median:**
+
+| workload | configuration |        ops/s (min–max) | p50 ms | p99 ms | CPU µs/op | instructions/op | cache hit |
+| -------- | ------------- | ---------------------: | -----: | -----: | --------: | --------------: | --------: |
+| C        | A             | 54,177 (52,792–55,872) |   0.79 |   4.33 |      62.9 |          206.6k |     37.5% |
+| C        | B             | 60,409 (56,254–60,945) |   0.63 |   3.93 |      54.5 |          181.4k |     68.0% |
+| C        | C             | 46,417 (46,252–47,475) |   0.99 |   4.15 |      44.2 |          161.6k |     84.8% |
+| chain-2  | A             | 43,619 (42,487–44,779) |   1.05 |   5.90 |      88.6 |          299.0k |     60.3% |
+| chain-2  | B             | 53,208 (52,420–53,288) |   0.80 |   4.54 |      69.3 |          232.7k |     86.3% |
+| chain-2  | C             | 35,736 (35,573–36,523) |   1.49 |   4.50 |      59.0 |          205.6k |     94.5% |
+
+Nothing regresses per op: B is 11–22% faster and C is the cheapest per op. C is 14–18% slower in ops/s because 2 JS threads used about 2.05 of the 4 cores (CPU µs/op × ops/s). The warm row is a fresh target after one read-all pass, so the caches were still taking their first touches: B and C's 68–95% are not their steady state.
+
+**At 2x (17.2M records), 3 reps each, medians over settled reps.** `memory-sweep.mts --cells=…` (below). Every sample restores the snapshot inside its own 8 GiB cgroup and warms up in chunks of 2M record reads until three agree (ceiling 12). Two of the 33 rows hit the ceiling and are excluded: A on C (rep 3) and B on chain-2 (rep 3). Record-cache counts, heap and major-GC rates come from the probe over the measured run. GC phases come from the `--profile` window. pg-redis's hit rate is Redis's.
+
+| workload | configuration  |        ops/s (min–max) | p50 / p99 ms | CPU µs/op | instructions/op | cache hit | immediate VT, share of hits | strong records/thread | peak heap/thread | anon / file GiB | disk refaults/op | block-cache hit |
+| -------- | -------------- | ---------------------: | -----------: | --------: | --------------: | --------: | --------------------------: | --------------------: | ---------------: | --------------: | ---------------: | --------------: |
+| C        | A `harper-uws` | 39,902 (39,853–39,950) |  1.16 / 6.79 |      92.7 |          266.2k |     37.5% |                       97.2% |                   12k |          118 MiB |     2.84 / 5.04 |             0.68 |           13.6% |
+| C        | B `-rc3g-4t`   | 36,943 (30,949–40,344) |  1.18 / 7.41 |      95.2 |          263.7k |     44.9% |                       98.3% |                  140k |          658 MiB |     3.59 / 4.24 |             0.78 |            3.4% |
+| C        | C `-rc3g-2t`   | 35,095 (32,536–36,457) |  1.48 / 6.12 |      76.4 |          247.2k |     48.2% |                       96.5% |                  262k |        1,417 MiB |     3.89 / 3.93 |             0.81 |            2.6% |
+| C        | pg-redis       | 27,293 (26,772–27,813) |  1.84 / 9.19 |     142.2 |          345.5k |     60.6% |                           – |                     – |                – |     3.38 / 3.17 |             0.96 |               – |
+| chain-2  | A              | 22,754 (21,671–25,498) | 1.71 / 11.64 |     154.8 |          405.3k |     56.6% |                       97.4% |                   13k |          122 MiB |     2.86 / 5.02 |             1.15 |           20.2% |
+| chain-2  | B              | 21,348 (20,165–22,530) | 2.11 / 14.00 |     157.9 |          400.2k |     66.1% |                       99.0% |                  162k |          663 MiB |     3.67 / 4.15 |             1.74 |            3.6% |
+| chain-2  | C              | 19,679 (18,476–22,562) | 2.11 / 17.43 |     125.0 |          366.1k |     69.7% |                       98.1% |                  332k |        1,460 MiB |     3.94 / 3.88 |             1.44 |            2.8% |
+| chain-2  | pg-redis       | 14,236 (14,156–14,610) | 3.56 / 15.67 |     273.3 |          663.5k |     79.3% |                           – |                     – |                – |     3.38 / 3.19 |             1.43 |               – |
+
+| workload C, 2x             |                  ops/s | CPU µs/op | cache hit | immediate VT | GC µs/op: scavenge / major marking / all GC | major GCs per s per thread |
+| -------------------------- | ---------------------: | --------: | --------: | -----------: | ------------------------------------------: | -------------------------: |
+| A                          |                 39,902 |      92.7 |     37.5% |        97.2% |                            5.5 / 5.2 / 13.9 |                       0.68 |
+| B                          |                 36,943 |      95.2 |     44.9% |        98.3% |                            6.2 / 5.0 / 14.4 |                       0.10 |
+| C                          |                 35,095 |      76.4 |     48.2% |        96.5% |                            7.6 / 1.8 / 11.7 |                       0.07 |
+| B, default 128K-slot table | 38,138 (36,402–38,198) |      96.4 |     45.2% |        93.0% |                            6.3 / 5.6 / 15.4 |                       0.11 |
+| A, 16M-slot table          | 36,320 (36,082–39,707) |      95.0 |     37.1% |        99.8% |                            5.4 / 4.6 / 13.2 |                       0.64 |
+| A, 2 threads               | 32,194 (31,203–32,724) |      81.5 |     37.9% |        97.0% |                            7.8 / 4.5 / 15.8 |                       1.05 |
+| pg-redis (Fastify's GC)    |                 27,293 |     142.2 |     60.6% |            – |                            5.2 / 6.1 / 14.3 |                          – |
+
+What the numbers say:
+
+- **A Redis-sized cache on 4 threads does not pay at 2x.** B is 6–7% below A on both workloads, inside the rep spread on C (B's reps run 30.9k–40.3k), and spends 2–3% more CPU per op. It gains 7–10 points of hit rate. The memory came out of the page cache (5.04 → 4.24 GiB) and the block cache (2 GiB → 512 MiB, hit rate 13.6% → 3.4%), so the misses left cost more. RocksDB's file reads after a block-cache miss rose from 6.6–7.9 to 7.4–8.5 µs/op on C (11.5–11.8 → 12.7–15.1 on chain-2). That offsets the binding and decode work that the extra hits save.
+- **The hit rate cannot rise much on this workload.** YCSB's scrambled zipfian draws ranks over 10¹⁰ items and folds them onto the keys with a hash. Computed from its constants, an ideal LRU hits 40% with 13k entries, 50% with 166k, 54% with 410k and 63% with Redis's ~2.9M keys (Redis measured 60.6%). B and C sit on that curve, a few points below it from first touches per thread. Each thread caches the same hot set, so four 768 MiB caches cover about what one would.
+- **The cache holds far fewer records strongly than its size says.** Under this load, weak-lru-cache's LRFU ring kept 140–162k records per thread strongly, 34–40% of B's 410k capacity, and 262–332k of C's 820k (32–40%). Every promotion leaves a hole in the generation it leaves, which is refilled only when that generation's write position comes round again. Heap still reached 658 MiB per thread for B: the weak tier and garbage between major GCs fill the rest. A configured entry count is therefore neither a byte budget nor a record count.
+- **A large old generation costs little GC here.** With the heap limit raised to fit the cache, V8 runs a major GC 7–10x less often (0.07–0.10 per second per thread against A's 0.68). Major marking stays at A's level for B (5.0 vs 5.2 µs/op) and falls to 1.8 for C (4.5 for the 2-thread stock control). B's scavenges cost 0.7 µs/op more, from cached records surviving to old space; C's 7.6 matches the 2-thread control's 7.8. Total GC: A 13.9, B 14.4, C 11.7 µs/op (2-thread control 15.8). Peak heap per thread was 658 MiB for B (limit 1176) and 1,417 MiB for C (limit 2288). No sample hit an OOM kill.
+- **2 threads cannot use 4 cores.** C and the 2-thread stock control use 2.6–2.7 of the 4 cores (CPU µs/op × ops/s), against 3.5–3.7 for A and 3.9 for pg-redis. At 2 threads the large cache does pay: C is 9% faster than the 2-thread stock control and 6% cheaper per op. That still leaves it 12% below A, and on chain-2 14% below.
+- **The verification-table size is not the limit at 2x.** With the default 128K slots, B's immediate VT share is 93.0% against 98.3% at 16M, and throughput is within noise. A with a 16M-slot table gains nothing either (97.2% → 99.8% immediate, ops/s within noise). One reason the small table holds up is the rocksdb-js gap above: at 2x, 26–53% of lookups go to the thread pool, and those cold reads never write a slot. Once that is fixed, cold reads will overwrite slots, and the table will have to be sized with the cache.
+- **Harper leads pg-redis at 2x** by 1.46x on C and 1.60x on chain-2 (A against pg-redis, at this head: #3837 and #3850 included).
+
+**Recommendation.** A byte-sized record cache is worth a product change, but not one sized to a Redis-like share when the dataset outgrows memory.
+
+- **Size it in bytes, not entries.** An entry count does not track memory. A ~1 KiB record holds 1,965 heap bytes. A record takes twice as many ring positions each time its size doubles (the expiration priority). Under load, the LRFU ring holds 32–40% of its nominal capacity strongly while the weak tier keeps more in the heap. The product setting should be a per-thread byte budget, enforced against measured or estimated record bytes. The heap limit should be derived from it.
+- **Grow it toward the dataset when the dataset fits, and keep it small when it does not.** Warm, where everything fits, the large cache is 11–22% faster at 13–22% less CPU per op. At 2x it buys a few points of hit rate at 4x duplication and loses on page cache. A budget-derived rule that matches both rows: record cache per thread = min(dataset's decoded size, a modest share of the heap budget), with the rest of the 8 GiB left to the block cache and page cache. Those are shared by every thread and hold about 4 records per 4 KiB block. These runs did not measure a share between ~25 MB and 768 MiB per thread. The next experiment should sweep 64/128/256 MiB per thread at 0.5x and 2x.
+- **Threads: one per core (4 here).** 2 threads with twice the cache are the cheapest per op but leave 1.3 cores idle and lose 12–18% throughput, warm and at 2x.
+- **GC is not the obstacle.** A 1.5 GiB-per-thread old generation is affordable if the heap limit leaves ~40% headroom: major GCs become rare and marking per op does not grow.
+- **Do these first; they are cheaper than any size change.**
+  1. Pass `POPULATE_VERSION_FLAG` through rocksdb-js's thread-pool fallback, so that a cold read from disk seeds the VT.
+  2. Drop the transaction's repeated block-cache probe. A read that misses the block cache makes three RocksDB lookups, one of them redundant, and those reads are 26–53% of lookups at 2x.
+  3. Expose `verificationTableEntries` in Harper's config and size it with the record cache. It costs 8 bytes per slot.
+
+**Method.** Harper `f916e39`, i7-12700H, turbo off, target cpuset `0,2,4,6` for every configuration, generator on other cores, `bench-run --bench-cpus 0-15`. A host gate before each sample waited up to 1 min for the rest of the host to use under 3 cores; noisy measured runs were measured once more. The probe was a temporary patch of `dist/resources/PrimaryRocksDatabase.js`, not committed, installed by renaming a generated file over the clean build's and restored by a shell trap. `meta.harper.digests` in each results file shows which build it ran. Per HTTP thread, it appended to a JSON-lines file every 100 ms: cumulative counters inside `getEntry` (lookups, cache hits, FRESH answers synchronous and asynchronous, thread-pool reads, decodes, cold reads); the database's `rocksdb.number.keys.read`, block-cache hit, miss, capacity and usage; `v8.getHeapStatistics()`; `PerformanceObserver` GC counts and pauses by kind; and, every 30 s, a scan of the LRFU ring for strongly held entries. The report differences each thread's first and last ticks at least 250 ms inside the measured run and works in rates per thread. Immediate VT hits = lookups − (RocksDB Gets − 2 × thread-pool reads), checked standalone against a 64-slot and a 16M-slot table, with and without a transaction. GC phases come from `profile-report.mts` (`gcPhase`, innermost frame that names a phase). Disk refaults are `memory.stat` `workingset_refault_file` over the workload.
+
+```sh
+node benchmarks/ycsb-vs-pg/run-compare.mts --cache=warm --scale=standard --targets=harper-uws,harper-uws-rc3g-4t,harper-uws-rc3g-2t --workloads=C,chain-2 --ops=1000000 --reps=3 --perf-counters --host-quiet-cores=3 --host-quiet-max-min=1
+node benchmarks/ycsb-vs-pg/memory-sweep.mts --reps=3 --profile=<dir> --profile-ops=400000 --host-quiet-cores=3 --host-quiet-max-min=1 --noisy-retries=1 --warmup-chunk=2000000 --warmup-max-chunks=12 \
+  --cells=2:C:harper-uws,2:C:harper-uws-rc3g-4t,2:C:harper-uws-rc3g-2t,2:C:pg-redis,2:C:harper-uws-rc3g-4t-vt128k,2:C:harper-uws-vt16m,2:C:harper-uws-2t,2:chain-2:harper-uws,2:chain-2:harper-uws-rc3g-4t,2:chain-2:harper-uws-rc3g-2t,2:chain-2:pg-redis
+node benchmarks/ycsb-vs-pg/profile-report.mts <memory-sweep results>.json
+```
 
 ## Token authentication on both sides (`--auth=token`, 2026-10-31)
 
