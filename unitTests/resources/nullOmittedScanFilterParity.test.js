@@ -1,7 +1,5 @@
 /**
- * harper#3731, harper#3400: a condition selects the same rows whichever path evaluates it. A non-null `ne` matches null
- * and omitted values; a range matches neither, even with a null bound. `b` is indexed and `u` is an unindexed copy of
- * it, so the indexed lead, the primary-store scan and the record filter all see the same values.
+ * harper#3731, harper#3400. `b` is indexed and `u` is an unindexed copy of it, so every search path sees the same values.
  */
 
 require('../testUtils');
@@ -362,6 +360,7 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
 				{ name: 'c', type: 'String', indexed: true },
 				{ name: 'tags', type: 'array', elements: { type: 'String' }, indexed: true },
+				{ name: 'days', type: 'array', elements: { type: 'Date' }, indexed: true },
 			],
 		});
 		let lastPut;
@@ -372,23 +371,26 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 			['empty', []],
 			['null', null],
 		])
-			lastPut = Table.put({ id, c: 'hot', tags });
+			lastPut = Table.put({ id, c: 'hot', tags, days: tags?.map((tag) => dayOf(tag.charCodeAt(0))) });
 		await Table.put({ id: 'omitted', c: 'hot' });
 		await lastPut;
 		if (Table.indexingOperation) await Table.indexingOperation;
 	});
 
 	it('matches every record whose value is not that one value, once each', async () => {
-		const ne = { attribute: 'tags', comparator: 'ne', value: 'x' };
 		const expected = ['empty', 'null', 'omitted', 'xy', 'y'];
-		for (const request of [
-			{ conditions: [ne] },
-			{ conditions: [{ attribute: 'c', value: 'hot' }, ne], enforceExecutionOrder: true },
-		]) {
-			const found = [];
-			for await (const record of Table.search(request)) found.push(record.id);
-			assert.deepStrictEqual(found.sort(), expected, JSON.stringify(request.conditions));
-		}
+		for (const ne of [
+			{ attribute: 'tags', comparator: 'ne', value: 'x' },
+			{ attribute: 'days', comparator: 'ne', value: dayOf('x'.charCodeAt(0)) },
+		])
+			for (const request of [
+				{ conditions: [ne] },
+				{ conditions: [{ attribute: 'c', value: 'hot' }, ne], enforceExecutionOrder: true },
+			]) {
+				const found = [];
+				for await (const record of Table.search(request)) found.push(record.id);
+				assert.deepStrictEqual(found.sort(), expected, JSON.stringify(request.conditions));
+			}
 	});
 });
 

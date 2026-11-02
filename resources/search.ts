@@ -2240,9 +2240,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			} else
 				baseFilter = attributeComparator(
 					attribute,
-					// the whole value is compared, so a Date becomes the epoch number its index key and `value` hold
-					(recordValue) =>
-						compareKeys((recordValue instanceof Date ? recordValue.getTime() : recordValue) ?? null, value) !== 0,
+					(recordValue) => compareKeys(asIndexKey(recordValue) ?? null, value) !== 0,
 					false,
 					true
 				);
@@ -2446,6 +2444,15 @@ function relationshipScanRuns(table, path: any[], offset: number, comparator, va
 		? relationshipScanRuns(relatedTable, path, offset + 1, comparator, value)
 		: scanDrivesIndex(relatedTable, path[offset + 1], comparator, value);
 }
+// `ne` compares the whole value, so a Date, alone or in an array, becomes the epoch number its index key and the
+// condition value hold
+function asIndexKey(value) {
+	if (value instanceof Date) return value.getTime();
+	if (Array.isArray(value) && value.some((element) => element instanceof Date))
+		return value.map((element) => (element instanceof Date ? element.getTime() : element));
+	return value;
+}
+
 /**
  * Conditions searchByIndex answers from the primary store even on an indexed attribute: their record predicate
  * admits values no secondary-index range reaches, a null below its open start or an omitted one with no entry.

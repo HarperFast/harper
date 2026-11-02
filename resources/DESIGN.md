@@ -336,7 +336,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay and 
 - **The estimated range is the executed range**: `getRange` and `estimateCount` share `translateIndexBounds`.
 - Secondary-index scans open at `null` exclusive; primary scans at `true`, past symbol-keyed metadata (`searchBooleanFalseIndex.test.js`).
 - A negated condition estimates `Infinity`; an AND's estimate ignores non-finite legs (`estimateConditionForTable`, `estimateFilterOnlySibling.test.js`; gap: `intersectionEstimate` multiplies `Infinity` into the incoming-row hint).
-- **Null and omitted values match alike on every path** (`nullOmittedScanFilterParity.test.js`): no range matches them; a `null` bound opens it; a non-null `ne` matches them, so it reads the primary store (`bypassesSecondaryIndex`); SQL lowering keeps three-valued logic.
+- **Null and omitted values match alike on every path** (`nullOmittedScanFilterParity.test.js`): no range matches them; a `null` bound opens it; a non-null `ne` matches them, so it reads the primary store (`bypassesSecondaryIndex`); SQL leaves a range against NULL residual.
 - **An AND leads with its narrowest condition that can drive an index scan** (`orderConditions`, `conditionDrivesIndex`), because `in`, an empty `starts_with` and unindexed ranges estimate finite counts (finite for `count: 'estimated'` and the lazy index switch) yet full-scan. A relationship drives only if each hop's join index and leaf scan can run (`relationshipScanRuns`). Only a lead that reads the sort attribute's index (`scansInAttributeOrder`) streams the sort and keeps the lead; others sort in memory.
 
 ## Chained query conditions scope one array element; FIQL tokens always advance
