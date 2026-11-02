@@ -222,9 +222,9 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [Local messages name the product through `PRODUCT_NAME` (`utility/packageUtils.js`)](utility/DESIGN.md#local-messages-name-the-product-through-product_name-utilitypackageutilsjs) — Local lifecycle messages use the running package.json `productName`; distributions such as Harper Pro set that field instead of rewriting core sources.
 - [Local times are unique across threads (`utility/lmdb/commonUtility.ts` `getNextMonotonicTime`)](utility/DESIGN.md#local-times-are-unique-across-threads-utilitylmdbcommonutilityts-getnextmonotonictime) — One `SharedArrayBuffer` clock word per process, advanced by CAS; same-node equal versions read as re-deliveries, so a shared time would drop a write. · [RocksDB arena size and flush policy stay rocksdb-js's unless configured (`utility/rocksMemoryConfig.ts`)](utility/DESIGN.md#rocksdb-arena-size-and-flush-policy-stay-rocksdb-jss-unless-configured-utilityrocksmemoryconfigts) — `storage.rocks.arenaBlockSize` and `storage.rocks.writeBufferManagerFlushPolicy` forward only a well-typed operator value; unset means rocksdb-js decides, and an explicit policy lasts until a full restart.
 
-## integrationTests/ — end-to-end suite and fixtures
+## integrationTests/
 
-- [A deployed fixture must not install from the npm registry (`integrationTests/`)](integrationTests/DESIGN.md#a-deployed-fixture-must-not-install-from-the-npm-registry-integrationtests) — A fixture with production dependencies and no bundled `node_modules` puts the npm registry on the test's critical path; vendor them or neutralize the install.
+- [A fixture must not install from the npm registry](integrationTests/DESIGN.md#a-fixture-must-not-install-from-the-npm-registry) — Vendor production dependencies or neutralize the install.
 
 ## build-tools/ — packaging, published artifacts and local lint rules
 
