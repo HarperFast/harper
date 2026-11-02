@@ -4970,7 +4970,6 @@ describe('record locks across a node restart (harper#3768, #2582, #3268)', () =>
 			};
 			const requester = lock('alpha', alpha, 3_000);
 			await waitFor(() => contender !== undefined, 2_000);
-			// Freed by the hand-back, the key goes to whichever asks next; the other gets it after release.
 			const winner = await Promise.race([contender, requester]);
 			assert.strictEqual(copy.granted, true);
 			const duplicate = cluster.replies.find((reply) => reply.requestId === copy.requestId);
@@ -5037,7 +5036,6 @@ describe('record locks across a node restart (harper#3768, #2582, #3268)', () =>
 			const held = await alpha.acquire(key, LEASE, WAIT);
 			const minting = cluster.requests.find((entry) => entry.from === 'alpha').request;
 			const first = cluster.replies.find((reply) => reply.requestId === minting.requestId);
-			// alpha still holds the key, so the contender's recall waits on its drain.
 			const contender = beta.acquire(key, LEASE, 5_000);
 			contender.catch(() => {});
 			await waitFor(() => cluster.recalls.length > 0, 2_000);
@@ -5049,7 +5047,6 @@ describe('record locks across a node restart (harper#3768, #2582, #3268)', () =>
 			alpha.release(key, held.admissionId);
 			const round = await contender;
 			assert.ok(round.tsR > held.tsR);
-			// What a stray reply's hand-back writes names the recalled token, never the successor's.
 			gamma.applyEntry(
 				{ type: 'lockRelease', key, requester: 'alpha', token: late.token, dependencies: [] },
 				'alpha',
