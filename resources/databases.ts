@@ -35,6 +35,7 @@ import {
 	unlinkSync,
 } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { latchAbortMarkers } from './transactionLogAbortMarkers.ts';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
@@ -498,7 +499,7 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 			configuredFlushPolicy: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY),
 			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
 		}),
-		transactionLogAbortMarkers: envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS) === true,
+		transactionLogAbortMarkers: latchAbortMarkers(envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS)),
 	});
 	const arenaBlockSize = resolveRocksArenaBlockSize(envGet(CONFIG_PARAMS.STORAGE_ROCKS_ARENABLOCKSIZE));
 	if (arenaBlockSize !== undefined) (options as { arenaBlockSize?: number }).arenaBlockSize = arenaBlockSize;

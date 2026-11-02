@@ -1,0 +1,343 @@
+require('../testUtils');
+const assert = require('node:assert');
+const { setTimeout: delay } = require('node:timers/promises');
+const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
+const { table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
+const { setMaxOutstandingTxnDuration, setMaxRetryDelayMs } = require('#src/resources/DatabaseTransaction');
+const { DERIVED_INDEX_ACCEPTED, DerivedIndexRuntime } = require('#src/resources/derivedIndexRuntime');
+const { auditHistoryAbortMarked, establishAbortMarkedHistory } = require('#src/resources/auditStore');
+const {
+	abortMarkersEnabled,
+	resolveAbortMarkersSetting,
+	setAbortMarkersForTests,
+} = require('#src/resources/transactionLogAbortMarkers');
+const { Transaction, ConflictKind, constants } = require('@harperfast/rocksdb-js');
+
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarkers)', function () {
+	if (isLMDB) return;
+	this.timeout(20000);
+	let Audited, ChainHead, ChainLink;
+	let nextId = 1;
+	const id = (prefix) => `${prefix}-${nextId++}`;
+	const restores = [];
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Audited = table({
+			table: 'AbortMarkersAudited',
+			database: 'abortMarkersA',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }, { name: 'count' }],
+			audit: true,
+		});
+		ChainHead = table({
+			table: 'AbortMarkersChainHead',
+			database: 'abortMarkersHead',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }],
+			audit: true,
+		});
+		ChainLink = table({
+			table: 'AbortMarkersChainLink',
+			database: 'abortMarkersLink',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }],
+			audit: true,
+		});
+		const priorRetryDelay = setMaxRetryDelayMs(1);
+		restores.push(() => setMaxRetryDelayMs(priorRetryDelay));
+	});
+
+	afterEach(() => {
+		while (restores.length > 1) restores.pop()();
+	});
+
+	after(() => {
+		while (restores.length) restores.pop()();
+	});
+
+	function auditEntries(targetTable, recordId) {
+		return [...targetTable.auditStore.getRange({ start: 1 })].filter(
+			(entry) => entry.tableId === targetTable.tableId && entry.recordId === recordId
+		);
+	}
+
+	// competing writes are older than the transaction they conflict with, so they do not supersede it
+	const OLD = Date.now() - 86400000;
+	const seed = (targetTable, recordId) =>
+		transaction({ timestamp: OLD }, (context) => targetTable.put({ id: recordId, writer: 'seed' }, context));
+
+	// Each attempt of the first transaction committing to `targetTable` meets a write that committed after
+	// its snapshot (a conflict RocksDB finds at commit) while `conflicts()` says so.
+	function conflictAtCommit(targetTable, recordId, conflicts) {
+		const targetDb = targetTable.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const attempts = [];
+		let target;
+		let passThrough = false;
+		Transaction.prototype.commit = async function (...args) {
+			if (passThrough || this.store?.db !== targetDb) return originalCommit.apply(this, args);
+			target ??= this.id;
+			if (this.id !== target) return originalCommit.apply(this, args);
+			if (conflicts(attempts.length)) {
+				passThrough = true;
+				try {
+					await transaction({ timestamp: OLD + attempts.length + 1 }, (other) =>
+						targetTable.put({ id: recordId, writer: 'competitor', count: attempts.length }, other)
+					);
+				} finally {
+					passThrough = false;
+				}
+			}
+			const result = await originalCommit.apply(this, args);
+			attempts.push({ kind: this.lastConflictKind(), logWritten: this.logWritten(), key: this.getTimestamp() });
+			return result;
+		};
+		restores.push(() => (Transaction.prototype.commit = originalCommit));
+		return attempts;
+	}
+
+	function writeAfterRead(targetTable, recordId, writer) {
+		const context = {};
+		return transaction(context, async () => {
+			await targetTable.get(recordId, context);
+			await targetTable.put({ id: recordId, writer }, context);
+		});
+	}
+
+	it('is on unless configured false', function () {
+		assert.equal(abortMarkersEnabled(), true, 'opening through databases.ts with the setting unset enables markers');
+		for (const configured of [undefined, null, true, 'true', ''])
+			assert.equal(resolveAbortMarkersSetting(configured), true, String(configured));
+		for (const configured of [false, 'false', 'FALSE', 0, '0', 'off'])
+			assert.equal(resolveAbortMarkersSetting(configured), false, String(configured));
+	});
+
+	it('retries a logged attempt write-once and commits one log entry under its first key', async function () {
+		const recordId = id('write-once');
+		await seed(Audited, recordId);
+		const attempts = conflictAtCommit(Audited, recordId, (attempt) => attempt < 3);
+		await writeAfterRead(Audited, recordId, 'mine');
+		assert.equal(attempts.length, 4);
+		assert.ok(attempts.slice(0, 3).every((attempt) => attempt.kind === ConflictKind.atCommit));
+		assert.ok(attempts.every((attempt) => attempt.logWritten && attempt.key === attempts[0].key));
+		assert.equal((await Audited.get(recordId)).writer, 'mine');
+		const mine = auditEntries(Audited, recordId).filter((entry) => entry.txnLogKey === attempts[0].key);
+		assert.equal(mine.length, 1, 'the retry must not stage its log batch again');
+	});
+
+	it('gives up after 40 logged commit conflicts with the 500, leaving no readable log entry', async function () {
+		const recordId = id('capped');
+		await seed(Audited, recordId);
+		const attempts = conflictAtCommit(Audited, recordId, () => true);
+		await assert.rejects(writeAfterRead(Audited, recordId, 'capped'), (error) => {
+			assert.match(error.message, /After 40 coordinated retries/);
+			assert.equal(error.statusCode, 500);
+			return true;
+		});
+		assert.equal(attempts.length, 41);
+		assert.ok(attempts.every((attempt) => attempt.kind === ConflictKind.atCommit && attempt.logWritten));
+		assert.deepEqual(
+			auditEntries(Audited, recordId).filter((entry) => entry.txnLogKey === attempts[0].key),
+			[],
+			'a reader must skip the aborted batch'
+		);
+		assert.equal((await Audited.get(recordId)).writer, 'competitor');
+	});
+
+	it('bounds refusals before the log write by the commit deadline (503), never the retry cap', async function () {
+		const recordId = id('refused');
+		await seed(Audited, recordId);
+		const priorDuration = setMaxOutstandingTxnDuration(600);
+		restores.push(() => setMaxOutstandingTxnDuration(priorDuration));
+		const targetDb = Audited.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const keys = []; // one per attempt
+		let target;
+		// What rocksdb-js reports for a commit refused on an older write intent before its log write: it parks,
+		// then resolves RETRY_NOW with nothing written.
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+			target ??= this.id;
+			if (this.id !== target) return originalCommit.apply(this, args);
+			keys.push(this.getTimestamp());
+			console.log('refused', keys.length, this.isRetry, this.relogOnRetry, this.retries, this.commitConflicts);
+			this.lastConflictKind = () => ConflictKind.intentBeforeLog;
+			this.logWritten = () => false;
+			await delay(5);
+			return constants.RETRY_NOW_VALUE;
+		};
+		restores.push(() => (Transaction.prototype.commit = originalCommit));
+		await assert.rejects(writeAfterRead(Audited, recordId, 'refused'), (error) => {
+			assert.equal(error.name, 'TransactionCommitConflictTimeoutError');
+			assert.equal(error.statusCode, 503);
+			return true;
+		});
+		assert.ok(keys.length > 41, `refusals must not count against the retry cap (${keys.length} attempts)`);
+		assert.equal((await Audited.get(recordId)).writer, 'seed');
+	});
+
+	it('re-logs a retry refused before its log write on an older write intent, committing one entry', async function () {
+		const { RocksDatabase } = require('@harperfast/rocksdb-js');
+		RocksDatabase.config({ transactionLogWriteIntents: true });
+		restores.push(() => RocksDatabase.config({ transactionLogWriteIntents: false }));
+		const recordId = id('relog');
+		await seed(Audited, recordId);
+		const targetDb = Audited.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const attempts = [];
+		let holderId;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb || this.id === holderId) return originalCommit.apply(this, args);
+			const result = await originalCommit.apply(this, args);
+			attempts.push({ kind: this.lastConflictKind(), logWritten: this.logWritten(), key: this.getTimestamp() });
+			return result;
+		};
+		restores.push(() => (Transaction.prototype.commit = originalCommit));
+		let releaseHolder;
+		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
+		const holderContext = {};
+		const holder = transaction(holderContext, async () => {
+			await Audited.get(recordId, holderContext);
+			await Audited.put({ id: recordId, writer: 'holder' }, holderContext);
+			const write = holderContext.transaction.writes.find((candidate) => candidate.key === recordId);
+			await holderContext.transaction.save(write);
+			holderId = holderContext.transaction.transaction.id;
+			await holderGate;
+			throw new Error('holder gives up');
+		});
+		holder.catch(() => {});
+		await waitFor(() => holderId !== undefined);
+		const mine = writeAfterRead(Audited, recordId, 'mine');
+		await delay(100); // parked behind the holder's intent
+		releaseHolder();
+		await mine;
+		await assert.rejects(holder, /holder gives up/);
+		assert.equal(attempts.length, 2);
+		assert.deepEqual(
+			{ kind: attempts[0].kind, logWritten: attempts[0].logWritten },
+			{ kind: ConflictKind.intentBeforeLog, logWritten: false }
+		);
+		assert.equal(attempts[1].logWritten, true);
+		assert.ok(attempts[1].key > attempts[0].key, 'the re-logged retry takes a fresh key');
+		const entries = auditEntries(Audited, recordId);
+		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[0].key).length, 0);
+		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[1].key).length, 1);
+		assert.equal(Audited.primaryStore.getEntry(recordId).version, attempts[1].key);
+		assert.equal((await Audited.get(recordId)).writer, 'mine');
+	});
+
+	it('keeps retrying a logged chain link once an earlier store committed', async function () {
+		const headId = id('chain-head');
+		const linkId = id('chain-link');
+		await seed(ChainLink, linkId);
+		const attempts = conflictAtCommit(ChainLink, linkId, (attempt) => attempt < 45);
+		const context = {};
+		await transaction(context, async () => {
+			await ChainHead.put({ id: headId, writer: 'mine' }, context);
+			await ChainLink.get(linkId, context);
+			await ChainLink.put({ id: linkId, writer: 'mine' }, context);
+		});
+		assert.equal(attempts.length, 46, 'aborting the link would land the transaction in part');
+		assert.equal((await ChainHead.get(headId)).writer, 'mine');
+		assert.equal((await ChainLink.get(linkId)).writer, 'mine');
+	});
+
+	for (const markers of [true, false]) {
+		it(`${markers ? 'never delivers' : 'delivers'} an aborted logged transaction to the derived-index runtime with markers ${markers ? 'on' : 'off'}`, async function () {
+			const priorMarkers = setAbortMarkersForTests(markers);
+			restores.push(() => setAbortMarkersForTests(priorMarkers ?? true));
+			const Indexed = table({
+				table: 'AbortMarkersIndexed',
+				database: `abortMarkersIndexed_${markers}`,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }, { name: 'count' }],
+				audit: true,
+			});
+			await Indexed.put({ id: 'anchor', writer: 'anchor' });
+			const anchor = auditEntries(Indexed, 'anchor').at(-1).txnLogKey;
+			const deliveries = [];
+			const backend = {
+				id: `aborted-${markers}`,
+				cursor: { format: 1, logs: { local: anchor } },
+				attach() {},
+				flush() {},
+				shutdown() {},
+				getDurableCursor() {
+					return this.cursor;
+				},
+				deliver(batch) {
+					deliveries.push(batch);
+					this.cursor = batch.through;
+					return DERIVED_INDEX_ACCEPTED;
+				},
+				onStateChange() {
+					return () => {};
+				},
+			};
+			const runtime = new DerivedIndexRuntime(Indexed.auditStore, (_tableId, recordId) => {
+				const entry = Indexed.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			});
+			restores.push(() => runtime.stop());
+			runtime.register({ backend, projections: new Map([[Indexed.tableId, (record) => ({ writer: record.writer })]]) });
+			const mutations = (recordId) =>
+				deliveries.flatMap((batch) =>
+					batch.transactions.flatMap((txn) => txn.mutations.filter((mutation) => mutation.recordId === recordId))
+				);
+			const targetDb = Indexed.primaryStore.store.db;
+			const originalCommit = Transaction.prototype.commit;
+			restores.push(() => (Transaction.prototype.commit = originalCommit));
+			let firstAttemptLogged;
+			const context = {};
+			const aborted = transaction(context, async () => {
+				await Indexed.get('conflicted', context);
+				await Indexed.put({ id: 'aborted', writer: 'never committed' }, context);
+				await Indexed.put({ id: 'conflicted', writer: 'never committed' }, context);
+				await transaction({}, (other) => Indexed.put({ id: 'conflicted', writer: 'competitor' }, other));
+				let attempt = 0;
+				// the first attempt logs and meets the competitor at commit; the retry fails terminally
+				Transaction.prototype.commit = async function (...args) {
+					if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+					if (++attempt === 1) {
+						const result = await originalCommit.apply(this, args);
+						firstAttemptLogged = this.logWritten() && this.lastConflictKind() === ConflictKind.atCommit;
+						return result;
+					}
+					throw Object.assign(new Error('terminal storage error after the log write'), {
+						code: 'ERR_IO',
+						hasLog: true,
+					});
+				};
+			});
+			await assert.rejects(aborted, (error) => error.code === 'ERR_IO');
+			Transaction.prototype.commit = originalCommit;
+			assert.equal(firstAttemptLogged, true, 'the aborted transaction must have written its log batch');
+			assert.equal(Indexed.primaryStore.getEntry('aborted'), undefined);
+			await Indexed.put({ id: 'after', writer: 'after' });
+			await waitFor(() => mutations('after').length > 0, { timeout: 5000 });
+			assert.equal(mutations('aborted').length, markers ? 0 : 1);
+		});
+	}
+
+	describe('history certification', function () {
+		it('certifies a database created with markers on, and not one opened with markers off', function () {
+			assert.equal(auditHistoryAbortMarked(Audited.auditStore), true);
+			const priorMarkers = setAbortMarkersForTests(false);
+			try {
+				establishAbortMarkedHistory(Audited.auditStore);
+				assert.equal(auditHistoryAbortMarked(Audited.auditStore), false);
+			} finally {
+				setAbortMarkersForTests(priorMarkers ?? true);
+			}
+			// the markers-off open forgot every log, so each must outlive its current file
+			establishAbortMarkedHistory(Audited.auditStore);
+			const history = Audited.auditStore.abortMarkedHistory;
+			const rootStore = Audited.auditStore.rootStore;
+			assert.equal(history.logs.local, rootStore.useLog('local').getStats().currentSequenceNumber);
+			assert.equal(auditHistoryAbortMarked(Audited.auditStore), false);
+		});
+	});
+});

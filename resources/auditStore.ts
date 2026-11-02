@@ -19,6 +19,7 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { asBinary } from './asBinary.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { endSubscriptionsFromEarlierHandles } from './transactionBroadcast.ts';
+import { abortMarkersEnabled } from './transactionLogAbortMarkers.ts';
 import {
 	ORIGIN_FLOOR_TICK_MS,
 	certifyOriginFloor,
@@ -197,6 +198,13 @@ const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
  * so a restart before the clock passes them cannot issue them again. RocksDB only.
  */
 const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
+/**
+ * Per transaction log, the file sequence that may still hold batches written with abort markers off
+ * (JSON `{ [log]: sequence }`; 0 for a log created with markers on); `null` once a database opens with
+ * markers off. A log's retained history is all marker-era once its oldest retained file is newer.
+ */
+const ABORT_MARKED_LOGS_KEY = Symbol.for('abort-marked-logs');
+const ABORT_MARKED_RECHECK_MS = 60_000;
 // Amortize durability barriers across keys; restart seeds above this whole reserve.
 const ISSUANCE_CEILING_HEADROOM_MS = 1000;
 
@@ -243,6 +251,7 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
+	establishAbortMarkedHistory(auditStore);
 	if (isRocksStore(auditStore)) {
 		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
 		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
@@ -1148,6 +1157,82 @@ export function establishDatabaseGeneration(auditStore: any): void {
 	} catch (error) {
 		warnContained('Error establishing the database generation', error);
 	}
+}
+
+function isEmptyLog(log: any): boolean {
+	for (const _entry of log.query({ start: 0, readUncommitted: true })) return false;
+	return true;
+}
+
+function readAbortMarkedLogs(stored: any): Record<string, number> | null | undefined {
+	if (stored === undefined) return undefined;
+	try {
+		return JSON.parse(Buffer.from(stored.buffer, stored.byteOffset, stored.byteLength).toString());
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Record at open which transaction-log files predate abort markers. An entry a committed reader returns
+ * from a later file belongs to a committed transaction; one from an earlier file can be an orphan of a
+ * logged attempt aborted with markers off. Read-only mode records nothing, so its history stays uncertified.
+ */
+export function establishAbortMarkedHistory(auditStore: any): void {
+	auditStore.abortMarkedHistory = undefined;
+	if (!isRocksStore(auditStore)) return;
+	try {
+		const markers = abortMarkersEnabled();
+		if (!isReadOnlyMode()) {
+			const rootStore = auditStore.rootStore;
+			commitAuditMetadata(
+				auditStore,
+				(read) => {
+					const stored = readAbortMarkedLogs(read(ABORT_MARKED_LOGS_KEY));
+					if (!markers) return stored === null ? undefined : [[ABORT_MARKED_LOGS_KEY, Buffer.from('null')]];
+					// a log missing from a recorded map was created while markers were on
+					const logs = stored ? { ...stored } : {};
+					let changed = !stored;
+					for (const name of rootStore.listLogs()) {
+						if (name in logs) continue;
+						logs[name] =
+							stored || isEmptyLog(rootStore.useLog(name))
+								? 0
+								: rootStore.useLog(name).getStats().currentSequenceNumber;
+						changed = true;
+					}
+					return changed ? [[ABORT_MARKED_LOGS_KEY, Buffer.from(JSON.stringify(logs))]] : undefined;
+				},
+				'abort-marked log history'
+			);
+		}
+		const logs = markers && readAbortMarkedLogs(auditStore.getBinary(ABORT_MARKED_LOGS_KEY));
+		if (logs) auditStore.abortMarkedHistory = { logs, certified: false, checkedAt: -Infinity };
+	} catch (error) {
+		warnContained('Error recording the abort-marked log history', error);
+	}
+}
+
+/**
+ * Whether every batch a committed reader can return from this audit store was written with abort
+ * markers on: every file that may hold an unmarked batch has been purged. Rechecked at most once a
+ * minute until it holds; then it holds for the life of the handle.
+ */
+export function auditHistoryAbortMarked(auditStore: any): boolean {
+	const history = auditStore?.abortMarkedHistory;
+	if (!history) return false;
+	if (history.certified) return true;
+	const now = performance.now();
+	if (now - history.checkedAt < ABORT_MARKED_RECHECK_MS) return false;
+	history.checkedAt = now;
+	const rootStore = auditStore.rootStore;
+	const existing = new Set(rootStore.listLogs());
+	for (const [name, sequence] of Object.entries(history.logs as Record<string, number>)) {
+		if (sequence === 0 || !existing.has(name)) continue;
+		const stats = rootStore.useLog(name).getStats();
+		if (stats.fileCount > 0 && stats.oldestSequenceNumber <= sequence) return false;
+	}
+	return (history.certified = true);
 }
 
 /**
