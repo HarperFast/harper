@@ -6,11 +6,7 @@ This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2
 
 ## Three HTTP stacks coexist — know which one
 
-| Stack                         | File                  | Used for                                                                                                                                                                                        |
-| ----------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Native**                    | `http.ts`             | Direct socket handling for application-level HTTP/1.1, HTTPS, HTTP/2, and WebSockets. Highest performance. This is the path most user requests take (REST, GraphQL, custom resource endpoints). |
-| **Operations API**            | `operationsServer.ts` | Fastify-based JSON operations API (`{operation: 'create_table', ...}`). Internal/admin surface — not on the hot path for application data.                                                      |
-| **Custom Functions (legacy)** | `fastifyRoutes.ts`    | Legacy custom functions only. Wraps Fastify with autoload. Don't add new code here.                                                                                                             |
+Native `http.ts`, the Fastify operations API (`operationsServer.ts`) and legacy custom functions (`fastifyRoutes.ts`); [AGENTS.md](../AGENTS.md) (Server) says what each serves.
 
 A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Of the two Fastify files only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`. Its `preValidation` chain (`reqBodyValidationHandler`, then `authHandler`) needs each hook to signal completion exactly once: Fastify's hook runner does not make `done` single-use, and the async `onSend` hooks keep `reply.sent` false long enough for a second call to reach `authHandler`. `unitTests/server/serverHelpers/reqBodyValidationHandler.test.js` pins it.
 
@@ -238,7 +234,7 @@ Consequences worth knowing:
 
 ## Operations authorization boundary
 
-Operations request bodies are untrusted data. `serverHelpers/serverHandlers.js → handlePostRequest()` rejects
+Operations request bodies are untrusted data. `serverHelpers/serverHandlers.ts → handlePostRequest()` rejects
 prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
 `serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
 internal callers pass bypass state as a separate argument and expose it to operation handlers only
@@ -632,7 +628,7 @@ through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` f
 registration, including Fastify's non-function listener) and cascade to Fastify via the
 `status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
 on the **main thread**, and the main thread loads components with `resources.isWorker = false`
-(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+(`server/loadRootComponents.ts`), so the componentLoader's `resources.isWorker &&
 extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
 `handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
 `universalHeaders` is per-thread module state, populated only where the http component loads.
@@ -822,7 +818,7 @@ the bare message until harper#2703, so the same error carried an error code on t
 REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
 close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.
 
-## `serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.js`)
+## `serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.ts`)
 
 `handlePostRequest` logs every error it throws, at error level or the error's own higher `fatal`/`notify`, and records it against its request; `serverErrorHandler`, which Fastify calls next with the same request, skips that error. Keep the log in `handlePostRequest` rather than moving it to the handler: `serverErrorHandler` logs an error with no `logLevel` of its own at info, below the default `warn`, so most operation errors would disappear from a default log; and a custom-function route that catches `hdbCore.request()`'s rejection never reaches the handler at all. The record is keyed by request, not by error, so an error object that surfaces again in another request is still logged there.
 

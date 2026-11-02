@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, like `create_authentication_tokens` against a password, with the same three wiring points (`server/serverHelpers/serverHandlers.ts` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
 
 **The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
@@ -93,8 +93,7 @@ name or a per-request timestamp — two different permission sets would alias on
 same-millisecond `Date.now()` was enough), leaking one principal's translated permissions to
 another. `syntheticRoleName()` derives the name from a hash of the post-downgrade permission
 content with `__updatedtime__: 0`, so identical sets share a slot and distinct sets can't collide;
-`applyImpersonation` re-keys all three impersonation modes the same way (Mode B/C previously wrote
-downgraded copies under the _persisted_ role's name). Synthetic translations live in a separate
+`applyImpersonation` re-keys all three impersonation modes the same way. Synthetic translations live in a separate
 256-entry LRU (`syntheticRolePermsMap`), not the permanent `rolePermsMap` — so >256 concurrently
 live distinct permission sets degrade to per-request translation (a deliberate cliff; raise the
 constant if a legitimate workload hits it). The `_` name prefix is the discriminator; a persisted
