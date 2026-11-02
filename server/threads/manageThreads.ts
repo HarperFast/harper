@@ -409,7 +409,6 @@ function stopWorkersForExit(exitDeadline: number) {
 	return workersStoppedForExit;
 }
 
-/** The exit deadline this thread was given (epoch ms), or undefined when the process is not exiting on a signal. */
 function getProcessExitDeadline(): number | undefined {
 	return processExitDeadline || undefined;
 }

@@ -207,11 +207,20 @@ function closeServers() {
 }
 
 let shutdownPromise: Promise<void>;
+let exitHold: NodeJS.Timeout | undefined;
+/**
+ * On a process exit a worker stays alive until it exits itself: scope and branch disposal can wait on
+ * unref'd work after the servers, its last ref'd handles, close. The exit deadline bounds it.
+ */
+function holdOpenForExit(exitDeadline: number | undefined) {
+	if (exitDeadline && !isMainThread) exitHold ??= setInterval(() => {}, 60_000);
+}
 /**
  * The thread's shutdown sequence, run once; a later call with a process `exitDeadline` only tightens the
  * drain deadline of the run already in progress. A phase that fails is logged and the next still runs.
  */
 function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadline()) {
+	holdOpenForExit(exitDeadline);
 	if (shutdownPromise) {
 		if (exitDeadline)
 			tightenShutdownDrains(shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline));
@@ -243,18 +252,7 @@ function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadli
 				startDeferredScopeCloses();
 			})
 		)
-		.then(
-			phase('closing scopes', async () => {
-				// closes deferred for a process exit start once the servers, the last ref'd handles, are gone;
-				// an empty event loop would end the worker mid-disposal
-				const holdOpen = exitDeadline ? setInterval(() => {}, 60_000) : undefined;
-				try {
-					await whenScopesClosed();
-				} finally {
-					clearInterval(holdOpen);
-				}
-			})
-		)
+		.then(phase('closing scopes', whenScopesClosed))
 		.then(
 			phase('closing branch databases', async () => {
 				const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
