@@ -404,7 +404,7 @@ function abortNativeTransaction(
 			);
 		} else if ((error as any)?.code === 'ERR_TRANSACTION_ABORT_UNRESOLVED') {
 			// its log batch stays unresolved, holding back committed readers until rocksdb-js marks it
-			harperLogger.warn?.(
+			harperLogger.error?.(
 				`Could not mark an aborted transaction's log batch (${context}), ${describeCommitIdentity(store, startedFrom, transaction)}`,
 				error
 			);

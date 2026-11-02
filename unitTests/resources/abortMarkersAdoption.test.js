@@ -175,7 +175,7 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		restores.push(() => setMaxOutstandingTxnDuration(priorDuration));
 		const targetDb = Audited.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
-		const keys = []; // one per attempt
+		const keys = [];
 		let target;
 		// What rocksdb-js reports for a commit refused on an older write intent before its log write: it parks,
 		// then resolves RETRY_NOW with nothing written.
