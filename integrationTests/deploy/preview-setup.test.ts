@@ -10,7 +10,7 @@
  *   npm run test:integration -- "integrationTests/deploy/preview-setup.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, doesNotMatch, match, ok, strictEqual } from 'node:assert';
 import { execFile } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -172,10 +172,19 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 	test('creates the identity, writes the starter workflow, and reports the unset variable', async () => {
 		const checkout = join(home, 'shop-checkout');
 		await mkdir(checkout, { recursive: true });
-		const { code, stdout, stderr } = await setup('shop', ['maxPreviews=1', 'maxTtlDays=2', 'write_workflow=true'], {
+		const refused = await setup('shop', ['maxPreviews=1', 'maxTtlDays=2', 'write_workflow=true'], {
 			cwd: checkout,
 			env: { ...adminAuth(), GITHUB_REPOSITORY: REPO },
 		});
+		strictEqual(refused.code, 1);
+		match(refused.stderr, /could not read the HARPER_PREVIEW_TARGET variable .*the gh CLI is not installed/);
+		strictEqual((await policyOf('shop')).enabled, false);
+
+		const { code, stdout, stderr } = await setup(
+			'shop',
+			['maxPreviews=1', 'maxTtlDays=2', 'write_workflow=true', 'allow_unverified=true'],
+			{ cwd: checkout, env: { ...adminAuth(), GITHUB_REPOSITORY: REPO } }
+		);
 		strictEqual(code, 1, `expected exit 1 (no gh). stdout=${stdout} stderr=${stderr}`);
 		match(stdout, /can deploy previews of shop/);
 		match(stdout, /created role shop-ci-preview, user shop-ci-preview, trust policy github-actions-shop-preview/);
@@ -205,12 +214,13 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		strictEqual(policy.repository, REPO);
 
 		// A rerun from the same checkout checks the workflow it wrote, and changes nothing.
-		const rerun = await setup('shop', ['maxPreviews=1', 'maxTtlDays=2'], {
+		const rerun = await setup('shop', ['maxPreviews=1', 'maxTtlDays=2', 'allow_unverified=true'], {
 			cwd: checkout,
 			env: { ...adminAuth(), GITHUB_REPOSITORY: REPO },
 		});
 		strictEqual(rerun.code, 1);
 		match(rerun.stdout, /already enabled; nothing changed/);
+		doesNotMatch(rerun.stdout, /Not verified from/);
 	});
 
 	test('harper preview deploy, as the created user, deploys a preview within the grant', async () => {

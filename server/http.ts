@@ -158,8 +158,8 @@ function ownershipOf(entry: {
  * that already rebound it). Unlike cleanupUdsFiles, a failed bind never produced a socket of its own,
  * so 'absent' here just means no bind ever won this path — not evidence of a live replacement — and
  * is safe to retract stale metadata for (see server/DESIGN.md's UDS ownership note for why this can't
- * require 'owned': the only real caller, an overlong path, fails before listen() ever runs, so this
- * worker's own identity is never recorded).
+ * require 'owned': its callers, an overlong path and a per-thread mirror skipped because its pool owns
+ * it, never run listen(), so this worker's own identity is never recorded).
  */
 export function markUdsBindFailed(socketPath: string) {
 	failedUdsPaths.add(socketPath);
@@ -168,6 +168,10 @@ export function markUdsBindFailed(socketPath: string) {
 	try {
 		unlinkSync(entry.yamlPath);
 	} catch {}
+}
+
+export function isUdsBindFailed(socketPath: string): boolean {
+	return failedUdsPaths.has(socketPath);
 }
 
 export function cleanupUdsFiles() {
@@ -185,8 +189,8 @@ export function cleanupUdsFiles() {
 		// coincidentally re-match a path it no longer has any claim to; clearing it here makes a
 		// repeat call a guaranteed no-op instead of a second chance to delete a stranger's files.
 		entry.identity = undefined;
-		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its only caller runs
-		// synchronously before any bind attempt, with no window for anyone else to be mid-flight),
+		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its callers run instead of a
+		// bind attempt, on a path nothing else binds, with no window for anyone else to be mid-flight),
 		// this function's second call (process.on('exit')) can land seconds after the first, while
 		// a concurrently-booting replacement — on the non-overlapping-restart platforms, started
 		// right after this worker's SHUTDOWN, not after it fully exits — may have already written
