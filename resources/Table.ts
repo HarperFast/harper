@@ -6524,6 +6524,7 @@ export function makeTable(options): TableResourceClass {
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
+							const resolvedAuditRefs = isRocksDB ? new Set<string>() : undefined;
 							const visitedAuditLogKeys = isRocksDB ? new Set<number>() : undefined;
 							let isAdditionalAuditRef = false;
 							let previousHeadOf: any;
@@ -6566,6 +6567,7 @@ export function makeTable(options): TableResourceClass {
 							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
+							let cappedProbeDepth: number | undefined;
 							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
 							// throwaway copy of this write purely to detect when every field has been overwritten by
 							// newer writes. When it empties — and there is no alternate audit branch — the write is
@@ -6597,7 +6599,7 @@ export function makeTable(options): TableResourceClass {
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
 									const auditIdentity = `${nodeId ?? (isRocksDB ? 'unknown' : 0)}:${localTime}`;
-									if (visitedAuditRefs.has(auditIdentity)) break;
+									if (visitedAuditRefs.has(auditIdentity) || resolvedAuditRefs?.has(auditIdentity)) break;
 									visitedAuditRefs.add(auditIdentity);
 									// An earlier same-key write in this transaction is not in the committed log yet; an uncommitted read
 									// on retry would see this handle's own unresolved batch from the failed attempt.
@@ -6613,18 +6615,17 @@ export function makeTable(options): TableResourceClass {
 									const revisitedLogKey = visitedAuditLogKeys?.has(localTime);
 									visitedAuditLogKeys?.add(localTime);
 									let probedAuditRef = false;
-									// Only a previously visited log key can resolve to a duplicate identity.
 									if (revisitedLogKey && nodeId == null) {
 										probedAuditRef = true;
 										if (resolvedEntry?.txnLogKey !== localTime) resolvedEntry = undefined;
-										if (resolvedEntry && visitedAuditRefs.has(`${resolvedEntry.nodeId ?? 0}:${localTime}`)) break;
-										if (fullUpdate) {
-											resolvedEntry = undefined;
+										if (resolvedEntry && resolvedAuditRefs?.has(`${resolvedEntry.nodeId ?? 0}:${localTime}`)) break;
+										if (fullUpdate && !resolvedEntry) {
 											let probeSteps = 0;
 											for (const entry of auditStore.getRange({ start: localTime, exactStart: true, readUncommitted: true })) {
 												if (entry.txnLogKey !== localTime) break;
 												if (++probeSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
 													auditWalkCapped = true;
+													cappedProbeDepth = probeSteps;
 													break;
 												}
 												if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
@@ -6643,7 +6644,7 @@ export function makeTable(options): TableResourceClass {
 										}
 										if (
 											resolvedEntry &&
-											visitedAuditRefs.has(`${resolvedEntry.nodeId ?? 0}:${resolvedEntry.txnLogKey ?? localTime}`)
+											resolvedAuditRefs?.has(`${resolvedEntry.nodeId ?? 0}:${resolvedEntry.txnLogKey ?? localTime}`)
 										)
 											break;
 									}
@@ -6701,10 +6702,10 @@ export function makeTable(options): TableResourceClass {
 										auditHistoryMissing = true;
 										break;
 									}
-									if (isRocksDB && nodeId == null) {
+									if (resolvedAuditRefs) {
 										const resolvedAuditIdentity = `${auditRecord.nodeId ?? 0}:${auditRecord.txnLogKey ?? localTime}`;
-										if (visitedAuditRefs.has(resolvedAuditIdentity)) break;
-										visitedAuditRefs.add(resolvedAuditIdentity);
+										if (resolvedAuditRefs.has(resolvedAuditIdentity)) break;
+										resolvedAuditRefs.add(resolvedAuditIdentity);
 									}
 									isAdditionalAuditRef = false;
 									if (!auditRecord.type || !Number.isFinite(auditRecord.version)) auditHistoryMissing = true;
@@ -6961,7 +6962,7 @@ export function makeTable(options): TableResourceClass {
 							if (auditWalkCapped) {
 								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
 								// history, seen during a replication full-copy of a large-history database — issue #1114).
-								// For full PUTs, depth counts scanned entries, including unrelated transaction siblings.
+								// For full PUTs, depth counts charged frame entries, including unrelated siblings.
 								// Walking and buffering the whole chain per record OOMs the worker, so we stopped at the cap
 								// and reconcile against only the Updates collected before the cap (the fold below). That is an
 								// approximation for histories deeper than the cap — updates older than the retained window are
@@ -6980,6 +6981,7 @@ export function makeTable(options): TableResourceClass {
 										table: tableName,
 										id,
 										depth: walkSteps,
+										probeDepth: cappedProbeDepth,
 										fullUpdate,
 									}
 								);

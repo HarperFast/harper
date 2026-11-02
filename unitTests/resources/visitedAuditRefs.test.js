@@ -3,7 +3,8 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
-const { publishOriginFloor } = require('#src/resources/originClosedFloor');
+const { publishOriginFloor, reserveLocalKey, releaseLocalKey } = require('#src/resources/originClosedFloor');
+const { recordUpdater } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -71,7 +72,7 @@ describe('Resolved audit references fold once', function () {
 				}
 				assert.strictEqual(snapshot.length, 200);
 				snapshots.push(snapshot);
-				if (isLMDB) continue; // LMDB re-delivery already reapplies increments on base; preserve its behavior.
+				if (isLMDB) continue; // Re-delivery also increments on unmodified LMDB.
 				await apply(receiver, writes[2], base + 2000, prefix);
 				for (const key of keys) {
 					assert.strictEqual(
@@ -122,6 +123,90 @@ describe('Resolved audit references fold once', function () {
 			assert.deepStrictEqual({ ...(await T.get('key-0')) }, { id: 'key-0', count: 108, label: 'newest' });
 		});
 	}
+
+	it('does not treat a failed qualified lookup as a resolved audit entry', async function () {
+		if (isLMDB) return this.skip();
+		const T = createTable('visitedAuditRefsQualifiedMiss');
+		const root = T.primaryStore.rootStore;
+		const [historical, middle, older] = ['historical', 'middle', 'older'].map((name) =>
+			getIdOfRemoteNode(`qualified-miss-${name}`, T.auditStore)
+		);
+		publishOriginFloor(root, Date.now() + 3_600_000);
+		await T.put('key-0', { label: 'seed' });
+		const seed = T.primaryStore.getEntry('key-0');
+		let headKey;
+		let middleKey;
+		for (const isHead of [true, false]) {
+			publishOriginFloor(root, isHead ? seed.version + 4000 : headKey + 1000);
+			let handle;
+			try {
+				await root.transaction((native) => {
+					handle = native;
+					const logKey = reserveLocalKey(root, native);
+					if (isHead) headKey = logKey;
+					else middleKey = logKey;
+					// Historical unnamed-origin entries can remain in local after the origin gains a name.
+					T.auditStore.put(
+						null,
+						{
+							type: 'patch',
+							tableId: T.tableId,
+							recordId: 'key-0',
+							nodeId: isHead ? historical : middle,
+							version: isHead ? headKey : headKey - 1000,
+							previousVersion: isHead ? seed.version : headKey,
+							encodedRecord: Buffer.from(
+								T.primaryStore.encoder.encode(isHead ? { label: 'newest' } : { middle: true })
+							),
+						},
+						{ transaction: native, nodeId: isHead ? undefined : middle }
+					);
+					if (!isHead)
+						recordUpdater(T.primaryStore, T.tableId, T.auditStore)(
+							'key-0',
+							{ id: 'key-0', middle: true, label: 'newest' },
+							seed,
+							headKey,
+							0,
+							false,
+							{
+								transaction: native,
+								nodeId: historical,
+								additionalAuditRefs: [
+									{ version: headKey, nodeId: historical },
+									{ version: middleKey, nodeId: middle },
+								],
+							}
+						);
+				});
+			} finally {
+				if (handle) releaseLocalKey(handle);
+			}
+		}
+		assert.strictEqual(T.primaryStore.getEntry('key-0').nodeId, historical);
+		assert.strictEqual(T.primaryStore.getEntry('key-0').version, headKey);
+		assert.strictEqual(T.auditStore.get(headKey, T.tableId, 'key-0', historical), undefined);
+		const head = T.auditStore.get(headKey, T.tableId, 'key-0');
+		assert.strictEqual(head.nodeId, historical);
+		assert.deepStrictEqual(head.getValue(T.primaryStore), { label: 'newest' });
+		assert.deepStrictEqual(T.auditStore.get(middleKey, T.tableId, 'key-0', middle).getValue(T.primaryStore), {
+			middle: true,
+		});
+		const context = { source: {}, sourceApply: true, timestamp: headKey - 2000 };
+		assert.ok(context.timestamp > seed.version);
+		await transaction(context, async () => {
+			const resource = await T.getResource('key-0', context);
+			await resource._writeUpdate('key-0', { retained: 'older', label: 'older' }, false, {
+				isNotification: true,
+				nodeId: older,
+				version: context.timestamp,
+			});
+		});
+		assert.deepStrictEqual(
+			{ ...(await T.get('key-0')) },
+			{ id: 'key-0', middle: true, retained: 'older', label: 'newest' }
+		);
+	});
 
 	it('bounds a previously unseen unknown frame whose target is past the walk limit', async function () {
 		if (isLMDB) return this.skip();
