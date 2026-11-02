@@ -185,6 +185,8 @@ describe('logBridge', function () {
 			logger.status({ problem: key, expires: 0.06 }).error('still failing');
 			const renewed = componentStatusRegistry.getStatus(key);
 			assert.equal(renewed.status, COMPONENT_STATUS_LEVELS.ERROR);
+			assert.equal(renewed.message, 'still failing');
+			assert.equal(renewed.occurrenceCount, 2);
 			const renewedAt = renewed.lastChecked.getTime();
 			const expired = await waitFor(() => {
 				const current = componentStatusRegistry.getStatus(key);
