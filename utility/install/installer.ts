@@ -31,7 +31,7 @@ import * as globalSchema from '../globalSchema.ts';
 import { promisify } from 'node:util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
-import { closeDatabase, databases } from '../../resources/databases.ts';
+import { closeDatabase, databases, resolveDatabaseStorageRoot } from '../../resources/databases.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
 import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 
@@ -134,6 +134,7 @@ function getCandidateSystemDbPaths(
 		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
 		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`),
 		path.join(rootDir, hdbTerms.LEGACY_DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
+		path.join(rootDir, hdbTerms.LEGACY_DATABASES_DIR_NAME, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`),
 		path.join(rootDir, hdbTerms.SYSTEM_SCHEMA_NAME, 'hdb_user.mdb'),
 	]);
 	for (const cfg of configSources) {
@@ -159,7 +160,54 @@ function getCandidateSystemDbPaths(
 	return Array.from(systemDbPaths);
 }
 
-function isPreseededRootConfig(rootDir: string | undefined, configFromFile: Record<string, any> = {}): boolean {
+function isOccupiedStore(storePath: string): boolean {
+	try {
+		const entry = fs.lstatSync(storePath);
+		let stat;
+		try {
+			stat = fs.statSync(storePath);
+		} catch (error) {
+			if (entry.isSymbolicLink() && error.code === 'ENOENT') return true;
+			throw error;
+		}
+		return !stat.isDirectory() || fs.readdirSync(storePath).length > 0;
+	} catch (error) {
+		if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+		throw error;
+	}
+}
+
+function hasOccupiedInstallDestination(rootDir: string): boolean {
+	const paths = new Set(getCandidateSystemDbPaths(rootDir));
+	const addStore = (parent: string, name: string) => {
+		paths.add(path.join(parent, name));
+		paths.add(path.join(parent, `${name}.mdb`));
+	};
+	const system = hdbTerms.SYSTEM_SCHEMA_NAME;
+	addStore(resolveDatabaseStorageRoot(system), system);
+	const tableConfigs = envManager.get(CONFIG_PARAMS.DATABASES)?.[system]?.tables;
+	for (const [name, config] of Object.entries(tableConfigs || {})) {
+		if ((config as { path?: string })?.path) addStore(resolveDatabaseStorageRoot(system, name), name);
+	}
+	// Mount can apply raw install args after staging; validation can select either default parent.
+	const args = assignCMDENVVariables(['DATABASES', 'STORAGE_PATH']);
+	if (args.STORAGE_PATH) addStore(args.STORAGE_PATH, system);
+	if (args.DATABASES) {
+		const configs = JSON.parse(args.DATABASES);
+		if (Array.isArray(configs)) {
+			for (const config of configs) {
+				const systemConfig = config?.[system];
+				if (systemConfig?.path) addStore(systemConfig.path, system);
+				for (const [name, tableConfig] of Object.entries(systemConfig?.tables || {})) {
+					if ((tableConfig as { path?: string })?.path) addStore((tableConfig as { path: string }).path, name);
+				}
+			}
+		}
+	}
+	return [...paths].some(isOccupiedStore);
+}
+
+function isPreseededRootConfig(rootDir: string | undefined): boolean {
 	const hdbConfigPath = getHdbConfigPath();
 	if (!isRootNamedHdbConfig(hdbConfigPath, rootDir) || !rootDir) return false;
 	const resolvedConfig = path.resolve(hdbConfigPath!);
@@ -168,7 +216,7 @@ function isPreseededRootConfig(rootDir: string | undefined, configFromFile: Reco
 			? hdbTerms.HDB_CONFIG_FILE
 			: hdbTerms.HARPER_CONFIG_FILE;
 	if (fs.existsSync(path.join(rootDir, otherConfigName))) return false;
-	if (getCandidateSystemDbPaths(rootDir, configFromFile).some((p) => fs.existsSync(p))) {
+	if (getCandidateSystemDbPaths(rootDir).some(isOccupiedStore)) {
 		return false;
 	}
 	return true;
@@ -231,7 +279,7 @@ async function install() {
 	}
 
 	// Check for an existing installation of Harper.
-	await checkForExistingInstall(configFromFile);
+	await checkForExistingInstall(isRootNamedHdbConfig(hdbConfigPath, promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH]));
 
 	// Prompt the user with params needed for install.
 	const installParams = await installPrompts(promptOverride);
@@ -246,7 +294,7 @@ async function install() {
 	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
 	if (
 		!ignoreExisting &&
-		!isPreseededRootConfig(hdbRoot, configFromFile) &&
+		!isPreseededRootConfig(hdbRoot) &&
 		((await fs.pathExists(path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE))) ||
 			(await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))))
 	) {
@@ -269,6 +317,11 @@ async function install() {
 	}
 	envManager.setHdbBasePath(hdbRoot);
 	const stagedInstall = stageInstallConfig(installParams);
+	if (!ignoreExisting && isRootNamedHdbConfig(hdbConfigPath, hdbRoot) && hasOccupiedInstallDestination(hdbRoot)) {
+		spinner.stop();
+		console.error(HDB_EXISTS_MSG);
+		process.exit(0);
+	}
 	bootPropsCreated = false;
 	rootExistedBeforeInstall = fs.existsSync(hdbRoot);
 	preExistingRootEntries = rootExistedBeforeInstall ? new Set(fs.readdirSync(hdbRoot)) : null;
@@ -511,7 +564,7 @@ function checkForPromptOverride() {
  * Checks for an existing install of Harper and prompts user accordingly.
  * @returns {Promise<void>}
  */
-async function checkForExistingInstall(configFromFile?: Record<string, any>) {
+async function checkForExistingInstall(rootNamedConfig = false) {
 	hdbLogger.trace('Checking for existing install.');
 	const bootPropPath = hdbUtils.getPropsFilePath();
 	const bootFileExists = await fs.pathExists(bootPropPath);
@@ -528,15 +581,15 @@ async function checkForExistingInstall(configFromFile?: Record<string, any>) {
 
 	// If the boot file doesn't exist check to see if cli/env root path has been passed and
 	// is pointing to an installed HDB
-	if (
-		!bootFileExists &&
-		hdbUtils.noBootFile() &&
-		!isPreseededRootConfig(hdbUtils.getEnvCliRootPath(), configFromFile)
-	) {
+	if (!bootFileExists && hdbUtils.noBootFile() && !isPreseededRootConfig(hdbUtils.getEnvCliRootPath())) {
 		hdbExists = true;
 	}
 
 	if (hdbExists && !ignoreExisting) {
+		if (rootNamedConfig) {
+			console.error(HDB_EXISTS_MSG);
+			process.exit(0);
+		}
 		hdbLogger.trace(`Install found existing HDB config at:${bootPropPath}`);
 		// getVersionUpdateInfo will only return an obj if there is an upgrade directive for the new version.
 		const upgradeObj = await hdbInfoController.getVersionUpdateInfo();
