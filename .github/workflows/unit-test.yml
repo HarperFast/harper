@@ -277,7 +277,7 @@ jobs:
 
   uws-tcp-macos:
     name: uWS TCP uploads (macOS, Node.js v26)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
       - name: Checkout code
