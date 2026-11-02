@@ -6,7 +6,7 @@ title: MCP Resource Subscriptions
 
 <VersionBadge version="v5.1.10" />
 
-Beyond the `notifications/*/list_changed` events that tell a client _what tools and resources exist_, Harper can push a notification whenever the _contents_ of a specific application resource change. A client subscribes to a resource URI with `resources/subscribe`; Harper watches that record (or table) through its audit-log change feed and emits `notifications/resources/updated` on every commit.
+Beyond the `notifications/*/list_changed` events that tell a client _what tools and resources exist_, Harper can push a notification whenever the _contents_ of a specific application resource change. A client subscribes to a resource URI with `resources/subscribe`; Harper watches that record (or table) through its audit-log change feed, or, for a [custom resource](./tools-and-resources.md#subscribing-to-custom-resources), the stream its `subscribe` method returns, and emits `notifications/resources/updated` on every change.
 
 This page covers `resources/subscribe` / `resources/unsubscribe`, the `notifications/resources/updated` push, which URIs are subscribable, and `Last-Event-ID` stream resumability. The `list_changed` events themselves are documented in [MCP Tools and Resources](./tools-and-resources.md#notificationslist_changed).
 
@@ -59,13 +59,26 @@ A successful subscribe returns an empty result:
 
 ### Which URIs are subscribable
 
-Only **row-backed application resources** can be subscribed to — the `harper+rest://` URIs that mirror an exported `Resource` (the same ones `resources/list` advertises on the application profile). The URI's path is matched against the `Resources` registry, and the resource is subscribable only if its class implements `subscribe`. Anything else returns `-32602`:
+Two kinds of URI can be subscribed to:
+
+- **Row-backed application resources** — the `harper+rest://` URIs that mirror an exported `Resource` (the same ones `resources/list` advertises on the application profile). The URI's path is matched against the `Resources` registry. A table exported with [`@export`](../database/schema.md#export) is subscribable with no code of yours, and so is a class that extends one, such as `export class Product extends tables.Product`: both use the table's `subscribe`, which watches the audit-log change feed. A `Resource` class that does not extend a table sends notifications only if it implements `subscribe`; the base class's default returns a stream that stays empty.
+- **Custom resources that declare `subscribe`** (Added in: v5.4.0) — URIs published through a static `mcpResources` entry. The URI is matched exactly as `resources/read` matches it, and the entry's `subscribe` method supplies the changes. See [Subscribing to custom resources](./tools-and-resources.md#subscribing-to-custom-resources).
+
+Anything else returns `-32602`:
 
 ```json
 { "error": { "code": -32602, "message": "resource is not subscribable: harper://schema/data/product" } }
 ```
 
 Synthetic `harper://*` metadata URIs (`harper://about`, `harper://openapi`, `harper://schema/...`, `harper://operations`) have no change source and are **not** subscribable. They participate in `notifications/resources/list_changed` only.
+
+A refused subscribe, row-backed or custom, answers a JSON-RPC error rather than an HTTP 500 (Changed in: v5.4.0):
+
+| Answer                                                         | When                                                                                             |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `-32602 permission denied: <uri>`                              | The session user may not read the resource.                                                      |
+| `-32603 failed to subscribe: <uri>`                            | The subscribe failed for another reason; the raw error is in the server log.                     |
+| `-32602 resources/subscribe for <uri> was cancelled: <reason>` | The GET stream closed, or an unsubscribe or another subscribe for the URI arrived, during setup. |
 
 `resources/list` advertised these URIs under `http(s)://` before 5.1.18 <VersionBadge type="changed" version="v5.1.18" />. A legacy `http://` or `https://` URI is still accepted by `resources/subscribe` and `resources/unsubscribe`, so a client holding an older listing keeps working; new clients should use the `harper+rest://` form the current listing returns.
 
@@ -80,11 +93,11 @@ The granularity of a subscription is determined by the path:
 
 A collection URI (no record key — the form `resources/list` advertises) subscribes to the entire table; a record URI narrows the watch to one primary key.
 
-Subscriptions use `omitCurrent` semantics: Harper does **not** replay the current value at subscribe time. You only receive notifications for changes that commit _after_ the subscription is established. The notification carries no snapshot — re-read the resource (or call the corresponding `get_*` tool) to fetch the new state.
+Row-backed subscriptions use `omitCurrent` semantics: Harper does **not** replay the current value at subscribe time. You only receive notifications for changes that commit _after_ the subscription is established. A custom resource's stream decides this itself: every value it yields sends a notification, including one it yields at once. The notification carries no snapshot — re-read the resource (or call the corresponding `get_*` tool) to fetch the new state.
 
 ## The `notifications/resources/updated` push
 
-On each committed change to a subscribed resource, Harper pushes a notification onto the session's GET-SSE channel:
+On each committed change to a subscribed row-backed resource, and on each value a custom resource's stream yields, Harper pushes a notification onto the session's GET-SSE channel:
 
 ```json
 {
@@ -116,7 +129,7 @@ Subscriptions are also torn down automatically when the session's GET-SSE stream
 
 ## Scope and durability
 
-Subscriptions are **per-worker**: a subscription is bound to the worker that holds the session's SSE stream, and the audit-log change feed delivers commits locally on that worker. The live subscription objects can't be persisted, but the durable list of subscribed URIs lives on the `mcp_session` record, which is how they survive a reconnect.
+Subscriptions are **per-worker**: a subscription is bound to the worker that holds the session's SSE stream, and the audit-log change feed delivers commits locally on that worker. A custom resource's stream also runs on that worker, and must itself deliver changes made on other workers, as Harper table subscriptions do. The live subscription objects can't be persisted, but the durable list of subscribed URIs lives on the `mcp_session` record, which is how they survive a reconnect.
 
 ## Resuming a dropped stream
 
@@ -128,7 +141,7 @@ Mcp-Session-Id: 0c8f...
 Last-Event-ID: 137
 ```
 
-Harper replays every buffered frame with a higher id (exclusive) before live frames resume, so a brief network blip doesn't drop `notifications/resources/updated` or `list_changed` events. On reconnect, Harper also restores the session's persisted subscriptions from the `mcp_session` record (best-effort — a URI that is no longer subscribable is dropped).
+Harper replays every buffered frame with a higher id (exclusive) before live frames resume, so a brief network blip doesn't drop `notifications/resources/updated` or `list_changed` events. On reconnect, Harper also restores the session's persisted subscriptions from the `mcp_session` record (best-effort — a URI that is no longer subscribable is dropped; one whose subscribe failed, or that nothing on this worker matches yet, stays on the record and is retried on the next reconnect). The GET response does not wait for the restore (Changed in: v5.4.0): subscriptions are restored after the stream opens, at most eight at a time, and their notifications follow on the stream.
 
 Caveats, all best-effort by design:
 

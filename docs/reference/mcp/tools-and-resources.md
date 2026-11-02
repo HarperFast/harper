@@ -186,8 +186,65 @@ Notes:
 - Reads dispatch on the **live** registry class, so an exported `resources.js` subclass's method (and its access control) always wins — the same rule as custom `mcpTools`.
 - `completions` optionally declares candidate values per template parameter, served by `completion/complete`.
 - Custom URIs must use an author-chosen scheme (`docs:///...` above), and that scheme must be a literal — a template whose scheme position holds a parameter (`{scheme}://...`) is rejected. The reserved schemes — `harper:`, `harper+rest:`, `http:`, `https:` — are rejected at registration so custom entries cannot shadow the built-in surfaces.
-- Invalid entries are skipped with a warning in the server log rather than failing the profile rebuild: a missing `name` or `method`, both or neither of `uri`/`uriTemplate`, a malformed or parameter-less template, a reserved scheme, or a `method` that is not a function on the prototype.
+- Invalid entries are skipped with a warning in the server log rather than failing the profile rebuild: a missing `name` or `method`, both or neither of `uri`/`uriTemplate`, a malformed or parameter-less template, a reserved scheme, or a `method` that is not a function on the prototype. A `subscribe` that is not a function on the prototype, or that names a generator method, is ignored with a warning instead, and the entry stays readable.
 - A read error from the method surfaces to the client as a sanitized JSON-RPC error; the raw error is written to the server log.
+- An optional `subscribe` names a method that makes the URI subscribable with `resources/subscribe` — see [Subscribing to custom resources](#subscribing-to-custom-resources).
+
+#### Subscribing to custom resources
+
+<VersionBadge version="v5.4.0" />
+
+Add `subscribe` to an entry to let MCP clients watch its URIs. It names an instance method that is called the same way as `method` — `(params, context)` on the live class, inside the same transaction carrying the session user — and returns an async iterable. Every value the iterable yields sends one `notifications/resources/updated` with the subscribed URI; the value itself is never sent, so the client re-reads the resource. A URI whose entry has no `subscribe` answers `-32602 resource is not subscribable: <uri>`, as before.
+
+```js
+import { RequestTarget, getUser } from 'harper';
+
+export class Order extends tables.Order {
+	static async get(target, context) {
+		const order = await super.get(target, context);
+		if (order && order.customerId !== getUser()?.username) throw new Error('not authorized');
+		return order;
+	}
+}
+
+export class OrderDocs extends Resource {
+	static mcpResources = [
+		{
+			uriTemplate: 'orders:///{+orderId}',
+			name: 'order by id',
+			description: 'An order; subscribe to hear when it changes',
+			mimeType: 'application/json',
+			method: 'readOrder',
+			subscribe: 'watchOrder',
+		},
+	];
+
+	async readOrder(params) {
+		const order = await Order.get(params.orderId);
+		if (!order) throw new Error(`no such order: ${params.orderId}`);
+		return { text: JSON.stringify(order), mimeType: 'application/json' };
+	}
+
+	async watchOrder(params) {
+		const order = await Order.get(params.orderId);
+		if (!order) throw new Error(`no such order: ${params.orderId}`);
+		const target = new RequestTarget();
+		target.id = params.orderId;
+		target.omitCurrent = true;
+		return Order.subscribe(target);
+	}
+}
+```
+
+`watchOrder` reads through the exported `Order` class, as `readOrder` does, so its `get` override authorizes the subscribe as the session user ([Access control for custom resources](#access-control-for-custom-resources) explains why the base `tables.Order` class must not be used). It subscribes through `Order` as well, so a `subscribe` override on that class runs too. `omitCurrent` skips the current value, so the first notification is the first change.
+
+The contract:
+
+- **Authorize and acquire before returning.** The returned iterable is consumed after the transaction ends, so a check made while iterating no longer runs as the session user. A generator method (`async *watch()`) would run its whole body that way, so a `subscribe` that names one is ignored with a warning, and the entry stays readable.
+- **Release.** Harper releases the stream on `resources/unsubscribe`, when the session's GET stream closes, on `DELETE /mcp`, and when the stream ends or throws: it calls the stream's `end()` if it has one, otherwise its iterator's `return()`. Return a stream with `end()` — a Harper subscription such as `Table.subscribe(...)`, or your own queue. Without `end()`, the iterator must have a `return()` that releases its source at once. A stream with neither, or an async generator with no `end()`, fails the subscribe with `-32603`: there is nothing to call, or `return()` cannot interrupt the generator while it waits for its next value.
+- **Access after subscribe.** Harper ends the stream when the session's bearer token expires, or when its user is dropped or no longer has a role. A [scoped token](/reference/v5/security/jwt-authentication#scoped-tokens-inline-role) belongs to no user, so only its expiry ends the stream, and an anonymous session has no identity to lapse, so only the release paths above end its stream. Changes to resource-specific access after subscribe are yours to enforce, for example by checking each change before yielding it.
+- **Workers.** A subscription runs on the worker holding the session's GET stream. If changes can originate on other workers, your stream must deliver them; Harper table subscriptions do.
+- **Errors.** An `AccessViolation`, which Harper's own permission checks throw (for example, a table read with `target.checkPermission` that the user's role does not allow), answers `-32602 permission denied: <uri>`. Any other error, including one your own gate throws, answers `-32603 failed to subscribe: <uri>`; the raw error goes to the server log.
 
 #### Template parameters are client-controlled
 
@@ -279,7 +336,7 @@ This is independent of the `http` exportType — the only switch that operators 
 
 ## Resources surface
 
-Both profiles serve `resources/list`, `resources/read`, and `resources/templates/list`. Row-backed application resources can additionally be watched with `resources/subscribe` — see [MCP Resource Subscriptions](./subscriptions.md).
+Both profiles serve `resources/list`, `resources/read`, and `resources/templates/list`. Row-backed application resources, and custom resources that declare `subscribe`, can additionally be watched with `resources/subscribe` — see [MCP Resource Subscriptions](./subscriptions.md).
 
 ### `harper://` URIs
 
