@@ -21,8 +21,8 @@ const OPTIONS = {
 	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
 };
 const PASSWORD = 'McpParity-4418!';
-const READER = 'mcp_parity_reader'; // table read, `description` read:false, no operations allowlist
-const ALL = 'mcp_parity_all'; // every source readable — positive control
+const READER = 'mcp_parity_reader';
+const ALL = 'mcp_parity_all';
 const SOURCES = ['id', 'title', 'description', 'tags', 'category', 'owner'];
 const DENIED = 'description';
 const SENTINEL = 'classified';
@@ -40,6 +40,9 @@ function ft(value: string, extra: Record<string, unknown> = {}) {
 		waitForIndexMilliseconds: 30_000,
 		...extra,
 	};
+}
+function byId(records: any[]): any[] {
+	return [...records].sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 function hasDenied(records: any[]): string[] {
 	return records.filter((record) => Object.hasOwn(record, DENIED)).map(({ id }) => id);
@@ -203,13 +206,13 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 	});
 
 	test('M0c: a plain equals search as the reader with get_attributes * is delivered without the denied attribute', async () => {
-		const result = await mcpSearch(
-			'reader',
-			searchArgs([{ attribute: 'category', comparator: 'equals', value: 'shoes' }])
-		);
+		const args = searchArgs([{ attribute: 'category', comparator: 'equals', value: 'shoes' }]);
+		const http = await expectOp({ operation: 'search_by_conditions', ...args }, reader, 200);
+		assert.deepStrictEqual(ids(http.body), ['one', 'two']);
+		assert.deepStrictEqual(hasDenied(http.body), [], `HTTP delivered ${DENIED}: ${http.text}`);
+		const result = await mcpSearch('reader', args);
 		assert.strictEqual(result.isError, false, `MCP equals search as the reader errored: ${result.text}`);
-		assert.deepStrictEqual(ids(result.rows), ['one', 'two']);
-		assert.deepStrictEqual(hasDenied(result.rows), [], `MCP delivered ${DENIED}: ${result.text}`);
+		assert.deepStrictEqual(byId(result.rows), byId(http.body), `MCP rows differ from HTTP: ${result.text}`);
 	});
 
 	test('M1 reader: a denied full-text source and an explicit denied attribute are refused with a permission error', async () => {
@@ -217,7 +220,9 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		const denied = await mcpSearch('reader', searchArgs([ft(SENTINEL)], ['id']));
 		assert.strictEqual(denied.isError, true, `denied-source search answered: ${denied.text}`);
 		assert.match(denied.text, DENIAL, denied.text);
-		const explicit = await mcpSearch('reader', searchArgs([ft('waterproof', { fields: ['title'] })], ['id', DENIED]));
+		const explicitArgs = searchArgs([ft('waterproof', { fields: ['title'] })], ['id', DENIED]);
+		await expectOp({ operation: 'search_by_conditions', ...explicitArgs }, reader, 403);
+		const explicit = await mcpSearch('reader', explicitArgs);
 		assert.strictEqual(explicit.isError, true, `explicit denied attribute answered: ${explicit.text}`);
 		assert.match(explicit.text, DENIAL, explicit.text);
 	});
@@ -229,8 +234,7 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		assert.deepStrictEqual(hasDenied(http.body), [], `HTTP delivered ${DENIED}: ${http.text}`);
 		const narrowed = await mcpSearch('reader', args);
 		assert.strictEqual(narrowed.isError, false, narrowed.text);
-		assert.deepStrictEqual(ids(narrowed.rows), ['one', 'two']);
-		assert.deepStrictEqual(hasDenied(narrowed.rows), [], `MCP delivered ${DENIED}: ${narrowed.text}`);
+		assert.deepStrictEqual(byId(narrowed.rows), byId(http.body), `MCP rows differ from HTTP: ${narrowed.text}`);
 	});
 
 	test('M3 positive control: the all-sources role gets the sentinel rows WITH the attribute on both surfaces', async () => {
@@ -263,6 +267,7 @@ suite('MCP operations tools answer like the operations HTTP API for the principa
 		const result = await mcp('admin', 'get_status', {});
 		assert.strictEqual(result.isError, false, result.text);
 		const keysOf = (v: any) => (Array.isArray(v) ? ['<array>'] : Object.keys(v ?? {}).sort());
+		assert.ok(keysOf(http.body).length > 0, `HTTP get_status returned no keys: ${http.text}`);
 		assert.deepStrictEqual(keysOf(result.parsed), keysOf(http.body), `MCP ${result.text} vs HTTP ${http.text}`);
 	});
 });

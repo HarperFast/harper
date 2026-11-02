@@ -5,12 +5,12 @@
  * keep-alive socket (MCP and REST), refusal order for callers without a principal, the REST and operations-port
  * readers of the same instance, and GET/DELETE carrying an oversize body.
  *
- * The REST, operations-port and anonymous-session arms are parity and liveness controls and pass without the fix.
+ * The REST, operations-port and anonymous-session arms are parity and liveness controls, not regression anchors.
  * Runs on the Node http server, or on uWebSockets.js when the environment sets `HARPER_UWS_HTTP=1` as the CI uWS
  * shard does; the test names carry the server that ran.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { connect, type Socket } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -403,14 +403,15 @@ suite('http.maxRequestBodySize on the MCP application endpoint', (ctx: ContextWi
 		});
 	}
 
-	test(`D [${mode}] refusal order: no credentials vs wrong credentials, under and over the limit`, async () => {
+	test(`D [${mode}] refusal order: an anonymous caller is refused on size, wrong credentials are refused before the body is read`, async () => {
 		const anon = { 'content-type': 'application/json', 'accept': 'application/json, text/event-stream' };
 		const wrong = { ...anon, authorization: basic('body_limit_nobody', 'wrong-pw') };
 		const d1 = await post(appUrl, paddedInitialize(512), anon);
 		const d2 = await post(appUrl, paddedInitialize(LIMIT + 1), anon);
 		const d3 = await post(appUrl, paddedInitialize(LIMIT + 1), wrong);
-		ok([200, 401].includes(d1.status), `anonymous under-limit initialize: ${d1.status} ${d1.text.slice(0, 120)}`);
-		ok([401, 413].includes(d2.status), `anonymous oversize: ${d2.status}`);
+		strictEqual(d1.status, 200, `anonymous under-limit initialize: ${d1.status} ${d1.text.slice(0, 120)}`);
+		strictEqual(d2.status, 413, `anonymous oversize: ${d2.status} ${d2.text.slice(0, 120)}`);
+		strictEqual(JSON.parse(d2.text).error, 'payload_too_large');
 		strictEqual(d3.status, 401, `wrong credentials are refused before the body is read: ${d3.status}`);
 		const after = await post(appUrl, paddedInitialize(512, 9), jsonHeaders);
 		strictEqual(after.status, 200);
@@ -424,41 +425,48 @@ suite('http.maxRequestBodySize on the MCP application endpoint', (ctx: ContextWi
 			body: JSON.stringify({ id: 'seeded-row', body: 'secret-value' }),
 		});
 		ok([200, 201, 204].includes(seed.status), `seed PUT: ${seed.status}`);
-		const init = await fetch(appUrl, { method: 'POST', headers: anon, body: paddedInitialize(512, 1) });
-		const initText = await init.text();
-		const sessionId = init.headers.get('mcp-session-id');
-		if (init.status !== 200) {
-			strictEqual(init.status, 401, `anonymous initialize: ${init.status} ${initText.slice(0, 160)}`);
-			return;
-		}
-		const protocolVersion = JSON.parse(initText).result.protocolVersion;
-		const rpc = async (method: string, params: Record<string, unknown>, id: number) => {
-			const r = await fetch(appUrl, {
-				method: 'POST',
-				headers: { ...anon, 'mcp-session-id': sessionId!, 'mcp-protocol-version': protocolVersion },
-				body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-			});
-			const text = await r.text();
-			let json: any;
-			try {
-				json = JSON.parse(text);
-			} catch {
-				json = undefined;
-			}
-			return { status: r.status, json, text };
+		const session = async (headers: Record<string, string>) => {
+			const init = await fetch(appUrl, { method: 'POST', headers, body: paddedInitialize(512, 1) });
+			const initText = await init.text();
+			strictEqual(init.status, 200, `initialize: ${init.status} ${initText.slice(0, 160)}`);
+			const sessionId = init.headers.get('mcp-session-id');
+			ok(sessionId, 'initialize issued a session id');
+			const protocolVersion = JSON.parse(initText).result.protocolVersion;
+			return async (method: string, params: Record<string, unknown>, id: number) => {
+				const r = await fetch(appUrl, {
+					method: 'POST',
+					headers: { ...headers, 'mcp-session-id': sessionId!, 'mcp-protocol-version': protocolVersion },
+					body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+				});
+				const text = await r.text();
+				let json: any;
+				try {
+					json = JSON.parse(text);
+				} catch {
+					json = undefined;
+				}
+				return { status: r.status, json, text };
+			};
 		};
+		const toolNames = (r: { json: any }) => (r.json?.result?.tools ?? []).map((t: any) => t.name);
+		const asAdmin = await session(jsonHeaders);
+		const adminTools = toolNames(await asAdmin('tools/list', {}, 2));
+		for (const name of ['get_LimitDoc', 'create_LimitDoc'])
+			ok(adminTools.includes(name), `${name} is a generated tool: [${adminTools.join(',')}]`);
+		const rpc = await session(anon);
 		const tools = await rpc('tools/list', {}, 2);
 		strictEqual(tools.status, 200, `tools/list for the anonymous session: ${tools.status} ${tools.text.slice(0, 160)}`);
-		ok(Array.isArray(tools.json?.result?.tools), `tools/list did not return a tool array: ${tools.text.slice(0, 160)}`);
+		deepStrictEqual(toolNames(tools), [], `an anonymous session sees tools: ${tools.text.slice(0, 160)}`);
 		const get = await rpc('tools/call', { name: 'get_LimitDoc', arguments: { id: 'seeded-row' } }, 5);
 		const create = await rpc(
 			'tools/call',
 			{ name: 'create_LimitDoc', arguments: { id: 'planted-row', body: 'planted' } },
 			6
 		);
-		const refused = (r: { json: any }) => Boolean(r.json?.error) || r.json?.result?.isError === true;
-		ok(refused(get), `anonymous get_LimitDoc was answered: ${get.text.slice(0, 300)}`);
-		ok(refused(create), `anonymous create_LimitDoc was answered: ${create.text.slice(0, 300)}`);
+		const refused = (r: { json: any; text: string }) =>
+			r.json?.result?.isError === true && /unauthorized|permission|not allowed/i.test(r.text);
+		ok(refused(get), `anonymous get_LimitDoc was not refused as unauthorized: ${get.text.slice(0, 300)}`);
+		ok(refused(create), `anonymous create_LimitDoc was not refused as unauthorized: ${create.text.slice(0, 300)}`);
 		ok(
 			!JSON.stringify(get.json ?? get.text).includes('secret-value'),
 			`anonymous get_LimitDoc returned the seeded row: ${get.text.slice(0, 300)}`
@@ -501,7 +509,7 @@ suite('http.maxRequestBodySize on the MCP application endpoint', (ctx: ContextWi
 	});
 
 	for (const method of ['GET', 'DELETE'] as const) {
-		test(`F [${mode}] ${method} /mcp with an oversize chunked body is refused or answered, not hung, and the socket still serves`, async () => {
+		test(`F [${mode}] ${method} /mcp with an oversize chunked body is refused, not hung, and the socket still serves`, async () => {
 			const [r1, r2] = await keepAliveAfter413(
 				appUrl,
 				'/mcp',
@@ -511,7 +519,10 @@ suite('http.maxRequestBodySize on the MCP application endpoint', (ctx: ContextWi
 				method,
 				'POST'
 			);
-			ok(r1.status >= 400 && r1.status < 500, `${method} with an oversize body: ${r1.status} ${r1.body.slice(0, 120)}`);
+			// uWS does not hand a GET body to the handler, so that request is refused as a sessionless GET instead
+			const expected = USE_UWS && method === 'GET' ? 400 : 413;
+			strictEqual(r1.status, expected, `${method} with an oversize body: ${r1.status} ${r1.body.slice(0, 120)}`);
+			if (expected === 413) strictEqual(JSON.parse(r1.body).error, 'payload_too_large');
 			strictEqual(r2.status, 200, `follow-up POST on the same socket: ${r2.status} ${r2.body.slice(0, 200)}`);
 			strictEqual(JSON.parse(r2.body).id, 11, `the follow-up is answered as itself: ${r2.body.slice(0, 200)}`);
 		});
