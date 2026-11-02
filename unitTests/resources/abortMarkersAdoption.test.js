@@ -119,8 +119,10 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		const originalCommit = Transaction.prototype.commit;
 		const attempts = [];
 		let holderId;
+		let submitted = false;
 		Transaction.prototype.commit = async function (...args) {
 			if (this.store?.db !== targetDb || this.id === holderId) return originalCommit.apply(this, args);
+			submitted = true;
 			const result = await originalCommit.apply(this, args);
 			attempts.push({ kind: this.lastConflictKind(), logWritten: this.logWritten(), key: this.getTimestamp() });
 			return result;
@@ -141,7 +143,8 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		holder.catch(() => {});
 		await waitFor(() => holderId !== undefined);
 		const mine = writeAfterRead(targetTable, recordId, 'mine');
-		await delay(100); // parked behind the holder's intent
+		await waitFor(() => submitted);
+		await delay(20); // the native intent check runs on the commit thread after submission
 		releaseHolder();
 		await mine;
 		await assert.rejects(holder, /holder gives up/);
@@ -241,6 +244,29 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		);
 	});
 
+	it('reports a deadline 503 as not retryable when its abort could not be marked', async function () {
+		const recordId = id('overdue-unmarked');
+		await seed(Audited, recordId);
+		const priorDuration = setMaxOutstandingTxnDuration(300);
+		restores.push(() => setMaxOutstandingTxnDuration(priorDuration));
+		conflictAtCommit(Audited, recordId, () => true, 20);
+		const originalAbort = Transaction.prototype.abort;
+		const targetDb = Audited.primaryStore.store.db;
+		Transaction.prototype.abort = function (...args) {
+			const result = originalAbort.apply(this, args);
+			if (this.store?.db === targetDb && this.logWritten())
+				throw Object.assign(new Error('could not mark'), { code: 'ERR_TRANSACTION_ABORT_UNRESOLVED' });
+			return result;
+		};
+		restores.push(() => (Transaction.prototype.abort = originalAbort));
+		await assert.rejects(writeAfterRead(Audited, recordId, 'overdue-unmarked'), (error) => {
+			assert.equal(error.name, 'TransactionCommitConflictTimeoutError');
+			assert.equal(error.retryable, false);
+			assert.match(error.message, /may still apply after a restart/);
+			return true;
+		});
+	});
+
 	it('bounds refusals before the log write by the commit deadline (503), never the retry cap', async function () {
 		const recordId = id('refused');
 		await seed(Audited, recordId);
@@ -324,7 +350,9 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		const targetDb = Blobs.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
 		const kinds = [];
+		let submitted = false;
 		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db === targetDb && this.id !== holderContext.transaction?.transaction?.id) submitted = true;
 			const result = await originalCommit.apply(this, args);
 			if (this.store?.db === targetDb) kinds.push(this.lastConflictKind());
 			return result;
@@ -340,7 +368,8 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			await context.transaction.save(write);
 			release = holdBlobFile(blob);
 		});
-		await delay(100); // parked behind the holder's intent
+		await waitFor(() => submitted);
+		await delay(20); // the native intent check runs on the commit thread after submission
 		releaseHolder();
 		await holder;
 		await mine;
