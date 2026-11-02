@@ -44,6 +44,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - index choice and condition order → `executeConditions`, `estimateCondition`, `searchByIndex` in search.ts
 - FIQL parsing → `parseBlock` in search.ts
 - response shape (select) → `transformEntryForSelect` in Table.ts; `transformForSelect` in Resource.ts
+- selects answered from index entries alone → `coveredSelectAttribute` in Table.ts; `coverIndexEntries` in search.ts
 - sorting → `transformToOrderedSelect` in Table.ts; whether the lead already supplies the order → `scansInAttributeOrder` in search.ts
 - record TTL and eviction → `setTTLExpiration`, `evict`, `scheduleCleanup` in Table.ts
 - cache miss to source → `getFromSource` in Table.ts

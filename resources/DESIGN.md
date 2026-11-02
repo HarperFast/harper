@@ -194,7 +194,7 @@ A read-only process stages no writes: every producer passes `DatabaseTransaction
 
 ## A past-expiry record on a sourceless table is gone before eviction
 
-Eviction trails expiry. Until then, a table without a source get treats an expired record as absent (`isHiddenExpiry`) in get, only-if-cached (504), search, subscribe and `withLocalEntry` (no `ETag`). Write-path loads, `relationship.from` (`getSync`) and `includeExpired` (SQL UPDATE/DELETE) still see it. Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
+Eviction trails expiry. Until then, a table without a source get treats an expired record as absent (`isHiddenExpiry`) in get, only-if-cached (504), search (uncovered), subscribe and `withLocalEntry` (no `ETag`). Write-path loads, `relationship.from` (`getSync`) and `includeExpired` (SQL UPDATE/DELETE) still see it. Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
 
 ## RocksDB range activity and snapshot expiration
 
@@ -202,7 +202,7 @@ Eviction trails expiry. Until then, a table without a source get treats an expir
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached read in `PrimaryRocksDatabase.getEntry` passes a fresh options literal, never the caller's object (`uncachedRead` and cache-disabled reads forward it); add newly needed options to that literal. Select load options are built once per query, sync and async apart, because `loadLocalRecord` mutates `options.async`; the plain-column fast path is decided per row (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not the caller's options (`uncachedRead` and cache-disabled reads forward it); add options there. A covered select (`coverIndexEntries`) reads no record: expired rows stay until eviction, undeclared bigint ids are numbers, arrays give the matching element. Pinned by `indexRangeSelect.test.js`.
 
 ## A read reference belongs to the handle acquisition it was taken on
 

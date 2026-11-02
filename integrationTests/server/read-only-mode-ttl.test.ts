@@ -1,6 +1,7 @@
 /**
  * A read-only server (`storage.readOnly`) answers for an expired record on a table with no source as if it were
- * absent, and leaves it on disk (harper#474). Runs on whichever engine HARPER_STORAGE_ENGINE selects.
+ * absent, and leaves it on disk (harper#474); a covered select, which reads no record, still returns it
+ * (resources/DESIGN.md). Runs on whichever engine HARPER_STORAGE_ENGINE selects.
  *
  *   npm run test:integration -- "integrationTests/server/read-only-mode-ttl.test.ts"
  */
@@ -71,9 +72,17 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 		for (let i = 0; i < 3; i++) await client.reqRest('/Session/expired').expect(404);
 	});
 
-	test('a query by an indexed attribute omits it', async () => {
+	test('a query by an indexed attribute omits it when it loads the record', async () => {
+		const response = await client.reqRest('/Session/?name=ttl&select(id,expiresAt)').expect(200);
+		deepStrictEqual(
+			response.body.map((row: any) => row.id),
+			['live']
+		);
+	});
+
+	test('a covered select returns it until eviction, which a read-only server never runs', async () => {
 		const response = await client.reqRest('/Session/?name=ttl&select(id)').expect(200);
-		deepStrictEqual(response.body, ['live']);
+		deepStrictEqual([...response.body].sort(), ['expired', 'live']);
 	});
 
 	test('a query with no index to use omits it', async () => {

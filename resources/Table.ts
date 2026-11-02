@@ -2150,6 +2150,8 @@ export function makeTable(options): TableResourceClass {
 	}
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
 	const recordDbRead = actionRecorder('db-read', tableName, null);
+	// a covered row is read from its index entry, whose size the scan does not report
+	const recordCoveredRead = databaseName !== 'system' ? () => recordDbRead(1) : undefined;
 	function conditionForWrite(context, id: Id) {
 		const condition = context?.[WRITE_CONDITION];
 		const matches =
@@ -7896,6 +7898,14 @@ export function makeTable(options): TableResourceClass {
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
 			try {
+				const coveredAttribute =
+					select !== undefined &&
+					!postOrdering &&
+					!recordAccess &&
+					!residencyPolicy &&
+					(context as any)?.replicateFrom !== false
+						? coveredSelectAttribute(select)
+						: undefined;
 				const entries = executeConditions(
 					conditions,
 					operator,
@@ -7905,7 +7915,9 @@ export function makeTable(options): TableResourceClass {
 					context,
 					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 					filtered,
-					recordAccess
+					recordAccess,
+					undefined,
+					coveredAttribute === undefined ? undefined : { attribute: coveredAttribute, recordRead: recordCoveredRead }
 				);
 				const ensure_loaded = (target as any).ensureLoaded !== false;
 				// The guards inside executeConditions evaluate the
@@ -12543,6 +12555,30 @@ export function makeTable(options): TableResourceClass {
 				};
 			}
 		}
+	}
+	// resources/DESIGN.md, covered selects
+	function coveredSelectAttribute(select: any): string | undefined {
+		if (primaryKey == null) return;
+		if (typeof select === 'string') return coverableAttribute(select) ? select : undefined;
+		if (!Array.isArray(select) || select.length === 0) return;
+		let attribute: string | undefined;
+		for (const name of select) {
+			if (name === primaryKey) continue;
+			if (typeof name !== 'string' || (attribute !== undefined && name !== attribute) || !coverableAttribute(name))
+				return;
+			attribute = name;
+		}
+		return attribute ?? primaryKey;
+	}
+	function coverableAttribute(name: string): boolean {
+		if (name === primaryKey) return true;
+		const index = Object.hasOwn(indices, name) ? indices[name] : undefined;
+		return (
+			index !== undefined &&
+			!index.customIndex &&
+			!propertyResolvers?.[name] &&
+			!primaryStore.encoder.resolvedAttributeNames?.has(name)
+		);
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;

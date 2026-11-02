@@ -50,21 +50,26 @@ describe('Benchmark: secondary-index range select', function () {
 		Records.dropTable();
 	});
 
-	const query = (select) => ({
-		conditions: [{ attribute: 'score', comparator: 'between', value: [RANGE_START, RANGE_START + RANGE_SIZE - 1] }],
+	const query = (select, single) => ({
+		conditions: [
+			single
+				? { attribute: 'score', value: RANGE_START }
+				: { attribute: 'score', comparator: 'between', value: [RANGE_START, RANGE_START + RANGE_SIZE - 1] },
+		],
 		select,
 	});
 
-	async function runCase(label, select, { sync = false, cold = false, iterations = ITERATIONS } = {}) {
+	async function runCase(label, select, { sync = false, cold = false, iterations = ITERATIONS, single = false } = {}) {
+		const rowCount = single ? 1 : RANGE_SIZE;
 		async function once() {
 			if (cold) Records.primaryStore.cache?.clear();
 			let rows = 0;
 			if (sync) {
-				for (const _ of Records.search(query(select))) rows++;
+				for (const _ of Records.search(query(select, single))) rows++;
 			} else {
-				for await (const _ of Records.search(query(select))) rows++;
+				for await (const _ of Records.search(query(select, single))) rows++;
 			}
-			if (rows !== RANGE_SIZE) throw new Error(`expected ${RANGE_SIZE} rows, got ${rows}`);
+			if (rows !== rowCount) throw new Error(`expected ${rowCount} rows, got ${rows}`);
 		}
 		for (let i = 0; i < WARMUP; i++) await once();
 		global.gc?.();
@@ -93,20 +98,34 @@ describe('Benchmark: secondary-index range select', function () {
 			case: label,
 			medianUs: Math.round(times[times.length >> 1] * 1000),
 			meanUs: Math.round((elapsed / iterations) * 1000),
-			rowsPerSec: Math.round((RANGE_SIZE * iterations) / (elapsed / 1000)),
-			bytesPerRow: Math.round(allocated / (RANGE_SIZE * iterations)),
+			rowsPerSec: Math.round((rowCount * iterations) / (elapsed / 1000)),
+			bytesPerRow: Math.round(allocated / (rowCount * iterations)),
 			gcCount: statistics.length,
 			gcMs: Math.round(gcMs),
 		};
 		console.log('BENCH ' + JSON.stringify(result));
 	}
 
+	it('select primary key (covered), async iteration', () => runCase('select-id-async', ['id']));
+	it('select primary key and indexed column (covered), async iteration', () =>
+		runCase('select-id-score-async', ['id', 'score']));
+	it('select primary key and indexed column (covered), sync iteration', () =>
+		runCase('select-id-score-sync', ['id', 'score'], { sync: true }));
+	it('select primary key and indexed column (covered), one row', () =>
+		runCase('select-id-score-one', ['id', 'score'], { single: true, iterations: ITERATIONS * 20 }));
+	it('select 4 columns, one row', () =>
+		runCase('select4-one', ['id', 'score', 'name', 'category'], { single: true, iterations: ITERATIONS * 20 }));
 	it('select 4 columns, async iteration', () => runCase('select4-async', ['id', 'score', 'name', 'category']));
 	it('select 4 columns, sync iteration', () =>
 		runCase('select4-sync', ['id', 'score', 'name', 'category'], { sync: true }));
 	it('select 3 columns and a resolver, async iteration', () =>
 		runCase('mixed-async', ['id', 'score', 'name', '$updatedtime']));
 	it('full record, async iteration', () => runCase('full-async', undefined));
+	it('select primary key and indexed column (covered), cold record cache', () =>
+		runCase('select-id-score-cold', ['id', 'score'], {
+			cold: true,
+			iterations: Math.ceil(ITERATIONS / 10),
+		}));
 	it('select 4 columns, cold record cache', () =>
 		runCase('select4-cold', ['id', 'score', 'name', 'category'], {
 			cold: true,
