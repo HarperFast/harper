@@ -902,13 +902,14 @@ export async function measureWindow(
 				pages[name] = (await readCgroupMemory(scope)).workingsetRefaultFile;
 			return pages;
 		};
-		const refaultsBefore = await refaults();
 		try {
+			const refaultsBefore = await refaults();
 			result = await driver.runWorkload(workload, distribution, ops);
+			for (const [name, pages] of Object.entries(await refaults()))
+				refaultFilePages[name] = pages - refaultsBefore[name];
 		} finally {
 			meanClockGHz = clock.stop();
 		}
-		for (const [name, pages] of Object.entries(await refaults())) refaultFilePages[name] = pages - refaultsBefore[name];
 		// CPU first: stopping the sampler can wait out its interval, and background work in
 		// that gap would be charged to the run.
 		after = await sampleResources(running.targets);
@@ -1468,10 +1469,14 @@ export async function createSession(
 			: undefined,
 		// --threads: Fastify's workers, and Harper's threads unless the target sets its own (harperSettings)
 		config: { ...options.config, threads: options.threads, engine: options.engine },
+		// What each Harper target fixes; a sized target's cache size follows its dataset, so only rows have it.
 		harperSettings: Object.fromEntries(
 			targets.flatMap((t) => {
 				const spec: HarperTarget | StackTarget = TARGETS[t];
-				return spec.kind === 'harper' ? [[t, harperSettings(spec, session)]] : [];
+				if (spec.kind !== 'harper') return [];
+				const settings = harperSettings(spec, session);
+				if (spec.sized) delete settings.recordCacheSize;
+				return [[t, settings]];
 			})
 		),
 		perfCounters,
