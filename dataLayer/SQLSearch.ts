@@ -130,7 +130,7 @@ class SQLSearch {
 				return emptySqlResults;
 			}
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -520,6 +520,7 @@ class SQLSearch {
 				let sql = this._buildSQL(false);
 				results = await alasql.promise(sql);
 			} catch (e) {
+				if (e instanceof ClientError) throw e;
 				log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
 				log.error(e);
 				throw new Error('There was a problem with the SQL statement');

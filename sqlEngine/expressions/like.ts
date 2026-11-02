@@ -8,11 +8,6 @@ export type LikeToken =
 
 export type LikeMatcher = (value: string) => boolean;
 
-export interface LikeMatchOptions {
-	caseInsensitive?: boolean;
-	oneExcludesLineTerminators?: boolean;
-}
-
 export function tokenizeLike(pattern: string, escape?: string): LikeToken[] {
 	const tokens: LikeToken[] = [];
 	for (let i = 0; i < pattern.length; i++) {
@@ -48,10 +43,8 @@ interface Chunk {
 
 interface Segment {
 	width: number;
-	/** Literal text, matched with `startsWith`/`indexOf` when the comparison is case-sensitive. */
 	text: string | undefined;
 	chunks: Chunk[];
-	/** Global search for the first chunk; only middle segments search. */
 	search: RegExp | undefined;
 }
 
@@ -60,9 +53,8 @@ interface Segment {
 const MAX_CHUNK_WIDTH = 10_000;
 const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
 
-export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions = {}): LikeMatcher {
-	const flags = options.caseInsensitive ? 'i' : '';
-	const one = options.oneExcludesLineTerminators ? '.' : '[\\s\\S]';
+export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false): LikeMatcher {
+	const flags = caseInsensitive ? 'i' : '';
 	const segments: Segment[] = [];
 	let text: string | undefined = '';
 	let units: string[] = [];
@@ -90,7 +82,7 @@ export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions
 			units.push(token.char.replace(REGEXP_SYNTAX, '\\$&'));
 		} else {
 			text = undefined;
-			units.push(token.kind === 'one' ? one : token.source);
+			units.push(token.kind === 'one' ? '.' : token.source);
 		}
 	}
 	endSegment();

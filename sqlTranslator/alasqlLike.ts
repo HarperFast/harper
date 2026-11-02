@@ -5,16 +5,16 @@ const MAX_CACHED_PATTERNS = 1000;
 const cacheByEscape = new Map<string, Map<string, LikeMatcher>>();
 let cachedPatterns = 0;
 
-function alasqlLike(pattern: unknown, value: unknown, escape: unknown = ''): boolean {
+// alasql passes no escape argument when the LIKE has no ESCAPE clause.
+function alasqlLike(pattern: unknown, value: unknown, escape?: unknown): boolean {
 	const patternText = String(pattern ?? '');
-	const escapeText = String(escape ?? '');
+	const escapeText = escape === undefined ? '' : String(escape);
+	if (escape !== undefined && escapeText.length !== 1) {
+		throw new ClientError(`LIKE ESCAPE must be a single character, got '${escapeText}'`);
+	}
 	let matches = cacheByEscape.get(escapeText)?.get(patternText);
 	if (!matches) {
-		if (escapeText.length > 1) throw new ClientError(`LIKE ESCAPE must be a single character, got '${escapeText}'`);
-		matches = compileLikeTokens(tokenizeAlasqlLike(patternText, escapeText), {
-			caseInsensitive: true,
-			oneExcludesLineTerminators: true,
-		});
+		matches = compileLikeTokens(tokenizeAlasqlLike(patternText, escapeText), true);
 		if (cachedPatterns >= MAX_CACHED_PATTERNS) evictOldestPattern();
 		let cache = cacheByEscape.get(escapeText);
 		if (!cache) cacheByEscape.set(escapeText, (cache = new Map()));

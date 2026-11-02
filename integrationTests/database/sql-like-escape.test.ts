@@ -23,7 +23,6 @@ const ESCAPE_CASES: { where: string; expected: string[] }[] = [
 	{ where: `ip LIKE 't!_0' ESCAPE '!'`, expected: ['t_0'] },
 	{ where: `ip LIKE 't!!%' ESCAPE '!'`, expected: ['t!_0', 't!x0'] },
 	{ where: `ip LIKE 't0!%%' ESCAPE '!'`, expected: ['t0%'] },
-	// controls without ESCAPE
 	{ where: `ip LIKE 't0%'`, expected: ['t0!z', 't0%', 't0a'] },
 	{ where: `ip LIKE 't0!%'`, expected: ['t0!z'] },
 ];
@@ -111,7 +110,12 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 				});
 			}
 
-			for (const where of [`note LIKE 't0!' ESCAPE '!'`, `note LIKE 't0!%' ESCAPE '!!'`, `note LIKE '[z-a]%'`]) {
+			for (const where of [
+				`note LIKE 't0!' ESCAPE '!'`,
+				`note LIKE 't0!%' ESCAPE '!!'`,
+				`note LIKE 't0%' ESCAPE ''`,
+				`note LIKE '[z-a]%'`,
+			]) {
 				if (where.includes('[') && sqlEngine === 'new') continue;
 				for (const statement of [
 					`SELECT id FROM ${SCHEMA}.${TABLE} WHERE ${where}`,

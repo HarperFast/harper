@@ -183,13 +183,14 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(compileExpr(likeExpr('12%', undefined, true)).eval({ v: 12345 }), false);
 	});
 
-	it('treats * as a literal and lets % and _ match line terminators (deliberate differences from the regex)', () => {
+	it('treats * as a literal and lets % match line terminators, as legacy does', () => {
 		assert.strictEqual(v2Like('a*', 'a*'), true);
 		assert.strictEqual(v2Like('a*', 'aaa'), false);
 		assert.strictEqual(v2Like('a*', ''), false);
 		assert.strictEqual(v2Like('a%b', 'a\nb'), true);
-		assert.strictEqual(v2Like('a_b', 'a\r\nb'), false);
-		assert.strictEqual(v2Like('a__b', 'a\r\nb'), true);
+		assert.strictEqual(v2Like('a%b', 'a\u2028b'), true);
+		assert.strictEqual(v2Like('a_b', 'a\nb'), false);
+		assert.strictEqual(v2Like('a__b', 'a\r\nb'), false);
 	});
 
 	it('matches a fixed-width run longer than one RegExp chunk', () => {
@@ -336,6 +337,8 @@ describe('legacy alasql LIKE', () => {
 		assert.throws(() => alasql.utils.like('[z-a]', 'b'), clientError);
 		assert.throws(() => alasql.utils.like('a!', 'a', '!'), clientError);
 		assert.throws(() => alasql.utils.like('a!%', 'a%', '!!'), clientError);
+		assert.throws(() => alasql.utils.like('a%', 'a', ''), clientError);
+		assert.strictEqual(alasql.utils.like('a%', 'a'), true);
 	});
 
 	it('tokenizes unclosed [ in linear time', () => {
