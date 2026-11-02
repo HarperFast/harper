@@ -29,7 +29,6 @@ require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// The storage.rocks.transactionLogAbortMarkers: false path; abortMarkersAdoption.test.js covers markers on.
 describe('Transactions are never aborted once durably written to the transaction log', function () {
 	if (isLMDB) return;
 	let priorAbortMarkers;

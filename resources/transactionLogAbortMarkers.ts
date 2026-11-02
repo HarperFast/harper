@@ -4,7 +4,6 @@ import { getEnvironmentData, isMainThread, setEnvironmentData } from 'node:worke
 const LATCH_KEY = 'harper.transactionLogAbortMarkers';
 let latched = getEnvironmentData(LATCH_KEY) as boolean | undefined;
 
-/** `storage.rocks.transactionLogAbortMarkers`: on unless configured false. */
 export function resolveAbortMarkersSetting(configured: unknown): boolean {
 	if (configured === false || configured === 0) return false;
 	if (typeof configured === 'string') return !['false', '0', 'no', 'off'].includes(configured.trim().toLowerCase());

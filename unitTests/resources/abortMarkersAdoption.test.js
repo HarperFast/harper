@@ -265,6 +265,34 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		assert.equal((await ChainLink.get(linkId)).writer, 'mine');
 	});
 
+	it('keeps retrying a chain link refused before its log write past the deadline once an earlier store committed', async function () {
+		const headId = id('refused-head');
+		const linkId = id('refused-link');
+		await seed(ChainLink, linkId);
+		const priorDuration = setMaxOutstandingTxnDuration(200);
+		restores.push(() => setMaxOutstandingTxnDuration(priorDuration));
+		const targetDb = ChainLink.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		let refusals = 0;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb || refusals >= 30) return originalCommit.apply(this, args);
+			refusals++;
+			this.lastConflictKind = () => ConflictKind.intentBeforeLog;
+			this.logWritten = () => false;
+			await delay(10);
+			return constants.RETRY_NOW_VALUE;
+		};
+		restores.push(() => (Transaction.prototype.commit = originalCommit));
+		const context = {};
+		await transaction(context, async () => {
+			await ChainHead.put({ id: headId, writer: 'mine' }, context);
+			await ChainLink.put({ id: linkId, writer: 'mine' }, context);
+		});
+		assert.equal(refusals, 30, 'the link must outlast its 200ms deadline');
+		assert.equal((await ChainHead.get(headId)).writer, 'mine');
+		assert.equal((await ChainLink.get(linkId)).writer, 'mine');
+	});
+
 	for (const markers of [true, false]) {
 		it(`${markers ? 'never delivers' : 'delivers'} an aborted logged transaction to the derived-index runtime with markers ${markers ? 'on' : 'off'}`, async function () {
 			const priorMarkers = setAbortMarkersForTests(markers);
@@ -347,10 +375,26 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			const prior = store.abortMarkedHistory;
 			restores.push(() => (store.abortMarkedHistory = prior));
 			assert.equal(auditHistoryAbortMarked(store, undefined), true, 'a log created in this process');
+			await Audited.put({ id: id('history'), writer: 'logged' });
 			establishAbortMarkedHistory(store); // as a restart would
 			const local = store.rootStore.useLog('local').getStats();
 			assert.equal(store.abortMarkedHistory.baseline.get('local'), local.currentSequenceNumber);
 			assert.equal(auditHistoryAbortMarked(store, undefined), false, 'earlier files may hold unmarked orphans');
+			const rootStore = store.rootStore;
+			const useLog = rootStore.useLog;
+			const baseline = store.abortMarkedHistory.baseline.get('local');
+			rootStore.useLog = (name) => {
+				const log = useLog.call(rootStore, name);
+				if (name !== 'local') return log;
+				return { getStats: () => ({ ...log.getStats(), fileCount: 1, oldestSequenceNumber: baseline + 1 }) };
+			};
+			try {
+				assert.equal(auditHistoryAbortMarked(store, undefined), false, 'rechecked at most once a minute');
+				store.abortMarkedHistory.recheckAt.clear();
+				assert.equal(auditHistoryAbortMarked(store, undefined), true, 'once the files before this process are purged');
+			} finally {
+				rootStore.useLog = useLog;
+			}
 			const priorMarkers = setAbortMarkersForTests(false);
 			try {
 				establishAbortMarkedHistory(store);

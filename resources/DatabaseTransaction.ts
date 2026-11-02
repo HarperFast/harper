@@ -899,11 +899,8 @@ const NO_COMPLETIONS: Promise<void>[] = Object.freeze([]) as unknown as Promise<
 type RocksTransactionWithRetry = RocksTransaction & {
 	isRetry?: boolean;
 	retries?: number;
-	// abort markers: conflicts RocksDB found at commit, the only ones the retry cap counts
 	commitConflicts?: number;
-	// abort markers: the last attempt wrote no log batch, so this retry stages it again
 	relogOnRetry?: boolean;
-	// abort markers: aborted with its log batch marked, so no reader will apply it
 	abortMarked?: boolean;
 	hasStagedLog?: boolean;
 	stagedTxnTime?: number;
@@ -1057,7 +1054,7 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
-	// this scope reopened after a mid-scope commit, which already landed some of its writes
+	// unlike `snapshotFree`, which lock() also sets on a scope that committed nothing
 	rotatedAfterCommit = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
 	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
@@ -1628,6 +1625,8 @@ export class DatabaseTransaction implements Transaction {
 			if (relog) {
 				(transaction as any).logEntries = undefined;
 				(transaction as any).pendingStructureWatermarks = undefined;
+				// no entry references them until the retry stages one again
+				for (const write of this.writes) if (write?.appendedTo === transaction) write.blobsAuditReferenced = false;
 				this.rekeyRefusedRetry(transaction);
 			}
 		}
@@ -1650,8 +1649,11 @@ export class DatabaseTransaction implements Transaction {
 	 * committed, so giving up would land the transaction in part.
 	 */
 	private mustRetryLoggedCommit(transaction: RocksTransaction, error?: { hasLog?: boolean }): boolean {
+		if (!abortMarkersEnabled()) return hasDurableLog(transaction, error);
+		// whether or not this attempt wrote its batch: a link refused before the write still must land
 		return (
-			hasDurableLog(transaction, error) && (!abortMarkersEnabled() || Boolean(this.root) || this.rotatedAfterCommit)
+			(Boolean(this.root) || this.rotatedAfterCommit) &&
+			(error?.hasLog === true || Boolean((transaction as RocksTransactionWithRetry).hasStagedLog))
 		);
 	}
 
@@ -1919,7 +1921,7 @@ export class DatabaseTransaction implements Transaction {
 			)
 				continue;
 			const owner = write.stagedOn ?? this.activeCommitHandle ?? nativeTxn;
-			if (!this.isHandleCommitted(owner) && !hasDurableLog(owner)) return true;
+			if (!this.isHandleCommitted(owner) && abortedWithoutLog(owner)) return true;
 		}
 		return false;
 	}
@@ -3587,8 +3589,7 @@ export class DatabaseTransaction implements Transaction {
 									// re-subscribe / sequence-id-resume path, so a dropped write would leave this node
 									// permanently diverged (harper-pro#348). Such transactions retry without a cap; the source
 									// apply loop serializes commits (backpressure), so contention clears rather than
-									// compounding. Durably logged transactions likewise retry without a cap so a written
-									// transaction-log entry is never abandoned.
+									// compounding. `mustRetryLoggedCommit` names the logged commits that likewise must not give up.
 									const neverDropOnConflict = this.sourceApply || mustRetry;
 									if (cappedRetries > MAX_RETRIES && !neverDropOnConflict) {
 										// giving up: poison and abort the whole linked chain so no link leaks its native
@@ -3621,6 +3622,7 @@ export class DatabaseTransaction implements Transaction {
 								if ((error as any)?.hasLog) {
 									txnWithRetry.isRetry = true;
 									txnWithRetry.hasStagedLog = true;
+									txnWithRetry.relogOnRetry = false;
 								}
 								abortNativeTransaction(
 									transaction,
@@ -4023,7 +4025,7 @@ export class DatabaseTransaction implements Transaction {
 	private abandonCommitAfterDeadline(headTransaction: RocksTransaction, elapsedMs: number): never {
 		const elapsed = Math.round(elapsedMs);
 		const budget = this.commitConflictBudget();
-		const retryable = !this.root && !this.snapshotFree;
+		const retryable = !this.root && !(abortMarkersEnabled() ? this.rotatedAfterCommit : this.snapshotFree);
 		const retries = (headTransaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries;
 		if (allowStuckCommitLog('abandon', performance.now())) {
 			let headTransactionId;

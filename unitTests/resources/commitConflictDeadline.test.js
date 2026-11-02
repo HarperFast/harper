@@ -292,7 +292,6 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		assert.deepStrictEqual(getOutstandingCommits(), { count: 0, oldestAgeMs: undefined }, 'no commit left tracked');
 	});
 
-	// abortMarkersAdoption.test.js covers a logged commit past the budget with markers on
 	it('never abandons a durably logged commit past the conflict budget with abort markers off, logging the overdue diagnostic once', async function () {
 		this.timeout(20000);
 		const priorAbortMarkers = setAbortMarkersForTests(false);
