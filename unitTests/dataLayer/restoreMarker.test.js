@@ -628,7 +628,7 @@ describe('restoreMarker', function () {
 		it('releases the claim it took when the restore child lock cannot be probed', function () {
 			// a directory where only a child ever creates the lock file: probing it fails to open it
 			mkdirSync(restoreChildLockPath(dbPath), { recursive: true });
-			assert.throws(() => acquireRestoreLock(dbPath), /open failed/);
+			assert.throws(() => acquireRestoreLock(dbPath), /open failed|CreateFile failed/);
 			rmSync(restoreChildLockPath(dbPath), { recursive: true });
 
 			releaseRestoreLock(acquireRestoreLock(dbPath));

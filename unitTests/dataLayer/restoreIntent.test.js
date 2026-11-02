@@ -35,9 +35,9 @@ const {
 	restoreBackupOffline,
 	restorePinId,
 } = require('#src/dataLayer/rocksdbBackup');
-const backupManifestModule = require('#src/dataLayer/backupManifest');
+const backupManifestModule = require('#js/dataLayer/backupManifest');
 const { readBackupManifest, writeBackupManifest } = backupManifestModule;
-const blobBackupModule = require('#src/dataLayer/blobBackup');
+const blobBackupModule = require('#js/dataLayer/blobBackup');
 const { blobSnapshotDir, fsyncTree } = blobBackupModule;
 const { backupPinsDir, readBackupPins } = require('#src/dataLayer/backupRepository');
 const {
@@ -50,7 +50,7 @@ const {
 	restoreSourceId,
 	restoringMarkerPath,
 } = require('#src/dataLayer/restoreMarker');
-const restoreReceiptModule = require('#src/dataLayer/restoreReceipt');
+const restoreReceiptModule = require('#js/dataLayer/restoreReceipt');
 const { readRestoreReceipt, restoreReceiptPath, writeRestoreReceipt } = restoreReceiptModule;
 const {
 	finishCommittedRestoresBeforeStartup,
@@ -60,16 +60,17 @@ const {
 	terminalRestoreExists,
 } = require('#src/dataLayer/restoreIntent');
 const { finishOutstandingRestore } = require('#src/dataLayer/restorePublication');
-const restoreChildRunnerModule = require('#src/dataLayer/restoreChildRunner');
+const restoreChildRunnerModule = require('#js/dataLayer/restoreChildRunner');
 const { runRestoreChild } = restoreChildRunnerModule;
 const { reconcileInterruptedJobs } = require('#src/server/jobs/jobOwnership');
 const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletion');
-const restartModule = require('#src/bin/restart');
+const restartModule = require('#js/bin/restart');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 
 // The code under test reads these exports through their module objects at call time, so assigning one
-// reaches it. Returns the function that puts the original back.
+// reaches it — in the compiled build only, since a source ES module's exports are read-only, which is
+// why the replaced modules are required through `#js`. Returns the function that puts the original back.
 function replaceExport(module, name, replacement) {
 	const original = module[name];
 	module[name] = replacement;
@@ -1041,7 +1042,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const fixture = await seededDatabase();
 			const [backupId] = fixture.backupIds;
 			const markerPath = restoringMarkerPath(fixture.dir);
-			const signalling = require('#src/utility/signalling');
+			const signalling = require('#js/utility/signalling');
 			const signalSchemaChange = signalling.signalSchemaChange;
 			const restoreSignals = [];
 			// restoreBackup reads it through the module object; recorded, then passed on to the real one
@@ -1329,7 +1330,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 });
 
 describe('recoverRestoresAtStartup latch', function () {
-	const databasesModule = require('#src/resources/databases');
+	const databasesModule = require('#js/resources/databases');
 
 	afterEach(function () {
 		resetStartupRecoveryForTesting();

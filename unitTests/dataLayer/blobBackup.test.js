@@ -17,7 +17,8 @@ const {
 	fsyncTree,
 } = require('#src/dataLayer/blobBackup');
 const { classifyBlobFileForCapture, isSystemicIoError } = require('#src/resources/blob');
-const durableFile = require('#src/utility/durableFile');
+// `#js`: the test replaces an export, which a source ES module does not allow
+const durableFile = require('#js/utility/durableFile');
 
 // Lay out a blob root the way resources/blob.ts does: files nested a few directories deep by id,
 // each an 8-byte header (type in the top 16 bits, body length in the low 48) followed by the body.

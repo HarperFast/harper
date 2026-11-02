@@ -82,6 +82,7 @@ privateRanges.addSubnet('fec0::', 10, 'ipv6');
 function parseIPv6(address: string): number[] | undefined {
 	let canonical: string;
 	try {
+		// an IPv6 hostname keeps its brackets
 		canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1);
 	} catch {
 		return undefined;

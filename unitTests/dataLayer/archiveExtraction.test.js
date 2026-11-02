@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
-const { join } = require('node:path');
+const { basename, dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { Writable } = require('node:stream');
 const { gzipSync } = require('node:zlib');
@@ -366,7 +366,8 @@ describe('archiveExtraction', function () {
 			const archive = await writeArchive([manifestEntry(), { name: 'big', contents: 'x'.repeat(100_000) }]);
 			await assert.rejects(extractArchive(archive, destDir, { ledger: ledger({ available: 50_000 }) }), (error) => {
 				assert.strictEqual(error.statusCode, 507);
-				assert.ok(error.message.includes(destDir), error.message);
+				// the message names the resolved path, which on Windows can differ from a short (8.3) temp path
+				assert.ok(error.message.includes(join(basename(dirname(destDir)), basename(destDir))), error.message);
 				return true;
 			});
 			assertNothingExtracted();

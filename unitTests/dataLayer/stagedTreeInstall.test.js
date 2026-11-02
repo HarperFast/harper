@@ -3,6 +3,7 @@
 const testUtils = require('../testUtils.js');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const { syncBuiltinESMExports } = require('node:module');
 const {
 	createWriteStream,
 	existsSync,
@@ -71,16 +72,24 @@ function flipMiddleByte(path) {
 	writeFileSync(path, bytes);
 }
 
-function failingOnCall(name, failOn, error) {
+// Replaces an `fs` function for the code under test. Under native type stripping that code is an ES
+// module whose named `node:fs` imports only see the replacement once the builtin exports are synced.
+function replaceFs(name, replacement) {
 	const original = fs[name];
-	let calls = 0;
-	fs[name] = (...args) => {
-		if (++calls === failOn) throw error;
-		return original(...args);
-	};
+	fs[name] = replacement(original);
+	syncBuiltinESMExports();
 	return () => {
 		fs[name] = original;
+		syncBuiltinESMExports();
 	};
+}
+
+function failingOnCall(name, failOn, error) {
+	let calls = 0;
+	return replaceFs(name, (original) => (...args) => {
+		if (++calls === failOn) throw error;
+		return original(...args);
+	});
 }
 
 function errorWithCode(code) {
@@ -206,15 +215,9 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 			const { stagingDir, treeDir } = await stage(engineArchive);
 			await verifyStagedTree(stagingDir, tmpdir(), []);
 			const target = fresh('target');
-			const restore = (() => {
-				const original = fs.linkSync;
-				fs.linkSync = () => {
-					throw errorWithCode('EXDEV');
-				};
-				return () => {
-					fs.linkSync = original;
-				};
-			})();
+			const restore = replaceFs('linkSync', () => () => {
+				throw errorWithCode('EXDEV');
+			});
 			try {
 				await installStagedTree(stagingDir, target, [], false, 'op2');
 			} finally {
@@ -324,16 +327,15 @@ describeUnlessLmdb('installing a staged archive tree', function () {
 				const blobParent = fresh('blobparent');
 				mkdirSync(parent, { recursive: true });
 				mkdirSync(blobParent, { recursive: true });
-				const original = fs.linkSync;
-				if (!linking) {
-					fs.linkSync = () => {
-						throw errorWithCode('EXDEV');
-					};
-				}
+				const restore = linking
+					? () => {}
+					: replaceFs('linkSync', () => () => {
+							throw errorWithCode('EXDEV');
+						});
 				try {
 					await assertInstallFits(stagingDir, plan, join(parent, 'db'), [join(blobParent, 'blobs')], true, 'probe1');
 				} finally {
-					fs.linkSync = original;
+					restore();
 				}
 				assert.deepStrictEqual(probes(parent), []);
 				assert.deepStrictEqual(probes(blobParent), []);

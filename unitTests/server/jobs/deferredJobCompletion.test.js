@@ -47,7 +47,8 @@ describe('recordJobResult', function () {
 
 // The job worker itself, run in a thread with its row I/O and dispatch stubbed: the deferred job's
 // continuation (the drained restart) must run even when the row that records the deferral cannot be
-// written, or the pending restore would fire at some unrelated later restart.
+// written, or the pending restore would fire at some unrelated later restart. Its stubs replace exports,
+// which only the compiled build allows, hence `#js`.
 describe('jobProcess', function () {
 	this.timeout(60000);
 
@@ -79,11 +80,11 @@ describe('jobProcess', function () {
 				env: { ...process.env, PROCESS_NAME: 'JOB-deferred-job-test' },
 				workerData: {
 					updateJobFails,
-					jobs: require.resolve('#src/server/jobs/jobs'),
-					serverUtilities: require.resolve('#src/server/serverHelpers/serverUtilities'),
-					application: require.resolve('#src/components/Application'),
-					deferred: require.resolve('#src/server/jobs/deferredJobCompletion'),
-					jobProcess: require.resolve('#src/server/jobs/jobProcess'),
+					jobs: require.resolve('#js/server/jobs/jobs'),
+					serverUtilities: require.resolve('#js/server/serverHelpers/serverUtilities'),
+					application: require.resolve('#js/components/Application'),
+					deferred: require.resolve('#js/server/jobs/deferredJobCompletion'),
+					jobProcess: require.resolve('#js/server/jobs/jobProcess'),
 				},
 			}
 		);

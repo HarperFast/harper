@@ -17,7 +17,7 @@ const {
 	writeFileSync,
 } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { join, resolve: resolvePath } = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { pack: tarPack } = require('tar-stream');
@@ -536,7 +536,8 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 				});
 				await assertRefusedBeforeAJob({
 					server_path,
-					server_path_identity: { ...server_path_identity, ino: server_path_identity.ino + 1 },
+					// a Windows file id can exceed 2^53, where adding 1 rounds back to the same number
+					server_path_identity: { ...server_path_identity, ino: server_path_identity.ino === 7 ? 8 : 7 },
 				});
 			});
 
@@ -801,7 +802,9 @@ describeUnlessLmdb('restore_backup from an archive', function () {
 						undefined,
 						'/nonexistent/x.tar.gz'
 					),
-					(error) => error.statusCode === 404 && /file=\/nonexistent\/x\.tar\.gz does not exist/.test(error.message)
+					(error) =>
+						error.statusCode === 404 &&
+						error.message.includes(`file=${resolvePath('/nonexistent/x.tar.gz')} does not exist`)
 				);
 				assert.deepStrictEqual(stagingEntries(name), []);
 			});
