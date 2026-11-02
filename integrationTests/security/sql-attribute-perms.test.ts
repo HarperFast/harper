@@ -273,6 +273,8 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 					const n = await asReader(name);
 					const result = `${name} -> ${n.status} ${JSON.stringify(n.body).slice(0, 300)}`;
 					if (sqlEngine === 'legacy') strictEqual(n.status, 400, result);
+					else if (sqlEngine === 'new') strictEqual(n.status, 200, result);
+					else ok(n.status === 200 || n.status === 400, result);
 					ok(!JSON.stringify(n.body).includes('111'), result);
 				}
 			});

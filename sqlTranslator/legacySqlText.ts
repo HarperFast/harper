@@ -1,9 +1,11 @@
 /**
  * Legacy SQL authorizes the parsed statement but runs AlaSQL's re-parse of its `toString()` text, so that text
  * must keep every literal a literal and every name one name. AlaSQL writes string and JSON literals without
- * escaping.
+ * escaping, and numbers in a form it reads back as a column.
  */
 import alasql from 'alasql';
+import clone from 'clone';
+import { backtickASTSchemaItems } from '../utility/common_utils.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { astNodes } from './sql_statement_bucket.ts';
 
@@ -16,8 +18,8 @@ const BARE_NAME = /^\w+$/;
 
 /**
  * Single-quoted text that AlaSQL decodes back to `value`, or undefined when there is none. AlaSQL lexes a
- * backslash as taking the next character, then decodes `\'` and `''` to `'`, so a quote after an even run of
- * backslashes, or an odd run at the end, has no spelling.
+ * backslash as taking the next character, then decodes `\'` and `''` to `'`, so an odd run of backslashes at
+ * the end has no spelling.
  */
 export function quoteString(value: string): string | undefined {
 	let text = "'";
@@ -32,9 +34,8 @@ export function quoteString(value: string): string | undefined {
 			break;
 		}
 		if (next === "'") {
-			if (backslashes === 0) text += "''";
-			else if (backslashes % 2) text += '\\'.repeat(backslashes + 1) + "''";
-			else return undefined;
+			if (backslashes % 2) text += '\\'.repeat(backslashes + 1) + "''";
+			else text += '\\'.repeat(backslashes) + (backslashes ? "\\'" : "''");
 		} else {
 			text += value.slice(i, i + backslashes + 1);
 		}
@@ -60,6 +61,21 @@ function lexesInside(body: string, quote: string): boolean {
 	return true;
 }
 
+// AlaSQL reads `1e+25` as `1e + 25` and `Infinity` as a column, so write every number in plain decimal.
+function numberText(value: number): string {
+	if (!Number.isFinite(value)) throw unwritable(`The number ${value}`);
+	const text = String(value);
+	const e = text.indexOf('e');
+	if (e < 0) return text;
+	const sign = text[0] === '-' ? '-' : '';
+	const [whole, fraction = ''] = text.slice(sign.length, e).split('.');
+	const digits = whole + fraction;
+	const point = whole.length + Number(text.slice(e + 1));
+	if (point <= 0) return `${sign}0.${'0'.repeat(-point)}${digits}`;
+	if (point >= digits.length) return sign + digits + '0'.repeat(point - digits.length);
+	return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
+}
+
 function unwritable(what: string) {
 	return new ClientError(
 		`${what} cannot be written back to SQL text for the legacy SQL engine. Remove the quotes, backticks, brackets or backslashes, or use the new SQL engine.`
@@ -77,7 +93,8 @@ function jsonText(value: any): string {
 		return text;
 	}
 	if (value == null) return 'NULL';
-	if (typeof value !== 'object') return typeof value === 'bigint' ? `${value}n` : String(value);
+	if (typeof value === 'number') return numberText(value);
+	if (typeof value !== 'object') return String(value);
 	// Any other object is an AST node inside the literal, a nested JSON literal included.
 	if (!isJsonData(value)) return value.toString();
 	if (Array.isArray(value)) return `@[${value.map(jsonText).join(',')}]`;
@@ -99,6 +116,29 @@ export function installLegacySqlText() {
 	yy.Json.prototype.toString = function () {
 		return jsonText(this.value);
 	};
+	yy.NumValue.prototype.toString = function () {
+		return typeof this.value === 'number' ? numberText(this.value) : String(this.value);
+	};
+}
+
+// What a statement reads or calls by name.
+const NAME_KEYS = ['columnid', 'tableid', 'databaseid', 'funcid', 'aggregatorid', 'variable', 'param'];
+
+function referencedNames(statement: any): Set<string> {
+	const names = new Set<string>();
+	for (const node of statementNodes(statement)) {
+		if (node instanceof yy.JavaScript) names.add(`javascript=${node.value}`);
+		for (const key of NAME_KEYS) {
+			if (!Object.hasOwn(node, key)) continue;
+			// `?` is param 0, written back as `$0`.
+			let name = typeof node[key] === 'number' ? String(node[key]) : node[key];
+			if (typeof name !== 'string') continue;
+			if (name.length > 1 && name.startsWith('`') && name.endsWith('`')) name = name.slice(1, -1);
+			// AlaSQL writes function names upper-cased.
+			names.add(`${key}=${key === 'funcid' || key === 'aggregatorid' ? name.toUpperCase() : name}`);
+		}
+	}
+	return names;
 }
 
 // AST nodes, without the plain objects and arrays that are a JSON literal's data.
@@ -142,5 +182,20 @@ export function assertLegacySqlText(statement: any) {
 				throw unwritable(`The name ${JSON.stringify(value)}`);
 			}
 		}
+	}
+	// Catches any writer not replaced here: the text legacy runs, with Harper's backticks, may read nothing new.
+	const written = clone(statement);
+	// `SELECT *` for a role that may read no column leaves no columns, which does not parse.
+	if (written instanceof yy.Select && written.columns?.length === 0) written.columns = [new yy.NumValue({ value: 1 })];
+	backtickASTSchemaItems(written);
+	let reparsed: any;
+	try {
+		reparsed = (alasql as any).parse(written.toString()).statements[0];
+	} catch {
+		throw unwritable('The statement');
+	}
+	const names = referencedNames(statement);
+	for (const name of referencedNames(reparsed)) {
+		if (!names.has(name)) throw unwritable('The statement');
 	}
 }

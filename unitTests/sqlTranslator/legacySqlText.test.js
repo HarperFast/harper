@@ -51,7 +51,14 @@ describe('legacy SQL text', function () {
 				}
 				if (columns.length !== 1 || columns[0].as !== 'v') continue;
 				const text = quoteString(columns[0].value);
-				if (text === undefined) continue;
+				if (text === undefined) {
+					assert.match(
+						columns[0].value,
+						/(^|[^\\])(\\\\)*\\$/,
+						`only a trailing odd run of backslashes is refused: ${body}`
+					);
+					continue;
+				}
 				const again = parse(`SELECT ${text} AS v FROM t WHERE w = 'z'`).columns;
 				assert.deepStrictEqual(
 					again.map((c) => c.value),
@@ -96,6 +103,35 @@ describe('legacy SQL text', function () {
 		}
 	});
 
+	it('writes numbers in plain decimal, which reads back as the same number', function () {
+		for (const literal of [
+			'10000000000000000000000000',
+			'0.0000001',
+			'123.5',
+			"{'a':0.0000001,'b':@[10000000000000000000000000]}",
+		]) {
+			const before = parse(`SELECT ${literal} AS v FROM dev.t`).columns;
+			const after = reparsed(`SELECT ${literal} AS v FROM dev.t`).columns;
+			assert.strictEqual(after.length, 1, literal);
+			assert.deepStrictEqual(after[0].value, before[0].value, literal);
+		}
+		assertUnwritable(`SELECT ${'9'.repeat(400)} AS v FROM dev.t`);
+		assertUnwritable(`SELECT {'a':${'9'.repeat(400)}} AS v FROM dev.t`);
+	});
+
+	it('refuses a statement whose text reads a name the statement does not', function () {
+		assertUnwritable('SELECT label->[x, ssn] AS v FROM dev.t');
+		const writer = alasql.yy.StringValue.prototype.toString;
+		alasql.yy.StringValue.prototype.toString = function () {
+			return "'" + this.value + "'";
+		};
+		try {
+			assertUnwritable("SELECT 'x'', ssn, ''y' AS v FROM dev.t");
+		} finally {
+			alasql.yy.StringValue.prototype.toString = writer;
+		}
+	});
+
 	it('refuses a string literal that has no spelling', function () {
 		assertUnwritable("SELECT 'a\\' AS v FROM dev.t");
 		assertUnwritable("UPDATE dev.t SET label = {'k':'a\\'} WHERE id = 1");
@@ -109,8 +145,12 @@ describe('legacy SQL text', function () {
 			'SELECT DISTINCT lower(a) AS l FROM dev.t WHERE EXISTS (SELECT 1 FROM dev.u WHERE u.id = t.id) ORDER BY l DESC LIMIT 2',
 			"SELECT CASE WHEN a = 1 THEN 'x' ELSE 'y' END AS c, CAST(b AS INT) AS n FROM dev.t WHERE b NOT IN (1, 2)",
 			'SELECT @x AS v, $1 AS w, ? AS z FROM dev.t',
+			'SELECT label->x AS v, COUNT(*) AS `count`, `select` FROM dev.t GROUP BY label->x, `select`',
 		]) {
 			assertLegacySqlText(parse(sql));
 		}
+		const noReadableColumn = parse("SELECT * FROM dev.t WHERE label = 'a'");
+		noReadableColumn.columns = [];
+		assertLegacySqlText(noReadableColumn);
 	});
 });
