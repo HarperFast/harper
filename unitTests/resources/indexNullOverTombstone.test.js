@@ -143,6 +143,7 @@ describe('null indexes over tombstones', function () {
 			await waitFor(() => !Cache.primaryStore.hasLock('restored'));
 			assert.deepStrictEqual(indexedKeys(Cache, 'restored'), [null]);
 			await request('restored', 'DELETE');
+			if (name === 'UnauditedCache') assert.strictEqual(origin.available, false, 'DELETE reached the Resource source');
 			assert.strictEqual(Cache.primaryStore.getEntry('restored').value, null, 'premise: DELETE left a tombstone');
 			assert.deepStrictEqual(indexedKeys(Cache, 'restored'), []);
 			origin.available = true;
