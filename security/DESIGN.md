@@ -249,9 +249,9 @@ born in old space and keeps its young function context, and everything that cont
 its headers, the response), alive across every scavenge until the next major GC. The same holds for any per-request
 or per-write path: assign a function literal to a local first, or bind a module function. The helpers' behavior is covered by `unitTests/security/authSessions.test.js`.
 
-## `session.update(data, { ifVersion })` is a compare-and-set on this node only (`security/auth.ts`, harper#2983)
+## `session.update(data, { ifVersion })` is a compare-and-set on this node only (`security/auth.ts`, `resources/Table.ts`, harper#2983)
 
-`hdb_session` replicates, so `ifVersion` sees only writes applied here: a logout committed on another node and not yet replicated is invisible, and last-write-wins lets a refresh committed after it revert the logout on every node. A component needing more defends across nodes itself (HarperFast/oauth#212); an older core ignores the argument. `updateSession` sets `X-Hdb-Session` for a conditional write only once it lands, and throws on an `options` without a finite `ifVersion`. Enforced by `unitTests/security/sessionUpdateIfVersion.test.js`.
+`hdb_session` replicates, so `ifVersion` sees only writes applied here: a logout committed on another node and not yet replicated is invisible, and last-write-wins lets a refresh committed after it revert the logout on every node. A component needing more defends across nodes itself (HarperFast/oauth#212); an older core ignores the argument. `updateSession` sets `X-Hdb-Session` only once a conditional write lands. The guard wraps `write.commit` in `_writeUpdate`, keyed on an `IF_VERSION` symbol only `auth.ts` sets, and fails closed (not retryable) on a snapshot-free transaction, `VERSION_REUSED`, or a version not behind `txnTime`. Never stage it beside another write: LMDB commits the sibling, and RocksDB leaked a snapshot (harper#2991). Enforced by `sessionUpdateIfVersion.test.js` and `tableIfVersion.test.js`.
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
