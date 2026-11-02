@@ -532,6 +532,23 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			);
 		});
 
+		test('a same-record group through the relationship is authorized against the related table', async () => {
+			// a group below the top level reaches the operations API's executor unvalidated
+			const group = (conditions: any[]) => [{ operator: 'and', conditions: [{ attribute: 'dept', conditions }] }];
+			const byName = group([{ attribute: 'name', value: DEPT.name }]);
+			const byBudget = group([{ attribute: 'budget', value: DEPT.budget }]);
+			assertRefused(await byConditions('empOnly', byName), 'group on an unreadable table', 'Dept');
+			assertRefused(await byConditions('restricted', byBudget), 'group on an unreadable attribute', 'Dept.budget');
+			const allowed = await byConditions('restricted', byName);
+			strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+			deepStrictEqual(allowed.body, [{ id: EMP.id }]);
+			strictEqual((await rest('restricted', `/Emp/?dept[budget=${DEPT.budget}]&select(id)`)).status, 403);
+			strictEqual((await rest('empOnly', `/Emp/?dept[name=${DEPT.name}]&select(id)`)).status, 403);
+			const restAllowed = await rest('restricted', `/Emp/?dept[name=${DEPT.name}]&select(id)`);
+			strictEqual(restAllowed.status, 200, JSON.stringify(restAllowed.body));
+			deepStrictEqual(restAllowed.body, [{ id: EMP.id }]);
+		});
+
 		test('operations API refuses a condition on a related attribute the role cannot read', async () => {
 			assertRefused(await byConditions('restricted', deptBudget), 'condition', 'Dept.budget');
 		});

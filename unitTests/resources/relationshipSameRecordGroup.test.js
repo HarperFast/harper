@@ -303,6 +303,51 @@ describe('A relationship condition is existential; `relationship[conditions]` is
 		);
 	});
 
+	it('drives an index scan through a to-one group or an OR inside a group, under allowFullScan: false', async () => {
+		const brands = async (conditions) => {
+			const found = [];
+			for await (const row of Brand.search({ conditions, select: ['id'], allowFullScan: false })) found.push(row.id);
+			return found.sort();
+		};
+		const viaBrand = {
+			attribute: ['products', 'brand'],
+			conditions: [
+				{ attribute: 'id', value: 'both' },
+				{ attribute: 'group', value: 'g' },
+			],
+		};
+		assert.deepStrictEqual(await brands([viaBrand]), ['both']);
+		const planned = (await Brand.search({ conditions: [viaBrand], explain: true, allowFullScan: false })).conditions;
+		assert.deepStrictEqual(planned[0].attribute, ['products']);
+		const either = {
+			operator: 'or',
+			conditions: [
+				{ attribute: 'name', value: 'Cable' },
+				{ attribute: 'name', value: 'Keyboard' },
+			],
+		};
+		assert.deepStrictEqual(
+			await brands([{ attribute: 'products', conditions: [either, { attribute: 'color', value: 'black' }] }]),
+			['both', 'cable-split', 'cable-whole']
+		);
+		assert.deepStrictEqual(await brands([{ attribute: 'products', operator: 'or', conditions: either.conditions }]), [
+			'both',
+			'cable-split',
+			'cable-whole',
+			'keyboard',
+		]);
+	});
+
+	it("reads a group's condition without an attribute as the related primary key", async () => {
+		const found = [];
+		for await (const row of Product.search({
+			conditions: [{ attribute: 'brand', conditions: [{ value: 'both' }] }],
+			select: ['id'],
+		}))
+			found.push(row.id);
+		assert.deepStrictEqual(found.sort(), ['k1', 'm1']);
+	});
+
 	it('selects the related record a key condition on a many-to-many relationship matched (#3814)', async () => {
 		const departments = async (conditions) => {
 			const found = [];
@@ -327,6 +372,7 @@ describe('A relationship condition is existential; `relationship[conditions]` is
 			{ attribute: 'group', conditions: [{ attribute: 'id', value: 'x' }] },
 			{ attribute: 'products', conditions: [] },
 			{ attribute: 'products', comparator: 'equals', value: 'x', conditions: [{ attribute: 'name', value: 'x' }] },
+			{ attribute: 'products', negated: true, conditions: [{ attribute: 'name', value: 'x' }] },
 			{ attribute: 'products', conditions: [{ attribute: 'name', comparator: 'fts', value: 'x' }] },
 		])
 			await assert.rejects(

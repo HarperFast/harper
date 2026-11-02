@@ -1627,6 +1627,7 @@ class RelationshipSelection {
 }
 const RESTRICTIONS = Symbol('relationshipRestrictions');
 const UNIONS = Symbol('relationshipUnions');
+const LOADS = Symbol('relationshipLoads');
 // A query's `filtered` map holds, per relationship name, a leading join's Map or a selection with `fromRecord`.
 // They are keyed by symbol because a relationship can be named like the maps' own members (`filters`, `get`).
 export function relationshipRestriction(filtered, name: string) {
@@ -1983,7 +1984,23 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			const restriction = relationshipRestriction(filtered, firstAttributeName);
 			const join: any = restriction instanceof Map ? restriction : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
-			const loadEntries = resolver?.loadEntries;
+			// the conditions of one scope on this relationship share the row's related entries
+			let lastLoad;
+			if (filtered && resolver?.loadEntries) {
+				const loads = (filtered[LOADS] ??= new Map());
+				lastLoad = loads.get(firstAttributeName);
+				if (!lastLoad) loads.set(firstAttributeName, (lastLoad = { record: undefined, loaded: undefined }));
+			}
+			const loadEntries =
+				resolver?.loadEntries &&
+				((record, context) => {
+					if (!lastLoad) return resolver.loadEntries(record, context);
+					if (lastLoad.record !== record) {
+						lastLoad.record = record;
+						lastLoad.loaded = resolver.loadEntries(record, context);
+					}
+					return lastLoad.loaded;
+				});
 			const getSubObject = (record, entry) => {
 				let subObject, subEntry, subEntries;
 				if (resolver) {
@@ -2016,7 +2033,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								(entry) => entry?.key ?? entry
 							)
 						: (join as any).fromRecord?.(record);
-					return new Set(keys);
+					return new Set(keys?.map(flattenKey));
 				};
 				const selection = new RelationshipSelection(units, (record, sync?: boolean) => {
 					const joined = joinedKeys(record);
@@ -2027,7 +2044,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								loaded,
 								(entry) =>
 									entry?.value != null &&
-									(joined?.has(relatedKey(entry)) || matchesFilters(units, entry.value, entry, true))
+									(joined?.has(flattenKey(relatedKey(entry))) || matchesFilters(units, entry.value, entry, true))
 							);
 							const matchingKeys = (matches) =>
 								loaded.filter((_entry, i) => matches[i]).map((entry) => relatedKey(entry));
@@ -2043,7 +2060,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 						const value = subObject[i];
 						const entry = subEntries?.[i];
 						const key = entry?.key ?? value[relatedTable.primaryKey];
-						if (joined?.has(key) || units.some((unit) => unit(value, entry))) keys.push(key);
+						if (joined?.has(flattenKey(key)) || units.some((unit) => unit(value, entry))) keys.push(key);
 					}
 					return keys;
 				});
@@ -2468,33 +2485,26 @@ function usableIndex(table, attributeName): any {
 function searchRelatedGroup(group, transaction, reverse: boolean, table, joined, options, context) {
 	const inner = group.conditions;
 	if (group.operator === 'or') {
-		if (inner.every((condition) => innerConditionDrives(table, condition))) {
-			let results;
-			for (const branch of inner) {
-				// a condition inside an OR decides rows only, so its joins register nowhere
-				const branchResults = searchByIndex(branch, transaction, reverse, table, {
-					...options,
-					filtered: Object.create(null),
-				});
-				results = results ? results.concat(branchResults) : branchResults;
-			}
-			return distinctKeys(results);
-		}
+		if (inner.every((condition) => scansRelated(table, condition)))
+			return unionScan(inner, transaction, reverse, table, options);
 	} else {
 		// the narrowest condition that drives an index scan, else the narrowest one searchByIndex can run (or refuse)
 		const estimate = estimateCondition(table);
 		let lead;
 		let leadDrives = false;
 		for (const condition of inner) {
-			if (condition.conditions && !isRelationshipGroup(condition)) continue;
-			const drives = conditionDrivesIndex(table, condition);
+			const drives = scansRelated(table, condition);
+			if (!drives && condition.conditions && !isRelationshipGroup(condition)) continue;
 			if (!lead || (drives && !leadDrives) || (drives === leadDrives && estimate(condition) < estimate(lead))) {
 				lead = condition;
 				leadDrives = drives;
 			}
 		}
 		if (lead) {
-			const results = searchByIndex(lead, transaction, reverse, table, options);
+			const results =
+				lead.conditions && !isRelationshipGroup(lead)
+					? unionScan(lead.conditions, transaction, reverse, table, options)
+					: searchByIndex(lead, transaction, reverse, table, options);
 			// built after the lead, so a relationship condition sees the lead's join on it
 			const filters = (joined.filters ??= []);
 			for (const condition of inner)
@@ -2513,9 +2523,28 @@ function searchRelatedGroup(group, transaction, reverse: boolean, table, joined,
 		options
 	);
 }
-// a plain group inside a same-record group is applied as a filter, never as the scan
-function innerConditionDrives(table, condition): boolean {
-	return !(condition.conditions && !isRelationshipGroup(condition)) && conditionDrivesIndex(table, condition);
+function unionScan(branches, transaction, reverse: boolean, table, options) {
+	let results;
+	for (const branch of branches) {
+		// a condition inside an OR decides rows only, so its joins register nowhere
+		const branchResults = searchByIndex(branch, transaction, reverse, table, {
+			...options,
+			filtered: Object.create(null),
+		});
+		results = results ? results.concat(branchResults) : branchResults;
+	}
+	return distinctKeys(results);
+}
+// whether a condition in a same-record group can be its index scan: a plain AND inside one is flattened when
+// it is prepared, and a plain OR scans as the union of its branches
+function scansRelated(table, condition): boolean {
+	if (!condition.conditions || isRelationshipGroup(condition)) return conditionDrivesIndex(table, condition);
+	return (
+		condition.operator === 'or' &&
+		condition.conditions.every(
+			(branch) => !(branch.conditions && !isRelationshipGroup(branch)) && conditionDrivesIndex(table, branch)
+		)
+	);
 }
 function relationshipScanRuns(table, path: any[], offset: number, comparator, value, group?): boolean {
 	const relationship = findAttribute(table.attributes, path[offset]);
@@ -2526,7 +2555,7 @@ function relationshipScanRuns(table, path: any[], offset: number, comparator, va
 	if (offset < path.length - (group ? 1 : 2))
 		return relationshipScanRuns(relatedTable, path, offset + 1, comparator, value, group);
 	if (!group) return scanDrivesIndex(relatedTable, path[offset + 1], comparator, value);
-	const drives = (condition) => innerConditionDrives(relatedTable, condition);
+	const drives = (condition) => scansRelated(relatedTable, condition);
 	return group.operator === 'or' ? group.conditions.every(drives) : group.conditions.some(drives);
 }
 // must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)

@@ -7790,15 +7790,21 @@ export function makeTable(options): TableResourceClass {
 					// filter. Report the total as unavailable for those rather than advertising it as count=exact
 					// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
 					// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
-					const touchesCustomIndex = (conds: any[]): boolean =>
+					const touchesCustomIndex = (conds: any[], table: any = TableResource): boolean =>
 						conds.some((c: any) => {
-							if (!c || isRelationshipGroup(c)) return false;
-							if (c.conditions) return touchesCustomIndex(c.conditions);
+							if (!c) return false;
+							if (isRelationshipGroup(c)) {
+								let related = table;
+								for (const hop of [].concat(c.attribute))
+									related = related?.propertyResolvers?.[hop]?.definition?.tableClass;
+								return Boolean(related) && touchesCustomIndex(c.conditions, related);
+							}
+							if (c.conditions) return touchesCustomIndex(c.conditions, table);
 							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
 							if (typeof attr !== 'string') return false;
 							return fullTextComparatorMode(c.comparator)
-								? Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
-								: Boolean(indices[attr]?.customIndex);
+								? Boolean(table.fullTextQueryIndexes?.[attr]?.customIndex)
+								: Boolean(table.indices?.[attr]?.customIndex);
 						});
 					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
 					return (async () => {
@@ -8199,7 +8205,12 @@ export function makeTable(options): TableResourceClass {
 				for (let index = 0; index < conditions.length; index++) {
 					const condition = conditions[index];
 					if (isRelationshipGroup(condition)) {
-						conditions[index] = prepareRelationshipGroup(condition);
+						const prepared = prepareRelationshipGroup(condition);
+						// a to-one group became plain paths, which an AND takes as its own conditions
+						if (prepared.attribute === undefined && operator !== 'or' && prepared.operator !== 'or') {
+							conditions.splice(index, 1, ...prepared.conditions);
+							index += prepared.conditions.length - 1;
+						} else conditions[index] = prepared;
 						continue;
 					}
 					if (condition.conditions) {
@@ -8318,13 +8329,12 @@ export function makeTable(options): TableResourceClass {
 				}
 				return conditions;
 			}
-			// `rel[...]`: conditions relative to the related table that one related record must meet
 			function prepareRelationshipGroup(group: any) {
 				const attributeName = group.attribute ?? group[0];
 				const path = Array.isArray(attributeName) ? attributeName : [attributeName];
 				const label = path.join('.');
-				if (group.comparator !== undefined || (group.value ?? group[1]) !== undefined)
-					throw new ClientError(`${label}[...] takes conditions, not a comparator or value`, 400);
+				if (group.comparator !== undefined || (group.value ?? group[1]) !== undefined || group.negated)
+					throw new ClientError(`${label}[...] takes conditions, not a comparator, value or negation`, 400);
 				if (!Array.isArray(group.conditions) || group.conditions.length === 0)
 					throw new ClientError(`${label}[...] requires at least one condition`, 400);
 				const relationship = findAttribute(attributes, path[0]);
@@ -8349,10 +8359,23 @@ export function makeTable(options): TableResourceClass {
 				const operator = path.length > 1 ? undefined : group.operator;
 				// a to-one relationship has one related record, so its group is a plain group of paths through it
 				if (!relationship.elements)
-					return { operator, conditions: prepared.map((condition) => throughRelationship(condition, path[0])) };
-				return { attribute: [path[0]], operator, conditions: prepared };
+					return {
+						operator,
+						conditions: prepared.map((condition) => throughRelationship(condition, path[0], relatedTable.primaryKey)),
+					};
+				// one related record meets every condition of a nested AND, so it scans like its parent's
+				return {
+					attribute: [path[0]],
+					operator,
+					conditions: operator === 'or' ? prepared : prepared.flatMap(flattenAnd),
+				};
 			}
-			function throughRelationship(condition: any, name: string) {
+			function flattenAnd(condition: any) {
+				return condition.conditions && !isRelationshipGroup(condition) && condition.operator !== 'or'
+					? condition.conditions.flatMap(flattenAnd)
+					: [condition];
+			}
+			function throughRelationship(condition: any, name: string, relatedKey: string) {
 				if (isRelationshipGroup(condition)) {
 					const attribute = condition.attribute ?? condition[0];
 					return { ...condition, attribute: [name, ...(Array.isArray(attribute) ? attribute : [attribute])] };
@@ -8360,13 +8383,16 @@ export function makeTable(options): TableResourceClass {
 				if (condition.conditions)
 					return {
 						...condition,
-						conditions: condition.conditions.map((child) => throughRelationship(child, name)),
+						conditions: condition.conditions.map((child) => throughRelationship(child, name, relatedKey)),
 					};
 				const attribute = condition[0] ?? condition.attribute;
 				const copy = Array.isArray(condition) ? { ...condition, value: condition[1] } : { ...condition };
 				delete copy[0];
 				delete copy[1];
-				copy.attribute = [name, ...(attribute == null ? [] : Array.isArray(attribute) ? attribute : [attribute])];
+				copy.attribute = [
+					name,
+					...(attribute == null ? [relatedKey] : Array.isArray(attribute) ? attribute : [attribute]),
+				];
 				return copy;
 			}
 			function rejectFullTextInGroup(conditions: any[]) {
@@ -12085,12 +12111,17 @@ export function makeTable(options): TableResourceClass {
 		prefix: any[] = []
 	): boolean {
 		for (const condition of conditions) {
-			const attribute = condition?.[0] ?? condition?.attribute;
-			const path = attribute == null ? prefix : prefix.concat(Array.isArray(attribute) ? attribute : [attribute]);
 			if (condition?.conditions) {
+				// read as `isRelationshipGroup` reads it
+				const attribute = condition.attribute ?? condition[0];
+				const path = attribute == null ? prefix : prefix.concat(attribute);
 				if (attribute != null && relationshipPathMatches(path, target, user, checkDenial)) return true;
 				if (someConditionPath(condition.conditions, target, user, checkDenial, path)) return true;
-			} else if (relationshipPathMatches(prefix.length ? path : attribute, target, user, checkDenial)) return true;
+				continue;
+			}
+			const attribute = condition?.[0] ?? condition?.attribute;
+			const path = prefix.length === 0 ? attribute : attribute == null ? prefix : prefix.concat(attribute);
+			if (relationshipPathMatches(path, target, user, checkDenial)) return true;
 		}
 		return false;
 	}
