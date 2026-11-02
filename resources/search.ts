@@ -2238,8 +2238,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				const equals = primaryKeyEquals(value);
 				baseFilter = attributeComparator(attribute, (primaryKey) => !equals(primaryKey));
 			} else {
-				// an array matches when some element differs, as its per-element index entries do; a Date is compared by
-				// the epoch number its index key and `value` hold
+				// whole values reach this predicate (allowObjectMatching), so it applies the per-element array rule itself
 				const differs = (element) =>
 					compareKeys((element instanceof Date ? element.getTime() : element) ?? null, value) !== 0;
 				baseFilter = attributeComparator(

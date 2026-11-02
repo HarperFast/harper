@@ -187,7 +187,6 @@ describe('null and omitted values match the same way on every search path', func
 
 	it('estimates the open range a null lower bound executes', function () {
 		const index = Table.indices.b;
-		// LMDB stores have no estimateCount
 		if (typeof index.estimateCount !== 'function') this.skip();
 		const original = index.estimateCount;
 		const ranges = [];
@@ -395,7 +394,7 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 				}
 		});
 
-	it('matches Date array elements by epoch number for every comparator, led or filtered', async () => {
+	it('matches Date array elements by epoch number for equals and ranges, led or filtered', async () => {
 		const x = dayOf('x'.charCodeAt(0));
 		for (const [condition, expected] of [
 			[{ attribute: 'days', value: x }, ['x', 'xx', 'xy']],
