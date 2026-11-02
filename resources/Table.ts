@@ -9271,7 +9271,7 @@ export function makeTable(options): TableResourceClass {
 						const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(id)?.value;
 						if (record && staleResource(resourceClass, context, entry, record).allowStaleWhileRevalidate?.(entry, id)) {
 							(staleKept ??= new WeakSet()).add(entry);
-							return entry;
+							return selectionStopped ? SKIP : entry;
 						}
 						if (selectionStopped) return SKIP;
 					}
