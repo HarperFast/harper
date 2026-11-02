@@ -176,6 +176,29 @@ When `true`, the Next.js request handler runs before any other Harper HTTP middl
 
 Note: enabling `runFirst` conflicts with Harper's REST API on the same port. Use a dedicated `port` to avoid conflicts.
 
+## Versioned Filesystem Cache
+
+By default, Next.js writes its incremental render and data caches under `.next` inside the application directory. That directory is replaced on every deploy, and workers still running the previous build keep writing to it until they restart, so the new build can serve pages the old build rendered. See [Writing Files in the Application Directory](./applications.md#writing-files-in-the-application-directory).
+
+`@harperfast/nextjs` v2.4.0 and later can keep these caches on disk in a directory per build, outside the application directory. This is opt-in: select it with `versionedCacheHandlerPath()` in place of the default handler or the [Harper-backed handler](#caching):
+
+```js
+import { withHarper, versionedCacheHandlerPath } from '@harperfast/nextjs';
+
+export default withHarper({
+	cacheHandler: versionedCacheHandlerPath(import.meta.dirname),
+});
+```
+
+For CommonJS configs, use `require('@harperfast/nextjs')` and pass `__dirname`.
+
+- For `<rootPath>/components/my-app`, entries go to `<rootPath>/.nextjs-cache/<app-path-hash>/<build-hash>/`. The build identity includes `BUILD_ID` and a digest of the build output. Set the plugin's `cacheDirectory` option in `config.yaml` to an absolute path outside the application directory to use another location.
+- Workers of the same build on the same node share the cache, and it survives worker restarts. It does not replicate between nodes.
+- Before the first deploy that uses this handler, stop workers running the stock handler: they can still overwrite the new build's seed files. Later rolling deploys are safe once the outgoing workers use this handler too.
+- Old build directories are not removed automatically. Delete them while no worker of that build is running.
+
+See the [plugin README](https://github.com/HarperFast/nextjs#versioned-filesystem-cache) for the full behavior, including `cacheMaxMemorySize` when several apps share a Next.js installation.
+
 ## Caching
 
 `@harperfast/nextjs` includes a Harper-backed cache handler for Next.js [Incremental Static Regeneration (ISR)](https://nextjs.org/docs/app/guides/incremental-static-regeneration), the [Data Cache](https://nextjs.org/docs/app/deep-dive/caching#data-cache), and [`unstable_cache`](https://nextjs.org/docs/app/api-reference/functions/unstable_cache).

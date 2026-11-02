@@ -83,6 +83,16 @@ export function handleApplication(scope) {
 
 See [Cleanup on Shutdown](./plugin-api.md#cleanup-on-shutdown) for the full shutdown sequence, including how async cleanup is awaited and the time limit it must finish within.
 
+## Writing Files in the Application Directory
+
+An application's directory (`<componentsRoot>/<name>`, or [`scope.directory`](./plugin-api.md#scopedirectory)) belongs to the deploy. Harper does not protect, version, or coordinate files an application writes there at runtime; if your application does, managing those files is your responsibility:
+
+- Each deploy replaces the directory, and files written at runtime are not carried over.
+- Workers running the previous version keep running until they restart, and a file they write by path lands in the new version's directory.
+- Worker threads write concurrently, and files on disk are not replicated to other nodes.
+
+Store state in a Harper [table](../database/overview.md) instead. For disk caches, write to a directory outside the application directory, namespaced by build or version, and remove old ones yourself. The [Next.js plugin](./nextjs.md#versioned-filesystem-cache) does this for Next.js's caches.
+
 ## Remote Management
 
 Managing applications on a remote Harper instance uses the same operations as local management. The recommended approach is to log in first using `harper login` to store an authentication token:
