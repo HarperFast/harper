@@ -939,11 +939,12 @@ function coverIndexEntries(
 	return entries.map((entry) => {
 		const { key, value: primaryKey } = entry;
 		let value = key;
-		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB (the record stores 0), and on
-		// RocksDB split into '\x18' and a primary key that was never stored, which the record path skips
-		if (typeof key === 'object' && key !== null) value = 0;
-		else if (key === '\x18' && primaryKey?.[0] === null) return SKIP;
-		else if (attributeName && typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
+		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB, and on RocksDB as key '\x18'
+		// with a null-led primary key that a real [null, …] id can also produce, so only its record tells them apart
+		if (typeof key === 'object' && key !== null) return SKIP;
+		if (key === '\x18' && primaryKey?.[0] === null) {
+			if (!Table.primaryStore.getEntry(primaryKey, { transaction })?.value) return SKIP;
+		} else if (attributeName && typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
 			value = entry.overflowed;
 			if (value === undefined) {
 				const record = Table.primaryStore.getEntry(primaryKey, { transaction })?.value;
@@ -1468,6 +1469,13 @@ export function searchByIndex(
 		}
 		const coverAttribute = covered?.attribute === attribute_name;
 		const coverEntries = coverAttribute || (covered !== undefined && covered.attribute === Table.primaryKey);
+		// a covered overflow entry stands for the one stored value it indexes, so it matches only through that value
+		const entryMatches = (entry, recordMatcher, overflowEntry: boolean) => {
+			if (!overflowEntry) return filter(recordMatcher);
+			entry.overflowed =
+				recordMatcher && overflowedValue(recordMatcher[attribute_name], entry.key, attribute_name, filter);
+			return entry.overflowed !== undefined;
+		};
 		const range = index.getRange(rangeOptions);
 		const scanned = filter
 			? range.map(function (entry) {
@@ -1480,21 +1488,13 @@ export function searchByIndex(
 						recordMatcher = Table.primaryStore.getEntry(value, { transaction })?.value;
 						overflowEntry = coverEntries;
 					} else recordMatcher = { [attribute_name]: key };
-					// a covered row stands for the value this entry indexes, so it matches only through that value
-					const matches = overflowEntry
-						? () => {
-								entry.overflowed =
-									recordMatcher && overflowedValue(recordMatcher[attribute_name], key, attribute_name, filter);
-								return entry.overflowed !== undefined;
-							}
-						: () => filter(recordMatcher);
-					if (this.isSync) return matches() ? matched : SKIP;
+					if (this.isSync) return entryMatches(entry, recordMatcher, overflowEntry) ? matched : SKIP;
 					// for filter operations, we intentionally yield the event turn so that scanning queries
 					// do not hog resources
 					return new Promise((resolve, reject) =>
 						setImmediate(() => {
 							try {
-								resolve(matches() ? matched : SKIP);
+								resolve(entryMatches(entry, recordMatcher, overflowEntry) ? matched : SKIP);
 							} catch (error) {
 								reject(error);
 							}

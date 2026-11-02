@@ -558,14 +558,23 @@ describe('Secondary-index range select', function () {
 			});
 			try {
 				for (let id = 1; id <= 20; id++) await Long.put(id, { value: ['e'.repeat(300) + id] });
-				let yielded = false;
-				setImmediate(() => (yielded = true));
-				const result = await rows(Long, {
-					conditions: [{ attribute: 'value', comparator: 'ends_with', value: 'none' }],
-					select: ['id', 'value'],
-				});
-				assert.deepStrictEqual(result, []);
-				assert.ok(yielded, 'the scan never yielded to the event loop');
+				let turns = 0;
+				let scanning = true;
+				const tick = () => {
+					turns++;
+					if (scanning) setImmediate(tick);
+				};
+				setImmediate(tick);
+				for (const select of [['id', 'value'], ['id']]) {
+					const before = turns;
+					const result = await rows(Long, {
+						conditions: [{ attribute: 'value', comparator: 'ends_with', value: 'none' }],
+						select,
+					});
+					assert.deepStrictEqual(result, []);
+					assert.ok(turns - before >= 10, `the scan yielded ${turns - before} times across 20 rejected entries`);
+				}
+				scanning = false;
 			} finally {
 				Long.dropTable();
 			}
@@ -624,6 +633,7 @@ describe('Secondary-index range select', function () {
 				await Reopened.put(3, { value: [6, 8], label: 'array' });
 				await Reopened.put(4, { value: { nested: 6 }, label: 'object' });
 				await Reopened.put(5, { value: -0, label: 'negative zero' });
+				await Reopened.put({ id: [null, 7], value: '\x18', label: 'control character' });
 				await closeDatabase(databaseName);
 				resetDatabases();
 				Reopened = declare();
@@ -632,24 +642,21 @@ describe('Secondary-index range select', function () {
 				const { result, reads } = await withReads(Reopened, () =>
 					rows(Reopened, { conditions: open, select: ['id', 'value'] })
 				);
-				// the same rows, in index order; the array row once per matching element, the object row
-				// not at all (it is not indexed), and the -0 row as the record path reads it
+				// the same rows, in index order: the array row once per matching element, the object row not at
+				// all (it is not indexed), and the -0 row not at all, as its index key cannot give its value
 				assert.deepStrictEqual(
 					result.map(({ id }) => id),
-					loaded.map(({ id }) => id)
+					loaded.map(({ id }) => id).filter((id) => id !== 5)
 				);
-				const negativeZero = result.filter(({ id }) => id === 5);
-				assert.deepStrictEqual(negativeZero, isLMDB ? [{ id: 5, value: 0 }] : []);
-				assert.deepStrictEqual(
-					result.filter(({ id }) => id !== 5),
-					[
-						{ id: 1, value: 5 },
-						{ id: 3, value: 6 },
-						{ id: 2, value: 7 },
-						{ id: 3, value: 8 },
-					]
-				);
-				assert.equal(reads, 0);
+				assert.deepStrictEqual(result, [
+					{ id: 1, value: 5 },
+					{ id: 3, value: 6 },
+					{ id: 2, value: 7 },
+					{ id: 3, value: 8 },
+					{ id: [null, 7], value: '\x18' },
+				]);
+				// a null-led id under a '\x18' key is checked against its record, since -0 decodes that way on RocksDB
+				assert.equal(reads, isLMDB ? 1 : 2);
 			} finally {
 				Reopened.dropTable();
 			}
@@ -734,6 +741,25 @@ describe('Secondary-index range select', function () {
 					await Snapshot.delete(4);
 					for (let step = await iterator.next(); !step.done; step = await iterator.next()) scanned.push(step.value);
 					assert.deepStrictEqual(scanned, before);
+					// an overflow row's value is read in the same snapshot as its index entry
+					const long = (suffix) => 'f'.repeat(300) + suffix;
+					await Snapshot.put(7, { score: long('a') });
+					await Snapshot.put(8, { score: long('b') });
+					const overflowQuery = {
+						conditions: [{ attribute: 'score', comparator: 'starts_with', value: 'fff' }],
+						select: ['id', 'score'],
+					};
+					const overflow = Snapshot.search(overflowQuery)[Symbol.asyncIterator]();
+					const overflowRows = [(await overflow.next()).value];
+					await Snapshot.put(8, { score: long('changed') });
+					for (let step = await overflow.next(); !step.done; step = await overflow.next())
+						overflowRows.push(step.value);
+					assert.deepStrictEqual(overflowRows, [
+						{ id: 7, score: long('a') },
+						{ id: 8, score: long('b') },
+					]);
+					await Snapshot.delete(7);
+					await Snapshot.delete(8);
 				} else {
 					await Snapshot.put(3, { score: 999 });
 					await Snapshot.put(6, { score: 25 });
