@@ -3783,7 +3783,6 @@ export function makeTable(options): TableResourceClass {
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
 				lastCleanupInterval = undefined;
 			}
-			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
 			if (typeof opts === 'number') {
 				expirationMs = opts * 1000;
 			} else if (!preserveLoadedConfiguration) {
@@ -3793,6 +3792,7 @@ export function makeTable(options): TableResourceClass {
 				recordScanInterval = (opts.scanInterval ?? 0) * 1000;
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
+			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
 			if (!preserveLoadedConfiguration) {
 				// default to one quarter of the total expiration+eviction window
 				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;

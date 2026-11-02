@@ -4,7 +4,14 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { catalogExpiration, databases, getDatabases, resetDatabases, table } = require('#src/resources/databases');
+const {
+	catalogExpiration,
+	databases,
+	getDatabases,
+	onUpdatedTable,
+	resetDatabases,
+	table,
+} = require('#src/resources/databases');
 
 const DATABASE = 'test';
 
@@ -74,6 +81,32 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.strictEqual(Restarted.evictionMS, 300000);
 	});
 
+	it('leaves the catalog untouched when a re-declaration omits a persisted setting', async function () {
+		const tableName = 'ExpiryOmittedOnRedeclare';
+		const Declared = keyless(tableName, { expiration: 600 });
+		await commitCatalog(Declared);
+		const updates = [];
+		const listener = onUpdatedTable((updated) => {
+			if (updated.tableName === tableName) updates.push(updated);
+		});
+		try {
+			keyless(tableName);
+		} finally {
+			listener.remove();
+		}
+		assert.deepStrictEqual(updates, [], 'an unchanged row must not be rewritten and announced');
+		assert.deepStrictEqual(catalogExpiration(Declared), { expiration: 600 });
+	});
+
+	it('reads the named primary row, as declareTable and initStores do', async function () {
+		const tableName = 'ExpiryNamedPrimaryRow';
+		const Legacy = keyed(tableName);
+		const { value } = primaryRow(Legacy);
+		Legacy.dbisDB.putSync(`${tableName}/id`, { ...value, name: 'id', isPrimaryKey: true, expiration: 77 });
+		await commitCatalog(Legacy);
+		assert.deepStrictEqual(catalogExpiration(Legacy), { expiration: 77 });
+	});
+
 	it('brings a loaded class that did not declare the table up to date with the catalog on reload', async function () {
 		const tableName = 'ExpiryAdoptedOnReload';
 		const Loaded = keyed(tableName);
@@ -114,6 +147,16 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 
 		resetDatabases();
 		assert.strictEqual(Declared.expirationMS, 600000);
+	});
+
+	it('does not let a rejected declaration claim the TTL', async function () {
+		const tableName = 'ExpiryRejectedDeclaration';
+		const Loaded = keyed(tableName);
+		assert.throws(() => keyed(tableName, { expiration: -5 }), /negative/);
+		await writeCatalogSettings(Loaded, { expiration: 120 });
+
+		resetDatabases();
+		assert.strictEqual(Loaded.expirationMS, 120000);
 	});
 
 	it('keeps a TTL application code set on this thread', async function () {

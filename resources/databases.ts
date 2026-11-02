@@ -1108,7 +1108,9 @@ export function catalogExpiration(table: { dbisDB: any; tableName: string; prima
 	expiration?: number;
 	eviction?: number;
 } {
-	const row = primaryCatalogRowFor(table)?.value;
+	// the row declareTable writes the settings to and initStores loads them from: a named primary row wins
+	const named = table.primaryKey ? table.dbisDB?.getSync(`${table.tableName}/${table.primaryKey}`) : undefined;
+	const row = named?.isPrimaryKey ? named : table.dbisDB?.getSync(`${table.tableName}/`);
 	const settings: { expiration?: number; eviction?: number } = {};
 	if (row?.expiration > 0) settings.expiration = row.expiration;
 	if (row?.eviction > 0) settings.eviction = row.eviction;
@@ -5733,7 +5735,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	// A peer's expiration reaches a table this call created through makeTable, as a catalog load. It never
 	// configures an existing table, and applying it here would mark the TTL as this thread's own declaration.
-	if (origin === 'cluster') expiration = eviction = undefined;
+	if (origin === 'cluster') expiration = eviction = scanInterval = undefined;
 	if (
 		expiration ||
 		eviction ||
@@ -5781,8 +5783,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
 				(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
 				(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
-				(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-				(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+				(expiration && +expiration !== +attributeDescriptor.expiration) ||
+				(eviction && +eviction !== +attributeDescriptor.eviction) ||
 				(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
 				(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
 				attribute.type !== attributeDescriptor.type)
