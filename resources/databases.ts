@@ -4325,7 +4325,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		throw new Error(`Can not use a closed data store for ${tableName}`);
 	}
 	// A re-declaration persists these to the catalog, where a negative value would fail every later load, and
-	// nothing it changes before then (index builds included) is rolled back. A create rejects them in makeTable.
+	// nothing it changes before then (index builds included) is rolled back.
 	if (Table && origin !== 'cluster') {
 		if (+expiration < 0 || +eviction < 0)
 			throw new ClientError(`Expiration and eviction of '${databaseName}.${tableName}' can not be negative`);

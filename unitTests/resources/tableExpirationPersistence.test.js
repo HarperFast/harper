@@ -1,6 +1,4 @@
-// Table-level expiration and eviction live on the table's primary catalog row (harper-pro#1179): a
-// re-declaration persists them whether or not it names a primary key, a peer's definition sets them only on
-// a table it creates, and a reload brings a class that did not declare them up to date with the catalog.
+// Table-level expiration and eviction on the primary catalog row (harper-pro#1179).
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
