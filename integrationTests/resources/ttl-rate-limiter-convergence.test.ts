@@ -8,7 +8,9 @@
  * view alongside the audit chain for initial short reads. This opt-in run is diagnostic and is
  * not equivalent to the default workload: the extra cached read can refresh the snapshot worker's
  * cache. That worker may differ from the worker serving the short GET. The transaction snapshot
- * is pinned, not a latest-commit view; different versions can be legitimate. Neither proves durability.
+ * is pinned, not a latest-commit view; different versions can be legitimate. Served ETags and the
+ * encoded raw version are evidence only: even equal versions do not alone prove a cache violation.
+ * Neither view proves durability.
  *
  * The chain is requested inside the key's own burst worker, behind a GET that already reads short.
  * Nothing in that sequence is awaited before round measurements: records expire 500 ms after their
@@ -26,6 +28,7 @@ import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { versionToEtag } from '../../server/serverHelpers/preconditions.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations
@@ -142,7 +145,13 @@ suite(
 			cached: SnapshotEntry | null;
 		};
 		type SnapshotCapture = { status?: number; value?: Snapshot; error?: string };
-		type Chain = { chain: AuditEntry[]; error?: string; snapshot?: SnapshotCapture; earlyHits?: number | null };
+		type Chain = {
+			chain: AuditEntry[];
+			error?: string;
+			snapshot?: SnapshotCapture;
+			earlyHits?: number | null;
+			earlyEtag?: string | null;
+		};
 
 		async function readSnapshot(id: string): Promise<SnapshotCapture> {
 			try {
@@ -275,7 +284,9 @@ suite(
 			}
 		}
 
-		async function getHits(id: string): Promise<{ status: number | 'error'; hits: number | null }> {
+		async function getHits(
+			id: string
+		): Promise<{ status: number | 'error'; hits: number | null; etag?: string | null }> {
 			try {
 				const r = await fetch(`${httpURL}/RateCounter/${id}`, {
 					headers: { Authorization: auth },
@@ -283,7 +294,11 @@ suite(
 				});
 				if (r.status !== 200) return { status: r.status, hits: null };
 				const body = await r.json();
-				return { status: 200, hits: Number(body?.hits ?? -1) };
+				return {
+					status: 200,
+					hits: Number(body?.hits ?? -1),
+					...(SNAPSHOT_DIAGNOSTICS ? { etag: r.headers.get('etag') } : {}),
+				};
 			} catch {
 				return { status: 'error', hits: null };
 			}
@@ -328,6 +343,7 @@ suite(
 												...chain,
 												snapshot,
 												earlyHits: early.hits,
+												earlyEtag: early.etag,
 											}))
 										: readChain(id)
 									: { chain: [] }
@@ -424,8 +440,22 @@ suite(
 				for (const [index, chain] of initialChains.entries()) {
 					if ('snapshot' in chain) {
 						initialShortSnapshotAttempts++;
+						const raw = chain.snapshot?.value?.transactionSnapshot;
+						const capture = chain.snapshot?.value;
+						const window = perWindow[index];
+						const evidence = {
+							servedEtag: chain.earlyEtag,
+							rawEtag: raw?.version == null ? null : versionToEtag(raw.version),
+							sameVersion: raw?.version != null && chain.earlyEtag === versionToEtag(raw.version),
+							servedBelowAcked: chain.earlyHits != null && chain.earlyHits < window.acked,
+							rawAtLeastAcked: raw?.hits != null && raw.hits >= window.acked,
+							rawWithinAcknowledgedAndErrors:
+								raw?.hits != null && raw.hits >= window.acked && raw.hits <= window.acked + window.errs,
+							rawLiveThroughoutCapture: raw?.expiresAt != null && capture != null && raw.expiresAt > capture.nowAfter,
+							rawVersionReused: raw?.metadataFlags != null && Boolean(raw.metadataFlags & 0x10000),
+						};
 						anomalyLogs.push(
-							`${perWindow[index].id}: INITIAL_SHORT_SNAPSHOT acked=${perWindow[index].acked} early=${chain.earlyHits} worker-relation=unknown ${JSON.stringify(snapshotDetail(chain.snapshot))}`
+							`${perWindow[index].id}: INITIAL_SHORT_SNAPSHOT acked=${perWindow[index].acked} early=${chain.earlyHits} errs=${window.errs} worker-relation=unknown evidence=${JSON.stringify(evidence)} snapshot=${JSON.stringify(snapshotDetail(chain.snapshot))}`
 						);
 					}
 				}
@@ -529,6 +559,7 @@ suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: Contex
 			signal: AbortSignal.timeout(5_000),
 		});
 		strictEqual(unchanged.status, 200);
+		strictEqual(unchanged.headers.get('etag'), versionToEtag(previousVersion!));
 		strictEqual((await unchanged.json()).hits, 17);
 		const updated = await fetch(`${httpURL}/RateCounter/${id}`, {
 			method: 'PUT',
