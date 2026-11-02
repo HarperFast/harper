@@ -41,7 +41,7 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 	});
 
 	after(function () {
-		restoreSerializeMessage();
+		restoreSerializeMessage?.();
 	});
 
 	function newRequest(cookie) {
@@ -104,11 +104,13 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 		const cookie = await establishSession('hello');
 
 		let heldVersion;
+		const response = newResponse();
 		await authModule.authentication(newRequest(cookie), async (request) => {
 			heldVersion = request.session.version;
 			await request.session.update({ greeting: 'updated' }, { ifVersion: heldVersion });
-			return newResponse();
+			return response;
 		});
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
 
 		await authModule.authentication(newRequest(cookie), async (request) => {
 			assert.strictEqual(request.session.greeting, 'updated');
@@ -132,15 +134,17 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 		});
 
 		let rejection;
+		const response = newResponse();
 		await authModule.authentication(newRequest(cookie), async (request) => {
 			try {
 				await request.session.update({ greeting: 'stale loser' }, { ifVersion: heldVersion });
 			} catch (error) {
 				rejection = error;
 			}
-			return newResponse();
+			return response;
 		});
 		assert.ok(rejection, 'the conditional write was rejected');
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined, 'no success header for a rejected write');
 		assert.strictEqual(rejection.code, 'VERSION_CONFLICT');
 		assert.strictEqual(rejection.statusCode, 409);
 		assert.strictEqual(rejection.retryable, true, 'an ordinary mismatch is retryable with a fresh read');
@@ -149,6 +153,34 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 			assert.strictEqual(request.session.greeting, 'concurrent winner', 'the rejected write left no trace');
 			return newResponse();
 		});
+	});
+
+	it('sets the success header on the response when a conditional write lands after the middleware returned', async function () {
+		const cookie = await establishSession('hello');
+
+		let pendingUpdate;
+		const response = newResponse();
+		await authModule.authentication(newRequest(cookie), async (request) => {
+			pendingUpdate = request.session.update({ greeting: 'late' }, { ifVersion: request.session.version });
+			return response;
+		});
+		await pendingUpdate;
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
+	});
+
+	it('rejects a conditional update without a session cookie, minting no cookie', async function () {
+		let rejection;
+		const response = newResponse();
+		await authModule.authentication(newRequest(null), async (request) => {
+			try {
+				await request.session.update({ greeting: 'no session' }, { ifVersion: 1 });
+			} catch (error) {
+				rejection = error;
+			}
+			return response;
+		});
+		assert.strictEqual(rejection?.code, 'VERSION_CONFLICT');
+		assert.strictEqual(response.headers.get('Set-Cookie'), undefined);
 	});
 
 	it('rejects an ambiguous ifVersion (present but not a finite number) rather than writing unconditionally', async function () {

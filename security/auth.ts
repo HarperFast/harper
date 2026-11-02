@@ -35,7 +35,7 @@ import {
 	isCredentialRejection,
 	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
-import { hdbErrors, ClientError, IF_VERSION } from '../utility/errors/hdbError.ts';
+import { hdbErrors, ClientError, IF_VERSION, VersionConflictError } from '../utility/errors/hdbError.ts';
 import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 import { onStartup } from '../utility/lifecycle.ts';
@@ -577,6 +577,9 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 		if (typeof ifVersion !== 'number' || !Number.isFinite(ifVersion)) {
 			throw new ClientError('session.update ifVersion must be a finite number', 400);
 		}
+		// no cookie means no stored row the condition could match; refuse before minting a cookie
+		if (!this.sessionId)
+			return Promise.reject(new VersionConflictError(getSessionTable().tableName, ifVersion, undefined, true));
 	}
 	const { request, headers, origin, responseHeaders, response } = this;
 	const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);

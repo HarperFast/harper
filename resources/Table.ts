@@ -7148,7 +7148,7 @@ export function makeTable(options): TableResourceClass {
 			// not taken — an ordinary write keeps the exact same function reference, on any retry.
 			if (ifVersion !== undefined) {
 				const plainCommit = write.commit;
-				write.commit = (
+				const guardedCommit = (
 					txnTime: number,
 					existingEntry: Entry,
 					retry: boolean,
@@ -7209,6 +7209,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					return plainCommit(txnTime, existingEntry, retry, nativeTxn, committedBy);
 				};
+				// a local first: V8 pretenures a function literal assigned to a property (security/DESIGN.md)
+				write.commit = guardedCommit;
 			}
 			this.#bindWriteLock(write, id, transaction);
 			this.#savingOperation = write;
