@@ -113,6 +113,13 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.deepStrictEqual(catalogExpiration(Legacy), { expiration: 77 });
 	});
 
+	it('reports a numeric-string expiration that a create persisted as given', async function () {
+		const tableName = 'ExpiryStringCreate';
+		const Created = keyed(tableName, { expiration: '45' });
+		await commitCatalog(Created);
+		assert.deepStrictEqual(catalogExpiration(Created), { expiration: 45 });
+	});
+
 	it('brings a loaded class that did not declare the table up to date with the catalog on reload', async function () {
 		const tableName = 'ExpiryAdoptedOnReload';
 		const Loaded = keyed(tableName);

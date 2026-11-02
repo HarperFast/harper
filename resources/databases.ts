@@ -1111,9 +1111,12 @@ export function catalogExpiration(table: { dbisDB: any; tableName: string; prima
 	// the row declareTable writes the settings to and initStores loads them from: a named primary row wins
 	const named = table.primaryKey ? table.dbisDB?.getSync(`${table.tableName}/${table.primaryKey}`) : undefined;
 	const row = named?.isPrimaryKey ? named : table.dbisDB?.getSync(`${table.tableName}/`);
+	// a create persists the declared value as given, which can be a numeric string
+	const expiration = Number(row?.expiration);
+	const eviction = Number(row?.eviction);
 	const settings: { expiration?: number; eviction?: number } = {};
-	if (row?.expiration > 0) settings.expiration = row.expiration;
-	if (row?.eviction > 0) settings.eviction = row.eviction;
+	if (expiration > 0) settings.expiration = expiration;
+	if (eviction > 0) settings.eviction = eviction;
 	return settings;
 }
 /**
