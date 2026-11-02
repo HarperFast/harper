@@ -774,3 +774,65 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		);
 	});
 });
+
+describe('sqlEngine LIKE … ESCAPE through the pipeline (#3878)', () => {
+	const IPS = ['t_0', 'tx0', 't!x0', 't!_0', 't0%', 't0!z', 't0a'];
+	let originalEngine;
+	let table;
+
+	beforeEach(() => {
+		originalEngine = process.env.HARPER_SQL_ENGINE;
+		process.env.HARPER_SQL_ENGINE = 'new';
+		table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'ip', indexed: true },
+				{ name: 'note', indexed: false },
+			],
+			rows: IPS.map((ip, i) => ({ id: i + 1, ip, note: ip })),
+		});
+		binder._setDatabasesLoader(() => ({ dev: { addr: table } }));
+	});
+
+	afterEach(() => {
+		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
+		else process.env.HARPER_SQL_ENGINE = originalEngine;
+		binder._setDatabasesLoader(null);
+	});
+
+	const ips = (rows) => rows.map((r) => r.ip).sort();
+
+	it('pushes the unescaped literal as the index condition', async () => {
+		assert.deepStrictEqual(ips(await runSql("SELECT ip FROM dev.addr WHERE ip LIKE 't0!%' ESCAPE '!'")), ['t0%']);
+		assert.deepStrictEqual(table._lastTarget.conditions[0], { attribute: 'ip', comparator: 'equals', value: 't0%' });
+		assert.deepStrictEqual(ips(await runSql("SELECT ip FROM dev.addr WHERE ip LIKE 't!_%' ESCAPE '!'")), ['t_0']);
+		assert.deepStrictEqual(table._lastTarget.conditions[0], {
+			attribute: 'ip',
+			comparator: 'starts_with',
+			value: 't_',
+		});
+		assert.deepStrictEqual(ips(await runSql("SELECT ip FROM dev.addr WHERE ip LIKE 't0%'")), ['t0!z', 't0%', 't0a']);
+	});
+
+	it('evaluates an escaped pattern that has no index shape as a residual filter', async () => {
+		const rows = await runSql("SELECT ip FROM dev.addr WHERE id > 0 AND note LIKE 't!!_0' ESCAPE '!'");
+		assert.deepStrictEqual(ips(rows), ['t!_0', 't!x0']);
+		const notLike = await runSql("SELECT ip FROM dev.addr WHERE id > 0 AND note NOT LIKE '%!%' ESCAPE '!'");
+		assert.deepStrictEqual(ips(notLike), ['t!_0', 't!x0', 't0!z', 't0a', 't_0', 'tx0']);
+	});
+
+	it('rejects a malformed pattern with a client error instead of falling back to legacy', async () => {
+		process.env.HARPER_SQL_ENGINE = 'auto';
+		for (const sql of [
+			"SELECT ip FROM dev.addr WHERE note LIKE 't0!' ESCAPE '!'",
+			"SELECT ip FROM dev.addr WHERE note LIKE 't0!%' ESCAPE '!!'",
+		]) {
+			await assert.rejects(
+				() => runSql(sql),
+				(err) => err instanceof ClientError && !(err instanceof EngineUnsupportedError),
+				sql
+			);
+		}
+	});
+});

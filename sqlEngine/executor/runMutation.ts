@@ -96,7 +96,6 @@ function collectReferencedColumns(expr: ExprNode, out: Set<string>): void {
 		case 'like':
 			collectReferencedColumns(expr.expr, out);
 			collectReferencedColumns(expr.pattern, out);
-			if (expr.escape) collectReferencedColumns(expr.escape, out);
 			return;
 		case 'isNull':
 			collectReferencedColumns(expr.expr, out);

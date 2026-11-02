@@ -1,0 +1,6 @@
+type Addr @table @export {
+	id: ID @primaryKey
+	ip: String @indexed
+	note: String
+	flag: String
+}
