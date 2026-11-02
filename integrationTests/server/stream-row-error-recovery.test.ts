@@ -7,6 +7,8 @@ import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { resolve } from 'node:path';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { decode } from 'cbor-x';
+import { unpackMultiple } from 'msgpackr';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'stream-row-error-recovery');
@@ -17,16 +19,17 @@ interface Capture {
 	status: number | null;
 	sawTerminalChunk: boolean;
 	body: string;
+	rawBody: Buffer;
 }
 
 function decodeBody(raw: Buffer): Capture {
 	const headerEnd = raw.indexOf('\r\n\r\n');
-	if (headerEnd === -1) return { status: null, sawTerminalChunk: false, body: '' };
+	if (headerEnd === -1) return { status: null, sawTerminalChunk: false, body: '', rawBody: Buffer.alloc(0) };
 	const head = raw.subarray(0, headerEnd).toString('latin1');
 	const status = Number.parseInt(head.split(' ')[1], 10);
 	const bodyRaw = raw.subarray(headerEnd + 4);
 	if (!/^transfer-encoding:\s*chunked/im.test(head)) {
-		return { status, sawTerminalChunk: true, body: bodyRaw.toString('utf8') };
+		return { status, sawTerminalChunk: true, body: bodyRaw.toString('utf8'), rawBody: bodyRaw };
 	}
 	const parts: Buffer[] = [];
 	let offset = 0;
@@ -45,7 +48,8 @@ function decodeBody(raw: Buffer): Capture {
 		if (dataEnd > bodyRaw.length) break;
 		offset = dataEnd + 2;
 	}
-	return { status, sawTerminalChunk, body: Buffer.concat(parts).toString('utf8') };
+	const rawBody = Buffer.concat(parts);
+	return { status, sawTerminalChunk, body: rawBody.toString('utf8'), rawBody };
 }
 
 // A raw socket exposes whether the chunked terminator arrived, which fetch() hides behind its own error handling.
@@ -190,6 +194,28 @@ suite('a failing row in a streamed collection read', (ctx: ContextWithHarper) =>
 			strictEqual(capture.status, 200);
 			strictEqual(capture.sawTerminalChunk, true);
 			assertRecovered(JSON.parse(capture.body));
+		});
+
+		test('REST CBOR and MessagePack: stays an in-band item with its primary key', async () => {
+			const cbor = await rest('application/cbor', GROUP_QUERY);
+			strictEqual(cbor.status, 200);
+			assertRecovered(decode(cbor.rawBody));
+
+			const msgpack = await rest('application/x-msgpack', GROUP_QUERY);
+			strictEqual(msgpack.status, 200);
+			assertRecovered(unpackMultiple(msgpack.rawBody));
+		});
+
+		test('REST CSV: stays an in-band row carrying error, message, and the primary key', async () => {
+			const csv = await rest('text/csv', '/Parent/?group=g&select(id,seq,flaky,error,message)');
+			strictEqual(csv.status, 200);
+			const rows = csv.body.trim().split('\n');
+			strictEqual(rows.length, 5, csv.body);
+			strictEqual(rows[0], '"id","seq","flaky","error","message"');
+			strictEqual(rows[1], '"g-1",1,"ok-1",,');
+			strictEqual(rows[2], '"g-2",,,"Error","flaky failed at seq=2"');
+			strictEqual(rows[3], '"g-3",3,"ok-3",,');
+			strictEqual(rows[4], '"g-4",4,"ok-4",,');
 		});
 
 		for (const accept of ['application/x-ndjson', 'application/ndjson']) {
