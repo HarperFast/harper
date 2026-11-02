@@ -190,8 +190,8 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	}
 
 	/** See file header — resources.js's RawSnapshot, one table, under one shared transaction. */
-	async function rawSnapshot(table: string): Promise<TableSnapshot> {
-		const r = await fetch(`${httpURL}/RawSnapshot/?table=${table}&attr=bucket`, { headers: client.headers });
+	async function rawSnapshot(table: string, attr = 'bucket'): Promise<TableSnapshot> {
+		const r = await fetch(`${httpURL}/RawSnapshot/?table=${table}&attr=${attr}`, { headers: client.headers });
 		strictEqual(r.status, 200, `/RawSnapshot/?table=${table} should return 200`);
 		return (await r.json()) as TableSnapshot;
 	}
@@ -406,6 +406,46 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 				0,
 				`permanent phantom index entries (index->no base): ${JSON.stringify(rP.phantom)}`
 			);
+		}
+	);
+
+	// harper#1481: rows that expire through an @expiresAt field alone (no table TTL) are reclaimed only by
+	// the record-expiration sweep, which runs once a minute. Polls the raw stores, never the records, so
+	// no read can hide or lazily evict a row on the sweep's behalf.
+	test(
+		'harper#1481 the @expiresAt sweep physically reclaims field-only expired rows and their index entries',
+		{ timeout: 180_000 },
+		async () => {
+			const expired = await postJSON('/LoadFieldExpiring/', { count: 40, bucket: 'FX', deadlineOffsetMs: -60_000 });
+			strictEqual(expired.status, 200, 'seed expired FieldExpiring rows');
+			const live = await postJSON('/LoadFieldExpiring/', { count: 10, bucket: 'FL', deadlineOffsetMs: 3_600_000 });
+			strictEqual(live.status, 200, 'seed live FieldExpiring rows');
+
+			const giveUpAt = Date.now() + 150_000; // two sweep intervals plus slack
+			let snap = await rawSnapshot('FieldExpiring');
+			while (snap.rows.some((row) => row.bucket === 'FX') && Date.now() < giveUpAt) {
+				await sleep(2_000);
+				snap = await rawSnapshot('FieldExpiring');
+			}
+			const deadlineIndex = await rawSnapshot('FieldExpiring', 'deadline');
+
+			const expiredRows = snap.rows.filter((row) => row.bucket === 'FX').length;
+			strictEqual(expiredRows, 0, `expired rows still physically present: ${expiredRows}`);
+			strictEqual(
+				snap.indexEntries.filter((entry) => entry.indexedValue === 'FX').length,
+				0,
+				'bucket index entries of evicted rows'
+			);
+			strictEqual(
+				deadlineIndex.indexEntries.filter((entry) => String(entry.primaryKey).startsWith('FX-')).length,
+				0,
+				'@expiresAt index entries of evicted rows'
+			);
+			const consistency = analyzeSnapshot(snap);
+			strictEqual(consistency.baseCount, 10, 'live rows survive the sweep');
+			strictEqual(consistency.phantom.length, 0, `phantom index entries: ${JSON.stringify(consistency.phantom)}`);
+			strictEqual(consistency.missing.length, 0, `missing index entries: ${JSON.stringify(consistency.missing)}`);
+			strictEqual(deadlineIndex.indexEntries.length, 10, 'live rows keep their @expiresAt index entries');
 		}
 	);
 });

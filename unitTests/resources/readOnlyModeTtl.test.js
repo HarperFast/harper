@@ -182,11 +182,8 @@ describe('read-only mode does not evict expired records', () => {
 				await Table.closeMaintenance();
 				const sweeps = resumeAndCaptureSweeps();
 				assert.strictEqual(sweeps.length, 1, 'a writable process arms the sweep');
-				// RocksDB's index stores have no getValues(), which the sweep calls, so only LMDB's sweep can evict
-				if (isLmdb) {
-					sweeps[0]();
-					await waitFor(() => Table.primaryStore.getEntry('expired') === undefined, 5000);
-				}
+				sweeps[0]();
+				await waitFor(() => Table.primaryStore.getEntry('expired') === undefined, 5000);
 			} finally {
 				await Table.closeMaintenance();
 			}

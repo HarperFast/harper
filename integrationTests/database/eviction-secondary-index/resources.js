@@ -68,6 +68,22 @@ export class Load extends Resource {
 	}
 }
 
+// POST /LoadFieldExpiring/ { count, bucket, deadlineOffsetMs } — FieldExpiring rows whose deadline field
+// is now + deadlineOffsetMs; several rows share each deadline.
+export class LoadFieldExpiring extends Resource {
+	static loadAsInstance = false;
+	async post(query, body) {
+		const b = body || query || {};
+		const n = Number(b.count) || 0;
+		const bucket = b.bucket || 'F';
+		const base = Date.now() + Number(b.deadlineOffsetMs);
+		for (let i = 0; i < n; i++) {
+			await tables.FieldExpiring.put({ id: `${bucket}-${pad(i)}`, bucket, seq: i, deadline: base - (i % 4) });
+		}
+		return { ok: true, count: n, bucket };
+	}
+}
+
 // GET /CountE/ -> { count } exact Expiring base row count (index-independent full scan).
 export class CountE extends Resource {
 	static loadAsInstance = false;

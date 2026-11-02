@@ -31,3 +31,12 @@ type Permanent @table @export {
 	seq: Int
 	payload: String
 }
+
+# harper#1481: expiry from an @expiresAt field alone, with no table-level expiration, so only the
+# once-a-minute record-expiration sweep reclaims these rows physically.
+type FieldExpiring @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	deadline: Float @expiresAt
+}

@@ -391,14 +391,6 @@ describe(`An out-of-order write keeps the newer head's expiry (${ENGINE})`, func
 	});
 
 	describe('the @expiresAt sweep', function () {
-		// RocksDB's index has no getValues(key), so the sweep cannot run there yet (harper#1481); this stands
-		// in for it so the eviction decision runs on both engines. A RocksDB key-only range still yields
-		// { key, value } entries, so the sweep hands it an entry.
-		function ensureIndexGetValues(index) {
-			if (typeof index.getValues === 'function') return;
-			index.getValues = (key) => [key.value];
-		}
-
 		async function captureSweep(Table) {
 			await Table.closeMaintenance();
 			const captured = [];
@@ -417,12 +409,10 @@ describe(`An out-of-order write keeps the newer head's expiry (${ENGINE})`, func
 		}
 
 		function sweptTable() {
-			const Table = newTable([
+			return newTable([
 				{ name: 'deadline', expiresAt: true, indexed: true },
 				{ name: 'tag', indexed: true },
 			]);
-			ensureIndexGetValues(Table.indices.deadline);
-			return Table;
 		}
 
 		it('keeps a record whose stored deadline overrides a past field, and evicts an expired one', async function () {

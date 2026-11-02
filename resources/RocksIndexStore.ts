@@ -17,6 +17,12 @@ declare module '@harperfast/rocksdb-js' {
 	}
 }
 
+export interface CompositeIndexEntry {
+	key: any;
+	value: Id;
+	cursor: any[];
+}
+
 /**
  * Widen value-space bounds to `[value, MAXIMUM_KEY]` composite bounds. The base implementation's
  * encoded-byte successor of the bare indexed value would exclude the wrong entries on composite
@@ -65,6 +71,19 @@ export class RocksIndexStore extends RocksDatabase {
 			entry.value = key.length > 2 ? key.slice(1) : key[1];
 			return entry;
 		});
+	}
+
+	/**
+	 * One bounded chunk of index entries with indexed values from the start of the index up to (not
+	 * including) `end`, resuming strictly after the composite `after` key. Each entry carries its full
+	 * composite key, decoded afresh per entry, as `cursor`, so a resumed scan neither skips nor repeats
+	 * entries that share an indexed value. Adapted from the cursor in harper#2155.
+	 */
+	getCompositeRange(options: { after?: any[]; end: any; limit: number }): Iterable<CompositeIndexEntry> {
+		const { after, end, limit } = options;
+		return super
+			.getKeys(after === undefined ? { start: true, end, limit } : { start: after, exclusiveStart: true, end, limit })
+			.map((cursor: any[]) => ({ key: cursor[0], value: cursor.length > 2 ? cursor.slice(1) : cursor[1], cursor }));
 	}
 
 	/**

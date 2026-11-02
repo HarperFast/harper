@@ -7,6 +7,7 @@ import { databaseBaselineHoldReason, isReplicationApply, REPLICATION_APPLY } fro
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS, THREAD_TYPES } from '../utility/hdbTerms.ts';
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
+import type { RocksIndexStore } from './RocksIndexStore.ts';
 import { Script } from 'node:vm';
 import {
 	compileResidencyPolicy,
@@ -356,6 +357,8 @@ type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; 
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+// index entries the RocksDB @expiresAt sweep reads per synchronous stretch
+const RECORD_EXPIRATION_CHUNK_SIZE = 500;
 const ABSENT_ENTRY = Object.freeze({
 	then(callback) {
 		return callback(undefined);
@@ -13473,50 +13476,103 @@ export function makeTable(options): TableResourceClass {
 						inFlight.add(tracked);
 						if (inFlight.size >= 50) return Promise.race(inFlight);
 					};
-					expirationScan: for (const key of index.getRange({
-						start: true,
-						values: false,
-						end: Date.now(),
-						snapshot: false,
-					})) {
-						for (const id of index.getValues(key)) {
-							if (maintenanceClosed) break expirationScan;
-							const recordEntry = primaryStore.getEntry(id);
-							if (!recordEntry?.value) {
-								// cleanup the index if the record is gone
-								const repair = trackMaintenanceCommit(
-									Promise.resolve(primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id))).catch(
-										(error) => logger.warn?.('Error removing stale expiration index entry', id, error)
-									)
-								);
-								const backpressure = trackInFlight(repair);
-								if (backpressure) await backpressure;
-							} else if (
-								recordEntry.expiresAt != undefined
-									? hasExpired(recordEntry)
-									: recordEntry.value[expiresAtName] < Date.now()
-							) {
-								// make sure the record hasn't changed and won't change while removing
-								const eviction = TableResource.evict(
-									id,
-									recordEntry.value,
-									recordEntry.version,
-									undefined,
-									recordEntry.expiresAt ?? null
-								);
-								if (eviction) {
-									const backpressure = trackInFlight(eviction);
+					// Evict an expired record, or drop an index entry whose record is gone. Returns admitted work.
+					const pruneCandidate = (key: any, id: Id) => {
+						const recordEntry = primaryStore.getEntry(id);
+						if (!recordEntry?.value) {
+							if (isRocksDB) return removeStaleRocksIndexEntry(index, key, id);
+							// cleanup the index if the record is gone
+							return trackMaintenanceCommit(
+								Promise.resolve(primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id))).catch(
+									(error) => logger.warn?.('Error removing stale expiration index entry', id, error)
+								)
+							);
+						}
+						// RocksDB acts only on a stored deadline: its encoding cannot tell an explicit no-expiry write
+						// from legacy metadata-absent rows, so the public field alone never makes a row eligible (harper#1481).
+						if (
+							recordEntry.expiresAt != undefined
+								? hasExpired(recordEntry)
+								: !isRocksDB && recordEntry.value[expiresAtName] < Date.now()
+						) {
+							// make sure the record hasn't changed and won't change while removing
+							return TableResource.evict(
+								id,
+								recordEntry.value,
+								recordEntry.version,
+								undefined,
+								recordEntry.expiresAt ?? null
+							);
+						}
+					};
+					if (isRocksDB) {
+						const end = Date.now();
+						let after: any[] | undefined;
+						expirationScan: for (;;) {
+							// Materialized so no native iterator outlives the awaits below.
+							const chunk = Array.from(
+								(index as RocksIndexStore).getCompositeRange({ after, end, limit: RECORD_EXPIRATION_CHUNK_SIZE })
+							);
+							for (const { key, value: id } of chunk) {
+								if (maintenanceClosed) break expirationScan;
+								const work = pruneCandidate(key, id);
+								if (work) {
+									const backpressure = trackInFlight(work);
 									if (backpressure) await backpressure;
 								}
 							}
+							if (chunk.length < RECORD_EXPIRATION_CHUNK_SIZE) break;
+							after = chunk[chunk.length - 1].cursor;
+							await rest();
 						}
-						await rest();
+					} else {
+						expirationScan: for (const key of index.getRange({
+							start: true,
+							values: false,
+							end: Date.now(),
+							snapshot: false,
+						})) {
+							for (const id of index.getValues(key)) {
+								if (maintenanceClosed) break expirationScan;
+								const work = pruneCandidate(key, id);
+								if (work) {
+									const backpressure = trackInFlight(work);
+									if (backpressure) await backpressure;
+								}
+							}
+							await rest();
+						}
 					}
 					await Promise.all(inFlight);
 				})()
 					.catch((error) => logger.error?.('Error in evicting old records', error))
 					.finally(() => (runningRecordExpiration = false));
 			}, RECORD_PRUNING_INTERVAL).unref();
+		}
+	}
+	/**
+	 * Remove a RocksDB expiry index entry whose record is gone or tombstoned. The primary entry is re-read
+	 * in the removing transaction, so a write that revives the record conflicts and the entry survives.
+	 * Only the index entry is removed; a retained tombstone stays.
+	 */
+	function removeStaleRocksIndexEntry(index: RocksIndexStore, key: any, id: Id): Promise<unknown> | undefined {
+		const transaction = new RocksTransaction(primaryStore.store);
+		let committed = false;
+		try {
+			if (primaryStore.getEntry(id, { transaction })?.value) return;
+			index.remove(key, id, { transaction } as any);
+			committed = true;
+			return trackMaintenanceCommit(
+				commitTrackedRocksTransaction(transaction, primaryStore).catch((error) => {
+					try {
+						transaction.abort();
+					} catch {}
+					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned stale expiration index repair', id);
+					else logger.warn?.('Error removing stale expiration index entry', id, error);
+				})
+			);
+		} finally {
+			if (!committed) transaction.abort();
 		}
 	}
 	function residencyFromFunction(shardOrResidencyList: ResidencyDefinition): string[] | void {
