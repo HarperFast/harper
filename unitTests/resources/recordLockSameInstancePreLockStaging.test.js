@@ -341,4 +341,40 @@ describe('Record locks: same-instance pre-lock staging, post-lock mutations, and
 			(err) => err.statusCode === 409
 		);
 	});
+
+	it('a scoped lock still refuses a second write through the instance after its pre-lock write saved', async function () {
+		if (SKIP_ON_LMDB) return this.skip();
+		const recordId = makeId('scoped-second-write');
+		await Audited.put({ id: recordId, n: 1 });
+		const ctx = {};
+		await transaction(ctx, async () => {
+			const rec = await Audited.update(recordId, { n: 2 }, ctx);
+			await rec.lock();
+			await rec.save();
+			assert.throws(
+				() => rec.set('n', 3),
+				(err) => err.statusCode === 409
+			);
+		});
+		assert.strictEqual((await Audited.get(recordId)).n, 2);
+	});
+
+	it('a nested array tracked under a lock is refused once unlock() abandons its changes', async function () {
+		if (SKIP_ON_LMDB) return this.skip();
+		const recordId = makeId('nested-unlock');
+		await Audited.put({ id: recordId, n: 1, items: ['a'] });
+		const h = await Audited.lock(recordId, { hold: true, lease: 5000 });
+		const items = h.items;
+		items.push('b');
+		await h.unlock();
+		assert.throws(
+			() => items.push('c'),
+			(err) => err.statusCode === 409
+		);
+		h.addTo('n', 1);
+		await h.save();
+		const after = await Audited.get(recordId);
+		assert.strictEqual(after.n, 2);
+		assert.deepStrictEqual([...after.items], ['a']);
+	});
 });

@@ -2153,13 +2153,21 @@ export function makeTable(options): TableResourceClass {
 			return this.#liveGeneration() ?? (this.#writeGeneration = { closed: false, internalWrites: 0 });
 		}
 		/**
-		 * A lock-writable instance keeps taking writes after the write it staged before lock() saved and
-		 * closed its generation, so it moves to a new one; nested objects captured in the closed one are
-		 * still refused.
+		 * A held lock keeps taking writes (save() restages them) after the write staged before lock() saved
+		 * and closed its generation, so it moves to a new one; nested objects captured in the closed one are
+		 * still refused. A scoped lock does not restage, so it keeps the 409 that asks for update().
 		 */
 		#liveGeneration(): WriteGeneration | undefined {
-			if (this.#lockWritable && this.#writeGeneration?.closed) this.#writeGeneration = undefined;
+			if (this.#lockWritable && this.#lockHandle?.hold && this.#writeGeneration?.closed)
+				this.#writeGeneration = undefined;
 			return this.#writeGeneration;
+		}
+		/** Nested objects tracked in discarded changes are refused rather than edited into nothing. */
+		#discardChanges(): void {
+			this.#changes = undefined;
+			if (!this.#writeGeneration) return;
+			this.#writeGeneration.closed = true;
+			this.#writeGeneration = undefined;
 		}
 
 		/**
@@ -5511,7 +5519,7 @@ export function makeTable(options): TableResourceClass {
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload, and whenever a write this
 			// instance staged before lock() reads them.
-			if (!preserveChanges && !this.#stagedWrite()) this.#changes = undefined;
+			if (!preserveChanges && !this.#stagedWrite()) this.#discardChanges();
 			this.#lockWritable = true;
 			// Scoped (not hold): stage now, same as update() would.  Skip if a write from an earlier
 			// lock() cycle on this instance is still pending (re-entrant call before its save()).
@@ -5535,7 +5543,7 @@ export function makeTable(options): TableResourceClass {
 			const staged = this.#stagedWrite();
 			// Changes made under the lock are abandoned with it, unless a staged write still reads them.
 			if (handle.released) {
-				if (!staged) this.#changes = undefined;
+				if (!staged) this.#discardChanges();
 				return Promise.resolve(false);
 			}
 			const link = txnForContext(this.getContext());
@@ -5543,7 +5551,7 @@ export function makeTable(options): TableResourceClass {
 			// run into the released-handle guard at the sweep. A joined write is the caller's own and
 			// stays, as an ordinary write (detachScopedUpgradeWrite).
 			if (staged?.lockHandle === handle && !staged.lockJoined) this.#savingOperation = null;
-			if (!staged || !this.#savingOperation) this.#changes = undefined;
+			if (!staged || !this.#savingOperation) this.#discardChanges();
 			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
