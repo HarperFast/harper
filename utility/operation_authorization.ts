@@ -1197,8 +1197,10 @@ function checkConditionPaths(
 	for (const condition of conditions) {
 		if (condition?.conditions) checkConditionPaths(state, condition.conditions, prefix, currentTable);
 		else {
-			const attribute = condition?.[0] ?? condition?.attribute ?? currentTable.primaryKey;
-			checkRelationshipPath(state, prefix ? prefix.concat(attribute) : attribute);
+			const attribute = prefix
+				? (condition?.[0] ?? condition?.attribute ?? currentTable.primaryKey)
+				: condition?.attribute;
+			if (attribute !== undefined) checkRelationshipPath(state, prefix ? prefix.concat(attribute) : attribute);
 		}
 	}
 }

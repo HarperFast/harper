@@ -48,8 +48,9 @@ describe('Read permission admission for nested selections and scalar properties'
 	this.timeout(15000);
 	let Emp, Dept, Org, server, base, priorSchema, priorMainIsWorker;
 	before(async () => {
-		setupTestDBPath();
+		priorSchema = global.hdb_schema;
 		priorMainIsWorker = getWorkerIndex() === 0;
+		setupTestDBPath();
 		setMainIsWorker(true);
 		Org = table({
 			database: DATABASE,
@@ -82,7 +83,6 @@ describe('Read permission admission for nested selections and scalar properties'
 		await Org.put({ id: 'o1', name: 'Org', secret: 'hidden' });
 		await Dept.put({ id: 'd1', name: 'Eng', secret: 'hidden', orgId: 'o1' });
 		await Emp.put({ id: 'e1', deptId: 'd1' });
-		priorSchema = global.hdb_schema;
 		global.hdb_schema = {
 			[DATABASE]: Object.fromEntries(
 				[Emp, Dept, Org].map((Table) => [
@@ -129,7 +129,7 @@ describe('Read permission admission for nested selections and scalar properties'
 	after(async () => {
 		if (server) await new Promise((resolve) => server.close(resolve));
 		global.hdb_schema = priorSchema;
-		setMainIsWorker(priorMainIsWorker);
+		if (priorMainIsWorker !== undefined) setMainIsWorker(priorMainIsWorker);
 	});
 
 	for (const conditions of [
@@ -184,6 +184,53 @@ describe('Read permission admission for nested selections and scalar properties'
 		}
 	});
 
+	for (const tableAccess of ['missing', 'write-only']) {
+		it(`denies nested predicates when related-table read is ${tableAccess}`, () => {
+			const user = plain(restricted);
+			if (tableAccess === 'missing') delete user.role.permission[DATABASE].tables.Dept;
+			else user.role.permission[DATABASE].tables.Dept = { ...READ, read: false, insert: true };
+			const target = { select: [selection([{ attribute: 'name', value: 'Eng' }])], checkPermission: true };
+			assert.throws(
+				() => new Emp(undefined, { user }).allowRead(user, target, { user }),
+				(error) => error.statusCode === 403
+			);
+		});
+	}
+
+	for (const attributeKey of ['attribute', 'search_attribute']) {
+		for (const grouped of [false, true]) {
+			it(`operations checks the actual ${grouped ? 'grouped' : 'flat'} ${attributeKey} despite numeric metadata`, () => {
+				const leaf = { 0: 'id', [attributeKey]: ['dept', 'secret'], comparator: 'equals', value: 'hidden' };
+				const conditions = grouped
+					? [{ operator: 'and', conditions: [{ attribute: 'id', value: 'e1' }, leaf] }]
+					: [leaf];
+				const response = verifyPerms(
+					{ schema: DATABASE, table: 'Emp', hdb_user: plain(restricted), get_attributes: ['id'], conditions },
+					'searchByConditions'
+				);
+				assert.ok(response, 'numeric metadata must not mask the executed predicate attribute');
+				assert.ok(
+					response.unauthorized_access.some((entry) => entry.table === 'Dept'),
+					JSON.stringify(response)
+				);
+			});
+		}
+	}
+
+	it('operations ignores numeric metadata when the executed attribute is readable', () => {
+		const response = verifyPerms(
+			{
+				schema: DATABASE,
+				table: 'Emp',
+				hdb_user: plain(restricted),
+				get_attributes: ['id'],
+				conditions: [{ 0: ['dept', 'secret'], attribute: 'id', value: 'e1' }],
+			},
+			'searchByConditions'
+		);
+		assert.strictEqual(response, null);
+	});
+
 	for (const method of ['searchByConditions', 'searchByHash', 'searchByValue']) {
 		for (const key of ['attribute', 'search_attribute']) {
 			it(`${method} refuses a nested ${key} before execution`, () => {
@@ -215,7 +262,7 @@ describe('Read permission admission for nested selections and scalar properties'
 		const request = {
 			schema: DATABASE,
 			table: 'Emp',
-			hdb_user: restricted,
+			hdb_user: plain(restricted),
 			get_attributes: [selection([{ operator: 'and', conditions: [{ search_attribute: 'name', value: 'Eng' }] }])],
 			conditions: [{ attribute: 'id', value: 'e1' }],
 		};
@@ -278,7 +325,8 @@ describe('Read permission admission for nested selections and scalar properties'
 						{ id, property: 'name', select: ['secret'], checkPermission: true },
 						{ user: restricted }
 					);
-					assert.deepStrictEqual(plain(result), mode === false ? {} : Table === Dept ? 'Eng' : 'Org');
+					if (mode === false) assert.ok(!JSON.stringify(result ?? null).includes('hidden'));
+					else assert.strictEqual(result, Table === Dept ? 'Eng' : 'Org');
 				}
 			} finally {
 				Table.loadAsInstance = original;

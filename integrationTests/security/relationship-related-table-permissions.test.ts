@@ -326,6 +326,22 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 	});
 
 	suite('nested selection condition admission', () => {
+		test('operations checks the executed attribute when numeric metadata is present', async () => {
+			for (const key of ['attribute', 'search_attribute']) {
+				for (const grouped of [false, true]) {
+					const leaf = { 0: 'id', [key]: ['dept', 'budget'], search_type: 'equals', search_value: DEPT.budget };
+					const conditions = grouped
+						? [{ operator: 'and', conditions: [{ attribute: 'id', value: EMP.id }, leaf] }]
+						: [leaf];
+					assertRefused(await byConditions('empOnly', conditions), `numeric decoy ${key} ${grouped}`, 'Dept');
+					assertRefused(await byConditions('restricted', conditions), `numeric decoy ${key} ${grouped}`, 'Dept.budget');
+				}
+			}
+			const allowed = await byConditions('empOnly', [{ 0: ['dept', 'budget'], attribute: 'id', value: EMP.id }]);
+			strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+			deepStrictEqual(allowed.body, [{ id: EMP.id }]);
+		});
+
 		for (const operation of ['search_by_conditions', 'search_by_hash', 'search_by_value']) {
 			test(`${operation} checks nested read and describe permissions before validation`, async () => {
 				for (const attributeKey of ['attribute', 'search_attribute']) {
@@ -376,6 +392,10 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		}
 
 		test('REST checks nested predicates on collections, records and QUERY bodies', async () => {
+			assertRefused(
+				await rest('empOnly', '/Emp/?select(id,dept[name=Eng&select(name,)])'),
+				'nested predicate without related-table read'
+			);
 			for (const id of ['', EMP.id, 'missing']) {
 				assertRefused(
 					await rest('restricted', `/Emp/${id}?select(id,dept[budget=number:100&select(name,)])`),

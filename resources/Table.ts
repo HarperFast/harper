@@ -2324,10 +2324,7 @@ export function makeTable(options): TableResourceClass {
 			else delete property.checkPermission;
 			if (
 				Array.isArray(property.conditions) &&
-				someConditionPath(property.conditions, (attribute) => {
-					const path = Array.isArray(attribute) ? attribute : [attribute ?? relatedTable.primaryKey];
-					return relatedTable._readDenial(path, user, property) !== undefined;
-				})
+				someConditionPath(property.conditions, property, user, true, relatedTable)
 			)
 				throw new AccessViolation(user);
 			for (let sort = typeof property.sort === 'object' && property.sort; sort; sort = sort.next) {
@@ -12022,12 +12019,27 @@ export function makeTable(options): TableResourceClass {
 		if (!checkDenial) return true;
 		return TableResource._readDenial(Array.isArray(attribute) ? attribute : [attribute], user, target) !== undefined;
 	}
-	function someConditionPath(conditions: Iterable<any>, matches: (attribute: any) => boolean): boolean {
+	function someConditionPath(
+		conditions: Iterable<any>,
+		target: RequestTarget,
+		user: User,
+		checkDenial: boolean,
+		relatedTable?: TableResourceClass
+	): boolean {
 		for (const condition of conditions) {
+			if (condition?.conditions) {
+				if (someConditionPath(condition.conditions, target, user, checkDenial, relatedTable)) return true;
+				continue;
+			}
+			const attribute = condition?.[0] ?? condition?.attribute;
 			if (
-				condition?.conditions
-					? someConditionPath(condition.conditions, matches)
-					: matches(condition?.[0] ?? condition?.attribute)
+				relatedTable
+					? relatedTable._readDenial(
+							Array.isArray(attribute) ? attribute : [attribute ?? relatedTable.primaryKey],
+							user,
+							target
+						) !== undefined
+					: relationshipPathMatches(attribute, target, user, checkDenial)
 			)
 				return true;
 		}
@@ -12050,11 +12062,7 @@ export function makeTable(options): TableResourceClass {
 			if (!Array.isArray(conditions) && conditions[Symbol.iterator]) target.conditions = Array.from(conditions);
 			conditions = searchConditions(target);
 		}
-		if (
-			conditions &&
-			someConditionPath(conditions, (attribute) => relationshipPathMatches(attribute, target, user, checkDenial))
-		)
-			return true;
+		if (conditions && someConditionPath(conditions, target, user, checkDenial)) return true;
 		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
 			if (relationshipPathMatches(sort.attribute, target, user, checkDenial)) return true;
 		}

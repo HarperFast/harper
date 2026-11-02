@@ -1,6 +1,7 @@
 import * as userRuntimeModule from '../security/user.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
+import { AccessViolation } from '../utility/errors/hdbError.ts';
 import type { UserChange } from '../security/user.ts';
 
 /**
@@ -394,6 +395,10 @@ async function recheckEntry(pass: Pass, entry: LiveSubscription): Promise<void> 
 			if (terminateEntry(entry, reason)) pass.countRevocation(reason);
 		}
 	} catch (error) {
+		if (error instanceof AccessViolation) {
+			if (terminateEntry(entry, 'no longer authorized')) pass.countRevocation('no longer authorized');
+			return;
+		}
 		// fail closed: if authorization can't be confirmed, revoke
 		if (terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn))
 			pass.countRevocation('recheck error');
