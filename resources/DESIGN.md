@@ -353,7 +353,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay, kee
 
 ## Ordering an in-memory result set reads each record at most twice
 
-`transformToOrderedSelect` resolves sort keys once per row before sorting; the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub is kept unless a filter lacks a `keyPredicate`; a content sort reloads it first (`prepareForSort`), so sorted and unsorted reads match.
+`transformToOrderedSelect` resolves sort keys once per row before sorting; the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub is kept unless a filter lacks a `keyPredicate`; a content sort reloads it (`prepareForSort`), so sorted and unsorted reads match.
 
 ## A related-table read uses the related table's own database link
 
