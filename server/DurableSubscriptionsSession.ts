@@ -9,6 +9,7 @@ import { server } from '../server/Server.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 let _DurableSession: any;
@@ -629,6 +630,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	writes: Promise<void> = Promise.resolve();
 	saving: Promise<void> | undefined;
 	dirty = false;
+	savesStarted = 0;
+	saveWaiters: { needed: number; resolve: () => void; reject: (error: Error) => void }[] = [];
 	checkpointScheduled: Promise<void> | undefined;
 	checkpointTimer: any;
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
@@ -760,6 +763,19 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
 	}
+	/** Settles once a save that read the session after this call has landed: later saves are not waited for. */
+	saveExchanges(): Promise<void> {
+		// an ended session's last save has been taken, so nothing it would acknowledge can be kept
+		if (this.sealed || this.discarded) return Promise.reject(this.endedError());
+		const needed = this.savesStarted + 1;
+		return new Promise((resolve, reject) => {
+			this.saveWaiters.push({ needed, resolve, reject });
+			this.persist();
+		});
+	}
+	hasEnded() {
+		return this.terminated || this.sealed || this.discarded;
+	}
 	consumed(subscription) {
 		const state = this.topics.get(subscription.topic);
 		if (state?.subscription === subscription) state.consumed++;
@@ -768,6 +784,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.inOrder(() => this.subscribeTopic(subscription, needsAck));
 	}
 	async subscribeTopic(subscription, needsAck) {
+		if (this.hasEnded()) throw this.endedError();
 		const { topic } = subscription;
 		const durable = subscription.qos > 0;
 		const existing = this.topics.get(topic);
@@ -786,23 +803,37 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		try {
 			started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
-			if (durable || started) await this.persist();
+			if (durable || started) await this.saveExchanges();
+			if (this.hasEnded()) {
+				if (!started) throw this.endedError();
+				this.endSubscription(started);
+			}
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
 			// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
-			else this.dropFailedSubscription(topic, started, replaced);
+			else
+				this.dropFailedSubscription(
+					topic,
+					started,
+					replaced,
+					Boolean(existing) && (this.hasEnded() || error instanceof SessionEndedError)
+				);
 			throw error;
 		}
 		return subscription;
 	}
-	/** Replacing ends the old subscription before the new one can fail, so a failed SUBSCRIBE leaves its topic unsubscribed. */
-	dropFailedSubscription(topic, started, replaced) {
-		const index = started ? this.subscriptions.indexOf(started) : -1;
+	endSubscription(subscription) {
+		const index = subscription ? this.subscriptions.indexOf(subscription) : -1;
 		if (index > -1) {
-			started.end();
+			subscription.end();
 			this.subscriptions.splice(index, 1);
-		}
+		} else subscription?.end?.();
+	}
+	/** Replacing ends the old subscription before the new one can fail, so a failed SUBSCRIBE leaves its topic unsubscribed. */
+	dropFailedSubscription(topic, started, replaced, keepTopic = false) {
+		this.endSubscription(started);
+		if (keepTopic) return;
 		const owner = this.topics.get(topic)?.subscription;
 		if (owner && (owner === started || (owner === replaced && !this.subscriptions.includes(owner)))) {
 			this.topics.delete(topic);
@@ -811,10 +842,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	removeSubscription(topic) {
 		return this.inOrder(async () => {
+			if (this.hasEnded()) throw this.endedError();
 			const result = await super.removeSubscription(topic);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
-			if (saved || this.dirty || this.saving) await this.persist();
+			if (saved || this.dirty || this.saving) await this.saveExchanges();
 			return result || saved;
 		});
 	}
@@ -912,12 +944,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.saving;
 	}
 	async saveWhileDirty() {
+		let failure: Error | undefined;
 		try {
 			while (this.dirty && !this.discarded) {
 				this.dirty = false;
 				await this.saveOnce();
 			}
 		} catch (error) {
+			failure = error;
 			// the next checkpoint retries
 			this.dirty = true;
 			this.startCheckpoints();
@@ -925,15 +959,40 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		} finally {
 			// cleared with the last dirty check, so a later persist() starts a new save rather than joining this one
 			this.saving = undefined;
+			// a waiter is left only when no save will run for it
+			if (this.saveWaiters.length > 0) this.settleSaveWaiters(Infinity, failure ?? this.endedError());
 		}
 	}
 	async saveOnce() {
+		const saveNumber = ++this.savesStarted;
 		const record = this.recordToWrite();
-		const stored = await getDurableSession().get(this.sessionId);
-		if (this.discarded) return;
-		if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
-		await getDurableSession().put(record, { source: true });
+		try {
+			const stored = await getDurableSession().get(this.sessionId);
+			if (this.discarded) return this.settleSaveWaiters(saveNumber, this.endedError());
+			if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) {
+				this.settleSaveWaiters(saveNumber, this.endedError());
+				return this.supersede();
+			}
+			await getDurableSession().put(record, { source: true });
+		} catch (error) {
+			this.settleSaveWaiters(saveNumber, error);
+			throw error;
+		}
 		this.mayCreate = false;
+		this.settleSaveWaiters(saveNumber);
+	}
+	endedError() {
+		return new SessionEndedError(this.sessionId);
+	}
+	settleSaveWaiters(saveNumber: number, error?: Error) {
+		if (this.saveWaiters.length === 0) return;
+		const waiting = [];
+		for (const waiter of this.saveWaiters) {
+			if (waiter.needed > saveNumber) waiting.push(waiter);
+			else if (error) waiter.reject(error);
+			else waiter.resolve();
+		}
+		this.saveWaiters = waiting;
 	}
 	/** Hands the session to a newer connection on this thread: its positions are saved, in `writes`, and it saves nothing after. */
 	yieldTo() {
@@ -1000,6 +1059,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if ((changed || this.dirty) && !this.discarded) this.persist().catch(() => {});
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
 		this.sealed = true;
+	}
+}
+
+class SessionEndedError extends ClientError {
+	constructor(sessionId: string) {
+		super(`MQTT session ${sessionId} has ended`, 409);
+		this.name = 'SessionEndedError';
 	}
 }
 
