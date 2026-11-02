@@ -230,103 +230,30 @@ function conjuncts(expression: string): string[] | undefined {
 
 const PULL_REQUEST_HEAD =
 	/head\.sha|head\.ref|head\.repo|head_ref|GITHUB_HEAD_REF|merge_commit_sha|refs\/pull\/|(?<![\w/])pull\/\S/;
-const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/s;
-// Whole lines too: the split below cannot follow `$(a; b)`, which can hide the verb from the head it fetches.
-const PR_HEAD_SHELL_LINE = new RegExp(
-	String.raw`\bgit\b[^\n]*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b[^\n]*(?:${PULL_REQUEST_HEAD.source})`
-);
-const EXPRESSION = String.raw`\$\{\{((?:[^}]|\}(?!\}))*)\}\}`;
-const SHELL_REFERENCE = new RegExp(String.raw`${EXPRESSION}|\$\{?(\w+)|\$\(|` + '`', 'g');
-// Under pull_request_target these describe the base repository and branch, or the runner.
-const BASE_RUN_VARIABLE =
-	/^(?:GITHUB_(?:SHA|REF|REF_NAME|BASE_REF|REPOSITORY|REPOSITORY_OWNER|SERVER_URL|WORKSPACE)|RUNNER_\w+)$/;
-const BASE_EXPRESSION =
-	/^\s*(?:github\.(?:sha|ref|ref_name|base_ref|repository|repository_owner|server_url|workspace|event\.pull_request\.base\.[\w.]+|event\.repository\.[\w.]+)|secrets\.\w+|vars\.\w+|runner\.\w+)\s*$/;
+const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/;
 
-type Naming = 'head' | 'base' | 'unknown';
-
-function worstNaming(namings: Naming[]): Naming {
-	return namings.includes('head') ? 'head' : namings.includes('unknown') ? 'unknown' : 'base';
-}
-
-/** A script split at newlines and `;`, `&` and `|`, unless escaped, quoted, or inside `${{ }}` or `$( )`, or part of `2>&1`. */
-function shellCommands(script: string): string[] {
-	const commands: string[] = [];
-	let command = '';
-	let quote: string | undefined;
-	let substitutions = 0;
-	for (let index = 0; index < script.length; index++) {
-		const character = script[index];
-		if (character === '\\' && quote !== "'") {
-			command += script.slice(index, index + 2);
-			index++;
-		} else if (script.startsWith('${{', index)) {
-			const end = script.indexOf('}}', index);
-			const stop = end < 0 ? script.length : end + 2;
-			command += script.slice(index, stop);
-			index = stop - 1;
-		} else if (quote) {
-			if (character === quote) quote = undefined;
-			command += character;
-		} else if (
-			substitutions === 0 &&
-			/[\n;&|]/.test(character) &&
-			!/[<>]/.test(script[index - 1] ?? '') &&
-			script[index + 1] !== '>'
-		) {
-			commands.push(command);
-			command = '';
-		} else {
-			if (character === '"' || character === "'" || character === '`') quote = character;
-			if (script.startsWith('$(', index)) substitutions++;
-			else if (character === ')' && substitutions > 0) substitutions--;
-			command += character;
-		}
-	}
-	commands.push(command);
-	return commands;
-}
-
-/** Whether what a job's steps name is the PR's head, from their `env` (nearest scope first) and scripts. */
-function namingsIn(scopes: any[], jobScripts: string) {
-	const resolving = new Set<string>();
-	const variableNaming = (variable: string): Naming => {
-		// A script can set what env says, for itself or (through $GITHUB_ENV) for later steps, in more forms than can be
-		// read here (`printf -v`, `read`, a heredoc), so any bare mention of the name leaves its value unknown; a
-		// `VAR=value` naming the head is the head.
-		const assignments = [
-			...jobScripts.matchAll(
-				new RegExp(String.raw`\b${variable}=((?:"(?:[^"\\]|\\.)*"|'[^']*'|${EXPRESSION}|[^\s;&|"'])*)`, 'g')
-			),
-		];
-		if (assignments.some(([, value]) => PULL_REQUEST_HEAD.test(value))) return 'head';
-		if (new RegExp(String.raw`(?<!\$\{?|env\.)\b${variable}\b`).test(jobScripts)) return 'unknown';
+/**
+ * Whether `text` names the PR's head where the file shows it: on its face, in an `env` value it references (nearest scope
+ * first), or in a `VAR=value` in the job's scripts. Nothing else is resolved; a value this cannot read is unverified.
+ */
+function namesPullRequestHead(text: string, scopes: any[], jobScripts: string): boolean {
+	if (PULL_REQUEST_HEAD.test(text)) return true;
+	const variables = [...text.matchAll(/\benv\.(\w+)|\$\{?(\w+)/g)].map(
+		([, inExpression, inShell]) => inExpression ?? inShell
+	);
+	return variables.some((variable) => {
 		const value = scopes.map((scope) => scope?.env?.[variable]).find((candidate) => candidate !== undefined);
-		if (value === undefined) return BASE_RUN_VARIABLE.test(variable) ? 'base' : 'unknown';
-		if (resolving.has(variable)) return 'unknown';
-		resolving.add(variable);
-		const naming = valueNaming(value);
-		resolving.delete(variable);
-		return naming;
-	};
-	const expressionNaming = (expression: string): Naming => {
-		if (PULL_REQUEST_HEAD.test(expression)) return 'head';
-		if (BASE_EXPRESSION.test(expression)) return 'base';
-		const named = [...expression.matchAll(/\benv\.(\w+)/g)].map(([, variable]) => variableNaming(variable));
-		if (named.includes('head')) return 'head';
-		return named.length === 1 && /^\s*env\.\w+\s*$/.test(expression) ? named[0] : 'unknown';
-	};
-	const valueNaming = (value: unknown): Naming => {
-		const text = String(value ?? '');
-		if (PULL_REQUEST_HEAD.test(text)) return 'head';
-		return worstNaming(
-			[...text.matchAll(new RegExp(EXPRESSION, 'g'))].map(([, expression]) => expressionNaming(expression))
-		);
-	};
-	return { variableNaming, expressionNaming, valueNaming };
+		if (value !== undefined && PULL_REQUEST_HEAD.test(String(value))) return true;
+		const assignment = new RegExp(String.raw`\b${variable}=((?:"[^"]*"|'[^']*'|\$\{\{[^}]*\}\}|[^\s;&|"'])*)`, 'g');
+		return [...jobScripts.matchAll(assignment)].some(([, assigned]) => PULL_REQUEST_HEAD.test(assigned));
+	});
 }
 
-/** How a job holding an identity token could end up running the PR's own code, as far as its steps show. */
+/**
+ * How a job holding an identity token could end up running the PR's own code, as far as its steps show. A `git` fetch or
+ * checkout, or an `actions/checkout` ref, that names anything the file does not spell out is unverified, whatever shell
+ * form carries it: reading shell has no end, and the operator can say it is safe with `allow_unverified=true`.
+ */
 function checkPullRequestCheckout(name: string, job: any, workflow: any, problems: string[], unsafe: string[]): void {
 	if (typeof job?.uses === 'string') {
 		unsafe.push(`that the reusable workflow job "${name}" calls never checks out the pull request's head`);
@@ -338,42 +265,34 @@ function checkPullRequestCheckout(name: string, job: any, workflow: any, problem
 		`job "${name}" holds an identity token and a step checks out the pull request's head, so a PR's code would ` +
 		'run with the preview identity';
 	for (const step of steps) {
-		const { variableNaming, expressionNaming, valueNaming } = namingsIn([step, job, workflow], scripts);
+		const scopes = [step, job, workflow];
 		if (typeof step?.uses === 'string' && /^actions\/checkout@/i.test(step.uses.trim())) {
 			for (const field of ['ref', 'repository']) {
 				const value = step.with?.[field];
 				if (value === undefined) continue;
-				// A secret or variable can stand in a git command, but what `ref` checks out cannot be read from here.
-				const naming = /\b(?:vars|secrets)\./.test(String(value)) ? 'unknown' : valueNaming(value);
-				if (naming === 'head') {
+				if (namesPullRequestHead(String(value), scopes, scripts)) {
 					problems.push(
 						`job "${name}" holds an identity token and checks out the pull request's head (${field}: ${value}), so a ` +
 							`PR's code would run with the preview identity`
 					);
-				} else if (naming === 'unknown') {
+				} else if (isExpression(value)) {
 					unsafe.push(`that job "${name}"'s checkout ${field} (${value}) is not the pull request's head`);
 				}
 			}
 		}
 		if (typeof step?.run !== 'string') continue;
-		const commands = shellCommands(step.run.replace(/\\\r?\n\s*/g, ' '));
-		if (PR_HEAD_SHELL_LINE.test(step.run) || commands.some((command) => /\bgh\s+pr\s+checkout\b/.test(command))) {
+		const lines = step.run.replace(/\\\r?\n\s*/g, ' ').split('\n');
+		if (lines.some((line: string) => /\bgh\s+pr\s+checkout\b/.test(line))) {
 			problems.push(headCheckout);
 			continue;
 		}
-		for (const command of commands.filter((candidate) => GIT_FETCHING_CODE.test(candidate))) {
-			const naming = worstNaming(
-				[...command.matchAll(SHELL_REFERENCE)].map(([, expression, variable]) => {
-					if (expression !== undefined) return expressionNaming(expression);
-					return variable === undefined ? 'unknown' : variableNaming(variable);
-				})
-			);
-			if (naming === 'head' || PULL_REQUEST_HEAD.test(command)) {
+		for (const line of lines.filter((candidate: string) => GIT_FETCHING_CODE.test(candidate))) {
+			if (namesPullRequestHead(line, scopes, scripts)) {
 				problems.push(headCheckout);
 				break;
 			}
-			if (naming === 'unknown') {
-				unsafe.push(`that \`${command.trim()}\` in job "${name}" does not check out the pull request's head`);
+			if (/[$`]/.test(line)) {
+				unsafe.push(`that \`${line.trim()}\` in job "${name}" does not check out the pull request's head`);
 			}
 		}
 	}
