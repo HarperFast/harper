@@ -388,7 +388,6 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 				const resource = await Partial.getResource('c', {}, { ensureLoaded: false });
 				resource._writeInvalidate('c');
 			});
-			// the reloaded value, not the missing one, decides the first page under a row filter
 			assert.deepStrictEqual(
 				await rowsOf({ ...byTag, limit: 1, rowFilter: (record) => record.body !== 'zzz' }, undefined, Partial),
 				['b:aaa']

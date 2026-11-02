@@ -365,7 +365,6 @@ describe('Reads of residency stubs', function () {
 		);
 	});
 
-	// only a sort on record content reloads stubs before ordering
 	for (const [keyLed, leadingRow, found] of [
 		[false, false, false],
 		[false, true, false],
@@ -386,7 +385,6 @@ describe('Reads of residency stubs', function () {
 				audit: true,
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
 			});
-			// the first stub each ordering reaches: index order for the content sort, descending keys for the key-led one
 			const gated = keyLed ? 'b' : 'a';
 			let resolveLoad, reportStarted;
 			const load = new Promise((resolve) => {

@@ -9264,8 +9264,8 @@ export function makeTable(options): TableResourceClass {
 			};
 			if (ensure_loaded && (hasSourceGet || sourceLoad))
 				(transform as any).prepareForSort = (entry: Entry) => {
-					if (selectionStopped || !(entry.metadataFlags & (INVALIDATED | EVICTED)) || context?.onlyIfCached)
-						return entry;
+					if (selectionStopped) return SKIP;
+					if (!(entry.metadataFlags & (INVALIDATED | EVICTED)) || context?.onlyIfCached) return entry;
 					const id = entry.key;
 					if (hasSourceGet && !context?.noCache && !needsResidentLoad(entry, context)) {
 						const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(id)?.value;
@@ -9273,13 +9273,19 @@ export function makeTable(options): TableResourceClass {
 							(staleKept ??= new WeakSet()).add(entry);
 							return entry;
 						}
-						if (selectionStopped) return entry;
+						if (selectionStopped) return SKIP;
 					}
 					const loading = ensureLoadedFromSource(source, id, entry, context);
 					if (!loading?.then) return entry;
 					// an absent row stays absent: returning the flagged stub would send the materializer to the source again
 					return loading.then((loaded: Entry) =>
-						loaded?.value != null ? loaded : canSkip ? SKIP : (loaded ?? { key: id, value: null })
+						selectionStopped
+							? SKIP
+							: loaded?.value != null
+								? loaded
+								: canSkip
+									? SKIP
+									: (loaded ?? { key: id, value: null })
 					);
 				};
 			return transform;
@@ -12914,11 +12920,11 @@ export function makeTable(options): TableResourceClass {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
-		if (record == null) {
-			// a cache stub: its key and entry metadata still resolve, whichever way the path is spelled
-			if (Array.isArray(attribute_name) && attribute_name.length === 1) attribute_name = attribute_name[0];
-			if (attribute_name === primaryKey) return entry.key;
-		}
+		if (record == null && Array.isArray(attribute_name) && attribute_name.length === 1) {
+			const name = attribute_name[0];
+			if (name === primaryKey) return entry.key;
+			if (ENTRY_SORT_ATTRIBUTES.has(name)) attribute_name = name;
+		} else if (record == null && attribute_name === primaryKey) return entry.key;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort, stopped);

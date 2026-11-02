@@ -87,7 +87,6 @@ suite('primary-key filtered reads over invalidated cache rows', (ctx: ContextWit
 				['a', 'zzz'],
 				['c', 'fresh c'],
 			];
-			// an unsorted read's order is not part of its contract
 			if (path.includes('sort(-id)')) deepStrictEqual(rows, expected.reverse());
 			else deepStrictEqual(rows.sort(), expected);
 			strictEqual((await rowState('c')).loads, loadsBefore + 1);
