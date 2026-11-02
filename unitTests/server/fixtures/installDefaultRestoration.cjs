@@ -9,6 +9,37 @@ async function run() {
 	const [phase, envVar, introducedBy] = process.argv.slice(2);
 	const root = process.env.ROOTPATH;
 	const defaults = YAML.parse(fs.readFileSync(path.resolve(__dirname, '../../../static/defaultConfig.yaml'), 'utf8'));
+	if (phase === 'omitted') {
+		for (const key of ['HDB_CONFIG', 'HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'])
+			delete process.env[key];
+		const config = require('#src/config/configUtils');
+		const { applyRuntimeEnvConfig } = require('#src/config/harperConfigEnvVars');
+		const cases = [
+			['mqtt', false],
+			['mqtt', null],
+			['mqtt', {}],
+			['mqtt', { network: {} }],
+			['authentication', false],
+			['threads', 4],
+			['tls', []],
+		];
+		for (const source of ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG']) {
+			for (const [index, [key, value]] of cases.entries()) {
+				const caseRoot = path.join(root, `${source}-${index}`);
+				fs.mkdirSync(caseRoot);
+				const template = path.join(caseRoot, 'template.yaml');
+				fs.writeFileSync(template, YAML.stringify({ rootPath: caseRoot }));
+				process.env[source] = JSON.stringify({ [key]: value });
+				const staged = config.stageInstallConfig({ ROOTPATH: caseRoot }, template);
+				staged.commitEnvConfigState();
+				delete process.env[source];
+				const restored = applyRuntimeEnvConfig(staged.configDoc.toJSON(), caseRoot);
+				assert.strictEqual(restored[key], undefined, `${source} ${key}=${JSON.stringify(value)} enabled a root`);
+			}
+		}
+		console.log('install-default-restoration-ok');
+		return;
+	}
 	if (phase === 'install') {
 		const installEnv = Object.fromEntries(
 			['HDB_CONFIG', 'HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'].map((key) => [

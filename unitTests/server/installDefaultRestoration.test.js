@@ -8,6 +8,28 @@ const path = require('node:path');
 const YAML = require('yaml');
 
 describe('install default restoration on a fresh boot', function () {
+	it('keeps omitted roots absent after releasing scalar, null, array and empty env values', function () {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-omitted-'));
+		try {
+			const output = execFileSync(
+				process.execPath,
+				[
+					...process.execArgv.filter((arg) => arg.startsWith('--conditions=')),
+					path.join(__dirname, 'fixtures/installDefaultRestoration.cjs'),
+					'omitted',
+				],
+				{
+					cwd: path.resolve(__dirname, '../..'),
+					env: { ...process.env, ROOTPATH: root },
+					encoding: 'utf8',
+					timeout: 30000,
+				}
+			);
+			assert.match(output, /install-default-restoration-ok/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 	for (const envVar of ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG']) {
 		for (const introducedBy of ['arg', 'env']) {
 			it(`restores required defaults after removing ${envVar} from an ${introducedBy}-introduced section`, function () {
