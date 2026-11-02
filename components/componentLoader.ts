@@ -28,7 +28,12 @@ import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import * as scheduler from '../resources/scheduler/scheduler.ts';
-import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.ts';
+import {
+	restartWorkers,
+	getWorkerIndex,
+	isProcessShuttingDown,
+	getProcessExitDeadline,
+} from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { closeScopeOnShutdown } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
@@ -1158,6 +1163,9 @@ export async function loadComponent(
 					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, (message) =>
 						closeScopeOnShutdown(() => scope.close(), message?.exitDeadline !== undefined)
 					);
+					// SHUTDOWN reaches only the listeners registered when it arrives; a scope loaded after it closes here
+					if (isProcessShuttingDown())
+						closeScopeOnShutdown(() => scope.close(), getProcessExitDeadline() !== undefined);
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 

@@ -292,7 +292,6 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		else this.#logger.error?.('Error in component scope:', error);
 	}
 
-	/** Idempotent: a repeated close (a second SHUTDOWN reaching a worker already stopping) awaits the first. */
 	close(): Promise<this> {
 		return (this.#closing ??= this.#close());
 	}

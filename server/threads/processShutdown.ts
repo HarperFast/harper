@@ -9,10 +9,7 @@ export function registerMainThreadShutdown(shutdown: ThreadShutdown): void {
 	mainThreadShutdown = shutdown;
 }
 
-/**
- * Stop every worker through its SHUTDOWN sequence and shut the main thread down, by `exitDeadline`. Never
- * rejects. Storage is closed afterwards by the process `exit` listeners.
- */
+// storage closes afterwards, in the process 'exit' listeners
 export function shutdownProcess(exitDeadline: number): Promise<unknown> {
 	beginProcessShutdown();
 	return Promise.allSettled([
@@ -25,10 +22,6 @@ export function shutdownProcess(exitDeadline: number): Promise<unknown> {
 	});
 }
 
-/**
- * The SIGINT/SIGQUIT/SIGTERM handler. The first signal runs `shutdown` and exits when it settles or
- * `getTimeoutMs()` passes, whichever is first; a later signal exits at once. `exit` runs exactly once.
- */
 export function createTerminationHandler({
 	getTimeoutMs,
 	shutdown,

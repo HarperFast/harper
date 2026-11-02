@@ -135,7 +135,6 @@ export { listenOnDomainSocket };
 export { listenOnPorts };
 export { startServers };
 export { closeServers };
-export { shutdownForExit };
 
 let serversClosing = false;
 function closeServers() {
@@ -215,10 +214,7 @@ let exitHold: NodeJS.Timeout | undefined;
 function holdOpenForExit(exitDeadline: number | undefined) {
 	if (exitDeadline && !isMainThread) exitHold ??= setInterval(() => {}, 60_000);
 }
-/**
- * The thread's shutdown sequence, run once; a later call with a process `exitDeadline` only tightens the
- * drain deadline of the run already in progress. A phase that fails is logged and the next still runs.
- */
+/** Runs once; a later call with an `exitDeadline` only tightens the drain deadline of the run in progress. */
 function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadline()) {
 	holdOpenForExit(exitDeadline);
 	if (shutdownPromise) {
@@ -324,6 +320,7 @@ function startServers() {
 		if (message.type !== terms.ITC_EVENT_TYPES.SHUTDOWN) return;
 		beginProcessShutdown();
 		harperLogger.trace('received shutdown request', threadId);
+		holdOpenForExit(message.exitDeadline);
 		const shutdown = () => shutdownServers(message.exitDeadline);
 		void loaded.then(shutdown, shutdown).catch((error) => harperLogger.error('Error shutting down HTTP worker', error));
 	});
