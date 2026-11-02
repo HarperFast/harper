@@ -8,10 +8,9 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 // `resources/Table.ts` loads through when IT requires `#src/...`, via `#src/resources/databases`
 // above. Getting `IF_VERSION` through that same graph matters because a symbol is only equal to
 // itself: a relative `.ts` import here would construct a *different* `Symbol('ifVersion')` that
-// `context?.[IF_VERSION]` in Table.ts would never match. `VersionConflictError`, by contrast, is
-// never compared for equality — it's checked by `.code`/`.statusCode`, not `instanceof`, because
-// its *constructor* could still differ by module instance even via this same `#src/` path (see
-// that check's own comment below for why that's a real risk `instanceof` can't tolerate).
+// `context?.[IF_VERSION]` in Table.ts would never match. `VersionConflictError` comes from this
+// same module, so `instanceof` would work too; the checks below read `.code`/`.statusCode`
+// because those are the contract callers branch on (the class is not a component export).
 const { IF_VERSION } = require('#src/utility/errors/hdbError');
 // Arrow function, not a `function` declaration: assert.rejects distinguishes a validation
 // function from a constructor by whether it has a `.prototype`, and only an arrow function lacks
