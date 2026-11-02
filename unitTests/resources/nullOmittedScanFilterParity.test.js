@@ -374,7 +374,6 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 		if (Table.indexingOperation) await Table.indexingOperation;
 	});
 
-	// an array matches when some element differs, as its per-element index entries do
 	for (const [value, expected] of [
 		['x', ['null', 'omitted', 'xy', 'y']],
 		[null, ['x', 'xx', 'xy', 'y']],
