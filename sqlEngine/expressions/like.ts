@@ -1,12 +1,7 @@
 /**
- * SQL LIKE, matched in O(value length × pattern length) with no backtracking.
- *
- * A pattern is tokenized once into literal characters, `_` (one character) and
- * `%` (any run). Splitting on `%` leaves fixed-width segments: the first is
- * anchored at the start, the last at the end, and each middle segment is placed
- * at its leftmost fit after the previous one. Leftmost placement is never wrong
- * for fixed-width segments separated by `%`, since any later solution can shift
- * that segment left without disturbing the rest — so no position is revisited.
+ * SQL LIKE in O(value x pattern) with no backtracking. `%` splits a pattern into fixed-width segments; the first
+ * and last are anchored, and each middle segment takes its leftmost fit after the previous one. Leftmost is
+ * always safe: any match that places the segment further right still matches with it shifted left.
  */
 
 import { EngineRuntimeError } from '../errors.ts';
@@ -20,13 +15,13 @@ export type LikeToken =
 export type LikeMatcher = (value: string) => boolean;
 
 export interface LikeMatchOptions {
-	/** Compare by regex `i` canonicalization (alasql's case-insensitive LIKE). */
+	/** RegExp `i` comparison, as alasql's LIKE. */
 	caseInsensitive?: boolean;
-	/** `_` does not match `\n`, `\r`, U+2028 or U+2029 (alasql's `_` is a regex `.`). */
+	/** `_` as a RegExp `.`, as alasql's LIKE. */
 	oneExcludesLineTerminators?: boolean;
 }
 
-/** Tokenizes a v2 SQL LIKE pattern; an escape followed by any character is that character literally. */
+/** An escape followed by any character is that character literally. */
 export function tokenizeLike(pattern: string, escape?: string): LikeToken[] {
 	const tokens: LikeToken[] = [];
 	for (let i = 0; i < pattern.length; i++) {
@@ -43,7 +38,6 @@ export function tokenizeLike(pattern: string, escape?: string): LikeToken[] {
 	return tokens;
 }
 
-/** Validates the ESCAPE operand of a LIKE: exactly one character. */
 export function assertLikeEscape(escape: unknown): asserts escape is string {
 	if (typeof escape !== 'string' || escape.length !== 1) {
 		throw new EngineRuntimeError(`LIKE ESCAPE must be a single character, got ${JSON.stringify(escape)}`);
@@ -56,16 +50,16 @@ export function compileLike(pattern: string, escape?: string): LikeMatcher {
 
 interface Segment {
 	width: number;
-	/** Set when every unit is a literal: the segment is found with `indexOf`. */
+	/** Set when every unit is a literal, so the segment can be found with `indexOf`. */
 	text: string | undefined;
 	units: (string | ((char: string) => boolean))[];
 }
 
 const anyChar = () => true;
-const notLineTerminator = (char: string) => char !== '\n' && char !== '\r' && char !== ' ' && char !== ' ';
+const notLineTerminator = (char: string) => char !== '\n' && char !== '\r' && char !== '\u2028' && char !== '\u2029';
 
 export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions = {}): LikeMatcher {
-	const fold = options.caseInsensitive ? canonicalizeCase : undefined;
+	const caseInsensitive = options.caseInsensitive === true;
 	const one = options.oneExcludesLineTerminators ? notLineTerminator : anyChar;
 	const segments: Segment[] = [];
 	let current: Segment = { width: 0, text: '', units: [] };
@@ -77,7 +71,7 @@ export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions
 		}
 		current.width++;
 		if (token.kind === 'literal') {
-			const char = fold ? fold(token.char) : token.char;
+			const char = caseInsensitive ? canonicalizeCase(token.char) : token.char;
 			current.units.push(char);
 			if (current.text !== undefined) current.text += char;
 		} else {
@@ -89,22 +83,22 @@ export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions
 
 	if (segments.length === 1) {
 		const only = segments[0];
-		return (input) => {
-			const value = fold ? canonicalizeString(input) : input;
-			return value.length === only.width && segmentMatchesAt(only, value, 0);
-		};
+		return (value) => value.length === only.width && segmentMatchesAt(only, value, 0, caseInsensitive);
 	}
 	const first = segments[0];
 	const last = segments[segments.length - 1];
 	const middle = segments.slice(1, -1).filter((segment) => segment.width > 0);
-	return (input) => {
-		const value = fold ? canonicalizeString(input) : input;
+	return (value) => {
 		const end = value.length - last.width;
 		if (end < first.width) return false;
-		if (!segmentMatchesAt(first, value, 0) || !segmentMatchesAt(last, value, end)) return false;
+		if (!segmentMatchesAt(first, value, 0, caseInsensitive) || !segmentMatchesAt(last, value, end, caseInsensitive)) {
+			return false;
+		}
+		if (middle.length === 0) return true;
+		const folded = caseInsensitive ? canonicalizeString(value) : value;
 		let position = first.width;
 		for (const segment of middle) {
-			const found = findSegment(segment, value, position, end - segment.width);
+			const found = findSegment(segment, folded, position, end - segment.width);
 			if (found < 0) return false;
 			position = found + segment.width;
 		}
@@ -112,12 +106,14 @@ export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions
 	};
 }
 
-function segmentMatchesAt(segment: Segment, value: string, start: number): boolean {
+function segmentMatchesAt(segment: Segment, value: string, start: number, fold: boolean): boolean {
 	const units = segment.units;
 	for (let i = 0; i < units.length; i++) {
 		const unit = units[i];
 		const char = value[start + i];
-		if (typeof unit === 'string' ? unit !== char : !unit(char)) return false;
+		if (typeof unit === 'string') {
+			if (unit !== (fold ? canonicalizeCase(char) : char)) return false;
+		} else if (!unit(char)) return false;
 	}
 	return true;
 }
@@ -128,28 +124,31 @@ function findSegment(segment: Segment, value: string, from: number, lastStart: n
 		return found <= lastStart ? found : -1;
 	}
 	for (let start = from; start <= lastStart; start++) {
-		if (segmentMatchesAt(segment, value, start)) return start;
+		if (segmentMatchesAt(segment, value, start, false)) return start;
 	}
 	return -1;
 }
 
-const NON_ASCII = /[\u0080-\uffff]/;
+function isAscii(value: string): boolean {
+	for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) > 127) return false;
+	return true;
+}
 
 /**
- * The per-code-unit Canonicalize of a non-Unicode case-insensitive RegExp: never
- * changes the string length, and never folds a non-ASCII unit to ASCII (so `ſ`
- * stays distinct from `s`), unlike `String.prototype.toUpperCase` on the whole string.
+ * Canonicalize of a non-Unicode case-insensitive RegExp, per code unit: the length never changes, and a
+ * non-ASCII unit never folds to ASCII (U+017F stays distinct from `s`), unlike `toUpperCase` on the whole string.
  */
-export function canonicalizeString(value: string): string {
-	if (!NON_ASCII.test(value)) return value.toUpperCase();
+function canonicalizeString(value: string): string {
+	if (isAscii(value)) return value.toUpperCase();
 	let folded = '';
 	for (let i = 0; i < value.length; i++) folded += canonicalizeCase(value[i]);
 	return folded;
 }
 
 function canonicalizeCase(char: string): string {
+	const code = char.charCodeAt(0);
+	if (code < 128) return code >= 97 && code <= 122 ? String.fromCharCode(code - 32) : char;
 	const upper = char.toUpperCase();
-	if (upper.length !== 1) return char;
-	if (char.charCodeAt(0) >= 128 && upper.charCodeAt(0) < 128) return char;
+	if (upper.length !== 1 || upper.charCodeAt(0) < 128) return char;
 	return upper;
 }

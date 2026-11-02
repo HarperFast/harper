@@ -1,44 +1,48 @@
 /**
- * Linear-time replacement for alasql's LIKE (`alasql.utils.like`), which compiles
- * each pattern to a backtracking RegExp (`%` → `[\s\S]*`) that a crafted pattern
- * drives into polynomial time (harper#1930).
- *
- * alasql's semantics are kept: case-insensitive, `_` does not match a line
- * terminator, `[set]` / `[^set]` classes with ranges. Characters alasql leaked
- * into its RegExp unescaped (`\`, `^`, `$`, and escape + letter such as `!d`
- * becoming `\d`) are literals here, as is a `[` with no closing `]` (alasql threw).
+ * alasql's own LIKE compiles each pattern to a backtracking RegExp (#1930). This keeps its semantics
+ * (case-insensitive, `_` excludes line terminators, `[set]` classes) on the linear matcher; characters alasql
+ * leaked into that RegExp unescaped (`\`, `^`, `$`, escape + letter) are literals here.
  */
 
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { compileLikeTokens, type LikeMatcher, type LikeToken } from '../sqlEngine/expressions/like.ts';
 
 const MAX_CACHED_PATTERNS = 1000;
-const cache = new Map<string, LikeMatcher>();
+const cacheByEscape = new Map<string, Map<string, LikeMatcher>>();
 
-export function alasqlLike(pattern: unknown, value: unknown, escape: unknown = ''): boolean {
+function alasqlLike(pattern: unknown, value: unknown, escape: unknown = ''): boolean {
 	const patternText = String(pattern ?? '');
 	const escapeText = String(escape ?? '');
-	const key = escapeText.length + ':' + escapeText + patternText;
-	let matches = cache.get(key);
+	let cache = cacheByEscape.get(escapeText);
+	if (!cache) cacheByEscape.set(escapeText, (cache = new Map()));
+	let matches = cache.get(patternText);
 	if (!matches) {
 		if (cache.size >= MAX_CACHED_PATTERNS) cache.clear();
 		matches = compileLikeTokens(tokenizeAlasqlLike(patternText, escapeText), {
 			caseInsensitive: true,
 			oneExcludesLineTerminators: true,
 		});
-		cache.set(key, matches);
+		cache.set(patternText, matches);
 	}
 	return matches('' + (value ?? ''));
 }
 
-export function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
+function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
+	if (escape.length > 1) throw new ClientError(`LIKE ESCAPE must be a single character, got '${escape}'`);
 	const tokens: LikeToken[] = [];
+	// Once no closing `]` remains, every later `[` is a literal: searching again would make the scan quadratic.
+	let unclosed = false;
 	for (let i = 0; i < pattern.length; i++) {
 		const char = pattern[i];
-		if (char === escape && i + 1 < pattern.length) {
-			tokens.push({ kind: 'literal', char: pattern[++i] });
-		} else if (char === '[') {
-			const close = pattern.indexOf(']', i + 1);
+		if (char === escape) {
+			if (++i === pattern.length) {
+				throw new ClientError(`LIKE pattern must not end with the escape character '${escape}'`);
+			}
+			tokens.push({ kind: 'literal', char: pattern[i] });
+		} else if (char === '[' && !unclosed) {
+			const close = findClassEnd(pattern, i + 1, escape);
 			if (close < 0) {
+				unclosed = true;
 				tokens.push({ kind: 'literal', char });
 				continue;
 			}
@@ -51,34 +55,41 @@ export function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[]
 	return tokens;
 }
 
-/** One `[...]` body as a single-character RegExp: `^` negates, `a-z` is a range, everything else is literal. */
-function compileClass(body: string, escape: string): (char: string) => boolean {
-	let negated = false;
-	let start = 0;
-	if (body[0] === '^') {
-		negated = true;
-		start = 1;
+function findClassEnd(pattern: string, from: number, escape: string): number {
+	for (let i = from; i < pattern.length; i++) {
+		if (pattern[i] === escape) i++;
+		else if (pattern[i] === ']') return i;
 	}
+	return -1;
+}
+
+/** A `[...]` body: a leading `^` negates, `a-z` is a range, an escaped or any other character is literal. */
+function compileClass(body: string, escape: string): (char: string) => boolean {
+	const negated = body[0] === '^';
 	let source = '';
-	for (let i = start; i < body.length; i++) {
+	for (let i = negated ? 1 : 0; i < body.length; i++) {
 		let char = body[i];
-		if (char === escape && i + 1 < body.length) char = body[++i];
+		if (char === escape) char = body[++i];
 		else if (char === '-') {
 			source += '-';
 			continue;
 		}
 		source += /[\\\]^[-]/.test(char) ? '\\' + char : char;
 	}
-	const regex = new RegExp(`^[${negated ? '^' : ''}${source}]$`, 'i');
+	let regex: RegExp;
+	try {
+		regex = new RegExp(`^[${negated ? '^' : ''}${source}]$`, 'i');
+	} catch (error) {
+		throw new ClientError(`invalid character class [${body}] in LIKE pattern: ${(error as Error).message}`);
+	}
 	return (char) => regex.test(char);
 }
 
 const ESCAPE_SERIALIZED = Symbol('harperLikeEscapeSerialized');
 
 /**
- * Points alasql's LIKE at {@link alasqlLike}, and makes `Op#toString` keep a LIKE's
- * `ESCAPE` clause: legacy SQL re-parses `where.toString()` (SQLSearch `_buildSQL`,
- * `update.ts`, `deleteTranslator.ts`), and alasql's own serialization drops it.
+ * Also makes `Op#toString` keep a LIKE's `ESCAPE`: legacy SQL re-parses `where.toString()`
+ * (SQLSearch `_buildSQL`, `update.ts`, `deleteTranslator.ts`), and alasql's serialization drops it.
  */
 export function installAlasqlLike(alasql: any): void {
 	alasql.utils.like = alasqlLike;

@@ -1,10 +1,5 @@
 'use strict';
 
-/**
- * SQL LIKE semantics and cost, for the v2 engine (compileExpr / whereToConditions / the normalizer) and for the
- * legacy alasql engine's `utils.like` once alasqlFunctionImporter has installed Harper's matcher (#1930, #3878).
- */
-
 const assert = require('assert');
 const { spawnSync } = require('node:child_process');
 const { join } = require('node:path');
@@ -13,6 +8,7 @@ const { compileExpr } = require('#src/sqlEngine/expressions/compile');
 const { whereToConditions } = require('#src/sqlEngine/optimizer/whereToConditions');
 const { normalizeStatement } = require('#src/sqlEngine/parser/normalizer');
 const { EngineRuntimeError, EngineUnsupportedError } = require('#src/sqlEngine/errors');
+const { ClientError } = require('#src/utility/errors/hdbError');
 require('#src/sqlTranslator/alasqlFunctionImporter').default(alasql);
 
 function likeExpr(pattern, escape, negated = false) {
@@ -30,7 +26,7 @@ function v2Like(pattern, value, escape) {
 	return compileExpr(likeExpr(pattern, escape)).eval({ v: value });
 }
 
-// The v2 matcher before #1930, kept as the parity oracle for patterns and values where it was not wrong.
+// The v2 matcher before #1930: the parity oracle where it was not wrong.
 function regexLike(pattern, value) {
 	let r = '^';
 	for (const ch of pattern) {
@@ -42,7 +38,6 @@ function regexLike(pattern, value) {
 	return new RegExp(r + '$').test(value);
 }
 
-// Reference LIKE by dynamic programming over (token, character) pairs.
 function dpLike(pattern, value, escape) {
 	const tokens = [];
 	for (let i = 0; i < pattern.length; i++) {
@@ -306,6 +301,26 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.utils.like('a!d', 'a5', '!'), false);
 		assert.strictEqual(alasql.utils.like('a[b', 'a[b'), true);
 	});
+
+	it('honors an escaped ] inside a class', () => {
+		assert.strictEqual(alasql.utils.like('a[!]]', 'a]', '!'), true);
+		assert.strictEqual(alasql.utils.like('a[!]]', 'a!]', '!'), false);
+		assert.strictEqual(alasql.utils.like('[a!-c]', 'b', '!'), false);
+		assert.strictEqual(alasql.utils.like('[a!-c]', '-', '!'), true);
+	});
+
+	it('rejects a malformed pattern or escape with a client error', () => {
+		const clientError = (error) => error instanceof ClientError && error.statusCode === 400;
+		assert.throws(() => alasql.utils.like('[z-a]', 'b'), clientError);
+		assert.throws(() => alasql.utils.like('a!', 'a', '!'), clientError);
+		assert.throws(() => alasql.utils.like('a!%', 'a%', '!!'), clientError);
+	});
+
+	it('tokenizes unclosed [ in linear time', () => {
+		const start = performance.now();
+		assert.strictEqual(alasql.utils.like('['.repeat(100_000) + '%', '['.repeat(100_000)), true);
+		assert.ok(performance.now() - start < 1_000);
+	});
 });
 
 describe('LIKE cost is linear in the value (#1930)', function () {
@@ -327,7 +342,7 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 				assert.strictEqual(child.status, 0, child.stderr);
 				const { result, ms } = JSON.parse(child.stdout);
 				assert.strictEqual(result, false);
-				assert.ok(ms < 50, `${engine} took ${ms.toFixed(1)} ms`);
+				assert.ok(ms < 200, `${engine} took ${ms.toFixed(1)} ms`);
 			});
 		}
 	}

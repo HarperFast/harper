@@ -1,6 +1,6 @@
 /**
- * SQL `LIKE … ESCAPE` row sets on an indexed column for SELECT, UPDATE and DELETE (#3878), and LIKE patterns
- * that backtrack catastrophically in a regex matcher returning promptly (#1930), under `auto`, `new` and `legacy`.
+ * `LIKE … ESCAPE` row sets on an indexed column (#3878), and regex-backtracking LIKE patterns returning promptly
+ * (#1930), under `auto`, `new` and `legacy`.
  */
 
 import { suite, test, before, after } from 'node:test';
@@ -117,8 +117,7 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 			}
 
 			for (const pattern of REDOS_PATTERNS) {
-				// With an index driver the v2 engine evaluates the LIKE (`new`, `auto`); without one, `auto` and `legacy`
-				// evaluate it in alasql. A backtracking matcher blocks the worker past the request deadline.
+				// Without an index driver, `auto` evaluates the LIKE in alasql.
 				const wheres = [`ip LIKE 't%' AND note LIKE '${pattern}'`];
 				if (sqlEngine !== 'new') wheres.push(`note LIKE '${pattern}'`);
 				for (const where of wheres) {
