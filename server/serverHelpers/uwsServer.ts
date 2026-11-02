@@ -23,6 +23,7 @@ import { statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { UwsRequest, UwsRequestBody } from './Request.ts';
 import { Headers } from './Headers.ts';
+import { formatPeerAddress } from './peerAddress.ts';
 import { when } from '../../utility/when.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import {
@@ -477,17 +478,15 @@ function streamResponse(
 	source.once('close', () => fail());
 }
 
-const HEX_DIGITS = Buffer.from('0123456789abcdef');
-const ipv6Text = Buffer.alloc(39, ':');
 // This thread's previous peer, so a keep-alive client's requests share one address string.
 const lastPeer = new Uint8Array(16);
 let lastPeerLength = -1;
 let lastPeerText = '';
 
 /**
- * The peer's address: IPv4, including IPv4-mapped IPv6 on a dual-stack socket, as dotted decimal, and
- * other IPv6 in uWS's own text form. `res` must still be live, and the bytes it returns can be uWS's
- * memory, so they are compared and copied here and never kept.
+ * The peer's address as Node's `socket.remoteAddress` would give it (see {@link formatPeerAddress}).
+ * `res` must still be live, and the bytes it returns can be uWS's memory, so they are compared and
+ * copied here and never kept.
  */
 function readPeerAddress(res: UwsResponse): string {
 	const bytes = new Uint8Array(res.getRemoteAddress());
@@ -503,25 +502,6 @@ function isLastPeer(bytes: Uint8Array): boolean {
 	if (bytes.length !== lastPeerLength) return false;
 	for (let i = 0; i < bytes.length; i++) if (bytes[i] !== lastPeer[i]) return false;
 	return true;
-}
-
-function formatPeerAddress(bytes: Uint8Array): string {
-	const offset = ipv4Offset(bytes);
-	if (offset >= 0) return `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
-	if (bytes.length !== 16) return '';
-	for (let i = 0, j = 0; i < 16; i++) {
-		if (i && !(i & 1)) j++;
-		ipv6Text[j++] = HEX_DIGITS[bytes[i] >> 4];
-		ipv6Text[j++] = HEX_DIGITS[bytes[i] & 15];
-	}
-	return ipv6Text.toString('latin1');
-}
-
-function ipv4Offset(bytes: Uint8Array): number {
-	if (bytes.length === 4) return 0;
-	if (bytes.length !== 16 || bytes[10] !== 0xff || bytes[11] !== 0xff) return -1;
-	for (let i = 0; i < 10; i++) if (bytes[i] !== 0) return -1;
-	return 12;
 }
 
 function registerWsBehavior(

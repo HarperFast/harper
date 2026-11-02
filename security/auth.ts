@@ -23,6 +23,7 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent, AuthAuditLog, errorForLog } = harperLogger;
 import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../server/serverHelpers/Headers.ts';
+import { isLocalPeerAddress } from '../server/serverHelpers/peerAddress.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
@@ -401,8 +402,8 @@ export async function authentication(request, nextHandler) {
 				if (failureResponse) return applyResponseHeaders(failureResponse);
 			}
 		} else if (
-			(AUTHORIZE_LOCAL && authorizeAllAsLocal) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
-			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
+			(AUTHORIZE_LOCAL && authorizeAllAsLocal) || // explicit bypass (test mode)
+			(AUTHORIZE_LOCAL && isLocalPeerAddress(request.ip)) ||
 			(request?._nodeRequest?.socket?.server?._pipeName &&
 				request?._nodeRequest?.socket?.server?.bypassLocalAuth &&
 				request.ip === undefined) // allow operations API domain socket
