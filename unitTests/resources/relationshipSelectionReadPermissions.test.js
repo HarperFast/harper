@@ -74,9 +74,11 @@ describe('Read permission admission for nested selections and scalar properties'
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'deptId' },
+				{ name: 'reader', computed: true },
 				{ name: 'dept', relationship: { from: 'deptId' }, definition: { tableClass: Dept } },
 			],
 		});
+		Emp.setComputedAttribute('reader', (_record, context) => context.user?.username ?? null);
 		await Org.put({ id: 'o1', name: 'Org', secret: 'hidden' });
 		await Dept.put({ id: 'd1', name: 'Eng', secret: 'hidden', orgId: 'o1' });
 		await Emp.put({ id: 'e1', deptId: 'd1' });
@@ -290,32 +292,22 @@ describe('Read permission admission for nested selections and scalar properties'
 		assert.deepStrictEqual(await response.json(), [{ id: 'e1', dept: { name: 'Eng' } }]);
 	});
 
-	it('searchByValue carries the caller into search execution', async () => {
-		const original = Emp.prototype.search;
-		const principals = [];
-		Emp.prototype.search = function (target) {
-			principals.push(this.getContext().user);
-			return original.call(this, target);
-		};
-		try {
-			const result = new ResourceBridge().searchByValue({
+	it('all operations search routes carry the caller into computed attributes', async () => {
+		const bridge = new ResourceBridge();
+		for (const method of ['searchByConditions', 'searchByHash', 'searchByValue']) {
+			const results = await bridge[method]({
 				schema: DATABASE,
 				table: 'Emp',
 				attribute: 'id',
 				value: 'e1',
-				get_attributes: [{ name: 'dept', select: ['name'] }],
+				conditions: [{ attribute: 'id', value: 'e1' }],
+				hash_values: ['e1'],
+				get_attributes: ['reader'],
 				hdb_user: restricted,
 			});
 			const rows = [];
-			for await (const row of result) rows.push(plain(row));
-			assert.deepStrictEqual(rows, [{ dept: { name: 'Eng' } }]);
-			assert.ok(principals.length > 0);
-			assert.ok(
-				principals.every((user) => user === restricted),
-				'search execution must receive the caller'
-			);
-		} finally {
-			Emp.prototype.search = original;
+			for await (const row of results) rows.push(plain(row));
+			assert.deepStrictEqual(rows, [{ reader: restricted.username }], method);
 		}
 	});
 });
