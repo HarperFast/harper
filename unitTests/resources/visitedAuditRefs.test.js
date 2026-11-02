@@ -208,6 +208,86 @@ describe('Resolved audit references fold once', function () {
 		);
 	});
 
+	it('continues known branches when an unknown-origin probe exhausts its budget', async function () {
+		if (isLMDB) return this.skip();
+		const T = createTable('visitedAuditRefsProbeLimit');
+		const root = T.primaryStore.rootStore;
+		const [fillerOrigin, predecessor, protectedOrigin, older] = ['filler', 'predecessor', 'protected', 'older'].map(
+			(name) => getIdOfRemoteNode(`probe-limit-${name}`, T.auditStore)
+		);
+		publishOriginFloor(root, Date.now() + 3_600_000);
+		await T.put('victim', { label: 'seed' });
+		const seed = T.primaryStore.getEntry('victim');
+		publishOriginFloor(root, seed.version + 5000);
+		await transaction({}, async () => {
+			for (let index = 0; index < 300; index++) await T.put(`local-${index}`, { value: index });
+		});
+		const key = T.primaryStore.getEntry('local-0').version;
+		await root.transaction((native) =>
+			recordUpdater(T.primaryStore, T.tableId, T.auditStore)(
+				'victim',
+				{ id: 'victim', label: 'seed' },
+				seed,
+				key,
+				0,
+				false,
+				{ transaction: native, nodeId: 0 }
+			)
+		);
+		const fillerContext = { source: {}, sourceApply: true, timestamp: key };
+		await transaction(fillerContext, async () => {
+			for (let index = 0; index < 900; index++) {
+				const id = `remote-${index}`;
+				const resource = await T.getResource(id, fillerContext);
+				await resource._writeUpdate(id, { id, value: index }, true, {
+					isNotification: true,
+					nodeId: fillerOrigin,
+					version: key,
+				});
+			}
+		});
+		async function deliver(nodeId, logKey, version, record, fullUpdate = false) {
+			const context = { source: {}, sourceApply: true, timestamp: logKey };
+			await transaction(context, async () => {
+				const resource = await T.getResource('victim', context);
+				await resource._writeUpdate('victim', record, fullUpdate, { isNotification: true, nodeId, version });
+			});
+		}
+		await deliver(predecessor, key + 1000, key - 2000, { middle: true });
+		await deliver(protectedOrigin, key + 2000, key - 1000, { label: 'newest' });
+		assert.strictEqual(T.primaryStore.getEntry('victim').version, key);
+		assert.strictEqual(T.auditStore.get(key, T.tableId, 'victim', 0), undefined);
+		assert.strictEqual(T.auditStore.get(key + 1000, T.tableId, 'victim', predecessor).previousVersion, key);
+		assert.strictEqual([...T.auditStore.getRange({ start: key, exactStart: true, log: 0 })].length, 300);
+		assert.strictEqual([...T.auditStore.getRange({ start: key, exactStart: true, log: fillerOrigin })].length, 900);
+		const getRange = T.auditStore.getRange;
+		const reads = [];
+		try {
+			T.auditStore.getRange = function (options) {
+				const range = getRange.call(this, options);
+				if (options.start !== key || options.log !== undefined) return range;
+				const observation = { count: 0 };
+				reads.push(observation);
+				return {
+					*[Symbol.iterator]() {
+						for (const entry of range) {
+							observation.count++;
+							yield entry;
+						}
+					},
+				};
+			};
+			await deliver(older, key + 3000, key - 3000, { id: 'victim', label: 'older', retained: true }, true);
+		} finally {
+			T.auditStore.getRange = getRange;
+		}
+		assert.strictEqual(reads[0]?.count, 1001, 'the identity probe reached its limit');
+		assert.deepStrictEqual(
+			{ ...(await T.get('victim')) },
+			{ id: 'victim', label: 'newest', middle: true, retained: true }
+		);
+	});
+
 	it('bounds a previously unseen unknown frame whose target is past the walk limit', async function () {
 		if (isLMDB) return this.skip();
 		const T = createTable('visitedAuditRefsUnknownCap');
