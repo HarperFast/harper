@@ -883,9 +883,6 @@ export async function measureWindow(
 	const before = await sampleResources(running.targets);
 	const generatorBefore = await cpuSecondsOf(driver.pids);
 	const host = startHostLoad(running.targets);
-	const refaultsBefore: Record<string, number> = {};
-	for (const [name, scope] of Object.entries(running.targets.cgroups))
-		refaultsBefore[name] = (await readCgroupMemory(scope)).workingsetRefaultFile;
 	const counters = session.perfCounters ? await startCounters(running.targets.cgroups, RESULTS_DIR) : undefined;
 	const startMs = Date.now();
 	memory.start();
@@ -897,12 +894,21 @@ export async function measureWindow(
 	let peaks: Awaited<ReturnType<MemoryPeakSampler['stop']>>;
 	let perf: MeasuredWindow['perf'];
 	let countersStopped = false;
+	const refaultFilePages: Record<string, number> = {};
 	try {
+		const refaults = async () => {
+			const pages: Record<string, number> = {};
+			for (const [name, scope] of Object.entries(running.targets.cgroups))
+				pages[name] = (await readCgroupMemory(scope)).workingsetRefaultFile;
+			return pages;
+		};
+		const refaultsBefore = await refaults();
 		try {
 			result = await driver.runWorkload(workload, distribution, ops);
 		} finally {
 			meanClockGHz = clock.stop();
 		}
+		for (const [name, pages] of Object.entries(await refaults())) refaultFilePages[name] = pages - refaultsBefore[name];
 		// CPU first: stopping the sampler can wait out its interval, and background work in
 		// that gap would be charged to the run.
 		after = await sampleResources(running.targets);
@@ -920,10 +926,8 @@ export async function measureWindow(
 	const window = { startMs, endMs: Date.now() };
 	const hostLoad = await host.stop();
 	const cgroupMemory: Record<string, CgroupMemory> = {};
-	const refaultFilePages: Record<string, number> = {};
 	for (const [name, scope] of Object.entries(running.targets.cgroups)) {
 		cgroupMemory[name] = await readCgroupMemory(scope);
-		refaultFilePages[name] = cgroupMemory[name].workingsetRefaultFile - refaultsBefore[name];
 		// Every component's cgroup is created for this sample, so any kill belongs to it.
 		const kills = cgroupMemory[name].events.oom_kill ?? 0;
 		if (kills > 0) throw new Error(`${name}: ${kills} OOM kill(s) during this sample — sample invalid`);
@@ -1224,8 +1228,8 @@ async function prepareDataDirs(): Promise<{ base: string; harperRoot: string }> 
 
 /** HEAD of a checkout, or the REVISION file an exported (git archive) tree carries instead. */
 /**
- * SHA-256 of the built files this branch's diagnostic probes patch in place (README, "Record-cache
- * probe"): a digest that differs from a clean build's marks an instrumented session.
+ * SHA-256 of the built files that the temporary record-cache probes patch in place (README, "A
+ * Redis-sized record cache"): a digest that differs from a clean build's marks an instrumented session.
  */
 function buildDigests(root: string): Record<string, string> {
 	const digests: Record<string, string> = {};
@@ -1462,7 +1466,14 @@ export async function createSession(
 		harperBase: baseHarperBin
 			? { bin: baseHarperBin, revision: gitRevision(join(baseHarperBin, '..', '..', '..')) }
 			: undefined,
+		// --threads: Fastify's workers, and Harper's threads unless the target sets its own (harperSettings)
 		config: { ...options.config, threads: options.threads, engine: options.engine },
+		harperSettings: Object.fromEntries(
+			targets.flatMap((t) => {
+				const spec: HarperTarget | StackTarget = TARGETS[t];
+				return spec.kind === 'harper' ? [[t, harperSettings(spec, session)]] : [];
+			})
+		),
 		perfCounters,
 		profile: profile && { ...profile, nodeOptions: PERF_NODE_OPTIONS },
 		auth:

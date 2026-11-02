@@ -2,15 +2,20 @@
 
 A rough head-to-head: the same YCSB-style REST workload driven against
 
-| Target             | What answers the request                                                                              |
-| ------------------ | ----------------------------------------------------------------------------------------------------- |
-| `harper`           | Harper core (this checkout's `dist/`), `usertable` over REST — database, cache and app in one process |
-| `harper-sized`     | Same, with `HARPER_RECORD_CACHE_SIZE` raised to the next power of two ≥ the record count              |
-| `harper-uws`       | `harper` with its plaintext HTTP port on uWebSockets.js (`HARPER_UWS_HTTP=1`) instead of Node's HTTP  |
-| `harper-uws-sized` | `harper-uws` with the sized record cache                                                              |
-| `harper-base`      | Another Harper build (`--base-harper=<dist/bin/harper.js>`), driven by this harness                   |
-| `pg-redis`         | Fastify → Redis look-aside cache → Postgres                                                           |
-| `pg-only`          | Fastify → Postgres (no cache), to isolate what the cache is buying                                    |
+| Target                      | What answers the request                                                                              |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `harper`                    | Harper core (this checkout's `dist/`), `usertable` over REST — database, cache and app in one process |
+| `harper-sized`              | Same, with `HARPER_RECORD_CACHE_SIZE` raised to the next power of two ≥ the record count              |
+| `harper-uws`                | `harper` with its plaintext HTTP port on uWebSockets.js (`HARPER_UWS_HTTP=1`) instead of Node's HTTP  |
+| `harper-uws-sized`          | `harper-uws` with the sized record cache                                                              |
+| `harper-base`               | Another Harper build (`--base-harper=<dist/bin/harper.js>`), driven by this harness                   |
+| `harper-uws-rc3g-4t`        | `harper-uws` with a 768 MiB record cache on each of 4 threads (3 GiB in all), see below               |
+| `harper-uws-rc3g-2t`        | The same 3 GiB on 2 threads, 1.5 GiB each                                                             |
+| `harper-uws-rc3g-4t-vt128k` | `harper-uws-rc3g-4t` with the default 128K-slot verification table                                    |
+| `harper-uws-vt16m`          | `harper-uws` with only the verification table enlarged, to 16M slots                                  |
+| `harper-uws-2t`             | `harper-uws` on 2 threads, stock record cache                                                         |
+| `pg-redis`                  | Fastify → Redis look-aside cache → Postgres                                                           |
+| `pg-only`                   | Fastify → Postgres (no cache), to isolate what the cache is buying                                    |
 
 **Which change moved Harper's read numbers in September 2026.** The read-only gain
 then (workload C 30.5k → 42k ops/s; Harper CPU-seconds 58 → 42) came from the HTTP
@@ -251,7 +256,7 @@ dataset sized as a multiple of the budget (`--ratios`, logical payload of the
   run is 1M record reads too. B's is bounded, not a write steady state; Postgres
   checkpoints in the window are recorded.
 - **No hit-rate gate.** The Redis hit rate per sample is the output. Harper's
-  record-cache hit rate is not observable without core changes.
+  record-cache hit rate needs a temporary probe in `dist/` (see the tuned-cache section).
 - **A failed sample** (errors, OOM kill, crash) is recorded with its phase and the
   session continues — unless its scopes or containers are still running, in which
   case the session stops. `--sized-ratios` limits the sized targets to some sizes.
@@ -277,6 +282,38 @@ dataset sized as a multiple of the budget (`--ratios`, logical payload of the
   the row (`noisyWindows`, `hostQuiet`). Harper rows also record RocksDB flushes and
   compactions per phase, from the info LOG.
 
+## A Redis-sized record cache (`harper-uws-rc3g-*`)
+
+Harper's record cache is per worker thread and sized in entries (`HARPER_RECORD_CACHE_SIZE`,
+default 32,768 ring positions, about 13k records at ~1 KiB). The tuned targets give it the
+share Redis gets in the sweep, 3 GiB, and stay inside the same 8 GiB cap and 4 cores. Each
+target's settings are in its `TARGETS` descriptor, and every row records what it launched
+with (`measured.harperSettings`; `meta.harperSettings` per target):
+
+|                                                            |     `-rc3g-4t` |     `-rc3g-2t` |         stock |
+| ---------------------------------------------------------- | -------------: | -------------: | ------------: |
+| `threads.count`                                            |              4 |              2 |             4 |
+| `HARPER_RECORD_CACHE_SIZE` (2 positions per ~1 KiB record) |        820,000 |      1,640,000 |        32,768 |
+| records held strongly per thread                           | 410k (768 MiB) | 820k (1.5 GiB) |          ~13k |
+| `threads.maxHeapMemory` (MB)                               |           1152 |           2240 | 744 (derived) |
+| `storage.rocks.blockCacheSize`                             |        512 MiB |        512 MiB |   2 GiB (25%) |
+| verification table slots                                   |            16M |            16M |          128K |
+
+- A cached record costs 1,965 heap bytes (measured; [PROFILE.md](PROFILE.md) has the method).
+- A cache hit is cheap only when rocksdb-js's verification table still vouches for the cached
+  version. That table is process-wide, direct-mapped and overwritten by every cold read, and
+  Harper has no setting for its size: `vtPreload.mjs`, loaded with `--import` into Harper's
+  main thread, sets it before Harper opens a database.
+- The controls separate the causes: `-vt128k` is B without the larger table, `harper-uws-vt16m`
+  is the stock cache with it, and `harper-uws-2t` is the stock cache on 2 threads.
+- `--cache=cold` refuses the tuned targets.
+- Rows also record each component's page-cache refaults during the measured run
+  (`refaultFilePages`, from `memory.stat`): file pages read again after the cgroup evicted
+  them, the reads that went to disk.
+- The record-cache counts in [PROFILE.md](PROFILE.md) come from a temporary probe patched
+  into `dist/` for those runs, never committed. `meta.harper.digests` holds the SHA-256 of the
+  two files such probes patch, so a results file says whether its build was instrumented.
+
 ## Profiling (`--profile`)
 
 `--profile=<dir>` starts every target with V8's perf-map flags and, after each
@@ -286,7 +323,8 @@ the measured run can still carry JIT warmup) and then `--profile-ops` more under
 `profile-report.mts <results.json> --svg-dir=<dir>` turns those into CPU µs/op per
 bucket (HTTP, routing, auth, transactions, record cache, RocksDB, decode, JSON, the
 stack's Redis and Postgres, event loop, GC, JIT), RocksDB sub-parts, Harper's
-pipeline by inclusive cost, counters, and flame graphs. `--pipeline` adds Harper's samples
+pipeline by inclusive cost, counters, GC by phase (scavenge, major marking, clearing weak
+references, compaction, sweeping), and flame graphs. `--pipeline` adds Harper's samples
 by request-pipeline layer (uWS, `http.ts`, authentication, REST, transaction, resource
 resolution, `Table.get`, record cache, RocksDB, decode, serialization), each charged to the
 innermost layer on its stack: work resumed after an `await` has lost its callers' frames, so
