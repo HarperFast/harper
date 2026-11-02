@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Enforces the design-doc layout described in the root DESIGN.md: the root is an index only, every
-// section of a note the index registers is indexed there and every relative link and anchor in the
-// index and the notes resolves; each DESIGN.md and MAP.md stays within its byte budget, or its ceiling
+// section of a note the index registers is indexed there and every inline relative link and anchor in
+// the index and the notes resolves; each DESIGN.md and MAP.md stays within its byte budget, or its ceiling
 // in CEILINGS_FILE; and each MAP.md has a `@MAP.md` CLAUDE.md, is listed in AGENTS.md and names only
 // symbols and files that exist.
 //   --base <ref>       also reject a raised or new ceiling, and hold only files changed since <ref> to their budget
@@ -74,7 +74,6 @@ function proseLines(text) {
 	return { lines, unclosed: fence?.line };
 }
 
-// A code span opens and closes with backtick runs of the same length (CommonMark).
 const CODE_SPAN = /(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g;
 
 export function codeSpans(text) {
