@@ -181,6 +181,35 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(client.count, 2, 'a client-level read sees the merged value, not a stale cache vouch');
 	});
 
+	it('a cold read from an older snapshot cannot republish a reused version', async function () {
+		const store = TestTable.primaryStore;
+		const id = 32;
+		await TestTable.put(id, { name: 'snapshot race', count: 0 });
+		const base = store.getEntry(id, { uncachedRead: true });
+		await TestTable.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: base.version + 100 });
+		const snapshot = new Transaction(store.store);
+		try {
+			const pinned = store.getEntry(id, { transaction: snapshot, uncachedRead: true });
+			assert.equal(pinned.value.count, 1, 'the native snapshot is pinned before the merged write');
+			assert(!(pinned.metadataFlags & VERSION_REUSED));
+			await TestTable.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: base.version + 50 });
+			const current = store.getEntry(id, { uncachedRead: true });
+			assert.equal(current.value.count, 2);
+			assert.equal(current.version, pinned.version, 'the merged write reuses the pinned version');
+			assert(current.metadataFlags & VERSION_REUSED);
+			assert(!store.verifyVersion(id, current.version), 'the merge invalidated its vouch');
+			store.cache.delete(id);
+			assert.equal(store.cache.getValue(id), undefined, 'the snapshot read must use the cold native path');
+			const old = store.getEntry(id, { transaction: snapshot });
+			assert.equal(old.value.count, 1, 'the transaction still sees its pre-merge snapshot');
+			assert.equal(old.version, current.version);
+			assert(!store.verifyVersion(id, current.version), 'an older snapshot must not republish a reused version');
+			assert.equal(store.getEntry(id).value.count, 2, 'a fresh read must see both increments');
+		} finally {
+			snapshot.abort();
+		}
+	});
+
 	it('an uncachedRead bypasses the cache vouch and returns the stored record', async function () {
 		const store = TestTable.primaryStore;
 		await TestTable.put(12, { name: 'stored', count: 5 });
