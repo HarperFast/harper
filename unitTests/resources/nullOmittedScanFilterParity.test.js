@@ -362,6 +362,7 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 		let lastPut;
 		for (const [id, tags] of [
 			['x', ['x']],
+			['xx', ['x', 'x']],
 			['xy', ['x', 'y']],
 			['y', ['y']],
 			['empty', []],
@@ -373,22 +374,27 @@ describe('a multi-valued attribute answers a non-null ne the same led or filtere
 		if (Table.indexingOperation) await Table.indexingOperation;
 	});
 
-	it('matches every record whose value is not that one value, once each', async () => {
-		const expected = ['empty', 'null', 'omitted', 'xy', 'y'];
-		for (const ne of [
-			{ attribute: 'tags', comparator: 'ne', value: 'x' },
-			{ attribute: 'days', comparator: 'ne', value: dayOf('x'.charCodeAt(0)) },
-			{ attribute: 'days', comparator: 'ne', value: dayOf('x'.charCodeAt(0)).getTime() },
-		])
-			for (const request of [
-				{ conditions: [ne] },
-				{ conditions: [{ attribute: 'c', value: 'hot' }, ne], enforceExecutionOrder: true },
-			]) {
-				const found = [];
-				for await (const record of Table.search(request)) found.push(record.id);
-				assert.deepStrictEqual(found.sort(), expected, JSON.stringify(request.conditions));
-			}
-	});
+	// an array matches when some element differs, as its per-element index entries do
+	for (const [value, expected] of [
+		['x', ['null', 'omitted', 'xy', 'y']],
+		[null, ['x', 'xx', 'xy', 'y']],
+	])
+		it(`ne ${value} matches the same records once each, led or filtered`, async () => {
+			const day = value && dayOf(value.charCodeAt(0));
+			for (const ne of [
+				{ attribute: 'tags', comparator: 'ne', value },
+				{ attribute: 'days', comparator: 'ne', value: day },
+				...(day ? [{ attribute: 'days', comparator: 'ne', value: day.getTime() }] : []),
+			])
+				for (const request of [
+					{ conditions: [ne] },
+					{ conditions: [{ attribute: 'c', value: 'hot' }, ne], enforceExecutionOrder: true },
+				]) {
+					const found = [];
+					for await (const record of Table.search(request)) found.push(record.id);
+					assert.deepStrictEqual(found.sort(), expected, JSON.stringify(request.conditions));
+				}
+		});
 });
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;

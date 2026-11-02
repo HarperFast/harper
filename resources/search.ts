@@ -2237,13 +2237,18 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			if (isPrimaryKey) {
 				const equals = primaryKeyEquals(value);
 				baseFilter = attributeComparator(attribute, (primaryKey) => !equals(primaryKey));
-			} else
+			} else {
+				// an array matches when some element differs, as its per-element index entries do; a Date is compared by
+				// the epoch number its index key and `value` hold
+				const differs = (element) =>
+					compareKeys((element instanceof Date ? element.getTime() : element) ?? null, value) !== 0;
 				baseFilter = attributeComparator(
 					attribute,
-					(recordValue) => compareKeys(dateAsIndexKey(recordValue) ?? null, value) !== 0,
+					(recordValue) => (Array.isArray(recordValue) ? recordValue.some(differs) : differs(recordValue)),
 					false,
 					true
 				);
+			}
 			break;
 		}
 		case 'sort':
@@ -2443,17 +2448,6 @@ function relationshipScanRuns(table, path: any[], offset: number, comparator, va
 	return offset < path.length - 2
 		? relationshipScanRuns(relatedTable, path, offset + 1, comparator, value)
 		: scanDrivesIndex(relatedTable, path[offset + 1], comparator, value);
-}
-// `ne` compares the whole value, so a Date, alone or in an array, becomes the epoch number its index key and the
-// condition value hold
-function dateAsIndexKey(value) {
-	if (value instanceof Date) return value.getTime();
-	if (!Array.isArray(value)) return value;
-	let converted;
-	for (let i = 0; i < value.length; i++) {
-		if (value[i] instanceof Date) (converted ??= value.slice())[i] = value[i].getTime();
-	}
-	return converted ?? value;
 }
 
 /**
