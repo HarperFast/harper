@@ -11,7 +11,6 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 	this.timeout(20_000);
 	const database = 'test_invalidated_stub_key_sort';
 	let Rows;
-	// `missing` ids are gone from the source; `gate`, when set, holds every load until it resolves
 	const source = { loads: 0, missing: new Set(), fail: false, gate: null };
 
 	before(async () => {
@@ -243,7 +242,7 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 
 		for (const attribute of ['$updatedtime', '$updatedTime']) {
 			it(`a sort on ${attribute} does not reload rows outside the page`, async () => {
-				// only a union post-orders by a metadata attribute; slice() also materializes the row after the page
+				// only a union post-orders by a metadata attribute, and slice() materializes the row after the page
 				const union = { operator: 'or', conditions: ['a', 'b', 'c'].map((value) => ({ attribute: 'id', value })) };
 				assert.deepStrictEqual(await rowsOf({ ...union, sort: { attribute }, limit: 1 }), ['a:zzz']);
 				assert.strictEqual(source.loads, 0);
@@ -268,6 +267,25 @@ describe('Invalidated cache rows under negated, grouped and sorted primary-key r
 			source.missing = new Set(['a']);
 			assert.deepStrictEqual(await rowsOf({ conditions: [geA], sort: { attribute: 'id' }, limit: 1 }), ['b:aaa']);
 		});
+
+		it('does not load a row the source no longer has a second time when the read keeps absent rows', async () => {
+			source.missing.add('c');
+			const context = {};
+			const transform = Rows.transformEntryForSelect(undefined, context, Rows._readTxnForContext(context), null, true);
+			const prepared = await transform.prepareForSort(Rows.primaryStore.getEntry('c'));
+			assert.equal(prepared.value, null);
+			assert.ok(!(prepared.metadataFlags & INVALIDATED), 'the materializer must not take it for a stub to reload');
+			assert.equal(await transform.call({}, prepared), null);
+			assert.strictEqual(source.loads, 1);
+		});
+
+		for (const attribute of ['$updatedtime', ['$updatedtime']]) {
+			it(`a one-element ${attribute} path does not reload rows outside the page`, async () => {
+				const union = { operator: 'or', conditions: ['a', 'b', 'c'].map((value) => ({ attribute: 'id', value })) };
+				assert.deepStrictEqual(await rowsOf({ ...union, sort: { attribute }, limit: 1 }), ['a:zzz']);
+				assert.strictEqual(source.loads, 0);
+			});
+		}
 
 		it('rejects the read when the source rejects a stub reload', async () => {
 			source.fail = true;

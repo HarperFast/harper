@@ -378,7 +378,6 @@ const ABSENT_ENTRY = Object.freeze({
 		return callback(undefined);
 	},
 });
-// passed to ensureLoadedFromSource for a row whose stale-while-revalidate hook already allowed stale data
 const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
 // `$distance` is left out: it can fall back to the record
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
@@ -8737,11 +8736,9 @@ export function makeTable(options): TableResourceClass {
 					function collect(entry): Promise<unknown> | undefined {
 						if (prepareForSort && entry.metadataFlags & (INVALIDATED | EVICTED)) {
 							const prepared = prepareForSort(entry);
-							if (prepared?.then)
-								return prepared.then((prepared) => {
-									if (!stopped()) return collectKeys(prepared);
-								});
-							return collectKeys(prepared);
+							// the read can close during the reload, or synchronously from a stale-while-revalidate hook
+							if (prepared?.then) return prepared.then((prepared) => (stopped() ? undefined : collectKeys(prepared)));
+							return stopped() ? undefined : collectKeys(prepared);
 						}
 						return collectKeys(entry);
 					}
@@ -8872,7 +8869,6 @@ export function makeTable(options): TableResourceClass {
 										if (value !== SKIP) return { value };
 										continue;
 									}
-									// a group is empty when prepareForSort skipped all of its rows
 									if (!dbDone) continue;
 									if (results.onDone) results.onDone();
 									return iteration;
@@ -9019,7 +9015,7 @@ export function makeTable(options): TableResourceClass {
 			const syncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded };
 			// loadLocalRecord sets `async` on the options of an async load, so sync loads need their own
 			const asyncLoadOptions = { transaction: readTxn, lazy, ensureLoaded: checkLoaded, async: true };
-			// entries prepareForSort kept stale under stale-while-revalidate, so the hook is not consulted twice
+			// so the materializer does not consult the stale-while-revalidate hook a second time
 			let staleKept: WeakSet<Entry>;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
@@ -9267,7 +9263,6 @@ export function makeTable(options): TableResourceClass {
 				if (transformCache) for (const child of transformCache.values()) (child as any).return?.();
 			};
 			if (ensure_loaded && (hasSourceGet || sourceLoad))
-				// whatever the select needs, a sort on content needs the record the materializer will return
 				(transform as any).prepareForSort = (entry: Entry) => {
 					if (selectionStopped || !(entry.metadataFlags & (INVALIDATED | EVICTED)) || context?.onlyIfCached)
 						return entry;
@@ -9282,7 +9277,10 @@ export function makeTable(options): TableResourceClass {
 					}
 					const loading = ensureLoadedFromSource(source, id, entry, context);
 					if (!loading?.then) return entry;
-					return loading.then((loaded: Entry) => (loaded?.value != null ? loaded : canSkip ? SKIP : entry));
+					// an absent row stays absent: returning the flagged stub would send the materializer to the source again
+					return loading.then((loaded: Entry) =>
+						loaded?.value != null ? loaded : canSkip ? SKIP : (loaded ?? { key: id, value: null })
+					);
 				};
 			return transform;
 		}
@@ -12905,8 +12903,9 @@ export function makeTable(options): TableResourceClass {
 	}
 	function sortReadsRecord(clauses: Sort[]) {
 		for (const clause of clauses) {
-			const attribute = clause.attribute;
-			if (!isPrimaryKeyAttribute(attribute) && !ENTRY_SORT_ATTRIBUTES.has(attribute as string)) return true;
+			let attribute = clause.attribute;
+			if (Array.isArray(attribute) && attribute.length === 1) attribute = attribute[0];
+			if (attribute !== primaryKey && !ENTRY_SORT_ATTRIBUTES.has(attribute as string)) return true;
 		}
 		return false;
 	}
@@ -12915,7 +12914,11 @@ export function makeTable(options): TableResourceClass {
 			return;
 		}
 		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
-		if (record == null && isPrimaryKeyAttribute(attribute_name)) return entry.key;
+		if (record == null) {
+			// a cache stub: its key and entry metadata still resolve, whichever way the path is spelled
+			if (Array.isArray(attribute_name) && attribute_name.length === 1) attribute_name = attribute_name[0];
+			if (attribute_name === primaryKey) return entry.key;
+		}
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			return getPathValue(record, attribute_name, 0, propertyResolvers, entry, context, sort, stopped);

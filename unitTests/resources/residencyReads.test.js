@@ -365,8 +365,7 @@ describe('Reads of residency stubs', function () {
 		);
 	});
 
-	// a sort on record content reloads the stubs before ordering, so it closes during that reload; a sort led by the
-	// primary key does not, so it closes while materializing a later row
+	// only a sort on record content reloads stubs before ordering
 	for (const [keyLed, leadingRow, found] of [
 		[false, false, false],
 		[false, true, false],
