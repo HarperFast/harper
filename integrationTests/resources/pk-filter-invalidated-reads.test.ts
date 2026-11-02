@@ -82,11 +82,14 @@ suite('primary-key filtered reads over invalidated cache rows', (ctx: ContextWit
 	]) {
 		test(`revalidates an invalidated row for ${path}`, async () => {
 			const loadsBefore = await invalidate('c');
-			const rows = await query(path);
-			deepStrictEqual(rows.map((row) => [row.id, row.body]).sort(), [
+			const rows = (await query(path)).map((row) => [row.id, row.body]);
+			const expected = [
 				['a', 'zzz'],
 				['c', 'fresh c'],
-			]);
+			];
+			// an unsorted read's order is not part of its contract
+			if (path.includes('sort(-id)')) deepStrictEqual(rows, expected.reverse());
+			else deepStrictEqual(rows.sort(), expected);
 			strictEqual((await rowState('c')).loads, loadsBefore + 1);
 			// the cache fill commits behind the response; the next case starts from a complete record
 			await waitForState('c', (state) => state.hasRecord);
