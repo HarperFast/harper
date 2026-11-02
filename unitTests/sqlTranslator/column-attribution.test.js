@@ -257,6 +257,16 @@ describe('SQL column attribution for attribute permissions', () => {
 			]);
 		});
 
+		it('lists `?` and `$n` parameters, which legacy SQL fills with its own rows', () => {
+			for (const sql of [
+				"SELECT ? AS v FROM data.L WHERE label = 'x'",
+				"SELECT $1 AS v FROM data.L WHERE label = 'x'",
+				'UPDATE data.L SET label = ? WHERE id = 1',
+			]) {
+				assert.deepStrictEqual(bucketFor(sql).getRowAccessors(), ['parameter'], sql);
+			}
+		});
+
 		it('refuses a JSON literal that hides an expression behind __proto__', () => {
 			for (const sql of [
 				"SELECT {__proto__:{rec:_}} AS obj FROM data.L WHERE label = 'x'",

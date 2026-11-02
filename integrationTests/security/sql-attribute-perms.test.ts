@@ -165,6 +165,8 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 					`SELECT _->id AS k FROM data.ColPermRight r WHERE r.label = 'shared'`,
 					"SELECT ``p`` AS rec FROM data.ColPermRight r WHERE r.label = 'shared'",
 					"SELECT {__proto__:{rec:_}} AS obj FROM data.ColPermRight r WHERE r.label LIKE '%shared%'",
+					`SELECT ? AS v FROM data.ColPermRight r WHERE r.label = 'shared'`,
+					`UPDATE data.ColPermLeft SET label = ? WHERE id = 'l2'`,
 				]) {
 					assertRefused(await asReader(sql), sql);
 				}

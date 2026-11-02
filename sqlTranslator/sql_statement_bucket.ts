@@ -139,7 +139,7 @@ class sqlStatementBucket {
 
 	/**
 	 * Expressions that read a whole row instead of naming a column: AlaSQL's `_` (`SELECT VALUE`,
-	 * `ROW`, `x._`, `_->attr`) and JavaScript expressions. Attribute permissions cannot apply to them,
+	 * `ROW`, `x._`, `_->attr`), JavaScript expressions and `?`/`$n` parameters. Attribute permissions cannot apply to them,
 	 * and legacy SQL's row container always carries the primary key.
 	 */
 	getRowAccessors(): string[] {
@@ -147,6 +147,8 @@ class sqlStatementBucket {
 		for (const node of astNodes(this.ast)) {
 			if (node instanceof (alasql as any).yy.Column && node.columnid === '_') accessors.push('_');
 			else if (node instanceof (alasql as any).yy.JavaScript) accessors.push('JavaScript expression');
+			// The `sql` operation binds no parameters, but legacy SQL runs every statement against its own rows.
+			else if (node instanceof (alasql as any).yy.ParamValue) accessors.push('parameter');
 			// A JSON literal's `__proto__` key hides an expression in the prototype, where every walk here
 			// (own properties only) misses it but AlaSQL's JSON compiler still evaluates it.
 			else if (!isKnownPrototype(Object.getPrototypeOf(node))) accessors.push('JSON literal with __proto__');
