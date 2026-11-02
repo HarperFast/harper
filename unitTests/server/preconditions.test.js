@@ -5,6 +5,7 @@ const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { Resource, WRITE_CONDITION } = require('#src/resources/Resource');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { Resources } = require('#src/resources/Resources');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -695,12 +696,203 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
-	it('rejects custom statics and handlers that never consume the condition', async () => {
+	it('leaves preconditions to resources that define their own verb or are not tables', async () => {
+		const seen = [];
 		class CustomStatic extends Row {
-			static put() {
-				throw new Error('must not dispatch');
+			static put(target, data, context) {
+				seen.push(['CustomStatic', context.headers.get('if-match')]);
+				return { revised: true };
 			}
 		}
+		class OwnConcurrency extends Resource {
+			static put(target, data, context) {
+				seen.push(['OwnConcurrency', context.headers.get('if-match')]);
+				return { revised: true };
+			}
+			static post(target, data, context) {
+				seen.push(['OwnConcurrency', context.headers.get('if-none-match')]);
+				return { created: true };
+			}
+		}
+		const IntKeyed = table({
+			table: 'HttpOwnVerbIntKeys',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true, type: 'Int' }, { name: 'n' }],
+		});
+		class OwnIntVerb extends IntKeyed {
+			static put(target, data, context) {
+				seen.push(['OwnIntVerb', context.headers.get('if-match')]);
+				return { created: target.id };
+			}
+		}
+		resources.set('CustomStatic', CustomStatic, { rest: true });
+		resources.set('OwnConcurrency', OwnConcurrency, { rest: true });
+		resources.set('OwnIntVerb', OwnIntVerb, { rest: true });
+		for (const [method, path, headers] of [
+			['PUT', '/OwnIntVerb/new', { 'if-match': '"3"' }],
+			['PUT', '/CustomStatic/read', { 'if-match': '"3"' }],
+			['PUT', '/OwnConcurrency/x', { 'if-match': '"3"' }],
+			['POST', '/OwnConcurrency/', { 'if-none-match': '*' }],
+		]) {
+			const response = await request(method, path, { n: 2 }, headers);
+			assert.ok(response.status < 300, `${method} ${path}: ${response.status} ${await bodyOf(response)}`);
+		}
+		assert.deepStrictEqual(seen, [
+			['OwnIntVerb', '"3"'],
+			['CustomStatic', '"3"'],
+			['OwnConcurrency', '"3"'],
+			['OwnConcurrency', '*'],
+		]);
+		assert.strictEqual((await Row.get('read')).n, 1);
+	});
+
+	it("applies the condition when a table class's own verb delegates to the table", async () => {
+		class Delegating extends Row {
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		resources.set('Delegating', Delegating, { rest: true });
+		await Row.put('delegate', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('delegate').version);
+		assert.strictEqual((await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-match': '"1"' })).status, 412);
+		assert.strictEqual((await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-none-match': '*' })).status, 412);
+		assert.strictEqual((await Row.get('delegate')).n, 1);
+		const response = await request('PUT', '/Delegating/delegate', { n: 2 }, { 'if-match': etag });
+		assert.ok(response.status < 300, await bodyOf(response));
+		assert.strictEqual((await Row.get('delegate')).n, 2);
+	});
+
+	it("binds an own verb's condition to the request target, not to other records it touches", async () => {
+		class ReadsFirst extends Row {
+			static async put(target, data, context) {
+				await super.get('other', context);
+				const collection = new RequestTarget();
+				collection.isCollection = true;
+				for await (const record of await super.get(collection, context)) void record;
+				return super.put(target, data, context);
+			}
+		}
+		class WritesCompanion extends Row {
+			static async put(target, data, context) {
+				await super.put('companion', { n: 9 }, context);
+				return super.put(target, data, context);
+			}
+		}
+		class ThroughBase extends Row {
+			static put(target, data, context) {
+				return Row.put(target, data, context);
+			}
+		}
+		class ById extends Row {
+			static put(target, data, context) {
+				return super.put(target.id, data, context);
+			}
+		}
+		class ByIdThroughBase extends Row {
+			static put(target, data, context) {
+				return Row.put(target.id, data, context);
+			}
+		}
+		class BatchFirst extends Modern {
+			static async put(target, data, context) {
+				const collection = new RequestTarget();
+				collection.isCollection = true;
+				await super.put(collection, [{ id: 'audit', n: 1 }], context);
+				return super.put(target, data, context);
+			}
+		}
+		for (const [name, Class] of [
+			['ReadsFirst', ReadsFirst],
+			['WritesCompanion', WritesCompanion],
+			['ThroughBase', ThroughBase],
+			['ById', ById],
+			['ByIdThroughBase', ByIdThroughBase],
+			['BatchFirst', BatchFirst],
+		]) {
+			resources.set(name, Class, { rest: true });
+			await Row.put('bound', { n: 1 });
+			await Row.delete('companion');
+			const stale = await request('PUT', `/${name}/bound`, { n: 2 }, { 'if-match': '"1"' });
+			assert.strictEqual(stale.status, 412, `${name}: ${await bodyOf(stale)}`);
+			assert.strictEqual((await Row.get('bound')).n, 1, name);
+			assert.strictEqual(await Row.get('companion'), null, name);
+			const etag = versionToEtag(Row.primaryStore.getEntry('bound').version);
+			const current = await request('PUT', `/${name}/bound`, { n: 2 }, { 'if-match': etag });
+			assert.ok(current.status < 300, `${name}: ${current.status} ${await bodyOf(current)}`);
+			assert.strictEqual((await Row.get('bound')).n, 2, name);
+			if (Class === WritesCompanion) assert.strictEqual((await Row.get('companion')).n, 9);
+		}
+	});
+
+	it("binds an own verb's condition through a parsePath that reads request state", async () => {
+		class Tenanted extends Row {
+			static parsePath(path, context) {
+				return `${context.user.tenant}-${path}`;
+			}
+			static put(target, data, context) {
+				return super.put(target, data, context);
+			}
+		}
+		resources.set('Tenanted', Tenanted, { rest: true });
+		const user = { tenant: 'acme', role: { permission: { super_user: true } } };
+		await Row.put('acme-x', { n: 1 });
+		const stale = await request('PUT', '/Tenanted/x', { n: 2 }, { 'if-match': '"1"' }, user);
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		const etag = versionToEtag(Row.primaryStore.getEntry('acme-x').version);
+		const current = await request('PUT', '/Tenanted/x', { n: 2 }, { 'if-match': etag }, user);
+		assert.ok(current.status < 300, `${current.status} ${await bodyOf(current)}`);
+		assert.strictEqual((await Row.get('acme-x')).n, 2);
+	});
+
+	it('leaves the condition to a table class whose own verb the table cannot apply it to, or that opts out', async () => {
+		class DelegatingModern extends Modern {
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		class CustomRepresentation extends Row {
+			static get(...args) {
+				return super.get(...args);
+			}
+			static put(...args) {
+				return super.put(...args);
+			}
+		}
+		const seen = [];
+		class SelfChecked extends Row {
+			static preconditions = false;
+			static put(target, data, context) {
+				seen.push(context.headers.get('if-match'));
+				return super.put(target, data, context);
+			}
+		}
+		resources.set('CustomRepresentation', CustomRepresentation, { rest: true });
+		resources.set('SelfChecked', SelfChecked, { rest: true });
+		await Row.put('declined', { n: 1 });
+		for (const [path, n] of [
+			['/CustomRepresentation/declined', 2],
+			['/SelfChecked/declined', 3],
+		]) {
+			const response = await request('PUT', path, { n }, { 'if-match': '"1"' });
+			assert.ok(response.status < 300, `${path}: ${response.status} ${await bodyOf(response)}`);
+			assert.strictEqual((await Row.get('declined')).n, n);
+		}
+		assert.deepStrictEqual(seen, ['"1"']);
+		const collection = await request('PUT', '/CustomRepresentation/', [{ id: 'declined', n: 4 }], {
+			'if-match': '"1"',
+		});
+		assert.ok(collection.status < 300, `${collection.status} ${await bodyOf(collection)}`);
+		assert.strictEqual((await Row.get('declined')).n, 4);
+		resources.set('DelegatingModern', DelegatingModern, { rest: true });
+		const arrayBody = await request('PUT', '/DelegatingModern/declined', [{ id: 'declined', n: 5 }], {
+			'if-match': '"1"',
+		});
+		assert.ok(arrayBody.status < 300, `${arrayBody.status} ${await bodyOf(arrayBody)}`);
+		assert.strictEqual((await Row.get('declined')).n, 5);
+	});
+
+	it('rejects table handlers that never consume the condition', async () => {
 		class Noop extends Row {
 			patch() {}
 		}
@@ -709,10 +901,9 @@ describe('REST preconditions with real table transactions', () => {
 				throw new Response('ok', { status: 200 });
 			}
 		}
-		resources.set('CustomStatic', CustomStatic, { rest: true });
 		resources.set('Noop', Noop, { rest: true });
 		resources.set('ThrownSuccess', ThrownSuccess, { rest: true });
-		assert.strictEqual((await request('PUT', '/CustomStatic/read', { n: 2 }, { 'if-match': '*' })).status, 501);
+		assert.strictEqual((await request('POST', '/Row/', { n: 2 }, { 'if-none-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/Noop/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/ThrownSuccess/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await Row.get('read')).n, 1);
@@ -1414,5 +1605,378 @@ describe('conditional write lock scope', () => {
 		);
 		assert.strictEqual(optedOut.status, 204, await bodyOf(optedOut));
 		assert.strictEqual((await Row.get('unavailable')).n, 2);
+	});
+});
+
+describe('conditional writes through a tracked record instance', () => {
+	let Tracked, resources, request;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Tracked = table({
+			database: 'test',
+			table: 'TrackedConditions',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n' },
+				{ name: 'm' },
+				{ name: 'name' },
+				{ name: 'legacy' },
+			],
+		});
+		resources = new Resources();
+		request = rest(resources);
+	});
+
+	const etagOf = (id) => versionToEtag(Tracked.primaryStore.getEntry(id).version);
+	const stored = (id) => ({ ...Tracked.primaryStore.getEntry(id).value });
+
+	it('applies tracked mutations followed by return this.save(), and rejects a stale condition without an unhandled rejection', async () => {
+		class SyncPatch extends Tracked {
+			patch(data) {
+				this.addTo('n', data.add);
+				this.subtractFrom('m', data.add);
+				this.name = data.name;
+				return this.save();
+			}
+		}
+		let lockSettled;
+		class DelayedSave extends Tracked {
+			async lock(...args) {
+				try {
+					return await super.lock(...args);
+				} finally {
+					lockSettled.resolve();
+				}
+			}
+			async patch(data) {
+				lockSettled = Promise.withResolvers();
+				this.addTo('n', data.add);
+				this.name = data.name;
+				if (!isLMDB) await lockSettled.promise;
+				await nextTurn();
+				return this.save();
+			}
+		}
+		class SyncReplace extends Tracked {
+			put(data) {
+				this.update({ name: data.name }, true);
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		resources.set('SyncPatch', SyncPatch, { rest: true });
+		resources.set('DelayedSave', DelayedSave, { rest: true });
+		resources.set('SyncReplace', SyncReplace, { rest: true });
+		const unhandled = [];
+		const onUnhandled = (reason) => {
+			if (reason?.statusCode === 412) unhandled.push(reason);
+		};
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			for (const [path, method, expected] of [
+				['SyncPatch', 'PATCH', { n: 15, m: 5, name: 'after', legacy: 'kept' }],
+				['DelayedSave', 'PATCH', { n: 15, m: 10, name: 'after', legacy: 'kept' }],
+				['SyncReplace', 'PUT', { n: 5, name: 'after' }],
+			]) {
+				const id = `sync-${path}`;
+				await Tracked.put(id, { n: 10, m: 10, name: 'before', legacy: 'kept' });
+				const original = stored(id);
+				const stale = await request(method, `/${path}/${id}`, { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
+				assert.strictEqual(stale.status, 412, await bodyOf(stale));
+				assert.deepStrictEqual(stored(id), original);
+				const matched = await request(method, `/${path}/${id}`, { add: 5, name: 'after' }, { 'if-match': etagOf(id) });
+				assert.strictEqual(matched.status, 204, await bodyOf(matched));
+				assert.deepStrictEqual(stored(id), { id, ...expected });
+			}
+			await delay(10);
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('keeps tracked mutations made while the precondition lock is pending and after it settles', async function () {
+		this.timeout(10_000);
+		const entered = Promise.withResolvers();
+		const lockSettled = Promise.withResolvers();
+		class AcrossLock extends Tracked {
+			async lock(...args) {
+				try {
+					return await super.lock(...args);
+				} finally {
+					lockSettled.resolve();
+				}
+			}
+			async patch(data) {
+				this.addTo('n', data.add);
+				this.name = data.name;
+				entered.resolve();
+				if (!isLMDB) await lockSettled.promise;
+				await nextTurn();
+				this.subtractFrom('m', data.add);
+				this.legacy = 'changed';
+				return this.save();
+			}
+		}
+		resources.set('AcrossLock', AcrossLock, { rest: true });
+		await Tracked.put('across', { n: 10, m: 10, name: 'before', legacy: 'kept' });
+		const etag = etagOf('across');
+		const held = isLMDB ? undefined : await Tracked.lock('across', { hold: true });
+		let pending;
+		try {
+			pending = request('PATCH', '/AcrossLock/across', { add: 5, name: 'after' }, { 'if-match': etag });
+			await entered.promise;
+			await nextTurn();
+		} finally {
+			await held?.unlock();
+		}
+		const response = await pending;
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(stored('across'), { id: 'across', n: 15, m: 5, name: 'after', legacy: 'changed' });
+	});
+
+	it('keeps a pending tracked write when the handler locks another record first', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(10_000);
+		const otherLocked = Promise.withResolvers();
+		class LocksOther extends Tracked {
+			async patch(data) {
+				this.addTo('n', data.add);
+				const other = await this.lock('lock-other-target');
+				other.addTo('n', 1);
+				otherLocked.resolve();
+				return this.save();
+			}
+		}
+		resources.set('LocksOther', LocksOther, { rest: true });
+		await Tracked.put('lock-other', { n: 10 });
+		await Tracked.put('lock-other-target', { n: 0 });
+		const etag = etagOf('lock-other');
+		const held = await Tracked.lock('lock-other', { hold: true });
+		let pending;
+		try {
+			pending = request('PATCH', '/LocksOther/lock-other', { add: 5 }, { 'if-match': etag });
+			await otherLocked.promise;
+		} finally {
+			await held.unlock();
+		}
+		const response = await pending;
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(stored('lock-other').n, 15);
+		assert.strictEqual(stored('lock-other-target').n, 1);
+	});
+
+	it('keeps a full replacement cleared when another update() follows it before the lock settles', async () => {
+		let observed;
+		class ReplaceThenUpdate extends Tracked {
+			async put(data) {
+				this.update({ name: data.name }, true);
+				await this.update({ m: 2 });
+				observed = this.legacy;
+				return this.save();
+			}
+		}
+		resources.set('ReplaceThenUpdate', ReplaceThenUpdate, { rest: true });
+		await Tracked.put('replace-update', { n: 1, name: 'before', legacy: 'old' });
+		const response = await request(
+			'PUT',
+			'/ReplaceThenUpdate/replace-update',
+			{ name: 'after' },
+			{ 'if-match': etagOf('replace-update') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(observed, undefined);
+		assert.deepStrictEqual(stored('replace-update'), { id: 'replace-update', name: 'after', m: 2 });
+	});
+
+	it('reads the stored record under the precondition lock through a record it never loaded', async () => {
+		let seen;
+		class Unloaded extends Tracked {
+			static loadAsInstance = false;
+			async patch(target, data) {
+				await this.update();
+				seen = this.name;
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		resources.set('Unloaded', Unloaded, { rest: true });
+		await Tracked.put('unloaded', { n: 10, name: 'before' });
+		const response = await request('PATCH', '/Unloaded/unloaded', { add: 5 }, { 'if-match': etagOf('unloaded') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(seen, 'before');
+		assert.deepStrictEqual(stored('unloaded'), { id: 'unloaded', n: 15, name: 'before' });
+	});
+
+	it('stages deferred writes in program order, before a write made after one of them settles', async () => {
+		class Sequenced extends Tracked {
+			async patch() {
+				const first = this.update(this.getId(), { n: 1 });
+				this.update(this.getId(), { name: 'second' });
+				this.update(this.getId(), { m: 3 });
+				await first;
+				this.update(this.getId(), { m: 4 });
+				return this.save();
+			}
+		}
+		resources.set('Sequenced', Sequenced, { rest: true });
+		await Tracked.put('sequenced', { n: 0, m: 0 });
+		const response = await request('PATCH', '/Sequenced/sequenced', {}, { 'if-match': etagOf('sequenced') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(stored('sequenced'), { id: 'sequenced', n: 1, name: 'second', m: 4 });
+	});
+
+	it('applies a conditional DELETE through a tracked handler', async () => {
+		let deleted;
+		class TrackedDelete extends Tracked {
+			async delete(target) {
+				deleted = await super.delete(target);
+			}
+		}
+		resources.set('TrackedDelete', TrackedDelete, { rest: true });
+		await Tracked.put('tracked-delete', { n: 1 });
+		const stale = await request('DELETE', '/TrackedDelete/tracked-delete', undefined, { 'if-match': '"stale"' });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		assert.strictEqual(stored('tracked-delete').n, 1);
+		const matched = await request('DELETE', '/TrackedDelete/tracked-delete', undefined, {
+			'if-match': etagOf('tracked-delete'),
+		});
+		assert.ok(matched.status >= 200 && matched.status < 300, await bodyOf(matched));
+		assert.strictEqual(deleted, true);
+		assert.strictEqual(await Tracked.get('tracked-delete'), null);
+	});
+
+	it('answers 501 without an unhandled rejection when the handler does not return save()', async () => {
+		class UnreturnedSave extends Tracked {
+			patch(data) {
+				this.update();
+				this.addTo('n', data.add);
+				this.save();
+			}
+		}
+		resources.set('UnreturnedSave', UnreturnedSave, { rest: true });
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			await Tracked.put('unreturned-save', { n: 10 });
+			const stale = await request('PATCH', '/UnreturnedSave/unreturned-save', { add: 5 }, { 'if-match': '"stale"' });
+			const matched = await request(
+				'PATCH',
+				'/UnreturnedSave/unreturned-save',
+				{ add: 5 },
+				{ 'if-match': etagOf('unreturned-save') }
+			);
+			// LMDB stages synchronously; the RocksDB lock defers the write past the response, which refuses it (#3229)
+			assert.deepStrictEqual([stale.status, matched.status], isLMDB ? [412, 204] : [501, 501]);
+			assert.strictEqual(stored('unreturned-save').n, isLMDB ? 15 : 10);
+			await delay(10);
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('keeps a full replacement on the instance and closes it on save()', async () => {
+		let observed, lateWrite;
+		class AwaitedReplace extends Tracked {
+			async put(data) {
+				await this.update({ name: data.name }, true);
+				observed = { legacy: this.legacy, n: this.n };
+				this.addTo('n', data.add);
+				await this.save();
+				try {
+					this.legacy = 'late';
+				} catch (error) {
+					lateWrite = error;
+				}
+			}
+		}
+		resources.set('AwaitedReplace', AwaitedReplace, { rest: true });
+		await Tracked.put('replace', { n: 100, m: 1, name: 'before', legacy: 'old' });
+		const stale = await request('PUT', '/AwaitedReplace/replace', { add: 5, name: 'stale' }, { 'if-match': '"stale"' });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		const response = await request(
+			'PUT',
+			'/AwaitedReplace/replace',
+			{ add: 5, name: 'after' },
+			{ 'if-match': etagOf('replace') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.deepStrictEqual(observed, { legacy: undefined, n: undefined });
+		assert.strictEqual(lateWrite?.statusCode, 409, 'the instance must be closed after save()');
+		assert.deepStrictEqual(stored('replace'), { id: 'replace', n: 5, name: 'after' });
+	});
+	it('keeps the policy of a record the handler locked itself while applying a conditional full replacement', async function () {
+		if (isLMDB) this.skip();
+		let observed;
+		class LockedReplace extends Tracked {
+			async put(data) {
+				await this.lock({ hold: true });
+				this.update({ name: data.name }, true);
+				observed = this.legacy;
+				this.addTo('n', data.add);
+				await this.save();
+				this.legacy = 'late';
+				await this.save();
+			}
+		}
+		resources.set('LockedReplace', LockedReplace, { rest: true });
+		await Tracked.put('locked', { n: 100, m: 1, name: 'before', legacy: 'old' });
+		const response = await request(
+			'PUT',
+			'/LockedReplace/locked',
+			{ add: 5, name: 'after' },
+			{ 'if-match': etagOf('locked') }
+		);
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(observed, undefined);
+		assert.deepStrictEqual(stored('locked'), { id: 'locked', n: 5, name: 'after', legacy: 'late' });
+		const held = await Tracked.lock('locked', { hold: true, timeout: 100 });
+		await held.unlock();
+	});
+
+	it('applies a tracked addTo once beside a plain write that lands before its commit, and through replayLogs', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(30000);
+		const Counter = table({
+			database: 'conditionalTrackedReplay',
+			table: 'Counter',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'm' }],
+		});
+		class TrackedCounter extends Counter {
+			patch(data) {
+				this.addTo('n', data.add);
+				return this.save();
+			}
+		}
+		const counters = new Resources();
+		counters.set('TrackedCounter', TrackedCounter, { rest: true });
+		await Counter.put('target', { n: 10, m: 0 });
+		const etag = versionToEtag(Counter.primaryStore.getEntry('target').version);
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const commit = Transaction.prototype.commit;
+		const targetDb = Counter.primaryStore.store.db;
+		let interposed = false;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db === targetDb && !interposed) {
+				interposed = true;
+				await Counter.patch('target', { m: 1 });
+			}
+			return commit.apply(this, args);
+		};
+		let response;
+		try {
+			response = await rest(counters)('PATCH', '/TrackedCounter/target', { add: 5 }, { 'if-match': etag });
+		} finally {
+			Transaction.prototype.commit = commit;
+		}
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.ok(interposed);
+		assert.deepStrictEqual({ ...Counter.primaryStore.getEntry('target').value }, { id: 'target', n: 15, m: 1 });
+		const { replayLogs } = require('#src/resources/replayLogs');
+		await replayLogs(Counter.primaryStore.rootStore, { Counter }, true);
+		assert.deepStrictEqual({ ...Counter.primaryStore.getEntry('target').value }, { id: 'target', n: 15, m: 1 });
 	});
 });

@@ -85,7 +85,9 @@ describe('Current-state subscription buffered mutations', () => {
 					if (current) {
 						assert.strictEqual(last.type, 'put');
 						assert.deepStrictEqual({ ...last.value }, { ...current });
-					} else assert.strictEqual(last.type, 'delete', 'deleted row must not remain at its scanned value');
+					} else {
+						assert.strictEqual(last.type, change, 'the row must not remain at its scanned value');
+					}
 				}
 			);
 		});

@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
+import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { ClientError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
 import { getAuditResumeFloor, getDatabaseGeneration } from './auditStore.ts';
+import { commitTrackedRocksTransaction } from './DatabaseTransaction.ts';
+import { RecordObject } from './RecordEncoder.ts';
 import { getNodeNameForId } from './nodeIdMapping.ts';
 import { getOriginClosedFloor, isValidFloor, originFloorsDurable } from './originClosedFloor.ts';
 
@@ -48,6 +51,7 @@ export function readOriginStateEpoch(rootStore: any): number {
 /** Above the 30 s certificate cadence plus the 5 s idle round, so a healthy cluster folds into one boundary. */
 export const MAX_OVERLAP_MS = 60_000;
 const MAX_ORIGINS = 1024;
+const MAX_REPLACED_GENERATIONS = 8;
 const MAX_EXCLUSIONS = 4;
 const MAX_COMBINATIONS = 100_000;
 const DIGEST_BYTES = 32;
@@ -58,7 +62,7 @@ export interface OriginState {
 	name: string;
 	/** The highest closed floor from a route whose stored prefix below it is complete and full-coverage. */
 	floor?: number;
-	/** The origin's database generation as certified; undefined from a level-1 route. */
+	/** The origin's database generation as certified; undefined from level-1 routes alone, or when unordered. */
 	generation?: string;
 	/** The origin key the route that certified `floor` has been floor-only from (`0`: the origin's first entry). */
 	certifiedFrom?: number;
@@ -101,24 +105,135 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 
 /**
  * The highest record version an audit-less base copy wrote here, per origin, over every copying peer's
- * `[copyBound, peerId]` row (`{ [localOriginId]: version }`, written only by that peer's copy). This node's log of
- * the origin lacks those rows, so no route certified from at or below the bound holds the origin complete. A
+ * `[copyBound, peerId, ...]` rows (`{ [localOriginId]: version }`, written only by `writeCopyBounds`). This node's
+ * log of the origin lacks those rows, so no route certified from at or below the bound holds the origin complete. A
  * malformed row throws: a bound read as absent would admit.
  */
 export function readCopyBounds(dbisDb: any): Map<number, number> {
 	const bounds = new Map<number, number>();
 	for (const { value } of dbisDb.getRange({ start: COPY_BOUND_KEY, end: [COPY_BOUND_KEY, Buffer.from([0xff])] })) {
-		const prototype = value && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined;
-		if (prototype !== Object.prototype && prototype !== null) throw unreadableCopyBound();
-		for (const key in value) {
-			const originId = Number(key);
-			const bound = value[key];
-			if (!(Number.isInteger(originId) && originId >= 0 && String(originId) === key)) throw unreadableCopyBound();
-			if (!(typeof bound === 'number' && Number.isFinite(bound) && bound >= 0)) throw unreadableCopyBound();
-			if (!(bounds.get(originId)! >= bound)) bounds.set(originId, bound);
-		}
+		mergeCopyBoundRow(bounds, value);
 	}
 	return bounds;
+}
+
+function isCopyBound(bound: unknown): bound is number {
+	return typeof bound === 'number' && Number.isFinite(bound) && bound >= 0;
+}
+
+function mergeCopyBoundRow(bounds: Map<number, number>, row: any): void {
+	// a range read decodes a plain object, a point read a record object
+	if (!(row instanceof RecordObject)) {
+		const prototype = row && typeof row === 'object' ? Object.getPrototypeOf(row) : undefined;
+		if (prototype !== Object.prototype && prototype !== null) throw unreadableCopyBound();
+	}
+	for (const key of Object.keys(row)) {
+		const originId = Number(key);
+		const bound = row[key];
+		if (!(Number.isInteger(originId) && originId >= 0 && String(originId) === key)) throw unreadableCopyBound();
+		if (!isCopyBound(bound)) throw unreadableCopyBound();
+		if (!(bounds.get(originId)! >= bound)) bounds.set(originId, bound);
+	}
+}
+
+export interface CopyBoundChange {
+	/** Max-merged into the row `[copyBound, peerId, ...at]`. */
+	raise?: ReadonlyMap<number, number>;
+	at?: (string | number)[];
+	/**
+	 * Rows `[copyBound, peerId, ...slot]` to remove. Every copied row they covered must already be covered by a row that
+	 * stays; their values need not be, since a reservation can over-approximate what its pass copied.
+	 */
+	release?: (string | number)[][];
+}
+
+/**
+ * Applies `change` to a copying peer's bound rows in one commit, under a cross-thread lock on the peer, then bumps the
+ * origin-state epoch, so every capture and admitted replay that read the rows before rechecks. The bump runs even when
+ * nothing changed: a retry then publishes a commit whose writer stopped before bumping. A database with no epoch is
+ * refused before anything is written. Resolves whether a row changed.
+ */
+export async function writeCopyBounds(
+	rootStore: any,
+	peerId: number,
+	{ raise, at = [], release = [] }: CopyBoundChange
+): Promise<boolean> {
+	const epoch = epochWord(rootStore);
+	if (!epoch) {
+		throw new Error(
+			'This database has no origin-state epoch, so a copy bound written to it could not void the checkpoints it covers'
+		);
+	}
+	if (!(Number.isInteger(peerId) && peerId >= 0)) throw new Error(`Invalid copy bound peer id: ${peerId}`);
+	if (
+		raise?.size &&
+		release.some((slot) => slot.length === at.length && slot.every((part, index) => part === at[index]))
+	) {
+		throw new Error('A copy bound change cannot raise and release the same row');
+	}
+	if (raise) {
+		for (const [originId, bound] of raise) {
+			if (!(Number.isInteger(originId) && originId >= 0 && isCopyBound(bound))) {
+				throw new Error(`Invalid copy bound for origin ${originId}: ${bound}`);
+			}
+		}
+	}
+	const dbisDb = rootStore.dbisDb;
+	const rowKey = [COPY_BOUND_KEY, peerId, ...at];
+	const plan = () => {
+		let row: { [originId: number]: number } | undefined;
+		if (raise && raise.size > 0) {
+			const merged = new Map<number, number>();
+			const existing = dbisDb.getSync(rowKey);
+			// rewriting a malformed row from what parses would turn admission's refusal into a lower bound
+			if (existing !== undefined) mergeCopyBoundRow(merged, existing);
+			let raised = false;
+			for (const [originId, bound] of raise) {
+				if (!(merged.get(originId)! >= bound)) {
+					merged.set(originId, bound);
+					raised = true;
+				}
+			}
+			if (raised) row = Object.fromEntries(merged);
+		}
+		const removals = release
+			.map((slot) => [COPY_BOUND_KEY, peerId, ...slot])
+			.filter((key) => dbisDb.getSync(key) !== undefined);
+		return { row, removals };
+	};
+	let changed = false;
+	if (rootStore instanceof RocksDatabase) {
+		await dbisDb.withLock([COPY_BOUND_KEY, peerId], async () => {
+			const { row, removals } = plan();
+			if (!row && removals.length === 0) return;
+			const transaction = new RocksTransaction(dbisDb.store);
+			try {
+				if (row) dbisDb.putSync(rowKey, row, { transaction });
+				for (const key of removals) dbisDb.removeSync(key, { transaction });
+				await commitTrackedRocksTransaction(transaction, dbisDb, rootStore);
+			} catch (error) {
+				// a staged or rejected transaction stays open and would pin a snapshot
+				try {
+					transaction.abort();
+				} catch {}
+				throw error;
+			}
+			changed = true;
+		});
+	} else {
+		// one started inside another write transaction commits with that one, or, inside an executing batch, after it
+		// while that batch waits on this
+		if (rootStore.env?.writeTxn)
+			throw new Error('A copy bound commits in a transaction of its own, never inside another');
+		changed = await rootStore.transactionAsync(() => {
+			const { row, removals } = plan();
+			if (row) dbisDb.putSync(rowKey, row);
+			for (const key of removals) dbisDb.removeSync(key);
+			return Boolean(row) || removals.length > 0;
+		});
+	}
+	Atomics.add(epoch, 0, 1);
+	return changed;
 }
 
 function unreadableCopyBound(): ResumeHistoryUnavailableError {
@@ -130,9 +245,7 @@ function unreadableCopyBound(): ResumeHistoryUnavailableError {
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
-	// each origin's row entries with the sequence id of the peer row holding them: a removed peer's row keeps
-	// an old one, a live route's keeps advancing, which is how two generations of one origin are ordered
-	const rows = new Map<number, { node: any; seqId: number }[]>();
+	const entries = new Map<number, { node: any; routeId: number }[]>();
 	const generation = getDatabaseGeneration(auditStore)?.id;
 	const own: OriginState = {
 		nodeId: 0,
@@ -161,67 +274,83 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 		!(node.certifiedFrom <= copyBounds.get(node.id)!);
 	for (const { key, value } of dbisDb.getRange({ start: SEQ_KEY, end: [SEQ_KEY, Buffer.from([0xff])] })) {
 		const nodes = value?.nodes;
-		if (!Array.isArray(nodes) || typeof key?.[1] !== 'number') continue;
-		const rowSeqId = typeof value.seqId === 'number' ? value.seqId : 0;
+		const routeId = key?.[1];
+		if (!Array.isArray(nodes) || typeof routeId !== 'number') continue;
 		for (const node of nodes) {
 			if (!node || typeof node.id !== 'number' || node.id === 0) continue;
-			let state = states.get(node.id);
-			if (!state) {
+			let originEntries = entries.get(node.id);
+			if (!originEntries) {
 				const name = getNodeNameForId(auditStore, node.id, true);
 				if (name === undefined) continue;
-				states.set(node.id, (state = { nodeId: node.id, name }));
-				rows.set(node.id, []);
+				states.set(node.id, { nodeId: node.id, name });
+				entries.set(node.id, (originEntries = []));
 			}
-			rows.get(node.id)!.push({ node, seqId: rowSeqId });
+			originEntries.push({ node, routeId });
+		}
+	}
+	for (const [nodeId, originEntries] of entries) {
+		const state = states.get(nodeId)!;
+		state.generation = currentGeneration(nodeId, originEntries);
+		if (state.generation === undefined) continue;
+		// only rows of the current generation speak for the origin, a route at level 1 since included
+		for (const { node } of originEntries) {
+			if ((node.originGeneration ?? node.lastGeneration) !== state.generation) continue;
+			if (node.floorRevoked === true) state.floorRevoked = true;
+			if (node.hole === true) state.hole = true;
 			if (!(state.floor >= node.closedFloor) && routeCertifies(node)) {
 				// the route that certified the floor is the one whose prefix below it is complete: another whole
 				// route's start says nothing about this one, since their coverage can be disjoint
 				state.floor = node.closedFloor;
-				state.generation = node.originGeneration;
 				state.certifiedFrom = node.certifiedFrom;
 				state.fullCoverage = true;
 			}
 		}
 	}
-	// qualifiers are sticky across rows of one origin generation. Generations are unordered ids, but every
-	// floor is a sample of the origin's own clock: the generation whose rows saw the highest floor (a revoked
-	// row keeps the floor it was revoked at) is the one the origin certified most recently, so a removed
-	// peer's retained row, frozen at its death, loses to a live route for a restored origin
-	for (const [nodeId, nodeRows] of rows) {
-		const state = states.get(nodeId)!;
-		const recency = new Map<string, number>();
-		for (const { node } of nodeRows) {
-			if (typeof node.originGeneration !== 'string') continue;
-			const seen = Math.max(
-				isValidFloor(node.closedFloor) ? node.closedFloor : 0,
-				isValidFloor(node.revokedFloor) ? node.revokedFloor : 0
-			);
-			if (!(recency.get(node.originGeneration) >= seen)) recency.set(node.originGeneration, seen);
-		}
-		let current: string | undefined;
-		for (const [generation, seen] of recency)
-			if (current === undefined || seen > recency.get(current)!) current = generation;
-		if (current !== undefined && state.generation !== current) {
-			state.floor = undefined;
-			state.certifiedFrom = undefined;
-			state.generation = current;
-			for (const { node } of nodeRows) {
-				if (node.originGeneration !== current) continue;
-				if (!(state.floor >= node.closedFloor) && routeCertifies(node)) {
-					state.floor = node.closedFloor;
-					state.certifiedFrom = node.certifiedFrom;
-					state.fullCoverage = true;
-				}
-			}
-		}
-		for (const { node } of nodeRows) {
-			// only rows of the current generation speak for the origin
-			if (node.originGeneration !== state.generation) continue;
-			if (node.floorRevoked === true) state.floorRevoked = true;
-			if (node.hole === true) state.hole = true;
-		}
-	}
 	return states;
+}
+
+/**
+ * The origin's generation its rows show current: the one its direct route last certified, when that route saw it
+ * replace every other generation the rows name, or else the only one they name; either way one a row certifies at
+ * level 2. A row at level 1 names the generation it last certified. A floor cannot order generations: floors sample the
+ * origin's clock, which a restore can set back. A relayed route is no witness either: a restored relay can forward a
+ * generation older than one it already forwarded. Undefined when nothing orders them, so the origin certifies nothing.
+ */
+function currentGeneration(nodeId: number, originEntries: { node: any; routeId: number }[]): string | undefined {
+	const named = new Set<string>();
+	const certified = new Set<string>();
+	let direct: any;
+	for (const { node, routeId } of originEntries) {
+		if (routeId === nodeId) direct = node;
+		const generation = node.originGeneration ?? node.lastGeneration;
+		if (typeof generation === 'string') named.add(generation);
+		if (typeof node.originGeneration === 'string') certified.add(node.originGeneration);
+	}
+	const latest = direct?.originGeneration ?? direct?.lastGeneration;
+	if (typeof latest !== 'string') {
+		const [only] = named;
+		return named.size === 1 && certified.has(only) ? only : undefined;
+	}
+	const replaced = Array.isArray(direct.replacedGenerations) ? direct.replacedGenerations : [];
+	if (!certified.has(latest)) return;
+	// the origin certified a generation it had already left: its history is not one line
+	if (replaced.includes(latest)) return;
+	for (const generation of named) if (generation !== latest && !replaced.includes(generation)) return;
+	return latest;
+}
+
+/**
+ * `replaced` appended to the generations the direct route saw its origin leave, keeping the newest
+ * `MAX_REPLACED_GENERATIONS`: a reversal to an older one than those goes unseen. A generation the origin returns to stays
+ * listed, never the one dropped, so a reversal reads as the contradiction it is.
+ */
+export function withReplacedGeneration(replacedGenerations: unknown, replaced: string, current: string): string[] {
+	const generations = Array.isArray(replacedGenerations)
+		? replacedGenerations.filter((generation) => typeof generation === 'string' && generation !== replaced)
+		: [];
+	generations.push(replaced);
+	while (generations.length > MAX_REPLACED_GENERATIONS) generations.splice(generations[0] === current ? 1 : 0, 1);
+	return generations;
 }
 
 function qualifies(state: OriginState): boolean {
@@ -450,6 +579,15 @@ export function admitCheckpoint(
 	const states = readOriginStates(auditStore, dbisDb);
 	if (typeof states.get(0)?.generation !== 'string') {
 		throw new ClientError('This database has no readable generation; resubscribe to resynchronize', 409);
+	}
+	// an origin with no generation is no membership candidate, so a token issued before it was known would match
+	// without accounting for it, and a copy can have written its rows with no log here to catch that
+	for (const state of states.values()) {
+		if (typeof state.generation !== 'string') {
+			throw new ResumeHistoryUnavailableError(
+				`Origin ${state.name} has no single certified generation here, so no checkpoint accounts for its history; resubscribe to resynchronize`
+			);
+		}
 	}
 	const candidates = new Map<string, string>();
 	const byName = new Map<string, OriginState>();

@@ -35,6 +35,7 @@ import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { enableCompileCache } from '../server/threads/compileCache.ts';
 
 let pmUtils;
 let cmdArgs;
@@ -237,6 +238,9 @@ async function main(calledByInstall = false) {
 			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
+		// after bin/harper.ts's earlier call: covers a fresh install, entries that call main() directly, and a rootPath
+		// that initialize() just moved
+		enableCompileCache(env.get(terms.CONFIG_PARAMS.ROOTPATH));
 
 		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
 
@@ -255,6 +259,11 @@ async function main(calledByInstall = false) {
 			process.env.DEV_MODE
 				? 1
 				: (env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdbTerms.CONFIG_PARAMS.THREADS))
+		);
+		// after main settled interrupted deploys and every pool worker reported what it loaded
+		import('../components/operations.ts').then(
+			({ retryPendingBranchRemovals }) => retryPendingBranchRemovals(),
+			(error) => hdbLogger.error(error)
 		);
 
 		if (!isScripted) started();

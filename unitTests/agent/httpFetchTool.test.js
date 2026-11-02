@@ -7,6 +7,7 @@ const {
 	buildHttpFetchTool,
 	checkHttpFetchTarget,
 	compileAllowList,
+	operationsApiPortsFrom,
 	resolveHttpFetchConfig,
 } = require('#src/agent/tools/httpFetchTool');
 const { waitFor } = require('../waitFor');
@@ -294,6 +295,39 @@ describe('agent/httpFetchTool request handling', () => {
 		await assert.rejects(call(buildHttpFetchTool(true), { url: `${allowedBase}/to?url=${target}` }), /metadata-host/);
 	});
 
+	it('refuses requests to configured operations API ports, including redirects', async () => {
+		const operationsApiPort = allowedServer.address().port;
+		const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7)] }, [operationsApiPort]);
+		await assert.rejects(
+			call(tool, { method: 'POST', body: '{"operation":"delete"}', url: `${allowedBase}/hello` }),
+			/operations API port/,
+			'http_fetch must block configured operations API ports'
+		);
+		assert.strictEqual(allowedHits, 0);
+
+		const redirectPort = secondAllowedServer.address().port;
+		const redirectTool = buildHttpFetchTool({ allow: [allowedBase.slice(7), secondAllowedBase.slice(7)] }, [
+			redirectPort,
+		]);
+		const target = encodeURIComponent(`${secondAllowedBase}/secret`);
+		await assert.rejects(call(redirectTool, { url: `${allowedBase}/to?url=${target}` }), /operations API port/);
+	});
+
+	it('refuses operations API ports given as environment-placeholder strings', async () => {
+		const operationsApiPort = String(allowedServer.address().port);
+		const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7)] }, operationsApiPortsFrom([operationsApiPort]));
+		await assert.rejects(call(tool, { url: `${allowedBase}/hello` }), /operations API port/);
+	});
+
+	it('refuses operations API ports given as host:port settings, without connecting', async () => {
+		const operationsApiPort = allowedServer.address().port;
+		for (const setting of [`127.0.0.1:${operationsApiPort}`, `localhost:${operationsApiPort}`]) {
+			const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7)] }, operationsApiPortsFrom([setting]));
+			await assert.rejects(call(tool, { url: `${allowedBase}/hello` }), /operations API port/, setting);
+		}
+		assert.strictEqual(allowedHits, 0);
+	});
+
 	it('follows an allowed redirect, resolving a relative Location', async () => {
 		const result = await call(restricted(), {
 			url: `${allowedBase}/to?status=301&url=${encodeURIComponent('/final')}`,
@@ -371,6 +405,25 @@ describe('agent/httpFetchTool request handling', () => {
 	it('applies one timeout across every hop', async () => {
 		const url = `${allowedBase}/to?url=${encodeURIComponent('/hang')}`;
 		await assert.rejects(call(restricted(), { url, timeoutMs: 300 }), /timed out after 300ms/);
+	});
+});
+
+describe('agent/httpFetchTool operationsApiPortsFrom', () => {
+	it('keeps numeric ports and numeric strings from environment placeholders', () => {
+		assert.deepStrictEqual(operationsApiPortsFrom([9926, '9927', ' 9928 ']), [9926, 9927, 9928]);
+	});
+
+	it('takes the port from host:port settings, as the listener does', () => {
+		assert.deepStrictEqual(operationsApiPortsFrom(['127.0.0.2:9925']), [9925]);
+		assert.deepStrictEqual(operationsApiPortsFrom(['[::1]:9925']), [9925]);
+		assert.deepStrictEqual(operationsApiPortsFrom(['localhost:9925', '127.0.0.1:9926']), [9925, 9926]);
+	});
+
+	it('drops values that are not a valid port', () => {
+		assert.deepStrictEqual(
+			operationsApiPortsFrom([undefined, null, '', 'abc', '9926abc', '0', '65536', '127.0.0.1:0', 1.5, true]),
+			[]
+		);
 	});
 });
 

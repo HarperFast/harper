@@ -16,6 +16,7 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import {
 	ERROR_CODES,
 	buildError,
@@ -92,6 +93,11 @@ export interface NormRequest {
 	 * (socket vs trusted header) happens in `resolveClientIdentity`.
 	 */
 	clientIp?: string;
+	/**
+	 * `protocol://host` the client used (application adapter only). Resource URIs
+	 * and the OpenAPI server URL are built from it.
+	 */
+	baseUrl?: string;
 }
 
 export interface NormResponse {
@@ -775,6 +781,7 @@ function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, me
 		profile: request.profile,
 		offset,
 		limit: DEFAULT_RESOURCE_PAGE_LIMIT,
+		baseUrl: request.baseUrl,
 	});
 	const body: { resources: unknown[]; nextCursor?: string } = { resources: result.resources };
 	if (result.nextCursor) body.nextCursor = result.nextCursor;
@@ -791,7 +798,7 @@ function dispatchResourceTemplatesList(
 	if (offset === INVALID_CURSOR) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
 	}
-	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset);
+	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset, undefined, request.baseUrl);
 	const result: { resourceTemplates: unknown[]; nextCursor?: string } = { resourceTemplates };
 	if (nextCursor) result.nextCursor = nextCursor;
 	return jsonResponse(200, buildSuccess(messageId, result));
@@ -849,11 +856,18 @@ async function dispatchPromptsGet(
 			profile: request.profile,
 			sessionId: session.id,
 		});
+		if (!Array.isArray(rendered?.messages)) {
+			harperLogger.warn(`MCP prompts/get ${name}: render must return { messages: [...] }, got ${typeName(rendered)}`);
+			return jsonResponse(
+				200,
+				buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'prompt render failed: expected { messages: [...] }')
+			);
+		}
 		return jsonResponse(
 			200,
 			buildSuccess(messageId, {
 				...(rendered.description ? { description: rendered.description } : {}),
-				messages: rendered.messages ?? [],
+				messages: rendered.messages,
 			})
 		);
 	} catch (err) {
@@ -861,6 +875,12 @@ async function dispatchPromptsGet(
 		harperLogger.warn(`MCP prompts/get ${name} threw: ${(err as Error).stack ?? errMsg}`);
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `prompt render failed: ${errMsg}`));
 	}
+}
+
+function typeName(value: unknown): string {
+	if (Array.isArray(value)) return 'an array';
+	if (value === null) return 'null';
+	return typeof value === 'object' ? `an object without a messages array` : typeof value;
 }
 
 function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
@@ -893,6 +913,7 @@ function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messa
 			// custom mcpResources templates complete from author-declared values,
 			// selected by the template the client is completing against (#1609)
 			refUri: typeof params?.ref?.uri === 'string' ? params.ref.uri : undefined,
+			baseUrl: request.baseUrl,
 		});
 	} else if (refType === 'ref/prompt') {
 		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;
@@ -928,7 +949,16 @@ async function dispatchResourcesSubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
 		);
 	}
-	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+	let ok: boolean;
+	try {
+		ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+	} catch (err) {
+		// Same permission-error mapping as resources/read.
+		if (err instanceof AccessViolation) {
+			return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `permission denied: ${uri}`));
+		}
+		throw err;
+	}
 	if (!ok) {
 		// Only row-backed application resources are subscribable; synthetic harper://*
 		// URIs (and unknown URIs) have no change source.
@@ -974,7 +1004,12 @@ async function dispatchResourcesRead(
 	if (!uri) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/read requires params.uri'));
 	}
-	const outcome = await readResource({ uri, user: effectiveUser(request), profile: request.profile });
+	const outcome = await readResource({
+		uri,
+		user: effectiveUser(request),
+		profile: request.profile,
+		baseUrl: request.baseUrl,
+	});
 	if (outcome.ok !== true) {
 		const fail = outcome as { ok: false; reason: string };
 		// Per MCP §server/resources, "resource not found" and access-control

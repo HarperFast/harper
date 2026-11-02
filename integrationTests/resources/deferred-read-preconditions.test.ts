@@ -19,10 +19,11 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 		await teardownHarper(ctx);
 	});
 
-	const request = (method: string, path: string, headers: Record<string, string> = {}) =>
+	const request = (method: string, path: string, headers: Record<string, string> = {}, body?: string) =>
 		fetch(`${base}/${path}`, {
 			method,
 			headers: { Authorization: auth, Accept: 'application/x-ndjson', ...headers },
+			body,
 			signal: AbortSignal.timeout(15_000),
 		});
 
@@ -67,5 +68,48 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 				}
 			}
 		}
+	});
+
+	test('answers Prefer: count and a delegated explain behind an async allowRead', async () => {
+		for (let i = 1; i <= 4; i++) {
+			const put = await request(
+				'PUT',
+				`CountedRow/row-${i}`,
+				{
+					'Content-Type': 'application/json',
+					'Accept': 'application/json',
+				},
+				JSON.stringify({ id: `row-${i}`, category: 'books' })
+			);
+			ok(put.status < 300, `seed row-${i}: ${put.status}`);
+			await put.text();
+		}
+		for (const accept of ['application/json', 'application/x-ndjson']) {
+			for (const method of ['GET', 'HEAD']) {
+				const label = `${method} ${accept}`;
+				const response = await request(method, 'AllowedItem/?category=books&limit(1,3)', {
+					Accept: accept,
+					Prefer: 'count=exact',
+				});
+				strictEqual(response.status, 200, label);
+				strictEqual(response.headers.get('content-range'), 'items 1-2/4', label);
+				strictEqual(response.headers.get('preference-applied'), 'count=exact', label);
+				const body = await response.text();
+				if (method === 'HEAD') strictEqual(body, '', label);
+				else {
+					const rows =
+						accept === 'application/json'
+							? JSON.parse(body)
+							: body
+									.trim()
+									.split('\n')
+									.map((line) => JSON.parse(line));
+					strictEqual(rows.map((row: { id: string }) => row.id).join(), 'row-2,row-3', label);
+				}
+			}
+		}
+		const plan = await request('GET', 'AllowedExplain/?category=books', { Accept: 'application/json' });
+		strictEqual(plan.status, 200);
+		ok(Array.isArray((await plan.json()).conditions), 'GET returns the query plan');
 	});
 });

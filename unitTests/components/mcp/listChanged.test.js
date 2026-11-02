@@ -8,6 +8,7 @@ const {
 } = require('#src/components/mcp/listChanged');
 const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const { localPrincipal } = require('#src/security/user');
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -216,6 +217,24 @@ describe('mcp/listChanged', () => {
 		await new Promise((r) => setTimeout(r, 20));
 		assert.equal(resolverCalled, false, 'scoped session must not trigger a by-name user resolve');
 		assert.equal(rec.user, scopedUser, 'record.user must remain the embedded scoped principal');
+	});
+
+	it('a local-principal session is never re-resolved by name', async () => {
+		const localUser = localPrincipal();
+		let resolverCalled = false;
+		_setUserResolverForTest(async () => {
+			resolverCalled = true;
+			return { username: 'local', role: { permission: {} } };
+		});
+
+		initListChanged();
+		const rec = registerSession('local-sid', 'operations', localUser);
+		seedSessionSnapshot('local-sid');
+
+		fakeItc._fireUser();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(resolverCalled, false, 'no record backs the local principal');
+		assert.equal(rec.user, localUser);
 	});
 
 	it('schema events also fan out (application profile)', async () => {

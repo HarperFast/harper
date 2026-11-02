@@ -26,6 +26,7 @@ import {
 	isValidFloor,
 	publishOriginFloor,
 	originFloorsDurable,
+	seedLocalIssuance,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
 
@@ -190,6 +191,14 @@ const AUDIT_RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
  * and read at open to bound every key issued afterwards. RocksDB only.
  */
 const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
+/**
+ * Above every local key the issuance ratchet handed out ahead of the clock (a record-lock claim, or
+ * keys behind a recovered floor). Written before such a key is used and read at open to seed issuance,
+ * so a restart before the clock passes them cannot issue them again. RocksDB only.
+ */
+const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
+// Amortize durability barriers across keys; restart seeds above this whole reserve.
+const ISSUANCE_CEILING_HEADROOM_MS = 1000;
 
 function isRocksStore(store: any): boolean {
 	return store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
@@ -234,7 +243,10 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
-	if (isRocksStore(auditStore)) publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
+	if (isRocksStore(auditStore)) {
+		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
+		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
+	}
 	endSubscriptionsFromEarlierHandles(auditStore, isRocksStore(auditStore));
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
@@ -988,6 +1000,43 @@ export function persistOriginClosedFloor(auditStore: any, floor: number): void {
 		},
 		'origin-closed floor'
 	);
+}
+
+export function readLocalIssuanceCeiling(auditStore: any): number {
+	const ceiling = decodeAuditFloor(auditStore.getBinary(LOCAL_ISSUANCE_CEILING_KEY));
+	return isValidFloor(ceiling) ? ceiling : 0;
+}
+
+let issuanceCeilingErrorLoggedAt = -Infinity;
+
+export function coverLocalIssuance(auditStore: any, key: number): number {
+	const ceiling = isValidFloor(key + ISSUANCE_CEILING_HEADROOM_MS) ? key + ISSUANCE_CEILING_HEADROOM_MS : key;
+	let stored = ceiling;
+	try {
+		commitAuditMetadata(
+			auditStore,
+			(read) => {
+				const existing = decodeAuditFloor(read(LOCAL_ISSUANCE_CEILING_KEY));
+				if (Number.isFinite(existing) && existing >= ceiling) {
+					stored = existing;
+					return undefined;
+				}
+				return [[LOCAL_ISSUANCE_CEILING_KEY, encodeAuditFloor(ceiling)]];
+			},
+			'local issuance ceiling'
+		);
+		// A WAL append alone can be lost after another node observes an issued key. An existing ceiling
+		// also needs this barrier: its writer may not have completed its flush yet.
+		(auditStore.rootStore ?? auditStore).flushSync({ allowWriteStall: true });
+		return stored;
+	} catch (error) {
+		const now = performance.now();
+		if (now - issuanceCeilingErrorLoggedAt >= 60_000) {
+			issuanceCeilingErrorLoggedAt = now;
+			warnContained('Error recording the local issuance ceiling', error);
+		}
+		throw error;
+	}
 }
 
 export interface DatabaseGeneration {

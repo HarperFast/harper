@@ -898,6 +898,14 @@ export function convertToMS(interval: any) {
 	return seconds * 1000;
 }
 
+/** Parse lock/config duration syntax without changing legacy convertToMS behavior. */
+export function parseDurationMs(interval: unknown): number {
+	if (typeof interval === 'number') return interval < 0 ? NaN : interval * 1000;
+	if (typeof interval !== 'string' || !/^\d+(?:\.\d+)?(?:ms|[smhd])?$/.test(interval)) return NaN;
+	if (interval.endsWith('ms')) return Number(interval.slice(0, -2));
+	return convertToMS(interval);
+}
+
 /**
  * Render a millisecond duration as a compact human-readable string, e.g. `1d 3h 8m 22s`. Drops only
  * the leading zero units (`5000` → `5s`, `90000` → `1m 30s`) and floors sub-second, negative, and

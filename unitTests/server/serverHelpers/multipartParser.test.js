@@ -8,7 +8,11 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
-const { parseMultipartRequest, releaseUnreadUpload } = require('#src/server/serverHelpers/multipartParser');
+const {
+	parseMultipartRequest,
+	releaseUnreadUpload,
+	UNREAD_UPLOAD_GRACE_MS,
+} = require('#src/server/serverHelpers/multipartParser');
 const { buildMultipartBody } = require('#src/bin/multipartBuilder');
 const { waitFor } = require('../../waitFor.js');
 
@@ -256,7 +260,7 @@ describe('multipartParser – an upload its response left unread', () => {
 		raw.complete = true;
 		await respond(request);
 		await waitFor(() => raw.readableEnded, 5000);
-		await sleep(1200);
+		await sleep(UNREAD_UPLOAD_GRACE_MS + 200);
 		assert.strictEqual(raw.destroyed && !raw.readableEnded, false, 'a body that arrived is never cut off');
 	});
 
@@ -271,7 +275,7 @@ describe('multipartParser – an upload its response left unread', () => {
 		await respond(request);
 		// Every byte has arrived, though the stream has not ended: the connection may already carry another request.
 		raw.complete = true;
-		await sleep(1200);
+		await sleep(UNREAD_UPLOAD_GRACE_MS + 200);
 		assert.strictEqual(raw.destroyed, false);
 	});
 
@@ -347,7 +351,7 @@ describe('multipartParser – an upload its response left unread', () => {
 		);
 		assert.strictEqual((await collect(payload)).toString(), 'file-bytes');
 		await respond(request);
-		await sleep(1200);
+		await sleep(UNREAD_UPLOAD_GRACE_MS + 200);
 		assert.strictEqual(raw.destroyed, false, 'a request whose part was read is not cut off');
 		raw.end();
 		await waitFor(() => raw.readableEnded, 5000);

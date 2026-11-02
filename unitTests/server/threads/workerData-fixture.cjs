@@ -12,4 +12,5 @@ parentPort.postMessage({
 	testNonCloneable: workerData.testNonCloneable,
 	name: workerData.name,
 	hasTicketKeys: Boolean(workerData.ticketKeys),
+	monotonicClock: workerData.monotonicClock,
 });

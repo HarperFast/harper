@@ -12,6 +12,9 @@ export {
 	assertActiveSuperUserRemains,
 	dropUser,
 	getSuperUser,
+	localPrincipal,
+	isLocalPrincipal,
+	LOCAL_USERNAME,
 	userInfo,
 	listUsers,
 	listUsersExternal,
@@ -145,6 +148,7 @@ async function addUser(user: User | any): Promise<string> {
 	let cleanUser = validate.cleanAttributes(user, USER_ATTRIBUTE_ALLOWLIST);
 	let validationResp = validation.addUserValidation(cleanUser);
 	if (validationResp) throw new ClientError(validationResp.message);
+	if (cleanUser.username === LOCAL_USERNAME) throw new ClientError(HDB_ERROR_MSGS.RESERVED_USERNAME(LOCAL_USERNAME));
 
 	let searchRole = await search.searchByValue({
 		schema: 'system',
@@ -278,6 +282,7 @@ async function userInfo(body): Promise<string | User> {
 		return 'There was no user info in the body';
 	}
 
+	if (isLocalPrincipal(body.hdb_user)) return { username: LOCAL_USERNAME, active: true, role: LOCAL_ROLE_RECORD };
 	let user = cloneDeep(body.hdb_user);
 	let roleData =
 		user.role &&
@@ -537,6 +542,43 @@ function userView(username: string, entries: UserEntries): User {
 	return user;
 }
 
+const LOCAL_USERNAME = 'local';
+// a default install's super_user role, which applications authorize on by `role.id`
+const LOCAL_ROLE_RECORD = deepFreeze({
+	role: 'super_user',
+	id: 'super_user',
+	permission: { super_user: true },
+	__createdtime__: 0,
+	__updatedtime__: 0,
+} as UserRole);
+let localRole: UserRole | undefined;
+
+/** The principal of a request trusted by its transport; security/DESIGN.md has its rules. */
+function localPrincipal(): User {
+	if (!localRole) {
+		localRole = withSystemTablePermissions(LOCAL_ROLE_RECORD);
+		deepFreeze(localRole.permission.system);
+	}
+	return {
+		username: LOCAL_USERNAME,
+		active: true,
+		_localPrincipal: true,
+		role: { ...localRole, permission: { ...localRole.permission } },
+	};
+}
+
+// a string marker, not a symbol: the Bun/uWS fallback and the MQTT will row carry the principal as data
+function isLocalPrincipal(user: any): boolean {
+	return user?._localPrincipal === true && user.username === LOCAL_USERNAME;
+}
+
+function deepFreeze<T>(value: T): T {
+	if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+	Object.freeze(value);
+	for (const key of Object.keys(value)) deepFreeze(value[key]);
+	return value;
+}
+
 function getUserWithRole(username: string): User | undefined {
 	const entries = readUserEntries(username);
 	return entries.user && userView(username, entries);
@@ -637,19 +679,9 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	return user;
 }
 
-let superUsername: string | undefined;
-
 async function getSuperUser(): Promise<User | undefined> {
-	if (superUsername !== undefined) {
-		const user = getUserWithRole(superUsername);
-		if (user?.role?.role === 'super_user') return user;
-	}
-	superUsername = undefined;
 	for (const [username, user] of (await listUsers()) ?? []) {
-		if (user.role?.role === 'super_user') {
-			superUsername = username;
-			return getUserWithRole(username);
-		}
+		if (user.active === true && user.role?.permission?.super_user === true) return getUserWithRole(username);
 	}
 }
 

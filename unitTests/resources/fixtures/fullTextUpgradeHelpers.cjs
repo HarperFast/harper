@@ -3,11 +3,11 @@
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 
-function previousFullTextProcess(mode, options, documents, payload) {
+function previousFullTextProcess(mode, options, documents, payload, version = '0.5.0') {
 	try {
 		return JSON.parse(
 			execFileSync(process.execPath, [path.join(__dirname, 'fullTextUpgradeProcess.cjs')], {
-				input: JSON.stringify({ mode, options, documents, payload }),
+				input: JSON.stringify({ mode, options, documents, payload, version }),
 				encoding: 'utf8',
 				timeout: 15_000,
 				maxBuffer: 1024 * 1024,

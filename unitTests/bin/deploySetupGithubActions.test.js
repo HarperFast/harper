@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const {
 	buildWorkflowRef,
 	canonicalWorkflowPath,
+	checkPreviewWorkflowFile,
 	checkWorkflowFile,
 	deriveCiNames,
 	planReconcile,
@@ -21,6 +22,7 @@ const {
 	GITHUB_ACTIONS_ISSUER,
 } = require('#src/bin/deploySetupGithubActions');
 const { buildRequest } = require('#src/bin/cliOperations');
+const { starterPreviewWorkflow } = require('#src/bin/previewSetup');
 
 const desired = () => ({
 	role: { role: 'web-ci-deploy', permission: { super_user: false, operations: [...CI_DEPLOY_OPERATIONS] } },
@@ -263,6 +265,158 @@ jobs:
 
 		it('reports a file it cannot parse', () => {
 			assert.match(checkWorkflowFile('on: [', 'main', 'production').problems[0], /not valid YAML/);
+		});
+	});
+
+	describe('checkPreviewWorkflowFile', () => {
+		const starter = starterPreviewWorkflow({ app: 'shop', branch: 'main' });
+		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
+		const sameRepository = ' && github.event.pull_request.head.repo.full_name == github.repository';
+		const deployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
+		const withDeployStep = (step) =>
+			starter.replace(
+				'      - run: npm install --global harper@^5.4\n',
+				`${step}      - run: npm install --global harper@^5.4\n`
+			);
+		const problemsOf = (content, branch) => check(content, branch).problems.join('\n');
+
+		it('accepts the starter workflow setup writes', () => {
+			assert.deepStrictEqual(check(starter), { problems: [], unverified: [], unsafe: [] });
+		});
+
+		it('refuses a workflow with no pull_request_target trigger', () => {
+			assert.match(
+				problemsOf(starter.replace('pull_request_target:', 'pull_request:')),
+				/no pull_request_target trigger/
+			);
+			assert.match(problemsOf('on: push\njobs: {}\n'), /no pull_request_target trigger/);
+		});
+
+		it('refuses a branch filter that leaves out the default branch, and cannot read a pattern', () => {
+			assert.match(problemsOf(starter, 'trunk'), /pull requests into main, not "trunk"/);
+			assert.deepStrictEqual(check(starter.replace('branches: ["main"]', "branches: ['release/**']")).unverified, [
+				'that release/** matches "main"',
+			]);
+		});
+
+		it('refuses a job in the environment that would run for fork pull requests', () => {
+			assert.match(
+				problemsOf(starter.replace(deployIf, "    if: github.event.action != 'closed'\n")),
+				/job "deploy" runs for pull requests from forks/
+			);
+			assert.match(problemsOf(starter.replace(deployIf, '')), /job "deploy" runs for pull requests from forks/);
+		});
+
+		it('takes neither head.repo.fork nor a test inside an || as excluding forks', () => {
+			const forkFalse = starter.replace(deployIf, '    if: ${{ !github.event.pull_request.head.repo.fork }}\n');
+			assert.deepStrictEqual(check(forkFalse).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const either = starter.replace(
+				deployIf,
+				`    if: github.event.action == 'opened' ||${sameRepository.slice(3)}\n`
+			);
+			assert.deepStrictEqual(check(either).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const needs = starter.replace(deployIf, '    needs: [gate]\n');
+			assert.deepStrictEqual(check(needs).unsafe, ['that job "deploy" excludes fork pull requests']);
+		});
+
+		it('follows needs into a job that excludes forks, unless the job runs past it being skipped', () => {
+			const gate = `  gate:\n${deployIf}    runs-on: ubuntu-latest\n`;
+			const gated = starter.replace(deployIf, '    needs: [gate]\n').replace('jobs:\n', `jobs:\n${gate}`);
+			assert.deepStrictEqual(check(gated), { problems: [], unverified: [], unsafe: [] });
+			const always = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: always()\n');
+			assert.deepStrictEqual(check(always).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const labeled = gated.replace(
+				'    needs: [gate]\n',
+				"    needs: [gate]\n    if: success() || github.event.action == 'labeled'\n"
+			);
+			assert.deepStrictEqual(check(labeled).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const capitalized = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: Always()\n');
+			assert.deepStrictEqual(check(capitalized).unsafe, ['that job "deploy" excludes fork pull requests']);
+		});
+
+		it('cannot read a condition that names the head repository without plainly admitting only it', () => {
+			for (const condition of [
+				'${{ !(github.event.pull_request.head.repo.full_name == github.repository) }}',
+				'(github.event.pull_request.head.repo.full_name == github.repository) == false',
+				'${{ !!github.event.pull_request.head.repo.fork }}',
+			]) {
+				const negated = starter.replace(deployIf, `    if: ${condition}\n`);
+				assert.deepStrictEqual(check(negated), {
+					problems: [],
+					unverified: [],
+					unsafe: ['that job "deploy" excludes fork pull requests'],
+				});
+			}
+		});
+
+		it('checks every job that holds the identity token, whatever its environment', () => {
+			const expression = starter.replace('    environment: preview-cleanup\n', '    environment: ${{ inputs.env }}\n');
+			const unguarded = expression.replace(
+				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				''
+			);
+			assert.match(problemsOf(unguarded), /job "cleanup" runs for pull requests from forks/);
+		});
+
+		it('refuses a workflow in which no job in the environment may request an identity token', () => {
+			const noToken = starter.replace(
+				'      id-token: write\n      pull-requests: read\n',
+				'      pull-requests: read\n'
+			);
+			assert.match(problemsOf(noToken), /no job in the "preview" environment has `permissions: id-token: write`/);
+			const cleanupNoToken = starter.replace(
+				'      id-token: write\n      pull-requests: read\n    env:',
+				'      pull-requests: read\n    env:'
+			);
+			assert.match(problemsOf(cleanupNoToken), /job "cleanup" runs in "preview-cleanup" without/);
+		});
+
+		it("refuses a job holding the identity token that checks out the pull request's head", () => {
+			for (const ref of ['${{ github.event.pull_request.head.sha }}', '${{ github.head_ref }}', 'refs/pull/7/merge']) {
+				const checkout = withDeployStep(`      - uses: actions/checkout@v5\n        with:\n          ref: ${ref}\n`);
+				assert.match(
+					problemsOf(checkout),
+					/job "deploy" holds an identity token and checks out the pull request's head/,
+					ref
+				);
+			}
+			const fork = withDeployStep(
+				'      - uses: actions/checkout@v5\n        with:\n          repository: ${{ github.event.pull_request.head.repo.full_name }}\n'
+			);
+			assert.match(problemsOf(fork), /checks out the pull request's head \(repository/);
+			for (const run of ['gh pr checkout "$PR"', 'git fetch origin pull/$PR/head && git checkout FETCH_HEAD']) {
+				assert.match(
+					problemsOf(withDeployStep(`      - run: ${run}\n`)),
+					/a step checks out the pull request's head/,
+					run
+				);
+			}
+		});
+
+		it("accepts a checkout of the workflow's own branch, and cannot read a ref given as an expression", () => {
+			assert.deepStrictEqual(check(withDeployStep('      - uses: actions/checkout@v5\n')).problems, []);
+			const expression = withDeployStep(
+				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ inputs.ref }}\n'
+			);
+			assert.deepStrictEqual(check(expression).unsafe, [
+				'that job "deploy"\'s checkout ref (${{ inputs.ref }}) is not the pull request\'s head',
+			]);
+		});
+
+		it('writes the options it is given into the deploy, and still passes', () => {
+			const shaped = starterPreviewWorkflow({
+				app: 'shop',
+				branch: 'trunk',
+				domain: 'previews.example.com',
+				credential: true,
+				shared: true,
+			});
+			assert.match(
+				shaped,
+				/harper preview deploy app=shop pr="\$PR" branch="\$BRANCH" by_ref=true ref="\$SHA" domain=previews\.example\.com credential=true branchedDatabases=false/
+			);
+			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });
+			assert.match(shaped, /if \[ "\$\{after%% \*\}" = closed \]; then harper preview drop app=shop/);
 		});
 	});
 

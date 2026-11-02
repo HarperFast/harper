@@ -37,7 +37,7 @@ npm run test:unit:windows          # The Windows CI gate — a scoped slice, see
 npm run test:integration           # Full integration test suite
 ```
 
-**Resources:** CI runs this suite as three shard jobs — `test:unit:resources:core:a-q`, `test:unit:resources:core:r-z` and `test:unit:resources:indexes` — so each step budget stays spendable as the suite grows, and so a wedged run is reported in minutes (harper#2660). `:indexes` is the `*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js` files; `:core:a-q` is the files whose name starts with `a`–`q` (either case) with that pattern excluded, and `:core:r-z` is every other file with both patterns excluded, so the three are an exact partition and a newly added file lands in exactly one of them. `:core` is the union of the two `:core:*` halves, kept for local runs. `test:unit:resources` is untouched — still one mocha process over the whole suite — so `test:unit:all`, `test:unit:lmdb` and a local full run behave exactly as before. `npm run check:unit-partition` (in the lint job) resolves each script's files with mocha's own collection and fails unless the three shards partition `test:unit:resources` exactly, compiled and type-strip alike; without it a file the globs stopped covering would get LMDB execution but, `vectorIndexPlane.test.js` and `blob.test.js` aside, no default-engine (RocksDB) execution. To reproduce a red CI shard locally, run that shard's script.
+**Resources:** CI runs this suite as three shard jobs — `test:unit:resources:core:a-n`, `test:unit:resources:core:o-z` and `test:unit:resources:indexes` — so each step budget stays spendable as the suite grows, and so a wedged run is reported in minutes (harper#2660). `:indexes` is the `*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js` files; `:core:a-n` is the files whose name starts with `a`–`n` (either case) with that pattern excluded, and `:core:o-z` is every other file with both patterns excluded, so the three are an exact partition and a newly added file lands in exactly one of them. `:core` is the union of the two `:core:*` halves, kept for local runs. `test:unit:resources` is untouched — still one mocha process over the whole suite — so `test:unit:all`, `test:unit:lmdb` and a local full run behave exactly as before. `npm run check:unit-partition` (in the lint job) resolves each script's files with mocha's own collection and fails unless the three shards partition `test:unit:resources` exactly, compiled and type-strip alike; without it a file the globs stopped covering would get LMDB execution but, `vectorIndexPlane.test.js` and `blob.test.js` aside, no default-engine (RocksDB) execution. To reproduce a red CI shard locally, run that shard's script.
 
 **Windows:** `test:unit:windows` is what the `unit-test-windows` CI job runs, and it covers only the part of the unit tree verified green on Windows. If you touch platform-specific code, run it — the Ubuntu jobs will not catch a Windows-only break. `unitTests/windowsGate.mjs` holds the scope and the list of suites still excluded, each with the reason; shrinking that list is welcome work. The gate runs one mocha process per directory and fails any group that exits without printing a summary line — keep both. A mocha run can stop advancing with nothing failed (`timeout: 0` in `.mocharc.json` means no test ever times out), in which case the event loop drains and the process exits 0 having printed no epilogue; that reads as a pass to every runner. `unitTests/mocha.init.js` fails such a run from the inside, and the gate's summary check backstops a process that never gets that far.
 
@@ -84,7 +84,7 @@ The universal abstraction. Everything that can be queried or mutated — databas
 
 Static methods (`Resource.get`, `Resource.put`, `Resource.post`, `Resource.delete`, `Resource.patch`, `Resource.subscribe`) are the protocol entry points: the REST layer dispatches to the _class_ (`server/REST.ts`, inside a request-level `transaction()`), and the base implementations are `transactional()` wrappers that resolve an instance and delegate to the matching instance method. **New `Resource` subclasses here override instance methods** and leave the statics generic. Overriding a static entry point is a deliberate act that takes over the whole wrapper contract — including `data` resolution and the `allow*` gate — see `resources/DESIGN.md` → Conventions for the two obligations it saddles you with. Note this is _core's_ convention: the public [Harper best-practice skills](https://github.com/HarperFast/skills) tell **application** authors to implement REST verbs as statics on their own component resources; choose based on the situation.
 
-`Table.ts` is the database table implementation (4744 lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Use `resources/DESIGN.md` as a section index instead of reading top-to-bottom.**
+`Table.ts` is the database table implementation (over ten thousand lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Use `resources/DESIGN.md` as a section index instead of reading top-to-bottom.**
 
 **Data Layer** (`dataLayer/`)  
 Legacy translation modules plus SQL translation (`sqlTranslator/`) via AlaSQL; these should be avoided. The storage engine is selectable via `HARPER_STORAGE_ENGINE=lmdb`.
@@ -141,7 +141,15 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ## Detailed navigation
 
-For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
+Find code by symbol instead of reading files top-to-bottom:
+
+- **Symbols:** `npm run outline -- <file|dir>` prints a file's nested declarations (classes, functions, methods, and the declarations inside factories such as `makeTable()`) and its `// #section:` markers, with line ranges; `npm run outline -- resources/Table.ts` takes under a second. In Claude sessions the LSP tool's document and workspace symbol lookups do the same.
+- **Concepts:** a directory's `MAP.md` points each file and each question a reader brings at the symbols that answer it. Claude Code loads it through that directory's `CLAUDE.md`; Codex and Gemini do not, so read the directory's map from the list below before its source.
+- **Invariants:** the directory's `DESIGN.md`, indexed from [DESIGN.md](DESIGN.md): why the code is the way it is, kept within the byte budgets that file sets.
+
+Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked here): none yet.
+
+For megafiles and complex subsystems, the design notes to read first:
 
 | If you are touching…                                   | Read first                                                 |
 | ------------------------------------------------------ | ---------------------------------------------------------- |

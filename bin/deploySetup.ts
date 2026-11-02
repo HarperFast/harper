@@ -166,39 +166,10 @@ export async function resolveSetupComponent(req: any, message: string, allowPatt
 	return component;
 }
 
-export async function deploySetup(req: any): Promise<void> {
-	// Every operation this flow issues rides the caller's connection context — the target, the
-	// explicitly passed credentials, the TLS strictness — so the seal is stored on the instance the
-	// user is talking to, as the identity they authenticated as. Only those fields carry over; the
-	// deploy args that brought us here (`setup`, `token`, `package`) never reach either body.
-	const transport = transportContext(req);
-
-	const provider: string =
-		req.provider ??
-		(await prompts.select({
-			message: 'What do you want to set up?',
-			choices: [
-				{ name: 'GitHub repository (private git clone)', value: 'github' },
-				{ name: 'npm registry (private packages / dependencies)', value: 'npm' },
-				{ name: 'GitHub Actions deploys (OIDC, no stored credential)', value: 'github-actions' },
-			],
-		}));
-
-	if (provider !== 'github' && provider !== 'npm' && provider !== 'github-actions') {
-		throw cliError(
-			`Unsupported provider "${provider}" — supported providers are "github", "npm" and "github-actions".`
-		);
-	}
-
-	// Authenticates CI with an identity token instead of storing one, so it needs no secret custody.
-	if (provider === 'github-actions') {
-		const component = await resolveSetupComponent(req, 'Component (project) name the workflow deploys:');
-		return setupGithubActions(req, transport, component);
-	}
-
-	// 1. Fetch the cluster's public secrets key. Not wrapped in a try/catch: `cliOperations` reports
-	// the failure and exits rather than throwing, so a catch here would be dead code promising a
-	// friendlier message that never runs.
+/** The cluster's public secrets key, which only Pro and Fabric provision. */
+export async function fetchSecretsPublicKey(transport: any): Promise<{ publicKey: string; fingerprint: string }> {
+	// Not wrapped in a try/catch: `cliOperations` reports the failure and exits rather than throwing, so
+	// a catch here would be dead code promising a friendlier message that never runs.
 	const keyResponse: any = await cliOperations({ ...transport, operation: 'get_secrets_public_key' }, true);
 	const publicKey: string | undefined = keyResponse?.public_key;
 	const fingerprint: string | undefined = keyResponse?.fingerprint;
@@ -208,14 +179,20 @@ export async function deploySetup(req: any): Promise<void> {
 				'(available on Harper Pro / Fabric). Without it, a credential cannot be sealed client-side.'
 		);
 	}
+	return { publicKey, fingerprint };
+}
 
-	// 2. Which component is the credential for? (the grant is scoped to it)
-	const component = await resolveSetupComponent(
-		req,
-		'Component (project) name, or a name prefix ending in *, this credential is for:',
-		true
-	);
-
+/**
+ * Sources a token for `provider` (asking for it unless `req.token` carries one), seals it with `key` and stores it as
+ * the secret a deploy of `component` derives, granted to `component` — a name, or a pattern ending in `*`.
+ */
+export async function sealDeployCredential(
+	req: any,
+	transport: any,
+	provider: 'github' | 'npm',
+	component: string,
+	{ publicKey, fingerprint }: { publicKey: string; fingerprint: string }
+): Promise<{ secretName: string; grants: string[]; credentialKey: string; credentialEntry: Record<string, string> }> {
 	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
 	let credentialEntry: Record<string, string>;
 	let token: string | undefined = req.token;
@@ -292,9 +269,57 @@ export async function deploySetup(req: any): Promise<void> {
 			? deriveGitSecretName(component, credentialKey)
 			: deriveRegistrySecretName(component, credentialKey);
 	const grants = await storeSealedSecret(transport, secretName, envelope, component);
+	credentialEntry.secret = secretName;
+	return { secretName, grants, credentialKey, credentialEntry };
+}
+
+export async function deploySetup(req: any): Promise<void> {
+	// Every operation this flow issues rides the caller's connection context — the target, the
+	// explicitly passed credentials, the TLS strictness — so the seal is stored on the instance the
+	// user is talking to, as the identity they authenticated as. Only those fields carry over; the
+	// deploy args that brought us here (`setup`, `token`, `package`) never reach either body.
+	const transport = transportContext(req);
+
+	const provider: string =
+		req.provider ??
+		(await prompts.select({
+			message: 'What do you want to set up?',
+			choices: [
+				{ name: 'GitHub repository (private git clone)', value: 'github' },
+				{ name: 'npm registry (private packages / dependencies)', value: 'npm' },
+				{ name: 'GitHub Actions deploys (OIDC, no stored credential)', value: 'github-actions' },
+			],
+		}));
+
+	if (provider !== 'github' && provider !== 'npm' && provider !== 'github-actions') {
+		throw cliError(
+			`Unsupported provider "${provider}" — supported providers are "github", "npm" and "github-actions".`
+		);
+	}
+
+	// Authenticates CI with an identity token instead of storing one, so it needs no secret custody.
+	if (provider === 'github-actions') {
+		const component = await resolveSetupComponent(req, 'Component (project) name the workflow deploys:');
+		return setupGithubActions(req, transport, component);
+	}
+
+	const key = await fetchSecretsPublicKey(transport);
+
+	// 2. Which component is the credential for? (the grant is scoped to it)
+	const component = await resolveSetupComponent(
+		req,
+		'Component (project) name, or a name prefix ending in *, this credential is for:',
+		true
+	);
+	const { secretName, grants, credentialKey, credentialEntry } = await sealDeployCredential(
+		req,
+		transport,
+		provider,
+		component,
+		key
+	);
 
 	// 5. Print the credentials reference the deploy should use.
-	credentialEntry.secret = secretName;
 	console.log(chalk.green(`\n✓ Sealed "${credentialKey}" credential and stored it as secret "${secretName}".`));
 	console.log(chalk.gray("  It was encrypted here with the cluster's public key — only ciphertext was sent."));
 	const grantSummary =

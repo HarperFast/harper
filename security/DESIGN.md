@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, like `create_authentication_tokens` against a password, with the same three wiring points (`server/serverHelpers/serverHandlers.ts` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
 
 **The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
@@ -60,7 +60,8 @@ a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`
 `registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
 `list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
 principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
-`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A
+`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`** (and
+`isLocalPrincipal`, below). A
 user _created after minting_ with a colliding name is therefore inert at every current site; the
 residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
 
@@ -92,8 +93,7 @@ name or a per-request timestamp — two different permission sets would alias on
 same-millisecond `Date.now()` was enough), leaking one principal's translated permissions to
 another. `syntheticRoleName()` derives the name from a hash of the post-downgrade permission
 content with `__updatedtime__: 0`, so identical sets share a slot and distinct sets can't collide;
-`applyImpersonation` re-keys all three impersonation modes the same way (Mode B/C previously wrote
-downgraded copies under the _persisted_ role's name). Synthetic translations live in a separate
+`applyImpersonation` re-keys all three impersonation modes the same way. Synthetic translations live in a separate
 256-entry LRU (`syntheticRolePermsMap`), not the permanent `rolePermsMap` — so >256 concurrently
 live distinct permission sets degrade to per-request translation (a deliberate cliff; raise the
 constant if a legitimate workload hits it). The `_` name prefix is the discriminator; a persisted
@@ -134,6 +134,8 @@ debounce. `loadAndWatch` latches its cert/key fingerprint before the callback fo
 the latch back on a false result, synchronous throw, or rejected callback promise (equality-guarded so a stale
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
+**A pass reads the certificate table as the system (harper-pro#1189).** `initialize()` can first run inside a request (harper-pro opens a replication connection from a non-owner read), so `updateTLS` re-enters itself under `contextStorage.exit()` (`run(undefined, …)` on every runtime; the async_hooks storage's native `exit()`, Node 22's default, leaks the request back after a nested `run()`, see `resources/DESIGN.md`). Inside the request, its static `hdb_certificate` calls would run that request's authorization (an anonymous one is denied) and consume its one-shot `authorize`, and the selector's timers and subscription would keep the request's context. A pass that fails before `.ready` settles still rejects it, but the attempt is not abandoned: a live selector's attempt keeps its subscription and retries on the failure backoff, because a listener calls `initialize()` once and depends on the selector recovering by itself; on recovery `.ready` is replaced with the resolved state. A later `initialize()` replaces a still-failing attempt (timers cleared, subscription ended) with a fresh one, and a one-shot selector's attempt is retired at once. `.ready` keeps the rejected promise until one of those: the Bun listener path reads it directly and would take `undefined` for "no TLS". Enforced by the `createTLSSelector initialized by a request` cases in `unitTests/security/keys.test.js`.
 
 ## Self-signed renewal replaces the pair in one transaction (`security/keys.ts`)
 
@@ -194,6 +196,29 @@ then throws `SES_NO_SLOPPY`. Lockdown and the compartment share that one SES ins
 `pure-ESM package resolution` blocks in `unitTests/security/jsLoader/jsLoader.test.js` (both modes) and
 `integrationTests/components/compartment-pure-esm-dependency.test.ts` (Node and Bun shards).
 
+## `require()` and `import` pass the same gates in the VM loader (`security/jsLoader.ts`)
+
+In `vm` and `vm-current-context` modes a module reaches application code through four entry points: the
+ESM `linker`, the two `importModuleDynamically` hooks, and the CommonJS `cjsRequire`. Each applies, in
+order: the `'harper'` alias, `checkAllowedModulePath` (allowedDirectory for files, allowedBuiltInModules
+for builtins, and the substitute it returns, such as the constrained `child_process`), the
+`shouldUseApplicationLoader` app-vs-native decision, and for app-loaded files `readApplicationModule`
+(record the bytes as read, strip TypeScript). `require()` differs only in loading synchronously: native
+is `require(path)` rather than `import()`. A new entry point, or a new branch in one, owes all four.
+A CommonJS or natively loaded file keeps the route whichever form loaded it first chose: `cjsCache`
+(app-loaded CommonJS) and `nativeModules` (natively loaded, registered before a native `require()`
+evaluates or a native `import()` settles, released if that fails without loading the file) are keyed
+by URL and consulted by both `require()` and `import`, so a file reached by two
+specifiers that would route differently has one instance per scope. Not covered: an ESM file the
+application loader evaluated lives only in `moduleCache`, so a bare-specifier `require()` of it under
+`dependencyLoader: native` gets Node's `require(esm)` instance; a JSON import is its own default-only
+module. Both caches hold only modules that passed the check, which is why a repeat returns from them
+before checking again. Only a compile error of a module's own CommonJS
+wrapper selects the ESM retry in `createModuleFromSource`; an error thrown while it runs propagates.
+Not covered: compartment mode's `importHook`, and what natively loaded packages require themselves.
+Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoader.test.js` and
+`integrationTests/components/cjs-require-loader.test.ts`.
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`
@@ -218,6 +243,18 @@ Two consequences that are easy to miss:
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
 
+## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
+
+`request.session.update` and `request.login` are `updateSession` / `loginWithSession` bound to one
+per-request `SessionState`, installed after the stored session fields are copied (so a stored `update`
+field is still overwritten), and they work detached or copied, as the closures they replaced did. They
+must not go back to `request.login = async function …`: V8's parser pretenures a function literal assigned
+to a property (`CheckAssigningFunctionLiteralToProperty`, `deps/v8/src/parsing/parser.h`), so the closure is
+born in old space and keeps its young function context, and everything that context reaches (the request,
+its headers, the response), alive across every scavenge until the next major GC. On a warm REST GET those
+two closures promoted ~1.8 KB per request and nearly tripled major GCs. The same holds for any per-request
+or per-write path: assign a function literal to a local first, or bind a module function. The helpers' behavior is covered by `unitTests/security/authSessions.test.js`.
+
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
 There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:
@@ -238,10 +275,33 @@ A role's `component_deploy` grant (harper#3046) reaches `deploy_component`, `dro
 3. **The constraints hold for the entry the deploy would publish, so `deployComponent` enforces them, on the origin only.** `isolated`, `hostSuffix` and `branchedDatabases: required` are read from what the release would leave in force: a package's declared entry, a payload's owned routing, or the entry as it stands for a payload that owns none. It checks before anything is written, again under the preparation lock, and for an activation against the staged descriptor. A peer applies what the origin allowed, as it does isolation admission.
 4. **A deploy credential's grant uses the same patterns, and only there.** `grant_secret component=my-app-pr-*` lets every preview's deploy resolve one dedicated credential (harper#3090, `resolveCredentials`). A component's runtime view of its secrets (`components/componentSecrets.ts`) stays exact, so preview code never reads a pattern-granted row; `harper deploy setup=true` accepts a pattern only for the github and npm providers.
 5. **The key is `component_deploy`, not `components`.** Role permission keys share a namespace with database names (`RESERVED_DATABASE_NAMES`), and `components` is a plausible database name.
+6. **`preview`, `maxPreviews` and `maxTtlDays` bound a preview identity**, below.
+
+## PR previews are enabled by the cluster (`components/previewOperations.ts`)
+
+`enable_previews`, `disable_previews` and `get_preview_policy` (harper#3042) manage the records CI authenticates as for one application's previews. The role and user are `<app>-ci-preview`, with `CI_PREVIEW_OPERATIONS`, a `component_deploy` grant for `<app>-pr-*` with `preview: required`, and no table permissions. The trust policies are `github-actions-<app>-preview` (environment `preview`) and `github-actions-<app>-preview-cleanup` (environment `preview-cleanup`, scoped to `drop_component`). The names and claims come from `utility/previewIdentity.ts`, which the CLI and Studio's preview panel derive them from too.
+
+- **Operations, not a client composition**, unlike `harper deploy setup=true provider=github-actions` above. With two clients (the CLI and Studio), each would otherwise carry the names, the reconcile rules and the teardown order, and the per-app policy is the cluster's to enforce at deploy time anyway. The records are system-table rows, which harper-pro replicates, so none of the three calls `replicateOperation`.
+- **The policy is the grant.** `maxPreviews` (in place of `deployment.previews.maxPerApplication`) and `maxTtlDays` sit in `component_deploy.constraints` beside `isolated`, `hostSuffix` and `branchedDatabases`. Every bound CI is held to is then one replicated record, enforced on the origin with the rest. A separate `hdb_preview_policy` table would also bound a super user's hand deploy, which no grant does, but it is a second record to keep in step and a new system table every node must declare. A super user's preview is held to the configured cap only.
+- **`preview: required` binds the metadata to the grant.** A deploy under it must carry `preview` naming an app `A` whose `A-pr-*` the grant lists, deployed as `A-pr-<n>`. Without that, a deploy escapes expiry and the cap, and `shop-pr-pr-3` (covered by `shop-pr-*`) would count against the cap of `shop-pr`. The same rule narrows what the grant covers for drops and reads, so `shop`'s identity cannot drop `shop-pr-tools`. `maxTtlDays` (7 unless enable is told otherwise) clamps `expiresAt` before the deployment row and the replicated request carry it. An activation is refused instead, since a build's recorded metadata is its own; it is checked against the build's deployment row before anything else, because activating a release that is already live returns before the swap.
+- **The cap is per origin**, as `maxPerApplication` is. It counts the origin's own live previews under its lock, so deploys through two origins can each take the last slot.
+- **Create-only, one at a time per node.** Enable keeps what matches and stops with a 409, writing nothing, on a record that differs or on another enabled policy that would match the same runs (`policiesOverlap`; the exchange takes the first match by id). One enable or disable runs at a time on a node, for every application, since two applications sharing a workflow file would otherwise both pass the overlap check. `add_oidc_trust` replaces, so each policy and its overlap are checked again just before it is written; a writer on another node in that window is not excluded, as for #3127.
+- **Disable revokes, then removes.** It drops the trust policies and deactivates the user. A deploy admitted earlier is refused at its activation, which checks, before and again inside the admission lock, that the deployer's records have not changed (`isCurrentUser`); a swap already under way, or a peer applying a replicated deploy, can still go live, is listed as in progress, and is bound by its expiry. It then asks every node for its live releases (`list_releases`), and drops each release of a `<app>-pr-<n>` component that was deployed as a preview of the app, on the node that holds it and only while it is that node's live release (`ifDeploymentId`). It drops on each node directly, because a drop whose release is not the origin's own stops on the origin before it replicates. Only then does it remove the user and role. A failed drop, a node that cannot say what it holds, or a release this node has no deployment row for yet stops it there with the identity revoked, and a rerun resumes.
+- **A second policy for cleanup, not a second user.** Required reviewers on `preview` gate every job in it, the close-event cleanup included. So cleanup runs in `preview-cleanup`, and its policy narrows the token to `drop_component`; the grant still limits that to `<app>-pr-*`, and `workflow_ref` to the default branch's workflow. A policy with no environment pin would also match the deploy job's token.
 
 ## The password hash function and token lifetimes are read when used, never at module load (`security/user.ts`, `security/tokenAuthentication.ts`, `utility/password.ts`)
 
 `harper run` on an empty root evaluates these modules (and `installer.ts`) before `install()` writes the config, and `install()` creates the admin before the startup phase (`runStartup()`) runs, so no startup hook can fix the admin's hash: `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`. Validation uses the stored value. `password.hash` defaults to the configured function; `password.validate` defaults to SHA-256 whatever is configured, because the algorithm of a stored hash is not policy and the refresh-token check validates its SHA-256 hash with that default (a config-driven default returns a Promise there, and `!Promise` accepts a superseded token). Token lifetimes are read per mint, so they need no startup hook. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
+
+## Local trust is a principal, not a stored user (`security/user.ts`, `security/auth.ts`)
+
+A request trusted by its transport — `authentication.authorizeLocal` from a loopback peer (`isLocalPeerAddress`: `127.0.0.x`, `::ffff:127.0.0.x`, `::1`), the operations domain socket (`bypassLocalAuth`), a loopback MQTT connection, test mode's `bypassAuth()` — runs as `localPrincipal()`: a fixed super user named `local` that no stored record backs, so admitting it reads no record and works with no users at all.
+
+- **Recognized by its marker, never its name.** `isLocalPrincipal` checks `_localPrincipal: true`, which only trusted code sets: `userView` copies no such field from a record, and the token, bearer-validator, OIDC and impersonation paths build users from explicit fields. A string, not a symbol, because the Bun/uWS fallback forwards `request.user` as JSON and the MQTT will row stores it. `add_user` refuses the name; a stored `local` that predates that is an ordinary user.
+- **Never resolvable by name, so never portable.** Local trust belongs to the connection. A session row never names the principal (`session.update` drops it), and no token is minted for it: a credential-free `create_authentication_tokens` from it mints for the first active stored user whose role has the `super_user` flag (`getSuperUser`), or fails with 409. A by-name rehydration site checks `isLocalPrincipal` first: the MQTT will replay rebuilds the principal from the marker; live-subscription re-authorization and MCP list_changed skip it, since no record change can revoke it.
+- **Each call is a separate view**, as with `userView`: fresh user, `role` and `permission` objects; the shared system-table tree is frozen. The role is a default install's `super_user` role, id included, because applications authorize on `role.id` (the published redirector and early-hints templates do).
+
+Enforced by `unitTests/security/localPrincipal.test.js` and `integrationTests/security/local-principal-token-mint.test.ts`.
 
 ## Named component children are identified by lifetime (`security/jsLoader.ts`, `security/spawnPidFile.ts`)
 
