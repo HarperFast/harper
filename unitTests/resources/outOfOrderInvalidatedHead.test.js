@@ -12,7 +12,9 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 let nextTimestamp = Date.now() + 1_000_000;
 
 function timestampAfterBootstrap(auditStore, candidate) {
-	return Math.max(candidate, getAuditFloor(auditStore) + 1_000_000);
+	const floor = getAuditFloor(auditStore);
+	assert.ok(Number.isFinite(floor), 'fixture audit floor must be initialized');
+	return Math.max(candidate, floor + 1_000_000);
 }
 
 const writes = {
@@ -111,8 +113,7 @@ describe('Out-of-order full PUT against an invalidated head', () => {
 		});
 	}
 
-	it('replaces an invalidated head when its timestamp seed predates table bootstrap', async function () {
-		if (isLMDB) return this.skip();
+	it('clamps a pre-bootstrap seed before replacing an invalidated head', async () => {
 		const base = timestampAfterBootstrap(T.auditStore, getAuditFloor(T.auditStore) - 200_000);
 		const id = 'inv-aged-seed';
 		await writes.put50(T, id, base);
