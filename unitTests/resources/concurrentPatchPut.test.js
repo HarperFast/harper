@@ -6,12 +6,12 @@ const { transaction } = require('#src/resources/transaction');
 
 describe('Concurrent PATCH/PUT with a pending audit frame', function () {
 	this.timeout(10000);
-	let Docs;
+	let Docs, RETRY_NOW;
 	let nextId = 0;
-	const RETRY_NOW = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 
 	before(function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		RETRY_NOW = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 		setupTestDBPath();
 		setMainIsWorker(true);
 		Docs = table({
@@ -38,15 +38,16 @@ describe('Concurrent PATCH/PUT with a pending audit frame', function () {
 			await transaction({}, () => Docs.patch(id, { title: 'competitor' }));
 			assert.strictEqual(await parked.transaction.commit(), RETRY_NOW);
 			assert.strictEqual(parked.transaction.logWritten(), true);
-			// Finish the parked transaction even when the regression assertion fails.
 			try {
 				result = await callback();
 			} catch (error) {
 				failure = error;
 			}
+		}).catch((error) => {
+			throw failure ?? error;
 		});
-		assert.strictEqual((await Docs.get(id)).title, 'competitor');
 		if (failure) throw failure;
+		assert.strictEqual((await Docs.get(id)).title, 'competitor');
 		return result;
 	}
 
