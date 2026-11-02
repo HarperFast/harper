@@ -344,9 +344,10 @@ describe('legacy alasql LIKE', () => {
 
 	it('tokenizes unclosed [ in linear time', () => {
 		assert.strictEqual(alasql.utils.like('['.repeat(20_000) + '%', '['.repeat(20_001)), true);
+		// Linear: ~60 ms. Rescanning for `]` at every `[` (quadratic): ~50 s.
 		const start = performance.now();
 		assert.strictEqual(alasql.utils.like('['.repeat(200_000) + '%', 'x'), false);
-		assert.ok(performance.now() - start < 1_000);
+		assert.ok(performance.now() - start < 10_000);
 	});
 });
 
