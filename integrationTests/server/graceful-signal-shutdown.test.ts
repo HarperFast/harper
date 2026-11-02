@@ -72,6 +72,9 @@ async function writeProbeApp(parent: string, probeOptions: Record<string, unknow
 	return app;
 }
 
+// Windows delivers no POSIX signal: child.kill('SIGTERM') there is TerminateProcess, so no handler runs
+const SKIP_SIGNALS = process.platform === 'win32' ? 'Windows cannot deliver SIGTERM to a handler' : false;
+
 function authHeader(ctx: ContextWithHarper) {
 	return `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 }
@@ -121,72 +124,76 @@ function hdbLog(ctx: ContextWithHarper) {
 }
 
 for (const threadCount of [1, 0]) {
-	suite(`SIGTERM drains an in-flight request (threads.count: ${threadCount})`, (ctx: ContextWithHarper) => {
-		let fixtureParent: string;
-		before(async () => {
-			fixtureParent = await mkdtemp(join(tmpdir(), 'harper-graceful-shutdown-'));
-			await setupHarperWithFixture(ctx, await writeProbeApp(fixtureParent, { delayMs: 1500 }), {
-				config: { threads: { count: threadCount } },
-				env: {},
+	suite(
+		`SIGTERM drains an in-flight request (threads.count: ${threadCount})`,
+		{ skip: SKIP_SIGNALS },
+		(ctx: ContextWithHarper) => {
+			let fixtureParent: string;
+			before(async () => {
+				fixtureParent = await mkdtemp(join(tmpdir(), 'harper-graceful-shutdown-'));
+				await setupHarperWithFixture(ctx, await writeProbeApp(fixtureParent, { delayMs: 1500 }), {
+					config: { threads: { count: threadCount } },
+					env: {},
+				});
 			});
-		});
-		after(async () => {
-			await teardownHarper(ctx);
-			await rm(fixtureParent, { recursive: true, force: true });
-		});
+			after(async () => {
+				await teardownHarper(ctx);
+				await rm(fixtureParent, { recursive: true, force: true });
+			});
 
-		test(
-			'the request completes with its scope still open, then the process exits 0',
-			// the uWS shim's close() is uWS App.close(), which drops connections still in flight
-			{ skip: process.env.HARPER_UWS_HTTP ? 'uWS closes in-flight requests at server close' : false },
-			async () => {
+			test(
+				'the request completes with its scope still open, then the process exits 0',
+				// the uWS shim's close() is uWS App.close(), which drops connections still in flight
+				{ skip: process.env.HARPER_UWS_HTTP ? 'uWS closes in-flight requests at server close' : false },
+				async () => {
+					const proc = ctx.harper.process;
+					const pending = appGet(ctx, '/Slow/');
+					await waitFor(async () => (await enteredCount(ctx)) > 0, { timeout: 10_000 });
+					const signalledAt = Date.now();
+					proc.kill('SIGTERM');
+					const response = await pending;
+					strictEqual(response.status, 200);
+					deepStrictEqual(await response.json(), { completed: true });
+					const exit = await exitOf(proc, signalledAt);
+					deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
+					ok(exit.afterMs < 8000, `exited ${exit.afterMs} ms after SIGTERM`);
+					ok((await hdbLog(ctx)).includes('Received SIGTERM; shutting down'), 'the graceful path logged its start');
+				}
+			);
+
+			test('an idle instance stops well inside a 5 s grace and restarts without replaying its log', async () => {
+				if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
+					ctx.harper.process.kill('SIGTERM');
+					await exitOf(ctx.harper.process, Date.now());
+				}
+				await startHarper(ctx, { config: { threads: { count: threadCount } }, env: {} });
 				const proc = ctx.harper.process;
-				const pending = appGet(ctx, '/Slow/');
-				await waitFor(async () => (await enteredCount(ctx)) > 0, { timeout: 10_000 });
 				const signalledAt = Date.now();
 				proc.kill('SIGTERM');
-				const response = await pending;
-				strictEqual(response.status, 200);
-				deepStrictEqual(await response.json(), { completed: true });
 				const exit = await exitOf(proc, signalledAt);
 				deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
-				ok(exit.afterMs < 8000, `exited ${exit.afterMs} ms after SIGTERM`);
-				ok((await hdbLog(ctx)).includes('Received SIGTERM; shutting down'), 'the graceful path logged its start');
-			}
-		);
-
-		test('an idle instance stops well inside a 5 s grace and restarts without replaying its log', async () => {
-			if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
-				ctx.harper.process.kill('SIGTERM');
-				await exitOf(ctx.harper.process, Date.now());
-			}
-			await startHarper(ctx, { config: { threads: { count: threadCount } }, env: {} });
-			const proc = ctx.harper.process;
-			const signalledAt = Date.now();
-			proc.kill('SIGTERM');
-			const exit = await exitOf(proc, signalledAt);
-			deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
-			ok(exit.afterMs < 5000, `idle stop took ${exit.afterMs} ms`);
-			ok((await hdbLog(ctx)).includes('Shutdown complete'), 'the graceful path logged its end');
-			const stoppedBootLog = hdbLogPath(ctx);
-			await startHarper(ctx, { config: { threads: { count: threadCount } }, env: {} });
-			// a restarted boot may keep writing to the first boot's log, so read both; the harness returns on
-			// the stdout "started" line, which can land before the same notice reaches hdb.log
-			const bootLogs = [...new Set([stoppedBootLog, hdbLogPath(ctx)])];
-			let logs = '';
-			await waitFor(
-				async () => {
-					logs = (await Promise.all(bootLogs.map((path) => readFile(path, 'utf8').catch(() => '')))).join('');
-					return (logs.match(/Harper successfully started/g)?.length ?? 0) >= 2;
-				},
-				{ timeout: 15_000, message: () => `the restarted boot never logged its start in ${bootLogs.join(', ')}` }
-			);
-			ok(!/Replayed \d+ records/.test(logs), 'no transaction-log replay after a clean stop');
-		});
-	});
+				ok(exit.afterMs < 5000, `idle stop took ${exit.afterMs} ms`);
+				ok((await hdbLog(ctx)).includes('Shutdown complete'), 'the graceful path logged its end');
+				const stoppedBootLog = hdbLogPath(ctx);
+				await startHarper(ctx, { config: { threads: { count: threadCount } }, env: {} });
+				// a restarted boot may keep writing to the first boot's log, so read both; the harness returns on
+				// the stdout "started" line, which can land before the same notice reaches hdb.log
+				const bootLogs = [...new Set([stoppedBootLog, hdbLogPath(ctx)])];
+				let logs = '';
+				await waitFor(
+					async () => {
+						logs = (await Promise.all(bootLogs.map((path) => readFile(path, 'utf8').catch(() => '')))).join('');
+						return (logs.match(/Harper successfully started/g)?.length ?? 0) >= 2;
+					},
+					{ timeout: 15_000, message: () => `the restarted boot never logged its start in ${bootLogs.join(', ')}` }
+				);
+				ok(!/Replayed \d+ records/.test(logs), 'no transaction-log replay after a clean stop');
+			});
+		}
+	);
 }
 
-suite('a scope close that never finishes', (ctx: ContextWithHarper) => {
+suite('a scope close that never finishes', { skip: SKIP_SIGNALS }, (ctx: ContextWithHarper) => {
 	let fixtureParent: string;
 	before(async () => {
 		fixtureParent = await mkdtemp(join(tmpdir(), 'harper-graceful-shutdown-'));
