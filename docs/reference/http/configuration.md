@@ -197,7 +197,7 @@ Type: `boolean | object`
 
 Default: `false`
 
-Enables mutual TLS (mTLS) authentication for HTTP connections. When set to `true`, client certificates are verified against the CA specified in `tls.certificateAuthority`. Authenticated connections use the `CN` (common name) from the certificate subject as the Harper username.
+Enables mutual TLS (mTLS) authentication for HTTP connections. When set to `true`, client certificates are verified against Harper's configured CAs (`tls.certificateAuthority`, or a certificate record marked as an authority). Authenticated connections use the `CN` (common name) from the certificate subject as the Harper username.
 
 ```yaml
 http:
