@@ -10932,8 +10932,8 @@ export function makeTable(options): TableResourceClass {
 						set(related) {
 							// A read-only resolver must never be the reason a record fails to materialize — the
 							// same reason the one-to-many branch above installs a no-op.
-							if (!attribute.set) return reportResolverCollision(name);
-							return attribute.set(this, related);
+							if (!attribute.set) reportResolverCollision(name);
+							else attribute.set(this, related);
 						},
 						configurable: true,
 						enumerable: attribute.enumerable,
