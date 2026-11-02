@@ -39,9 +39,8 @@ export class RateSnapshot extends Resource {
 		const Table = tables.RateCounter;
 		const transaction = Table._readTxnForContext(this.getContext());
 		const nowBefore = Date.now();
-		const rawBefore = copyEntry(Table.primaryStore.getEntry(id, { transaction, uncachedRead: true }));
+		const transactionSnapshot = copyEntry(Table.primaryStore.getEntry(id, { transaction, uncachedRead: true }));
 		const cached = copyEntry(Table.primaryStore.getEntry(id, { transaction }));
-		const rawAfter = copyEntry(Table.primaryStore.getEntry(id, { transaction, uncachedRead: true }));
 		return {
 			id,
 			threadId,
@@ -49,9 +48,8 @@ export class RateSnapshot extends Resource {
 			nowAfter: Date.now(),
 			engine: Table.primaryStore.encoder?.isRocksDB ? 'rocksdb' : 'other',
 			uncachedReadBypassesCache: Table.primaryStore.isPrimaryRocksDatabase === true,
-			rawBefore,
+			transactionSnapshot,
 			cached,
-			rawAfter,
 		};
 	}
 }
