@@ -2,12 +2,9 @@
  * Concurrent partial updates to an audited RocksDB table, from one or several worker threads, must not
  * lose a committed write.
  *
- * Each round seeds DOC_COUNT records, then sends every record 10 updates (`addTo('hits', 1)` and a new
- * `title`) interleaved with 10 patches of `meta`/`tags`, all at once, over keep-alive connections
- * pinned to each worker. Each field is last-write-wins by version, so whatever order the writes commit
- * in, every record must end with `hits === 10`, the `meta`/`tags` of its highest-version patch and the
- * `title` of its highest-version update; the fixture's `Verify` reads those from the audit log. One
- * arm's updates never read the record first; the other's read it in the same transaction.
+ * Whatever order the writes commit in, every record must end with `hits === 10`, the `meta`/`tags` of
+ * its highest-version patch and the `title` of its highest-version update; the fixture's `Verify` reads
+ * those from the audit log.
  *
  * A RocksDB transaction appends its transaction-log entry at its first commit attempt, and a retry
  * after a conflict appends nothing. The test covers both ways that loses a write:

@@ -70,8 +70,6 @@ describe('Audit chain across a conflict retry', function () {
 		return observed;
 	}
 
-	// `retried` commits at base + 300 and conflicts on its first attempt with a patch at base + 200, which it
-	// then retries in order over, so its log entry names the seed at `base` as its previous version.
 	async function retryOverIntermediateHead(id, base, ...retried) {
 		await applyFromOrigin(base, put(id, { id, title: 'seed', meta: 'seed' }));
 		const interception = interceptNextCommit(async (commit) => {
@@ -141,7 +139,6 @@ describe('Audit chain across a conflict retry', function () {
 		const base = freshBase();
 		await retryOverIntermediateHead(id, base, patch(id, { meta: 'retried' }));
 		assert(namesHead(id, base + 200), 'the record names the head the retry committed over');
-		// older than the intermediate head, so its title has to lose to it
 		await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
 		const { title, meta } = await T.get(id);
 		assert.deepStrictEqual({ title, meta }, { title: 'intermediate', meta: 'retried' });
