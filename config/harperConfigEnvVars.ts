@@ -600,11 +600,10 @@ function loadConfigState(rootPath: string): ConfigState {
 }
 
 /**
- * Clear a sidecar left by an interrupted commit, reporting whether one was there. The caller skips
- * drift detection for that boot: it cannot tell a manual user edit from the write that was in
- * flight, and calling it an edit hands those paths to 'user' for good.
+ * Detect an interrupted commit, clearing its sidecar only when requested. The caller skips drift
+ * detection because the interrupted write is not evidence of a manual user edit.
  */
-function takeInterruptedCommit(rootPath: string): boolean {
+function takeInterruptedCommit(rootPath: string, consume = true): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	let entries: string[];
 	try {
@@ -624,6 +623,10 @@ function takeInterruptedCommit(rootPath: string): boolean {
 			interrupted = true;
 			continue;
 		}
+		if (!consume) {
+			interrupted = true;
+			continue;
+		}
 		try {
 			fs.removeSync(entryPath);
 		} catch (error) {
@@ -633,7 +636,8 @@ function takeInterruptedCommit(rootPath: string): boolean {
 		}
 		interrupted = true;
 	}
-	if (interrupted) getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
+	if (interrupted && consume)
+		getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
 	return interrupted;
 }
 
@@ -1133,7 +1137,7 @@ export function applyRuntimeEnvConfig(
 export function prepareRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
-	options: { isInstall?: boolean; userPaths?: Iterable<string> } = {}
+	options: { isInstall?: boolean; userPaths?: Iterable<string>; deferStateCommit?: boolean } = {}
 ): {
 	config: ConfigObject;
 	saveState: () => boolean;
@@ -1147,7 +1151,7 @@ export function prepareRuntimeEnvConfig(
 	// Load existing state. Only the main thread persists, so only the main thread has wreckage to
 	// clear - and a worker shares its pid, so letting one scan would delete the main thread's
 	// in-flight sidecar as if it were last boot's.
-	const interruptedCommit = isMainThread && !options.isInstall && takeInterruptedCommit(rootPath);
+	const interruptedCommit = isMainThread && takeInterruptedCommit(rootPath, !options.deferStateCommit);
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
@@ -1196,7 +1200,7 @@ export function prepareRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
 	const retireInterruptedCommit = () => {
-		if (options.isInstall && isMainThread) takeInterruptedCommit(rootPath);
+		if (options.deferStateCommit && isMainThread) takeInterruptedCommit(rootPath);
 	};
 	return {
 		config: fileConfig,

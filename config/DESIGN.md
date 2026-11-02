@@ -362,4 +362,4 @@ This install-only ordering change does not repair older state files without save
 
 During CLI `install`, `initConfig()` composes/backfills without publication paths, retaining validation but discarding its trial commit. Staging re-reads the template and publishes on success; normal boot persists as before. Root-template mount/boot-property failures roll back before inventories clear. Empty store directories get their own entry snapshots, so cleanup closes new handles and clears contents while keeping mounts. Inventories do not serialize concurrent writers or recover from process/cleanup failure.
 
-`prepareRuntimeEnvConfig()` retains recovery sidecars during install; its commit callbacks retire them after success.
+`prepareRuntimeEnvConfig()` retains recovery sidecars during deferred trials; commits retire them after success.

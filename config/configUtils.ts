@@ -953,7 +953,6 @@ export function initConfig(force = false) {
 
 		// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables
 		applyRuntimeEnvVarConfig(configDoc, installing ? null : configFilePath, {
-			isInstall: installing,
 			deferStateCommit: installing,
 		});
 

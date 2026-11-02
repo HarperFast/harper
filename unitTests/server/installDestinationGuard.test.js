@@ -324,4 +324,27 @@ describe('effective installation destination protection', function () {
 			fs.rmSync(temp, { recursive: true, force: true });
 		}
 	});
+	it('keeps runtime DEFAULT precedence while checking an existing non-template installation', function () {
+		const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-runtime-default-'));
+		try {
+			const env = installEnv(temp, 'root', 'rocksdb');
+			const original = path.join(temp, 'original');
+			const other = path.join(temp, 'other');
+			fs.mkdirSync(original);
+			fs.mkdirSync(other);
+			env.STORAGE_PATH = original;
+			assert.match(run('install', env), /install-destination-guard-ok/);
+			const configPath = env.HDB_CONFIG;
+			const before = fs.readFileSync(configPath);
+			delete env.HDB_CONFIG;
+			delete env.STORAGE_PATH;
+			env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { path: other } });
+			const output = run('cli', env);
+			assert.match(output, /already installed/);
+			assert.deepStrictEqual(fs.readFileSync(configPath), before);
+			assert.deepStrictEqual(fs.readdirSync(other), []);
+		} finally {
+			fs.rmSync(temp, { recursive: true, force: true });
+		}
+	});
 });
