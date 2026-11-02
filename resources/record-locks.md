@@ -106,9 +106,9 @@ Consequences that shape the code:
   `lockHandle` into the same guard.
 - **A write on a locked key carries the lock, whichever instance staged it.** `DatabaseTransaction`
   applies lock rules (holder stamps, hold floor or 409, lease-expiry 409, `refuseLockWrites`,
-  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` sets it at all four staging sites
-  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`) from the instance's own handle,
-  else from `recordLocks` — so static verbs and other instances on the same context are covered.
+  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` covers all five keyed staging sites
+  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish`) using the instance
+  handle or `recordLocks` for static verbs and other instances on the same context.
   Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
   without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
   been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock

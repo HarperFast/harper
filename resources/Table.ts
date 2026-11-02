@@ -10239,6 +10239,7 @@ export function makeTable(options): TableResourceClass {
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
 			const keyed = id !== null;
+			if (keyed) this.#assertLiveHandle(id, true);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -10341,6 +10342,7 @@ export function makeTable(options): TableResourceClass {
 					return result;
 				},
 			};
+			if (keyed) this.#bindWriteLock(write, id, transaction);
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
 			transaction.addWrite(write);
