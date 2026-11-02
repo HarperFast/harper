@@ -3281,12 +3281,12 @@ export class LockCoordinator {
 			existing.delegate === requester &&
 			existing.requestId === requestId &&
 			existing.delegateEpoch === delegateEpoch &&
-			!existing.recalling &&
-			!existing.recallConfirmed &&
 			existing.expiresMono - this.#skewMs - now >= MIN_LOCK_LEASE_MS
 		)
 			// The request that minted this grant, delivered again (§5.2): the same token and what is left
-			// of its lease, so the delegate's token and the home's never diverge.
+			// of its lease, so the delegate's token and the home's never diverge. Recalled or not: this
+			// reply is the only way a delegate whose first delivery's reply went nowhere learns the token,
+			// and handing it back is the only release that grant will get before its deadline.
 			return {
 				granted: true,
 				token: existing.token,
