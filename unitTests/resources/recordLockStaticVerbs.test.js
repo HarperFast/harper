@@ -51,6 +51,49 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 	});
 
 	describe('Keyed publishes', function () {
+		for (const action of ['upgrade', 'unlock']) {
+			it(`an instance publish survives a scoped lock ${action} before commit`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Audited.put({ id: recordId, n: 1 });
+				await transaction({}, async () => {
+					const locked = await Audited.lock(recordId);
+					locked.set('n', 2);
+					locked.publish({ n: 7 });
+					if (action === 'upgrade') {
+						const holder = await Audited.lock(recordId, { hold: true, lease: 5000 });
+						cleanups.push(() => holder.unlock());
+					} else await locked.unlock();
+				});
+				assert.ok(
+					[...Audited.auditStore.getRange({ start: 1 })].some(
+						(entry) => entry.recordId === recordId && entry.type === 'message'
+					),
+					'lock cleanup must preserve the explicit publish'
+				);
+				assert.strictEqual((await Audited.get(recordId)).n, 1);
+			});
+		}
+
+		for (const audit of [true, false]) {
+			it(`an immediate holder publish advances the floor for its next save (audit: ${audit})`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const TestTable = audit ? Audited : Unaudited;
+				const recordId = id();
+				await TestTable.put({ id: recordId, n: 1 });
+				const context = {};
+				const holder = await TestTable.lock(recordId, { hold: true, lease: 5000 }, context);
+				cleanups.push(() => holder.unlock());
+				holder.publish({ n: 7 });
+				await waitFor(() => !context.transaction.isCommitting);
+				const publishedVersion = TestTable.primaryStore.getEntry(recordId).version;
+				holder.set('n', 2);
+				await holder.save();
+				assert.strictEqual((await TestTable.get(recordId)).n, 2);
+				assert.ok(TestTable.primaryStore.getEntry(recordId).version > publishedVersion);
+			});
+		}
+
 		for (const route of ['static', 'holder']) {
 			it(`${route} publish under a held lock binds the handle and delivers its message`, async function () {
 				if (SKIP_ON_LMDB) return this.skip();

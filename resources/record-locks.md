@@ -112,9 +112,12 @@ Consequences that shape the code:
   Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
   without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
   been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
-  replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
-  the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
+  replaced it; only one released by `unlock()` lets the write rebind or revert. All bound publishes
+  (own-handle or registry) and registry-bound writes are `lockJoined`: caller writes rather than the scoped
+  lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
   into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
+  A bound publish can still stamp below a concurrent record version; see
+  [An out-of-order publish rewinds the record's version, letting a stale delete or write through](https://github.com/HarperFast/harper/issues/3637).
 - **Lock first, then write (harper#3896).** A fresh `lock()` on a key this transaction has a pending write to
   is refused with 409 (`hasPendingWriteTo`: owned, not dropped, and unsaved or saved into a transaction that
   has not committed; an `ImmediateTransaction`'s saved write was submitted on its own). Such a write was
