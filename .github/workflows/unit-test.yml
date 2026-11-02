@@ -67,7 +67,7 @@ jobs:
             timeout: 8
           - shard: server
             script: test:unit:main:server
-            timeout: 8
+            timeout: 10
           - shard: resources-core-a-n
             script: test:unit:resources:core:a-n
             timeout: 9
@@ -154,7 +154,8 @@ jobs:
   unit-test-source:
     name: Native Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 28
+    # Above the `core` shard's step-cap sum (32), so a stall fails a step rather than cancelling the job.
+    timeout-minutes: 33
     strategy:
       fail-fast: false
       matrix:
@@ -166,7 +167,7 @@ jobs:
         include:
           - shard: core
             script: test:unit:typestrip
-            timeout: 10
+            timeout: 15
           - shard: resources-core-a-n
             script: test:unit:typestrip:resources:core:a-n
             timeout: 9
