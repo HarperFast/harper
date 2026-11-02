@@ -53,7 +53,11 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - table create, schema change, drop → `table()`, `runIndexing` in databases.ts; `dropTable`, `updatedAttributes` in Table.ts
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts
 - URL path to resource → `getMatch`, `matchParamRoute` in Resources.ts
-- record flags (`INVALIDATED`, `REPLICA`, `VERSION_REUSED`) → RecordEncoder.ts; byte layout in [storage-format.md](../storage-format.md)
+- record flags → `INVALIDATED`, `REPLICA` in Table.ts; `VERSION_REUSED`, `FULL_WRITE_HEAD` in RecordEncoder.ts
 - audit floor and retention → auditStore.ts; see [audit-retention.md](audit-retention.md)
+- opting a query out of a read snapshot → `useReadTxn` in Table.ts; `getReadTxn` in DatabaseTransaction.ts
+- application row filtering → `eventFilter` in ResourceInterface.ts; `search`, `subscribe` in Table.ts
+- matching expired rows in SQL UPDATE/DELETE → `transformEntryForSelect` in Table.ts
+- filters during a vector search → `composeRecordFilter`, `planCandidateKeys` in search.ts; see [indexes/DESIGN.md](indexes/DESIGN.md)
 - HNSW connectivity after a delete → `repairSeveredNeighbors` in indexes/HierarchicalNavigableSmallWorld.ts
 - tests → `unitTests/resources/`
