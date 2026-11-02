@@ -16,8 +16,9 @@
 import { readFile, writeFile, mkdir, rename, rm, statfs } from 'node:fs/promises';
 import { statSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseOptions } from '../ycsb/harness.mts';
 import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf, usesDependentReads } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
@@ -64,8 +65,44 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_APP_DIR = join(REPO_ROOT, 'benchmarks', 'ycsb', 'app');
 export const RESULTS_DIR = join(import.meta.dirname, 'results');
 
-type HarperTarget = { kind: 'harper'; uws: boolean; sized: boolean; base: boolean; label: string };
+/** Settings a target fixes for Harper instead of taking its defaults. */
+export interface HarperTuning {
+	/** HARPER_RECORD_CACHE_SIZE: weak-lru-cache ring positions per thread; a ~1 KiB record takes 2. */
+	recordCacheSize?: number;
+	/** threads.maxHeapMemory: old-space MB per worker. */
+	maxHeapMemoryMb?: number;
+	/** storage.rocks.blockCacheSize, bytes. */
+	blockCacheBytes?: number;
+	/** rocksdb-js's process-global verification table, which Harper has no setting for (see vtPreload.mjs). */
+	verificationTableEntries?: number;
+}
+
+type HarperTarget = {
+	kind: 'harper';
+	uws: boolean;
+	sized: boolean;
+	base: boolean;
+	/** threads.count, instead of the session's --threads. */
+	threads?: number;
+	tuning?: HarperTuning;
+	label: string;
+};
 type StackTarget = { kind: 'stack'; cache: boolean; label: string };
+
+const MiB = 1024 ** 2;
+/**
+ * 3 GiB of decoded records in total, Redis's maxmemory in the sweep: 4 threads x 768 MiB or 2 x 1.5 GiB.
+ * A cached ~1 KiB record holds 1,965 heap bytes (measured, PROFILE.md "A Redis-sized record cache") and
+ * two ring positions, so 768 MiB is 410k records and a cacheSize of 820k. The heap allows the cache plus
+ * the ~50 MiB per-thread baseline plus 40% for garbage between major GCs; the block cache gives up
+ * 1.5 GiB of its 2 GiB default toward it.
+ */
+const RC3G = {
+	blockCacheBytes: 512 * MiB,
+	verificationTableEntries: 2 ** 24,
+};
+const RC3G_4T: HarperTuning = { ...RC3G, recordCacheSize: 820_000, maxHeapMemoryMb: 1152 };
+const RC3G_2T: HarperTuning = { ...RC3G, recordCacheSize: 1_640_000, maxHeapMemoryMb: 2240 };
 
 /** What each target is. Launch settings derive from this, never from the name. */
 export const TARGETS = {
@@ -91,6 +128,49 @@ export const TARGETS = {
 		sized: false,
 		base: true,
 		label: 'Harper (--base-harper build), Node HTTP, stock record cache',
+	},
+	'harper-uws-rc3g-4t': {
+		kind: 'harper',
+		uws: true,
+		sized: false,
+		base: false,
+		threads: 4,
+		tuning: RC3G_4T,
+		label: 'Harper, uWS HTTP, 4 threads x 768 MiB record cache, 512 MiB block cache, 16M-slot verification table',
+	},
+	'harper-uws-rc3g-2t': {
+		kind: 'harper',
+		uws: true,
+		sized: false,
+		base: false,
+		threads: 2,
+		tuning: RC3G_2T,
+		label: 'Harper, uWS HTTP, 2 threads x 1.5 GiB record cache, 512 MiB block cache, 16M-slot verification table',
+	},
+	'harper-uws-rc3g-4t-vt128k': {
+		kind: 'harper',
+		uws: true,
+		sized: false,
+		base: false,
+		threads: 4,
+		tuning: { ...RC3G_4T, verificationTableEntries: undefined },
+		label: 'harper-uws-rc3g-4t with the default 128K-slot verification table',
+	},
+	'harper-uws-vt16m': {
+		kind: 'harper',
+		uws: true,
+		sized: false,
+		base: false,
+		tuning: { verificationTableEntries: RC3G.verificationTableEntries },
+		label: 'Harper, uWS HTTP, stock record cache, 16M-slot verification table',
+	},
+	'harper-uws-2t': {
+		kind: 'harper',
+		uws: true,
+		sized: false,
+		base: false,
+		threads: 2,
+		label: 'Harper, uWS HTTP, 2 threads, stock record cache',
 	},
 	'pg-redis': { kind: 'stack', cache: true, label: 'Fastify + Postgres + Redis (cache-aside)' },
 	'pg-only': { kind: 'stack', cache: false, label: 'Fastify + Postgres (no cache)' },
@@ -366,6 +446,7 @@ export interface Running {
 	pinned: Record<string, number>;
 	memoryLimits: Record<string, MemoryLimit>;
 	recordCacheSize?: number;
+	harperSettings?: HarperSettings;
 	/** Harper's install directory (its RocksDB info LOGs are under it). */
 	dataRoot?: string;
 	/** Milliseconds from launch to accepting requests; a restore's copy is part of it. */
@@ -393,6 +474,49 @@ export interface LaunchOptions {
 	recordCacheSize?: number;
 }
 
+/** Loaded into Harper's main thread when a target sets the verification table's size. */
+const VT_PRELOAD = join(import.meta.dirname, 'vtPreload.mjs');
+
+/** What a Harper launch is configured with; a setting left out takes Harper's default. */
+export interface HarperSettings extends HarperTuning {
+	threads: number;
+}
+
+export function harperSettings(
+	spec: HarperTarget,
+	session: Pick<Session, 'cache' | 'recordCacheSize'> & { options: { threads: number } },
+	launch: LaunchOptions = {}
+): HarperSettings {
+	const { tuning = {} } = spec;
+	const recordCacheSize =
+		tuning.recordCacheSize ??
+		(spec.sized || session.cache === 'cold' ? (launch.recordCacheSize ?? session.recordCacheSize) : undefined);
+	const settings: HarperSettings = { threads: spec.threads ?? session.options.threads };
+	if (recordCacheSize !== undefined) settings.recordCacheSize = recordCacheSize;
+	for (const key of ['maxHeapMemoryMb', 'blockCacheBytes', 'verificationTableEntries'] as const) {
+		if (tuning[key] !== undefined) settings[key] = tuning[key];
+	}
+	return settings;
+}
+
+/** Harper's NODE_OPTIONS: the profiler's flags and the verification-table preload, each when needed. */
+export function harperNodeOptions(profile: boolean, settings: HarperSettings): string {
+	return [
+		...(profile ? [PERF_NODE_OPTIONS] : []),
+		...(settings.verificationTableEntries === undefined ? [] : [`--import=${pathToFileURL(VT_PRELOAD).href}`]),
+	].join(' ');
+}
+
+function describeSettings(settings: HarperSettings): string {
+	const parts = [`threads.count=${settings.threads}`];
+	if (settings.maxHeapMemoryMb) parts.push(`threads.maxHeapMemory=${settings.maxHeapMemoryMb}`);
+	if (settings.blockCacheBytes) parts.push(`storage.rocks.blockCacheSize=${settings.blockCacheBytes}`);
+	if (settings.recordCacheSize) parts.push(`HARPER_RECORD_CACHE_SIZE=${settings.recordCacheSize}`);
+	if (settings.verificationTableEntries !== undefined)
+		parts.push(`verificationTableEntries=${settings.verificationTableEntries}`);
+	return parts.join(', ');
+}
+
 function nextUnit(session: Session, component: string): string {
 	return `${session.unitPrefix}-${++session.units.count}-${component}`;
 }
@@ -408,15 +532,15 @@ async function withHarper<T>(
 	const spec = TARGETS[target] as HarperTarget;
 	const { options } = session;
 	const bin = spec.base ? session.baseHarperBin! : session.harperBin;
-	const recordCacheSize =
-		spec.sized || session.cache === 'cold' ? (launch.recordCacheSize ?? session.recordCacheSize) : undefined;
+	const settings = harperSettings(spec, session, launch);
+	const { recordCacheSize, maxHeapMemoryMb, blockCacheBytes, verificationTableEntries } = settings;
 	const unit = nextUnit(session, 'harper');
 	const ctx = createHarperContext(`ycsb-vs-pg-${target}`);
 	console.log(
-		`\n=== ${target}: starting ${bin} (threads.count=${options.threads}, memory.max=${session.harperMemoryBytes}` +
-			`${recordCacheSize ? `, HARPER_RECORD_CACHE_SIZE=${recordCacheSize}` : ''}` +
+		`\n=== ${target}: starting ${bin} (memory.max=${session.harperMemoryBytes}, ${describeSettings(settings)}` +
 			`${launch.restore ? `, restoring ${launch.restore}` : ''}) ===`
 	);
+	const nodeOptions = harperNodeOptions(Boolean(session.profile), settings);
 	const env: Record<string, string> = {
 		HARPER_STORAGE_ENGINE: options.engine,
 		YCSB_SCOPE_UNIT: unit,
@@ -425,12 +549,16 @@ async function withHarper<T>(
 		YCSB_AUTH: session.auth,
 		...(spec.uws ? { HARPER_UWS_HTTP: '1' } : {}),
 		...(recordCacheSize ? { HARPER_RECORD_CACHE_SIZE: String(recordCacheSize) } : {}),
-		...(session.profile ? { NODE_OPTIONS: PERF_NODE_OPTIONS } : {}),
+		...(verificationTableEntries === undefined
+			? {}
+			: { YCSB_VERIFICATION_TABLE_ENTRIES: String(verificationTableEntries) }),
+		...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
 	};
 	const harperOptions = {
 		harperBinPath: bin,
 		config: {
-			threads: { count: options.threads },
+			threads: { count: settings.threads, ...(maxHeapMemoryMb ? { maxHeapMemory: maxHeapMemoryMb } : {}) },
+			...(blockCacheBytes ? { storage: { rocks: { blockCacheSize: blockCacheBytes } } } : {}),
 			analytics: { aggregatePeriod: -1 },
 			logging: { level: 'warn' },
 			...(session.auth === 'token' ? { authentication: { authorizeLocal: false } } : {}),
@@ -483,6 +611,7 @@ async function withHarper<T>(
 				harper: verifyMemoryLimit('harper', cgroup, session.harperMemoryBytes, MEMORY_BUDGET_BYTES),
 			},
 			recordCacheSize,
+			harperSettings: settings,
 			...credentials,
 			dataRoot: started.harper.dataRootDir,
 			startupMs: Date.now() - launchedAt,
@@ -621,6 +750,10 @@ export interface MeasuredWindow {
 	redisKeys?: number;
 	checkpoints?: number;
 	recordCacheSize?: number;
+	/** Harper: the threads and memory settings the target launched with. */
+	harperSettings?: HarperSettings;
+	/** Page-cache refaults (pages read again after eviction) per component during the window: the reads that went to disk. */
+	refaultFilePages: Record<string, number>;
 	affinityVerifiedThreads: number;
 	/** Wall clock of the measured run, epoch ms. */
 	window: { startMs: number; endMs: number };
@@ -750,6 +883,9 @@ export async function measureWindow(
 	const before = await sampleResources(running.targets);
 	const generatorBefore = await cpuSecondsOf(driver.pids);
 	const host = startHostLoad(running.targets);
+	const refaultsBefore: Record<string, number> = {};
+	for (const [name, scope] of Object.entries(running.targets.cgroups))
+		refaultsBefore[name] = (await readCgroupMemory(scope)).workingsetRefaultFile;
 	const counters = session.perfCounters ? await startCounters(running.targets.cgroups, RESULTS_DIR) : undefined;
 	const startMs = Date.now();
 	memory.start();
@@ -784,8 +920,10 @@ export async function measureWindow(
 	const window = { startMs, endMs: Date.now() };
 	const hostLoad = await host.stop();
 	const cgroupMemory: Record<string, CgroupMemory> = {};
+	const refaultFilePages: Record<string, number> = {};
 	for (const [name, scope] of Object.entries(running.targets.cgroups)) {
 		cgroupMemory[name] = await readCgroupMemory(scope);
+		refaultFilePages[name] = cgroupMemory[name].workingsetRefaultFile - refaultsBefore[name];
 		// Every component's cgroup is created for this sample, so any kill belongs to it.
 		const kills = cgroupMemory[name].events.oom_kill ?? 0;
 		if (kills > 0) throw new Error(`${name}: ${kills} OOM kill(s) during this sample — sample invalid`);
@@ -852,6 +990,8 @@ export async function measureWindow(
 				? undefined
 				: checkpointsAfter - checkpointsBefore,
 		recordCacheSize: running.recordCacheSize,
+		harperSettings: running.harperSettings,
+		refaultFilePages,
 		affinityVerifiedThreads,
 		window,
 		host: hostLoad,
@@ -1083,6 +1223,19 @@ async function prepareDataDirs(): Promise<{ base: string; harperRoot: string }> 
 }
 
 /** HEAD of a checkout, or the REVISION file an exported (git archive) tree carries instead. */
+/**
+ * SHA-256 of the built files this branch's diagnostic probes patch in place (README, "Record-cache
+ * probe"): a digest that differs from a clean build's marks an instrumented session.
+ */
+function buildDigests(root: string): Record<string, string> {
+	const digests: Record<string, string> = {};
+	for (const file of ['dist/resources/PrimaryRocksDatabase.js', 'node_modules/weak-lru-cache/dist/index.cjs']) {
+		const path = join(root, file);
+		digests[file] = existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : 'missing';
+	}
+	return digests;
+}
+
 function gitRevision(root: string): string {
 	try {
 		return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
@@ -1132,11 +1285,11 @@ export async function createSession(
 		throw new Error('--uws is gone: the HTTP backend is part of the target (harper-uws, harper-uws-sized)');
 	}
 	if (cache === 'cold') {
-		// Cold Postgres is pg-only. A sized target is the warm configuration by definition, and a
+		// Cold Postgres is pg-only. A sized or tuned target is a warm configuration by definition, and a
 		// base build need not read HARPER_RECORD_CACHE_SIZE (6d725818 does not).
 		const refused = targets.filter((t) => {
-			const spec = TARGETS[t];
-			return spec.kind === 'stack' ? spec.cache : spec.sized || spec.base;
+			const spec: HarperTarget | StackTarget = TARGETS[t];
+			return spec.kind === 'stack' ? spec.cache : spec.sized || spec.base || spec.tuning !== undefined;
 		});
 		if (refused.length > 0) throw new Error(`--cache=cold does not support ${refused.join(', ')}`);
 	}
@@ -1196,8 +1349,14 @@ export async function createSession(
 		const spec = TARGETS[t];
 		return spec.kind === 'harper' && (spec.sized || cache === 'cold');
 	});
-	if (sizesCache && options.engine !== 'rocksdb') {
-		throw new Error(`HARPER_RECORD_CACHE_SIZE only applies to the rocksdb engine, not ${options.engine}`);
+	const tuned = targets.filter((t) => {
+		const spec: HarperTarget | StackTarget = TARGETS[t];
+		return spec.kind === 'harper' && spec.tuning !== undefined;
+	});
+	if ((sizesCache || tuned.length > 0) && options.engine !== 'rocksdb') {
+		throw new Error(
+			`HARPER_RECORD_CACHE_SIZE and the RocksDB tuning of ${tuned.join(', ') || 'sized targets'} only apply to the rocksdb engine, not ${options.engine}`
+		);
 	}
 
 	// Harper inherits this environment: an exported value would silently retune or re-back a target.
@@ -1299,7 +1458,7 @@ export async function createSession(
 		recordCacheSize: sizesCache ? session.recordCacheSize : undefined,
 		shards: session.shards,
 		dataDir: base,
-		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT) },
+		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT), digests: buildDigests(REPO_ROOT) },
 		harperBase: baseHarperBin
 			? { bin: baseHarperBin, revision: gitRevision(join(baseHarperBin, '..', '..', '..')) }
 			: undefined,

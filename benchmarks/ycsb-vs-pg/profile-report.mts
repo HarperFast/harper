@@ -236,6 +236,33 @@ export function rocksdbPart(stack: string[]): string {
 	return 'JS glue, napi, other';
 }
 
+// Innermost matching frame wins, so a scavenge's own helpers (ScavengerJobTask) and a mark-compact's
+// evacuation under MarkCompactCollector::CollectGarbage each land in their own phase.
+const GC_PHASES: [RegExp, string][] = [
+	[/Scavenger|ScavengerCollector|Heap::Scavenge\b|MinorMarkSweep|MinorGCJob|ScavengeJob/, 'scavenge'],
+	[
+		/ClearNonLiveReferences|ClearJSWeakRefs|ClearWeakCollections|ClearWeakReferences/,
+		'major: clearing weak references',
+	],
+	[
+		/ConcurrentMarking|IncrementalMarking|MarkingVisitor|MarkingBarrier|MarkingWorklist|MarkCompactCollector::(Mark|ProcessMarking|ProcessEphemeron|StartMarking|FinishConcurrentMarking|RetainMaps)|Heap::StartIncrementalMarking|cppgc::internal::Marker/,
+		'major: marking',
+	],
+	[
+		/Evacuat|PointersUpdating|UpdatingItem|MarkCompactCollector::(UpdatePointers|Compact)|Compactor/,
+		'major: compaction',
+	],
+	[/Sweeper|SweepingJob|MarkCompactCollector::Sweep|cppgc::internal::Sweeper/, 'sweeping'],
+];
+
+/** The GC phase of a sample in the gc bucket, by its innermost frame that names one. */
+export function gcPhase(stack: string[]): string {
+	for (let i = stack.length - 1; i >= 0; i--) {
+		for (const [pattern, phase] of GC_PHASES) if (pattern.test(stack[i])) return phase;
+	}
+	return 'other GC';
+}
+
 interface ProfileRow {
 	label: string;
 	file: string;
@@ -248,6 +275,8 @@ interface ProfileRow {
 	/** bucket -> µs/op in kernel mode */
 	kernelMicrosPerOp: Record<string, number>;
 	rocksdbParts: Record<string, number>;
+	/** The gc bucket's µs/op by phase; the phases sum to the bucket. */
+	gcParts: Record<string, number>;
 	topSelf: Record<string, [string, number][]>;
 	/** Harper's own JS frames by inclusive µs/op: the request pipeline's stages. */
 	topInclusive: [string, number][];
@@ -278,6 +307,7 @@ async function analyze(
 	const microsPerOp: Record<string, number> = {};
 	const kernelMicrosPerOp: Record<string, number> = {};
 	const rocksdbParts: Record<string, number> = {};
+	const gcParts: Record<string, number> = {};
 	const topSelf: Record<string, Map<string, number>> = {};
 	const inclusive = new Map<string, number>();
 	const pipelineSelf: Record<string, Map<string, number>> = {};
@@ -304,6 +334,9 @@ async function analyze(
 			if (bucket === 'rocksdb') {
 				const part = rocksdbPart(stack);
 				rocksdbParts[part] = (rocksdbParts[part] ?? 0) + us;
+			} else if (bucket === 'gc') {
+				const phase = gcPhase(stack);
+				gcParts[phase] = (gcParts[phase] ?? 0) + us;
 			}
 			// The innermost frame that is not kernel, libc or a V8 builtin: what to look at first.
 			let leaf = stack.length - 1;
@@ -333,6 +366,7 @@ async function analyze(
 		microsPerOp,
 		kernelMicrosPerOp,
 		rocksdbParts,
+		gcParts,
 		topInclusive: [...inclusive].sort((a, b) => b[1] - a[1]).slice(0, 40),
 		pipeline: Object.fromEntries(
 			Object.entries(pipelineUs).map(([layer, us]) => [
@@ -589,6 +623,8 @@ async function main(): Promise<void> {
 		}
 		const parts = Object.entries(r.rocksdbParts).sort((a, b) => b[1] - a[1]);
 		if (parts.length > 0) out.push(`RocksDB read: ${parts.map(([p, us]) => `${p} ${us.toFixed(1)}`).join(', ')} µs/op`);
+		const phases = Object.entries(r.gcParts).sort((a, b) => b[1] - a[1]);
+		if (phases.length > 0) out.push(`GC: ${phases.map(([p, us]) => `${p} ${us.toFixed(2)}`).join(', ')} µs/op`);
 		for (const bucket of used) {
 			const top = r.topSelf[bucket];
 			if (!top || (r.microsPerOp[bucket] ?? 0) < 1) continue;

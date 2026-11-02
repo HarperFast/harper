@@ -342,6 +342,8 @@ export interface CgroupMemory {
 	/** Page cache charged to the cgroup, shared memory (Postgres shared_buffers) included. */
 	fileBytes: number;
 	shmemBytes: number;
+	/** memory.stat workingset_refault_file: file pages read again after the cgroup evicted them. */
+	workingsetRefaultFile: number;
 	/** Lifetime high-water mark, load and restore included. */
 	peakBytes: number;
 	/** memory.events counters: low, high, max, oom, oom_kill, oom_group_kill. */
@@ -364,6 +366,7 @@ export async function readCgroupMemory(scope: string): Promise<CgroupMemory> {
 		anonBytes: stat.anon,
 		fileBytes: stat.file,
 		shmemBytes: stat.shmem,
+		workingsetRefaultFile: stat.workingset_refault_file,
 		peakBytes: Number(await readFile(`${scope}/memory.peak`, 'utf8')),
 		events: keyedCounters(await readFile(`${scope}/memory.events`, 'utf8')),
 	};

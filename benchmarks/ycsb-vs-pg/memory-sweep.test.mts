@@ -11,8 +11,17 @@ import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from 
 import { checkOwnCgroup, foreignPids, isInstanceMonitor } from './resources.mts';
 import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
-import { classify, pipelineLayer, rocksdbPart } from './profile-report.mts';
-import { TARGETS, parseTargets, writeJsonAtomic, MEMORY_BUDGET_BYTES, primaryLatency } from './run-compare.mts';
+import { classify, gcPhase, pipelineLayer, rocksdbPart } from './profile-report.mts';
+import {
+	TARGETS,
+	parseTargets,
+	writeJsonAtomic,
+	MEMORY_BUDGET_BYTES,
+	primaryLatency,
+	harperSettings,
+	harperNodeOptions,
+} from './run-compare.mts';
+import { PERF_NODE_OPTIONS } from './perfProfile.mts';
 import { SWEEP_STACK_MEMORY, WARM_STACK_MEMORY } from './pgStack.mts';
 
 test('dataset ratios size the record count from the logical payload', () => {
@@ -57,9 +66,57 @@ test('targets carry their HTTP backend and cache sizing', () => {
 		'harper-uws': { uws: true, sized: false },
 		'harper-uws-sized': { uws: true, sized: true },
 		'harper-base': { uws: false, sized: false },
+		'harper-uws-rc3g-4t': { uws: true, sized: false },
+		'harper-uws-rc3g-2t': { uws: true, sized: false },
+		'harper-uws-rc3g-4t-vt128k': { uws: true, sized: false },
+		'harper-uws-vt16m': { uws: true, sized: false },
+		'harper-uws-2t': { uws: true, sized: false },
 	});
 	deepStrictEqual(parseTargets('harper-uws, pg-redis'), ['harper-uws', 'pg-redis']);
 	throws(() => parseTargets('harper,uws'), /unknown target "uws"/);
+});
+
+test('a tuned target launches with its own threads and memory settings; the rest keep the defaults', () => {
+	const warm = { cache: 'warm' as const, recordCacheSize: 262_144, options: { threads: 4 } };
+	deepStrictEqual(harperSettings(TARGETS['harper-uws'], warm), { threads: 4 });
+	deepStrictEqual(harperSettings(TARGETS['harper-uws-sized'], warm), { threads: 4, recordCacheSize: 262_144 });
+	deepStrictEqual(harperSettings(TARGETS['harper-uws-sized'], warm, { recordCacheSize: 1 << 25 }), {
+		threads: 4,
+		recordCacheSize: 1 << 25,
+	});
+	deepStrictEqual(harperSettings(TARGETS['harper-uws-2t'], warm), { threads: 2 });
+	const b = harperSettings(TARGETS['harper-uws-rc3g-4t'], warm, { recordCacheSize: 1 << 25 });
+	strictEqual(b.threads, 4);
+	strictEqual(b.recordCacheSize, TARGETS['harper-uws-rc3g-4t'].tuning.recordCacheSize, 'the tuning wins');
+	strictEqual(b.verificationTableEntries, 2 ** 24);
+	const c = harperSettings(TARGETS['harper-uws-rc3g-2t'], { ...warm, options: { threads: 8 } });
+	strictEqual(c.threads, 2);
+	const noVt = harperSettings(TARGETS['harper-uws-rc3g-4t-vt128k'], warm);
+	strictEqual('verificationTableEntries' in noVt, false, 'left out, so rocksdb-js keeps its default');
+	deepStrictEqual(
+		{ ...noVt, verificationTableEntries: b.verificationTableEntries },
+		{ ...b },
+		'the control differs from B only in the verification table'
+	);
+	deepStrictEqual(harperSettings(TARGETS['harper-uws-vt16m'], warm), { threads: 4, verificationTableEntries: 2 ** 24 });
+	for (const name of Object.keys(TARGETS) as (keyof typeof TARGETS)[]) {
+		const spec = TARGETS[name];
+		if (spec.kind !== 'harper') continue;
+		const settings = harperSettings(spec, warm);
+		const { recordCacheSize = 32_768, maxHeapMemoryMb, blockCacheBytes, verificationTableEntries } = settings;
+		strictEqual(Number.isSafeInteger(recordCacheSize) && recordCacheSize <= 16_777_216, true, `${name} cache size`);
+		for (const value of [maxHeapMemoryMb, blockCacheBytes, verificationTableEntries])
+			strictEqual(value === undefined || (Number.isSafeInteger(value) && value > 0), true, `${name} tuning`);
+	}
+});
+
+test("Harper's NODE_OPTIONS carry the profiler flags and the verification-table preload together", () => {
+	strictEqual(harperNodeOptions(false, { threads: 4 }), '');
+	strictEqual(harperNodeOptions(true, { threads: 4 }), PERF_NODE_OPTIONS);
+	const both = harperNodeOptions(true, { threads: 4, verificationTableEntries: 2 ** 24 }).split(' ');
+	strictEqual(both.slice(0, -1).join(' '), PERF_NODE_OPTIONS);
+	strictEqual(/^--import=file:\/\/.*\/vtPreload\.mjs$/.test(both.at(-1)!), true);
+	strictEqual(harperNodeOptions(false, { threads: 4, verificationTableEntries: 0 }).startsWith('--import='), true);
 });
 
 test('every stack split sums to the memory budget', () => {
@@ -294,4 +351,71 @@ test('pipeline samples go to their innermost layer; native transaction work is n
 	);
 	strictEqual(pipelineLayer([...get, 'v8::internal::Scavenger::Process() (node)']), 'GC');
 	strictEqual(pipelineLayer(['http', 'uv_run (node)', 'uv__io_poll (node)']), 'event loop, microtasks');
+});
+
+test('a GC sample goes to the phase of its innermost frame that names one', () => {
+	const collect =
+		'v8::internal::Heap::CollectGarbage(v8::internal::AllocationSpace, v8::internal::GarbageCollectionReason, v8::GCCallbackFlags, v8::internal::PerformHeapLimitCheck, v8::internal::PerformIneffectiveMarkCompactCheck) (node)';
+	const perform = 'v8::internal::Heap::PerformGarbageCollection(v8::internal::GarbageCollector) (node)';
+	const cases: [string[], string][] = [
+		[
+			[
+				'http',
+				collect,
+				perform,
+				'v8::internal::Heap::Scavenge() (node)',
+				'v8::internal::ScavengerJobTask::ProcessItems(v8::JobDelegate*, v8::internal::Scavenger*) (node)',
+				'v8::internal::Scavenger::EvacuateInPlaceInternalizableString(...) (node)',
+			],
+			'scavenge',
+		],
+		[
+			[
+				'http',
+				'start_thread (libc.so.6)',
+				'v8::internal::ConcurrentMarking::JobTaskMajor::Run(v8::JobDelegate*) (node)',
+				'void v8::internal::BodyDescriptorBase::IteratePointers<v8::internal::ConcurrentMarkingVisitor>() (node)',
+				'memcpy (libc.so.6)',
+			],
+			'major: marking',
+		],
+		[
+			['http', 'Builtins_InterpreterEntryTrampoline (node)', 'v8::internal::MarkingBarrier::Write() (node)'],
+			'major: marking',
+		],
+		[
+			[
+				'http',
+				collect,
+				perform,
+				'v8::internal::MarkCompactCollector::CollectGarbage() (node)',
+				'v8::internal::MarkCompactCollector::Evacuate() (node)',
+				'v8::internal::Evacuator::EvacuatePage(v8::internal::MutablePage*) (node)',
+				'memmove (libc.so.6)',
+			],
+			'major: compaction',
+		],
+		[
+			[
+				'http',
+				'v8::internal::MarkCompactCollector::CollectGarbage() (node)',
+				'v8::internal::MarkCompactCollector::ClearNonLiveReferences() (node)',
+				'v8::internal::MarkCompactCollector::ClearJSWeakRefs() (node)',
+			],
+			'major: clearing weak references',
+		],
+		[
+			[
+				'http',
+				'v8::internal::Sweeper::SweeperJob::Run(v8::JobDelegate*) (node)',
+				'v8::internal::Sweeper::RawSweep() (node)',
+			],
+			'sweeping',
+		],
+		[['http', collect, perform], 'other GC'],
+	];
+	for (const [stack, phase] of cases) {
+		strictEqual(classify(stack, 'harper'), 'gc', `${phase} fixture is in the gc bucket`);
+		strictEqual(gcPhase(stack), phase);
+	}
 });
