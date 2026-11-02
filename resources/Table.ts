@@ -6618,7 +6618,6 @@ export function makeTable(options): TableResourceClass {
 									if (revisitedLogKey && nodeId == null) {
 										probedAuditRef = true;
 										if (resolvedEntry?.txnLogKey !== localTime) resolvedEntry = undefined;
-										if (resolvedEntry && resolvedAuditRefs?.has(`${resolvedEntry.nodeId ?? 0}:${localTime}`)) break;
 										if (fullUpdate && !resolvedEntry) {
 											let probeSteps = 0;
 											for (const entry of auditStore.getRange({ start: localTime, exactStart: true, readUncommitted: true })) {
