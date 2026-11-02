@@ -338,6 +338,7 @@ describe('legacy alasql LIKE', () => {
 		assert.throws(() => alasql.utils.like('a!', 'a', '!'), clientError);
 		assert.throws(() => alasql.utils.like('a!%', 'a%', '!!'), clientError);
 		assert.throws(() => alasql.utils.like('a%', 'a', ''), clientError);
+		assert.throws(() => alasql.utils.like('a%', 'a', 1), clientError);
 		assert.strictEqual(alasql.utils.like('a%', 'a'), true);
 	});
 

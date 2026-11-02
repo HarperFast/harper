@@ -8,10 +8,10 @@ let cachedPatterns = 0;
 // alasql passes no escape argument when the LIKE has no ESCAPE clause.
 function alasqlLike(pattern: unknown, value: unknown, escape?: unknown): boolean {
 	const patternText = String(pattern ?? '');
-	const escapeText = escape === undefined ? '' : String(escape);
-	if (escape !== undefined && escapeText.length !== 1) {
-		throw new ClientError(`LIKE ESCAPE must be a single character, got '${escapeText}'`);
+	if (escape !== undefined && (typeof escape !== 'string' || escape.length !== 1)) {
+		throw new ClientError(`LIKE ESCAPE must be a single character, got ${JSON.stringify(escape)}`);
 	}
+	const escapeText = escape === undefined ? '' : (escape as string);
 	let matches = cacheByEscape.get(escapeText)?.get(patternText);
 	if (!matches) {
 		matches = compileLikeTokens(tokenizeAlasqlLike(patternText, escapeText), true);
