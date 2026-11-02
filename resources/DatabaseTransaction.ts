@@ -920,9 +920,22 @@ function hasDurableLog(transaction: RocksTransaction | null | undefined, error?:
 	return error?.hasLog === true || Boolean(txn?.isRetry && txn?.hasStagedLog && !txn.relogOnRetry);
 }
 
+// An abort rocksdb-js could not mark leaves the batch for crash replay to apply.
+function unknownOutcomeNote(transaction: RocksTransaction, error?: { hasLog?: boolean }): string {
+	return abortedWithoutLog(transaction, error)
+		? ''
+		: '; its transaction-log entry could not be marked aborted, so it may still apply after a restart';
+}
+
 /** Whether aborting left nothing a reader or replay can apply: no log batch, or one rocksdb-js marked aborted. */
 function abortedWithoutLog(transaction: RocksTransaction | null | undefined, error?: { hasLog?: boolean }): boolean {
 	return !hasDurableLog(transaction, error) || (transaction as RocksTransactionWithRetry).abortMarked === true;
+}
+
+// A first attempt stages its log batch; a retry reuses it, unless the attempt it retries wrote none.
+function stagesLog(transaction: RocksTransaction): boolean {
+	const txn = transaction as RocksTransactionWithRetry;
+	return !txn.isRetry || txn.relogOnRetry === true;
 }
 
 function releaseTransactionLockHolds(transaction: RocksTransaction | null | undefined): void {
@@ -1626,6 +1639,8 @@ export class DatabaseTransaction implements Transaction {
 			if (relog) {
 				(transaction as any).logEntries = undefined;
 				(transaction as any).pendingStructureWatermarks = undefined;
+				// the batch was discarded; a re-staged entry claims the write again in save()
+				for (const write of this.writes) if (write?.appendedTo === transaction) write.appendedTo = undefined;
 				this.rekeyRefusedRetry(transaction);
 			}
 		}
@@ -2669,7 +2684,7 @@ export class DatabaseTransaction implements Transaction {
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-			if (!(transaction as RocksTransactionWithRetry).isRetry) operation.stagedAudit = 'none';
+			if (stagesLog(transaction)) operation.stagedAudit = 'none';
 			try {
 				completion = operation.commit(
 					writeVersion,
@@ -2713,7 +2728,7 @@ export class DatabaseTransaction implements Transaction {
 		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
 		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
 		// retries where a recommit round self-skips before a fresh-transaction replay.
-		if (!(transaction as RocksTransactionWithRetry).isRetry) {
+		if (stagesLog(transaction)) {
 			if (operation.skipped) operation.stagedAudit = undefined;
 			else if (operation.stagedAudit !== 'none') {
 				operation.appendedAuditEntry = true;
@@ -3375,7 +3390,8 @@ export class DatabaseTransaction implements Transaction {
 									// handle / read snapshot — or any unpublished transaction-log position — until GC.
 									this.abortChainAfterRetries(transaction);
 									throw new ServerError(
-										`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+										`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes` +
+											unknownOutcomeNote(transaction)
 									);
 								}
 								if ((this.sourceApply || mustRetry) && retries > 0 && retries % MAX_RETRIES === 0) {
@@ -3594,7 +3610,8 @@ export class DatabaseTransaction implements Transaction {
 										// handle / read snapshot until GC.
 										this.abortChainAfterRetries(transaction);
 										throw new ServerError(
-											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes` +
+												unknownOutcomeNote(transaction, error as any)
 										);
 									}
 									// Uncapped retry can otherwise stall silently (debug logging is off in production);

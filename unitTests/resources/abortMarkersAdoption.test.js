@@ -15,6 +15,7 @@ const {
 	setAbortMarkersForTests,
 } = require('#src/resources/transactionLogAbortMarkers');
 const { Transaction, ConflictKind, constants } = require('@harperfast/rocksdb-js');
+const { createBlob, saveBlob, holdBlobFile, setDeletionDelay } = require('#src/resources/blob');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -149,6 +150,25 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		assert.equal((await Audited.get(recordId)).writer, 'competitor');
 	});
 
+	it('says the outcome is unknown when the abort at the cap could not be marked', async function () {
+		const recordId = id('unmarked');
+		await seed(Audited, recordId);
+		conflictAtCommit(Audited, recordId, () => true);
+		const originalAbort = Transaction.prototype.abort;
+		const targetDb = Audited.primaryStore.store.db;
+		Transaction.prototype.abort = function (...args) {
+			const result = originalAbort.apply(this, args);
+			if (this.store?.db === targetDb && this.logWritten())
+				throw Object.assign(new Error('could not mark'), { code: 'ERR_TRANSACTION_ABORT_UNRESOLVED' });
+			return result;
+		};
+		restores.push(() => (Transaction.prototype.abort = originalAbort));
+		await assert.rejects(writeAfterRead(Audited, recordId, 'unmarked'), (error) => {
+			assert.match(error.message, /After 40 coordinated retries.*may still apply after a restart/);
+			return true;
+		});
+	});
+
 	it('abandons a logged commit still in conflict past the commit deadline with the 503', async function () {
 		const recordId = id('overdue');
 		await seed(Audited, recordId);
@@ -247,6 +267,52 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[1].key).length, 1);
 		assert.equal(Audited.primaryStore.getEntry(recordId).version, attempts[1].key);
 		assert.equal((await Audited.get(recordId)).writer, 'mine');
+	});
+
+	it('discards the blob of a re-logged retry that a newer write superseded', async function () {
+		const { RocksDatabase } = require('@harperfast/rocksdb-js');
+		RocksDatabase.config({ transactionLogWriteIntents: true });
+		restores.push(() => RocksDatabase.config({ transactionLogWriteIntents: false }));
+		const Blobs = table({
+			table: 'AbortMarkersBlobs',
+			database: 'abortMarkersBlobs',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }, { name: 'blob', type: 'Blob' }],
+			audit: true,
+		});
+		const recordId = id('blob-relog');
+		await seed(Blobs, recordId);
+		setDeletionDelay(0);
+		restores.push(() => setDeletionDelay(undefined));
+		let releaseHolder;
+		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
+		const holderContext = { timestamp: Date.now() + 60000 };
+		let holderStaged = false;
+		const holder = transaction(holderContext, async () => {
+			await Blobs.get(recordId, holderContext);
+			await Blobs.put({ id: recordId, writer: 'newer' }, holderContext);
+			await holderContext.transaction.save(holderContext.transaction.writes.find((write) => write.key === recordId));
+			holderStaged = true;
+			await holderGate;
+		});
+		await waitFor(() => holderStaged);
+		const blob = createBlob(Buffer.alloc(20000, 'r'), { saveBeforeCommit: true });
+		let write, release;
+		const context = { timestamp: OLD + 100 };
+		const mine = transaction(context, async () => {
+			await Blobs.get(recordId, context);
+			await Blobs.put({ id: recordId, writer: 'older', blob }, context);
+			write = context.transaction.writes.find((candidate) => candidate.key === recordId);
+			await context.transaction.save(write);
+			release = holdBlobFile(blob);
+		});
+		await delay(100); // parked behind the holder's intent
+		releaseHolder();
+		await holder;
+		await mine;
+		release?.();
+		assert.equal(write.skipped, true, 'the newer write supersedes the retried one');
+		assert.equal((await Blobs.get(recordId)).writer, 'newer');
+		assert.throws(() => saveBlob(blob), /Blob was discarded/, 'no committed entry references the blob');
 	});
 
 	it('keeps retrying a logged chain link once an earlier store committed', async function () {
