@@ -101,7 +101,7 @@ Each relationship step needs `read` on the related table and attribute (`Table._
 - Only records and relationship targets use a table's resolvers; plain JSON uses resolver-free `nestedSelectTransform` (`searchSelectProjection.test.js`).
 - Storage keeps only stored fields (`storedFieldsOnly`); `toJSON` is a projection.
 - **`relationship.from` accessors are synchronous** (v4 parity): `getSync`/`getEntry`, never `get()` (`query.test.js`). Resolving one marks the request uncacheable (`markRelatedReadUncacheable`), or a stale ETag yields a 304.
-- **Queries read related records asynchronously** (`loadEntries`), choose one or many by `toMany`, and check `getReadTransactionGuard` after each await (`relationshipAsyncReads.test.js`).
+- **Queries read related records asynchronously** (`loadEntries`), choose one or many by `toMany`, and check `getReadTransactionGuard` after each await (`relationshipAsyncReads.test.js`). Restrictions and sibling filters live under symbol keys (`relationshipRestriction`) so a relationship name never collides with map members; AND conditions on one relationship (including a leading to-one hop or nested select `conditions`) meet the same related record whichever leads, while an OR branch gets its own scope and decides rows without narrowing a sibling join or selection (`relationshipConditionScope.test.js`; OR multi-hop and to-one→to-many paths remain a gap, harper#3762).
 - **`@relationship(from, to)` joins `related[to] == local[from]`.** The resolver, `joinTo`/`joinFrom`, `transformEntryForSelect` and `filterByType` must agree.
 - `updatedAttributes` precompiles expressions before mutating, and retires removed accessors.
 - A new `_writeUpdate` early return follows the blob protocol. A new `Table.ts` section starts with `// #section:`.
@@ -335,7 +335,8 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay and 
 - **Capability is feature-detected per store** and answers are validated (`estimateRangeCondition`), so an odd store degrades to the heuristic rather than NaN-poisoning the order.
 - **The estimated range is the executed range**: `getRange` and `estimateCount` share `translateIndexBounds`.
 - Secondary-index scans open at `null` exclusive; primary scans at `true`, past symbol-keyed metadata (`searchBooleanFalseIndex.test.js`).
-- A negated condition estimates `Infinity`. Non-driving filters drop null and omitted values, as ranges do (harper#3212; `estimateRangeCondition.test.js`).
+- A negated condition estimates `Infinity`; an AND group's estimate ignores non-finite legs and is `Infinity` only when every leg is (`estimateConditionForTable`, `estimateFilterOnlySibling.test.js`; gap: `intersectionEstimate` still multiplies `Infinity` into the incoming-row hint). Non-driving filters drop null and omitted values, as ranges do (harper#3212; `estimateRangeCondition.test.js`).
+- **An AND leads with its narrowest condition that can drive an index scan** (`orderConditions`, `conditionDrivesIndex`), because `in`, an empty `starts_with` and unindexed ranges estimate finite counts (kept finite for `count: 'estimated'` and the lazy index switch) yet full-scan. A relationship condition drives when each hop's local join index and the leaf scan can run (`relationshipScanRuns`; an unindexed local FK never drives, even under `allowFullScan: true`), and a leading synthetic index-order `sort` keeps the lead to stream a sorted page.
 
 ## Chained query conditions scope one array element; FIQL tokens always advance
 

@@ -1,6 +1,6 @@
 # resources/ — map
 
-Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read the note before you change code it names. To list the symbols in a file, run `npm run outline -- <file>` where that script exists, or use the LSP tool's document/workspace symbol lookup. `grep -n '#section:' resources/Table.ts` lists the sections of the `makeTable()` factory.
+Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read the note before you change code it names. To list the symbols in a file, run `npm run outline -- <file>` or use the LSP tool's document/workspace symbol lookup. `grep -n '#section:' resources/Table.ts` lists the sections of the `makeTable()` factory.
 
 ## Files
 
@@ -14,7 +14,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `RocksTransactionLogStore.ts`, `auditStore.ts` — per-origin transaction logs; audit records, audit floor, database generation
 - `replayLogs.ts`, `replayLogsGuards.ts` — crash replay of the transaction logs
 - `transactionBroadcast.ts`, `IterableEventQueue.ts` — commit notification fan-out; subscription queues
-- `subscriptionCheckpoint.ts`, `originClosedFloor.ts` — per-origin subscription checkpoints; the certified `local` log floor
+- `subscriptionCheckpoint.ts`, `originClosedFloor.ts` — per-origin subscription checkpoints; the certified local log floor
 - `search.ts` — FIQL parsing, condition planning and estimation, index scans, joins
 - `blob.ts` — file-backed blobs: saving, compression, cleanup, reclamation
 - `tracked.ts`, `crdt.ts` — tracked-instance changes; CRDT operations and history reconstruction

@@ -136,12 +136,6 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 - **[storage-format.md](storage-format.md)** — on-disk layout (RocksDB/LMDB).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — contribution workflow.
 
-### Directory maps
-
-A `MAP.md` indexes one directory's files and concepts by symbol. Claude Code loads it automatically through that directory's `CLAUDE.md` (`@MAP.md`). Codex, Gemini and other agents do not, so open it before working in the directory.
-
-- [resources/MAP.md](resources/MAP.md)
-
 ---
 
 ## Detailed navigation
@@ -152,7 +146,7 @@ Find code by symbol instead of reading files top-to-bottom:
 - **Concepts:** a directory's `MAP.md` points each file and each question a reader brings at the symbols that answer it. Claude Code loads it through that directory's `CLAUDE.md`; Codex and Gemini do not, so read the directory's map from the list below before its source.
 - **Invariants:** the directory's `DESIGN.md`, indexed from [DESIGN.md](DESIGN.md): why the code is the way it is, kept within the byte budgets that file sets.
 
-Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked here): none yet.
+Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked here): [resources/MAP.md](resources/MAP.md).
 
 For megafiles and complex subsystems, the design notes to read first:
 
