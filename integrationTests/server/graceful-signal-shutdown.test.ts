@@ -89,7 +89,6 @@ interface Exit {
 	afterMs: number;
 }
 
-/** The process's exit, timed from `since`; SIGKILLs it (and reports so) past `limitMs`. */
 async function exitOf(proc: ChildProcess, since: number, limitMs = 30_000): Promise<Exit> {
 	if (proc.exitCode !== null || proc.signalCode !== null)
 		return { code: proc.exitCode, signal: proc.signalCode, afterMs: Date.now() - since };

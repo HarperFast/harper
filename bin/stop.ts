@@ -15,7 +15,7 @@ const EXIT_POLL_INTERVAL_MS = 100;
 
 export default stop;
 
-/** Signals the running instance and waits for it to exit, so a following `harper start` cannot race its shutdown. */
+// waits for the exit, so a following `harper start` cannot race the shutdown
 async function stop() {
 	console.log(STOP_MSG);
 	hdbLogger.notify(STOP_MSG);

@@ -413,7 +413,6 @@ function getProcessExitDeadline(): number | undefined {
 	return processExitDeadline || undefined;
 }
 
-/** Resolves once the workers {@link stopWorkersForExit} stopped have exited; at once if it has not run. */
 function whenWorkersStoppedForExit() {
 	return workersStoppedForExit;
 }
