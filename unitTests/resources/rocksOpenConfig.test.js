@@ -41,6 +41,7 @@ describe('openRocksDatabase storage.rocks config', function () {
 		setupTestDBPath();
 		for (const key of [
 			CONFIG_PARAMS.STORAGE_ROCKS_ARENABLOCKSIZE,
+			CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE,
 			CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY,
 		]) {
 			priorValues.set(key, env.get(key));
@@ -111,6 +112,7 @@ describe('openRocksDatabase storage.rocks config', function () {
 			originalConfig.call(RocksDatabase, rest);
 		});
 		try {
+			env.setProperty(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE, 64 * 1024 * 1024);
 			env.setProperty(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY, 'largestAcrossDBs');
 			open({});
 			env.setProperty(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY, undefined);
