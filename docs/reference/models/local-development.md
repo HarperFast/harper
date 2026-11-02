@@ -85,7 +85,7 @@ models:
       model: Qwen/Qwen2.5-7B-Instruct
 ```
 
-**Embedding compatibility.** Embedding vectors are only comparable within a single model's vector space, and models differ in dimensionality. Vectors written locally with one embedding model cannot be meaningfully searched against vectors produced in production by another — which matters whenever embedded data, or an [HNSW index](../database/schema#vector-indexing) built from [`@embed`](../database/schema#embed) vectors, moves between environments. Where embedded data crosses environments, use the same embedding model in both — for example, an open model served by Ollama locally and by an OpenAI-compatible host in production — or re-embed after the move.
+**Embedding compatibility.** Embedding vectors are only comparable within a single model's vector space, and models differ in dimensionality. Vectors written locally with one embedding model cannot be meaningfully searched against vectors produced in production by another — which matters whenever embedded data, or an [HNSW index](../database/schema#vector-indexing) built from [`@embed`](../database/schema#embed) vectors, moves between environments. Where embedded data crosses environments, use the same embedding model in both — for example, an open model served by Ollama locally and by an OpenAI-compatible host in production — or re-embed after the move. Task-prefix text must match too: Ollama adds Nomic prefixes for `inputType: 'document'` or `'query'` automatically, while an OpenAI embedding entry needs the matching [`inputPrefixes`](./backends#embedding-task-prefixes) configured from v5.4.0.
 
 ## Per-environment configuration
 

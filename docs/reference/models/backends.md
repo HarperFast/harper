@@ -80,13 +80,14 @@ models:
       model: meta-llama/Llama-3.1-8B-Instruct
 ```
 
-| Field          | Default                     | Description                                                                                                     |
-| -------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `apiKey`       | — (required)                | API key, sent as a bearer token. Use `${VAR}` indirection                                                       |
-| `baseUrl`      | `https://api.openai.com/v1` | API root; point at any OpenAI-compatible endpoint                                                               |
-| `model`        | —                           | Model name, e.g. `gpt-4o`, `text-embedding-3-large`                                                             |
-| `organization` | —                           | Sent as the `OpenAI-Organization` header, for keys spanning multiple organizations                              |
-| `truncation`   | —                           | From v5.4.0, `vllm` on an embedding entry served by vLLM 0.18 or later, so `embed()` can honor `truncate: true` |
+| Field           | Default                     | Description                                                                                                                                   |
+| --------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apiKey`        | — (required)                | API key, sent as a bearer token. Use `${VAR}` indirection                                                                                     |
+| `baseUrl`       | `https://api.openai.com/v1` | API root; point at any OpenAI-compatible endpoint                                                                                             |
+| `model`         | —                           | Model name, e.g. `gpt-4o`, `text-embedding-3-large`                                                                                           |
+| `organization`  | —                           | Sent as the `OpenAI-Organization` header, for keys spanning multiple organizations                                                            |
+| `truncation`    | —                           | From v5.4.0, `vllm` on an embedding entry served by vLLM 0.18 or later, so `embed()` can honor `truncate: true`                               |
+| `inputPrefixes` | unset                       | Optional `document` and `query` strings on embedding entries only. See [Embedding task prefixes](#embedding-task-prefixes) (Added in: v5.4.0) |
 
 `responseFormat: 'json'` maps to OpenAI's JSON mode and `responseFormat: { schema }` to strict structured outputs (`json_schema`); OpenAI-compatible servers vary in their support for these.
 
@@ -104,6 +105,43 @@ models:
       model: BAAI/bge-m3
       truncation: vllm
 ```
+
+### Embedding task prefixes
+
+<VersionBadge version="v5.4.0" />
+
+OpenAI embedding entries can opt into task prefixes with `inputPrefixes`:
+
+```yaml
+models:
+  embedding:
+    default:
+      backend: openai
+      apiKey: ${EMBEDDING_API_KEY}
+      baseUrl: http://localhost:8000/v1
+      model: nomic-ai/nomic-embed-text-v1.5
+      inputPrefixes:
+        document: 'search_document: '
+        query: 'search_query: '
+```
+
+`inputPrefixes` is supported only on `models.embedding` entries with `backend: openai`; it is rejected on OpenAI generative entries and on the other built-in backends. Its `document` and `query` values are optional strings, including empty strings; non-string values and unknown keys are rejected. An unresolved `${VAR}` prefix is a registration-time error: Harper logs it and skips that entry at startup without blocking other entries, or keeps the previous entry on reload. Quote values to preserve trailing spaces.
+
+Harper prepends the matching string to each input in the batch when `embed()` specifies `inputType: 'document'` or `inputType: 'query'`. With no `inputType`, no `inputPrefixes`, or no matching key, the input is sent unchanged. Each fallback entry applies its own prefixes to the original input.
+
+Harper's OpenAI-compatible HTTP embedding endpoint, `POST /v1/embeddings`, does not set `inputType`, so its callers must add task prefixes themselves.
+
+The `@embed` write hook sets `inputType: 'document'`. Set `inputType: 'query'` when embedding search text:
+
+```js
+const [queryVector] = await models.embed('What is Harper?', { inputType: 'query' });
+```
+
+Both [nomic-embed-text-v1](https://huggingface.co/nomic-ai/nomic-embed-text-v1#usage) and [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5#usage) require `"search_document: "` for retrieval documents and `"search_query: "` for retrieval queries. For other models, follow the model author's instructions and leave prefixes unset unless required.
+
+Prefixes are concatenated exactly: Harper does not trim text or detect an existing prefix. Remove any application wrapper adding the same prefix when enabling this option, and leave it unset if the endpoint already adds the task instruction. Existing embedding config entries retain their previous behavior until configured. A config reload applies prefix changes immediately. Changing the text sent for existing documents requires rewriting their source fields to re-embed those documents; switching from a wrapper that already adds these exact strings preserves input bytes.
+
+Ollama already applies these two prefixes for model names containing `nomic-embed-text` when `inputType` is present. Its existing behavior is unchanged; `inputPrefixes` is an OpenAI embedding setting.
 
 ## Anthropic
 

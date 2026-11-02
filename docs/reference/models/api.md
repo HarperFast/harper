@@ -21,16 +21,16 @@ Converts one or more strings into embedding vectors. The result is always an arr
 import { models } from 'harper';
 
 const [single] = await models.embed('What is Harper?', { inputType: 'query' });
-const batch = await models.embed(['first document', 'second document']);
+const batch = await models.embed(['first document', 'second document'], { inputType: 'document' });
 ```
 
-| Option      | Type                      | Default     | Description                                                                                                                                            |
-| ----------- | ------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `model`     | `string`                  | `'default'` | Logical name of a configured embedding model                                                                                                           |
-| `requires`  | `Capability[]`            | —           | Capabilities the chosen backend must satisfy; used by [routing](./routing#capability-routing) to select a candidate in the group                       |
-| `inputType` | `'document'` \| `'query'` | —           | Hint for models that distinguish document embeddings from query embeddings (e.g. `nomic-embed-text`); ignored by models that do not                    |
-| `truncate`  | `boolean`                 | `false`     | From v5.4.0, cut each input to what the model accepts instead of failing on an over-long input — see [Truncating long inputs](#truncating-long-inputs) |
-| `signal`    | `AbortSignal`             | —           | Cancels the call; composed with the backend's configured `requestTimeoutMs`                                                                            |
+| Option      | Type                      | Default     | Description                                                                                                                                                                          |
+| ----------- | ------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `model`     | `string`                  | `'default'` | Logical name of a configured embedding model                                                                                                                                         |
+| `requires`  | `Capability[]`            | —           | Capabilities the chosen backend must satisfy; used by [routing](./routing#capability-routing) to select a candidate in the group                                                     |
+| `inputType` | `'document'` \| `'query'` | —           | Document/query hint. OpenAI embedding entries require configured [inputPrefixes](./backends#embedding-task-prefixes) (Added in: v5.4.0). Ollama applies Nomic prefixes automatically |
+| `truncate`  | `boolean`                 | `false`     | From v5.4.0, cut each input to what the model accepts instead of failing on an over-long input — see [Truncating long inputs](#truncating-long-inputs)                               |
+| `signal`    | `AbortSignal`             | —           | Cancels the call; composed with the backend's configured `requestTimeoutMs`                                                                                                          |
 
 ### Truncating long inputs
 
