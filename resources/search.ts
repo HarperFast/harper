@@ -930,8 +930,6 @@ function negativeZeroShape(key: any, primaryKey: any): boolean {
 	return (typeof key === 'object' && key !== null) || (key === '\x18' && primaryKey?.[0] === null);
 }
 
-// resolves the stored value (or array element) a truncated overflow key stands for, in the scan's snapshot,
-// admitting the entry only if the condition matches that value
 function overflowResolver(
 	Table: any,
 	searchCondition: any,
@@ -948,16 +946,16 @@ function overflowResolver(
 		return entry.recovered === undefined ? SKIP : entry;
 	};
 	return (sync: boolean, entry) => {
-		const read = () => recover(entry, Table.primaryStore.getEntry(entry.value, { transaction })?.value);
-		if (sync) return read();
-		if (!filter)
-			return when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
+		if (sync) return recover(entry, Table.primaryStore.getEntry(entry.value, { transaction })?.value);
+		const load = () =>
+			when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
 				recover(entry, loaded?.value)
 			);
+		if (!filter) return load();
 		return new Promise((resolve, reject) =>
 			setImmediate(() => {
 				try {
-					resolve(read());
+					resolve(load());
 				} catch (error) {
 					reject(error);
 				}
@@ -1026,7 +1024,6 @@ function coverIndexEntries(
 		return entry;
 	};
 	return entries.map(function (entry) {
-		// without an admission stage (no filter, no dedupe), exceptional entries are settled here
 		if (resolveOverflow) {
 			if (negativeZeroShape(entry.key, entry.value)) return entry.value;
 			if (coverAttribute && typeof entry.key === 'string' && entry.key.length > MAX_SEARCH_KEY_LENGTH) {

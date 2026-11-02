@@ -576,6 +576,36 @@ describe('Secondary-index range select', function () {
 			}
 		});
 
+		it('rejects an overflow entry before the dedupe of a declared array, so a matching element keeps the row', async function () {
+			const Paths = table({
+				table: 'IndexRangeCoveredOverflowDedupeTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'paths', indexed: true, elements: { type: 'String' } },
+				],
+			});
+			try {
+				const long = (suffix) => 'g'.repeat(300) + suffix;
+				await Paths.put(1, { paths: [long('x'), 'z-match'] });
+				await Paths.put(2, { paths: [long('a'), long('match')] });
+				const query = { conditions: [{ attribute: 'paths', comparator: 'ends_with', value: 'match' }] };
+				for (const reverse of [false, true]) {
+					assert.deepStrictEqual(await rows(Paths, { ...query, reverse, select: ['id', 'paths'] }), [
+						...(reverse ? [] : [{ id: 2, paths: long('match') }]),
+						{ id: 1, paths: 'z-match' },
+						...(reverse ? [{ id: 2, paths: long('match') }] : []),
+					]);
+					assert.deepStrictEqual(
+						rowsSync(Paths, { ...query, reverse, select: ['id'] }).map(({ id }) => id),
+						reverse ? [1, 2] : [2, 1]
+					);
+				}
+			} finally {
+				Paths.dropTable();
+			}
+		});
+
 		it('keeps a value the declared type cannot reconstruct as the index holds it', async function () {
 			const attributes = (amount, when) => [
 				{ name: 'id', isPrimaryKey: true },
