@@ -820,6 +820,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
 	STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS: 'storage_rocks_transactionLogAbortMarkers',
+	STORAGE_ROCKS_TRANSACTIONLOGWRITEINTENTS: 'storage_rocks_transactionLogWriteIntents',
 	STORAGE_ROCKS_COMPRESSION: 'storage_rocks_compression',
 	STORAGE_ROCKS_BLOCKCACHESIZE: 'storage_rocks_blockCacheSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE: 'storage_rocks_writeBufferManagerSize',

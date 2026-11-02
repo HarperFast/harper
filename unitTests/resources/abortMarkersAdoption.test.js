@@ -12,7 +12,9 @@ const { auditHistoryAbortMarked, establishAbortMarkedHistory } = require('#src/r
 const {
 	abortMarkersEnabled,
 	resolveAbortMarkersSetting,
+	resolveWriteIntentsSetting,
 	setAbortMarkersForTests,
+	setWriteIntentsForTests,
 } = require('#src/resources/transactionLogAbortMarkers');
 const { Transaction, ConflictKind, constants } = require('@harperfast/rocksdb-js');
 const { createBlob, saveBlob, holdBlobFile, setDeletionDelay } = require('#src/resources/blob');
@@ -110,12 +112,63 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		});
 	}
 
-	it('is on unless configured false', function () {
+	async function relogAfterRefusal(targetTable) {
+		const recordId = id('relog');
+		await seed(targetTable, recordId);
+		const targetDb = targetTable.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const attempts = [];
+		let holderId;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb || this.id === holderId) return originalCommit.apply(this, args);
+			const result = await originalCommit.apply(this, args);
+			attempts.push({ kind: this.lastConflictKind(), logWritten: this.logWritten(), key: this.getTimestamp() });
+			return result;
+		};
+		restores.push(() => (Transaction.prototype.commit = originalCommit));
+		let releaseHolder;
+		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
+		const holderContext = {};
+		const holder = transaction(holderContext, async () => {
+			await targetTable.get(recordId, holderContext);
+			await targetTable.put({ id: recordId, writer: 'holder' }, holderContext);
+			const write = holderContext.transaction.writes.find((candidate) => candidate.key === recordId);
+			await holderContext.transaction.save(write);
+			holderId = holderContext.transaction.transaction.id;
+			await holderGate;
+			throw new Error('holder gives up');
+		});
+		holder.catch(() => {});
+		await waitFor(() => holderId !== undefined);
+		const mine = writeAfterRead(targetTable, recordId, 'mine');
+		await delay(100); // parked behind the holder's intent
+		releaseHolder();
+		await mine;
+		await assert.rejects(holder, /holder gives up/);
+		assert.equal(attempts.length, 2);
+		assert.deepEqual(
+			{ kind: attempts[0].kind, logWritten: attempts[0].logWritten },
+			{ kind: ConflictKind.intentBeforeLog, logWritten: false }
+		);
+		assert.equal(attempts[1].logWritten, true);
+		assert.ok(attempts[1].key > attempts[0].key, 'the re-logged retry takes a fresh key');
+		const entries = auditEntries(targetTable, recordId);
+		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[0].key).length, 0);
+		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[1].key).length, 1);
+		assert.equal(targetTable.primaryStore.getEntry(recordId).version, attempts[1].key);
+		assert.equal((await targetTable.get(recordId)).writer, 'mine');
+	}
+
+	it('turns markers on unless configured false, and write intents only when configured', function () {
 		assert.equal(abortMarkersEnabled(), true, 'opening through databases.ts with the setting unset enables markers');
 		for (const configured of [undefined, null, true, 'true', ''])
 			assert.equal(resolveAbortMarkersSetting(configured), true, String(configured));
 		for (const configured of [false, 'false', 'FALSE', 0, '0', 'off'])
 			assert.equal(resolveAbortMarkersSetting(configured), false, String(configured));
+		for (const configured of [undefined, null, '', false, 'false', 0])
+			assert.equal(resolveWriteIntentsSetting(configured), false, `write intents ${configured}`);
+		for (const configured of [true, 'true', 1])
+			assert.equal(resolveWriteIntentsSetting(configured), true, `write intents ${configured}`);
 	});
 
 	it('retries a logged attempt write-once and commits one log entry under its first key', async function () {
@@ -220,59 +273,32 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 	});
 
 	it('re-logs a retry refused before its log write on an older write intent, committing one entry', async function () {
-		const { RocksDatabase } = require('@harperfast/rocksdb-js');
-		RocksDatabase.config({ transactionLogWriteIntents: true });
-		restores.push(() => RocksDatabase.config({ transactionLogWriteIntents: false }));
-		const recordId = id('relog');
-		await seed(Audited, recordId);
-		const targetDb = Audited.primaryStore.store.db;
-		const originalCommit = Transaction.prototype.commit;
-		const attempts = [];
-		let holderId;
-		Transaction.prototype.commit = async function (...args) {
-			if (this.store?.db !== targetDb || this.id === holderId) return originalCommit.apply(this, args);
-			const result = await originalCommit.apply(this, args);
-			attempts.push({ kind: this.lastConflictKind(), logWritten: this.logWritten(), key: this.getTimestamp() });
-			return result;
-		};
-		restores.push(() => (Transaction.prototype.commit = originalCommit));
-		let releaseHolder;
-		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
-		const holderContext = {};
-		const holder = transaction(holderContext, async () => {
-			await Audited.get(recordId, holderContext);
-			await Audited.put({ id: recordId, writer: 'holder' }, holderContext);
-			const write = holderContext.transaction.writes.find((candidate) => candidate.key === recordId);
-			await holderContext.transaction.save(write);
-			holderId = holderContext.transaction.transaction.id;
-			await holderGate;
-			throw new Error('holder gives up');
+		const priorIntents = setWriteIntentsForTests(true);
+		restores.push(() => setWriteIntentsForTests(priorIntents ?? false));
+		await relogAfterRefusal(Audited);
+	});
+
+	it('turns write intents on from storage.rocks.transactionLogWriteIntents', async function () {
+		const env = require('#src/utility/environment/environmentManager');
+		const configured = env.get('storage_rocks_transactionLogWriteIntents');
+		const priorIntents = setWriteIntentsForTests(undefined);
+		env.setProperty('storage_rocks_transactionLogWriteIntents', true);
+		restores.push(() => {
+			env.setProperty('storage_rocks_transactionLogWriteIntents', configured);
+			setWriteIntentsForTests(priorIntents ?? false);
 		});
-		holder.catch(() => {});
-		await waitFor(() => holderId !== undefined);
-		const mine = writeAfterRead(Audited, recordId, 'mine');
-		await delay(100); // parked behind the holder's intent
-		releaseHolder();
-		await mine;
-		await assert.rejects(holder, /holder gives up/);
-		assert.equal(attempts.length, 2);
-		assert.deepEqual(
-			{ kind: attempts[0].kind, logWritten: attempts[0].logWritten },
-			{ kind: ConflictKind.intentBeforeLog, logWritten: false }
-		);
-		assert.equal(attempts[1].logWritten, true);
-		assert.ok(attempts[1].key > attempts[0].key, 'the re-logged retry takes a fresh key');
-		const entries = auditEntries(Audited, recordId);
-		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[0].key).length, 0);
-		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[1].key).length, 1);
-		assert.equal(Audited.primaryStore.getEntry(recordId).version, attempts[1].key);
-		assert.equal((await Audited.get(recordId)).writer, 'mine');
+		const Configured = table({
+			table: 'AbortMarkersIntents',
+			database: 'abortMarkersIntents',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }, { name: 'count' }],
+			audit: true,
+		});
+		await relogAfterRefusal(Configured);
 	});
 
 	it('discards the blob of a re-logged retry that a newer write superseded', async function () {
-		const { RocksDatabase } = require('@harperfast/rocksdb-js');
-		RocksDatabase.config({ transactionLogWriteIntents: true });
-		restores.push(() => RocksDatabase.config({ transactionLogWriteIntents: false }));
+		const priorIntents = setWriteIntentsForTests(true);
+		restores.push(() => setWriteIntentsForTests(priorIntents ?? false));
 		const Blobs = table({
 			table: 'AbortMarkersBlobs',
 			database: 'abortMarkersBlobs',
