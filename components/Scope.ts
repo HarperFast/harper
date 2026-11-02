@@ -4,11 +4,11 @@ import { EventEmitter, once } from 'node:events';
 import { databaseEventsEmitter, scopedTableFactory } from '../resources/databases.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
-import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
+import { OptionsWatcher, type OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { resources, type Resources } from '../resources/Resources.ts';
 import { Models, models as modelsSingleton } from '../resources/models/Models.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
-import { FilesOption } from './deriveGlobOptions.ts';
+import { type FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { composeMountedUrlPath, type ScopeMount } from './scopeMount.ts';
@@ -38,7 +38,9 @@ export type ScopeEventsMap = {
 	// (extract + npm install). Plugins observing these can pause their own
 	// file-driven work to avoid acting on intermediate states.
 	'deploy:start': [componentName: string];
-	// Fired after deploy I/O completes (success or failure). The scope's
+	// Fired after deploy I/O completes (success or failure), or, for a deploy
+	// a canary certifies, once its rollout ends, so a worker the rollout
+	// replaces may never see it. The scope's
 	// EntryHandlers have been resumed by this point; their replacement watcher
 	// generation compares the post-deploy scan with the retained pre-deploy
 	// snapshot, so subsequent events are the logical differences of that tree,
@@ -70,6 +72,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#deployInFlight: boolean = false;
 	#restartRequestedDuringDeploy: boolean = false;
 	#optionsReady: boolean = false;
+	#closed: boolean = false;
+	#bearerValidatorsDisposed: boolean = false;
+	#bearerValidatorDisposers: Array<() => void> = [];
 	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
@@ -78,13 +83,6 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	ready: Promise<any[]>;
 	databaseEvents: typeof databaseEventsEmitter;
 	models: Models;
-	// Set by the loader on deploy pre-flight validation loads (collectScopes):
-	// the scope exists to validate a component, not to run it. Plugins with
-	// process-global side effects should validate fully but skip activation.
-	// Such a scope never follows a deploy: it loads a finished candidate from inside
-	// its own deploy's lifecycle, so waiting or pausing for a deploy waits on itself.
-	isTransientValidation?: boolean;
-
 	/**
 	 * Routing the operator declared for this application in the root config. Applied automatically
 	 * to handlers registered through `scope.server`, so plugins normally don't touch it — the
@@ -105,25 +103,23 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		applicationScope: ApplicationScope,
 		origin: string = appName,
 		isRootConfig?: boolean,
-		mount?: ScopeMount,
-		isTransientValidation?: boolean
+		mount?: ScopeMount
 	) {
 		super();
 
 		this.mount = mount;
-		this.isTransientValidation = isTransientValidation;
 		this.#appName = appName;
 		this.#pluginName = pluginName;
 		this.#origin = typeof origin === 'string' ? origin : appName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
-		this.#deployInFlight = !isTransientValidation && deployLifecycle.loadsAwaitDeploy(this.#appName);
+		this.#deployInFlight = deployLifecycle.loadsAwaitDeploy(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
-		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so a
-		// throwaway deploy-validation Scope closing can't tear down a sibling/running Scope's streams.
+		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so one
+		// Scope of the identity closing can't tear down the streams of another that is still running.
 		retainComponentSubscriptions(applicationScope?.name ?? appName);
 		this.resources = applicationScope?.resources ?? resources;
 		this.models = modelsSingleton;
@@ -143,6 +139,19 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 								...options,
 								...scopeRef.routeFor(options),
 							});
+						};
+					}
+				}
+				if (prop === 'registerBearerValidator') {
+					const method = Reflect.get(target, prop, receiver);
+					if (typeof method === 'function') {
+						return (validator: any, options?: any) => {
+							if (scopeRef.#closed || scopeRef.#bearerValidatorsDisposed) {
+								throw new Error(`Cannot register a Bearer validator on closed scope ${pluginName}`);
+							}
+							const dispose = method.call(target, validator, options);
+							if (typeof dispose === 'function') scopeRef.#bearerValidatorDisposers.push(dispose);
+							return dispose;
 						};
 					}
 				}
@@ -174,10 +183,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#deployEndHandler = (name) => {
 			if (name === this.#appName) this.#onDeployEnd(name);
 		};
-		if (!isTransientValidation) {
-			deployLifecycle.on('deploy:start', this.#deployStartHandler);
-			deployLifecycle.on('deploy:end', this.#deployEndHandler);
-		}
+		deployLifecycle.on('deploy:start', this.#deployStartHandler);
+		deployLifecycle.on('deploy:end', this.#deployEndHandler);
 	}
 
 	get logger(): Logger {
@@ -285,6 +292,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	async close(): Promise<this> {
+		this.#closed = true;
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
 
@@ -630,6 +638,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				resolve();
 			}
 		});
+	}
+
+	disposeBearerValidators(): void {
+		this.#bearerValidatorsDisposed = true;
+		while (this.#bearerValidatorDisposers.length > 0) {
+			this.#bearerValidatorDisposers.pop()!();
+		}
 	}
 
 	/**

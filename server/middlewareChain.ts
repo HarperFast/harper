@@ -175,7 +175,7 @@ export function hostnameFromHeader(hostHeader: string): string {
  * pseudo-header — HTTP/2 clients don't send `Host` at all). The header fallbacks below only
  * cover request-like objects that don't carry that getter (e.g. bare fakes in tests).
  */
-function requestAuthority(request: any): string {
+export function requestAuthority(request: any): string {
 	return request.host ?? request.headers?.asObject?.[':authority'] ?? request.headers?.asObject?.host ?? '';
 }
 

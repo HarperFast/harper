@@ -1,3 +1,4 @@
+import * as transactionRuntimeModule from '../../resources/transaction.ts';
 /**
  * Phase 4 mutation executors: INSERT / UPDATE / DELETE.
  *
@@ -175,7 +176,7 @@ export function _setTransactionRunner(runner: TransactionRunner | null): void {
 function getTransactionRunner(): TransactionRunner {
 	if (_transactionRunner) return _transactionRunner;
 	// eslint-disable-next-line @typescript-eslint/no-var-requires
-	const mod = require('../../resources/transaction.js');
+	const mod = transactionRuntimeModule;
 	return mod.transaction as TransactionRunner;
 }
 

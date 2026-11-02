@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Verifies that a `Prefer: count=` page — which is materialized and returned AFTER Table.search
 // releases its read transaction — does not hand back Bytes fields that alias the (now-released) read

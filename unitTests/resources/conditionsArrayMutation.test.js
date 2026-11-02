@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // harper#1572: Table.search({ conditions, sort }) must not mutate the caller's
 // conditions array. The planner pushes a `{ comparator: 'sort' }` pseudo-condition

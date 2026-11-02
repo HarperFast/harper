@@ -1,11 +1,11 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
-import { EventEmitter, once } from 'events';
+import { EventEmitter, once } from 'node:events';
 import { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
-import { isDeepStrictEqual } from 'util';
+import { isDeepStrictEqual } from 'node:util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
 import {
 	POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,

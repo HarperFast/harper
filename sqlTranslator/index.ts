@@ -1,14 +1,14 @@
 'use strict';
 
 import * as insert from '../dataLayer/insert.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 const cbInsertInsert = util.callbackify(insert.insert);
 import { search } from '../dataLayer/search.ts';
 import { update } from '../dataLayer/update.ts';
 const cbUpdateUpdate = util.callbackify(update);
 import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
 const cbDeleteTranslator = util.callbackify(deleteTranslator);
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import * as opAuth from '../utility/operation_authorization.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import alasqlFunctionImporter from './alasqlFunctionImporter.ts';

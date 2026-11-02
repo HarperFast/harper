@@ -398,6 +398,18 @@ suite(
 			);
 		});
 
+		test('a: event/id/retry carrying CR/LF -- no forged field or event reaches the wire', async () => {
+			const r = await consumeSse(`${restBase}/LineBreakFieldsPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			// Exact bytes rather than parseSseBlocks, which splits on LF only and would miss a bare-CR field.
+			// The uWS transport opens the stream with a `:` comment to flush headers.
+			strictEqual(
+				r.raw.replace(/^:[^\r\n]*\n\n/, ''),
+				'event: payloadevent: forged\ndata: line-break-probe\nid: 7data: forged\n\n' +
+					'event: payload\ndata: after-line-break-probe\n\n'
+			);
+		});
+
 		// ── (b) F-133 re-characterization: generator throws mid-stream ─────────────────────────
 
 		test(

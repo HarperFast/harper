@@ -1,7 +1,7 @@
 require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('warm cached read', function () {
 	it('measures warm getEntry throughput', async function () {

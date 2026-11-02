@@ -12,15 +12,21 @@ export {
 	assertActiveSuperUserRemains,
 	dropUser,
 	getSuperUser,
+	localPrincipal,
+	isLocalPrincipal,
+	LOCAL_USERNAME,
 	userInfo,
 	listUsers,
 	listUsersExternal,
 	findAndValidateUser,
 	getUserWithRole,
 	isCurrentUser,
+	hasRecordProvenance,
 	userRecordVersions,
 	trackUserRecords,
+	cloneUserView,
 	onUserChange,
+	userChangeNotificationEpoch,
 	USERNAME_REQUIRED,
 	ALTERUSER_NOTHING_TO_UPDATE,
 	EMPTY_PASSWORD,
@@ -32,6 +38,7 @@ export interface User {
 	active?: boolean;
 	username: string;
 	role?: UserRole;
+	authExpiresAt?: number;
 	__updatedtime__?: number;
 	__createdtime__?: number;
 	[other: string]: unknown;
@@ -52,6 +59,8 @@ export interface UserRoleNamedPermissions extends Partial<CRUDPermissions> {
 	operations?: string[];
 	/** Pre-expanded Set built from operations at cache-load time. Not persisted. */
 	_expandedOperations?: Set<string>;
+	/** The components this role may deploy and drop (security/componentGrant.ts). */
+	component_deploy?: import('./componentGrant.ts').ComponentGrant;
 }
 
 export interface UserRoleDatabasePermissions {
@@ -91,14 +100,16 @@ import * as delete_ from '../dataLayer/delete.ts';
 import * as validation from '../validation/user_validation.ts';
 import * as search from '../dataLayer/search.ts';
 import * as hdbUtility from '../utility/common_utils.ts';
-import * as validate from 'validate.js';
+import _validate from 'validate.js';
+// validate.js is a CJS module; in ESM (typestrip) the default export IS the library object.
+const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
-import { promisify } from 'util';
-import * as env from '../utility/environment/environmentManager.ts';
-import systemSchema from '../json/systemSchema.json';
+import { promisify } from 'node:util';
+import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
-import * as _ from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
+import isEqual from 'lodash/isEqual.js';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 // Need to use `.js` even for other TS files since TS compiler won't replace requires.
@@ -112,15 +123,16 @@ import { credentialRejectionError } from './credentialRejection.ts';
 import { databases, getDatabases, onUpdatedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
+import { deliveryCertified } from '../resources/transactionBroadcast.ts';
 import { writeKey } from 'ordered-binary';
 
-server.getUser = (username: string, password?: string | null): Promise<User> => {
+function getUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password, password != null);
-};
+}
 
-server.authenticateUser = (username: string, password?: string | null): Promise<User> => {
+function authenticateUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password);
-};
+}
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -130,14 +142,13 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 };
 const passwordHashCache = new Map();
 const promiseDelete = promisify(delete_.delete_);
-const configuredHashFunction =
-	env.get(terms.CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION) ?? password.HASH_FUNCTION.SHA256;
 const { USER_TABLE_NAME, ROLE_TABLE_NAME } = terms.SYSTEM_TABLE_NAMES;
 
 async function addUser(user: User | any): Promise<string> {
 	let cleanUser = validate.cleanAttributes(user, USER_ATTRIBUTE_ALLOWLIST);
 	let validationResp = validation.addUserValidation(cleanUser);
 	if (validationResp) throw new ClientError(validationResp.message);
+	if (cleanUser.username === LOCAL_USERNAME) throw new ClientError(HDB_ERROR_MSGS.RESERVED_USERNAME(LOCAL_USERNAME));
 
 	let searchRole = await search.searchByValue({
 		schema: 'system',
@@ -155,8 +166,9 @@ async function addUser(user: User | any): Promise<string> {
 		throw new ClientError(HDB_ERROR_MSGS.DUP_ROLES_FOUND(cleanUser.role), HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-	cleanUser.hash_function = configuredHashFunction;
+	const hashFunction = password.configuredHashFunction();
+	cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+	cleanUser.hash_function = hashFunction;
 	cleanUser.role = searchRole[0].id;
 
 	const insertResponse = await insert.insert({
@@ -198,8 +210,9 @@ async function alterUser(jsonMessage) {
 	}
 
 	if (!hdbUtility.isEmpty(cleanUser.password) && !hdbUtility.isEmptyOrZeroLength(cleanUser.password.trim())) {
-		cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-		cleanUser.hash_function = configuredHashFunction;
+		const hashFunction = password.configuredHashFunction();
+		cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+		cleanUser.hash_function = hashFunction;
 	}
 
 	// the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly
@@ -269,7 +282,8 @@ async function userInfo(body): Promise<string | User> {
 		return 'There was no user info in the body';
 	}
 
-	let user = _.cloneDeep(body.hdb_user);
+	if (isLocalPrincipal(body.hdb_user)) return { username: LOCAL_USERNAME, active: true, role: LOCAL_ROLE_RECORD };
+	let user = cloneDeep(body.hdb_user);
 	let roleData =
 		user.role &&
 		(await search.searchByHash({
@@ -333,7 +347,7 @@ async function listUsers(): Promise<Map<string, User>> {
 
 	const userMap: Map<string, User> = new Map();
 	for (let user of users) {
-		user = _.cloneDeep(user);
+		user = cloneDeep(user);
 		user.role = roleMapObj[user.role];
 		if (!user.role) logger.error(`invalid user role found.`);
 		userMap.set(user.username, user);
@@ -388,7 +402,7 @@ function cacheExpandedOperationsPerms(userRole: UserRole) {
 }
 
 function withSystemTablePermissions(roleRecord: UserRole): UserRole {
-	const role = _.cloneDeep(roleRecord);
+	const role = cloneDeep(roleRecord);
 	appendSystemTablesToRole(role);
 	cacheExpandedOperationsPerms(role);
 	return role;
@@ -450,7 +464,7 @@ function stampOf(entry: RecordEntry | undefined): RecordStamp {
 
 function holdsStamp(entry: RecordEntry | undefined, stamp: RecordStamp): boolean {
 	if (entry === undefined || stamp === null) return entry === undefined && stamp === null;
-	if (typeof stamp === 'object') return _.isEqual(entry.value, stamp);
+	if (typeof stamp === 'object') return isEqual(entry.value, stamp);
 	return !(entry.metadataFlags & VERSION_REUSED) && (entry.version ?? 0) === stamp;
 }
 
@@ -503,7 +517,9 @@ interface UserProvenance {
 	roleStamp: RecordStamp;
 }
 
-const userProvenance = new WeakMap<User, UserProvenance>();
+// An own property of a user this module built, so a spread copy carries it without a WeakMap write
+const PROVENANCE = Symbol('record provenance');
+// a user resolved outside this module (a component's server.getUser), which may not take a property
 const trackedProvenance = new WeakMap<User, UserProvenance>();
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
@@ -522,8 +538,45 @@ function userView(username: string, entries: UserEntries): User {
 	const role = record && derivedRole(record.role, entries.role);
 	// verifyPerms replaces role.permission on the request's user; the derived role is shared
 	if (role) user.role = { ...role, permission: { ...role.permission } };
-	userProvenance.set(user, provenanceOf(username, entries));
+	(user as any)[PROVENANCE] = provenanceOf(username, entries);
 	return user;
+}
+
+const LOCAL_USERNAME = 'local';
+// a default install's super_user role, which applications authorize on by `role.id`
+const LOCAL_ROLE_RECORD = deepFreeze({
+	role: 'super_user',
+	id: 'super_user',
+	permission: { super_user: true },
+	__createdtime__: 0,
+	__updatedtime__: 0,
+} as UserRole);
+let localRole: UserRole | undefined;
+
+/** The principal of a request trusted by its transport; security/DESIGN.md has its rules. */
+function localPrincipal(): User {
+	if (!localRole) {
+		localRole = withSystemTablePermissions(LOCAL_ROLE_RECORD);
+		deepFreeze(localRole.permission.system);
+	}
+	return {
+		username: LOCAL_USERNAME,
+		active: true,
+		_localPrincipal: true,
+		role: { ...localRole, permission: { ...localRole.permission } },
+	};
+}
+
+// a string marker, not a symbol: the Bun/uWS fallback and the MQTT will row carry the principal as data
+function isLocalPrincipal(user: any): boolean {
+	return user?._localPrincipal === true && user.username === LOCAL_USERNAME;
+}
+
+function deepFreeze<T>(value: T): T {
+	if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+	Object.freeze(value);
+	for (const key of Object.keys(value)) deepFreeze(value[key]);
+	return value;
 }
 
 function getUserWithRole(username: string): User | undefined {
@@ -537,10 +590,31 @@ function userRecordVersions(username: string): UserProvenance {
 
 /**
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
- * before it was resolved; a write in between then shows as a change.
+ * before it was resolved; a write in between then shows as a change. Returns whether `user` was
+ * resolved outside this module.
  */
-function trackUserRecords(user: User, versions: UserProvenance): void {
-	if (user && typeof user === 'object' && !userProvenance.has(user)) trackedProvenance.set(user, versions);
+function trackUserRecords(user: User, versions: UserProvenance): boolean {
+	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return false;
+	trackedProvenance.set(user, versions);
+	return true;
+}
+
+/**
+ * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
+ * `isCurrentUser` checks it against the records `user` was built from.
+ */
+function cloneUserView(user: User & { role: UserRole }): User {
+	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
+	if (!(clone as any)[PROVENANCE]) {
+		const tracked = trackedProvenance.get(user);
+		if (tracked) (clone as any)[PROVENANCE] = tracked;
+	}
+	return clone;
+}
+
+/** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
+function hasRecordProvenance(user: User): boolean {
+	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
 }
 
 /**
@@ -548,7 +622,7 @@ function trackUserRecords(user: User, versions: UserProvenance): void {
  * no recorded versions (a scoped token, whose role it carries itself) is current.
  */
 function isCurrentUser(user: User): boolean {
-	const provenance = userProvenance.get(user) ?? trackedProvenance.get(user);
+	const provenance: UserProvenance | undefined = (user as any)[PROVENANCE] ?? trackedProvenance.get(user);
 	if (!provenance) return true;
 	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userStamp)) return false;
 	return (
@@ -605,25 +679,29 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	return user;
 }
 
-let superUsername: string | undefined;
-
 async function getSuperUser(): Promise<User | undefined> {
-	if (superUsername !== undefined) {
-		const user = getUserWithRole(superUsername);
-		if (user?.role?.role === 'super_user') return user;
-	}
-	superUsername = undefined;
 	for (const [username, user] of (await listUsers()) ?? []) {
-		if (user.role?.role === 'super_user') {
-			superUsername = username;
-			return getUserWithRole(username);
-		}
+		if (user.active === true && user.role?.permission?.super_user === true) return getUserWithRole(username);
 	}
 }
 
-const userChangeListeners: Array<() => void | Promise<void>> = [];
-const userChangeSubscriptions = new Map<string, { table: any; subscription: Promise<any> }>();
-let userChangeNotificationScheduled = false;
+/** Primary keys of the hdb_user and hdb_role records changed since the previous notification. */
+export interface UserChange {
+	usernames: ReadonlySet<unknown>;
+	roleIds: ReadonlySet<unknown>;
+}
+
+type UserChangeListener = (change?: UserChange) => void | Promise<void>;
+
+const userChangeListeners: UserChangeListener[] = [];
+const userChangeSubscriptions = new Map<string, { table: any; subscription: Promise<any>; opened?: any }>();
+// tables whose subscription has been open before, so a new one follows a gap in notifications
+const subscribedBefore = new Set<string>();
+// null while nothing is pending; undefined once the pending batch lost its identities
+let pendingUserChange: { usernames: Set<unknown>; roleIds: Set<unknown> } | null | undefined = null;
+const MAX_CHANGE_IDS = 1000;
+let notificationEpoch = 0;
+let epochsIssued = 0;
 let unauditedUserTableLogged = false;
 const SUBSCRIBE_RETRY_MIN_MS = 1000;
 const SUBSCRIBE_RETRY_MAX_MS = 60_000;
@@ -631,10 +709,12 @@ let subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
 
 /**
  * Calls `listener` on this thread after `system.hdb_user` or `system.hdb_role` changes, from any thread
- * or a replicated write, at most once per event-loop turn. For consumers already holding a user (live
- * subscriptions, MCP sessions); lookups need no notification because they read the records.
+ * or a replicated write, at most once per event-loop turn, with the changed records' primary keys. With
+ * no `change`, which records changed is unknown: a whole-table event, an oversized batch, or a gap in
+ * the table subscriptions. For consumers already holding a user (live subscriptions, MCP sessions);
+ * lookups need no notification because they read the records.
  */
-function onUserChange(listener: () => void | Promise<void>): void {
+function onUserChange(listener: UserChangeListener): void {
 	userChangeListeners.push(listener);
 	if (userChangeListeners.length > 1) return;
 	onUpdatedTable((table) => {
@@ -646,12 +726,34 @@ function onUserChange(listener: () => void | Promise<void>): void {
 	}
 }
 
+/**
+ * 0 unless the hdb_user and hdb_role subscriptions are both open and have been delivered every record
+ * committed since they opened; otherwise an id that changes each time they become so. A consumer that
+ * saw the same non-zero epoch before and after a period was notified of every change in it. Always 0
+ * where the storage engine cannot certify delivery (LMDB).
+ */
+function userChangeNotificationEpoch(): number {
+	for (const tableName of [USER_TABLE_NAME, ROLE_TABLE_NAME]) {
+		const opened = userChangeSubscriptions.get(tableName)?.opened;
+		if (!opened || !deliveryCertified(opened)) return 0;
+	}
+	return notificationEpoch;
+}
+
+function updateNotificationEpoch(): void {
+	const open =
+		userChangeSubscriptions.get(USER_TABLE_NAME)?.opened && userChangeSubscriptions.get(ROLE_TABLE_NAME)?.opened;
+	if (!open) notificationEpoch = 0;
+	else if (notificationEpoch === 0) notificationEpoch = ++epochsIssued;
+}
+
 function subscribeToUserChanges(table): void {
 	const { tableName } = table;
 	if (tableName !== USER_TABLE_NAME && tableName !== ROLE_TABLE_NAME) return;
 	const previous = userChangeSubscriptions.get(tableName);
 	if (previous?.table === table) return;
 	userChangeSubscriptions.delete(tableName);
+	updateNotificationEpoch();
 	previous?.subscription.then(
 		(subscription) => subscription?.end?.(),
 		() => {}
@@ -666,36 +768,76 @@ function subscribeToUserChanges(table): void {
 		}
 		return;
 	}
+	const noteChange = tableName === USER_TABLE_NAME ? 'usernames' : 'roleIds';
 	// outside any request context, which the subscription would otherwise adopt for its lifetime
 	const subscription = contextStorage.exit(() =>
-		table.subscribe({ listener: scheduleUserChangeNotification, omitCurrent: true })
+		table.subscribe({
+			listener: (event) => scheduleUserChangeNotification(noteChange, event?.id),
+			omitCurrent: true,
+			// certifies to userChangeNotificationEpoch that no committed change was skipped
+			reportProgress: true,
+		})
 	);
-	userChangeSubscriptions.set(tableName, { table, subscription });
+	const state: { table: any; subscription: Promise<any>; opened?: any } = { table, subscription };
+	userChangeSubscriptions.set(tableName, state);
+	const isCurrent = () => userChangeSubscriptions.get(tableName) === state;
+	const resubscribeLater = () => {
+		setTimeout(() => {
+			if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
+		}, subscribeRetryDelay).unref();
+		subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+	};
 	subscription.then(
-		() => (subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS),
+		(opened) => {
+			if (!isCurrent()) return;
+			const openedAt = Date.now();
+			const onClosed = () => {
+				if (!isCurrent()) return;
+				userChangeSubscriptions.delete(tableName);
+				updateNotificationEpoch();
+				// one that closes on every event keeps backing off, since each reopen rechecks everything
+				if (Date.now() - openedAt >= SUBSCRIBE_RETRY_MAX_MS) subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
+				resubscribeLater();
+			};
+			if (opened.closed) return onClosed();
+			// the broadcaster closes subscribers when their database closes or changes generation, and a
+			// progress-reporting one when an event fails to deliver
+			opened.on('close', onClosed);
+			state.opened = opened;
+			updateNotificationEpoch();
+			if (subscribedBefore.has(tableName)) scheduleUserChangeNotification();
+			else subscribedBefore.add(tableName);
+		},
 		(error) => {
-			if (userChangeSubscriptions.get(tableName)?.subscription !== subscription) return;
+			if (!isCurrent()) return;
 			userChangeSubscriptions.delete(tableName);
 			logger.error(`Failed to subscribe to system.${tableName} for user changes; retrying`, error);
-			setTimeout(() => {
-				if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
-			}, subscribeRetryDelay).unref();
-			subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+			resubscribeLater();
 		}
 	);
 }
 
-function scheduleUserChangeNotification(): void {
-	if (userChangeNotificationScheduled) return;
-	userChangeNotificationScheduled = true;
-	setImmediate(notifyUserChangeListeners);
+/** With no `kind`, or an event with no record id, which records changed is unknown. */
+function scheduleUserChangeNotification(kind?: 'usernames' | 'roleIds', id?: unknown): void {
+	if (pendingUserChange === null) {
+		pendingUserChange = { usernames: new Set(), roleIds: new Set() };
+		setImmediate(notifyUserChangeListeners);
+	}
+	if (pendingUserChange === undefined) return;
+	if (kind === undefined || id == null) pendingUserChange = undefined;
+	else {
+		pendingUserChange[kind].add(id);
+		if (pendingUserChange.usernames.size + pendingUserChange.roleIds.size > MAX_CHANGE_IDS)
+			pendingUserChange = undefined;
+	}
 }
 
 function notifyUserChangeListeners(): void {
-	userChangeNotificationScheduled = false;
+	const change = pendingUserChange ?? undefined;
+	pendingUserChange = null;
 	for (const listener of userChangeListeners) {
 		try {
-			const result: any = listener();
+			const result: any = listener(change);
 			if (typeof result?.catch === 'function')
 				result.catch((error) => logger.error('User change listener failed', error));
 		} catch (error) {
@@ -704,8 +846,13 @@ function notifyUserChangeListeners(): void {
 	}
 }
 
+/** Test-only: the open hdb_user or hdb_role subscription behind `onUserChange`. */
+export function _userChangeSubscription(tableName: string): any {
+	return userChangeSubscriptions.get(tableName)?.opened;
+}
+
 let invalidateCallbacks = [];
-(server as any).invalidateUser = function (user: User | any) {
+function invalidateUserImpl(user: User | any) {
 	for (let callback of invalidateCallbacks) {
 		try {
 			callback(user);
@@ -713,8 +860,13 @@ let invalidateCallbacks = [];
 			harperLogger.error('Error invalidating user', error);
 		}
 	}
-};
+}
 
-server.onInvalidatedUser = function (callback) {
+function onInvalidatedUserImpl(callback) {
 	invalidateCallbacks.push(callback);
-};
+}
+
+server.getUser = getUserImpl;
+server.authenticateUser = authenticateUserImpl;
+server.onInvalidatedUser = onInvalidatedUserImpl;
+(server as any).invalidateUser = invalidateUserImpl;

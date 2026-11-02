@@ -5,7 +5,7 @@
  * a specific table OBJECT, so a path that replaces `databases.system.hdb_certificate` with a new
  * object orphans it. #1999 made `updateTLS()` detect the swap and re-subscribe, but that check only
  * runs when something re-enters `updateTLS()` — and after a swap the only re-entry triggers are the
- * orphaned subscription itself, the zero-certs retry timer (#1998), and a private-key hot reload. A
+ * orphaned subscription itself and the zero-certs retry timer (#1998). A
  * swap while `secureContexts` is non-empty would therefore leave no pending trigger at all.
  *
  * #2004 names `resetDatabases()` among the swapping paths. What this file pins is that an ordinary,

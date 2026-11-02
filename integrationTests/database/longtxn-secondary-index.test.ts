@@ -259,8 +259,9 @@ suite(`QA-176 long-txn monitor vs secondary index [${ENGINE}]`, { skip: skipSuit
 		// The headline assertions: zero orphans regardless of over-time outcome.
 		strictEqual(totalPhantom, 0, `total phantom index entries across all buckets: ${totalPhantom}`);
 		strictEqual(totalMissing, 0, `total missing index entries across all buckets: ${totalMissing}`);
-		// Soft signal — surfaced in the log; we don't hard-fail if the monitor didn't fire so the
-		// consistency result is still reported, but we record whether the anchor truly exercised.
-		ok(true, `over-time fired=${fired}`);
+		// LMDB ignores storage.maxTransactionOpenTime (see Q2), so only RocksDB is guaranteed to cross it.
+		if (ENGINE === 'rocksdb') {
+			ok(fired, 'over-time monitor never fired, so this run did not exercise the force-commit path');
+		}
 	});
 });

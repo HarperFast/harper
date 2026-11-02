@@ -17,6 +17,7 @@ testUtils.preTestPrep();
 const { handleGetDeploymentPayload, handleDeleteDeploymentPayload } = require('#src/components/deploymentOperations');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
+const { waitFor } = require('../waitFor.js');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 const SUPER_USER = { username: 'admin', role: { permission: { super_user: true } } };
@@ -69,7 +70,7 @@ describe('handleGetDeploymentPayload', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('rejects a caller with no hdb_user as forbidden, before any deployment lookup', async () => {
 		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'd1' }), (err) => {
@@ -125,7 +126,7 @@ describe('handleDeleteDeploymentPayload', () => {
 	beforeEach(() => {
 		installed = installMockDeploymentTable();
 	});
-	afterEach(() => installed.restore());
+	afterEach(() => installed?.restore());
 
 	it('rejects a missing deployment_id', async () => {
 		await assert.rejects(handleDeleteDeploymentPayload({}), /'deployment_id' is required/);
@@ -186,5 +187,74 @@ describe('handleDeleteDeploymentPayload', () => {
 		assert.strictEqual(result.freed_bytes, 0);
 		assert.match(result.message, /No payload stored/);
 		assert.strictEqual(installed.mock.puts.length, 0, 'no write on the idempotent path');
+	});
+});
+
+describe('handleGetDeployment live tail (harper#3062)', () => {
+	const { handleGetDeployment } = require('#src/components/deploymentOperations');
+	const { DeploymentRecorder } = require('#src/components/deploymentRecorder');
+	const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed?.restore());
+
+	it('forwards live events, sends no internal event, and ends with the terminal row once the deploy finishes', async () => {
+		const deployEmitter = new ProgressEmitter();
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter: deployEmitter });
+		const sse = new ProgressEmitter();
+		const forwarded = [];
+		sse.subscribe((event) => forwarded.push(event.event));
+
+		let settled = false;
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, progress: sse }).then((row) => {
+			settled = true;
+			return row;
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		deployEmitter.emit('phase', { phase: 'prepare', status: 'start' });
+		deployEmitter.emit('phase', { phase: 'success', status: 'done' });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(settled, false, 'the tail waits for the recorder, not for a phase event');
+
+		await recorder.finish('success');
+		const row = await tail;
+		assert.strictEqual(row.status, 'success');
+		assert.ok(forwarded.length > 0);
+		assert.ok(
+			forwarded.every((name) => !name.startsWith('_')),
+			`forwarded: ${forwarded.join(', ')}`
+		);
+	});
+
+	it('waits for a terminal write already under way when the tail arrives', async () => {
+		let releaseTerminalWrite;
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter: new ProgressEmitter() });
+		const put = installed.mock.put;
+		installed.mock.put = async (row) => {
+			if (row.status === 'success') await new Promise((resolve) => (releaseTerminalWrite = resolve));
+			return put.call(installed.mock, row);
+		};
+		const finishing = recorder.finish('success');
+		await waitFor(() => releaseTerminalWrite, 2000);
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, progress: new ProgressEmitter() });
+		await new Promise((resolve) => setImmediate(resolve));
+		releaseTerminalWrite();
+		await finishing;
+		assert.strictEqual((await tail).status, 'success');
+	});
+
+	it('stops waiting when the SSE client disconnects', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p', emitter: new ProgressEmitter() });
+		const sse = new ProgressEmitter();
+		const controller = new AbortController();
+		sse.signal = controller.signal;
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, progress: sse });
+		await new Promise((resolve) => setImmediate(resolve));
+		controller.abort();
+		const row = await tail;
+		assert.strictEqual(row.status, 'pending');
+		await recorder.finish('success');
 	});
 });

@@ -1,4 +1,4 @@
-const { isHdbInstalled } = require('#src/utility/installation');
+const { isHdbInstalled } = require('#js/utility/installation');
 const sinon = require('sinon');
 const { expect } = require('chai');
 const fs = require('node:fs');

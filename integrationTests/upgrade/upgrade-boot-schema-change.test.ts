@@ -20,8 +20,6 @@
  *   - ops search_by_id    : legacy ops API primary-key point lookup
  *
  * Also probes:
- *   - write-then-read heal: does re-putting a missed row's known original fields repair the
- *     cached point-GET surface? (/Touch/)
  *   - boot-order dependence: does a SECOND restart (no further config change) clear a miss seen
  *     after the first restart, or is the miss stable/growing?
  *   - config change across the boot: between restart #1's kill and start, the on-disk
@@ -41,7 +39,7 @@
  * Repro: timeout 900 npm run test:integration -- "integrationTests/upgrade/upgrade-boot-schema-change.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, deepStrictEqual } from 'node:assert';
+import { strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve, join, basename } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -229,7 +227,6 @@ suite('QA-647 upgrade-boot read visibility across surfaces (#1865)', { skip: ski
 
 	let matrixBaseline: SurfaceMatrix;
 	let matrixAfterRestart1: SurfaceMatrix;
-	let matrixAfterHeal: SurfaceMatrix | null = null;
 	let matrixAfterRestart2: SurfaceMatrix;
 
 	before(async () => {
@@ -339,38 +336,6 @@ suite('QA-647 upgrade-boot read visibility across surfaces (#1865)', { skip: ski
 		);
 	});
 
-	test('Q3 write-then-read heal: does re-putting a missed row repair it?', { timeout: 30_000 }, async (t) => {
-		const anyMisses =
-			matrixAfterRestart1.cachedGetMisses.length ||
-			matrixAfterRestart1.restMisses.length ||
-			matrixAfterRestart1.opsByIdMisses.length ||
-			matrixAfterRestart1.sqlMisses.length;
-		if (!anyMisses) {
-			t.skip('no miss observed after restart #1 on any point surface — nothing to heal');
-			return;
-		}
-		// Prefer a row missed on cached point-GET (the surface #1865 names); fall back to any miss.
-		const targetId =
-			matrixAfterRestart1.cachedGetMisses[0] ??
-			matrixAfterRestart1.restMisses[0] ??
-			matrixAfterRestart1.opsByIdMisses[0] ??
-			matrixAfterRestart1.sqlMisses[0];
-		const row = rows.find((r) => r.id === targetId)!;
-		log(`Q3: healing probe targets ${targetId} (missed pre-heal)`);
-
-		const beforeHeal = await cachedGet(targetId);
-		const r = await post('/Touch/', row);
-		strictEqual(r.status, 200, 'Touch should return 200');
-		const touchBody = (await r.json()) as { foundAfterTouch: boolean };
-		const afterHeal = await cachedGet(targetId);
-		log(
-			`Q3: ${targetId} cachedGET before-write=${beforeHeal}, Touch.foundAfterTouch=${touchBody.foundAfterTouch}, ` +
-				`cachedGET after-write=${afterHeal} -> ${afterHeal ? 'WRITE HEALS the miss' : 'STILL MISSING after the write'}`
-		);
-		matrixAfterHeal = await buildMatrix('POST-HEAL');
-		ok(true, `heal probe recorded (before=${beforeHeal}, after=${afterHeal})`);
-	});
-
 	test(
 		'Q4 RESTART #2 (no further config change): is the miss stable, cleared, or does it grow?',
 		{ timeout: 90_000 },
@@ -420,9 +385,6 @@ suite('QA-647 upgrade-boot read visibility across surfaces (#1865)', { skip: ski
 					`  POST-RESTART-1    : oracle=${matrixAfterRestart1.oracleIds.size}/${ROW_COUNT} opsScan=${matrixAfterRestart1.opsScanIds.size}/${ROW_COUNT} ` +
 					`cachedGET=${matrixAfterRestart1.cachedGetHits.length}/${ROW_COUNT} REST=${matrixAfterRestart1.restHits.length}/${ROW_COUNT} ` +
 					`opsById=${matrixAfterRestart1.opsByIdHits.length}/${ROW_COUNT} SQL=${matrixAfterRestart1.sqlHits.length}/${ROW_COUNT}\n` +
-					(matrixAfterHeal
-						? `  POST-HEAL         : oracle=${matrixAfterHeal.oracleIds.size}/${ROW_COUNT} cachedGET=${matrixAfterHeal.cachedGetHits.length}/${ROW_COUNT} REST=${matrixAfterHeal.restHits.length}/${ROW_COUNT} opsById=${matrixAfterHeal.opsByIdHits.length}/${ROW_COUNT} SQL=${matrixAfterHeal.sqlHits.length}/${ROW_COUNT}\n`
-						: '') +
 					`  POST-RESTART-2    : oracle=${matrixAfterRestart2.oracleIds.size}/${ROW_COUNT} opsScan=${matrixAfterRestart2.opsScanIds.size}/${ROW_COUNT} ` +
 					`cachedGET=${matrixAfterRestart2.cachedGetHits.length}/${ROW_COUNT} REST=${matrixAfterRestart2.restHits.length}/${ROW_COUNT} ` +
 					`opsById=${matrixAfterRestart2.opsByIdHits.length}/${ROW_COUNT} SQL=${matrixAfterRestart2.sqlHits.length}/${ROW_COUNT}`

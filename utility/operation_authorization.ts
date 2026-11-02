@@ -1,4 +1,4 @@
-'use strict';
+import { loadRuntimeModule, loadNativePackage } from './packageUtils.js';
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
  * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
@@ -31,25 +31,36 @@ import {
 	registerGrantableOperation,
 	unregisterGrantableOperation,
 } from './operationPermissions.ts';
-import * as permsTranslator from '../security/permissionsTranslator.js';
+import * as permsTranslator from '../security/permissionsTranslator.ts';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
 import * as configUtils from '../config/configUtils.ts';
-import * as functionsOperations from '../components/operations.js';
+import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
 import * as status from '../server/status/index.ts';
 import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
+import {
+	COMPONENT_GRANT_OPERATIONS,
+	componentGrantOf,
+	grantCoversComponent,
+	type ComponentGrant,
+} from '../security/componentGrant.ts';
+import { canonicalProjectName, projectNameFromPackage } from './componentNames.ts';
+import { getDatabases } from '../resources/databases.ts';
+import type { ReadDenial } from '../resources/Table.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
+import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
 import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
+import * as previewOperations from '../components/previewOperations.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -94,6 +105,7 @@ const BULK_OPS = {
 /** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
 const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
 const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
+const SEARCH_OPS = new Set([search.searchByConditions.name, search.searchByHash.name, search.searchByValue.name]);
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -360,6 +372,10 @@ requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
 );
+requiredPermissions.set(
+	releaseOperations.handleListReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_RELEASES)
+);
 // get_deployment_payload streams the full tarball (which can embed secrets), unlike
 // get_deployment/list_deployments (metadata only), so it ALSO enforces super_user directly in
 // the handler — it cannot be delegated through a role's `operations` allowlist (gate-2 bypass
@@ -412,6 +428,20 @@ requiredPermissions.set(
 	trustPolicyOperations.dropOidcTrust.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
 );
+// An application's PR-preview identity is a role, a user and trust policies, so enabling or disabling it is SU-only,
+// and the handlers ALSO enforce super_user so a role's `operations` allowlist cannot delegate them.
+requiredPermissions.set(
+	previewOperations.enablePreviews.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.ENABLE_PREVIEWS)
+);
+requiredPermissions.set(
+	previewOperations.disablePreviews.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DISABLE_PREVIEWS)
+);
+requiredPermissions.set(
+	previewOperations.getPreviewPolicy.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY)
+);
 // The exchange is unauthenticated by design — it authenticates its own caller against a trust
 // policy, the way create_authentication_tokens does against a password.
 requiredPermissions.set(
@@ -462,15 +492,6 @@ requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new permission(false, [
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new permission(false, [READ_PERM], null));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new permission(false, [INSERT_PERM], null));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, [UPDATE_PERM], null));
-
-module.exports = {
-	verifyPerms,
-	verifyPermsAST,
-	verifyOperationsAllowlist,
-	verifyBulkLoadAttributePerms,
-	registerOperationPermission,
-	unregisterOperationPermission,
-};
 
 /**
  * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.
@@ -548,6 +569,8 @@ function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
 	return tokenScopeDenial(userObject, sqlVariant);
 }
 
+let StatementBucket;
+let alasql;
 export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
@@ -572,12 +595,11 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	if (scopeDenial) return scopeDenial;
 
 	try {
-		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
-		const bucket = bucketModule.default || bucketModule;
-		const alasql = require('alasql');
+		StatementBucket ??= loadRuntimeModule('sqlTranslator/sql_statement_bucket').default;
+		alasql ??= loadNativePackage('alasql');
 
 		const permsResponse = new PermissionResponseObject();
-		let parsedAst = new bucket(ast);
+		let parsedAst = new StatementBucket(ast);
 		let schemas = parsedAst.getSchemas();
 		let schemaTableMap = new Map();
 
@@ -620,7 +642,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
-		if (!isSuperUser && ast instanceof alasql.yy.Select) {
+		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
 		}
 
@@ -657,6 +679,50 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	} catch (e) {
 		throw handleHDBError(e);
 	}
+}
+
+/**
+ * Checked ahead of gate 2, so an `operations` listing of one of the grant's operations, which would otherwise admit
+ * it for every component, still answers to the grant's names. A deploy or drop is checked here against the component it names, resolved as the handler resolves it. The reads
+ * name no component up front, so their handlers answer only for the components the grant covers.
+ */
+function componentGrantDenial(
+	grant: ComponentGrant,
+	apiName: string,
+	requestJson: any,
+	permsResponse: PermissionResponseObject
+) {
+	let component: unknown;
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT && requestJson._deploymentId !== undefined) {
+		return permsResponse.handleUnauthorizedItem(
+			`'_deploymentId' is set by replication; a deploy under a component grant cannot carry it`
+		);
+	}
+	if (
+		apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT &&
+		Array.isArray(requestJson.credentials) &&
+		requestJson.credentials.some((entry: any) => entry?.token !== undefined)
+	) {
+		return permsResponse.handleUnauthorizedItem(
+			'A deploy under a component grant can only reference stored credentials; sealing a literal token needs super_user'
+		);
+	}
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT) {
+		component =
+			typeof requestJson.project === 'string' && requestJson.project
+				? canonicalProjectName(requestJson.project)
+				: typeof requestJson.package === 'string'
+					? projectNameFromPackage(requestJson.package)
+					: undefined;
+	} else if (apiName === terms.OPERATIONS_ENUM.DROP_COMPONENT) {
+		component = requestJson.project;
+	} else {
+		return null;
+	}
+	if (grantCoversComponent(grant, component)) return null;
+	return permsResponse.handleUnauthorizedItem(
+		`Component '${String(component)}' is not covered by this role's component grant`
+	);
 }
 
 /**
@@ -724,6 +790,8 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// unaffected: `verifyBulkLoadAttributePerms` receives the real action from
 	// `bulkLoad.validateChunk`, not from here.
 	let action = isBulkLoadOperation(op) ? requestJson.action : undefined;
+
+	if (SEARCH_OPS.has(op)) normalizeSearchRequest(requestJson);
 
 	// Resolved through the same helper the handlers use (`transformReq` delegates to it), because
 	// authorization runs BEFORE `transformReq` and any disagreement about the target means the
@@ -801,6 +869,13 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		return null;
 	}
 
+	// Ahead of the structure-user and allowlist grants below, which would otherwise admit them.
+	if (!isSuperUser && (requestJson.replicateTo != undefined || requestJson.replicatedConfirmation != undefined)) {
+		return permsResponse.handleUnauthorizedItem(
+			'Can not specify replicateTo or replicatedConfirmation without super user permissions'
+		);
+	}
+
 	//structureUsers can create/drop schemas if they are not locked down to specific schemas.
 	if (structureUser === true && (op === schema.createSchema.name || op === schema.dropSchema.name)) {
 		return null;
@@ -834,6 +909,12 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
 	// regardless; get_backup is kept out of reach by registering it without an api_name, which gate 1
 	// can never match.
+	const apiName = requiredPermissions.get(op)?.api_name;
+	if (COMPONENT_GRANT_OPERATIONS.has(apiName)) {
+		const componentGrant = componentGrantOf(requestJson.hdb_user);
+		if (componentGrant) return componentGrantDenial(componentGrant, apiName, requestJson, permsResponse);
+	}
+
 	if (allowedOperationsList !== undefined && requiredPermissions.get(op)?.requires_su) {
 		return null;
 	}
@@ -903,12 +984,31 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 			} else {
 				finalGetAttrs = global.hdb_schema[operationSchema][table].attributes.map((obj) => obj.attribute);
 			}
+			const tableClass = getDatabases()[operationSchema]?.[table];
+			if (tableClass?.hasRelationships)
+				finalGetAttrs = finalGetAttrs.filter(
+					(name) =>
+						!tableClass.propertyResolvers[name]?.definition?.tableClass ||
+						!tableClass._readDenial([name], requestJson.hdb_user)
+				);
 
 			requestJson.get_attributes = [...new Set([...finalGetAttrs, ...requestedMetadata])];
 		}
 	}
 
-	const recordAttrs = getRecordAttributes(requestJson, op);
+	const rootAttributesDenied =
+		!isSuperUser && table != undefined && SEARCH_OPS.has(op)
+			? checkRelationshipReads(requestJson, operationSchema, table, op === search.searchByValue.name, permsResponse)
+			: undefined;
+
+	const tableClass =
+		(requestJson.conditions || Array.isArray(requestJson.search_attribute ?? requestJson.attribute)) &&
+		SEARCH_OPS.has(op) &&
+		table != undefined
+			? getDatabases()[operationSchema]?.[table]
+			: undefined;
+	const recordAttrs = getRecordAttributes(requestJson, op, tableClass?.hasRelationships ? tableClass : undefined);
+	if (rootAttributesDenied) for (const attribute of rootAttributesDenied) recordAttrs.add(attribute);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
 	// A `put` replaces the whole record, so it REMOVES every attribute the request omits — and
 	// `checkAttributePerms` below only sees the attributes a request SUPPLIES, so it cannot police
@@ -923,6 +1023,174 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 
 	//This result value will be null if no perms issues were found in checkAttributePerms
 	return permsResponse.getPermsResponse();
+}
+
+function normalizeSearchRequest(requestJson: any) {
+	if (requestJson.select !== undefined) {
+		requestJson.get_attributes = requestJson.select;
+		delete requestJson.select;
+	}
+	normalizeConditionAttributes(requestJson.conditions);
+	stripPermissionControls(requestJson.get_attributes);
+}
+
+function normalizeConditionAttributes(conditions: any) {
+	if (!Array.isArray(conditions)) return;
+	for (const condition of conditions) {
+		if (!condition || typeof condition !== 'object') continue;
+		if (condition.conditions) normalizeConditionAttributes(condition.conditions);
+		else if (condition.search_attribute !== undefined) {
+			condition.attribute ??= condition.search_attribute;
+			delete condition.search_attribute;
+		}
+	}
+}
+
+function stripPermissionControls(select: any) {
+	if (select == null || typeof select !== 'object') return;
+	for (const property of Array.isArray(select) ? select : [select]) {
+		if (!property || typeof property !== 'object') continue;
+		delete property.checkPermission;
+		stripPermissionControls(property.select);
+	}
+}
+
+interface RelationshipReadCheck {
+	tableClass: any;
+	user: any;
+	denials?: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
+}
+
+function checkRelationshipReads(
+	requestJson: any,
+	operationSchema: string,
+	table: string,
+	valueSearch: boolean,
+	permsResponse
+): Set<string> | undefined {
+	const tableClass = getDatabases()[operationSchema]?.[table];
+	if (!tableClass?.hasRelationships) return;
+	let valueAttribute = valueSearch ? (requestJson.search_attribute ?? requestJson.attribute) : undefined;
+	if ((requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value) === '*')
+		valueAttribute = undefined;
+	if (
+		requestJson.get_attributes == null &&
+		requestJson.conditions == null &&
+		requestJson.sort == null &&
+		valueAttribute === undefined
+	)
+		return;
+	const state: RelationshipReadCheck = { tableClass, user: requestJson.hdb_user };
+	checkSelectPaths(state, requestJson.get_attributes, undefined, tableClass);
+	checkConditionPaths(state, requestJson.conditions);
+	checkSortPaths(state, requestJson.sort, undefined);
+	if (valueAttribute !== undefined) checkRelationshipPath(state, valueAttribute);
+	if (state.denials)
+		return reportRelationshipDenials(
+			state.denials,
+			requestJson.hdb_user?.role?.permission,
+			operationSchema,
+			table,
+			permsResponse
+		);
+}
+
+// Reported like a root reference: what the role cannot describe does not exist for it. The root table's own denied
+// attributes are returned for the root attribute check to report.
+function reportRelationshipDenials(
+	denials: RelationshipReadCheck['denials'],
+	permission: any,
+	operationSchema: string,
+	table: string,
+	permsResponse
+): Set<string> | undefined {
+	let rootAttributes: Set<string> | undefined;
+	for (const { denial, attributes } of denials.values()) {
+		const { database, table: deniedTable } = denial;
+		if (database === operationSchema && deniedTable === table) {
+			rootAttributes = attributes;
+			continue;
+		}
+		const databasePermission = permission?.[database];
+		if (!databasePermission || databasePermission[DESCRIBE_PERM] === false) {
+			permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(database));
+			continue;
+		}
+		const tablePermission = databasePermission.tables?.[deniedTable];
+		if (!tablePermission || tablePermission[DESCRIBE_PERM] === false) {
+			permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(database, deniedTable));
+			continue;
+		}
+		if (denial.attribute === undefined) {
+			permsResponse.addUnauthorizedTable(database, deniedTable, [READ_PERM]);
+			continue;
+		}
+		const required = Object.create(null);
+		for (const attribute of attributes) {
+			const attributePermission = tablePermission.attribute_permissions?.find(
+				(entry) => entry.attribute_name === attribute
+			);
+			if (!attributePermission || attributePermission[DESCRIBE_PERM] === false)
+				permsResponse.addInvalidItem(
+					HDB_ERROR_MSGS.ATTR_NOT_FOUND(database, deniedTable, attribute),
+					database,
+					deniedTable
+				);
+			else required[attribute] = [READ_PERM];
+		}
+		const unauthorized = Object.keys(required);
+		if (unauthorized.length > 0) permsResponse.addUnauthorizedAttributes(unauthorized, database, deniedTable, required);
+	}
+	return rootAttributes;
+}
+
+function relatedTableOf(currentTable: any, name: any) {
+	return currentTable?.propertyResolvers?.[name]?.definition?.tableClass;
+}
+
+function checkRelationshipPath(state: RelationshipReadCheck, attribute: any) {
+	const path = Array.isArray(attribute);
+	if (!relatedTableOf(state.tableClass, path ? attribute[0] : attribute)) return;
+	const denial = state.tableClass._readDenial(path ? attribute : [attribute], state.user);
+	if (!denial) return;
+	state.denials ??= new Map();
+	const key = `${denial.database}_${denial.table}`;
+	let entry = state.denials.get(key);
+	if (!entry) state.denials.set(key, (entry = { denial, attributes: new Set() }));
+	if (denial.attribute === undefined) entry.denial = denial;
+	else entry.attributes.add(denial.attribute);
+}
+
+function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[] | undefined) {
+	for (; sort && typeof sort === 'object'; sort = sort.next) {
+		if (sort.attribute !== undefined)
+			checkRelationshipPath(state, prefix ? prefix.concat(sort.attribute) : sort.attribute);
+	}
+}
+
+function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any[] | undefined, currentTable: any) {
+	if (select == null) return;
+	for (const property of Array.isArray(select) ? select : [select]) {
+		const name = property?.name ?? property;
+		const relatedTable = relatedTableOf(currentTable, name);
+		if (relatedTable) {
+			const path = prefix ? [...prefix, name] : [name];
+			checkRelationshipPath(state, path);
+			checkSelectPaths(state, property?.select, path, relatedTable);
+			checkSortPaths(state, property?.sort, path);
+			continue;
+		}
+		// a related '*' is narrowed to the readable attributes after admission, like a root '*'
+		if (prefix && name !== '*') checkRelationshipPath(state, [...prefix, name]);
+	}
+}
+
+function checkConditionPaths(state: RelationshipReadCheck, conditions: any) {
+	if (!Array.isArray(conditions)) return;
+	for (const condition of conditions) {
+		if (condition?.conditions) checkConditionPaths(state, condition.conditions);
+		else if (condition?.attribute !== undefined) checkRelationshipPath(state, condition.attribute);
+	}
 }
 
 /**
@@ -1129,7 +1397,7 @@ function isBulkLoadOperation(operationName): boolean {
 	return BULK_OP_NAMES.has(operationName);
 }
 
-function getRecordAttributes(json, operationName?) {
+function getRecordAttributes(json, operationName?, relationshipTable?: any) {
 	let affectedAttributes = new Set();
 	try {
 		// Bulk load operations have their attribute permissions checked per chunk instead, in
@@ -1153,7 +1421,9 @@ function getRecordAttributes(json, operationName?) {
 					if (condition.search_attribute !== undefined) {
 						attribute = condition.search_attribute;
 					}
-					affectedAttributes.add(attribute);
+					if (Array.isArray(attribute)) {
+						if (!relatedTableOf(relationshipTable, attribute[0])) affectedAttributes.add(attribute[0]);
+					} else affectedAttributes.add(attribute);
 				}
 			};
 			addConditionAttributes(json.conditions);
@@ -1164,7 +1434,9 @@ function getRecordAttributes(json, operationName?) {
 			if (json.search_attribute !== undefined) {
 				attribute = json.search_attribute;
 			}
-			affectedAttributes.add(attribute);
+			if (Array.isArray(attribute)) {
+				if (!relatedTableOf(relationshipTable, attribute[0])) affectedAttributes.add(attribute[0]);
+			} else affectedAttributes.add(attribute);
 		}
 
 		if (!json.records || json.records.length === 0) {
@@ -1178,7 +1450,7 @@ function getRecordAttributes(json, operationName?) {
 					(attr === '$score' || attr === '$highlights')
 				)
 					continue;
-				affectedAttributes.add(attr);
+				affectedAttributes.add(attr?.name ?? attr);
 			}
 		} else {
 			// get unique affectedAttributes

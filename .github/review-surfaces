@@ -1,0 +1,69 @@
+# Risk surfaces: how much human and agent review attention a change to a path deserves.
+# The pre-push review reads this file from the BASE branch, so a PR cannot lower the tier of its
+# own files. Format: `<tier> <glob>`, last match wins. A glob containing `/` is anchored at the
+# repository root; one without matches at any depth.
+#
+# critical  — correctness or durability of stored data, replication, wire/at-rest encodings
+# sensitive — authentication, authorization, secrets
+# hot       — request/read/write hot paths where a regression is a performance incident
+# ordinary  — overrides a default
+
+critical  replication/
+critical  resources/transactionBroadcast.ts
+critical  resources/Table.ts
+critical  resources/RecordEncoder.ts
+critical  resources/tracked.ts
+critical  resources/crdt.ts
+critical  resources/PrimaryRocksDatabase.ts
+critical  resources/DatabaseTransaction.ts
+critical  resources/LMDBTransaction.ts
+critical  resources/RocksIndexStore.ts
+critical  resources/RocksTransactionLogStore.ts
+critical  resources/auditStore.ts
+critical  resources/blob.ts
+critical  resources/branchDatabase.ts
+critical  resources/databases.ts
+critical  resources/databaseDropPreparation.ts
+critical  resources/derivedIndexes.ts
+critical  resources/derivedIndexRuntime.ts
+critical  resources/derivedIndexRegistry.ts
+critical  resources/indexes/
+critical  resources/longLivedTransactions.ts
+critical  resources/nodeIdMapping.ts
+critical  resources/recordLock.ts
+critical  resources/recordLockCoordinator.ts
+critical  resources/replayLogs.ts
+critical  resources/replayLogsGuards.ts
+critical  resources/replicatedApplyFailure.ts
+critical  resources/search.ts
+critical  resources/analytics/write.ts
+critical  bin/copyDb.ts
+critical  dataLayer/backupRepository.ts
+critical  dataLayer/harperBridge/ResourceBridge.ts
+critical  dataLayer/restoreMarker.ts
+critical  dataLayer/rocksdbBackup.ts
+critical  dataLayer/schemaDescribe.ts
+critical  server/storageReclamation.ts
+critical  server/transactionLogCooling.ts
+critical  upgrade/
+critical  utility/lmdb/
+
+sensitive security/
+# The review gate itself: a change here moves what every later PR is held to.
+sensitive .github/review-surfaces
+sensitive .github/actions/review-coverage/
+sensitive .github/workflows/review-coverage.yml
+sensitive resources/login.ts
+sensitive resources/roles.ts
+sensitive resources/secretDecryptor.ts
+sensitive server/liveSubscriptionAuth.ts
+sensitive server/operationsServer.ts
+
+hot       server/http.ts
+hot       server/REST.ts
+hot       server/middlewareChain.ts
+hot       server/threads/
+hot       server/mqtt.ts
+hot       server/DurableSubscriptionsSession.ts
+hot       resources/Resource.ts
+hot       resources/IterableEventQueue.ts

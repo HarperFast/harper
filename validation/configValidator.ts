@@ -1,11 +1,14 @@
 'use strict';
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import Joi from 'joi';
-import * as os from 'os';
+import { resolveFullTextSearchLimits, resolveFullTextQueryLimits } from '../resources/indexes/fullTextSearchLimits.ts';
+import { validateHeaderValue } from 'node:http';
+import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
-import { totalmem } from 'os';
-import * as path from 'path';
+const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
+import { totalmem } from 'node:os';
+import * as path from 'node:path';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
@@ -205,6 +208,18 @@ const generativeDecisionEntrySchema = Joi.object({
 const unknownBackendEntrySchema = Joi.object({
 	backend: string.required(),
 }).unknown(true);
+// USD per million tokens. Only generative calls are priced, so every other kind refuses the field
+// rather than accepting a price nothing reads.
+const pricingSchema = Joi.object({
+	inputPerMtok: number.min(0).required(),
+	outputPerMtok: number.min(0).required(),
+}).unknown(false);
+const withPricingFor = (kind, schema) =>
+	schema.keys({ pricing: kind === 'generative' ? pricingSchema.optional() : Joi.forbidden() });
+const inputPrefixesSchema = Joi.object({
+	document: string.allow('').optional(),
+	query: string.allow('').optional(),
+}).unknown(false);
 // A built-in that cannot serve the kind it is listed under fails here, with the kind named, rather
 // than passing as a module specifier and failing at boot.
 function rejectWrongKind(kind) {
@@ -215,20 +230,29 @@ const wrongKindEntrySchema = (kind) =>
 const providerEntrySchema = (kind) =>
 	Joi.alternatives().conditional('.backend', {
 		switch: [
-			{ is: 'ollama', then: ollamaEntrySchema },
-			{ is: 'openai', then: openaiEntrySchema },
-			{ is: 'anthropic', then: anthropicEntrySchema },
-			{ is: 'bedrock', then: bedrockEntrySchema },
+			{ is: 'ollama', then: withPricingFor(kind, ollamaEntrySchema) },
+			{
+				is: 'openai',
+				then: withPricingFor(
+					kind,
+					openaiEntrySchema.keys({
+						inputPrefixes: kind === 'embedding' ? inputPrefixesSchema.optional() : Joi.forbidden(),
+						truncation: kind === 'embedding' ? string.valid('vllm').optional() : Joi.forbidden(),
+					})
+				),
+			},
+			{ is: 'anthropic', then: withPricingFor(kind, anthropicEntrySchema) },
+			{ is: 'bedrock', then: withPricingFor(kind, bedrockEntrySchema) },
 			{ is: 'generative', then: wrongKindEntrySchema(kind) },
 		],
-		otherwise: unknownBackendEntrySchema,
+		otherwise: withPricingFor(kind, unknownBackendEntrySchema),
 	});
 const decisionEntrySchema = Joi.alternatives().conditional('.backend', {
 	switch: [
 		{ is: 'generative', then: generativeDecisionEntrySchema },
 		{ is: Joi.valid('ollama', 'openai', 'anthropic', 'bedrock'), then: wrongKindEntrySchema('decision') },
 	],
-	otherwise: unknownBackendEntrySchema,
+	otherwise: withPricingFor('decision', unknownBackendEntrySchema),
 });
 const modelsSchema = Joi.object({
 	embedding: Joi.object().pattern(Joi.string(), providerEntrySchema('embedding')).optional(),
@@ -278,6 +302,37 @@ export function validateModelsBlock(models) {
 let hdbRoot;
 let skipFsVal = false;
 
+const healthThresholds = (warningDefault: number, errorDefault: number) =>
+	Joi.object({ warning: number.min(0).max(100).optional(), error: number.min(0).max(100).optional() })
+		.unknown(false)
+		.custom((value, helpers) =>
+			(value.warning ?? warningDefault) <= (value.error ?? errorDefault) ? value : helpers.error('any.invalid')
+		);
+
+const corsAllowHeadersConstraints = Joi.custom((value, helpers) => {
+	try {
+		for (const header of Array.isArray(value) ? value : [value])
+			validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
+		return value;
+	} catch {
+		return helpers.error('any.invalid');
+	}
+})
+	.allow(null)
+	.optional();
+const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
+	.prefs({ convert: false })
+	.optional();
+
+export function effectiveHttpConfigValidator(flatConfig) {
+	return Joi.object({
+		http_readrequestqueuelimit: readRequestQueueLimitConstraints,
+		http_corsaccesscontrolallowheaders: corsAllowHeadersConstraints,
+	}).validate({
+		http_readrequestqueuelimit: flatConfig.http_readrequestqueuelimit,
+		http_corsaccesscontrolallowheaders: flatConfig.http_corsaccesscontrolallowheaders,
+	});
+}
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
 	hdbRoot = configJson.rootPath;
@@ -302,8 +357,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
-	// Presence-based enablement: a profile is on iff its sub-block exists in
-	// config (same convention as `replication`). No `enabled` field.
+	// A profile is on when its sub-block exists, unless it sets `enabled: false`.
+	// `enabled: true` lets env-var config (where `{}` is dropped as "no overrides")
+	// create the block.
 	const mcpRateLimitSchema = Joi.object({
 		perToolPerSecond: number.min(0).optional(),
 		perToolBurst: number.min(0).optional(),
@@ -311,6 +367,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 		sessionPerSecond: number.min(0).optional(),
 	});
 	const mcpOperationsSchema = Joi.object({
+		// `convert: false` — validateConfig() doesn't write coerced mcp values back, so a quoted
+		// "false" would pass here and still leave the profile on.
+		enabled: boolean.optional().prefs({ convert: false }),
 		mountPath: string.optional().default('/mcp'),
 		allow: array.items(string).optional(),
 		deny: array.items(string).optional(),
@@ -390,6 +449,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			url: nodeUrlConstraints,
 			port: portConstraints,
 			securePort: portConstraints,
+			threads: number.integer().min(0).optional().empty(null),
 			routes: array.optional().empty(null),
 			databases: Joi.alternatives(string, array),
 			enableRootCAs: boolean.optional(),
@@ -462,6 +522,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
+			corsAccessControlAllowHeaders: corsAllowHeadersConstraints,
+			readRequestQueueLimit: readRequestQueueLimitConstraints,
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
@@ -482,6 +544,22 @@ export function configValidator(configJson, skipFsValidation = false) {
 				.pattern(string, Joi.alternatives([string, number, boolean]))
 				.optional(),
 		}).required(),
+		status: Joi.object({
+			healthChecks: Joi.object({
+				enabled: boolean.optional(),
+				intervalSeconds: number.min(1).max(2147483).optional(),
+				thresholds: Joi.object({
+					disk: healthThresholds(80, 95),
+					memory: healthThresholds(80, 95),
+					cpu: healthThresholds(85, 95),
+				})
+					.unknown(false)
+					.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
+		}).optional(),
 		threads: Joi.alternatives(
 			threadsConstraints.optional(),
 			Joi.object({
@@ -502,9 +580,23 @@ export function configValidator(configJson, skipFsValidation = false) {
 				preloadRequire: Joi.alternatives([string, array.items(string)])
 					.allow(null)
 					.optional(),
+				v8Flags: Joi.alternatives([v8Flag, array.items(v8Flag)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({
+			fullText: Joi.object()
+				.custom((value, helpers) => {
+					try {
+						resolveFullTextSearchLimits(value);
+						resolveFullTextQueryLimits(value?.query);
+						return value;
+					} catch (error) {
+						return helpers.message({ custom: error instanceof Error ? error.message : String(error) });
+					}
+				})
+				.optional(),
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
@@ -538,6 +630,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			]),
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
+			maxLockClockSkew: Joi.alternatives([
+				number
+					.min(0)
+					.custom((value, helpers) =>
+						Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+					),
+				string.custom((value, helpers) =>
+					Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+				),
+			]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),

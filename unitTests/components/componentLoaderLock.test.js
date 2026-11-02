@@ -57,6 +57,7 @@ describe('componentLoader per-application plugin lock isolation', () => {
 		const hogReleased = new Promise((resolve) => (releaseHog = resolve));
 		TRUSTED_RESOURCE_PLUGINS[PLUGIN_NAME] = {
 			handleApplication(scope) {
+				collectedScopes.add(scope);
 				if (scope.appName === HOG_APP) {
 					hogRunning = true;
 					return hogReleased;
@@ -91,7 +92,6 @@ describe('componentLoader per-application plugin lock isolation', () => {
 		hogLoad = loadComponent(hogDir, resources, 'test-origin', {
 			isRoot: false,
 			appName: HOG_APP,
-			collectScopes: collectedScopes,
 		});
 		hogLoad.then(
 			() => (hogLoadSettled = true),
@@ -107,7 +107,6 @@ describe('componentLoader per-application plugin lock isolation', () => {
 		await loadComponent(bystanderDir, resources, 'test-origin', {
 			isRoot: false,
 			appName: BYSTANDER_APP,
-			collectScopes: collectedScopes,
 		});
 		const elapsedMs = Date.now() - startedAt;
 

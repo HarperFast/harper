@@ -7,9 +7,12 @@
  * `testUtils.preTestPrep()` keeps from refreshing.
  */
 
-const { readFileSync, writeFileSync } = require('node:fs');
+const { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
 const YAML = require('yaml');
 const { getConfigFilePath } = require('#src/config/configUtils');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 function readRootConfig() {
 	return YAML.parse(readFileSync(getConfigFilePath(), 'utf8')) ?? {};
@@ -36,4 +39,27 @@ function preserveRootConfig() {
 	});
 }
 
-module.exports = { readRootConfig, rootConfigEntry, setRootConfigEntry, preserveRootConfig };
+/**
+ * Register hooks, inside a `describe`, that remove every application its tests deployed into the run's one
+ * components root. A later suite that loads that root would otherwise load them too, with the default config's
+ * `rest: true` claiming REST's root mount for the rest of the run.
+ */
+function removeDeployedComponents() {
+	const visibleEntries = () => {
+		const root = env.get(CONFIG_PARAMS.COMPONENTSROOT);
+		return existsSync(root) ? readdirSync(root).filter((name) => !name.startsWith('.')) : [];
+	};
+	let existing;
+	before(() => {
+		existing = new Set(visibleEntries());
+	});
+	after(() => {
+		for (const name of visibleEntries()) {
+			if (!existing.has(name)) {
+				rmSync(join(env.get(CONFIG_PARAMS.COMPONENTSROOT), name), { recursive: true, force: true, maxRetries: 5 });
+			}
+		}
+	});
+}
+
+module.exports = { readRootConfig, rootConfigEntry, setRootConfigEntry, preserveRootConfig, removeDeployedComponents };

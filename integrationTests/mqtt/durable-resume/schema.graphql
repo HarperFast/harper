@@ -1,0 +1,9 @@
+# Two tables in one database: writes to Noise advance the database's log without touching Readings.
+type Readings @table(audit: true) @export {
+	id: ID @primaryKey
+	value: Int
+}
+type Noise @table(audit: true) @export {
+	id: ID @primaryKey
+	value: Int
+}

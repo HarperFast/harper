@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { join } = require('node:path');
 const { setupTestDBPath } = require('../../testUtils');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { clearRegistry, defineBackend, setDecision } = require('#src/resources/models/backendRegistry');
 const { clearRouting, registerRouter, setFallbackGroup } = require('#src/resources/models/routing');
 const { Models, models } = require('#src/resources/models/Models');

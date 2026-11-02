@@ -5,7 +5,7 @@ import { classifyPullRequest, easyDiffWaiver, isAiAuthored } from './prExemption
 // The exact output of `formatReviewCoverage` (HarperFast/skills-internal
 // skills/cross-model-review/bin/prepush-policy.mjs), whose leg names come from REVIEW_LEGS there.
 // A footer that helper could not have written grants no enforceable coverage.
-const COVERAGE_LEGS = new Set([
+export const COVERAGE_LEGS = new Set([
 	'codex',
 	'claude',
 	'claude(fallback)',
@@ -14,6 +14,7 @@ const COVERAGE_LEGS = new Set([
 	'cursor-composer',
 	'cursor-kimi',
 	'cursor-muse',
+	'muse',
 ]);
 const RECEIPT_LEGS = new Set([...COVERAGE_LEGS, 'domain', 'conformance']);
 const knownLegs = (key, allowed, legs) => {
@@ -22,15 +23,35 @@ const knownLegs = (key, allowed, legs) => {
 	return new Set(legs).size === legs.length ? '' : `repeats a leg in \`${key}=\``;
 };
 const legList = (key, allowed) => (value) => knownLegs(key, allowed, value.split(','));
+// skills-internal rules/prepush-cli.md "The footer token": `pending` until a round or the leg's own
+// fold adjudicates it; the rest are consumed.
+const LATE_STATES = new Set(['pending', 'adjudicated', 'failed', 'timeout', 'lost', 'no-scope']);
 const positive = (key) => (value) =>
 	/^[1-9]\d*$/.test(value) ? '' : `has \`${key}=${value}\`, not a positive integer`;
 const SEGMENTS = new Map([
 	[
 		'authored',
 		(value) =>
-			/^(?:claude|codex|unknown)$/.test(value) ? '' : `has \`authored=${value}\`, not claude, codex or unknown`,
+			/^(?:claude|codex|gemini|unknown)$/.test(value)
+				? ''
+				: `has \`authored=${value}\`, not claude, codex, gemini or unknown`,
 	],
 	['ran', (value) => (value === 'none' ? '' : legList('ran', COVERAGE_LEGS)(value))],
+	['pending', legList('pending', COVERAGE_LEGS)],
+	[
+		'late',
+		(value) => {
+			const legs = [];
+			for (const entry of value.split(',')) {
+				const parsed = /^(.+):([^:]+)$/.exec(entry);
+				if (!parsed) return `has \`late=\` entry \`${entry}\`, not \`<leg>:<state>\``;
+				if (!LATE_STATES.has(parsed[2]))
+					return `has \`late=\` entry \`${entry}\`, whose state is not one of ${[...LATE_STATES].join(', ')}`;
+				legs.push(parsed[1]);
+			}
+			return knownLegs('late', COVERAGE_LEGS, legs);
+		},
+	],
 	['adjudicated', legList('adjudicated', new Set(['domain']))],
 	[
 		'blocked',
@@ -45,9 +66,19 @@ const SEGMENTS = new Map([
 		},
 	],
 	['declined', legList('declined', RECEIPT_LEGS)],
+	[
+		'urgency',
+		(value) =>
+			/^(?:fast|urgent)$/.test(value)
+				? ''
+				: `has \`urgency=${value}\`, not fast or urgent (the helper omits the segment at normal urgency)`,
+	],
 	['rounds', positive('rounds')],
 	['full', positive('full')],
 ]);
+const URGENCIES_READY_WHILE_PENDING = new Set(['fast', 'urgent']);
+export const PENDING_FIX =
+	'run the pre-push CLI with `--fold-late` (`--wait-late` while the leg still runs), which folds it and updates the PR body, or run another review round and re-materialize the footer with `pr-body-review-need.mjs --write`; a late leg that self-folds updates the PR body itself';
 const ORDER = [...SEGMENTS.keys()];
 const FIELD = 'Review-Coverage: ';
 
@@ -120,35 +151,66 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const adjudicatorBlocked = footerRead.segments.get('adjudicated')?.split(',').includes('domain')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
+	// `pending=` is the older form the helper still writes beside `late=`; either one marks the leg pending.
+	const pendingLegs = [
+		...new Set([
+			...(footerRead.segments.get('pending')?.split(',') ?? []),
+			...(footerRead.segments.get('late') ?? '')
+				.split(',')
+				.filter((entry) => entry.endsWith(':pending'))
+				.map((entry) => entry.slice(0, -':pending'.length)),
+		]),
+	];
+	const urgency = footerRead.segments.get('urgency') ?? 'normal';
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
 
-	const footer = [
-		...prose.matchAll(/Human-Review-Need:\s*(\d+)(?:(?:(?!Human-Review-Need:)[^@\n])*@\s*([0-9a-f]{6,40}))?/gi),
+	const lastFooter = (field, value) =>
+		[
+			...prose.matchAll(new RegExp(`${field}:\\s*(${value})(?:(?:(?!${field}:)[^@\\n])*@\\s*([0-9a-f]{6,40}))?`, 'gi')),
+		].at(-1);
+	// The format check's grammar (evaluatePrFormat.mjs): `@` may appear inside the `(detail)`.
+	const attention = [
+		...prose.matchAll(
+			/Review-Attention:\s*((?:skim|read|study|deep)\s+~\d+m)(?:\s+\([^)\n]*\))?(?:\s*@\s*([0-9a-f]{6,40}))?/gi
+		),
 	].at(-1);
+	const field = attention ? 'Review-Attention' : 'Human-Review-Need';
+	const footer = attention ?? lastFooter(field, '\\d+');
 	const head = String(pr?.head?.sha ?? '').toLowerCase();
 	// Reported, never enforced: the question is whether two outside models looked at this change,
 	// not whether the footer was re-materialized after the last amend.
 	const footerNote = !footer
-		? 'no Human-Review-Need footer'
+		? 'no Review-Attention (or legacy Human-Review-Need) footer'
 		: !footer[2]
-			? `Human-Review-Need: ${footer[1]} @ unpinned sha`
+			? `${field}: ${footer[1]} @ unpinned sha`
 			: head.startsWith(footer[2].toLowerCase())
-				? `Human-Review-Need: ${footer[1]} @ head`
-				: `Human-Review-Need footer is stale (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
+				? `${field}: ${footer[1]} @ head`
+				: `${field} footer is stale (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
 
+	const pendingList = pendingLegs.map((leg) => `\`${leg}\``).join(', ');
 	const classification = classifyPullRequest(pr);
 	const waiver = easyDiffWaiver(pr, easy);
 	const aiAuthored = isAiAuthored(prose);
 	// Waives ONE leg, not "all but one": a consumer asking for three still gets two.
-	const easyWaived = waiver.waived && !adjudicatorBlocked && enforceable >= Math.max(1, required - 1);
+	const easyWaived =
+		waiver.waived && !adjudicatorBlocked && !pendingLegs.length && enforceable >= Math.max(1, required - 1);
+	const easyNeedsFold =
+		waiver.waived &&
+		!adjudicatorBlocked &&
+		pendingLegs.length > 0 &&
+		enforceable >= Math.max(1, required - 1) &&
+		enforceable < required;
+	const pendingHeld = pendingLegs.length > 0 && (!URGENCIES_READY_WHILE_PENDING.has(urgency) || easyNeedsFold);
+	const compliant = enforceable >= required && !adjudicatorBlocked && !pendingHeld;
 	const exempt =
 		classification.exempt ||
-		(classification.draft ? 'draft — checked again at ready-for-review' : '') ||
+		(classification.draft
+			? `draft — checked again at ready-for-review${pendingLegs.length ? `; late review leg ${pendingList} ${pendingHeld ? 'must be adjudicated first' : `is still pending; \`urgency=${urgency}\` does not hold ready-for-review on it`}` : ''}`
+			: '') ||
 		(!aiAuthored ? 'not AI-authored — coverage is reported, not required' : '') ||
 		(easyWaived ? `Complexity: easy on a ${waiver.lines}-line diff — one outside review is enough` : '');
-	const compliant = enforceable >= required && !adjudicatorBlocked;
 	const pass = mode !== 'enforce' || Boolean(exempt) || compliant;
 	const proseNote = !hasFooter
 		? count > 0
@@ -160,11 +222,29 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 				? '; the `Review-Coverage:` footer names no `authored=` family, so it cannot exclude the authoring model and is not counted'
 				: '';
 	const easyNote =
-		waiver.claimed && !waiver.waived ? `; \`Complexity: easy\` does not waive here — ${waiver.reason}` : '';
+		waiver.claimed && !waiver.waived
+			? `; \`Complexity: easy\` does not waive here — ${waiver.reason}`
+			: easyNeedsFold && !exempt
+				? '; `Complexity: easy` does not waive while a late review leg is pending, at any urgency'
+				: '';
 	const adjudicationNote = adjudicatorBlocked
 		? `; the Harper adjudicator (\`domain\`) is blocked (${adjudicatorBlocked}) in every round, so no outside finding was adjudicated — rerun the pre-push review until \`domain\` completes and re-materialize the footer`
 		: '';
-	const summary = exempt ? `exempt: ${exempt}` : adjudicatorBlocked ? `${coverage}; adjudication blocked` : coverage;
+	const pendingNote =
+		pendingHeld && !exempt
+			? `; late review leg ${pendingList} is still pending in the \`Review-Coverage:\` footer, so its findings are not adjudicated yet — ${PENDING_FIX}`
+			: '';
+	const lateNotice =
+		pendingLegs.length && compliant && !exempt
+			? `late review leg ${pendingList} is still pending, so its findings are not adjudicated yet; \`urgency=${urgency}\` lets a ready PR pass before the leg folds`
+			: '';
+	const summary = exempt
+		? `exempt: ${exempt}`
+		: adjudicatorBlocked
+			? `${coverage}; adjudication blocked`
+			: pendingHeld
+				? `${coverage}; late review leg pending`
+				: coverage;
 	return {
 		pass,
 		exempt,
@@ -173,7 +253,11 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		families,
 		aiAuthored,
 		adjudicatorBlocked,
+		pendingLegs,
+		pendingHeld,
+		urgency,
+		lateNotice,
 		summary,
-		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}${adjudicationNote}`,
+		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}${adjudicationNote}${pendingNote}${lateNotice ? `; ${lateNotice}` : ''}`,
 	};
 }

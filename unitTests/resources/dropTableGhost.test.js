@@ -1,8 +1,8 @@
 require('../testUtils');
 const assert = require('assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const harperLogger = require('#src/utility/logging/harper_logger');
 
 const TEST_DB = 'test';
@@ -271,13 +271,13 @@ describe('dropTable ghost regression', () => {
 		// forever.
 		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		const storageLogger = harperLogger.forComponent('storage');
 		const originalLogError = storageLogger.error;
 		const errorLogs = [];
@@ -297,7 +297,7 @@ describe('dropTable ghost regression', () => {
 			for (let i = 0; i < 5; i++) reload();
 		} finally {
 			storageLogger.error = originalLogError;
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		assert.ok(attemptsWhenExhausted > 0, 'the interrupted drop must be attempted at least once');
@@ -359,15 +359,13 @@ describe('dropTable ghost regression', () => {
 		};
 		const stubFailingRemove = (dbisDb, table) => {
 			const originalRemoveSync = dbisDb.removeSync;
-			dbisDb.removeSync = function (key, ...rest) {
+			const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 				if (typeof key === 'string' && key.startsWith(`${table}/`)) {
 					throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 				}
 				return originalRemoveSync.call(this, key, ...rest);
-			};
-			return () => {
-				dbisDb.removeSync = originalRemoveSync;
-			};
+			});
+			return restoreRemoveSync;
 		};
 		const storageLogger = harperLogger.forComponent('storage');
 		const originalLogError = storageLogger.error;
@@ -452,13 +450,13 @@ describe('dropTable ghost regression', () => {
 
 		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		const reload = () => {
 			resetDatabases();
 			getDatabases();
@@ -486,7 +484,7 @@ describe('dropTable ghost regression', () => {
 				`a later interrupted drop must be retried again, not skipped on the previous drop's spent budget (attempts stuck at ${attempts})`
 			);
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -521,13 +519,13 @@ describe('dropTable ghost regression', () => {
 
 		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		const reload = () => {
 			resetDatabases();
 			getDatabases();
@@ -551,7 +549,7 @@ describe('dropTable ghost regression', () => {
 				`generation B must get its own budget instead of inheriting A's spent count (attempts stuck at ${attempts})`
 			);
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -644,17 +642,17 @@ describe('dropTable ghost regression', () => {
 		delete databases[TEST_DB][TABLE];
 
 		const originalRemoveSync = dbisDb.removeSync;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (key === secondaryKey) {
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		try {
 			resetDatabases();
 			getDatabases();
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		assert.ok(

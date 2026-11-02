@@ -14,7 +14,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 
 	before(function () {
 		// Load the modules
-		crlModule = require('#src/security/certificateVerification/crlVerification');
+		crlModule = require('#js/security/certificateVerification/crlVerification');
 		ocspModule = require('#src/security/certificateVerification/ocspVerification');
 		const sourceModule = require('#src/security/certificateVerification/certificateVerificationSource');
 		CertificateVerificationSourceClass = sourceModule.CertificateVerificationSource;

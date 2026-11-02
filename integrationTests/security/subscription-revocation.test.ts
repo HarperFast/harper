@@ -7,11 +7,15 @@
  *   1. the user's permission is revoked (drop_user) — event-driven via the user-change broadcast,
  *   2. an in-place role-permission edit (alter_role) removes the read grant — same event-driven path
  *      but revokes via the ROLE rather than the user record, and
- *   3. the bearer token the subscription was opened with expires — caught by the interval sweep.
+ *   3. the bearer token the subscription was opened with expires — terminated by the expiry timer, and
+ *   4. an MQTT connection authenticated before drop_user SUBSCRIBEs after it — rejected at registration.
+ *
+ * The periodic pass is configured longer than the suite, so every revocation here comes from a targeted
+ * recheck (or the expiry timer), never from a sweep that would mask a targeting defect.
  *
  * Each trigger is exercised on at least two transports (SSE/WS/MQTT) so the fix is verified at the
  * shared re-auth registry, not one protocol's wiring:
- *   drop_user     -> SSE, MQTT
+ *   drop_user     -> SSE, MQTT (also a SUBSCRIBE after it on an older connection)
  *   alter_role    -> WS,  MQTT
  *   token expiry  -> SSE, WS
  * A persistent oracle subscription (never revoked) runs for the whole suite and is checked after
@@ -47,6 +51,7 @@ const DAVE = { username: 'subrevoke_dave', password: 'Davey-pw-1414!' }; // toke
 const EVE = { username: 'subrevoke_eve', password: 'Evelyn-pw-1414!' }; // alter_role / WS
 const FRANK = { username: 'subrevoke_frank', password: 'Franky-pw-1414!' }; // alter_role / MQTT
 const OBS = { username: 'subrevoke_obs', password: 'Observ-pw-1414!' }; // never revoked — global-stall oracle
+const GRACE = { username: 'subrevoke_grace', password: 'Gracie-pw-1414!' }; // drop_user between CONNECT and SUBSCRIBE
 
 /** An open SSE stream that records how many record events have arrived. */
 interface SseStream {
@@ -196,8 +201,8 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			config: {},
 			env: {
 				AUTHENTICATION_AUTHORIZELOCAL: 'false',
-				// Sweep often so the token-expiry path (not event-signaled) is observable in-test.
-				HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS: '1000',
+				// No periodic pass during the suite: revocation must come from targeted rechecks and the expiry timer.
+				HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS: '600000',
 			},
 		});
 		client = createApiClient(ctx.harper);
@@ -235,7 +240,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 				.send({ operation: 'add_user', role: ROLE, username: u.username, password: u.password, active: true })
 				.expect(200);
 		}
-		for (const u of [DAVE, OBS]) {
+		for (const u of [DAVE, OBS, GRACE]) {
 			await client
 				.req()
 				.send({ operation: 'add_user', role: ROLE, username: u.username, password: u.password, active: true })
@@ -287,7 +292,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			const afterFirst = stream.count();
 			ok(afterFirst >= 1, `expected delivery while authorized, saw ${afterFirst} events`);
 
-			// Revoke access mid-stream. drop_user broadcasts a user-change → immediate re-auth sweep.
+			// Revoke access mid-stream. drop_user broadcasts a user-change → a recheck of that user.
 			await client.req().send({ operation: 'drop_user', username: ALICE.username }).expect(200);
 			await sleep(2000);
 
@@ -324,7 +329,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			await sleep(1000);
 			ok(stream.count() >= 1, `expected delivery while token valid, saw ${stream.count()}`);
 
-			// Wait past token expiry (3s) plus a sweep interval (1s).
+			// Wait past token expiry (3s); the expiry timer fires at exp.
 			await sleep(4000);
 			const probe = stream.count();
 			await insert({ id: `r-${seq++}`, value: 'token-after' });
@@ -353,7 +358,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 		ok(gotPre, 'positive control failed — MQTT subscription never delivered while authorized');
 
 		await client.req().send({ operation: 'drop_user', username: CAROL.username }).expect(200);
-		await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / re-auth sweep time to land under CI load
+		await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / targeted recheck time to land under CI load
 
 		const preCount = msgs.length;
 		await insert({ id: `r-${seq++}`, value: 'mqtt-drop-post' });
@@ -364,6 +369,26 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			preCount,
 			`MQTT connection kept delivering after drop_user (connected=${mqttClient.connected})`
 		);
+	});
+
+	test('a SUBSCRIBE after drop_user on a connection authenticated before it delivers nothing', async () => {
+		const mqttClient = await mqttConnect(mqttURL, GRACE, 'subrevoke-stale-mqtt');
+		mqttClients.add(mqttClient);
+		const msgs: string[] = [];
+		mqttClient.on('message', (_t, payload) => msgs.push(payload.toString()));
+
+		await client.req().send({ operation: 'drop_user', username: GRACE.username }).expect(200);
+		// the user-change notification lands before this connection registers anything
+		await sleep(1000);
+		const granted = await new Promise<number | undefined>((res) =>
+			mqttClient.subscribe('Owned/#', { qos: 1 }, (err, grants) => res(err ? 128 : grants?.[0]?.qos))
+		);
+
+		await insert({ id: `r-${seq++}`, value: 'mqtt-stale-post' });
+		await sleep(1500);
+		await assertOracleAlive('mqtt-stale-oracle');
+		strictEqual(msgs.length, 0, `a SUBSCRIBE by the dropped user delivered (granted qos ${granted})`);
+		ok(granted === undefined || granted >= 128, `the SUBSCRIBE was granted qos ${granted}`);
 	});
 
 	test('alter_role (removing read in place) terminates an active WS subscription', async () => {
@@ -391,7 +416,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 					},
 				})
 				.expect(200);
-			await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / re-auth sweep time to land under CI load
+			await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / targeted recheck time to land under CI load
 
 			const preCount = sub.frames.length;
 			await insert({ id: `r-${seq++}`, value: 'ws-alter-post' });
@@ -449,7 +474,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 					},
 				})
 				.expect(200);
-			await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / re-auth sweep time to land under CI load
+			await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / targeted recheck time to land under CI load
 
 			const preCount = msgs.length;
 			await insert({ id: `r-${seq++}`, value: 'mqtt-alter-post' });
@@ -495,7 +520,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 		const gotPre = await waitFor(() => sub.frames.length >= 1, 6000);
 		ok(gotPre, 'positive control failed — WS subscription never delivered while token valid');
 
-		// Wait past token expiry (3s) plus a sweep interval (1s).
+		// Wait past token expiry (3s); the expiry timer fires at exp.
 		await sleep(4200);
 		const preCount = sub.frames.length;
 		await insert({ id: `r-${seq++}`, value: 'ws-token-post' });
@@ -525,9 +550,9 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 					},
 				},
 			},
-			// Long enough that the multi-step recheck phase below (add_role + add_user + sweep +
+			// Long enough that the multi-step recheck phase below (add_role + add_user + recheck +
 			// delivery probe, up to ~8s) completes well before expiry, so the survives-recheck
-			// assertion never races the expiry sweep.
+			// assertion never races the expiry timer.
 			expires_in: 20,
 		});
 		strictEqual(tokenResp.status, 200, `scoped token issue failed: ${tokenResp.status} ${tokenResp.text}`);
@@ -547,7 +572,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			);
 
 			// Now create a REAL user colliding with the token's attribution name, holding a role with
-			// NO read on Owned. This both triggers a re-auth sweep and sets up the substitution trap:
+			// NO read on Owned. This both triggers a recheck of that username and sets up the substitution trap:
 			// if the recheck re-resolved the scoped principal by name it would adopt this user's
 			// (no-read) permissions and terminate the subscription. Continued delivery proves the
 			// embedded scoped role — not the colliding hdb_user — governs the recheck.
@@ -574,7 +599,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			);
 
 			// It must still expire with the token. Anchor on the mint time so the recheck phase's
-			// variable duration can't leave us short: wait until well past the 20s lifetime + sweep.
+			// variable duration can't leave us short: wait until well past the 20s lifetime.
 			await sleep(Math.max(0, mintedAt + 22000 - Date.now()));
 			const probe = stream.count();
 			await insert({ id: `r-${seq++}`, value: 'scoped-post-expiry' });

@@ -1,5 +1,5 @@
 /* eslint-disable sonarjs/no-nested-functions */
-const { OptionsWatcher } = require('#src/components/OptionsWatcher');
+const { OptionsWatcher } = require('#js/components/OptionsWatcher');
 const { EventEmitter, once } = require('node:events');
 const assert = require('node:assert');
 const { join } = require('node:path');

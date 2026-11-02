@@ -156,9 +156,9 @@ for (const threadCount of [1, 0]) {
 			let installedDir: string;
 			let replacementDir: string;
 			let gate: Awaited<ReturnType<typeof createGate>>;
-			const config = (component: Record<string, unknown>) => ({
+			const config = (component: Record<string, unknown>, deployment?: Record<string, unknown>) => ({
 				threads: { count: threadCount },
-				deployment: { startupInstallTimeout: STARTUP_INSTALL_TIMEOUT_MS },
+				...(deployment && { deployment }),
 				[PROJECT]: component,
 			});
 
@@ -166,11 +166,15 @@ for (const threadCount of [1, 0]) {
 				gate = await createGate();
 				installedDir = await writeFixture(1, false);
 				replacementDir = await writeFixture(2, true);
+				// No short deadline here: an install left behind by it is not served until a restart.
 				await startHarper(ctx, { config: config({ package: `file:${installedDir}` }), env: {} });
 				await waitUntil('version 1 serves', async () => (await probe(ctx)).body?.version === 1);
 				await killHarper(ctx);
 				await startHarper(ctx, {
-					config: config({ package: `file:${replacementDir}`, install: { command: gate.installCommand } }),
+					config: config(
+						{ package: `file:${replacementDir}`, install: { command: gate.installCommand } },
+						{ startupInstallTimeout: STARTUP_INSTALL_TIMEOUT_MS }
+					),
 					env: {},
 				});
 			});

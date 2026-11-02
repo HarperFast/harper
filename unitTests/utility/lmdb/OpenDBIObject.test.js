@@ -1,6 +1,6 @@
 require('../../testUtils');
 const assert = require('assert');
-const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
+const { OpenDBIObject } = require('#js/utility/lmdb/OpenDBIObject');
 const envMngr = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 

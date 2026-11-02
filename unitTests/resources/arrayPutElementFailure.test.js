@@ -6,7 +6,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // An unhandled rejection is reported a turn or two after the promise is abandoned, so give the
 // loop time to fire before asserting it did not.

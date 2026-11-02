@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { estimateCondition } = require('#src/resources/search');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('the query planner treats a rebuilding index as unavailable (harper#2537)', function () {
 	this.timeout(60000);

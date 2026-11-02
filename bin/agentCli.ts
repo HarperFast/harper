@@ -18,9 +18,10 @@ import * as readline from 'node:readline';
 import { loadCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { refreshExpiredOperationToken } from './cliOperations.ts';
 import { httpRequest } from '../utility/common_utils.ts';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 import * as terms from '../utility/hdbTerms.ts';
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
 
 const POLL_INTERVAL_MS = 1000;
 const TERMINAL_STATUSES = new Set(['completed', 'error', 'idle', 'aborted']);
@@ -198,7 +199,7 @@ async function resolveConnection(opts: CliOptions): Promise<Connection> {
 
 	// Local instance over the operations domain socket.
 	initConfig();
-	if (!getHdbPid()) throw new Error('Harper must be running to use the agent (no local instance detected).');
+	if (!getHdbPid()) throw new Error(`${PRODUCT_NAME} must be running to use the agent (no local instance detected).`);
 	const socketPath = getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET);
 	if (!socketPath) throw new Error('No operations domain socket configured for the local instance.');
 	return {

@@ -165,6 +165,11 @@ describe('keeping the release an activation displaces', () => {
 			await prepareApplication(app, { artifactId: 'd1', describeArtifact: () => PACKAGE_V1 });
 
 			assert.ok((await fs.lstat(path.join(root, 'web'))).isSymbolicLink(), 'the live path is the link');
+			assert.strictEqual(
+				app.installedTree,
+				`link:${await fs.readlink(path.join(root, 'web'))}`,
+				'a link is identified by its target, since it carries no marker'
+			);
 			assert.strictEqual(existsSync(path.join(source, DEPLOYMENT_PROVENANCE_FILE)), false);
 			assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'and a link keeps no record to return to');
 			await fs.rm(root, { recursive: true, force: true });

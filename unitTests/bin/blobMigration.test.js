@@ -10,7 +10,7 @@ const fs = require('fs-extra');
 const assert = require('assert');
 const path = require('path');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { getFilePathForBlob } = require('#src/resources/blob');
@@ -22,7 +22,7 @@ describe('Blob migration LMDB -> RocksDB (#857)', function () {
 	if ((process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb') return;
 	const { setupTestDBPath } = require('../testUtils');
 	const copyDB = require('#src/bin/copyDb');
-	const { RocksDatabase } = require('@harperfast/rocksdb-js');
+	const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 	let BlobMig;
 	let rootPath;

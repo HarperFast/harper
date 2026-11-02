@@ -4,6 +4,18 @@
 
 This document describes the binary format used to store audit/transaction log entries in Harper. The format is designed for efficient storage and retrieval of database operation records with support for CRDT operations, replication, and change tracking.
 
+## Primary-record residency metadata
+
+`RecordEncoder.ts` inserts optional primary fields in this order: local timestamp, metadata word, expiration, legacy residency ID, attribute sharding slot, origin node ID, additional audit references, encoded value. `HAS_RESIDENCY_SLOT` (`0x200` in the primary metadata word) adds a two-byte unsigned big-endian slot immediately after the optional four-byte legacy residency ID. Zero is a present slot; absence is `undefined`. The two bytes count toward the reserved-prefix budget before additional audit references are bounded.
+
+Only the experimental attribute-slot implementation writes this field. Public schemas reject `by` and `slotFrom` pending [harper-pro#1178](https://github.com/HarperFast/harper-pro/issues/1178). Key-derived policies compute the slot from the key and add no primary/audit field or flag. Historical legacy IDs remain decodable but declarative placement ignores them. Default key hashing is FNV-1a 32-bit over the ordered-binary key encoding (offset `2166136261`, multiplier `16777619`, unsigned result modulo the database's fixed slot count).
+
+The persisted table policy retains `slots`, `slotFrom`, and the internal `byAttribute` flag; the optional `by` attribute name selects default attribute hashing and the non-null guard. Explicit expressions remain unchanged strings in catalog/schema metadata. The public directive rename changes no record fields or wire framing.
+
+The primary `0x200` flag and audit `0x200` flag have different meanings. A copy sender must translate metadata, not copy the primary flags directly into an audit entry.
+
+Attribute slots require a decoder that understands the added fields. Downgrade requires a preactivation backup and can lose subsequent writes. Key-derived conversion needs no record rewrite and supports previous-binary rollback with equivalent legacy schema and placement function. Wire fallback strips the new audit fields and sends connection-only residency references; it does not make the old local decoder compatible.
+
 ## Transaction Log Entry Structure
 
 Each transaction log entry consists of two parts:
@@ -33,22 +45,24 @@ The audit entry data follows the transaction log header and contains the actual 
 
 ### Structure
 
-| Section               | Size                   | Description                                             |
-| --------------------- | ---------------------- | ------------------------------------------------------- |
-| Previous Local Time   | 0 or 8 bytes           | Optional previous version timestamp                     |
-| Action + Flags        | 1, 2, or 4 bytes       | Operation type and extended flags                       |
-| Node ID               | 1, 2, 4, or 5 bytes    | Node identifier (variable-length integer)               |
-| Table ID              | 1, 2, 4, or 5 bytes    | Table identifier (variable-length integer)              |
-| Record ID Length      | 1, 2, 4, or 5 bytes    | Length of record ID                                     |
-| Record ID             | Variable               | Binary-encoded record identifier                        |
-| Version               | 8 bytes                | IEEE 754 double timestamp                               |
-| Current Residency ID  | 0, 1, 2, 4, or 5 bytes | Optional, if `HAS_CURRENT_RESIDENCY_ID` flag            |
-| Previous Residency ID | 0, 1, 2, 4, or 5 bytes | Optional, if `HAS_PREVIOUS_RESIDENCY_ID` flag           |
-| Expiration Time       | 0 or 8 bytes           | Optional, if `HAS_EXPIRATION_EXTENDED_TYPE` flag        |
-| Originating Operation | 0, 1, 2, 4, or 5 bytes | Optional, if `HAS_ORIGINATING_OPERATION` flag           |
-| Username Length       | 1 or 2 bytes           | Length of username (0 if no username)                   |
-| Username              | Variable               | Binary-encoded username string                          |
-| Record Value          | Variable               | Optional, encoded record data (not present for deletes) |
+| Section                 | Size                   | Description                                             |
+| ----------------------- | ---------------------- | ------------------------------------------------------- |
+| Previous Local Time     | 0 or 8 bytes           | Optional previous version timestamp                     |
+| Action + Flags          | 1, 2, or 4 bytes       | Operation type and extended flags                       |
+| Node ID                 | 1, 2, 4, or 5 bytes    | Node identifier (variable-length integer)               |
+| Table ID                | 1, 2, 4, or 5 bytes    | Table identifier (variable-length integer)              |
+| Record ID Length        | 1, 2, 4, or 5 bytes    | Length of record ID                                     |
+| Record ID               | Variable               | Binary-encoded record identifier                        |
+| Version                 | 8 bytes                | IEEE 754 double timestamp                               |
+| Current Residency ID    | 0, 1, 2, 4, or 5 bytes | Optional, if `HAS_CURRENT_RESIDENCY_ID` flag            |
+| Previous Residency ID   | 0, 1, 2, 4, or 5 bytes | Optional, if `HAS_PREVIOUS_RESIDENCY_ID` flag           |
+| Current Residency Slot  | 0, 1, 2, or 4 bytes    | Optional unsigned slot, `HAS_CURRENT_RESIDENCY_SLOT`    |
+| Previous Residency Slot | 0, 1, 2, or 4 bytes    | Optional old slot, `HAS_PREVIOUS_RESIDENCY_SLOT`        |
+| Expiration Time         | 0 or 8 bytes           | Optional, if `HAS_EXPIRATION_EXTENDED_TYPE` flag        |
+| Originating Operation   | 0, 1, 2, 4, or 5 bytes | Optional, if `HAS_ORIGINATING_OPERATION` flag           |
+| Username Length         | 1 or 2 bytes           | Length of username (0 if no username)                   |
+| Username                | Variable               | Binary-encoded username string                          |
+| Record Value            | Variable               | Optional, encoded record data (not present for deletes) |
 
 ## Field Details
 
@@ -103,16 +117,20 @@ The extended type must leave the low byte clear (`createAuditEntry` throws on
 `HAS_PREVIOUS_VERSION` flag in this word: the previous local time announces itself by its own leading
 byte, and it precedes this word, so a reader cannot consult a flag before deciding whether to skip it.
 
-| Value          | Name                         | Description                          |
-| -------------- | ---------------------------- | ------------------------------------ |
-| 256 (0x100)    | HAS_STRUCTURE_UPDATE         | Entry advances the structure set     |
-| 512 (0x200)    | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included        |
-| 1024 (0x400)   | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included       |
-| 2048 (0x800)   | HAS_ORIGINATING_OPERATION    | Originating operation type included  |
-| 4096 (0x1000)  | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included        |
-| 8192 (0x2000)  | HAS_BLOBS                    | Binary blob data included            |
-| 16384 (0x4000) | HAS_ADDITIONAL_AUDIT_REFS    | Additional audit references included |
-| 32768 (0x8000) | LOCAL_ONLY                   | Never forwarded to replication peers |
+| Value            | Name                         | Description                              |
+| ---------------- | ---------------------------- | ---------------------------------------- |
+| 256 (0x100)      | HAS_STRUCTURE_UPDATE         | Entry advances the structure set         |
+| 512 (0x200)      | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included            |
+| 1024 (0x400)     | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included           |
+| 2048 (0x800)     | HAS_ORIGINATING_OPERATION    | Originating operation type included      |
+| 4096 (0x1000)    | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included            |
+| 8192 (0x2000)    | HAS_BLOBS                    | Binary blob data included                |
+| 16384 (0x4000)   | HAS_ADDITIONAL_AUDIT_REFS    | Additional audit references included     |
+| 32768 (0x8000)   | LOCAL_ONLY                   | Never forwarded to replication peers     |
+| 65536 (0x10000)  | HAS_CURRENT_RESIDENCY_SLOT   | Current attribute-derived slot included  |
+| 131072 (0x20000) | HAS_PREVIOUS_RESIDENCY_SLOT  | Previous attribute-derived slot included |
+
+Slot fields follow the two optional residency IDs and precede expiration, using the integer codec below. A changed/deleted attribute slot preserves its previous slot in the audit entry even when no body is present. Values are bounded to `0..65535`; key-derived records never set either slot flag.
 
 ### Variable-Length Integer Encoding
 
@@ -223,4 +241,4 @@ Byte sequence for a delete operation:
 ## Version History
 
 - **Structure Version:** Stored in lower 24 bits of transaction log header
-- **Compatibility:** Extended type flags allow backward-compatible schema evolution
+- **Compatibility:** Readers must understand every present field; the attribute-slot fields are not backward compatible with older local decoders.

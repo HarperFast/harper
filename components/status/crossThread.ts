@@ -5,12 +5,13 @@
  * and aggregating it into a unified view.
  */
 
-import { sendItcEvent } from '../../server/threads/itc.js';
+import { isMainThread } from 'node:worker_threads';
+import { sendItcEvent } from '../../server/threads/itc.ts';
 import {
 	getWorkerIndex,
 	onMessageByType,
 	getEligibleBroadcastRecipientThreadIds,
-} from '../../server/threads/manageThreads.js';
+} from '../../server/threads/manageThreads.ts';
 import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
@@ -20,24 +21,34 @@ import {
 	type AggregatedComponentStatus,
 	type ComponentStatusLevel,
 	COMPONENT_STATUS_LEVELS,
+	STATUS_PRIORITY,
 	type ComponentStatusAbnormality,
 } from './types.ts';
 import { ITCError } from './errors.ts';
 
 const logger = loggerWithTag('componentStatus.crossThread');
 const THREAD_IDENTITY_SEPARATOR = '#thread-';
-const STATUS_PRIORITY = [
-	COMPONENT_STATUS_LEVELS.ERROR,
-	COMPONENT_STATUS_LEVELS.WARNING,
-	COMPONENT_STATUS_LEVELS.LOADING,
-	COMPONENT_STATUS_LEVELS.UNKNOWN,
-	COMPONENT_STATUS_LEVELS.HEALTHY,
-];
 
-function stripThreadIdentity(statusKey: string): string {
-	const threadLabelStart = statusKey.lastIndexOf('@') + 1;
-	const identityIndex = statusKey.indexOf(THREAD_IDENTITY_SEPARATOR, threadLabelStart);
-	return identityIndex === -1 ? statusKey : statusKey.substring(0, identityIndex);
+function parseStatusKey(statusKey: string): {
+	componentName: string;
+	threadLabel: string;
+	publicNameWithThread: string;
+} {
+	const atIndex = statusKey.lastIndexOf('@');
+	if (atIndex <= 0) {
+		return {
+			componentName: statusKey,
+			threadLabel: '',
+			publicNameWithThread: statusKey,
+		};
+	}
+	const identityIndex = statusKey.indexOf(THREAD_IDENTITY_SEPARATOR, atIndex + 1);
+	const publicNameWithThread = identityIndex === -1 ? statusKey : statusKey.substring(0, identityIndex);
+	return {
+		componentName: publicNameWithThread.substring(0, atIndex),
+		threadLabel: publicNameWithThread.substring(atIndex + 1),
+		publicNameWithThread,
+	};
 }
 
 /**
@@ -203,17 +214,8 @@ export class CrossThreadStatusCollector {
 			// Clean up response checker
 			this.responseCheckers.delete(requestId);
 
-			// Aggregate responses from all threads
-			const aggregatedStatuses = new Map<string, ComponentStatusSummary>();
-
-			// Add local thread's component status
-			const localStatuses = registry.getAllStatuses();
-			const localWorkerIndex = getWorkerIndex();
-			const localThreadLabel = localWorkerIndex === undefined ? 'main' : `worker-${localWorkerIndex}`;
-
-			for (const [name, status] of localStatuses) {
-				this.setThreadStatus(aggregatedStatuses, name, localThreadLabel, status, localWorkerIndex);
-			}
+			// Aggregate responses from all threads, starting with the local thread's status
+			const aggregatedStatuses = this.getLocalStatusOnly(registry);
 
 			// Add responses from other threads
 			for (const response of collectedResponses) {
@@ -265,11 +267,14 @@ export class CrossThreadStatusCollector {
 	/**
 	 * Get status from local thread only (fallback when cross-thread collection fails)
 	 */
-	private getLocalStatusOnly(registry: ComponentStatusRegistry): Map<string, ComponentStatusSummary> {
+	private getLocalStatusOnly(
+		registry: ComponentStatusRegistry,
+		onMainThread: boolean = isMainThread
+	): Map<string, ComponentStatusSummary> {
 		const localStatuses = registry.getAllStatuses();
 		const fallbackStatuses = new Map<string, ComponentStatusSummary>();
-		const localWorkerIndex = getWorkerIndex();
-		const localThreadLabel = localWorkerIndex === undefined ? 'main' : `worker-${localWorkerIndex}`;
+		const localWorkerIndex = onMainThread ? undefined : getWorkerIndex();
+		const localThreadLabel = onMainThread ? 'main' : `worker-${localWorkerIndex}`;
 
 		for (const [name, status] of localStatuses) {
 			this.setThreadStatus(fallbackStatuses, name, localThreadLabel, status, localWorkerIndex);
@@ -305,9 +310,7 @@ export class StatusAggregator {
 		const componentGroups = new Map<string, Array<[string, ComponentStatusSummary]>>();
 
 		for (const [nameWithThread, status] of allStatuses) {
-			// Extract component name without thread suffix (e.g., "myComponent@worker-1" -> "myComponent")
-			const atIndex = nameWithThread.indexOf('@');
-			const componentName = atIndex !== -1 ? nameWithThread.substring(0, atIndex) : nameWithThread;
+			const { componentName } = parseStatusKey(nameWithThread);
 
 			let group = componentGroups.get(componentName);
 			if (!group) {
@@ -336,17 +339,19 @@ export class StatusAggregator {
 		const lastCheckedTimes: AggregatedComponentStatus['lastChecked'] = {
 			workers: {},
 		};
+		let highestPriorityIndex = Infinity;
 		let mostRecentCheckTime = 0;
 		let latestMessage: string | undefined;
 		let error: Error | string | undefined;
+		let loadedAt: number | undefined;
+		let source: ComponentStatusSummary['source'];
+		let totalOccurrenceCount = 0;
 		const statusCounts = new Map<ComponentStatusLevel, number>();
 		const abnormalities = new Map<string, ComponentStatusAbnormality>();
 
 		// Analyze all instances of this component
 		for (const [nameWithThread, status] of statusEntries) {
-			const atIndex = nameWithThread.lastIndexOf('@');
-			const threadLabelWithIdentity = atIndex !== -1 ? nameWithThread.substring(atIndex + 1) : '';
-			const threadLabel = stripThreadIdentity(threadLabelWithIdentity);
+			const { threadLabel } = parseStatusKey(nameWithThread);
 
 			// Convert lastChecked to ms since epoch
 			const checkTime =
@@ -362,21 +367,27 @@ export class StatusAggregator {
 				}
 			}
 
+			if (status.loadedAt) loadedAt = Math.max(loadedAt ?? 0, new Date(status.loadedAt).getTime());
+
 			// Track status counts
 			statusCounts.set(status.status, (statusCounts.get(status.status) || 0) + 1);
 
-			// Track messages - prioritize non-healthy messages
-			if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY && status.message) {
-				if (!latestMessage || checkTime > mostRecentCheckTime) {
+			// Pair latestMessage and error from the highest-priority, most-recent non-healthy entry
+			if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY && (status.message || status.error !== undefined)) {
+				const priorityIndex = STATUS_PRIORITY.indexOf(status.status);
+				if (
+					priorityIndex < highestPriorityIndex ||
+					(priorityIndex === highestPriorityIndex && checkTime > mostRecentCheckTime)
+				) {
+					highestPriorityIndex = priorityIndex;
 					mostRecentCheckTime = checkTime;
 					latestMessage = status.message;
+					error = status.error;
 				}
 			}
 
-			// Capture any error
-			if (status.error && !error) {
-				error = status.error;
-			}
+			if (status.source) source = status.source;
+			if (status.occurrenceCount) totalOccurrenceCount += status.occurrenceCount;
 		}
 
 		// Determine overall status (priority: error > warning > loading > unknown > healthy)
@@ -388,7 +399,7 @@ export class StatusAggregator {
 			// There are inconsistencies - populate abnormalities
 			for (const [nameWithThread, status] of statusEntries) {
 				if (status.status !== determinedStatus) {
-					const publicNameWithThread = stripThreadIdentity(nameWithThread);
+					const { publicNameWithThread } = parseStatusKey(nameWithThread);
 					const existing = abnormalities.get(publicNameWithThread);
 					if (existing && STATUS_PRIORITY.indexOf(existing.status) <= STATUS_PRIORITY.indexOf(status.status)) {
 						continue;
@@ -410,7 +421,10 @@ export class StatusAggregator {
 			lastChecked: lastCheckedTimes,
 			latestMessage,
 			error,
+			source,
+			occurrenceCount: totalOccurrenceCount || undefined,
 		};
+		if (loadedAt !== undefined) aggregatedStatus.loadedAt = loadedAt;
 
 		// Only add abnormalities if there are any
 		if (abnormalities.size > 0) {

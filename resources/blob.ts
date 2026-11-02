@@ -11,7 +11,7 @@
  *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
  */
 
-import { addExtension, pack, Packr } from 'msgpackr';
+import { addExtension, Packr } from 'msgpackr';
 import {
 	readFile,
 	rename,
@@ -48,10 +48,11 @@ import {
 import type { ReadStream, StatsFs } from 'node:fs';
 import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
-import { ensureDirSync } from 'fs-extra';
+import _typestrip_fs_extra from 'fs-extra';
+const { ensureDirSync } = _typestrip_fs_extra;
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
-import { join, dirname } from 'path';
+import { join, dirname } from 'node:path';
 import { logger } from '../utility/logging/logger.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import type { RootDatabase } from 'lmdb';
@@ -156,6 +157,7 @@ export function isBlobReceiveInFlight(fileId: string | null | undefined, store: 
 }
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
+const blobNameHasSetter = Boolean(Object.getOwnPropertyDescriptor(Blob.prototype, 'name')?.set);
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
@@ -291,6 +293,15 @@ export function watchInProgressFile(
 		handlers.onFailure();
 	});
 	return watcher;
+}
+class BlobReclamationBusyError extends Error {
+	statusCode = 503;
+	code = 'BLOB_RECLAMATION_BUSY';
+	retryable = true;
+	constructor() {
+		super('Blob storage is being reclaimed; reload the record before retrying the write');
+		this.name = 'BlobReclamationBusyError';
+	}
 }
 class BlobReadError extends Error {
 	statusCode: number;
@@ -1247,6 +1258,7 @@ interface PendingReclamation {
 	blobs: WeakRef<Blob>[];
 	seenBlobs: WeakSet<Blob>;
 	fileInfo: BlobFileInfo;
+	referenceGeneration: number | undefined;
 	deadline: number;
 	enqueuedAt: number;
 	supersededAt: number;
@@ -1290,20 +1302,19 @@ let invalidRetentionLogged = false;
 // Cross-worker state for one blob file, in the store's shared buffer — the same mechanism the blob
 // file-id allocator above uses. Two Int32 slots:
 //   [HOLDS]      how many consumers are using the file right now, across every worker
-//   [REREFERENCED] set when a record version referencing the file again is written, so the worker
-//                  that queued the reclamation (which may be a different one) drops it
+//   [REFERENCE_GENERATION] increments at encoding; a later reference invalidates an older reclamation
 // A lock cannot express either: it is binary, so it cannot count concurrent holders, and it carries
 // no signal a reclaiming worker can read other than "taken".
 const HOLDS = 0;
-const REREFERENCED = 1;
+const REFERENCE_GENERATION = 1;
 // Claimed by a reclaimer that has established there are no holders. A hold that arrives afterwards
 // sees a negative count and knows the file is already going away, which closes the window between
 // checking for holders and unlinking.
 const RECLAIMING = -1 << 20;
 // One fixed table per store rather than a buffer per fileId: `getUserSharedBuffer` documents no
 // eviction, and every other use in Harper keys a small fixed set ('next-id', 'blob-file-id'), so a
-// key per blob would grow without bound on a churning table. Slots are shared by hash, which can
-// only ever over-retain — a collision defers someone else's reclamation, it never unlinks early.
+// key per blob would grow without bound on a churning table. Hash collisions retain another file;
+// during an active reclaim claim they can also refuse an encoder or new holder conservatively.
 const HOLD_TABLE_SLOTS = 4096;
 const holdTables = new WeakMap<object, Int32Array>();
 
@@ -1323,7 +1334,7 @@ function blobHoldSlot(fileId: string): number {
 	return ((hash >>> 0) % HOLD_TABLE_SLOTS) * 2;
 }
 
-/** The two shared counters for a blob file: `[slot + HOLDS]` and `[slot + REREFERENCED]`. */
+/** The two shared counters for a blob file: `[slot + HOLDS]` and `[slot + REFERENCE_GENERATION]`. */
 function blobHoldState(store: any, fileId: string): { table: Int32Array; slot: number } | undefined {
 	try {
 		return { table: blobHoldTable(store), slot: blobHoldSlot(fileId) };
@@ -1336,7 +1347,14 @@ function blobHoldState(store: any, fileId: string): { table: Int32Array; slot: n
 
 /** Exposed for tests that need to act as a second worker against the same shared table. */
 export function getBlobHoldStateForTesting(store: any, fileId: string) {
-	return blobHoldState(store, fileId);
+	return {
+		...blobHoldState(store, fileId),
+		get pendingReclamation() {
+			for (const pending of pendingReclamation.values())
+				if (pending.fileInfo?.store === store && pending.fileInfo.fileId === fileId) return true;
+			return false;
+		},
+	};
 }
 
 /**
@@ -1373,17 +1391,13 @@ export function holdBlobFile(blob: Blob): (() => void) | null {
 	};
 }
 
-/**
- * Whether a record version referencing this file again was written since it was queued — by any
- * worker. Reading clears it, so the next supersession starts from a clean slate.
- */
-function consumeRereferenced(storageInfo: BlobFileInfo | undefined): boolean {
+function blobReferenceGeneration(storageInfo: BlobFileInfo | undefined): number {
 	const store = storageInfo?.store;
 	const fileId = storageInfo?.fileId;
-	if (!store || !fileId) return false;
+	if (!store || !fileId) return 0;
 	const state = blobHoldState(store, fileId);
-	if (!state) throw new Error(`Could not read hold state for blob ${fileId}`);
-	return Atomics.exchange(state.table, state.slot + REREFERENCED, 0) === 1;
+	if (!state) throw new Error(`Could not read reference generation for blob ${fileId}`);
+	return Atomics.load(state.table, state.slot + REFERENCE_GENERATION);
 }
 
 /**
@@ -1441,16 +1455,10 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 	if (!storageInfo?.fileId || !storageInfo.store) return;
 	const state = blobHoldState(storageInfo.store, storageInfo.fileId);
 	if (state) {
+		Atomics.add(state.table, state.slot + REFERENCE_GENERATION, 1);
 		if (Atomics.load(state.table, state.slot + HOLDS) < 0) {
-			// Already claimed by a reclaimer: the file is on its way out and the record being written
-			// will reference bytes that are about to disappear. Nothing to cancel; say so rather than
-			// letting it be silent.
-			logger.warn?.(
-				`Blob file ${storageInfo.fileId} is being reclaimed while a record is being written that references it`
-			);
-			return;
+			throw new BlobReclamationBusyError();
 		}
-		Atomics.store(state.table, state.slot + REREFERENCED, 1);
 	}
 	if (pendingReclamation.size === 0) return;
 	let filePath: string;
@@ -1494,7 +1502,11 @@ export function deleteBlobAndWait(blob: Blob): Promise<void> {
 	});
 }
 
-function queueBlobReclamation(blob: Blob, waiter?: { resolve: () => void; reject: (error: Error) => void }): void {
+function queueBlobReclamation(
+	blob: Blob,
+	waiter?: { resolve: () => void; reject: (error: Error) => void },
+	expectedGeneration?: number
+): void {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob as any);
 	if (!filePath) {
@@ -1503,10 +1515,18 @@ function queueBlobReclamation(blob: Blob, waiter?: { resolve: () => void; reject
 	}
 	const now = Date.now();
 	const storageInfo = storageInfoForBlob.get(blob);
-	if (storageInfo?.store && storageInfo.fileId) {
-		// A genuine supersession clears any re-reference recorded for an earlier one.
-		const state = blobHoldState(storageInfo.store, storageInfo.fileId);
-		if (state) Atomics.store(state.table, state.slot + REREFERENCED, 0);
+	let referenceGeneration: number | undefined;
+	try {
+		referenceGeneration = blobReferenceGeneration(storageInfo);
+	} catch {
+		if (expectedGeneration !== undefined) {
+			waiter?.resolve();
+			return;
+		}
+	}
+	if (expectedGeneration !== undefined && expectedGeneration !== referenceGeneration) {
+		waiter?.resolve();
+		return;
 	}
 	// Reusing the queued entry when two writes supersede the same file keeps the age cap measuring
 	// from the first supersession and tracks every live blob instance that carries the condemned fileId.
@@ -1514,6 +1534,7 @@ function queueBlobReclamation(blob: Blob, waiter?: { resolve: () => void; reject
 		blobs: [],
 		seenBlobs: new WeakSet<Blob>(),
 		fileInfo: { store: storageInfo?.store, fileId: storageInfo?.fileId },
+		referenceGeneration,
 		deadline: 0,
 		enqueuedAt: now,
 		supersededAt: now,
@@ -1527,6 +1548,7 @@ function queueBlobReclamation(blob: Blob, waiter?: { resolve: () => void; reject
 		if (storageInfo) discardStorage(storageInfo);
 		return;
 	}
+	pending.referenceGeneration = referenceGeneration;
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
 }
 
@@ -1588,7 +1610,7 @@ function runReclamation(): void {
 		const expired = now - pending.enqueuedAt >= ageCap;
 		let held: boolean;
 		try {
-			if (consumeRereferenced(storageInfo)) {
+			if (blobReferenceGeneration(storageInfo) !== pending.referenceGeneration) {
 				// A record version referencing this file again was written, possibly on another worker.
 				// The file is live; drop the reclamation rather than unlinking under it.
 				pendingReclamation.delete(filePath);
@@ -1605,6 +1627,12 @@ function runReclamation(): void {
 			// Claim it in the same operation that establishes there are no holders, so a hold cannot
 			// slip in between. Not claimed once expired: the age cap deliberately reclaims held bytes.
 			held = isBlobHeld(storageInfo, !expired);
+			if (blobReferenceGeneration(storageInfo) !== pending.referenceGeneration) {
+				if (!held && !expired) releaseReclaimClaim(storageInfo);
+				pendingReclamation.delete(filePath);
+				settleReclamationWaiters(pending);
+				continue;
+			}
 		} catch (error) {
 			// Reading shared state can fail on a closed store, and this is a timer callback: throwing
 			// here takes the worker down. A store that never reopens would retry forever, so an
@@ -3101,6 +3129,26 @@ export function decodeFromDatabase<T>(callback: () => T, rootStore: RootDatabase
 	return callback();
 }
 
+export function captureBlobReclamation(object: any): (retainedFileIds?: Set<string>) => void {
+	const candidates: { blob: Blob; fileId: string; store: object; generation: number }[] = [];
+	findBlobsInObject(object, (blob) => {
+		const info = storageInfoForBlob.get(blob);
+		if (!info?.fileId || !info.store) return;
+		try {
+			candidates.push({ blob, fileId: info.fileId, store: info.store, generation: blobReferenceGeneration(info) });
+		} catch {
+			// An unreadable generation cannot certify a later deletion.
+		}
+	});
+	return (retainedFileIds) => {
+		for (const { blob, fileId, store, generation } of candidates) {
+			const info = storageInfoForBlob.get(blob);
+			if (info?.fileId === fileId && info.store === store && !retainedFileIds?.has(fileId))
+				queueBlobReclamation(blob, undefined, generation);
+		}
+	};
+}
+
 /**
  * Delete blobs in an object, recursively searching for blobs. When `retainedFileIds`
  * is supplied, blobs whose fileId is in that set are skipped — used by the update path
@@ -3318,6 +3366,11 @@ export function collectRetainedFileIds(record: any): Set<string> | undefined {
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
+// Extension 11's `pack()` runs inside an outer Packr.pack() call — including msgpackr's
+// module-level `pack()` singleton used by the public `application/x-msgpack` serializer.
+// Calling that singleton here would re-enter `defaultPackr.pack()` and reset its closure
+// `start` offset to 0, prepending stale shared-buffer bytes to the outer frame.
+const blobPackr = new Packr({ useRecords: false });
 
 addExtension({
 	Class: Blob,
@@ -3325,6 +3378,14 @@ addExtension({
 	unpack: function (buffer) {
 		const blobInfo = copyingUnpacker.unpack(buffer);
 		const blob = new FileBackedBlob();
+		// Bun's inherited name setter would hide this stored property from the next encoding.
+		if (blobNameHasSetter && blobInfo[0] && Object.hasOwn(blobInfo[0], 'name'))
+			Object.defineProperty(blob, 'name', {
+				value: blobInfo[0].name,
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
 		Object.assign(blob, blobInfo[0]); // copy any properties
 		if (typeof blobInfo[1] !== 'object') {
 			// this is a reference, not followed by any buffer
@@ -3371,7 +3432,7 @@ addExtension({
 				(storageInfo.contentBuffer?.length < FILE_STORAGE_THRESHOLD || blob.saveInRecord)
 			) {
 				options.size = storageInfo.contentBuffer.length;
-				return pack([options, storageInfo.contentBuffer]);
+				return blobPackr.pack([options, storageInfo.contentBuffer]);
 			}
 		}
 		if (encodeForStorageForRecordId !== undefined) {
@@ -3389,12 +3450,12 @@ addExtension({
 			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
 			// write that supersedes, not a file already awaiting reclamation from a previous one.
 			cancelBlobReclamation(storageInfo);
-			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+			return blobPackr.pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
 			if (currentBlobCallback) {
 				currentBlobCallback(blob);
-				return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+				return blobPackr.pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 			}
 			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 			// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
@@ -3419,7 +3480,7 @@ addExtension({
 					// so the receiver holds the gap and retries rather than replicating the stub (harper-pro#481/#429).
 					if (type !== PENDING_TYPE && size === buffer.length - HEADER_SIZE && sizeMatchesDescriptor) {
 						// the file is there and complete, we can return the encoding
-						return Buffer.concat([pack([options]), buffer]);
+						return Buffer.concat([blobPackr.pack([options]), buffer]);
 					}
 				}
 				// declare it as being fulfilled
@@ -3494,7 +3555,7 @@ function polyfillBlob() {
  * @param database
  */
 export async function cleanupOrphans(database: any, databaseName?: string) {
-	const { HAS_BLOBS, isAuditEntryWrite } = await import('./auditStore.ts');
+	const { HAS_BLOBS } = await import('./auditStore.ts');
 	let store: RootDatabase;
 	let auditStore: RootDatabase;
 	let orphansDeleted = 0;
@@ -3579,13 +3640,7 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 			try {
 				const primaryStore = (auditStore as any).tableStores[(auditRecord as any).tableId];
 				if (!primaryStore) continue;
-				const entry = primaryStore?.getEntry((auditRecord as any).recordId);
-				// Only the write this audit record describes had its blobs scanned by the table loop above.
-				// Identity is the log key, not the version: a version match can name a different write and
-				// would skip an audit value whose blobs are still referenced.
-				if (!entry?.value || !isAuditEntryWrite(entry, auditRecord as any)) {
-					checkObjectForReferences((auditRecord as any).getValue(primaryStore));
-				}
+				checkObjectForReferences((auditRecord as any).getValue(primaryStore));
 				// slow this down a bit to reduce excessive load, this runs approximately at 10k per second
 				if (i++ % perMS === 0)
 					await delay(1); // one millisecond delay to avoid overloading the system

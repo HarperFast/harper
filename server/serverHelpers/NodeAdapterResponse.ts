@@ -6,7 +6,7 @@ import type {
 	ServerResponse as NodeServerResponse,
 } from 'node:http';
 import type { Socket } from 'node:net';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Readable, Writable } from 'node:stream';
 import { Headers as ResponseHeaders, applyWriteHeadHeaders } from './Headers.ts';
 
 export interface AdaptedResponse {
@@ -29,6 +29,20 @@ class UnsupportedResponseMethodError extends Error {
 }
 
 const ignoreError = () => {};
+const ignoreChunk = () => {};
+
+// Node 26.11's pipe fast path (nodejs/node#66182) skips write() overrides such as compression's while pipe's listener
+// is a byte-mode source's only 'data' listener; see server/DESIGN.md
+const pipeSkipsWrite = 'writeKnownBuffer' in Writable;
+function guardPipeSource(source: Readable) {
+	// object mode, a decoder, and legacy or userland pipe() never take the fast path; legacy pipe() never emits 'unpipe'
+	if (source instanceof Readable && !source.readableObjectMode && !source.readableEncoding)
+		source.on('data', ignoreChunk);
+}
+// must run before pipe's own unpipe cleanup, which resumes a source awaiting 'drain' while any 'data' listener remains
+function releasePipeSource(source: unknown) {
+	if (source instanceof Readable) source.removeListener('data', ignoreChunk);
+}
 
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
 	statusCode = 200;
@@ -60,6 +74,10 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		this.#resolve = resolve;
 		this.#reject = reject;
 		this.on('error', ignoreError);
+		if (pipeSkipsWrite) {
+			this.on('pipe', guardPipeSource);
+			this.prependListener('unpipe', releasePipeSource);
+		}
 		if (typeof nodeResponse?.on === 'function') {
 			const forward = (...args: any[]) => this.emit('timeout', ...args);
 			let forwarding = false;

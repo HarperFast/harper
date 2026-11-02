@@ -8,8 +8,17 @@ import {
 } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
 
-export const contextStorage = new AsyncLocalStorage<Context>();
+class ContextStorage extends AsyncLocalStorage<Context> {
+	// The async_hooks storage (Node 22's default) implements exit() by disabling itself, so a run() nested inside
+	// re-enables it with the outer store still current. AsyncContextFrame (Node 24+) implements exit() as run(undefined, …).
+	exit<R, TArgs extends any[]>(callback: (...args: TArgs) => R, ...args: TArgs): R {
+		return this.run(undefined, callback, ...args);
+	}
+}
+
+export const contextStorage = new ContextStorage();
 
 export function transaction<T>(context: Context, callback: (transaction: Transaction) => T): T;
 export function transaction<T>(callback: (transaction: Transaction) => T): T;
@@ -59,7 +68,7 @@ export function transaction<T>(
 	// writes and releases what it staged (DatabaseTransaction.admitRequestWrite). sourceApply is exempt,
 	// having no resume path (harper-pro#348); work that must outlive the client runs on a context without
 	// the signal (resources/DESIGN.md).
-	if (!transaction.sourceApply) transaction.requestSignal = context.signal;
+	if (!transaction.sourceApply) transaction.requestSignalSource = context;
 
 	let result;
 	try {
@@ -104,6 +113,14 @@ export function transaction<T>(
 		abortAndThrow(error, true);
 	}
 	function abortAndThrow(error, callbackThrew: boolean): never {
+		try {
+			if (
+				callbackThrew &&
+				error?.replicationUnconfirmed === true &&
+				(transaction.hasPendingWrites() || transaction.isChainCommitting() || transaction.writesRolledBack)
+			)
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
 		// A commit attempt that has not reached its native outcome owns its own teardown — a handler that
 		// fired txn.commit() without awaiting it can get here while it is still running, and aborting
 		// would clear the writes it is committing and abort the handle it is committing them through.

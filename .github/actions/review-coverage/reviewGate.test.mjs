@@ -237,7 +237,7 @@ test('the structured Review-Coverage field is preferred over prose, and counts o
 			'authored=claude; ran=codex,gemini; adjudicated=domain; blocked=cursor-grok(auth); declined=cursor-composer; rounds=2 @ abcdef123456'
 		),
 		'',
-		'<sub>Human-Review-Need: 3 @ abcdef123456</sub>',
+		'<sub>Review-Attention: read ~30m (critical: a.cpp +1) @ abcdef123456</sub>',
 		'',
 		'🤖 Generated with [Claude Code](https://claude.com/claude-code)',
 	].join('\n');
@@ -277,6 +277,10 @@ test('one Cursor leg is one family, not two', () => {
 	assert.deepStrictEqual(
 		structuredCoverage(FIELD('authored=claude; ran=cursor-grok,cursor-composer; rounds=1')).families,
 		['cursor', 'xai']
+	);
+	assert.deepStrictEqual(
+		structuredCoverage(FIELD('authored=claude; ran=cursor-composer,cursor-kimi,cursor-muse,muse; rounds=1')).families,
+		['cursor', 'kimi', 'meta']
 	);
 });
 

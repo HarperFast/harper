@@ -1,3 +1,4 @@
+import * as harper_loggerCjsModule from '../utility/logging/harper_logger.ts';
 /**
  * Router that dispatches a SQL request to either the new engine or the legacy
  * AlaSQL-based path based on the sql.engine config flag.
@@ -29,7 +30,7 @@ export interface RouteOptions {
 
 function getLogger(): { info: (msg: string) => void; warn: (msg: string) => void } {
 	try {
-		const harperLogger = require('../utility/logging/harper_logger.js');
+		const harperLogger = harper_loggerCjsModule;
 		return harperLogger.loggerWithTag ? harperLogger.loggerWithTag('sql-engine') : harperLogger;
 	} catch {
 		return { info: () => {}, warn: () => {} };

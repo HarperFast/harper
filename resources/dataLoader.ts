@@ -1,15 +1,33 @@
 import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
-import { Databases, databases, table, Tables, tables } from './databases.ts';
-import { isApplicationPrimaryWorker } from '../server/threads/manageThreads.js';
+import { toBufferKey } from 'ordered-binary';
+import { type Databases, databases, table, type Tables, tables } from './databases.ts';
+import { isApplicationPrimaryWorker } from '../server/threads/manageThreads.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { Attribute } from './Table.ts';
-import { FileEntry } from '../components/EntryHandler.ts';
+import { type Attribute } from './Table.ts';
+import { type FileEntry } from '../components/EntryHandler.ts';
 
-const dataLoaderLogger = harperLogger.forComponent('dataLoader');
+// Resolve the logger lazily so unit tests can stub `forComponent` between
+// module load and first use (otherwise transitive importers — componentLoader
+// pulled in via http.ts / threadServer.ts / operations.ts — capture the real
+// logger before dataLoader.test.js installs its stub).
+let _dataLoaderLogger: any;
+function getDataLoaderLogger() {
+	if (!_dataLoaderLogger) _dataLoaderLogger = harperLogger.forComponent('dataLoader');
+	return _dataLoaderLogger;
+}
+const dataLoaderLogger = new Proxy(
+	{},
+	{
+		get(_t, prop) {
+			return getDataLoaderLogger()[prop];
+		},
+	}
+) as any;
 
 /** System table name for storing data loader hashes */
 const DATA_LOADER_HASH_TABLE = 'hdb_dataloader_hash';
@@ -19,23 +37,39 @@ let _hashTrackingTable: ReturnType<typeof table>;
 
 /**
  * Computes a deterministic hash of a record's content for tracking data file changes.
- * The hash is computed from a stable JSON representation (sorted keys) to ensure
- * the same content always produces the same hash, regardless of key order.
+ * Object keys are sorted at every depth (arrays keep their order), so the same content
+ * always produces the same hash regardless of key order.
  *
  * @param record - The record object to hash
  * @returns A hex string hash of the record content
  */
 export function computeRecordHash(record: Record<string, any>): string {
-	// Sort keys for deterministic hashing
-	const sortedKeys = Object.keys(record).sort();
-	const sortedRecord: Record<string, any> = {};
-	for (const key of sortedKeys) {
-		sortedRecord[key] = record[key];
-	}
+	return createHash('sha256')
+		.update(JSON.stringify(sortTopLevelKeys(record), sortObjectKeys))
+		.digest('hex');
+}
 
-	// Compute hash of the stable JSON representation
-	const content = JSON.stringify(sortedRecord);
-	return createHash('sha256').update(content).digest('hex');
+/** The hash earlier versions stored, which sorted only top-level keys */
+function computeLegacyRecordHash(record: Record<string, any>): string {
+	return createHash('sha256')
+		.update(JSON.stringify(sortTopLevelKeys(record)))
+		.digest('hex');
+}
+
+// A plain object, so a top-level `__proto__` is left out of the hash as it always has been: tables do not
+// store that field under its own name
+function sortTopLevelKeys(record: Record<string, any>): Record<string, any> {
+	const sortedRecord: Record<string, any> = {};
+	for (const key of Object.keys(record).sort()) sortedRecord[key] = record[key];
+	return sortedRecord;
+}
+
+function sortObjectKeys(_key: string, value: any) {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+	// null prototype, so a nested `__proto__` key stays an own property and in the hash
+	const sorted = Object.create(null);
+	for (const key of Object.keys(value).sort()) sorted[key] = value[key];
+	return sorted;
 }
 
 /**
@@ -58,7 +92,7 @@ function getHashTrackingTable(databasesRef: Databases): any {
 		database: 'system',
 		table: DATA_LOADER_HASH_TABLE,
 		attributes: [
-			{ name: 'id', type: 'string', isPrimaryKey: true }, // Format: "database:table:recordId"
+			{ name: 'id', type: 'string', isPrimaryKey: true }, // getHashKey(); earlier versions: "database:table:id"
 			{ name: 'hash', type: 'string' },
 		],
 	});
@@ -67,39 +101,84 @@ function getHashTrackingTable(databasesRef: Databases): any {
 }
 
 /**
- * Gets the stored hash for a record from the tracking table
+ * The tracking key for a record: a digest of its database, table and primary key as the stores encode it, so
+ * distinct records never share a key, and no key contains the `:` that every key earlier versions wrote does.
  */
-async function getStoredHash(
+function getHashKey(database: string | undefined, tableName: string, recordId: any): string {
+	return createHash('sha256')
+		.update(JSON.stringify([database || DEFAULT_DATABASE_NAME, tableName]))
+		.update(toBufferKey(recordId))
+		.digest('hex');
+}
+
+/**
+ * Reads the hashes earlier versions stored for a file's records. They keyed `table:id` (`database:table:id` when the
+ * file named a database) by the record's `id` field whatever the primary key, so a custom-key record without one
+ * shared `table:undefined` with its whole table. Their hashes cover the primary key, so a matching one belongs to
+ * the record unless another table wrote the same key: refused when a name contains `:`, when a default-database
+ * table is named like the key's prefix, and, for a named database, when the default database has a same-named
+ * table that those versions would have written the file's records to instead. Not detectable: keys a since-dropped
+ * table named like a prefix wrote, and an old `-0` row's entry matching a `0` row (JSON writes both as `0`). A
+ * record with no matching entry is never overwritten, even when identical to its seed row, and legacy entries are
+ * never modified (pinned by `unitTests/resources/dataLoaderRecordIdentity.test.js`).
+ */
+function legacyHashReader(
+	trackingTable: any,
 	database: string | undefined,
 	tableName: string,
-	recordId: string,
-	databasesRef: Databases
-): Promise<string | null> {
-	try {
-		const trackingTable = getHashTrackingTable(databasesRef);
-		const hashId = database ? `${database}:${tableName}:${recordId}` : `${tableName}:${recordId}`;
-		const hashRecord = await trackingTable.get(hashId);
-		return hashRecord?.hash || null;
-	} catch (error) {
-		dataLoaderLogger.error?.(`Failed to get stored hash: ${error.message}`);
-		return null;
-	}
+	tablesRef: Tables
+): (recordId: any, existingRecordSubset: Record<string, any>) => Promise<string[]> {
+	const isDefaultDatabase = !database || database === DEFAULT_DATABASE_NAME;
+	const unambiguous =
+		!tableName.includes(':') && (isDefaultDatabase || !(database.includes(':') || tablesRef?.[tableName]));
+	// a default-database table named `data:table` or `database:table` wrote keys of the same form
+	const prefixes = (
+		!unambiguous
+			? []
+			: isDefaultDatabase
+				? [tableName, `${DEFAULT_DATABASE_NAME}:${tableName}`]
+				: [`${database}:${tableName}`]
+	)
+		.filter((prefix) => prefix === tableName || !tablesRef?.[prefix])
+		.map((prefix) => prefix + ':');
+	// promises, so the records of one file share each read of their table's `undefined` slot
+	const slotEntries = new Map<string, Promise<any>>();
+	return async (recordId, existingRecordSubset) => {
+		// those hashes went through JSON, which conflates some keys (Infinity and -Infinity both become null)
+		if (prefixes.length === 0 || !toBufferKey(JSON.parse(JSON.stringify(recordId))).equals(toBufferKey(recordId))) {
+			return [];
+		}
+		// The `id` an earlier version keyed by is the stored one, so it is among the compared fields: any other
+		// reading of the same key has a different `id`. A record compared without one used the shared slot
+		const id = 'id' in existingRecordSubset ? existingRecordSubset.id : undefined;
+		const hashes: string[] = [];
+		for (const prefix of prefixes) {
+			const key = prefix + id;
+			let entry = slotEntries.get(key);
+			if (!entry) {
+				entry = Promise.resolve().then(() => trackingTable.get(key));
+				if (id === undefined) slotEntries.set(key, entry);
+			}
+			let hashRecord;
+			try {
+				hashRecord = await entry;
+			} catch (error) {
+				// an unreadable entry is no evidence (a key over the size limit was never writable either)
+				dataLoaderLogger.debug?.(`Skipping unreadable earlier hash for ${tableName}: ${error.message}`);
+				continue;
+			}
+			if (hashRecord) hashes.push(hashRecord.hash);
+		}
+		return hashes;
+	};
 }
 
 /**
  * Stores the hash for a record in the tracking table
  */
-async function storeHash(
-	database: string | undefined,
-	tableName: string,
-	recordId: string,
-	hash: string,
-	databasesRef: Databases
-): Promise<void> {
+async function storeHash(trackingTable: any, hashKey: string, hash: string): Promise<void> {
 	try {
-		const trackingTable = getHashTrackingTable(databasesRef);
-		const hashId = database ? `${database}:${tableName}:${recordId}` : `${tableName}:${recordId}`;
-		await trackingTable.put({ id: hashId, hash });
+		await trackingTable.put({ id: hashKey, hash });
 	} catch (error) {
 		dataLoaderLogger.error?.(`Failed to store hash: ${error.message}`);
 	}
@@ -194,12 +273,12 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 		let tableRef;
 
 		// If a database is specified, check if the table exists in that database
-		if (database && databasesRef[database] && databasesRef[database][tableName]) {
+		if (database && databasesRef[database]?.[tableName]) {
 			dataLoaderLogger.debug?.(`Using existing table ${tableIdentifier} from database tables`);
 			tableRef = databasesRef[database][tableName];
 		}
 		// If no database is specified, check if the table exists in the global tables
-		else if (tablesRef && tablesRef[tableName]) {
+		else if (!database && tablesRef?.[tableName]) {
 			dataLoaderLogger.debug?.(`Using existing table ${tableIdentifier} from global tables`);
 			tableRef = tablesRef[tableName];
 		} else {
@@ -231,6 +310,10 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 			});
 		}
 
+		const primaryKey = tableRef.primaryKey ?? 'id';
+		const trackingTable = getHashTrackingTable(databasesRef);
+		const getLegacyHashes = legacyHashReader(trackingTable, database, tableName, tablesRef);
+
 		// Process records with timestamp comparison
 		// Count metrics
 		const dataFIleRecords = records.length;
@@ -251,39 +334,27 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 					try {
 						// Get existing record with the same ID if it exists
 						let existingRecord: Record<string, any> | null = null;
-						const recordId = newRecord.id;
+						const recordId = newRecord[primaryKey];
 
 						if (recordId !== undefined) {
 							existingRecord = await tableRef.get(recordId);
 						}
 
-						// Compute hash of the new record from the data file
-						const newRecordHash = computeRecordHash(newRecord);
+						const hashKey = recordId === undefined ? undefined : getHashKey(database, tableName, recordId);
 
 						if (!existingRecord) {
 							// If the record doesn't exist yet, insert it
+							// (hashed before the put, which stamps @createdTime/@updatedTime fields into the record it is given)
+							const newRecordHash = computeRecordHash(newRecord);
 							newRecords++;
 							const result = await tableRef.put(newRecord);
-							// Store the hash in the tracking table
-							await storeHash(database, tableName, recordId, newRecordHash, databasesRef);
+							// A record without a primary key value can't be looked up again, so there is nothing to track
+							if (hashKey) await storeHash(trackingTable, hashKey, newRecordHash);
 							return result;
-						}
-
-						// Check if there's a stored hash for this record
-						const existingHash = await getStoredHash(database, tableName, recordId, databasesRef);
-
-						if (!existingHash) {
-							// No hash means this record wasn't loaded by the data loader
-							// (likely created via operations API or other means)
-							// Don't overwrite user-created records
-							skippedRecords++;
-							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
 
 						// Compute hash of only the fields that exist in the data file
 						// This allows users to add extra fields without triggering a "modified" detection
-						// Note: This is a simple top-level field comparison - nested object changes
-						// within data file fields will still be detected as modifications
 						const existingRecordSubset: Record<string, any> = {};
 						for (const key of Object.keys(newRecord)) {
 							if (key in existingRecord) {
@@ -292,27 +363,37 @@ export async function loadDataFile({ contents, absolutePath }: FileEntry, tables
 						}
 						const existingRecordHash = computeRecordHash(existingRecordSubset);
 
-						if (existingRecordHash !== existingHash) {
-							// The existing record's data file fields don't match the stored hash,
-							// meaning those fields were modified externally (via operations API, etc.)
-							// Don't overwrite user-modified records
+						const storedHash = (await trackingTable.get(hashKey))?.hash;
+						let loadedByDataLoader: boolean;
+						if (storedHash !== undefined) {
+							loadedByDataLoader = storedHash === existingRecordHash;
+						} else {
+							const legacyHashes = await getLegacyHashes(recordId, existingRecordSubset);
+							loadedByDataLoader =
+								legacyHashes.length > 0 &&
+								(legacyHashes.includes(existingRecordHash) ||
+									legacyHashes.includes(computeLegacyRecordHash(existingRecordSubset)));
+						}
+
+						if (!loadedByDataLoader) {
 							skippedRecords++;
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
 
-						// Compare hashes to detect actual content changes in the data file
-						if (newRecordHash !== existingHash) {
+						const newRecordHash = computeRecordHash(newRecord);
+						if (newRecordHash !== existingRecordHash) {
 							// Hash differs - the data file content has changed
 							// Use patch to update only the fields from the data file,
 							// preserving any additional fields the user may have added
 							updatedRecords++;
 							await tableRef.patch(recordId, newRecord);
-							await storeHash(database, tableName, recordId, newRecordHash, databasesRef);
+							await storeHash(trackingTable, hashKey, newRecordHash);
 							// Return a result indicating update (patch doesn't return a value)
 							return { updated: 1 };
 						} else {
 							// Hash matches - content hasn't changed, skip update
 							skippedRecords++;
+							if (storedHash === undefined) await storeHash(trackingTable, hashKey, newRecordHash);
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
 					} catch (error) {

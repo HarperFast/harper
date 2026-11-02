@@ -177,7 +177,45 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(specialLogs.constructor, 15);
 	});
 
-	it('round-trips cursor coverage and preserves it across ordinary publication', async () => {
+	it('round-trips cursor floors in sorted order and rejects malformed ones', () => {
+		const payload = encodeFullTextCursorPayload({ format: 1, logs: { b: 2, a: 1 }, floors: { z: 3, a: 2 } });
+		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":1,"b":2},"floors":{"a":2,"z":3}}}');
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(payload).floors }, { a: 2, z: 3 });
+		const special = encodeFullTextCursorPayload(
+			Object.assign(cursorForLogs([['local', 5]]), { floors: Object.fromEntries([['__proto__', 4]]) })
+		);
+		const specialFloors = decodeFullTextCursorPayload(special).floors;
+		assert.strictEqual(Object.hasOwn(specialFloors, '__proto__'), true);
+		assert.strictEqual(specialFloors.__proto__, 4);
+		for (const floors of ['{"remote":0}', '{"remote":1.5}', '{"remote":4294967296}', '[3]', '{"":3}']) {
+			assert.throws(
+				() => decodeFullTextCursorPayload(`{"format":1,"cursor":{"format":1,"logs":{"local":1},"floors":${floors}}}`),
+				`floors ${floors} must be rejected`
+			);
+		}
+	});
+
+	it('keeps cursor floors through delivery, flush and coverage publication', async () => {
+		const floored = { format: 1, logs: { local: 10 }, floors: { remote: 3 } };
+		const engine = new FakeEngine(encodeFullTextCursorPayload(floored));
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: engine.committedPayload }, [engine])
+		);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().floors }, floored.floors);
+		backend.deliver(batch(1n, [], { format: 1, logs: { local: 20 }, floors: { remote: 3 } }));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		const published = decodeFullTextCursorPayload(engine.publications[0]);
+		assert.deepStrictEqual({ ...published.logs }, { local: 20 });
+		assert.deepStrictEqual({ ...published.floors }, { remote: 3 });
+		assert.deepStrictEqual({ ...backend.getDurableCursor().floors }, { remote: 3 });
+		backend.publishCoverage({ local: { sequence: 3, offset: 4 } }, 1n);
+		await waitFor(() => engine.publications.length === 2);
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[1]).floors }, { remote: 3 });
+		await backend.shutdown(1n);
+	});
+
+	it('round-trips cursor coverage and keeps it only while publication keeps the cursor vector', async () => {
 		const covered = {
 			format: 1,
 			logs: { local: 10 },
@@ -188,10 +226,41 @@ describe('FullTextDerivedIndexBackend', () => {
 			lifecycle({ state: 'checkpointed', committedPayload: engine.committedPayload }, [engine])
 		);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().coverage }, covered.coverage);
-		backend.deliver(batch(1n, [], cursor(20)));
+		backend.deliver(batch(1n, [], cursor(10)));
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).coverage }, covered.coverage);
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 2);
+		assert.strictEqual(decodeFullTextCursorPayload(engine.publications[1]).coverage, undefined);
+		await backend.shutdown(1n);
+	});
+
+	it('drops cursor coverage from a publication that carries mutations under the same vector', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		backend.deliver(batch(1n, [], cursor(10)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		const coverage = { local: { sequence: 3, offset: 4 } };
+		backend.publishCoverage(coverage, 1n);
+		await waitFor(() => engine.publications.length === 2);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(10)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 3);
+		assert.strictEqual(decodeFullTextCursorPayload(engine.publications[2]).coverage, undefined);
+		await backend.shutdown(1n);
+	});
+
+	it('strips coverage a delivered cursor carries from a publication with staged mutations', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const coverage = { local: { sequence: 3, offset: 4 } };
+		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], { ...cursor(10), coverage }));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(decodeFullTextCursorPayload(engine.publications[0]).coverage, undefined);
 		await backend.shutdown(1n);
 	});
 
@@ -1048,7 +1117,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		await waitFor(() => changes.includes('accepted-work-lost'));
 		assert.deepStrictEqual({ ...backend.getDurableCursor().coverage }, actual.coverage);
 
-		backend.deliver(batch(1n, [], cursor(20)));
+		backend.deliver(batch(1n, [], cursor(10)));
 		backend.flush();
 		await waitFor(() => second.publications.length === 1);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(second.publications[0]).coverage }, actual.coverage);

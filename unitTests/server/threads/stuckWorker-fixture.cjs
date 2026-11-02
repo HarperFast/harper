@@ -10,7 +10,7 @@ const {
 	onMessageFromWorkers,
 	onThreadExit,
 	sendToThread,
-} = require('#js/server/threads/manageThreads');
+} = require('#src/server/threads/manageThreads');
 const { databaseDropPreparationSnapshot } = require('#src/resources/databaseDropPreparation');
 let acknowledgementCount = 0;
 const exitedThreadIds = [];

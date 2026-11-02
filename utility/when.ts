@@ -1,6 +1,5 @@
 import type { RequestTarget, RequestTargetOrId } from '../resources/RequestTarget.ts';
 
-// wait for a promise or plain object to resolve
 export function when<T, R>(
 	value: T | Promise<T>,
 	callback: (value: T) => R,

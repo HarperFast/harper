@@ -2,7 +2,7 @@
 
 const chai = require('chai');
 const { expect } = chai;
-const ipc_utils = require('#js/server/threads/itc');
+const ipc_utils = require('#src/server/threads/itc');
 
 describe('Test ipcUtils module', () => {
 	describe('Test validateEvent function', () => {

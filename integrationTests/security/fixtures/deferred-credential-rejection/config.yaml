@@ -13,3 +13,7 @@ rest: true
 # authentication error envelope REST returns — not GraphQL's own {errors:[...]} mapping.
 graphql: true
 deferredAuthAppCatchAll: true
+# A legacy Fastify route behind `hdbCore.preValidation` is Harper-owned too: the catch-all lets
+# /legacy-* through to the Fastify fallback so the deferred rejection is settled there.
+fastifyRoutes:
+  files: routes/*.js

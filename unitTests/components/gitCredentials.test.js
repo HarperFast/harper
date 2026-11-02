@@ -347,8 +347,17 @@ describe('Application git credential lifecycle', () => {
 describe('nonInteractiveSpawn git credential scoping', () => {
 	let scriptDir;
 	let scriptPath;
+	// The probe reports every inherited GIT_* key, and spawns deliberately pass the operator's own git
+	// environment through, so a runner that exports GIT_CONFIG_* (CI, an agent wrapper) would read as
+	// leaked credential wiring. Run this suite without one.
+	const ambientGitEnv = {};
 
 	before(async () => {
+		for (const key of Object.keys(process.env)) {
+			if (!key.startsWith('GIT_')) continue;
+			ambientGitEnv[key] = process.env[key];
+			delete process.env[key];
+		}
 		scriptDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-env-probe-'));
 		scriptPath = path.join(scriptDir, 'probe.js');
 		// Stands in for a dependency's install script: prints whatever git credential wiring it inherited.
@@ -360,6 +369,7 @@ describe('nonInteractiveSpawn git credential scoping', () => {
 	});
 
 	after(async () => {
+		Object.assign(process.env, ambientGitEnv);
 		await fs.rm(scriptDir, { recursive: true, force: true });
 	});
 

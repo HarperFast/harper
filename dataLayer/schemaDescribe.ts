@@ -8,12 +8,17 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
+import { getDatabases as _getDatabases } from '../resources/databases.ts';
+const getDatabases = _getDatabases;
+import fs from 'fs-extra';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-envMngr.initSync();
-import { getDatabases } from '../resources/databases.ts';
-import * as fs from 'fs-extra';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 /**
  * This method is exposed to the API and internally for system operations.  If the op is being made internally, the `opObj`
  * argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.
@@ -31,8 +36,8 @@ export async function describeAll(opObj: any = {}) {
 			isSu = rolePerms?.super_user;
 		}
 		let databases = getDatabases();
-		let schemaList = {};
-		let schemaPerms = {};
+		let schemaList = Object.create(null);
+		let schemaPerms = Object.create(null);
 		let tResults = [];
 		const exact_count = opObj?.exact_count;
 		const skip_record_count = opObj?.skip_record_count;
@@ -59,11 +64,11 @@ export async function describeAll(opObj: any = {}) {
 			}
 		}
 
-		let hdbDescription = {};
+		let hdbDescription = Object.create(null);
 		for (let t in tResults) {
 			if (sysCall || isSu || bypassAuth) {
 				if (hdbDescription[tResults[t].schema] == null) {
-					hdbDescription[tResults[t].schema] = {};
+					hdbDescription[tResults[t].schema] = Object.create(null);
 				}
 
 				hdbDescription[tResults[t].schema][tResults[t].name] = tResults[t];
@@ -72,7 +77,7 @@ export async function describeAll(opObj: any = {}) {
 				}
 			} else if (schemaPerms[tResults[t].schema]) {
 				if (hdbDescription[tResults[t].schema] == null) {
-					hdbDescription[tResults[t].schema] = {};
+					hdbDescription[tResults[t].schema] = Object.create(null);
 				}
 
 				hdbDescription[tResults[t].schema][tResults[t].name] = tResults[t];
@@ -84,9 +89,9 @@ export async function describeAll(opObj: any = {}) {
 
 		for (let schema in schemaList) {
 			if (sysCall || isSu || bypassAuth) {
-				hdbDescription[schema] = {};
+				hdbDescription[schema] = Object.create(null);
 			} else if (schemaPerms[schema]) {
-				hdbDescription[schema] = {};
+				hdbDescription[schema] = Object.create(null);
 			}
 		}
 		return hdbDescription;
@@ -141,7 +146,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}
-	let tableObj = tables[table];
+	let tableObj: any = tables[table];
 	if (!tableObj)
 		throw handleHDBError(
 			new Error(),
@@ -183,8 +188,8 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 	let attributes = [];
 	let readableAttributes: Set<string> | undefined;
 	if (tableAttrPerms?.length) {
-		let permittedAttr = {};
-		let readableAttr = {};
+		let permittedAttr = Object.create(null);
+		let readableAttr = Object.create(null);
 		tableAttrPerms.forEach((a) => {
 			if (a.describe) permittedAttr[a.attribute_name] = true;
 			if (a.read) readableAttr[a.attribute_name] = true;
@@ -337,7 +342,7 @@ export async function describeSchema(describeSchemaObject: any) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}
-	let results = {};
+	let results = Object.create(null);
 	for (let tableName in schema) {
 		let table_perms;
 		if (schemaPerms && schemaPerms.tables[tableName]) {

@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Covers the `Prefer: count=` pagination support in Table.search: a `count` target returns the
 // requested page (offset/limit window) as an array carrying `recordCount` (total matching records)
@@ -85,7 +85,7 @@ describe('Table.search count (REST pagination total-count)', () => {
 
 	it('a non-finite, negative, or oversized limit falls through to streaming (no count)', function () {
 		// The count page must be a finite, non-negative integer no larger than the max count-page size;
-		// anything else (limit(Infinity)/limit(foo)->NaN, a negative, or an oversized limit) must not
+		// anything else on a programmatic target (Infinity, NaN, a negative, or an oversized limit) must not
 		// materialize a count page.
 		for (const limit of [Infinity, NaN, -1, 20000]) {
 			const results = CountTable.search({ limit, count: 'exact' });
@@ -141,7 +141,7 @@ describe('Table.search count (REST pagination total-count)', () => {
 		// On RocksDB the range estimator makes the total track the actual key range: a narrow tail must
 		// estimate fewer rows than the whole table. The old heuristic was range-blind (a fixed fraction of
 		// the table size), so narrow and wide would tie — this is what proves estimateCount is in play.
-		const { RocksDatabase } = require('@harperfast/rocksdb-js');
+		const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 		if (CountTable.primaryStore instanceof RocksDatabase) {
 			const narrow = await CountTable.search({
 				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: 15 }],
@@ -169,7 +169,7 @@ describe('Table.search count (REST pagination total-count)', () => {
 		assert.strictEqual(wide.recordCountExact, false);
 		assert.ok(wide.recordCount >= wide.length, `total ${wide.recordCount} must be >= page length ${wide.length}`);
 
-		const { RocksDatabase } = require('@harperfast/rocksdb-js');
+		const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 		if (CountTable.indices?.score instanceof RocksDatabase) {
 			const narrow = await CountTable.search({
 				conditions: [{ attribute: 'score', comparator: 'greater_than_equal', value: 15 }],

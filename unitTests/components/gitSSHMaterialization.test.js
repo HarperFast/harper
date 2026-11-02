@@ -34,7 +34,7 @@ const secretDecryptor = require('#src/resources/secretDecryptor');
 const { encryptEnvelope, decryptEnvelope, fingerprintOf } = require('#src/utility/secretEnvelope');
 // CJS interop hands back the module namespace, which is the very object Application.ts's default
 // import resolves to — so stubbing a level here is what the code under test sees.
-const logger = require('#src/utility/logging/harper_logger');
+const logger = require('#js/utility/logging/harper_logger');
 
 const ENC_PREFIX = 'enc:v1:';
 const KEY_MATERIAL = '-----BEGIN OPENSSH PRIVATE KEY-----\nc3NoLWtleS1tYXRlcmlhbA\n-----END OPENSSH PRIVATE KEY-----\n';
@@ -60,6 +60,7 @@ const tempSSHDirs = (dir) => fs.readdirSync(dir).filter((entry) => entry.startsW
 // the same pattern). Callers must mkdtemp anything meant to live under the stub (e.g. rootDir
 // below) only after calling this, so restore()'s single recursive rm covers it.
 function scopeTmpdir() {
+	const previousRoot = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitssh-suite-'));
 	const original = os.tmpdir;
 	os.tmpdir = () => dir;
@@ -67,6 +68,7 @@ function scopeTmpdir() {
 	return {
 		dir,
 		restore() {
+			env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, previousRoot);
 			os.tmpdir = original;
 			syncBuiltinESMExports();
 			fs.rmSync(dir, { recursive: true, force: true });
@@ -99,10 +101,12 @@ describe('materializeGitSSH', () => {
 
 	const seal = (plaintext, kp = keypair) => ENC_PREFIX + encryptEnvelope(plaintext, kp.publicKey, kp.kid);
 
+	let originalRootPath;
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-test-'));
 		sshDir = path.join(rootDir, 'ssh');
+		originalRootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
 		keypair = makeKeypair();
 
@@ -117,7 +121,9 @@ describe('materializeGitSSH', () => {
 		logger.error = originalError;
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
-		scopedTmpdir.restore();
+		// the root is deleted with the scoped tmpdir; a later suite must not resolve system keys under it
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
+		scopedTmpdir?.restore();
 	});
 
 	it('returns undefined when the node has no ssh dir', async () => {
@@ -360,10 +366,12 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	let rootDir;
 	let sshDir;
 
+	let originalRootPath;
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-spawn-test-'));
 		sshDir = path.join(rootDir, 'ssh');
+		originalRootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
 		fs.mkdirSync(sshDir, { recursive: true });
 		fs.writeFileSync(path.join(sshDir, 'deploy.key'), KEY_MATERIAL, { mode: 0o600 });
@@ -375,7 +383,8 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	});
 
 	afterEach(() => {
-		scopedTmpdir.restore();
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
+		scopedTmpdir?.restore();
 	});
 
 	it('exposes GIT_SSH_COMMAND to the child and removes the key material once it exits', async () => {

@@ -9,8 +9,8 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const _ = require('lodash');
 const rewire = require('rewire');
-const op_auth = require('#src/utility/operation_authorization');
-const op_auth_rewire = rewire('#src/utility/operation_authorization');
+const op_auth = require('#js/utility/operation_authorization');
+const op_auth_rewire = rewire('#js/utility/operation_authorization');
 const Permission_rw = op_auth_rewire.__get__('permission');
 const write = require('#src/dataLayer/insert');
 const user = require('#src/security/user');
@@ -39,7 +39,7 @@ const { server } = require('#src/server/Server');
 require('#src/server/serverHelpers/serverUtilities'); // ensure the real (cached) bindings are set first
 const realRegisterOperation = server.registerOperation;
 const realOperation = server.operation;
-const serverUtilities_rw = rewire('#src/server/serverHelpers/serverUtilities');
+const serverUtilities_rw = rewire('#js/server/serverHelpers/serverUtilities');
 const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
 const OPERATION_MAP = initializeOperationFunctionMap_rw();
 server.registerOperation = realRegisterOperation;
@@ -699,6 +699,50 @@ describe('Test operation_authorization', function () {
 			assert.equal(result instanceof PermissionResponseObject, true);
 			assert.equal(result.invalid_schema_items.length, 1);
 			assert.equal(result.unauthorized_access.length, 0);
+		});
+
+		it('checks a path or sub-selection by its root attribute', function () {
+			const verifyRoot = (breedReadable) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, {
+					operation: 'search_by_conditions',
+					get_attributes: ['name', { name: 'breed', select: ['name'] }],
+					conditions: [{ search_attribute: ['breed', 'name'], search_type: 'equals', search_value: 'x' }],
+				});
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: breedReadable, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			};
+			assert.equal(verifyRoot(true), null);
+			assert.deepStrictEqual(verifyRoot(false).invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+		});
+
+		it('checks the select alias the search handlers read in place of get_attributes', function () {
+			const verifySelect = (select) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, { operation: 'search_by_hash', hash_values: [1], get_attributes: ['name'], select });
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: false, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return { req_json, result: op_auth.verifyPerms(req_json, search.searchByHash.name) };
+			};
+			const { req_json, result } = verifySelect(['name', 'breed']);
+			assert.equal(result instanceof PermissionResponseObject, true);
+			assert.deepStrictEqual(result.invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+			assert.deepStrictEqual(req_json.get_attributes, ['name', 'breed']);
+			assert.equal('select' in req_json, false);
+			assert.equal(verifySelect(['name']).result, null);
 		});
 
 		it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
@@ -1841,5 +1885,83 @@ describe('Test operations permissions', function () {
 				assert.equal(op_auth.verifyPerms(req_json, dispatchedHandlerName(alias)), null);
 			});
 		}
+	});
+});
+
+describe('verifyPerms() — replication directives are super-user only (harper#2898)', function () {
+	before(() => {
+		global.hdb_schema = global.hdb_schema || {};
+		testUtils.setGlobalSchema('id', TEST_SCHEMA, TEST_TABLE, TEST_ATTRIBUTES);
+	});
+
+	after(() => {
+		global.hdb_schema = undefined;
+	});
+
+	const DIRECTIVE_DENIAL = ['Can not specify replicateTo or replicatedConfirmation without super user permissions'];
+	const WRITE_OPERATIONS = [
+		terms.OPERATIONS_ENUM.INSERT,
+		terms.OPERATIONS_ENUM.UPDATE,
+		terms.OPERATIONS_ENUM.UPSERT,
+		terms.OPERATIONS_ENUM.PUT,
+		terms.OPERATIONS_ENUM.DELETE,
+	];
+
+	function writerRequest(operation, directives, permission = {}) {
+		const req_json = getRequestJson(TEST_JSON);
+		req_json.operation = operation;
+		Object.assign(req_json.hdb_user.role.permission, permission);
+		return Object.assign(req_json, directives);
+	}
+
+	for (const operation of WRITE_OPERATIONS) {
+		for (const directives of [
+			{ replicateTo: 0 },
+			{ replicateTo: [] },
+			{ replicateTo: ['node-1'] },
+			{ replicatedConfirmation: 1 },
+		]) {
+			it(`denies ${operation} with ${JSON.stringify(directives)} to a role that may write the table`, function () {
+				const handler = dispatchedHandlerName(operation);
+				assert.equal(op_auth.verifyPerms(writerRequest(operation, {}), handler), null);
+				const result = op_auth.verifyPerms(writerRequest(operation, directives), handler);
+				assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+			});
+		}
+	}
+
+	it('denies a structure user', function () {
+		const result = op_auth.verifyPerms(
+			writerRequest(terms.OPERATIONS_ENUM.INSERT, { replicateTo: 0 }, { structure_user: true }),
+			write.insert.name
+		);
+		assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+	});
+
+	it('denies a role whose operations allowlist names the write', function () {
+		const result = op_auth.verifyPerms(
+			writerRequest(
+				terms.OPERATIONS_ENUM.INSERT,
+				{ replicatedConfirmation: 1 },
+				{ operations: [terms.OPERATIONS_ENUM.INSERT] }
+			),
+			write.insert.name
+		);
+		assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+	});
+
+	it('allows a super user, including on a system table', function () {
+		const request = (directives) => {
+			const req_json = getRequestJson(TEST_JSON_SUPER_USER);
+			return Object.assign(req_json, directives);
+		};
+		const directives = { replicateTo: 0, replicatedConfirmation: 1 };
+		assert.equal(op_auth.verifyPerms(request(directives), write.insert.name), null);
+		const systemWrite = (extra) =>
+			op_auth.verifyPerms(
+				request({ schema: terms.SYSTEM_SCHEMA_NAME, table: terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, ...extra }),
+				write.insert.name
+			);
+		assert.deepEqual(systemWrite(directives), systemWrite({}));
 	});
 });

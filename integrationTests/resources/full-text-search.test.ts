@@ -10,10 +10,20 @@ import {
 	teardownHarper,
 	type ContextWithHarper,
 } from '@harperfast/integration-testing';
-import { runtimeInfo } from '@harperfast/fulltext/native';
+import * as native from '@harperfast/fulltext/native';
+import { createHash } from 'node:crypto';
+import { previousFullTextProcess } from '../../unitTests/resources/fixtures/fullTextUpgradeHelpers.cjs';
+
+const { runtimeInfo } = native;
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'full-text-search');
-const OPTIONS = { config: { threads: { count: 2 } }, env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' } };
+const OPTIONS = {
+	config: {
+		threads: { count: 2 },
+		storage: { fullText: { query: { maxQueryTerms: 128, maxQueryClauses: 512, maxFuzzyDistance: 2 } } },
+	},
+	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
+};
 const READER = { username: 'fulltext_reader', password: 'Fulltext-reader-2855!' };
 const READER_AUTH = `Basic ${Buffer.from(`${READER.username}:${READER.password}`).toString('base64')}`;
 const PAGE_IDS = Array.from({ length: 300 }, (_, index) => `page-${String(index).padStart(3, '0')}`);
@@ -36,6 +46,30 @@ function query(value: string, condition: Record<string, unknown> = {}, options: 
 		],
 		...options,
 	};
+}
+
+async function assertOperationsQueryRejection(
+	operationsAPIURL: string,
+	authorization: string,
+	target: ReturnType<typeof query>,
+	message: string
+) {
+	const response = await fetch(operationsAPIURL, {
+		method: 'POST',
+		headers: {
+			'Authorization': authorization,
+			'Content-Type': 'application/json',
+			'Accept': 'application/x-ndjson',
+		},
+		body: JSON.stringify({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target }),
+		signal: AbortSignal.timeout(45_000),
+	});
+	const body = await response.text();
+	assert.strictEqual(response.status, 200, body);
+	assert.match(response.headers.get('content-type'), /^application\/x-ndjson(?:;|$)/);
+	assert.deepStrictEqual(body.trim().split('\n').map(JSON.parse), [
+		{ $harperStreamError: { error: 'ClientError', message, status: 400 } },
+	]);
 }
 
 suite('deployed full-text fields and native search', (ctx: ContextWithHarper) => {
@@ -143,10 +177,137 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await teardownHarper(ctx);
 	});
 
-	test('loads published 0.3.0 and exposes a ready index without a stored virtual attribute', async () => {
+	test('adopts host query capacity and fuzzy controls through two-worker HTTP and operations search', async () => {
+		const fixtureIds = [
+			'capacity-late',
+			...Array.from({ length: 135 }, (_, i) => `fuzzy-control-${String(i).padStart(3, '0')}`),
+		];
+		try {
+			await operation({
+				operation: 'insert',
+				schema: 'data',
+				table: 'Product',
+				records: [
+					{ id: 'capacity-late', title: 'qword064' },
+					...Array.from({ length: 135 }, (_, i) => ({
+						id: `fuzzy-control-${String(i).padStart(3, '0')}`,
+						title: 'catalog',
+					})),
+				],
+			});
+			const late = await request('/SearchProduct/', {
+				method: 'POST',
+				body: JSON.stringify(
+					query(Array.from({ length: 65 }, (_, i) => `qword${String(i).padStart(3, '0')}`).join(' '), {
+						fields: ['title'],
+					})
+				),
+			});
+			assert.deepStrictEqual(ids(late), ['capacity-late']);
+			const result = await operation({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] }, { limit: 140 }),
+			});
+			assert.strictEqual(result.length, 135);
+			const misses = await operation({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
+			});
+			assert.deepStrictEqual(misses, []);
+			const traversed = await request('/SearchProduct/', {
+				method: 'POST',
+				body: JSON.stringify(
+					query(
+						'catxxog',
+						{ comparator: 'matches_fuzzy_prefix', fuzzyDistance: 2, fields: ['title'], includeHighlights: true },
+						{ limit: 130, offset: 2 }
+					)
+				),
+			});
+			assert.strictEqual(traversed.length, 130);
+			assert(
+				traversed.every((record) => record.id.startsWith('fuzzy-control-') && record.$highlights?.title?.length > 0)
+			);
+			for (const controls of [{ fuzzyDistance: '2' }, { fuzzyTranspositions: 'false' }]) {
+				const response = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						operation: 'search_by_conditions',
+						schema: 'data',
+						table: 'Product',
+						...query('catalog', { comparator: 'matches_fuzzy', ...controls }),
+					}),
+					signal: AbortSignal.timeout(45000),
+				});
+				assert.strictEqual(response.status, 400, await response.text());
+			}
+		} finally {
+			await operation({
+				operation: 'delete',
+				schema: 'data',
+				table: 'Product',
+				ids: fixtureIds,
+			});
+		}
+	});
+
+	test('enforces compiled clause capacity independently of per-leaf analyzed terms through both public paths', async () => {
+		const target = (count: number) => ({
+			operator: 'or',
+			conditions: Array.from({ length: count }, () => query('waterproof', { fields: ['title'] }).conditions[0]),
+		});
+		// Native accounting charges each OR child plus its single-field term: 256 * 2 = 512.
+		for (const count of [129, 256, 257]) {
+			const clauses = count * 2;
+			const expectedStatus = clauses <= 512 ? 200 : 400;
+			const targetQuery = target(count);
+			await assert.doesNotReject(async () => {
+				const records = await search(targetQuery, authorization, expectedStatus);
+				if (expectedStatus === 200) assert.deepStrictEqual(ids(records), ['one', 'two']);
+			}, `HTTP compiled-clause boundary: ${clauses} clauses, expected ${expectedStatus}`);
+			await assert.doesNotReject(
+				async () => {
+					if (expectedStatus === 400)
+						await assertOperationsQueryRejection(
+							ctx.harper.operationsAPIURL,
+							authorization,
+							targetQuery,
+							"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
+						);
+					else {
+						const records = await operation({
+							operation: 'search_by_conditions',
+							schema: 'data',
+							table: 'Product',
+							...targetQuery,
+						});
+						assert.deepStrictEqual(ids(records), ['one', 'two']);
+					}
+				},
+				`Operations compiled-clause boundary: ${clauses} clauses, expected rejection: ${expectedStatus === 400}`
+			);
+		}
+		assert.deepStrictEqual(ids(await search(query('waterproof'))), ['one', 'two']);
+		assert.deepStrictEqual(
+			ids(
+				await operation({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...query('waterproof') })
+			),
+			['one', 'two']
+		);
+	});
+
+	test('loads the pinned native package and exposes a ready index without a stored virtual attribute', async () => {
 		const info = await runtimeInfo();
-		assert.strictEqual(info.packageVersion, '0.3.0');
-		assert.strictEqual(info.queryApiVersion, 2);
+		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
+		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
+		assert.strictEqual(info.mutationBatchApiVersion, 5);
+		assert.strictEqual(info.nativeAbiVersion, 13);
+		assert.strictEqual(info.queryApiVersion, 7);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');
@@ -280,6 +441,43 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			rest.map(({ id }) => id),
 			page.map(({ id }) => id)
 		);
+	});
+
+	test('rejects removed paging functions before a collection delete can run', async () => {
+		for (const option of ['continuation()', 'continuation(token)', 'closeContinuation()']) {
+			for (const method of ['GET', 'DELETE']) {
+				const response = await fetch(`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&${option}`, {
+					method,
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(45000),
+				});
+				assert.strictEqual(response.ok, false);
+				assert.strictEqual((await response.json()).code, 'SyntaxViolation');
+			}
+		}
+		assert.deepStrictEqual(ids(await search(query('pagination'))), PAGE_IDS);
+	});
+
+	test('fills REST autocomplete pages after structured filtering and beyond the first native batch', async () => {
+		const all = await search(query('pagination'));
+		const expected = all
+			.filter(({ category }) => category === 'even')
+			.slice(0, 100)
+			.map(({ id }) => id);
+		for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+			const results = await request(
+				`/Product/?catalogSearch=${comparator}=pagin&category=even&limit(100)&select(id,title)`
+			);
+			assert.deepStrictEqual(
+				results.map(({ id }) => id),
+				expected
+			);
+			const larger = await request(`/Product/?catalogSearch=${comparator}=pagin&limit(150)&select(id,title)`);
+			assert.deepStrictEqual(
+				larger.map(({ id }) => id),
+				all.slice(0, 150).map(({ id }) => id)
+			);
+		}
 	});
 
 	test('preserves source permissions and row filters for non-admin searches', async () => {
@@ -451,6 +649,148 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForIds(query('asteroid'), []);
 	});
 
+	test('upgrades a real 0.5 checkpoint on two workers and recovers after an old-engine refusal', async () => {
+		const records = [
+			{ id: 'upgrade-added', title: 'added waterproof' },
+			{ id: 'upgrade-ad', title: 'ad' },
+			{ id: 'upgrade-deleted', title: 'removed migrationwitness' },
+		];
+		for (const record of records) {
+			await request(`/LifecycleProduct/${record.id}`, { method: 'PUT', body: JSON.stringify(record) }, 204);
+		}
+		await waitForReady('LifecycleProduct');
+		const searchLifecycle = (text: string) =>
+			request('/LifecycleProduct/', { method: 'QUERY', body: JSON.stringify(query(text)) });
+		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
+		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
+		const before = (await request('/FullTextState/')).LifecycleProduct;
+		const previousLogPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const previousLogLength = (await readFile(previousLogPath, 'utf8')).length;
+		await killHarper(ctx);
+		assert.ok(ctx.harper.process.exitCode !== null || ctx.harper.process.signalCode !== null);
+		const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+		const configuration = {
+			path: join(before.storePath, `${digest('LifecycleProduct/catalogSearch')}.fulltext`),
+			indexId: 'fulltext:LifecycleProduct/catalogSearch',
+			generation: digest(`${before.tableId}:${before.generations.catalogSearch}`),
+			fields: [{ name: 'title', weight: 3 }],
+			analyzer: 'english@2',
+			stopWords: true,
+			positions: true,
+			surfaceTerms: true,
+			synonyms: [],
+			limits: {
+				indexingThreads: 2,
+				searchThreads: 2,
+				writerMemoryBytes: 64 * 1024 * 1024,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64 * 1024 * 1024,
+				maxBatchBytes: 8 * 1024 * 1024,
+			},
+		};
+		const checkpoint = native.inspectNativeFullTextIndex(configuration);
+		assert.strictEqual(checkpoint.state, 'checkpointed', 'seed must replace the actual declared index');
+		const reader = await native.openNativeFullTextReader(configuration);
+		const documents = [];
+		try {
+			for (const record of records) {
+				const hits = (await reader.search({ text: record.title, mode: 'all', exactTotal: true })).hits;
+				assert.strictEqual(hits.length, 1, record.id);
+				documents.push({ id: hits[0].id, version: hits[0].version, fields: { title: record.title } });
+			}
+		} finally {
+			await reader.close();
+		}
+		await native.resetNativeFullTextIndex({ path: configuration.path, indexId: configuration.indexId });
+		const seeded = previousFullTextProcess(
+			'seed',
+			configuration,
+			[...documents, { id: 'native-only-ghost', version: '1', fields: { title: 'migrationghost' } }],
+			checkpoint.committedPayload
+		);
+		assert.deepStrictEqual(seeded.inspection, checkpoint);
+		assert.deepStrictEqual(seeded.ghostIds, ['native-only-ghost']);
+		assert.deepStrictEqual(native.inspectNativeFullTextIndex(configuration), {
+			state: 'incompatible',
+			code: 'E_IDENTITY_MISMATCH',
+		});
+		await startHarper(ctx, OPTIONS);
+		const deadline = Date.now() + 30_000;
+		let ready = false;
+		do {
+			let response: Response;
+			let body: string;
+			try {
+				response = await fetch(`${ctx.harper.httpURL}/LifecycleProduct/?catalogSearch=matches=ad`, {
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+				});
+				body = await response.text();
+			} catch (error) {
+				if (error.name === 'TimeoutError')
+					assert.fail('upgraded public search did not become ready before the deadline');
+				assert.ok(!response || response.status === 200, String(error));
+				assert.ok(
+					error.name === 'TypeError' && ['UND_ERR_SOCKET', 'ECONNRESET'].includes(error.cause?.code),
+					String(error.cause ?? error)
+				);
+				await delay(25);
+				continue;
+			}
+			assert.ok(response.status === 200 || response.status === 503, body);
+			if (response.status === 200) {
+				const records = JSON.parse(body);
+				assert.ok(Array.isArray(records));
+				assert.deepStrictEqual(ids(records), ['upgrade-ad'], 'no request may expose the old stemming');
+				ready = true;
+			} else assert.ok(body.length > 0);
+			if (!ready) await delay(25);
+		} while (!ready && Date.now() < deadline);
+		assert.ok(ready, 'upgraded public search did not become ready before the deadline');
+		await waitForReady('LifecycleProduct');
+		const mismatch = /fulltext:LifecycleProduct\/catalogSearch.*is incompatible \(E_IDENTITY_MISMATCH\); rebuilding/;
+		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const logDeadline = Date.now() + 10_000;
+		let upgradeLog: string;
+		do {
+			upgradeLog = (await readFile(previousLogPath, 'utf8')).slice(previousLogLength);
+			if (logPath !== previousLogPath) upgradeLog += await readFile(logPath, 'utf8');
+			if (mismatch.test(upgradeLog)) break;
+			await delay(25);
+		} while (Date.now() < logDeadline);
+		assert.match(upgradeLog, mismatch);
+		assert.deepStrictEqual(ids(await searchLifecycle('added')), ['upgrade-added']);
+		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
+		await request('/LifecycleProduct/upgrade-deleted', { method: 'DELETE' });
+		assert.deepStrictEqual(await searchLifecycle('migrationwitness'), []);
+		await request(
+			'/LifecycleProduct/upgrade-added',
+			{
+				method: 'PATCH',
+				body: JSON.stringify({ title: 'added waterproof recovered' }),
+			},
+			204
+		);
+		assert.deepStrictEqual(ids(await searchLifecycle('recovered')), ['upgrade-added']);
+		const after = (await request('/FullTextState/')).LifecycleProduct;
+		assert.strictEqual(after.tableId, before.tableId);
+		assert.deepStrictEqual(after.generations, before.generations);
+		await killHarper(ctx);
+		const refused = previousFullTextProcess('inspect', configuration);
+		assert.deepStrictEqual(refused.inspection, { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		assert.strictEqual(refused.openError, 'E_IDENTITY_MISMATCH');
+		assert.strictEqual(previousFullTextProcess('reset', configuration).resetError, 'E_INDEX_CORRUPT');
+		assert.strictEqual(native.inspectNativeFullTextIndex(configuration).state, 'checkpointed');
+		await startHarper(ctx, OPTIONS);
+		await waitForReady('LifecycleProduct');
+		assert.deepStrictEqual(ids(await searchLifecycle('recovered')), ['upgrade-added']);
+		assert.deepStrictEqual(ids(await searchLifecycle('ad')), ['upgrade-ad']);
+		assert.deepStrictEqual(await searchLifecycle('migrationwitness'), []);
+		assert.deepStrictEqual(await searchLifecycle('migrationghost'), []);
+		await waitForReady('Product');
+		await waitForIds(query('waterproof'), ['one', 'two']);
+	});
+
 	test('preserves index generation and physical paths and protects declarations after restart', async () => {
 		await request(
 			'/LifecycleProduct/lifecycle',
@@ -575,5 +915,185 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.deepStrictEqual(remainingPaths, unaffectedPaths, 'removed declaration must retire its active directory');
 		await waitForReady('Product');
 		await waitForIds(query('waterproof'), ['one', 'two']);
+	});
+	test(
+		'applies full-text request limits through set_configuration and worker restart',
+		{ skip: process.platform === 'win32' ? 'HTTP worker restart on Windows: HarperFast/harper#549' : false },
+		async () => {
+			async function restartWorkers() {
+				const { job_id } = await operation({ operation: 'restart_service', service: 'http_workers' });
+				assert(job_id);
+				const deadline = Date.now() + 60000;
+				let status;
+				do {
+					let job;
+					try {
+						[job] = await operation({ operation: 'get_job', id: job_id });
+					} catch (error) {
+						const code = (error as any)?.cause?.code ?? (error as any)?.code;
+						if (!['ECONNREFUSED', 'ECONNRESET', 'UND_ERR_SOCKET'].includes(code)) throw error;
+						assert.strictEqual(
+							ctx.harper.process.exitCode,
+							null,
+							`Harper exited during worker restart: ${ctx.harper.process.exitCode}`
+						);
+						assert.strictEqual(
+							ctx.harper.process.signalCode,
+							null,
+							`Harper stopped during worker restart: ${ctx.harper.process.signalCode}`
+						);
+					}
+					status = job?.status;
+					if (status === 'COMPLETE' || status === 'ERROR') break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 'COMPLETE');
+				await waitForReady('Product');
+			}
+			async function assertBudget(name: string) {
+				let status: number;
+				let body: string;
+				const deadline = Date.now() + 10000;
+				do {
+					const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
+						method: 'POST',
+						headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+						body: JSON.stringify(query('shoe', {}, { limit: 2 })),
+						signal: AbortSignal.timeout(5000),
+					});
+					status = response.status;
+					body = await response.text();
+					if (status === 400 && body.includes(name)) break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 400, body);
+				assert.ok(body.includes(name), body);
+			}
+			const original = (await operation({ operation: 'get_configuration' })).storage.fullText;
+			assert.ok(original, 'Installed configuration must include full-text defaults');
+			try {
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 500,
+					storage_fullText_maxResultsPerRequest: 1,
+					storage_fullText_requestBudgetMilliseconds: 1000,
+				});
+				const updated = (await operation({ operation: 'get_configuration' })).storage.fullText;
+				assert.strictEqual(updated.maxRawHitsPerRequest, 500);
+				assert.strictEqual(updated.maxResultsPerRequest, 1);
+				assert.strictEqual(updated.requestBudgetMilliseconds, 1000);
+				await restartWorkers();
+				await assertBudget('maxResultsPerRequest');
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 1,
+					storage_fullText_maxResultsPerRequest: 500,
+				});
+				await restartWorkers();
+				await assertBudget('maxRawHitsPerRequest');
+			} finally {
+				if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
+					await operation({
+						operation: 'set_configuration',
+						storage_fullText_maxRawHitsPerRequest: original.maxRawHitsPerRequest,
+						storage_fullText_maxResultsPerRequest: original.maxResultsPerRequest,
+						storage_fullText_requestBudgetMilliseconds: original.requestBudgetMilliseconds,
+					});
+					await restartWorkers();
+				}
+			}
+		}
+	);
+});
+
+suite('deployed full-text default query policy', (ctx: ContextWithHarper) => {
+	let authorization: string;
+
+	async function search(target: ReturnType<typeof query>, operations: boolean, expectedStatus = 200) {
+		const response = await fetch(operations ? ctx.harper.operationsAPIURL : `${ctx.harper.httpURL}/SearchProduct/`, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify(
+				operations ? { operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target } : target
+			),
+			signal: AbortSignal.timeout(45_000),
+		});
+		const text = await response.text();
+		assert.strictEqual(response.status, expectedStatus, text);
+		return JSON.parse(text);
+	}
+
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { threads: { count: 2 } }, env: OPTIONS.env });
+		authorization = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
+		const response = await fetch(`${ctx.harper.httpURL}/Product/default-policy`, {
+			method: 'PUT',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: 'Waterproof shoes' }),
+			signal: AbortSignal.timeout(45_000),
+		});
+		assert.strictEqual(response.status, 204, await response.text());
+		const deadline = Date.now() + 30_000;
+		let state: string;
+		do {
+			const description = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ operation: 'describe_table', schema: 'data', table: 'Product' }),
+				signal: AbortSignal.timeout(45_000),
+			});
+			const body = await description.text();
+			assert.strictEqual(description.status, 200, body);
+			state = JSON.parse(body).full_text_indexes[0].readiness.state;
+			if (state === 'ready') return;
+			assert.notStrictEqual(state, 'unavailable', 'Product full-text index is unavailable');
+			await delay(50);
+		} while (Date.now() < deadline);
+		assert.strictEqual(state, 'ready', 'Product full-text index did not become ready');
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('rejects distance two by default and recovers with valid fuzzy and ordinary searches', async () => {
+		for (const operations of [false, true]) {
+			const rejected = query('waterprof', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] });
+			if (operations)
+				await assertOperationsQueryRejection(
+					ctx.harper.operationsAPIURL,
+					authorization,
+					rejected,
+					'Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance'
+				);
+			else await search(rejected, false, 400);
+			assert.deepStrictEqual(
+				ids(
+					await search(
+						query('waterprof', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
+						operations
+					)
+				),
+				['default-policy']
+			);
+			assert.deepStrictEqual(ids(await search(query('waterproof'), operations)), ['default-policy']);
+		}
+	});
+
+	test('accepts 64 analyzed terms and rejects 65 with implied query defaults', async () => {
+		const accepted = query([...Array.from({ length: 63 }, (_, index) => `term${index}`), 'waterproof'].join(' '), {
+			fields: ['title'],
+		});
+		for (const operations of [false, true])
+			assert.deepStrictEqual(ids(await search(accepted, operations)), ['default-policy']);
+		const target = query(Array.from({ length: 65 }, (_, index) => `term${index}`).join(' '), { fields: ['title'] });
+		await search(target, false, 400);
+		await assertOperationsQueryRejection(
+			ctx.harper.operationsAPIURL,
+			authorization,
+			target,
+			"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
+		);
+		assert.deepStrictEqual(ids(await search(query('waterproof'), true)), ['default-policy']);
 	});
 });

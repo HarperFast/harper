@@ -1,3 +1,4 @@
+import * as ModelsRuntimeModule from './Models.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import { isAllowedValue } from './decision.ts';
 import {
@@ -41,7 +42,7 @@ type DecideFn = (state: DecideInput, schema: DecisionLeaf, opts: DecideOpts) => 
 let _decideFn: DecideFn | undefined;
 function resolveDecideFn(): DecideFn {
 	if (_decideFn) return _decideFn;
-	const { Models } = require('#src/resources/models/Models'); // eslint-disable-line @typescript-eslint/no-var-requires
+	const { Models } = ModelsRuntimeModule; // eslint-disable-line @typescript-eslint/no-var-requires
 	const models = new Models();
 	_decideFn = (state, schema, opts) => models.decide(state, schema, opts);
 	return _decideFn;

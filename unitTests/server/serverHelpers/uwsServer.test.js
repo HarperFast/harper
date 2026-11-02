@@ -12,6 +12,17 @@ const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
 const { Readable } = require('node:stream');
+const { once } = require('node:events');
+const { waitFor } = require('../../waitFor.js');
+
+async function getFreeTcpPort() {
+	const reservation = net.createServer();
+	reservation.listen(0, '127.0.0.1');
+	await once(reservation, 'listening');
+	const { port } = reservation.address();
+	await new Promise((resolve) => reservation.close(resolve));
+	return port;
+}
 
 // A Readable that emits the given chunks one per read() tick (async), then ends.
 function chunkStream(chunks) {
@@ -26,10 +37,12 @@ function chunkStream(chunks) {
 }
 
 let createUwsServer;
+let HarperHeaders;
 let uwsAvailable = true;
 try {
 	require('uWebSockets.js');
 	({ createUwsServer } = require('#src/server/serverHelpers/uwsServer'));
+	({ Headers: HarperHeaders } = require('#src/server/serverHelpers/Headers'));
 } catch {
 	uwsAvailable = false;
 }
@@ -106,6 +119,7 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 					status: res.statusCode,
 					statusMessage: res.statusMessage,
 					headers: res.headers,
+					rawHeaders: res.rawHeaders,
 					body: Buffer.concat(chunks),
 				})
 			);
@@ -118,7 +132,6 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 					}
 					return;
 				}
-				if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
 				settleReject(err);
 			});
 		});
@@ -211,6 +224,27 @@ function readBody(request) {
 					headers: { 'content-type': 'application/json' },
 					body: JSON.stringify(request.headers.get('x-dup')),
 				};
+			case '/header-names':
+			case '/header-names-stream': {
+				const headers = new HarperHeaders();
+				headers.set('Vary', 'Accept, Authorization');
+				headers.set('Content-Length', '999');
+				headers.set('X-Ten-Char', 'ten');
+				headers.set('Set-Cookie', ['a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT', 'b=2']);
+				headers.set('Cache-Control', 'private, no-cache');
+				const body = request.pathname === '/header-names' ? 'hello' : chunkStream(['hel', 'lo']);
+				return { status: 200, headers, body };
+			}
+			case '/header-names-whatwg': {
+				const headers = new globalThis.Headers();
+				headers.set('X-Ten-Char', 'ten');
+				headers.set('Content-Length', '999');
+				headers.append('Set-Cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT');
+				headers.append('Set-Cookie', 'b=2');
+				return { status: 200, headers, body: 'hello' };
+			}
+			case '/header-names-object':
+				return { status: 200, headers: { 'CONTENT-LENGTH': '999', 'X-Ten-Char': 'ten' }, body: 'hello' };
 			case '/sse':
 				return {
 					status: 200,
@@ -431,6 +465,63 @@ function readBody(request) {
 		assert.strictEqual(res.body.toString(), '203.0.113.7');
 	});
 
+	function appHeaders(rawHeaders) {
+		const pairs = [];
+		for (let i = 0; i < rawHeaders.length; i += 2) {
+			const name = rawHeaders[i].toLowerCase();
+			if (name !== 'date' && name !== 'uwebsockets') pairs.push([rawHeaders[i], rawHeaders[i + 1]]);
+		}
+		return pairs;
+	}
+
+	for (const [pathName, expected] of [
+		[
+			'/header-names',
+			[
+				['Vary', 'Accept, Authorization'],
+				['X-Ten-Char', 'ten'],
+				['Set-Cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT'],
+				['Set-Cookie', 'b=2'],
+				['Cache-Control', 'private, no-cache'],
+				['Content-Length', '5'],
+			],
+		],
+		[
+			'/header-names-stream',
+			[
+				['Vary', 'Accept, Authorization'],
+				['X-Ten-Char', 'ten'],
+				['Set-Cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT'],
+				['Set-Cookie', 'b=2'],
+				['Cache-Control', 'private, no-cache'],
+				['Transfer-Encoding', 'chunked'],
+			],
+		],
+		[
+			'/header-names-whatwg',
+			[
+				['x-ten-char', 'ten'],
+				['set-cookie', 'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT'],
+				['set-cookie', 'b=2'],
+				['Content-Length', '5'],
+			],
+		],
+		[
+			'/header-names-object',
+			[
+				['X-Ten-Char', 'ten'],
+				['Content-Length', '5'],
+			],
+		],
+	]) {
+		it(`writes response headers by name, dropping Content-Length and splitting cookies (${pathName})`, async function () {
+			const res = await udsRequest(socketPath, { pathName });
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(res.body.toString(), 'hello');
+			assert.deepStrictEqual(appHeaders(res.rawHeaders), expected);
+		});
+	}
+
 	it('streams a text/event-stream (SSE) body, flushing headers up front', async function () {
 		const res = await udsRequest(socketPath, { pathName: '/sse' });
 		assert.strictEqual(res.status, 200);
@@ -530,6 +621,154 @@ function readBody(request) {
 	});
 });
 
+(uwsAvailable ? describe : describe.skip)('uWS oversized TCP uploads', function () {
+	for (const {
+		name,
+		chunked = false,
+		connection = 'close',
+		finish = false,
+		disconnect = false,
+		duplicateConnection = false,
+		continueUpload = false,
+		consume = true,
+	} of [
+		{ name: 'completes a 413 after a fixed-length uploader stops at its headers' },
+		{ name: 'completes a 413 after a chunked uploader stops at its headers', chunked: true },
+		{ name: 'finishes draining when the remaining upload arrives', finish: true, connection: 'Close' },
+		{ name: 'preserves an immediate complete 413 on keep-alive', connection: 'keep-alive' },
+		{ name: 'cancels the drain deadline when the peer disconnects', disconnect: true },
+		{ name: 'delivers 413 with repeated Connection headers', duplicateConnection: true },
+		{ name: 'delivers 413 before bounding an uploader that ignores it', chunked: true, continueUpload: true },
+		{ name: 'releases a paused body before draining the upload', consume: false },
+	]) {
+		it(name, async function () {
+			const port = await getFreeTcpPort();
+			let request;
+			let bufferedBeforeReject = 0;
+			let delivered = 0;
+			const server = await createUwsServer({
+				host: '127.0.0.1',
+				port,
+				maxBodyBytes: consume ? 1024 : 128 * 1024,
+				handler: async (incoming) => {
+					if (incoming.method === 'GET') return { status: 200, body: 'alive' };
+					request = incoming;
+					if (!consume) {
+						incoming.body.on('data', () => delivered++);
+						incoming.body.pause();
+						await new Promise((resolve) => incoming.signal.addEventListener('abort', resolve, { once: true }));
+						return { status: 200 };
+					}
+					return { status: 200, body: await readBody(incoming) };
+				},
+			});
+			try {
+				const response = await new Promise((resolve, reject) => {
+					const chunk = Buffer.alloc(64 * 1024);
+					const length = (continueUpload ? 16 : 1) * 1024 * 1024;
+					let sent = 0;
+					let sentAtHeaders;
+					let raw = '';
+					let nextWrite;
+					const socket = net.connect({ host: '127.0.0.1', port }, () => {
+						const framing = chunked ? 'Transfer-Encoding: chunked' : `Content-Length: ${length}`;
+						const connectionHeaders = `Connection: ${connection}\r\n${duplicateConnection ? 'Connection: close\r\n' : ''}`;
+						socket.write(`POST / HTTP/1.1\r\nHost: localhost\r\n${connectionHeaders}${framing}\r\n\r\n`);
+						upload();
+					});
+					function upload() {
+						bufferedBeforeReject = Math.max(bufferedBeforeReject, request?.body.readableLength ?? 0);
+						if (socket.destroyed || (!continueUpload && raw.includes('\r\n\r\n'))) return;
+						if (sent === length) {
+							if (chunked) socket.write('0\r\n\r\n');
+							return;
+						}
+						// Hold until the paused body has buffered the first chunk, so the over-limit read
+						// cannot be the server's first.
+						if (!consume && sent && !bufferedBeforeReject) {
+							nextWrite = setImmediate(upload);
+							return;
+						}
+						sent += chunk.length;
+						const data = chunked ? Buffer.concat([Buffer.from('10000\r\n'), chunk, Buffer.from('\r\n')]) : chunk;
+						const scheduleUpload = () => (nextWrite = continueUpload ? setTimeout(upload, 10) : setImmediate(upload));
+						if (socket.write(data)) scheduleUpload();
+						else socket.once('drain', scheduleUpload);
+					}
+					let timer = setTimeout(() => {
+						const stalled = !consume && !bufferedBeforeReject;
+						socket.destroy(
+							new Error(
+								stalled ? 'the paused body never buffered the first chunk' : 'oversized upload did not receive 413'
+							)
+						);
+					}, 5000);
+					socket.on('data', (data) => {
+						raw += data.toString('latin1');
+						if (sentAtHeaders !== undefined || !raw.includes('\r\n\r\n')) return;
+						sentAtHeaders = sent;
+						if (disconnect) socket.destroy();
+						else if (connection === 'keep-alive') {
+							socket.write(Buffer.alloc(length - sent));
+							sent = length;
+							socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+						} else if (finish) {
+							clearTimeout(timer);
+							timer = setTimeout(() => socket.destroy(new Error('finished upload waited for the drain deadline')), 500);
+							socket.write(Buffer.alloc(length - sent));
+							sent = length;
+						}
+					});
+					socket.on('error', (error) => {
+						if (!continueUpload || !raw.includes('\r\n\r\n')) reject(error);
+					});
+					socket.on('close', () => {
+						clearTimeout(timer);
+						if (continueUpload) clearTimeout(nextWrite);
+						else clearImmediate(nextWrite);
+						resolve({ raw, sentAtHeaders, length });
+					});
+				});
+				assert.match(response.raw, /^HTTP\/1\.1 413 Payload Too Large\r\n/);
+				assert.match(response.raw, /\r\n\r\n/);
+				if (!disconnect && !continueUpload) {
+					assert.ok(
+						/\r\ncontent-length: 0\r\n/i.test(response.raw) || response.raw.endsWith('\r\n0\r\n\r\n'),
+						'the 413 response body must be complete'
+					);
+				}
+				if (continueUpload) assert.match(response.raw, /ClientError: Request body exceeds 1024 bytes/);
+				if (connection === 'keep-alive') {
+					assert.match(response.raw, /HTTP\/1\.1 200 OK\r\n/);
+					assert.ok(response.raw.endsWith('alive'), 'the fully drained keep-alive connection serves another request');
+				}
+				assert.ok(response.sentAtHeaders < response.length, '413 headers must arrive before the upload finishes');
+				assert.ok(request.signal.aborted, 'the rejected handler is cancelled');
+				assert.ok(request.body.destroyed, 'the rejected body is destroyed');
+				assert.strictEqual(request.body.readableLength, 0, 'rejected body buffers are released');
+				if (!consume) {
+					assert.ok(bufferedBeforeReject > 0, 'the paused body buffered upload bytes before rejection');
+					assert.strictEqual(delivered, 0, 'teardown never delivers buffered bytes to the paused consumer');
+				}
+				if (disconnect || finish) {
+					await new Promise((resolve) => setTimeout(resolve, 1100));
+					const status = await new Promise((resolve, reject) => {
+						http
+							.get({ host: '127.0.0.1', port, agent: false }, (res) => {
+								res.resume();
+								res.on('end', () => resolve(res.statusCode));
+							})
+							.on('error', reject);
+					});
+					assert.strictEqual(status, 200, 'the server survives past the cancelled drain deadline');
+				}
+			} finally {
+				server.close();
+			}
+		});
+	}
+});
+
 let WebSocket;
 try {
 	({ WebSocket } = require('ws'));
@@ -541,11 +780,13 @@ try {
 	'uWS WebSocket adapter (createUwsServer wsHandler)',
 	function () {
 		let server;
-		const port = 34100 + (process.pid % 1500); // avoid collisions across concurrent suites
+		let port;
 		const opened = [];
 
 		before(async function () {
+			port = await getFreeTcpPort();
 			server = await createUwsServer({
+				host: '127.0.0.1',
 				port,
 				handler: async (req) => ({
 					status: 200,
@@ -624,8 +865,9 @@ try {
 		it('enforces wsMaxPayload by closing a connection that sends an oversized frame', async function () {
 			// Regression: registerWsBehavior passed `maxPayload` to app.ws(), but uWS's option key is
 			// `maxPayloadLength`, so the configured cap was silently ignored (uWS's 16 KiB default applied).
-			const cappedPort = port + 1;
+			const cappedPort = await getFreeTcpPort();
 			const cappedServer = await createUwsServer({
+				host: '127.0.0.1',
 				port: cappedPort,
 				handler: async () => ({ status: 200, body: 'http' }),
 				wsHandler: (ws) => ws.on('message', (data) => ws.send(data)),
@@ -671,6 +913,75 @@ try {
 					done(error);
 				}
 			});
+		});
+
+		it('resumes a backpressured producer and releases it when the reader disconnects', async function () {
+			this.timeout(20000);
+			const connections = [];
+			const pressurePort = await getFreeTcpPort();
+			const pressureServer = await createUwsServer({
+				host: '127.0.0.1',
+				port: pressurePort,
+				handler: () => ({ status: 200, body: 'http' }),
+				wsHandler: (ws) => {
+					const state = { ws, produced: 0, finished: false, error: undefined };
+					connections.push(state);
+					const controller = new AbortController();
+					ws.once('close', () => controller.abort());
+					(async () => {
+						for (let id = 0; id < 128 && !controller.signal.aborted; id++) {
+							const message = Buffer.alloc(512 * 1024);
+							message.writeUInt32BE(id);
+							ws.send(message);
+							state.produced++;
+							if (ws._socket.writableNeedDrain) {
+								await once(ws._socket, 'drain', { signal: controller.signal });
+							}
+						}
+					})()
+						.catch((error) => {
+							if (!controller.signal.aborted) state.error = error;
+						})
+						.finally(() => {
+							state.finished = true;
+						});
+				},
+			});
+			const clients = [];
+			const openStalled = () => {
+				const client = new WebSocket(`ws://127.0.0.1:${pressurePort}/`);
+				client.once('open', () => client.pause());
+				clients.push(client);
+				return client;
+			};
+			try {
+				const client = openStalled();
+				const received = [];
+				client.on('message', (message) => received.push(message.readUInt32BE()));
+				await once(client, 'open', { signal: AbortSignal.timeout(5000) });
+				await waitFor(() => connections[0]?.ws._socket.writableNeedDrain, 5000);
+				assert.ok(connections[0].produced < 128);
+				client.resume();
+				await waitFor(() => received.length >= 128 && connections[0].finished, 10000);
+				assert.ifError(connections[0].error);
+				assert.deepStrictEqual(
+					received,
+					Array.from({ length: 128 }, (_, id) => id)
+				);
+				client.terminate();
+
+				const disconnected = openStalled();
+				await once(disconnected, 'open', { signal: AbortSignal.timeout(5000) });
+				await waitFor(() => connections[1]?.ws._socket.writableNeedDrain, 5000);
+				assert.ok(connections[1].produced < 128);
+				disconnected.terminate();
+				await waitFor(() => connections[1].finished, 5000);
+				assert.ifError(connections[1].error);
+				assert.strictEqual(connections[1].ws._socket.listenerCount('drain'), 0);
+			} finally {
+				for (const client of clients) client.terminate();
+				pressureServer.close();
+			}
 		});
 	}
 );

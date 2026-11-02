@@ -20,7 +20,7 @@ const {
 	setRegistryStatusForTests,
 	startLongLivedTransactionReporting,
 } = require('#src/resources/longLivedTransactions');
-const { registryStatus } = require('@harperfast/rocksdb-js');
+const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	DatabaseTransaction,
 	getOutstandingCommits,
@@ -29,8 +29,8 @@ const {
 	trackOutstandingCommit,
 } = require('#src/resources/DatabaseTransaction');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { table } = require('#src/resources/databases');
 const { waitFor } = require('../waitFor.js');
 
@@ -57,7 +57,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		logger.warn = originalWarn;
 		logger.error = originalError;
 		env.setProperty(THRESHOLD, originalThreshold);
-		setRegistryStatusForTests(registryStatus);
+		setRegistryStatusForTests();
 		resetLongLivedTransactionReportsForTests();
 	});
 
@@ -118,7 +118,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.match(reported[0][0], /1h/);
 		});
 
-		// registryStatus() reports an entry with no path for an ephemeral descriptor; the rest of this
+		// getRegistryStatus() reports an entry with no path for an ephemeral descriptor; the rest of this
 		// surface defaults it, and an operator reading "on database undefined" learns nothing.
 		it('names a handle whose database has no path without printing undefined', function () {
 			setRegistryStatusForTests(status(database(undefined, [7, 3600000])));
@@ -208,7 +208,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			setRegistryStatusForTests(() => [{ path: '/db/alpha', transactions: 3 }]);
 			assert.doesNotThrow(() => runLongLivedTransactionSweep());
 			runLongLivedTransactionSweep();
-			assert.strictEqual(warningsMatching('does not expose registryStatus().transactionDetails').length, 1);
+			assert.strictEqual(warningsMatching('entry has no transactionDetails').length, 1);
 		});
 
 		it('swallows and logs a registry failure', function () {
@@ -629,14 +629,14 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 	});
 
-	// A store's rootStore.path is what checkOverloaded() hands the lookup, and registryStatus() reports
+	// A store's rootStore.path is what checkOverloaded() hands the lookup, and getRegistryStatus() reports
 	// the database's own path — if those two ever stop being the same string, every candidate list goes
 	// silently empty. Asserted against the real registry rather than a stub, which is the only way to
 	// catch a drift in either producer.
 	describe('the store path joins to the registry path', () => {
 		it('finds a real table’s database in the real registry', function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
-			setRegistryStatusForTests(registryStatus);
+			setRegistryStatusForTests();
 			const JoinTable = table({
 				table: 'HolderJoinTable',
 				database: 'test',
@@ -645,7 +645,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			const storePath = JoinTable.primaryStore.rootStore.path;
 			assert.ok(storePath, 'a table store must expose its database path');
 			assert.ok(
-				registryStatus().some((entry) => path.resolve(entry.path) === path.resolve(storePath)),
+				getRegistryStatus().some((entry) => path.resolve(entry.path) === path.resolve(storePath)),
 				'the path checkOverloaded() looks up must be a path the registry reports'
 			);
 		});
@@ -672,7 +672,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				database: 'chain-attribution-secondary',
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
 			});
-			setRegistryStatusForTests(registryStatus);
+			setRegistryStatusForTests();
 			env.setProperty(THRESHOLD, '0.001');
 			// sourceApply is exempt from reaping, which is what keeps both links open long enough for the
 			// monitor to observe them — and is the #2471 shape besides.
@@ -777,13 +777,88 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 	});
 
+	describe('monitor abort attribution', () => {
+		it('names the aborted head under the describeCommitIdentity form for a transaction spanning two tables', async function () {
+			this.timeout(20000);
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			setMainIsWorker(true);
+			// Not `test`: data/dev/test/test2 share one root, which carries the name of whichever alias opened
+			// it first (databases.ts initStores), so the logged database depends on which suites ran earlier.
+			const Primary = table({
+				table: 'MonitorAbortPrimaryTable',
+				database: 'monitor-abort-primary',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+			});
+			const Secondary = table({
+				table: 'MonitorAbortSecondaryTable',
+				database: 'monitor-abort-secondary',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+			});
+			const originalError = harperLogger.error;
+			const errorLines = [];
+			harperLogger.error = (...args) => errorLines.push(args);
+			// Filtered on this fixture's own table, not just "has been aborted": this thread is never
+			// idle, and another suite's own timed-out transaction can log the same phrase first.
+			const abortLine = () =>
+				errorLines.find(
+					([message]) =>
+						String(message).includes('has been aborted') && String(message).includes('MonitorAbortPrimaryTable')
+				);
+			// Slow expiration during the two real writes: a loaded CI runner must not let a premature tick
+			// catch them mid-flight.
+			const trackedTxns = setTxnExpiration(30000);
+			const context = {};
+			let headId;
+			try {
+				await assert.rejects(
+					transaction(context, async () => {
+						await Primary.put(1, { v: 'root' }, context);
+						await Secondary.put(1, { v: 'second' }, context);
+						const links = [];
+						for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) links.push(txn);
+						assert.strictEqual(links.length, 2, 'the second table must be a chain link');
+						// Reachable only through the root's chain: an independently-tracked second link could
+						// otherwise be visited by the monitor and abort on its own terms too.
+						trackedTxns.delete(links[1]);
+						links[1].writeTimeout = 0; // decays chainStillActive() for the head's own visit below
+						headId = links[0].transaction?.id;
+						assert.ok(headId !== undefined, 'the head must own a native handle');
+						setTxnExpiration(20);
+						links[0].timeout = 0;
+						await waitFor(() => abortLine() !== undefined, {
+							timeout: 10000,
+							message: 'the monitor never logged the abort',
+						});
+					}),
+					(error) => {
+						// An assertion that failed inside the callback rejects this too; rethrow it so it reports as
+						// itself rather than as a missing poison.
+						if (!/exceeding the maximum open-transaction time/.test(error?.message)) throw error;
+						return true;
+					},
+					'the poisoned commit must still surface as a rejection once the callback returns'
+				);
+				// `table()` names an ephemeral test table with a component-scoped `/@<uuid>` suffix, so match
+				// around it rather than requiring the table name to butt up against "(transaction N)".
+				assert.match(
+					String(abortLine()[0]),
+					new RegExp(`from table: monitor-abort-primary\\.MonitorAbortPrimaryTable\\S* \\(transaction ${headId}\\)`),
+					`expected the describeCommitIdentity form naming the head's database.table and native id: ${abortLine()[0]}`
+				);
+			} finally {
+				harperLogger.error = originalError;
+				setTxnExpiration(30000);
+			}
+		});
+	});
+
 	describe('cross-thread visibility', () => {
 		it('reports a worker thread’s handle from the main thread, exactly once', async function () {
 			this.timeout(20000);
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			const dbPath = path.join(os.tmpdir(), `harper-2471-${process.pid}-${Date.now()}`);
 			const worker = new Worker(
-				`const { RocksDatabase, Transaction } = require('@harperfast/rocksdb-js');
+				`const { RocksDatabase, Transaction } = require(${JSON.stringify(require.resolve('../rocksdbBindings.mts'))}).rocksdbBindings();
 				const { parentPort } = require('node:worker_threads');
 				const db = RocksDatabase.open(${JSON.stringify(dbPath)});
 				const txn = new Transaction(db.store, { coordinatedRetry: true });
@@ -801,7 +876,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					worker.once('message', resolve);
 					worker.once('error', reject);
 				});
-				setRegistryStatusForTests(registryStatus);
+				setRegistryStatusForTests();
 				env.setProperty(THRESHOLD, '0.05');
 				await waitFor(() => {
 					runLongLivedTransactionSweep();
@@ -821,7 +896,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				});
 				await waitFor(
 					() =>
-						!registryStatus().some(
+						!getRegistryStatus().some(
 							(database) =>
 								database.path === dbPath && database.transactionDetails?.some((handle) => handle.id === nativeId)
 						),

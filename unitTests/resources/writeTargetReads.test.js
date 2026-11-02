@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { Resource } = require('#src/resources/Resource');
 require('#src/server/serverHelpers/serverUtilities');
 

@@ -10,13 +10,15 @@
  */
 
 import { fsTools } from './tools/fsTools.ts';
-import { httpFetchTool } from './tools/httpFetchTool.ts';
+import { HTTP_FETCH_TOOL_NAME } from './tools/httpFetchTool.ts';
 import { buildScheduleTool, type ScheduleToolDeps, type ScheduledFollowup } from './tools/scheduleTool.ts';
 import type { AgentTool } from './types.ts';
 
 export interface ComposeToolsetOpts extends ScheduleToolDeps {
 	/** When `false`, destructive tools are filtered out at composition time. */
 	allowDestructive?: boolean;
+	/** `http_fetch` built from the boot-time `agent.httpFetch` policy; absent when the policy disables it. */
+	httpFetchTool?: AgentTool;
 	/** Operator-injected extras (tests, custom plugins). */
 	extraTools?: AgentTool[];
 	/**
@@ -39,15 +41,17 @@ export interface ComposedToolset {
 export function composeToolset(opts: ComposeToolsetOpts): ComposedToolset {
 	const schedule = buildScheduleTool(opts);
 	// Operator-only tools first — they own their names. Registry tools that collide are dropped.
+	// `http_fetch` is reserved for the policy-built tool, so disabling it never admits a same-named tool.
+	const extras = (opts.extraTools ?? []).filter((t) => t.def.name !== HTTP_FETCH_TOOL_NAME);
 	const operator: AgentTool[] = [
 		...fsTools,
-		httpFetchTool,
+		...(opts.httpFetchTool ? [opts.httpFetchTool] : []),
 		schedule.tool,
 		...(opts.inspectorTools ?? []),
-		...(opts.extraTools ?? []),
+		...extras,
 	];
-	const operatorNames = new Set(operator.map((t) => t.def.name));
-	const registry = (opts.registryTools ?? []).filter((t) => !operatorNames.has(t.def.name));
+	const reservedNames = new Set([...operator.map((t) => t.def.name), HTTP_FETCH_TOOL_NAME]);
+	const registry = (opts.registryTools ?? []).filter((t) => !reservedNames.has(t.def.name));
 	const all = [...operator, ...registry];
 	const tools = opts.allowDestructive === false ? all.filter((t) => !t.destructive) : all;
 	return { tools, scheduled: schedule.pending };

@@ -19,6 +19,7 @@
 import type { LogicalPlan, LogicalScan } from './op.ts';
 import type { ExprNode, JoinNode, ProjectionNode, SelectNode, SortNode, StatementNode } from '../parser/ast.ts';
 import type { BoundSelect, BoundTable } from '../binder/bind.ts';
+import { normalizePredicate } from '../optimizer/rules/predicateNormalize.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 
 export function buildLogicalPlan(stmt: StatementNode): LogicalPlan {
@@ -177,7 +178,7 @@ function buildJoinSource(stmt: SelectNode & Partial<BoundSelect>): LogicalPlan {
 	const perAlias = new Map<string, ExprNode[]>();
 	const residual: ExprNode[] = [];
 	if (stmt.where) {
-		for (const conjunct of flattenAnd(stmt.where)) {
+		for (const conjunct of flattenAnd(normalizePredicate(stmt.where))) {
 			const aliases = referencedAliases(conjunct);
 			const alias = aliases.size === 1 ? [...aliases][0] : undefined;
 			if (alias && !nullableAliases.has(alias)) {

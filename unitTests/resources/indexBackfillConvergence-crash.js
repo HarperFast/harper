@@ -13,7 +13,7 @@ if (require.main === module) {
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(rootPath, 'database'));
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, { [database]: { path: databasePath } });
 	const { table, resetDatabases, setIndexingCheckpointPeriod } = require('#src/resources/databases');
-	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	setMainIsWorker(true);
 	// kill-at-checkpoint: die at the first persisted checkpoint (checkpoint on every interval);
 	// kill-after-complete: never checkpoint, die once the ready descriptor is persisted

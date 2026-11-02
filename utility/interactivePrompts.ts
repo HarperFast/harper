@@ -20,7 +20,7 @@ function lazyPrompt<C, R>(loadModule: () => Promise<{ default: PromptFn<C, R> }>
 
 // These are genuine ES modules, so their default exports are non-writable bindings —
 // `require('@inquirer/input').default = stub` silently no-ops even after CJS interop, unlike a
-// CJS default export's own properties (see the chokidar seam in watcherFallback.ts). Routing every
+// default-exported plain object's own properties (see the chokidar seam in watcherFallback.ts). Routing every
 // call through this plain, mutable object gives unit tests a real seam to stub — a test
 // reassignment here is checked before `lazyPrompt`'s own `import()` ever runs, so stubbing never
 // triggers the real load either.

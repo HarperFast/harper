@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Regression for the `Prefer: count=exact` pagination path on vector/HNSW-sorted queries. An HNSW sort
 // returns a bounded, approximate candidate set whose size is chosen from the requested page (minResults =

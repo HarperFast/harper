@@ -1,0 +1,6 @@
+graphqlSchema:
+  files: '*.graphql'
+rest: true
+mqtt: true
+jsResource:
+  files: resources.js

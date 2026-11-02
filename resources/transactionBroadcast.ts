@@ -1,7 +1,14 @@
 import { basename } from 'node:path';
-import { warn } from '../utility/logging/harper_logger.js';
+import { warn } from '../utility/logging/harper_logger.ts';
 import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
+import { ORIGIN_FLOOR_TICK_MS, localStartBound, threadStartBound } from './originClosedFloor.ts';
+import {
+	captureCertifiedFloors,
+	positionBefore,
+	readOriginStateEpoch,
+	type CertifiedFloors,
+} from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
 
@@ -56,21 +63,44 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			? new DatabaseGenerationChangedError()
 			: closingError(table.auditStore, path);
 	}
+	// sampled before the log is opened or drained, so a commit the subscriber could miss is above it
+	let startBound: ReturnType<typeof localStartBound>;
+	let committedThrough: number | undefined;
+	// sampled on every registration: the drain below can end the last progress consumer and clear the certified mark
+	if (options?.reportProgress && table.auditStore?.reusableIterable) {
+		startBound = (options.crossThreads === false ? threadStartBound : localStartBound)(table.primaryStore.rootStore);
+	} else if (options?.reportProgress && table.auditStore && !startTime) {
+		// a read during a close flush arms a read-txn reset that throws on the next tick
+		if (table.auditStore.rootStore?.status === 'closing') throw closingError(table.auditStore, path);
+		committedThrough = newestCommittedKey(table.auditStore);
+	}
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
 		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);
+		databaseSubscriptions.sameThread = true;
 		listenToCommits(table.primaryStore, table.auditStore);
 	} else {
 		databaseSubscriptions = allSubscriptions[path] || (allSubscriptions[path] = []);
 		const auditStore = table.auditStore;
+		// A new subscriber receives only what commits after it registers (resources/DESIGN.md).
+		if (!databaseSubscriptions.activeCount) {
+			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
+			// and still match older version numbers that may commit in the future. But we have to start
+			// immediately so we are at the right position.
+			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({});
+			// LMDB passes read from lastTxnTime, which no pass advanced while nothing was subscribed
+			else if (committedThrough !== undefined) databaseSubscriptions.lastTxnTime = committedThrough;
+			else if (auditStore.rootStore?.status !== 'closing' && auditStore.rootStore?.status !== 'closed')
+				databaseSubscriptions.lastTxnTime = newestCommittedKey(auditStore);
+		} else if (!databaseSubscriptions.passYielded && !databaseSubscriptions.dispatching) {
+			notifyFromTransactionData(
+				databaseSubscriptions,
+				auditStore.reusableIterable ? auditStore.subscriptionLogRange : null,
+				false,
+				true
+			);
+		}
 		if (!auditStore.hasSubscriptionCommitListener) {
-			let auditLogIterator;
-			if (auditStore.reusableIterable) {
-				// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
-				// and still match older version numbers that may commit in the future. But we have to start
-				// immediately so we are at the right position
-				auditLogIterator = auditStore.getRange({});
-			}
 			auditStore.hasSubscriptionCommitListener = true;
 			// Coalesce 'committed' bursts: instead of iterating the audit log synchronously inside the
 			// commit microtask (which pegs the event loop during replication backlog catch-up), defer
@@ -87,7 +117,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 				}
 				if (databaseSubscriptions.notifyScheduled) return;
 				databaseSubscriptions.notifyScheduled = true;
-				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditLogIterator, true));
+				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditStore.subscriptionLogRange, true));
 			});
 		}
 	}
@@ -110,6 +140,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
 	subscription.startTime = startTime;
+	subscription.databaseGeneration = table.auditStore?.databaseGeneration?.id;
 	let subscriptions: any = tableSubscriptions.get(key);
 
 	if (subscriptions) subscriptions.push(subscription);
@@ -122,7 +153,214 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	}
 	subscription.subscriptions = subscriptions;
 	databaseSubscriptions.activeCount = (databaseSubscriptions.activeCount || 0) + 1;
+	if (options?.reportProgress && table.auditStore?.reusableIterable) {
+		if (!databaseSubscriptions.progressConsumers) startProgressTracking(databaseSubscriptions, table.auditStore);
+		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
+		subscription.reportsProgress = true;
+		subscription.registeredThrough = databaseSubscriptions.certifiedThrough;
+		if (startBound)
+			subscription.localResumeStart = 'above' in startBound ? startBound.above : positionBefore(startBound.atOrAbove);
+		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
+		if (dbisDb && !databaseSubscriptions.sameThread && !databaseSubscriptions.originFloorTimer)
+			startOriginTracking(databaseSubscriptions, dbisDb);
+	} else if (committedThrough !== undefined) subscription.localResumeStart = committedThrough;
 	return subscription;
+}
+
+/**
+ * LMDB stamps each log key at commit, under the write lock, from the native realtime clock, so a commit this read
+ * cannot see yet takes a higher key as long as that clock never moves backwards; a stale snapshot only lowers the
+ * result. An empty log gives 1, the bottom of the log above its symbol metadata keys.
+ */
+function newestCommittedKey(auditStore: any): number {
+	auditStore.resetReadTxn?.();
+	for (const key of auditStore.getKeys({ reverse: true, limit: 1 })) if (typeof key === 'number' && key > 1) return key;
+	return 1;
+}
+
+let originCaptureInterval = ORIGIN_FLOOR_TICK_MS;
+/** Test-only: how often the certified floors are captured for checkpoints and held same-thread passes re-capture. */
+export function setOriginCaptureIntervalForTests(ms: number = ORIGIN_FLOOR_TICK_MS) {
+	originCaptureInterval = ms;
+}
+
+/**
+ * Per-origin certified floors for checkpoints: every `ORIGIN_FLOOR_TICK_MS` the floors are
+ * captured, then a notify pass runs; the capture a pass began with is published once that pass drains, so every
+ * entry below a captured floor — all in the log before the capture — has been dispatched by then. Shared by every
+ * progress-reporting subscription on the database; an idle database pays one seq-row read and an empty pass.
+ */
+function startOriginTracking(databaseSubscriptions: any, dbisDb: any) {
+	const auditStore = databaseSubscriptions.auditStore;
+	databaseSubscriptions.capturedFloors = undefined;
+	databaseSubscriptions.certifiedFloors = undefined;
+	const capture = () => {
+		if (!databaseSubscriptions.progressConsumers || auditStore.rootStore?.status === 'closed') {
+			stopOriginTracking(databaseSubscriptions);
+			return;
+		}
+		try {
+			databaseSubscriptions.capturedFloors = captureCertifiedFloors(auditStore, dbisDb) ?? null;
+		} catch (error) {
+			warn('Could not read the origin floors for subscription checkpoints', error);
+			databaseSubscriptions.capturedFloors = null;
+		}
+		if (databaseSubscriptions.notifyScheduled) return;
+		databaseSubscriptions.notifyScheduled = true;
+		setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditStore.subscriptionLogRange, true));
+	};
+	databaseSubscriptions.originFloorTimer = setInterval(capture, originCaptureInterval);
+	databaseSubscriptions.originFloorTimer.unref?.();
+	capture();
+}
+
+function stopOriginTracking(databaseSubscriptions: any) {
+	clearInterval(databaseSubscriptions.originFloorTimer);
+	databaseSubscriptions.originFloorTimer = undefined;
+	databaseSubscriptions.capturedFloors = undefined;
+	databaseSubscriptions.certifiedFloors = undefined;
+}
+
+/** The per-origin floors every dispatched entry below which this subscription has been handed, or undefined. */
+export function certifiedFloors(subscription: any): CertifiedFloors | undefined {
+	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscription.reportsProgress || !databaseSubscriptions || databaseSubscriptions.progressStopped) return;
+	const floors: CertifiedFloors | undefined = databaseSubscriptions.certifiedFloors ?? undefined;
+	if (floors && floors.epoch !== readOriginStateEpoch(databaseSubscriptions.auditStore?.rootStore)) return;
+	return floors;
+}
+
+function rangeFailures(range: any): number {
+	return (range?.failedLogs?.size ?? 0) + (range?.corruptFrameStop?.breaks ?? 0);
+}
+
+function startProgressTracking(databaseSubscriptions: any, auditStore: any) {
+	databaseSubscriptions.pendingProgressKey = undefined;
+	// a key left by an earlier stretch of tracking does not cover what was dispatched untracked since
+	databaseSubscriptions.dispatchedThrough = undefined;
+	databaseSubscriptions.certifiedThrough = undefined;
+	databaseSubscriptions.recheckedCeiling = undefined;
+	// the log store ends a failed log's iteration quietly, and nothing after lost records can be certified
+	if (rangeFailures(auditStore.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
+}
+
+function advanceProgress(subscriptions: any, key: number, range: any): boolean {
+	if (rangeFailures(range) > 0) {
+		stopProgress(subscriptions);
+		return false;
+	}
+	if (!(subscriptions.dispatchedThrough >= key)) subscriptions.dispatchedThrough = key;
+	return true;
+}
+
+/**
+ * Preserve a completed scalar replay's observed key as a candidate, never as a certificate. Entries before
+ * registration belong to the replay; the registry delivers entries committed since registration. Even a pass
+ * already in progress may certify this candidate only below its pre-drain reservation ceiling, after draining.
+ */
+export function completedReplayThrough(subscription: any, key: number): void {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscription.reportsProgress || !subscriptions?.progressConsumers || subscriptions.progressStopped) return;
+	if (subscriptions.sameThread) return;
+	if (!advanceProgress(subscriptions, key, subscriptions.auditStore?.subscriptionLogRange)) return;
+	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
+	if (subscriptions.auditStore?.rootStore?.status !== 'open') return;
+	subscriptions.notifyScheduled = true;
+	setImmediate(() => notifyFromTransactionData(subscriptions, subscriptions.auditStore.subscriptionLogRange, true));
+}
+
+function stopProgress(databaseSubscriptions: any) {
+	if (databaseSubscriptions.progressStopped) return;
+	databaseSubscriptions.progressStopped = true;
+	warn(
+		'The transaction log could not be read in full; durable subscription positions on it stop advancing, and on the system database live-subscription revocation falls back to periodic full rechecks'
+	);
+}
+
+/**
+ * Whether every transaction-log record since `subscription` registered was read and routable, so it missed
+ * none addressed to it. Known only for a subscription that tracks progress, and only while it is open.
+ */
+export function deliveryCertified(subscription: any): boolean {
+	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscription.reportsProgress || !databaseSubscriptions) return false;
+	// a failed read ends a drain as if the log were exhausted, so no later record may come to latch it
+	if (rangeFailures(databaseSubscriptions.auditStore?.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
+	return !databaseSubscriptions.progressStopped;
+}
+
+/**
+ * The key below which every local write the registry delivers (every thread's for the cross-thread registry,
+ * this thread's for a `crossThreads: false` one) has been dispatched to every subscriber registered at the time,
+ * and none can still land. A completed scalar replay may supply a candidate from before registration, outside
+ * the registry's live-delivery contract. Either candidate is held at the ceiling the dispatching pass
+ * captured (`captureCeiling`). Undefined before a pass has certified one since progress tracking began.
+ */
+export function certifiedThrough(subscription: any): number | undefined {
+	return subscription.subscriptions?.tables?.envs?.certifiedThrough;
+}
+
+/**
+ * Captured before a pass drains the log: a local key at or below it was committed before the capture, so the
+ * drain reads it; a key reserved later is above the capture's sample, and one outstanding at the capture is
+ * above its bound. A reservation is released a microtask after its commit settles and its entry is read only by
+ * the next pass, so a scan after a drain, or on a read, would take a released key for a dispatched one.
+ */
+function captureCeiling(subscriptions: any, auditStore: any): void {
+	subscriptions.passCeiling = undefined;
+	subscriptions.passCeilingReserved = false;
+	const rootStore = auditStore?.rootStore;
+	if (!rootStore || rootStore.status === 'closed') return;
+	const bound = (subscriptions.sameThread === true ? threadStartBound : localStartBound)(rootStore);
+	if (bound === undefined) return;
+	if ('above' in bound) subscriptions.passCeiling = bound.above;
+	else {
+		subscriptions.passCeiling = positionBefore(bound.atOrAbove);
+		subscriptions.passCeilingReserved = true;
+	}
+}
+
+function certifyProgress(subscriptions: any, readEntries: boolean): void {
+	const through = subscriptions.dispatchedThrough;
+	const ceiling = subscriptions.passCeiling;
+	if (through === undefined || ceiling === undefined) return;
+	const certified = ceiling < through ? ceiling : through;
+	if (!(subscriptions.certifiedThrough >= certified)) subscriptions.certifiedThrough = certified;
+	// a commit's own pass can capture before its reservation is released, which lands after the commit settles:
+	// a pass that dispatched entries and was held gets one follow-up pass, whose capture sees the release. A pass
+	// that read nothing and was held by a clock sample, not a reservation, is held by another origin's key ahead of
+	// this clock (every local key it had read is below the sample): only time certifies it, so no pass follows
+	if (
+		ceiling < through &&
+		(readEntries || (subscriptions.passCeilingReserved && !(subscriptions.recheckedCeiling >= ceiling)))
+	) {
+		subscriptions.recheckedCeiling = ceiling;
+		subscriptions.recheckPending = true;
+	}
+	if (!(ceiling < through)) {
+		// a follow-up a synchronous drain requested while this pass was pending has nothing left to certify
+		subscriptions.recheckPending = false;
+		if (subscriptions.recaptureTimer) {
+			clearTimeout(subscriptions.recaptureTimer);
+			subscriptions.recaptureTimer = undefined;
+		}
+	}
+	// a same-thread registry runs no capture tick (its pass would drain the cross-thread registry's log range), so
+	// a hold that ends in an abort is re-captured on its own timer
+	if (ceiling < through && subscriptions.sameThread && !subscriptions.recaptureTimer) {
+		subscriptions.recaptureTimer = setTimeout(() => {
+			subscriptions.recaptureTimer = undefined;
+			if (
+				subscriptions.dispatching ||
+				subscriptions.notifyScheduled ||
+				subscriptions.auditStore?.rootStore?.status === 'closed'
+			)
+				return;
+			subscriptions.notifyScheduled = true;
+			notifyFromTransactionData(subscriptions, [], true);
+		}, originCaptureInterval);
+		subscriptions.recaptureTimer.unref?.();
+	}
 }
 
 /**
@@ -169,6 +407,22 @@ class Subscription extends IterableEventQueue {
 	listener: (recordId: Id, auditEntry: any, txnLogKey: number, beginTxn: boolean) => void;
 	subscriptions: any;
 	startTime?: number;
+	databaseGeneration?: string;
+	resumeVerified?: Promise<boolean>;
+	reportsProgress?: boolean;
+	registeredThrough?: number;
+	/**
+	 * With no `registeredThrough`: an exclusive start that skips no local key reserved (LMDB: committed) when it
+	 * registered or later.
+	 */
+	localResumeStart?: number;
+	sentCount?: number;
+	lowestLateUnconsumed?: (consumed: number) => number | undefined;
+	progress?: () => number | undefined;
+	checkpoint?: (holds?: Map<number, number>) => any;
+	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
+	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
+	ungated?: boolean;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;
@@ -183,6 +437,11 @@ class Subscription extends IterableEventQueue {
 			this.subscriptions = null;
 			const envSubscriptions = subscriptions.tables?.envs;
 			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
+			if (this.reportsProgress) {
+				this.reportsProgress = false;
+				if (envSubscriptions?.progressConsumers > 0) envSubscriptions.progressConsumers--;
+				if (envSubscriptions && !envSubscriptions.progressConsumers) stopOriginTracking(envSubscriptions);
+			}
 			// splicing would shift the next subscriber past a loop walking this array, which compacts it when it finishes
 			if (subscriptions.traversals > 0) subscriptions.hasEnded = true;
 			else {
@@ -222,18 +481,29 @@ const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
 // Sized to keep per-batch wall time within a few ms on commodity hardware while keeping the
 // scheduling overhead amortized; tune if profiling shows different shapes.
 const NOTIFY_BATCH_SIZE = 256;
-function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield = false) {
+function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield = false, registrationDrain = false) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
 	// If no real subscribers are attached, skip the iteration. The reusable iterator preserves its
 	// position and will pick up from where we left it once a subscriber is added.
 	if (!subscriptions.activeCount) {
 		subscriptions.pendingTxnSubscribers = null; // discard any carry-over from a yielded run
+		subscriptions.passYielded = false;
 		if (allowYield) subscriptions.notifyScheduled = false;
 		return;
 	}
 	const auditStore = subscriptions.auditStore;
-	auditStore.resetReadTxn?.();
 	nextTransaction(auditStore);
+	// A commit notification can arrive while or after its store closes (LMDB flushes pending writes during close and
+	// delivers the notification from native code). This store's subscriptions end when the database reopens; reading
+	// it now throws out of setImmediate, and on LMDB arms a read-txn reset timer that throws again.
+	const status = auditStore.rootStore?.status;
+	if (status === 'closing' || status === 'closed') {
+		subscriptions.pendingTxnSubscribers = null;
+		subscriptions.passYielded = false;
+		if (allowYield) subscriptions.notifyScheduled = false;
+		return;
+	}
+	auditStore.resetReadTxn?.();
 	// subscribersWithTxns is carried across batches so the end_txn signal fires only once the
 	// iterator truly drains, not at each yield point.
 	let subscribersWithTxns = subscriptions.pendingTxnSubscribers;
@@ -247,7 +517,19 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	const iterator = auditLogIterable[Symbol.iterator]?.() ?? auditLogIterable;
 	let processed = 0;
 	let yielded = false;
+	let iteratorFailed = false;
+	let trackProgress = subscriptions.progressConsumers > 0 && !subscriptions.progressStopped;
+	let progressKey = trackProgress ? subscriptions.pendingProgressKey : undefined;
+	// the floors a fresh pass starts with are certified once it drains; a continuation keeps its pass's capture
+	const freshPass = !subscriptions.passYielded;
+	if (freshPass) subscriptions.passCapture = subscriptions.capturedFloors;
+	subscriptions.dispatching = true;
+	subscriptions.passYielded = false;
 	try {
+		if (freshPass) {
+			if (trackProgress) captureCeiling(subscriptions, auditStore);
+			else subscriptions.passCeiling = undefined;
+		}
 		while (true) {
 			let result;
 			try {
@@ -260,12 +542,24 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				// subscription set on every commit). Stop draining this pass; the next
 				// commit reschedules another notify cycle.
 				warn('Audit log iterator failed during broadcast; stopping this pass', error);
+				iteratorFailed = true;
+				if (trackProgress) stopProgress(subscriptions);
 				break;
 			}
 			if (result.done) break;
 			const auditRecord = result.value;
 			const timestamp: number = auditRecord.txnLogKey;
 			subscriptions.lastTxnTime = timestamp;
+			if (trackProgress && timestamp !== progressKey) {
+				// a transaction's records share its key and are appended together, so a new key completes the last one
+				if (progressKey !== undefined) trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
+				progressKey = timestamp;
+			}
+			if (trackProgress && auditRecord.type === undefined) {
+				// the decoder's sentinel for an entry it could not read names no table to rule out
+				stopProgress(subscriptions);
+				trackProgress = false;
+			}
 			// the transaction extent: RocksDB entries committed together share the log key (record
 			// versions may differ); LMDB's transaction-log key is per-entry, so version delimits there
 			const txnKey = auditStore.reusableIterable ? timestamp : auditRecord.version;
@@ -273,6 +567,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				const tableSubscriptions = subscriptions[auditRecord.tableId];
 				if (tableSubscriptions) {
 					const recordId = auditRecord.recordId;
+					if (recordId === undefined && trackProgress) {
+						// a record id that failed to decode cannot be routed, so its subscribers miss it
+						stopProgress(subscriptions);
+						trackProgress = false;
+					}
 					// TODO: How to handle invalidation
 					let matchingKey = keyArrayToString(recordId);
 					let ancestorLevel = 0;
@@ -293,7 +592,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 										!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
 									)
 										continue;
-									if (subscription.startTime >= timestamp) {
+									if (!subscription.ungated && subscription.startTime >= timestamp) {
 										continue;
 									}
 									try {
@@ -344,7 +643,8 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						try {
 							for (let i = 0, length = keySubscriptions.length; i < length; i++) {
 								const subscription = keySubscriptions[i];
-								if (!subscription.subscriptions || subscription.startTime >= timestamp) continue;
+								if (!subscription.subscriptions || (!subscription.ungated && subscription.startTime >= timestamp))
+									continue;
 								try {
 									subscription.listener(null, auditRecord, timestamp, false);
 								} catch (error) {
@@ -357,20 +657,45 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 					}
 				}
 			}
-			if (allowYield && ++processed >= NOTIFY_BATCH_SIZE) {
+			if ((allowYield || registrationDrain) && ++processed >= NOTIFY_BATCH_SIZE) {
 				// Yield the event loop. Save in-progress txn state so the next batch can resume.
 				// Reusable iterables (rocksdb) can be passed back in directly; LMDB-style iterables
 				// are recreated from the advanced lastTxnTime. The same-thread aftercommit path does not
 				// set allowYield because it holds an inter-thread lock that must not span event-loop turns.
 				subscriptions.pendingTxnSubscribers = subscribersWithTxns;
+				subscriptions.pendingProgressKey = progressKey;
 				yielded = true;
+				subscriptions.passYielded = true;
+				if (registrationDrain) {
+					if (subscriptions.notifyScheduled) return;
+					subscriptions.notifyScheduled = true;
+				}
 				setImmediate(() =>
-					notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditLogIterable : null, true)
+					notifyFromTransactionData(
+						subscriptions,
+						auditStore.reusableIterable ? auditStore.subscriptionLogRange : null,
+						true
+					)
 				);
 				return;
 			}
 		}
 		subscriptions.pendingTxnSubscribers = null;
+		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
+			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
+		}
+		if (trackProgress && !iteratorFailed && rangeFailures(auditLogIterable) === 0)
+			certifyProgress(subscriptions, progressKey !== undefined);
+		subscriptions.passCeiling = undefined;
+		subscriptions.pendingProgressKey = undefined;
+		if (subscriptions.passCapture !== undefined) {
+			// a pass that read every entry appended before its capture certifies the capture's floors
+			subscriptions.certifiedFloors =
+				trackProgress && !iteratorFailed && !subscriptions.progressStopped && rangeFailures(auditLogIterable) === 0
+					? (subscriptions.passCapture ?? undefined)
+					: undefined;
+			subscriptions.passCapture = undefined;
+		}
 		if (subscribersWithTxns) {
 			// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
 			for (const subscription of subscribersWithTxns) {
@@ -384,9 +709,17 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 	} finally {
+		subscriptions.dispatching = false;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.
 		if (allowYield && !yielded) subscriptions.notifyScheduled = false;
+		if (!yielded && subscriptions.recheckPending && !subscriptions.notifyScheduled) {
+			subscriptions.recheckPending = false;
+			subscriptions.notifyScheduled = true;
+			setImmediate(() =>
+				notifyFromTransactionData(subscriptions, subscriptions.sameThread ? [] : auditStore.subscriptionLogRange, true)
+			);
+		}
 	}
 }
 /**

@@ -3,7 +3,7 @@
 import { getDatabases } from '../../resources/databases.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import log from '../../utility/logging/harper_logger.ts';
-import * as manageThreads from '../threads/manageThreads.js';
+import { processIncarnation } from '../threads/processIncarnation.ts';
 import { updateJob } from './jobs.ts';
 
 /**
@@ -11,7 +11,7 @@ import { updateJob } from './jobs.ts';
  * dead job look alive. Every thread of one Harper process carries the same value, and any restart
  * produces a new one. `undefined` on a thread started without one.
  */
-export const JOB_OWNER_INSTANCE_ID: string | undefined = manageThreads.processIncarnation;
+export const JOB_OWNER_INSTANCE_ID: string | undefined = processIncarnation;
 
 /** Stripped from `get_job` responses. */
 export const JOB_OWNER_ATTRIBUTES = ['owner_instance', 'owner_pid'] as const;
@@ -22,6 +22,20 @@ export function stampJobOwner(job: any): void {
 	if (job == null || typeof job !== 'object') return;
 	job.owner_instance = JOB_OWNER_INSTANCE_ID;
 	job.owner_pid = process.pid;
+}
+
+function jobTable(): any {
+	return (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
+}
+
+// Deliberately not "rerun it": the job may have applied some of its effects before it died, and nothing
+// here can tell how far it got.
+function settle(id: any, interruption: string) {
+	return updateJob({
+		id,
+		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
+		message: `Job was interrupted: ${interruption}. Its outcome is unknown — check for partial effects before running the operation again.`,
+	});
 }
 
 let reconciliation: Promise<number> | undefined;
@@ -52,13 +66,13 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	// than declaring a running job dead. The main thread always has one.
 	if (JOB_OWNER_INSTANCE_ID == null) return 0;
 
-	const jobTable = (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
-	if (!jobTable) return 0;
+	const table = jobTable();
+	if (!table) return 0;
 
 	// Collect before writing: the search walks the `status` attribute these updates change.
 	const interrupted: Array<{ id: any; owner_pid: any }> = [];
 	for (const status of UNFINISHED_JOB_STATUSES) {
-		for await (const job of jobTable.search([{ attribute: 'status', value: status }])) {
+		for await (const job of table.search([{ attribute: 'status', value: status }])) {
 			if (job.owner_instance !== JOB_OWNER_INSTANCE_ID) interrupted.push({ id: job.id, owner_pid: job.owner_pid });
 		}
 	}
@@ -68,13 +82,7 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	for (const { id, owner_pid } of interrupted) {
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
-			// Deliberately not "rerun it": the job may have applied some of its effects before it died, and
-			// nothing here can tell how far it got.
-			await updateJob({
-				id,
-				status: hdbTerms.JOB_STATUS_ENUM.ERROR,
-				message: `Job was interrupted: ${owner} exited before it finished. Its outcome is unknown — check for partial effects before running the operation again.`,
-			});
+			await settle(id, `${owner} exited before it finished`);
 			settled++;
 		} catch (error) {
 			// Keep going: one unwritable row must not strand the rest.
@@ -86,4 +94,13 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	// Reported as a failure so the pass is not memoized as complete while rows are still stuck.
 	if (unsettled > 0) throw new Error(`Could not settle ${unsettled} of ${interrupted.length} interrupted job(s)`);
 	return settled;
+}
+
+/** Settle a job abandoned by a worker thread that died inside a live process. See server/jobs/DESIGN.md. */
+export async function settleAbandonedJob(jobId: any): Promise<boolean> {
+	const job = await jobTable()?.get(jobId);
+	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;
+	await settle(jobId, 'its worker thread exited before it finished');
+	log.warn(`Settled job ${jobId}, whose worker thread exited before it finished`);
+	return true;
 }

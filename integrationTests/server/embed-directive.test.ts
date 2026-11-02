@@ -52,6 +52,12 @@ const SCHEMA_GRAPHQL = [
 	'\tembedding: [Float] @embed(source: "content", model: "default")',
 	'}',
 	'',
+	'type PrefixedEmbedDoc @table(database: "embedtest") @sealed @export {',
+	'\tid: ID! @primaryKey',
+	'\tcontent: String',
+	'\tembedding: [Float] @embed(source: "content", model: "prefixed")',
+	'}',
+	'',
 ].join('\n');
 
 // resources.js wiring for the caching-table @embed path. The Resource base class
@@ -106,7 +112,7 @@ async function startFakeOllama(): Promise<FakeOllama> {
 	let embedCalls = 0;
 	const embedInputs: string[][] = [];
 	const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
-		if (req.method === 'POST' && req.url === '/api/embed') {
+		if (req.method === 'POST' && (req.url === '/api/embed' || req.url === '/v1/embeddings')) {
 			let body = '';
 			req.on('data', (chunk) => (body += chunk));
 			req.on('end', () => {
@@ -117,7 +123,13 @@ async function startFakeOllama(): Promise<FakeOllama> {
 					embedInputs.push(inputs);
 					const embeddings = inputs.map((s) => deterministicVector(s));
 					res.writeHead(200, { 'Content-Type': 'application/json' });
-					res.end(JSON.stringify({ embeddings, prompt_eval_count: inputs.join(' ').length }));
+					res.end(
+						JSON.stringify(
+							req.url === '/v1/embeddings'
+								? { data: embeddings.map((embedding, index) => ({ index, embedding })) }
+								: { embeddings, prompt_eval_count: inputs.join(' ').length }
+						)
+					);
 				} catch (err) {
 					res.writeHead(400, { 'Content-Type': 'application/json' });
 					res.end(JSON.stringify({ error: String(err) }));
@@ -163,6 +175,14 @@ suite('@embed directive end-to-end with fake Ollama', (ctx: any) => {
 				models: {
 					embedding: {
 						default: { backend: 'ollama', host: fake.host, model: 'fake-embed' },
+						prefixed: {
+							backend: 'openai',
+							baseUrl: `${fake.url}/v1`,
+							apiKey: 'test',
+							model: 'nomic-ai/nomic-embed-text-v1.5',
+							inputPrefixes: { document: 'search_document: ', query: 'search_query: ' },
+							requestTimeoutMs: 5000,
+						},
 					},
 				},
 			},
@@ -214,6 +234,23 @@ suite('@embed directive end-to-end with fake Ollama', (ctx: any) => {
 		ok(embeddingAttr.embed, 'describe should surface @embed config');
 		strictEqual(embeddingAttr.embed.source, 'content');
 		strictEqual(embeddingAttr.embed.model, 'default');
+	});
+
+	test('OpenAI @embed sends the configured document prefix and stores the returned vector', async () => {
+		fake.reset();
+		const content = 'prefix-sensitive document';
+		await request(ctx.harper.httpURL)
+			.post('/PrefixedEmbedDoc/')
+			.set(client.headers)
+			.send({ id: 'prefixed', content })
+			.expect((r: any) => ok([200, 201, 204].includes(r.status), r.text));
+		strictEqual(fake.embedCallCount(), 1);
+		strictEqual(fake.lastEmbedInputs()[0][0], `search_document: ${content}`);
+		const response = await client.reqRest('/PrefixedEmbedDoc/prefixed').expect(200);
+		const stored = decodeVector(response.body.embedding);
+		ok(stored);
+		const expected = deterministicVector(`search_document: ${content}`);
+		for (let i = 0; i < expected.length; i++) ok(Math.abs(stored[i] - expected[i]) < 1e-5);
 	});
 
 	test('happy path: POST → embedder runs → vector stored on record', async () => {

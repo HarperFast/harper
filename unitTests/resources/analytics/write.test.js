@@ -17,7 +17,7 @@ const {
 	storeVolumeMetrics,
 	storeRocksDBStatsMetrics,
 } = require('#src/resources/analytics/write');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../../rocksdbBindings.mts').rocksdbBindings();
 const { writeFile, mkdtemp, rm, mkdir } = require('node:fs/promises');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');

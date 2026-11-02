@@ -159,7 +159,7 @@ export function materializeGlobalSecrets(): Promise<void> {
 	// out by Promise.all over component loads) join one table scan instead of issuing N scans with
 	// N×rows RSA decrypts, and two scans can never interleave — so an older, slower scan cannot
 	// overwrite newer state. A caller arriving after completion starts a fresh scan, preserving the
-	// deploy-validation freshness guarantee (set_secret → deploy is sequential).
+	// freshness guarantee (set_secret → deploy is sequential).
 	return (materializeInFlight ??= doMaterializeGlobalSecrets().finally(() => {
 		materializeInFlight = undefined;
 	}));
@@ -697,11 +697,10 @@ export function closeComponentSubscriptions(componentName: string): void {
 }
 
 // Subscriptions are keyed by component IDENTITY (applicationScope.name), which several concurrently-open
-// Scopes legitimately share — most notably a throwaway deploy-validation Scope loads the SAME directory
-// as the running app and closes in a `finally` before the real restart. Tearing down on any one Scope's
-// close would kill the running app's live streams. So teardown is reference-counted per identity: a Scope
-// retains on construction and releases on close, and streams are ended only when the LAST holder of that
-// identity releases (i.e. the app is truly unloading, not merely a validation load being discarded).
+// Scopes legitimately share — every plugin an application declares gets a Scope of its own. Tearing down on
+// any one Scope's close would kill the running app's live streams. So teardown is reference-counted per
+// identity: a Scope retains on construction and releases on close, and streams are ended only when the LAST
+// holder of that identity releases (i.e. the app is truly unloading, not merely one of its Scopes closing).
 const subscriptionHolders = new Map<string, number>();
 
 /** A Scope of this identity is now open — hold its live secret subscriptions until it releases. */

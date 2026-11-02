@@ -1,3 +1,4 @@
+const { getFullTextTestConfiguration, setFullTextTestConfiguration } = require('./fullTextTestConfiguration');
 require('../testUtils');
 const assert = require('node:assert');
 const { toBufferKey } = require('ordered-binary');
@@ -12,6 +13,22 @@ const {
 } = require('#src/resources/indexes/fullTextQueryIndex');
 const { encodeFullTextCursorPayload } = require('#src/resources/indexes/fullTextDerivedIndex');
 const { nativeFullTextIndexPath } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
+
+function withTraversal(reader) {
+	if (reader?.then) return reader.then(withTraversal);
+	if (typeof reader.searchPage === 'function') return reader;
+	reader.searchPage = async function ({ continuation, ...request }, options) {
+		const offset = Number(continuation ?? 0);
+		const result = await this.search({ ...request, offset }, options);
+		const next = offset + result.hits.length;
+		return {
+			...result,
+			totalRelation: 'exact',
+			continuation: result.hits.length > 0 && next < result.total ? String(next) : undefined,
+		};
+	};
+	return reader;
+}
 
 function sharedStore() {
 	const buffers = new Map();
@@ -108,8 +125,16 @@ function definition() {
 function queryLimits(overrides = {}) {
 	const maxSearchWindow = overrides.maxSearchWindow ?? 10_000;
 	return {
+		maxConfiguredQueryTerms: 1024,
+		maxConfiguredQueryClauses: 4096,
+		maxRecordIdBytes: 4_096,
+		maxRecordVersionBytes: 4_096,
+		maxCandidateIds: 1_024,
+		maxCandidateBytes: 1024 * 1024,
 		maxSearchWindow,
+		maxSearchPageSize: maxSearchWindow,
 		maxAutocompleteResults: Math.min(100, maxSearchWindow),
+		maxSearchResponseBytes: 8 * 1024 * 1024,
 		maxSearchBudgetMilliseconds: 30_000,
 		maxTraceRecords: 10,
 		maxTraceSourceBytes: Number.MAX_SAFE_INTEGER,
@@ -135,11 +160,18 @@ function simpleQueryIndex({
 	hits,
 	onReload,
 	onClose,
+	onOpen,
+	onTrace,
 	onGetEntry,
+	onSearch,
 	entryForKey,
+	estimatedRecordCount = 20,
 	isEntryCurrent,
 	storeName = 'unused',
 	sourceGeneration = 'generation',
+	maxSearchWindow = 10,
+	searchResult,
+	searchPageResult,
 }) {
 	let committedPayload = payload;
 	let reloads = 0;
@@ -149,6 +181,7 @@ function simpleQueryIndex({
 			...(isEntryCurrent ? { isFullTextSearchEntryCurrent: isEntryCurrent } : null),
 			primaryStore: {
 				rootStore: auditStore.rootStore,
+				getEstimatedKeyCount: () => estimatedRecordCount,
 				getEntry: (key) => {
 					onGetEntry?.(key);
 					return entryForKey?.(key) ?? { version: 1, value: { title: 'shoe' } };
@@ -168,17 +201,29 @@ function simpleQueryIndex({
 			async runtimeInfo() {
 				return {
 					queryClassIsolationMinimumSearchThreads: 1,
-					limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					limits: queryLimits({ maxSearchWindow, maxTraceRecords: 10 }),
 				};
 			},
 			async openNativeFullTextReader() {
-				return {
+				const readerId = onOpen?.();
+				return withTraversal({
+					...(onTrace ? { traceMatches: (request, records) => onTrace(request, records, readerId) } : null),
 					get committedPayload() {
 						return committedPayload;
 					},
-					async search({ offset = 0, limit }) {
+					async search(request) {
+						onSearch?.(request);
+						if (searchResult) return searchResult(request);
+						const { offset = 0, limit } = request;
 						const current = hits();
 						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
+					},
+					async searchPage({ continuation, ...request }) {
+						if (searchPageResult) return searchPageResult({ continuation, ...request });
+						const offset = Number(continuation ?? 0);
+						const result = await this.search({ ...request, offset });
+						const next = offset + result.hits.length;
+						return { ...result, continuation: next < result.total ? String(next) : undefined };
 					},
 					async reload() {
 						reloads++;
@@ -187,7 +232,7 @@ function simpleQueryIndex({
 					async close() {
 						onClose?.();
 					},
-				};
+				});
 			},
 		},
 	});
@@ -213,7 +258,331 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	return fixture.index;
 }
 
+describe('full-text replay page protocol', () => {
+	const { replayFullTextPrefix } = require('#src/resources/indexes/fullTextQueryProtocol');
+	const prefix = [
+		{ id: 'a', score: 3, version: '1' },
+		{ id: 'b', score: 2, version: '1' },
+		{ id: 'c', score: 1, version: '1' },
+	];
+	it('accounts for a prefix split over several lower-bound pages before returning new hits', () => {
+		const first = { hits: prefix.slice(0, 1), totalRelation: 'lower-bound', continuation: 'next' };
+		const one = replayFullTextPrefix(prefix, 3, first);
+		assert.deepStrictEqual(one, { skipped: 1, remaining: 2, hits: [] });
+		assert.strictEqual(first.totalRelation, 'lower-bound');
+		const next = { id: 'd', score: 0, version: '1' };
+		assert.deepStrictEqual(replayFullTextPrefix(prefix, one.remaining, { hits: [...prefix.slice(1), next] }), {
+			skipped: 2,
+			remaining: 0,
+			hits: [next],
+		});
+	});
+	it('rejects an empty page claiming more hits, a changed prefix and premature exhaustion', () => {
+		for (const page of [
+			{ hits: [], continuation: 'next' },
+			{ hits: [{ ...prefix[0], version: '2' }], continuation: 'next' },
+			{ hits: prefix.slice(0, 1) },
+		])
+			assert.throws(
+				() => replayFullTextPrefix(prefix, 3, page),
+				(error) => error.statusCode === 500
+			);
+		assert.deepStrictEqual(replayFullTextPrefix(undefined, 0, { hits: [] }), { skipped: 0, remaining: 0, hits: [] });
+	});
+});
+
+describe('full-text traversal ordering guard', () => {
+	it('requires a new page to advance by score and then UTF-8 ID order', () => {
+		const { fullTextHitsAdvance } = require('#src/resources/indexes/fullTextQueryProtocol');
+		assert.strictEqual(fullTextHitsAdvance({ id: 'z', score: 2 }, { id: 'a', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: '\uE000', score: 1 }, { id: '😀', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'b', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'b', score: 2 }), false);
+	});
+});
+
 describe('FullTextQueryIndex', () => {
+	it('rejects disallowed fuzzy controls before readiness waits or reader opens, even for zero results', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'early-fuzzy-policy';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'rebuilding');
+		let opens = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			onOpen: () => opens++,
+		});
+		try {
+			for (const waitForIndexMilliseconds of [0, 30000])
+				for (const minResults of [0, 1])
+					await assert.rejects(
+						async () =>
+							index.search(
+								{ comparator: 'matches_fuzzy', value: 'catalog', fuzzyDistance: 2, waitForIndexMilliseconds },
+								{},
+								{ minResults }
+							),
+						(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
+					);
+			assert.strictEqual(opens, 0);
+		} finally {
+			await index.close();
+		}
+	});
+
+	it('keeps a filled ordinary request out of native traversal admission', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'ordinary-query-admission';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), score: 1, version: '1' }],
+			searchPageResult: () => {
+				throw new Error('ordinary query must not enter traversal');
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		assert.strictEqual((await index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 })).length, 1);
+		await index.close();
+	});
+
+	for (const filtered of [false, true])
+		it(`rejects impossible replay work before traversal (${filtered ? 'filtered' : 'ordinary'})`, async () => {
+			const previous = getFullTextTestConfiguration();
+			const auditStore = sharedStore();
+			const readinessId = `impossible-replay-${filtered}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const hits = Array.from({ length: 1000 }, (_, i) => ({
+				id: nativeId(1, `record-${i}`),
+				version: '1',
+				score: 1000 - i,
+			}));
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				maxSearchWindow: 10000,
+				hits: () => hits,
+				onSearch: () => searches++,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 500 });
+				await assert.rejects(
+					index.search(
+						{ comparator: 'matches', value: 'shoe' },
+						{},
+						{
+							minResults: 300,
+							...(filtered ? { filter: () => false } : null),
+						}
+					),
+					(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
+				);
+				assert.strictEqual(searches, 1);
+			} finally {
+				setFullTextTestConfiguration(previous);
+				await index.close();
+			}
+		});
+
+	it('allows exhausted matches below the target when replay still fits the work budget', async () => {
+		const previous = getFullTextTestConfiguration();
+		const auditStore = sharedStore();
+		const readinessId = 'exhausted-replay-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 260 }, (_, i) => ({
+			id: nativeId(1, `record-${i}`),
+			version: '1',
+			score: 260 - i,
+		}));
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			maxSearchWindow: 10000,
+			hits: () => hits,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 600 });
+			const result = await index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 500 });
+			assert.strictEqual(result.length, 260);
+		} finally {
+			setFullTextTestConfiguration(previous);
+			await index.close();
+		}
+	});
+
+	for (const [count, budget, expectedCalls] of [
+		[1000, 500, 1],
+		[256, 512, 2],
+		[1000, 550, 2],
+	])
+		it(`bounds replay with an uninformative lower-bound total (${count} hits, budget ${budget})`, async () => {
+			const previous = getFullTextTestConfiguration();
+			const auditStore = sharedStore();
+			const readinessId = `lower-bound-replay-${count}-${budget}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const hits = Array.from({ length: count }, (_, i) => ({
+				id: nativeId(1, `record-${i}`),
+				version: '1',
+				score: count - i,
+			}));
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				maxSearchWindow: 10000,
+				hits: () => hits,
+				searchResult: ({ limit }) => {
+					searches++;
+					return { total: limit, totalRelation: 'lower-bound', hits: hits.slice(0, limit) };
+				},
+				searchPageResult: ({ continuation, limit }) => {
+					searches++;
+					const offset = Number(continuation ?? 0);
+					const page = hits.slice(offset, offset + limit);
+					const next = offset + page.length;
+					return {
+						total: count,
+						totalRelation: 'exact',
+						hits: page,
+						continuation: next < count ? String(next) : undefined,
+					};
+				},
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: budget });
+				const search = index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 300 });
+				if (count < 300) assert.strictEqual((await search).length, count);
+				else
+					await assert.rejects(
+						search,
+						(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
+					);
+				assert.strictEqual(searches, expectedCalls);
+			} finally {
+				setFullTextTestConfiguration(previous);
+				await index.close();
+			}
+		});
+
+	it('rejects an empty native page claiming a continuation', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'empty-traversal-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			searchResult: () => ({
+				total: 2,
+				totalRelation: 'exact',
+				hits: [{ id: nativeId(1, 'one'), score: 1, version: '1' }],
+			}),
+			searchPageResult: () => ({ total: 1, totalRelation: 'exact', hits: [], continuation: 'next' }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{ minResults: 1, filter: () => false }
+			),
+			/empty page with more results/
+		);
+		await index.close();
+	});
+
+	it('keeps retained result limits independent from raw work and reports invalid configuration', async () => {
+		const previous = getFullTextTestConfiguration();
+		const auditStore = sharedStore();
+		const readinessId = 'independent-results-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let searches = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+			onSearch: () => searches++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			setFullTextTestConfiguration({
+				...previous,
+				maxRawHitsPerRequest: 500000,
+				maxResultsPerRequest: 10,
+			});
+			await assert.rejects(
+				index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 11 }),
+				(error) => error.statusCode === 400 && /maxResultsPerRequest/.test(error.message)
+			);
+			assert.strictEqual(searches, 0);
+			setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 0 });
+			await assert.rejects(
+				index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+				(error) =>
+					error.statusCode === 500 && /Invalid full-text configuration:.*maxRawHitsPerRequest/.test(error.message)
+			);
+			assert.strictEqual(searches, 0);
+		} finally {
+			setFullTextTestConfiguration(previous);
+			await index.close();
+		}
+	});
+
+	it('rejects unbounded results at the actual work or retained-result ceiling', async () => {
+		const previous = getFullTextTestConfiguration();
+		const auditStore = sharedStore();
+		const readinessId = 'unbounded-result-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let nativeHitCount = 200;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			maxSearchWindow: 1000,
+			hits: () =>
+				Array.from({ length: nativeHitCount }, (_, i) => ({
+					id: nativeId(1, String(i)),
+					score: 200 - i,
+					version: '1',
+				})),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			for (const count of [200, 2000]) {
+				nativeHitCount = count;
+				for (const name of ['maxRawHitsPerRequest', 'maxResultsPerRequest']) {
+					setFullTextTestConfiguration({
+						...previous,
+						maxRawHitsPerRequest: 500,
+						maxResultsPerRequest: 500,
+						[name]: 100,
+					});
+					await assert.rejects(
+						index.search({ comparator: 'matches', value: 'shoe' }, {}),
+						(error) => error.statusCode === 400 && error.message.includes(`storage.fullText.${name}`)
+					);
+				}
+			}
+		} finally {
+			setFullTextTestConfiguration(previous);
+			await index.close();
+		}
+	});
+
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
 			assert.strictEqual(fullTextComparatorMode(comparator), undefined);
@@ -363,7 +732,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			async openNativeFullTextReader(options) {
 				readerOptions = options;
-				return reader;
+				return withTraversal(reader);
 			},
 		};
 		const Table = {
@@ -475,7 +844,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						get committedPayload() {
 							return payload;
 						},
@@ -494,7 +863,7 @@ describe('FullTextQueryIndex', () => {
 							}
 						},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -697,14 +1066,14 @@ describe('FullTextQueryIndex', () => {
 			isEntryCurrent: (entry) => entry.metadataFlags === 0,
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) => error.name === 'DerivedIndexLagError'
+		assert.deepStrictEqual(
+			await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			[]
 		);
 		await index.close();
 	});
 
-	it('reports an expired bounded native window as expired matches', async () => {
+	it('exhausts expired native matches beyond the ordinary window', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'expired-native-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -716,11 +1085,9 @@ describe('FullTextQueryIndex', () => {
 			entryForKey: (key) => ({ version: 1, value: { title: key }, expiresAt: Date.now() - 1 }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) =>
-				error.statusCode === 400 &&
-				/Expired full-text matches exhausted the 10-result search window/.test(error.message)
+		assert.deepStrictEqual(
+			await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			[]
 		);
 		await index.close();
 	});
@@ -841,14 +1208,14 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							committedPayload: payload,
 							async search() {},
 							async reload() {},
 							async close() {
 								closes++;
 							},
-						};
+						});
 					},
 				},
 			});
@@ -923,7 +1290,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+					return withTraversal({ committedPayload: undefined, async search() {}, async reload() {}, async close() {} });
 				},
 			},
 		});
@@ -967,7 +1334,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+					return withTraversal({ committedPayload: undefined, async search() {}, async reload() {}, async close() {} });
 				},
 			},
 		});
@@ -1016,7 +1383,7 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(opens, 0);
 	});
 
-	it('retries native capability discovery after a transient failure', async () => {
+	it('retries native capability discovery without unused candidate limits after a transient failure', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'binding-retry';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1035,21 +1402,24 @@ describe('FullTextQueryIndex', () => {
 			binding: {
 				async runtimeInfo() {
 					if (++probes === 1) throw new Error('temporary capability probe failure');
+					const limits = queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 });
+					delete limits.maxCandidateIds;
+					delete limits.maxCandidateBytes;
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
+						limits,
 					};
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return { total: 0, totalRelation: 'exact', hits: [] };
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1062,39 +1432,120 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('rejects an incomplete injected query capability contract before opening a reader', async () => {
+	it('rejects incomplete injected query capability contracts before opening a reader', async () => {
 		const auditStore = sharedStore();
-		const readinessId = 'binding-capabilities';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		let opens = 0;
-		const index = new FullTextQueryIndex({
-			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath: '/unused',
-			storeName: 'unused',
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					const limits = queryLimits();
-					delete limits.maxAutocompleteResults;
-					return { queryClassIsolationMinimumSearchThreads: 1, limits };
+		for (const missing of [
+			'maxAutocompleteResults',
+			'maxRecordIdBytes',
+			'maxRecordVersionBytes',
+			'maxSearchWindow',
+			'maxSearchPageSize',
+			'maxSearchResponseBytes',
+			'maxSearchBudgetMilliseconds',
+			'maxTraceRecords',
+			'maxTraceSourceBytes',
+		]) {
+			const readinessId = `binding-capabilities-${missing}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			const index = new FullTextQueryIndex({
+				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath: '/unused',
+				storeName: 'unused',
+				sourceGeneration: 'generation',
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						const limits = queryLimits();
+						delete limits[missing];
+						return { queryClassIsolationMinimumSearchThreads: 1, limits };
+					},
+					async openNativeFullTextReader() {
+						opens++;
+					},
 				},
-				async openNativeFullTextReader() {
-					opens++;
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			await assert.rejects(
+				index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+				/Full-text search on 'catalogSearch' failed/
+			);
+			assert.strictEqual(opens, 0);
+			await index.close();
+		}
+	});
+
+	it('rejects native response envelopes that cannot hold a hit and clamps autocomplete', async () => {
+		const search = async (readinessId, overrides, comparator = 'matches', expectedOpens = 1) => {
+			const auditStore = sharedStore();
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			let request;
+			const index = new FullTextQueryIndex({
+				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath: '/unused',
+				storeName: 'unused',
+				sourceGeneration: 'generation',
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						return {
+							queryClassIsolationMinimumSearchThreads: 1,
+							limits: queryLimits({
+								maxRecordIdBytes: 1,
+								maxRecordVersionBytes: 1,
+								maxAutocompleteResults: 2,
+								...overrides,
+							}),
+						};
+					},
+					async openNativeFullTextReader() {
+						opens++;
+						return withTraversal({
+							async search(searchRequest) {
+								request = searchRequest;
+								return { total: 0, totalRelation: 'exact', hits: [] };
+							},
+							committedPayload: publicationPayload(),
+							async reload() {},
+							async close() {},
+						});
+					},
 				},
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				const results = await index.search({ attribute: readinessId, comparator, value: 'shoe' }, {});
+				return { request, results };
+			} finally {
+				await index.close();
+				assert.strictEqual(opens, expectedOpens);
+			}
+		};
 		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
-			/Full-text search on 'catalogSearch' failed/
+			search('response-cannot-hold-hit', { maxSearchResponseBytes: 96 }, 'matches', 0),
+			(error) => error.statusCode === 500 && error.message === "Full-text search on 'catalogSearch' failed"
 		);
-		assert.strictEqual(opens, 0);
-		await index.close();
+		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 111 })).results, []);
+		const autocomplete = await search(
+			'response-clamps-autocomplete-query',
+			{ maxSearchResponseBytes: 111 },
+			'matches_prefix'
+		);
+		assert.deepStrictEqual(autocomplete.results, []);
+		assert.strictEqual(autocomplete.request.limit, 1);
+		assert.deepStrictEqual(
+			(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 112 })).results,
+			[]
+		);
 	});
 
 	it('maps native query failures without exposing native details', async () => {
@@ -1102,6 +1553,7 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, 'query-errors', 'ready');
 		const errors = [
 			Object.assign(new Error('expanded secret details'), { code: 'E_PREFIX_TOO_BROAD' }),
+			Object.assign(new Error('invalid native details'), { code: 'E_INVALID_ARGUMENT' }),
 			new Error('storage path and internal details'),
 		];
 		const index = new FullTextQueryIndex({
@@ -1122,14 +1574,14 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							throw errors.shift();
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1137,7 +1589,16 @@ describe('FullTextQueryIndex', () => {
 		const query = { attribute: 'query-errors', comparator: 'matches_prefix', value: 's' };
 		await assert.rejects(
 			index.search(query, {}),
-			(error) => error.statusCode === 400 && error.message === "Full-text query on 'catalogSearch' is invalid"
+			(error) =>
+				error.statusCode === 400 &&
+				error.message === "Full-text prefix on 'catalogSearch' is too broad; use a longer prefix"
+		);
+		await assert.rejects(
+			index.search(query, {}),
+			(error) =>
+				error.statusCode === 400 &&
+				error.message ===
+					"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
 		);
 		await assert.rejects(
 			index.search(query, {}),
@@ -1163,7 +1624,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			async openNativeFullTextReader(options) {
 				opens.push(structuredClone(options));
-				return {
+				return withTraversal({
 					async search() {
 						return {
 							total: 1,
@@ -1181,7 +1642,7 @@ describe('FullTextQueryIndex', () => {
 					async close() {
 						closes++;
 					},
-				};
+				});
 			},
 		};
 		const index = new FullTextQueryIndex({
@@ -1247,7 +1708,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -1262,7 +1723,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -1282,7 +1743,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('requires callers to page searches larger than the native result window', async () => {
+	it('bounds unbounded searches but permits bounded requests beyond the native result window', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-window', 'ready');
 		let searches = 0;
@@ -1311,7 +1772,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							searches++;
 							lastRequest = request;
@@ -1321,13 +1782,14 @@ describe('FullTextQueryIndex', () => {
 								hits: [
 									{ id: nativeId(1, 'one'), version: '1', score: 2 },
 									{ id: nativeId(1, 'two'), version: '1', score: 1 },
-								],
+									{ id: nativeId(1, 'three'), version: '1', score: 0 },
+								].slice(request.offset ?? 0, (request.offset ?? 0) + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1335,8 +1797,7 @@ describe('FullTextQueryIndex', () => {
 		const query = { attribute: 'query-window', comparator: 'matches', value: 'shoe' };
 		assert.deepStrictEqual(await index.search(query, {}, { minResults: 0 }), []);
 		assert.strictEqual(searches, 0);
-		await assert.rejects(index.search(query, {}, { minResults: 3 }), /reduce offset or limit/);
-		assert.strictEqual(searches, 0);
+		assert.strictEqual((await index.search(query, {}, { minResults: 3 })).length, 3);
 		await assert.rejects(index.search(query, {}), /exceeds the 2-result search window/);
 		assert.strictEqual(lastRequest.exactTotal, true);
 		await index.close();
@@ -1374,7 +1835,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							requests.push(request);
 							return {
@@ -1386,7 +1847,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1397,13 +1858,1028 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
 			[
 				{ offset: 0, limit: 256, exactTotal: true },
-				{ offset: 256, limit: 256, exactTotal: undefined },
+				{ offset: 0, limit: 512, exactTotal: undefined },
 			]
 		);
 		await index.close();
 	});
 
-	it('uses the native autocomplete window for prefix expressions', async () => {
+	it('grows zero-yield native pages within the response envelope', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'adaptive-filtered-paging';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 4_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 4_000 - index,
+		}));
+		const requests = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4_000,
+			onSearch: (request) => requests.push(request),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 20,
+				filter: (key) => Number(String(key).slice('record-'.length)) >= 3_381,
+			}
+		);
+		assert.deepStrictEqual(
+			requests.map(({ offset, limit }) => ({ offset, limit })),
+			[
+				{ offset: 0, limit: 40 },
+				{ offset: 0, limit: 200 },
+				{ offset: 200, limit: 640 },
+				{ offset: 840, limit: 1_022 },
+				{ offset: 1_862, limit: 1_022 },
+				{ offset: 2_884, limit: 1_022 },
+			]
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			Array.from({ length: 20 }, (_value, index) => `record-${3_381 + index}`)
+		);
+		await index.close();
+	});
+
+	it('sizes the next bounded native page from observed filter yield', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'adaptive-positive-yield';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 1_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 1_000 - index,
+		}));
+		const requests = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 1_000,
+			onSearch: (request) => requests.push(request),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+			{},
+			{
+				minResults: 20,
+				filter: (key) => key === 'record-0' || key === 'record-20' || Number(key.slice('record-'.length)) >= 700,
+			}
+		);
+		assert.deepStrictEqual(
+			requests.map(({ offset, limit }) => ({ offset, limit })),
+			[
+				{ offset: 0, limit: 40 },
+				{ offset: 0, limit: 760 },
+			]
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-0', 'record-20', ...Array.from({ length: 18 }, (_value, offset) => `record-${700 + offset}`)]
+		);
+		await index.close();
+	});
+
+	it('uses a complete point probe before loading authoritative records', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-point-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 100 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 100 - index,
+		}));
+		let reads = 0;
+		let filters = 0;
+		let collections = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+			maxSearchWindow: 100,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					filters++;
+					return true;
+				},
+				candidateKeys: {
+					estimatedCount: 50,
+					collect: () => {
+						collections++;
+						return null;
+					},
+					probe: {
+						complete: true,
+						estimatedCount: 50,
+						maxReadsPerCandidate: 1,
+						has: (key) => key === 'record-50',
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-50']
+		);
+		assert.strictEqual(collections, 0, 'the broad condition must not be materialized');
+		assert.strictEqual(reads, 1, 'probe misses must not load source records');
+		assert.strictEqual(filters, 0, 'a complete probe decides the companion predicate');
+		await index.close();
+	});
+
+	it('keeps the record predicate behind an incomplete point probe', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-residual-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 4 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 4 - index,
+		}));
+		const loaded = [];
+		const filtered = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 4,
+			onGetEntry: (key) => loaded.push(key),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: (key) => {
+					filtered.push(key);
+					return key === 'record-3';
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => null,
+					probe: {
+						complete: false,
+						estimatedCount: 1,
+						maxReadsPerCandidate: 1,
+						has: (key) => key === 'record-2' || key === 'record-3',
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-3']
+		);
+		assert.deepStrictEqual(loaded, ['record-2', 'record-3']);
+		assert.deepStrictEqual(filtered, ['record-2', 'record-3']);
+		await index.close();
+	});
+
+	it('skips point probes that are not expected to avoid source reads', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-unprofitable-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let reads = 0;
+		let probes = 0;
+		let filters = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					filters++;
+					return true;
+				},
+				candidateKeys: {
+					estimatedCount: 5,
+					collect: () => null,
+					probe: {
+						complete: true,
+						estimatedCount: 5,
+						maxReadsPerCandidate: 1,
+						has: () => {
+							probes++;
+							return true;
+						},
+					},
+				},
+			}
+		);
+		assert.strictEqual(results.length, 1);
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 1);
+		assert.strictEqual(filters, 1);
+		await index.close();
+	});
+
+	it('prices an incomplete probe from the conditions it covers', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-selectivity';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let probes = 0;
+		let reads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: (key) => key === 'record-1',
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => null,
+					probe: {
+						complete: false,
+						estimatedCount: 100,
+						maxReadsPerCandidate: 1,
+						has: () => {
+							probes++;
+							return true;
+						},
+					},
+				},
+			}
+		);
+		assert.strictEqual(results[0].key, 'record-1');
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 2);
+		await index.close();
+	});
+
+	it('falls back from costly point probes without changing filtered results', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-cost';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let reads = 0;
+		let probes = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			maxSearchWindow: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = (maxReadsPerCandidate) =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-3',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: {
+							complete: true,
+							estimatedCount: 1,
+							maxReadsPerCandidate,
+							has: (key) => {
+								probes++;
+								return key === 'record-3';
+							},
+						},
+					},
+				}
+			);
+		const probed = await search(4);
+		assert.deepStrictEqual(
+			probed.map(({ key }) => key),
+			['record-3']
+		);
+		assert.strictEqual(probes, 4);
+		assert.strictEqual(reads, 1);
+		probes = 0;
+		reads = 0;
+		const fallback = await search(5);
+		assert.deepStrictEqual(
+			fallback.map(({ key }) => key),
+			['record-3']
+		);
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 4);
+		await index.close();
+	});
+
+	it('backs off a failing candidate-key collection between requests', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let collectionAttempts = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = () =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => {
+							collectionAttempts++;
+							throw new Error('injected collection failure');
+						},
+					},
+				}
+			);
+		assert.strictEqual((await search())[0].key, 'record-1');
+		assert.strictEqual((await search())[0].key, 'record-1');
+		assert.strictEqual(collectionAttempts, 1);
+		await index.close();
+	});
+
+	it('does not let an older collection success clear a newer failure backoff', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-failure-epoch';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const collectionStarted = Promise.withResolvers();
+		const finishCollection = Promise.withResolvers();
+		let finalCollectionAttempts = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [
+				{ id: nativeId(1, 'record-0'), version: '1', score: 2 },
+				{ id: nativeId(1, 'record-1'), version: '1', score: 1 },
+			],
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const condition = { attribute: readinessId, comparator: 'matches', value: 'pack' };
+		const options = (collect) => ({
+			minResults: 1,
+			filter: () => true,
+			candidateKeys: { estimatedCount: 1, collect },
+		});
+		const realDateNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			const olderSearch = index.search(
+				condition,
+				{},
+				options(async () => {
+					collectionStarted.resolve();
+					await finishCollection.promise;
+					return null;
+				})
+			);
+			await collectionStarted.promise;
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => ({
+							complete: true,
+							keys: {
+								has() {
+									throw new Error('injected newer collected-set admission failure');
+								},
+							},
+						}))
+					)
+				)[0].key,
+				'record-0'
+			);
+			finishCollection.resolve();
+			assert.strictEqual((await olderSearch)[0].key, 'record-0');
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => {
+							finalCollectionAttempts++;
+							return null;
+						})
+					)
+				)[0].key,
+				'record-0'
+			);
+		} finally {
+			Date.now = realDateNow;
+			finishCollection.resolve();
+		}
+		assert.strictEqual(finalCollectionAttempts, 0);
+		await index.close();
+	});
+
+	it('observes cancellation while collecting candidate keys', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-cancellation';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const cancellation = new Error('cancel candidate collection');
+		const controller = new AbortController();
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () =>
+				Array.from({ length: 100 }, (_value, position) => ({
+					id: nativeId(1, `record-${position}`),
+					version: '1',
+					score: 100 - position,
+				})),
+			estimatedRecordCount: 100,
+			maxSearchWindow: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 1,
+					filter: () => true,
+					candidateKeys: {
+						estimatedCount: 1,
+						async collect(_maxKeys, cooperate) {
+							controller.abort(cancellation);
+							await cooperate();
+							return null;
+						},
+					},
+				}
+			),
+			(error) => error === cancellation
+		);
+		await index.close();
+	});
+
+	it('backs off a collected set that fails during admission', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collected-set-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let collections = 0;
+		let collectedAdmissions = 0;
+		let probes = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = () =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => {
+							collections++;
+							return {
+								complete: true,
+								keys: {
+									has: () => {
+										collectedAdmissions++;
+										throw new Error('injected collected-set admission failure');
+									},
+								},
+							};
+						},
+						probe: {
+							complete: true,
+							estimatedCount: 1,
+							maxReadsPerCandidate: 1,
+							has: (key) => {
+								probes++;
+								return key === 'record-1';
+							},
+						},
+					},
+				}
+			);
+		const realDateNow = Date.now;
+		let first;
+		let second;
+		try {
+			Date.now = () => 1_000;
+			first = await search();
+			second = await search();
+		} finally {
+			Date.now = realDateNow;
+		}
+		assert.strictEqual(first[0].key, 'record-1');
+		assert.strictEqual(second[0].key, 'record-1');
+		assert.strictEqual(collections, 1);
+		assert.strictEqual(collectedAdmissions, 1);
+		assert.strictEqual(probes, 2);
+		await index.close();
+	});
+
+	it('does not let an older successful probe clear a newer failure backoff', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-failure-epoch';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 130 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 130 - index,
+		}));
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			maxSearchWindow: 130,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const condition = { attribute: readinessId, comparator: 'matches', value: 'pack' };
+		const options = (has) => ({
+			minResults: 1,
+			filter: () => true,
+			candidateKeys: {
+				estimatedCount: 1,
+				collect: () => null,
+				probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has },
+			},
+		});
+		let olderProbeAttempts = 0;
+		let newerFailure;
+		let finalProbeAttempts = 0;
+		const realDateNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			const olderSearch = index.search(
+				condition,
+				{},
+				options(() => {
+					olderProbeAttempts++;
+					if (olderProbeAttempts === 128) {
+						newerFailure = index.search(
+							condition,
+							{},
+							options(() => {
+								throw new Error('injected newer point-probe failure');
+							})
+						);
+					}
+					return olderProbeAttempts > 128;
+				})
+			);
+			assert.strictEqual((await olderSearch)[0].key, 'record-128');
+			assert(newerFailure, 'the older query must overlap the newer failure');
+			assert.strictEqual((await newerFailure)[0].key, 'record-0');
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => {
+							finalProbeAttempts++;
+							return true;
+						})
+					)
+				)[0].key,
+				'record-0'
+			);
+		} finally {
+			Date.now = realDateNow;
+		}
+		assert.strictEqual(finalProbeAttempts, 0, 'the newer failure cooldown must remain active');
+		await index.close();
+	});
+
+	it('caps candidate collection from the native hit count', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-native-hit-bound';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let collectionAttempts = 0;
+		let reads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'record-0'), version: '1', score: 1 }],
+			estimatedRecordCount: 1_000_000,
+			maxSearchWindow: 10_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				filter: () => true,
+				candidateKeys: {
+					estimatedCount: 4_096,
+					collect: () => {
+						collectionAttempts++;
+						return null;
+					},
+				},
+			}
+		);
+		assert.strictEqual(results[0].key, 'record-0');
+		assert.strictEqual(collectionAttempts, 0);
+		assert.strictEqual(reads, 1);
+		await index.close();
+	});
+
+	it('uses a selective collected set once and falls back when point probing fails', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collected-set';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let collections = 0;
+		let reads = 0;
+		const fixture = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(fixture.index, auditStore, readinessId);
+		const results = await fixture.index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					throw new Error('a complete set must decide the filter');
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => {
+						collections++;
+						return { complete: true, keys: { has: (key) => key === 'record-4' } };
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-4']
+		);
+		assert.strictEqual(collections, 1);
+		assert.strictEqual(reads, 1);
+		await fixture.index.close();
+
+		const boundedReadinessId = 'candidate-collection-bound';
+		publishDerivedIndexReadiness(auditStore, boundedReadinessId, 'ready');
+		let collectionBudget;
+		const bounded = simpleQueryIndex({
+			auditStore,
+			readinessId: boundedReadinessId,
+			payload: publicationPayload(),
+			hits: () =>
+				Array.from({ length: 5_000 }, (_value, index) => ({
+					id: nativeId(1, `record-${index}`),
+					version: '1',
+					score: 5_000 - index,
+				})),
+			estimatedRecordCount: 1_000_000,
+			maxSearchWindow: 5_000,
+		});
+		attachCurrentCoverage(bounded.index, auditStore, boundedReadinessId);
+		await bounded.index.search(
+			{ attribute: boundedReadinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 100,
+				filter: () => true,
+				candidateKeys: {
+					estimatedCount: 4_096,
+					collect: (maxKeys) => {
+						collectionBudget = maxKeys;
+						return null;
+					},
+				},
+			}
+		);
+		assert.strictEqual(collectionBudget, 4_096);
+		await bounded.index.close();
+
+		const unboundedReadinessId = 'candidate-unbounded-collection';
+		publishDerivedIndexReadiness(auditStore, unboundedReadinessId, 'ready');
+		let unboundedCollections = 0;
+		const unbounded = simpleQueryIndex({
+			auditStore,
+			readinessId: unboundedReadinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			maxSearchWindow: 100,
+		});
+		attachCurrentCoverage(unbounded.index, auditStore, unboundedReadinessId);
+		const unboundedResults = await unbounded.index.search(
+			{ attribute: unboundedReadinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				filter: () => {
+					throw new Error('a complete unbounded candidate set must decide the filter');
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => {
+						unboundedCollections++;
+						return { complete: true, keys: { has: (key) => key === 'record-4' } };
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			unboundedResults.map(({ key }) => key),
+			['record-4']
+		);
+		assert.strictEqual(unboundedCollections, 1);
+		await unbounded.index.close();
+
+		const fallbackReadinessId = 'candidate-probe-fallback';
+		publishDerivedIndexReadiness(auditStore, fallbackReadinessId, 'ready');
+		reads = 0;
+		const fallback = simpleQueryIndex({
+			auditStore,
+			readinessId: fallbackReadinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(fallback.index, auditStore, fallbackReadinessId);
+		let probeAttempts = 0;
+		const fallbackSearch = () =>
+			fallback.index.search(
+				{ attribute: fallbackReadinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: {
+							complete: true,
+							estimatedCount: 1,
+							maxReadsPerCandidate: 1,
+							has: () => {
+								probeAttempts++;
+								throw new Error('injected point-read failure');
+							},
+						},
+					},
+				}
+			);
+		const fallbackResults = await fallbackSearch();
+		assert.deepStrictEqual(
+			fallbackResults.map(({ key }) => key),
+			['record-1']
+		);
+		assert.strictEqual(reads, 2, 'the established record predicate must resume after a probe failure');
+		assert.strictEqual((await fallbackSearch())[0].key, 'record-1');
+		assert.strictEqual(probeAttempts, 1);
+		await fallback.index.close();
+	});
+
+	it('fails closed when a short lower-bound native page claims more hits', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'short-lower-bound-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			maxSearchWindow: 100,
+			searchResult: ({ limit }) => ({
+				total: limit + 1,
+				totalRelation: 'lower-bound',
+				hits: Array.from({ length: limit - 1 }, (_value, id) => ({
+					id: nativeId(1, `record-${id}`),
+					version: '1',
+					score: limit - id,
+				})),
+			}),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search({ attribute: readinessId, comparator: 'matches', value: 'pack' }, {}, { minResults: 1 }),
+			/incomplete result page/
+		);
+		await index.close();
+	});
+
+	it('accepts a short terminal lower-bound native page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'terminal-lower-bound-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			maxSearchWindow: 100,
+			searchResult: () => ({
+				total: 3,
+				totalRelation: 'lower-bound',
+				hits: Array.from({ length: 3 }, (_value, id) => ({
+					id: nativeId(1, `record-${id}`),
+					version: '1',
+					score: 3 - id,
+				})),
+			}),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{ minResults: 5 }
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-0', 'record-1', 'record-2']
+		);
+		await index.close();
+	});
+
+	it('honors cancellation while validating a large native page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'large-page-abort';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5_000 - index,
+		}));
+		const controller = new AbortController();
+		const reason = new Error('request abandoned');
+		let reads = 0;
+		let abortScheduled = false;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 5_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 2_000,
+					filter: (key) => {
+						if (key === 'record-300' && !abortScheduled) {
+							abortScheduled = true;
+							setImmediate(() => controller.abort(reason));
+						}
+						return false;
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert.strictEqual(reads, 512);
+		await index.close();
+	});
+
+	it('yields after bounded companion point-read work', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'point-probe-yield';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5_000 - index,
+		}));
+		const controller = new AbortController();
+		const reason = new Error('request abandoned');
+		let probes = 0;
+		let abortScheduled = false;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5_000,
+			maxSearchWindow: 5_000,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 2_000,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 1_000,
+						collect: () => null,
+						probe: {
+							complete: true,
+							estimatedCount: 1_000,
+							maxReadsPerCandidate: 4,
+							has: () => {
+								probes++;
+								if (probes === 300 && !abortScheduled) {
+									abortScheduled = true;
+									setImmediate(() => controller.abort(reason));
+								}
+								return false;
+							},
+						},
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert(
+			probes >= 300 && probes <= 307,
+			`cancellation should be observed within one bounded probe interval; performed ${probes} probes`
+		);
+		await index.close();
+	});
+
+	it('keeps the initial autocomplete window and traverses larger prefix expressions', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'autocomplete-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1435,19 +2911,19 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							requests.push(request);
 							return {
 								total: hits.length,
 								totalRelation: 'exact',
-								hits: hits.slice(0, request.limit),
+								hits: hits.slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1464,75 +2940,88 @@ describe('FullTextQueryIndex', () => {
 				],
 			},
 		};
-		await assert.rejects(index.search(query, {}), /100-result search window; add a limit/);
-		assert.deepStrictEqual(
-			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
-			[{ offset: 0, limit: 100, exactTotal: true }]
-		);
+		assert.strictEqual((await index.search(query, {})).length, hits.length);
+		assert.deepStrictEqual((({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal }))(requests[0]), {
+			offset: 0,
+			limit: 100,
+			exactTotal: true,
+		});
+		requests.length = 0;
 		assert.strictEqual((await index.search(query, {}, { minResults: 100 })).length, 100);
-		await assert.rejects(index.search(query, {}, { minResults: 101 }), /100-result autocomplete search window/);
-		assert.strictEqual(requests.length, 2);
+		assert.strictEqual(requests.length, 1);
+		assert.strictEqual((await index.search(query, {}, { minResults: 101 })).length, 101);
 		await index.close();
 	});
 
-	it('applies one execution budget across every native result page', async () => {
-		const auditStore = sharedStore();
-		const readinessId = 'query-budget';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		let searches = 0;
-		const index = new FullTextQueryIndex({
-			Table: {
-				tableId: 1,
-				primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
-				_readTxnForContext: () => undefined,
-			},
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath: '/unused',
-			storeName: 'unused',
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					return {
-						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10_000, maxSearchBudgetMilliseconds: 20, maxTraceRecords: 10 }),
-					};
-				},
-				async openNativeFullTextReader() {
-					return {
-						async search(request) {
-							searches++;
-							await new Promise((resolve) => setTimeout(resolve, 25));
+	for (const configured of [false, true])
+		it(`applies the ${configured ? 'Harper' : 'native'} execution budget across every result page`, async () => {
+			const previous = getFullTextTestConfiguration();
+			if (configured) setFullTextTestConfiguration({ ...previous, requestBudgetMilliseconds: 20 });
+			try {
+				const auditStore = sharedStore();
+				const readinessId = 'query-budget';
+				publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+				let searches = 0;
+				const index = new FullTextQueryIndex({
+					Table: {
+						tableId: 1,
+						primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
+						_readTxnForContext: () => undefined,
+					},
+					definition: definition(),
+					auditStore,
+					readinessId,
+					indexId: readinessId,
+					storePath: '/unused',
+					storeName: 'unused',
+					sourceGeneration: 'generation',
+					limits: {},
+					binding: {
+						async runtimeInfo() {
 							return {
-								total: 300,
-								totalRelation: 'exact',
-								hits: Array.from({ length: request.limit }, (_value, offset) => ({
-									id: nativeId(1, `record-${request.offset + offset}`),
-									version: '1',
-									score: 300 - request.offset - offset,
-								})),
+								queryClassIsolationMinimumSearchThreads: 1,
+								limits: queryLimits({
+									maxSearchWindow: 10_000,
+									maxSearchBudgetMilliseconds: configured ? 30000 : 20,
+									maxTraceRecords: 10,
+								}),
 							};
 						},
-						committedPayload: publicationPayload(),
-						async reload() {},
-						async close() {},
-					};
-				},
-			},
+						async openNativeFullTextReader() {
+							return withTraversal({
+								async search(request) {
+									searches++;
+									await new Promise((resolve) => setTimeout(resolve, 25));
+									return {
+										total: 300,
+										totalRelation: 'exact',
+										hits: Array.from({ length: request.limit }, (_value, offset) => ({
+											id: nativeId(1, `record-${request.offset + offset}`),
+											version: '1',
+											score: 300 - request.offset - offset,
+										})),
+									};
+								},
+								committedPayload: publicationPayload(),
+								async reload() {},
+								async close() {},
+							});
+						},
+					},
+				});
+				attachCurrentCoverage(index, auditStore, readinessId);
+				await assert.rejects(
+					index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+					(error) => error.statusCode === 503 && /execution budget/.test(error.message)
+				);
+				assert.strictEqual(searches, 1);
+				await index.close();
+			} finally {
+				setFullTextTestConfiguration(previous);
+			}
 		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
-			(error) => error.statusCode === 503 && /execution budget/.test(error.message)
-		);
-		assert.strictEqual(searches, 1);
-		await index.close();
-	});
 
-	it('fails instead of returning an incomplete bounded page after filtering exhausts the native window', async () => {
+	it('returns an exhausted filtered page after traversing all raw results', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'filtered-window', 'ready');
 		const index = new FullTextQueryIndex({
@@ -1557,7 +3046,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 2,
@@ -1571,23 +3060,23 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
 		attachCurrentCoverage(index, auditStore, 'filtered-window');
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: 'filtered-window', comparator: 'matches', value: 'shoe' },
 				{},
 				{ minResults: 1, filter: () => false }
 			),
-			/filters exhausted the 2-result search window/
+			[]
 		);
 		await index.close();
 	});
 
-	it('reports stale native versions as retryable index lag', async () => {
+	it('returns no stale native versions after exhausting the snapshot', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'stale-window', 'ready');
 		const index = new FullTextQueryIndex({
@@ -1612,29 +3101,124 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
-						async search() {
+					return withTraversal({
+						async search(request) {
 							return {
 								total: 3,
 								totalRelation: 'lower-bound',
 								hits: [
 									{ id: nativeId(1, 'one'), version: '1', score: 2 },
 									{ id: nativeId(1, 'two'), version: '1', score: 1 },
-								],
+									{ id: nativeId(1, 'three'), version: '1', score: 0 },
+								].slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
 		attachCurrentCoverage(index, auditStore, 'stale-window');
-		await assert.rejects(
-			index.search({ attribute: 'stale-window', comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
+		assert.deepStrictEqual(
+			await index.search(
+				{ attribute: 'stale-window', comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => true,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => true },
+					},
+				}
+			),
+			[]
 		);
+		await index.close();
+	});
+
+	it('exhausts companion-gate rejections without returning stale matches', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'stale-gate-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let sourceReads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4,
+			estimatedRecordCount: 5,
+			onGetEntry: () => sourceReads++,
+			entryForKey: () => ({ version: 2, value: { title: 'shoe' } }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		assert.deepStrictEqual(
+			await index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => false },
+					},
+				}
+			),
+			[]
+		);
+		assert.strictEqual(sourceReads, 0, 'a complete gate can reject all hits without reading records');
+		await index.close();
+	});
+
+	it('exhausts expired companion-gate rejections beyond the search window', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'expired-gate-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let sourceReads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4,
+			estimatedRecordCount: 5,
+			onGetEntry: () => sourceReads++,
+			entryForKey: () => ({ version: 1, expiresAt: 0, value: { title: 'shoe' } }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		assert.deepStrictEqual(
+			await index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => false },
+					},
+				}
+			),
+			[]
+		);
+		assert.strictEqual(sourceReads, 0, 'a complete gate can reject expired hits without reading records');
 		await index.close();
 	});
 
@@ -1661,7 +3245,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							throw Object.assign(new Error('corrupt'), { code: 'E_INDEX_CORRUPT' });
 						},
@@ -1670,7 +3254,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							if (closeAttempts++ === 0) throw new Error('close failed');
 						},
-					};
+					});
 				},
 			},
 		});
@@ -1715,14 +3299,14 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								throw Object.assign(new Error('native storage cannot open'), { code });
 							},
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -1766,7 +3350,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -1777,7 +3361,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1829,10 +3413,10 @@ describe('FullTextQueryIndex', () => {
 				async openNativeFullTextReader() {
 					const readerIndex = opens++;
 					let readerHits = publishedHits;
-					return {
+					return withTraversal({
 						async search(request) {
 							pages.push({ readerIndex, offset: request.offset });
-							if (readerIndex === 0 && request.offset > 0) {
+							if (readerIndex === 0 && pages.filter((page) => page.readerIndex === 0).length === 2) {
 								firstStarted.resolve();
 								await firstSearch.promise;
 							}
@@ -1850,7 +3434,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -1877,7 +3461,7 @@ describe('FullTextQueryIndex', () => {
 			assert.strictEqual(reloads, 0);
 			assert.deepStrictEqual(pages, [
 				{ readerIndex: 0, offset: 0 },
-				{ readerIndex: 0, offset: 256 },
+				{ readerIndex: 0, offset: 0 },
 				{ readerIndex: 1, offset: 0 },
 			]);
 			await waitFor(() => closes === 1);
@@ -1918,7 +3502,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -1931,7 +3515,7 @@ describe('FullTextQueryIndex', () => {
 							reloads++;
 						},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1989,7 +3573,7 @@ describe('FullTextQueryIndex', () => {
 						throw new Error('transient replacement open failure');
 					}
 					const first = opens === 1;
-					return {
+					return withTraversal({
 						async search() {
 							if (first) {
 								firstSearchStarted.resolve();
@@ -2006,7 +3590,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -2029,87 +3613,101 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(closes, opens - 1);
 	});
 
-	it('bounds close while a native search keeps a reader lease', async () => {
-		const auditStore = sharedStore();
-		const readinessId = 'query-reader-close-timeout';
-		const storePath = '/unused';
-		const storeName = 'query-reader-close-timeout';
-		const nativePath = nativeFullTextIndexPath(storePath, storeName);
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		const searchStarted = Promise.withResolvers();
-		const finishSearch = Promise.withResolvers();
-		let closes = 0;
-		const index = new FullTextQueryIndex({
-			Table: {
-				tableId: 1,
-				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
-				_readTxnForContext: () => undefined,
-			},
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath,
-			storeName,
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					return {
-						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10, maxSearchBudgetMilliseconds: 100, maxTraceRecords: 10 }),
-					};
-				},
-				async openNativeFullTextReader() {
-					return {
-						async search() {
-							searchStarted.resolve();
-							await finishSearch.promise;
+	for (const exceedsBudget of [false, true]) {
+		it(
+			exceedsBudget
+				? 'bounds close while a native search keeps a reader lease'
+				: 'lets an in-budget search finish through reader retirement and pause',
+			async () => {
+				const auditStore = sharedStore();
+				const readinessId = 'query-reader-close-timeout';
+				const storePath = '/unused';
+				const storeName = 'query-reader-close-timeout';
+				const nativePath = nativeFullTextIndexPath(storePath, storeName);
+				publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+				const searchStarted = Promise.withResolvers();
+				const finishSearch = Promise.withResolvers();
+				let closes = 0;
+				const index = new FullTextQueryIndex({
+					Table: {
+						tableId: 1,
+						primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+						_readTxnForContext: () => undefined,
+					},
+					definition: definition(),
+					auditStore,
+					readinessId,
+					indexId: readinessId,
+					storePath,
+					storeName,
+					sourceGeneration: 'generation',
+					limits: {},
+					binding: {
+						async runtimeInfo() {
 							return {
-								total: 1,
-								totalRelation: 'exact',
-								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+								queryClassIsolationMinimumSearchThreads: 1,
+								limits: queryLimits({
+									maxSearchWindow: 10,
+									maxSearchBudgetMilliseconds: exceedsBudget ? 100 : 5000,
+									maxTraceRecords: 10,
+								}),
 							};
 						},
-						committedPayload: publicationPayload(),
-						async reload() {},
-						async close() {
-							closes++;
+						async openNativeFullTextReader() {
+							return withTraversal({
+								async search() {
+									searchStarted.resolve();
+									await finishSearch.promise;
+									return {
+										total: 1,
+										totalRelation: 'exact',
+										hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+									};
+								},
+								committedPayload: publicationPayload(),
+								async reload() {},
+								async close() {
+									closes++;
+								},
+							});
 						},
-					};
-				},
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		const search = index.search(
-			{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
-			{},
-			{ minResults: 1 }
+					},
+				});
+				attachCurrentCoverage(index, auditStore, readinessId);
+				const search = index.search(
+					{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+					{},
+					{ minResults: 1 }
+				);
+				await searchStarted.promise;
+				let closeError;
+				const close = index.close().catch((error) => (closeError = error));
+				if (exceedsBudget) {
+					await waitFor(() => closeError, 3000);
+					assert.match(closeError.message, /reader drain did not settle/);
+					assert.strictEqual(closeError.statusCode, 503);
+				}
+				const replacement = readyQueryIndex(auditStore, 'replacement-readiness', storeName);
+				let pauseSettled = false;
+				const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
+					pauseSettled = true;
+				});
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(pauseSettled, false);
+				finishSearch.resolve();
+				if (exceedsBudget) await assert.rejects(search, /Full-text search exceeded its execution budget/);
+				else assert.strictEqual((await search).length, 1);
+				await close;
+				if (!exceedsBudget) assert.strictEqual(closeError, undefined);
+				await pause;
+				assert.strictEqual(pauseSettled, true);
+				resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
+				await waitFor(() => closes === 1);
+				await index.close();
+				await replacement.close();
+			}
 		);
-		await searchStarted.promise;
-		let closeError;
-		const close = index.close().catch((error) => (closeError = error));
-		await new Promise((resolve) => setTimeout(resolve, 1_500));
-		assert.match(closeError?.message, /reader drain did not settle/);
-		assert.strictEqual(closeError.statusCode, 503);
-		await close;
-		const replacement = readyQueryIndex(auditStore, 'replacement-readiness', storeName);
-		let pauseSettled = false;
-		const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
-			pauseSettled = true;
-		});
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.strictEqual(pauseSettled, false);
-		finishSearch.resolve();
-		assert.strictEqual((await search).length, 1);
-		await pause;
-		assert.strictEqual(pauseSettled, true);
-		resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
-		await waitFor(() => closes === 1);
-		await index.close();
-		await replacement.close();
-	});
-
+	}
 	it('does not let a native reader close failure reject lifecycle shutdown', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-close-failure';
@@ -2139,7 +3737,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -2153,7 +3751,7 @@ describe('FullTextQueryIndex', () => {
 							closes++;
 							throw new Error('close failed');
 						},
-					};
+					});
 				},
 			},
 		});
@@ -2209,7 +3807,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -2239,7 +3837,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2372,7 +3970,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 2,
@@ -2390,7 +3988,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2447,7 +4045,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -2458,7 +4056,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2512,7 +4110,7 @@ describe('FullTextQueryIndex', () => {
 						openStarted.resolve();
 						await finishOpen.promise;
 					}
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -2523,7 +4121,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2578,7 +4176,7 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								if (oldGeneration) {
 									searchStarted.resolve();
@@ -2595,7 +4193,7 @@ describe('FullTextQueryIndex', () => {
 							async close() {
 								if (oldGeneration) oldCloses++;
 							},
-						};
+						});
 					},
 				},
 			});
@@ -2707,7 +4305,7 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								return {
 									total: 1,
@@ -2718,7 +4316,7 @@ describe('FullTextQueryIndex', () => {
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -2784,7 +4382,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							searchStarted.resolve();
 							await finishSearch.promise;
@@ -2797,7 +4395,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2918,7 +4516,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -2929,7 +4527,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3096,7 +4694,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3107,7 +4705,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 1 } }),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});

@@ -1,15 +1,15 @@
-'use strict';
+import { loadNativePackage } from '../utility/packageUtils.js';
+('use strict');
 
 import bulkDeleteValidator from '../validation/bulkDeleteValidator.ts';
 import deleteValidator from '../validation/deleteValidator.ts';
 import * as commonUtils from '../utility/common_utils.ts';
-import moment from 'moment';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { promisify, callbackify } from 'util';
+import { promisify, callbackify } from 'node:util';
 import * as terms from '../utility/hdbTerms.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 const pGlobalSchema = promisify(globalSchema.getTableSchema);
-const harperBridge = require('./harperBridge/harperBridge').default;
+import harperBridge from './harperBridge/harperBridge.ts';
 import { DeleteResponseObject } from './DataLayerObjects.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -35,6 +35,7 @@ export async function deleteFilesBefore(deleteObj: any) {
 
 	commonUtils.transformReq(deleteObj);
 
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let parsedDate = moment(deleteObj.date, moment.ISO_8601);
 	if (!parsedDate.isValid()) {
 		throw handleHDBError(

@@ -6,7 +6,7 @@ const { setupTestDBPath } = require('../../testUtils');
 const { table } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { __setDecideFnForTest } = require('#src/resources/models/decideHook');
 
 const ROUTES = ['billing', 'refund', 'bug', 'other'];

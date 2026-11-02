@@ -1,0 +1,25 @@
+# Terms with a situational meaning in harper. PR descriptions define them at first use as <ins title="…">term</ins>.
+# One "term: definition" per line; keep each definition to one clause.
+database generation: per-node id a RocksDB database gets at genesis and on every copy, so no position resumes across copies
+resumable position: RocksDB position that resumes only if it names the current generation and is not below the resume floor
+audit floor: per-database audit-log time below which history may be missing, raised before any tracked prune deletes
+audit store: per-database write history, a RocksTransactionLogStore on RocksDB and a separate DBI on LMDB
+transaction log: a database's audit store, which RocksDB keeps as one log per origin node shared by all its tables
+origin log: RocksDB transaction log holding one origin node's entries, each filed under that origin's log key
+log key: an audit entry's key (txnLogKey), the position a subscription resumes from, which can differ from the record version
+record version: the originating write's timestamp used for last-writer-wins ordering, which can differ from the log key
+tombstone: null entry kept in place of a deleted record, carrying the delete's version for conflict ordering
+drop tombstone: dropping flag saved on a table's primary catalog entry before destructive drop work, so an interrupted drop completes
+local-only: LOCAL_ONLY flag on a write's audit entry, and for record mutations the stored record, that replication senders skip
+invalidate: write flagging a stored record INVALIDATED, usually as a null or indexed-attribute stub, so reads treat it as stale
+relocate: write applying a record's new residency, cutting it to an indexed-attribute stub where this node is not resident
+residency: set of nodes that hold a record's full body, where no residency means every node does
+crash replay: re-application at database open of RocksDB transaction-log writes, at their stored version, never re-appending audit entries
+structures: a table's persisted, append-only msgpackr/structon structure definitions, which its encoded records reference by id
+cluster-origin definition: table definition with origin 'cluster', a peer's schema snapshot that is applied additive-only
+over-time transaction: transaction still open past the max transaction time, which the monitor aborts or force-commits depending on its kind
+key lock: rocksdb-js process-wide in-memory lock on a record key, the sole authority behind table.lock() and never persisted
+home: the node chosen by rendezvous hash over the home map to arbitrate a key's lock delegations
+delegation: exclusive, time-bounded right, granted by a key's home, to admit locks on that key locally
+derived index: native HNSW or full-text (Tantivy) index fed from the committed transaction log, outside the commit path
+native plane: a derived index's native file-backed store, which for HNSW is a memory-mapped file holding the whole graph

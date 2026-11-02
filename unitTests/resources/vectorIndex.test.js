@@ -5,7 +5,7 @@ const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
 const { CandidateKeySet } = require('#src/resources/search');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 
@@ -3323,6 +3323,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				{ name: 'tenant', indexed: true },
 				{ name: 'rank', indexed: true, type: 'Int' },
 				{ name: 'shard', indexed: true },
+				{ name: 'mixedNumber', indexed: true, type: 'Any' },
 				{ name: 'note' },
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
 			],
@@ -3331,6 +3332,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			const record = {
 				tenant: i % 3 === 0 ? 'a' : 'b',
 				shard: i < 290 ? 'wide' : 'narrow',
+				mixedNumber: i === 0 ? 1n : i === 1 ? 1 : i,
 				note: i % 2 === 0 ? 'keep' : 'drop',
 				vector: [i, 0],
 			};
@@ -3394,15 +3396,125 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		);
 	});
 
+	it('keeps strict equality behind an Any numeric candidate set', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'mixedNumber', comparator: 'equals', value: 1 }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(probed.complete, false);
+		assert(probed.keys.has(0), 'the storage range includes the BigInt value');
+		assert(probed.keys.has(1), 'the storage range includes the Number value');
+		assert(stats.filterEvaluations > 0, 'the strict record predicate decides admission');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[1]
+		);
+	});
+
+	it('does not inspect point-probe capabilities unless the lead index opts in', async () => {
+		const tenantIndex = A.indices.tenant;
+		const ownDescriptor = Object.getOwnPropertyDescriptor(tenantIndex, 'hasIndexEntry');
+		Object.defineProperty(tenantIndex, 'hasIndexEntry', {
+			configurable: true,
+			get() {
+				throw new Error('the HNSW planner must not inspect point-probe capabilities');
+			},
+		});
+		try {
+			const { results, options } = await searchWithSpy(
+				[0, 0],
+				[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+				{ limit: 1 }
+			);
+			assert.strictEqual(options.candidateKeys.probe, undefined);
+			assert.strictEqual(results[0].id, 0);
+		} finally {
+			if (ownDescriptor) Object.defineProperty(tenantIndex, 'hasIndexEntry', ownDescriptor);
+			else delete tenantIndex.hasIndexEntry;
+		}
+	});
+
+	it('composes equality point probes across AND, OR, and residual conditions', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		customIndex.candidateKeyProbe = true;
+		const inspect = (keys) => (plan) => ({
+			complete: plan.probe?.complete,
+			estimatedCount: plan.probe?.estimatedCount,
+			maxReadsPerCandidate: plan.probe?.maxReadsPerCandidate,
+			matches: keys.map((key) => plan.probe?.has(key)),
+		});
+		try {
+			const and = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+				],
+				{ limit: 1 },
+				inspect([0, 1, 291])
+			);
+			assert.deepStrictEqual(and.probed, {
+				complete: true,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 2,
+				matches: [true, false, false],
+			});
+
+			const or = await searchWithSpy(
+				[0, 0],
+				[
+					{
+						operator: 'or',
+						conditions: [
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+							{ attribute: 'rank', comparator: 'equals', value: 7 },
+						],
+					},
+				],
+				{ limit: 1 },
+				inspect([3, 7, 8])
+			);
+			assert.deepStrictEqual(or.probed, {
+				complete: true,
+				estimatedCount: 101,
+				maxReadsPerCandidate: 2,
+				matches: [true, true, false],
+			});
+
+			const residual = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'note', comparator: 'equals', value: 'keep' },
+				],
+				{ limit: 1 },
+				inspect([0, 1])
+			);
+			assert.deepStrictEqual(residual.probed, {
+				complete: false,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 1,
+				matches: [true, false],
+			});
+		} finally {
+			delete customIndex.candidateKeyProbe;
+		}
+	});
+
 	it('builds the allow-set from each range comparator a missing value cannot satisfy', async () => {
 		for (const [comparator, value, target, expected] of [
 			['ge', 200, [200, 0], [200, 201, 202, 203, 204]],
 			['gt', 199, [200, 0], [200, 201, 202, 203, 204]],
 			['between', [100, 199], [150.3, 0], [150, 151, 149, 152, 148]],
 		]) {
-			const { results, stats } = await searchWithSpy(target, [{ attribute: 'rank', comparator, value }], {
-				limit: 5,
-			});
+			// The allow-set gate reads this estimate, and a memtable range estimate is a skip-list sample
+			// that can land past the 150-key budget.
+			const { results, stats } = await searchWithSpy(
+				target,
+				[{ attribute: 'rank', comparator, value, estimated_count: 100 }],
+				{ limit: 5 }
+			);
 			assert.strictEqual(stats.filterEvaluations, 0, `${comparator} must be answered by the allow-set`);
 			assert.strictEqual(stats.candidateKeys, 100, `${comparator} selects 100 records`);
 			assert.deepStrictEqual(
@@ -3413,14 +3525,27 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
+	it('clears the allow-set gate with an unpinned planner estimate on a narrow range', async () => {
+		const { results, stats } = await searchWithSpy(
+			[104.3, 0],
+			[{ attribute: 'rank', comparator: 'between', value: [100, 109] }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(stats.filterEvaluations, 0, 'the estimate must not decline the allow-set');
+		assert.strictEqual(stats.candidateKeys, 10);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[104, 105, 103, 106, 102]
+		);
+	});
+
 	it('returns what the predicate path returns when a condition admits a record the index does not hold', async () => {
 		const customIndex = A.indices.vector.customIndex;
 		for (const [condition, planned] of [
-			// Satisfied by id 0, which has no rank, so no index range can supply every match.
+			// Satisfied by a rank of 0, which a record written as -0 holds and its index entry cannot supply.
+			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
 			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
 			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
-			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
-			// Satisfied by a rank of 0, which a record written as -0 holds and its index entry cannot supply.
 			[{ attribute: 'rank', comparator: 'equals', value: 0 }, false],
 			[{ attribute: 'rank', comparator: 'between', value: [-0, 60] }, false],
 			// -0 encodes above every number, so an unnormalized lower bound would scan an empty range.
@@ -3491,9 +3616,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
-	it('counts the null block a lt/le range reads, so a mostly-null column is not mis-estimated', async () => {
-		// A BigInt bound, because it is the one lt/le a missing value cannot satisfy: compareKeys has no
-		// type order for bigint and ranks undefined above it, while null still sorts below.
+	it('skips the null block a lt/le range cannot match, so null ranks neither fill the allow-set nor the limit', async () => {
 		const N = table({
 			table: 'HNSWAllowNulls',
 			database: 'test',
@@ -3504,8 +3627,6 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			],
 		});
 		try {
-			// 200 of 300 rows have a null rank. The range starts at null and reads that block first, so
-			// an estimate taken over `[true, 250n)` would size the budget at 50 and overrun it on entry 51.
 			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : BigInt(i), vector: [i, 0] });
 			const customIndex = N.indices.vector.customIndex;
 			const original = customIndex.search;
@@ -3515,8 +3636,9 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				return original.call(this, condition, context, options);
 			};
 			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			let results;
 			try {
-				await fromAsync(
+				results = await fromAsync(
 					N.search(
 						{
 							conditions: [
@@ -3534,10 +3656,78 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			} finally {
 				customIndex.search = original;
 			}
-			assert.strictEqual(plan.keys.size, 250, 'the 200 nulls plus ranks 200-249');
+			assert.strictEqual(plan.keys.size, 50, 'ranks 200-249, and none of the 200 nulls');
 			assert.strictEqual(plan.complete, true);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				[200]
+			);
 		} finally {
 			N.dropTable();
+		}
+	});
+
+	it('leaves a range on an untyped attribute to the predicate, which nested arrays and BigInts can defeat', async () => {
+		const M = table({
+			table: 'HNSWAllowUntypedRange',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// -2n has the index key of -2 but fails `< -1`; [[-2]] passes it but has no index entry
+			await M.put(1, { rank: -2n, vector: [0, 0] });
+			await M.put(2, { rank: [[-2]], vector: [0.25, 0] });
+			await M.put(3, { rank: 5, vector: [0.5, 0] });
+			await M.put(4, { rank: -2, vector: [1, 0] });
+			for (let i = 10; i < 60; i++) await M.put(i, { rank: i, vector: [i, 0] });
+			const customIndex = M.indices.vector.customIndex;
+			const original = customIndex.search;
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			try {
+				for (const [comparator, value, expected] of [
+					['lt', -1, [2, 4]],
+					['le', -1, [2, 4]],
+					['between', [null, -1], [2, 4]],
+					// the zero probe does not decline this one
+					['gt', 1],
+				]) {
+					let candidateKeys;
+					customIndex.search = function (condition, context, options) {
+						candidateKeys = options.candidateKeys;
+						return original.call(this, condition, context, options);
+					};
+					const results = await fromAsync(
+						M.search(
+							{
+								conditions: [
+									{ attribute: 'vector', comparator: 'sort', ...sort },
+									{ attribute: 'rank', comparator, value },
+								],
+								sort,
+								enforceExecutionOrder: true,
+								select: ['id'],
+								limit: 2,
+							},
+							{}
+						)
+					);
+					assert.strictEqual(candidateKeys, undefined, `${comparator}: no allow-set`);
+					if (expected)
+						assert.deepStrictEqual(
+							results.map((record) => record.id),
+							expected,
+							comparator
+						);
+				}
+			} finally {
+				customIndex.search = original;
+			}
+		} finally {
+			M.dropTable();
 		}
 	});
 

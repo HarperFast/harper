@@ -12,13 +12,15 @@ const {
 	getDatabases,
 	resetDatabases,
 } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { databaseCommitsSuspended, getSuspendedDatabaseRootCount } = require('#src/resources/DatabaseTransaction');
 const {
 	beginRestore,
 	completeRestore,
 	abandonRestore,
+	acquireRestoreLock,
+	releaseRestoreLock,
 	restoringMarkerPath,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
@@ -201,6 +203,47 @@ describe('dropDatabase restore serialization', () => {
 		await assert.doesNotReject(dropDatabase(MULTI));
 	});
 
+	it('refuses an open while the restore lock is held, with no marker to fall back on', async function () {
+		this.timeout(30000);
+		// An anchor gives us the databases root and tells us which engine's path shape to build, so this
+		// runs on both. There is deliberately NO marker: before the exclusion, throwIfBlockedByRestore
+		// read 'clear' without probing the lock and the open went straight through, so the lock alone
+		// has to be what stops it. Reverting either open site to a bare open fails this.
+		const anchor = table({
+			table: 'Anchor',
+			database: 'exclusion-anchor-test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = anchor.primaryStore.rootStore;
+		const BLOCKED = 'exclusion-blocked-test';
+		const blockedPath = join(dirname(rootStore.path), rootStore instanceof RocksDatabase ? BLOCKED : `${BLOCKED}.mdb`);
+
+		const lock = acquireRestoreLock(blockedPath);
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'Blocked',
+						database: BLOCKED,
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				(error) => error.statusCode === 409
+			);
+		} finally {
+			releaseRestoreLock(lock);
+		}
+
+		// and the exclusion is the lock dropDatabase takes, so a held lock refuses the drop too
+		const held = acquireRestoreLock(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase('exclusion-anchor-test'), (error) => error.statusCode === 409);
+		} finally {
+			releaseRestoreLock(held);
+		}
+		table({ table: 'Anchor', database: 'exclusion-anchor-test', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		await assert.doesNotReject(dropDatabase('exclusion-anchor-test'));
+	});
+
 	it('never loads the reserved restore-metadata directory as a database', function () {
 		// the API can't create a database with this name (schemaRegex rejects the backtick), but the
 		// scan opens any CURRENT+MANIFEST directory regardless of name, so it must skip the reserved dir
@@ -253,11 +296,11 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
 	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
-	const { registryStatus } = require('@harperfast/rocksdb-js');
+	const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 	// the real observable for a released handle: rocksdb-js's registry is process-global and its
 	// refCount only drops to zero once every column family opened under a path has been closed
-	const refCountFor = (dbPath) => registryStatus().find((entry) => entry.path === dbPath)?.refCount ?? 0;
+	const refCountFor = (dbPath) => getRegistryStatus().find((entry) => entry.path === dbPath)?.refCount ?? 0;
 
 	let checkpointDir;
 	let scratchRoot;

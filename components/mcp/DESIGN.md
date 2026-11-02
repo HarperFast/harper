@@ -19,6 +19,12 @@ Resources/tables. Profile gating runs throughout (`completeResourceArgument`, pr
 
 A handful of design points are non-obvious and easy to break:
 
+- **The application profile reads its own request body, so it enforces `http.maxRequestBodySize` itself.**
+  `readBody` in `adapters/harperHttp.ts` shares `getMaxRequestBodySize()` with the REST reader, answers 413
+  for a declared `Content-Length` over the limit or once the streamed bytes pass it, and keeps a discarding
+  `'data'` listener on the body afterwards: a uWS body is a paused `Readable` that buffers the whole upload
+  unless something reads it. Like REST, it does not close the connection or bound the discard. The
+  operations profile is capped by Fastify's `bodyLimit` instead.
 - **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
   (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
   API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on
@@ -116,3 +122,15 @@ A handful of design points are non-obvious and easy to break:
   one module for that reason — it was duplicated across the two surfaces, and keeping two copies in
   step is how the original bug survived. Whenever `verifyPerms`' ordering, the `api_name` table, or
   `STRUCTURE_USER_OPS` changes, re-check it.
+
+- **Operations-profile iterable results are collected before `wrapToolResult`.** Operation handlers
+  that return non-array iterables or async iterables (`read_audit_log`'s `groupRecordsInHistory`
+  generator, `get_analytics`'s async-mapped `ExtendedIterable`, full-text `search_by_conditions`,
+  and `search_by_id` / `search_by_hash`'s `getRecords` cursor) rely on the caller to drain them,
+  because `wrapToolResult` uses synchronous `JSON.stringify` (`tools/results.ts`). In
+  `makeOperationToolHandler` (`tools/operations.ts`), `collectIterableResult` drains any non-array,
+  non-`Readable`, non-`ArrayBufferView` iterable via `for await` (wiring `.mapError` when present,
+  awaiting element promises, and checking `context.signal`) up to `MAX_OPERATION_ITERABLE_ITEMS`
+  (10,000 items) and `MAX_OPERATION_ITERABLE_BYTES` (10 MiB), enforced by
+  `unitTests/components/mcp/tools/operations.test.js` and
+  `integrationTests/mcp/operations-iterable-results.test.ts`.

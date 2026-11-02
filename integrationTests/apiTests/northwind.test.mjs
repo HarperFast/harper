@@ -16,6 +16,8 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { setTimeout } from 'node:timers/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
@@ -2031,11 +2033,13 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	let client;
 	let adminPwd, adminUsername;
 	let jobId; // shared job_id state used by 7_jobsAndJobRoleTesting tests
+	let exportDir;
 	// Per-user headers — built in before() from the Harper admin password.
 	let headersTestUser, headersBulkLoadUser, headersNoPermsUser, headersOnePermUser, headersImportantUser;
 	let dateYesterday, dateTomorrow;
 
 	before(async () => {
+		exportDir = mkdtempSync(join(tmpdir(), 'northwind-export-'));
 		await startHarper(ctx, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
 		adminPwd = ctx.harper.admin.password;
@@ -2119,7 +2123,11 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (exportDir) rmSync(exportDir, { recursive: true, force: true });
+		}
 	});
 
 	// ── Legacy utility shims — defined at suite scope so they close over client ──
@@ -6894,7 +6902,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					get_attributes: ['*'],
 				})
 				.expect((r) => assert.equal(r.body.error, "'hash_values' must be an array", r.text))
-				.expect(500);
+				.expect(400);
 		});
 
 		test('NoSQL search by hash get_attributes bad data type', async () => {
@@ -6908,7 +6916,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					get_attributes: '*',
 				})
 				.expect((r) => assert.equal(r.body.error, "'get_attributes' must be an array", r.text))
-				.expect(500);
+				.expect(400);
 		});
 
 		test('update NoSQL employee with falsey attributes', async () => {
@@ -6948,6 +6956,57 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					assert.equal(r.body[0].notes, false, r.text);
 				})
 				.expect(200);
+		});
+
+		test('NoSQL search by value with search_value null matches search_by_conditions equals null', async () => {
+			let conditionsBody;
+			await client
+				.req()
+				.send({
+					operation: 'search_by_conditions',
+					schema: `northnwd`,
+					table: `employees`,
+					get_attributes: ['employeeid', 'hireDate'],
+					conditions: [{ search_attribute: 'hireDate', search_type: 'equals', search_value: null }],
+				})
+				.expect((r) => {
+					conditionsBody = r.body;
+					assert.ok(
+						r.body.some((row) => row.employeeid === 2 && row.hireDate === null),
+						r.text
+					);
+				})
+				.expect(200);
+
+			await client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					schema: `northnwd`,
+					table: `employees`,
+					search_attribute: 'hireDate',
+					search_value: null,
+					get_attributes: ['employeeid', 'hireDate'],
+				})
+				.expect((r) => {
+					assert.deepEqual(r.body, conditionsBody, r.text);
+				})
+				.expect(200);
+		});
+
+		test('NoSQL search by value with search_value ["*"] returns 400', async () => {
+			await client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					schema: `northnwd`,
+					table: `employees`,
+					search_attribute: 'hireDate',
+					search_value: ['*'],
+					get_attributes: ['employeeid', 'hireDate'],
+				})
+				.expect((r) => assert.equal(r.body.error, "'value' must not be an array containing '*'", r.text))
+				.expect(400);
 		});
 
 		test('update NoSQL one employee record with no hash attribute', async () => {
@@ -11869,7 +11928,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					.req()
 					.send({
 						operation: 'export_local',
-						path: './',
+						path: exportDir,
 						format: 'json',
 						filename: 'integration-test',
 						search_operation: {
@@ -12425,7 +12484,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.req()
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12442,7 +12501,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.req()
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12462,7 +12521,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12493,7 +12552,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12524,7 +12583,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12555,7 +12614,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export',
 					format: 'json',
 					search_operation: {

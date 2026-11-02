@@ -9,7 +9,7 @@ const {
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
 } = require('#src/resources/derivedIndexRuntime');
-const { derivedIndexWriteRejection, registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
+const { derivedIndexWriteRejection, registerDerivedIndexTables } = require('#js/resources/derivedIndexRegistry');
 
 const APPLY_MICROS = Number(process.env.DERIVED_BENCH_APPLY_MICROS ?? 350);
 const BARRIER_MILLIS = Number(process.env.DERIVED_BENCH_BARRIER_MILLIS ?? 5);
@@ -289,7 +289,7 @@ describe('Benchmark: derived-index runtime with a costly native-shaped backend',
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const { setupTestDBPath } = require('../testUtils');
 		setupTestDBPath();
-		require('#js/server/threads/manageThreads').setMainIsWorker(true);
+		require('#src/server/threads/manageThreads').setMainIsWorker(true);
 		const { table } = require('#src/resources/databases');
 		const registry = require('#src/resources/derivedIndexRegistry');
 		const Plain = table({

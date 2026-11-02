@@ -155,7 +155,7 @@ describe('Login', () => {
 		let originalStdoutWrite;
 
 		// Mock cliOperations
-		const cliOperationsModule = require('#src/bin/cliOperations');
+		const cliOperationsModule = require('#js/bin/cliOperations');
 		let originalCliOperations;
 
 		before(() => {

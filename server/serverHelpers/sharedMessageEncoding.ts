@@ -1,4 +1,4 @@
-import { serializeMessage, getMessageSerializer } from './contentTypes.ts';
+import { serializeMessage, getMessageSerializer, isPassThroughEnvelope } from './contentTypes.ts';
 import { logger } from '../../utility/logging/logger.ts';
 
 /**
@@ -162,8 +162,9 @@ function fill(encoding: SharedMessageEncoding, message: any, request: any) {
 	const payload = serializeMessage(message, request);
 	encoding.payload = payload;
 	encoding.failed = false;
-	// A pass-through payload IS the message's own data, already reachable from the WeakMap key, so
-	// caching it retains nothing extra and must not be billed against the budget.
+	// A pass-through payload IS the message's own data (or a Buffer over the same memory), already
+	// reachable from the WeakMap key, so caching it retains nothing extra and must not be billed
+	// against the budget.
 	if (encoding.serializer === PASS_THROUGH) return;
 	if (typeof (payload as any)?.then === 'function')
 		// collapse an async serialization in place so later subscribers, and frame sharing, see the
@@ -222,8 +223,7 @@ function reuse(encoding: SharedMessageEncoding, message: any, request: any): Sha
 export function getSharedMessageEncoding(message: any, request?: any, version?: number): SharedMessageEncoding {
 	// Negotiation must not run for a pass-through message: an Accept header naming only unsupported
 	// types throws 406, which would kill a delivery that used to succeed by returning message.data.
-	const serializer =
-		message?.contentType != null && message.data != null ? PASS_THROUGH : getMessageSerializer(request);
+	const serializer = isPassThroughEnvelope(message) ? PASS_THROUGH : getMessageSerializer(request);
 	// primitives can not key a WeakMap, and are cheap to encode anyway; these stay per-subscriber
 	if (message === null || typeof message !== 'object' || typeof version !== 'number')
 		return encode(message, request, serializer);

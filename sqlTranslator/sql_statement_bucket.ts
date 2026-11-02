@@ -4,9 +4,10 @@
  * AST SQL values such as attributes, tables, etc.
  **/
 
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import RecursiveIterator from 'recursive-iterator';
-const harperLogger = require('../utility/logging/harper_logger').default || require('../utility/logging/harper_logger');
+import _harperLogger from '../utility/logging/harper_logger.ts';
+const harperLogger = _harperLogger;
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { findDatabasesWithTable, loadDatabaseRegistry } from '../sqlEngine/binder/defaultDatabase.ts';
@@ -203,6 +204,11 @@ class sqlStatementBucket {
 
 function filterReadRestrictedAttrs(attrPerms: any[]) {
 	return attrPerms.filter((perm) => perm[terms.PERMS_CRUD_ENUM.READ]);
+}
+
+// FIRST(*), ARRAY(*) and COUNT(DISTINCT *) read the value of an attribute literally named `*`, so they stay collected.
+function isRowCountWildcard(parent: any, node: any): boolean {
+	return node.columnid === '*' && parent?.aggregatorid === 'COUNT' && parent.expression === node && !parent.distinct;
 }
 
 function interpretAST(
@@ -465,8 +471,8 @@ function getSelectAttributes(
 	}
 
 	const iterator = new RecursiveIterator(ast.columns);
-	for (let { node } of iterator) {
-		if (node && node.columnid) {
+	for (let { node, parent } of iterator) {
+		if (node && node.columnid && !isRowCountWildcard(parent, node)) {
 			let tableName = node.tableid;
 			// tableToSchemaLookup is keyed by alias AND by base table name, so it resolves
 			// `SELECT vault.Secret.ssn FROM data.Public JOIN vault.Secret` where schemaLookup — which
@@ -507,8 +513,8 @@ function getSelectAttributes(
 		const iterator = new RecursiveIterator(ast.where);
 		const fromTable = ast.from[0].tableid;
 
-		for (let { node } of iterator) {
-			if (node && node.columnid) {
+		for (let { node, parent } of iterator) {
+			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
 				let table = node.tableid ? node.tableid : fromTable;
 
 				const whereSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
@@ -542,8 +548,8 @@ function getSelectAttributes(
 		const iterator = new RecursiveIterator(ast.group);
 		const fromTable = ast.from[0].tableid;
 
-		for (let { node } of iterator) {
-			if (node && node.columnid) {
+		for (let { node, parent } of iterator) {
+			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
 				let table = node.tableid ? node.tableid : fromTable;
 
 				const groupSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
@@ -572,8 +578,8 @@ function getSelectAttributes(
 		const iterator = new RecursiveIterator(ast.having);
 		const fromTable = ast.from[0].tableid;
 
-		for (let { node } of iterator) {
-			if (node && node.columnid) {
+		for (let { node, parent } of iterator) {
+			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
 				let table = node.tableid ? node.tableid : fromTable;
 
 				const havingSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
@@ -604,8 +610,8 @@ function getSelectAttributes(
 		ast.joins.forEach((join) => {
 			const iterator = new RecursiveIterator(join.on);
 
-			for (let { node } of iterator) {
-				if (node && node.columnid) {
+			for (let { node, parent } of iterator) {
+				if (node && node.columnid && !isRowCountWildcard(parent, node)) {
 					let table = node.tableid;
 					let schema = tableToSchemaLookup.get(table);
 
@@ -636,8 +642,8 @@ function getSelectAttributes(
 	// the SELECT clause with wildcard
 	if (ast.order) {
 		const orderIterator = new RecursiveIterator(ast.order);
-		for (let { node } of orderIterator) {
-			if (node && node.columnid) {
+		for (let { node, parent } of orderIterator) {
+			if (node && node.columnid && !isRowCountWildcard(parent, node)) {
 				let tableName = node.tableid;
 				// tableToSchemaLookup is keyed by alias AND by base table name — schemaLookup alone
 				// (aliases only) silently fell back to the FROM table's schema for an unaliased joined

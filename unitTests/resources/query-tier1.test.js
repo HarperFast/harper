@@ -3,7 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { parseQuery, resolveComparator, getNestedValue } = require('#src/resources/search');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('Query Tier-1 additions', () => {
 	let Items, People;

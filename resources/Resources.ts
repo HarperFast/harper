@@ -1,7 +1,9 @@
+import * as ErrorResourceRuntimeModule from './ErrorResource.ts';
 import { transaction } from './transaction.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { server } from '../server/Server.ts';
+import { ErrorResource } from './ErrorResource.ts';
 
 export interface ResourceEntry {
 	Resource: any;
@@ -160,7 +162,6 @@ export class Resources extends Map<string, ResourceEntry> {
 			// don't provide anything more descriptive.
 			const error = new ServerError(`Conflicting paths for ${path}`);
 			logger.error(error);
-			const { ErrorResource } = require('./ErrorResource');
 			entry.Resource = new ErrorResource(error);
 		}
 		super.set(path, entry);
@@ -221,7 +222,7 @@ export class Resources extends Map<string, ResourceEntry> {
 				// conflicting registrations for the same parameterised path; surface it like the static-path conflict
 				const error = new ServerError(`Conflicting paths for ${path}`);
 				logger.error(error);
-				const { ErrorResource } = require('./ErrorResource');
+				const { ErrorResource } = ErrorResourceRuntimeModule;
 				compiled.entry.Resource = new ErrorResource(error);
 			}
 			this.paramRoutes[existingIndex] = compiled;

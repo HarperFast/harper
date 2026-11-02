@@ -11,8 +11,9 @@ const { setTimeout: sleep } = require('node:timers/promises');
  * via `assert.fail` if `timeout` ms elapse before the condition is met.
  *
  * @param {() => unknown | Promise<unknown>} condition evaluated immediately, then every `interval` ms
- * @param {number | { timeout?: number, interval?: number, message?: string }} [timeoutOrOptions]
- *   a timeout in ms, or an options object. `message` is used as the failure message on timeout.
+ * @param {number | { timeout?: number, interval?: number, message?: string | (() => string) }} [timeoutOrOptions]
+ *   a timeout in ms, or an options object. `message` is used as the failure message on timeout; a
+ *   function is called only then, so it can describe the state the condition last saw.
  * @param {number} [interval] poll interval in ms, used only when `timeoutOrOptions` is a number
  *   (preserves the original `waitFor(condition, timeout, interval)` signature)
  * @returns {Promise<unknown>} the truthy value `condition` returned
@@ -20,11 +21,14 @@ const { setTimeout: sleep } = require('node:timers/promises');
 async function waitFor(condition, timeoutOrOptions = {}, interval) {
 	const options = typeof timeoutOrOptions === 'number' ? { timeout: timeoutOrOptions, interval } : timeoutOrOptions;
 	const { timeout = 2000, interval: pollInterval = 10, message } = options;
-	const deadline = Date.now() + timeout;
+	// monotonic: a caller may stub Date.now while it waits
+	const deadline = performance.now() + timeout;
 	let result = await condition();
 	while (!result) {
-		if (Date.now() >= deadline) {
-			assert.fail(message ?? `Timed out after ${timeout}ms waiting for condition`);
+		if (performance.now() >= deadline) {
+			assert.fail(
+				(typeof message === 'function' ? message() : message) ?? `Timed out after ${timeout}ms waiting for condition`
+			);
 		}
 		await sleep(pollInterval);
 		result = await condition();

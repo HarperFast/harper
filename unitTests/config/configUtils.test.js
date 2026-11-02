@@ -4,10 +4,11 @@ const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
 const assert = require('node:assert/strict');
+const plainAssert = require('node:assert');
 const rewire = require('rewire');
 const path = require('path');
 const fs = require('fs-extra');
-const config_utils_rw = rewire('#src/config/configUtils');
+const config_utils_rw = rewire('#js/config/configUtils');
 const YAML = require('yaml');
 const logger = require('#src/utility/logging/harper_logger');
 const common_utils = require('#src/utility/common_utils');
@@ -528,6 +529,20 @@ describe('Test configUtils module', () => {
 			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
 		});
 
+		it('does not backfill a built-in registered without a package identifier', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody';
+			writeConfig('replication: {}\n');
+			const original = fs.readFileSync(BI_CONFIG_PATH, 'utf8');
+			plainAssert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+			plainAssert.strictEqual(fs.readFileSync(BI_CONFIG_PATH, 'utf8'), original);
+		});
+
+		it('backfills built-ins with spaces around the registration separator', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = ' secretCustody = @/dist/security/keyCustody.js ';
+			writeConfig('replication: {}\n');
+			plainAssert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['secretCustody']);
+		});
+
 		it('is a no-op when secretCustody is already present', () => {
 			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody=@/dist/security/keyCustody.js';
 			writeConfig('secretCustody: {}\n');
@@ -546,7 +561,7 @@ describe('Test configUtils module', () => {
 			authentication_refreshtokentimeout: '30d',
 			applications_moduleloader: 'vm',
 			applications_dependencyloader: false,
-			applications_lockdown: 'freeze',
+			applications_lockdown: 'seal-after-load',
 			applications_allowedspawncommands: 'freeze',
 			http_cors: false,
 			http_corsaccesslist: [null],
@@ -1885,7 +1900,7 @@ describe('Test configUtils module', () => {
 			// Re-require the module to get a fresh copy
 			delete require.cache[require.resolve('#src/config/configUtils')];
 			require('#src/config/configUtils');
-			const freshRewire = rewire('#src/config/configUtils');
+			const freshRewire = rewire('#js/config/configUtils');
 			// Copy the fresh parseYamlDoc to our rewired module
 			const parseYamlDoc = freshRewire.__get__('parseYamlDoc');
 			config_utils_rw.__set__('parseYamlDoc', parseYamlDoc);

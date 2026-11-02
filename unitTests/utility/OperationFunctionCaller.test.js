@@ -5,7 +5,7 @@
 //testUtils.preTestPrep();
 const assert = require('assert');
 const op_func_caller = require('#src/utility/OperationFunctionCaller');
-const hdb_logger = require('#src/utility/logging/harper_logger');
+const hdb_logger = require('#js/utility/logging/harper_logger');
 const { promisify } = require('util');
 
 class TestInputObject {
@@ -226,6 +226,37 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 				vm_error,
 				'expected the raw VM Error instance to be passed to log.error, not a pre-formatted string'
 			);
+		});
+
+		it('bounds the logged payload and masks credential-shaped keys inside it', async function () {
+			const long_line = 'x'.repeat(20_000);
+			const test_func_exception = async function () {
+				const err = new Error('deploy failed');
+				err.http_resp_msg = {
+					error: err.message,
+					deployment_id: 'test-deployment-id',
+					request: {
+						headers: { authorization: 'Bearer super-secret-token' },
+						registry: { password: 'registry-password' },
+					},
+					install_output: { lines: Array.from({ length: 5_000 }, () => ({ line: long_line })) },
+				};
+				throw err;
+			};
+
+			try {
+				await op_func_caller.callOperationFunctionAsAwait(test_func_exception, new TestInputObject(), null);
+				assert.fail('expected callOperationFunctionAsAwait to reject');
+			} catch {
+				// expected - the structured error is rethrown after being logged
+			}
+
+			const logged_payload = logged_calls[1].join(' ');
+			assert.ok(logged_payload.length <= 256 * 1024, `logged ${logged_payload.length} characters`);
+			assert.ok(logged_payload.includes('sanitize budget'), logged_payload.slice(-500));
+			assert.ok(logged_payload.includes('test-deployment-id'));
+			assert.ok(!logged_payload.includes('super-secret-token'));
+			assert.ok(!logged_payload.includes('registry-password'));
 		});
 
 		it('reads a getter-backed http_resp_msg exactly once, so classification and logging cannot see different values (#1982 review)', async function () {

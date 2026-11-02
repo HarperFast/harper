@@ -27,7 +27,7 @@ const {
 const { waitFor } = require('../waitFor.js');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { packageDirectory } = require('#src/components/packageComponent');
-const { unconfirmedStagingPeers } = require('#src/components/operations');
+const { unconfirmedStagingPeers, confirmedStagingPeers, certificationFailure } = require('#src/components/operations');
 const { getConfigFilePath } = require('#src/config/configUtils');
 const { preserveRootConfig, rootConfigEntry, setRootConfigEntry } = require('../rootConfigFixture.js');
 
@@ -914,6 +914,52 @@ describe('an activation that fails before it commits', () => {
 describe('an activation that fails after it commits', () => {
 	preserveRootConfig();
 
+	it('reports the publication failure, not a commit of its certification that failed after it', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
+		const root = await newRoot('post-commit-certification');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'DEPLOYED v2\n' })
+		);
+		const intact = readFileSync(getConfigFilePath(), 'utf8');
+		// As below: a read-only root parks the activation past its journal, where the publication is what fails.
+		for (const dir of ['.deploy-staging', path.join('.deploy-aside', 'web'), '.component-preparation-locks']) {
+			await fs.mkdir(path.join(root, dir), { recursive: true, mode: 0o700 });
+		}
+		await fs.chmod(root, 0o500);
+		const deploying = prepareApplication(app, {
+			artifactId: 'd1',
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: true }, isolated: true }),
+			certification: {
+				arm: async () => true,
+				commit: async () => {
+					throw new Error('could not reach main');
+				},
+				withdraw: async () => {},
+			},
+		});
+		deploying.catch(() => {});
+		try {
+			await waitFor(
+				async () => {
+					const entries = await fs.readdir(deploymentDir(root, 'd1')).catch(() => []);
+					return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+				},
+				20000,
+				5
+			);
+			writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
+			await fs.chmod(root, 0o700);
+			await assert.rejects(deploying, /Deployed web on this node, but could not publish its root configuration/);
+		} finally {
+			await fs.chmod(root, 0o700).catch(() => {});
+			writeFileSync(getConfigFilePath(), intact);
+		}
+	});
+
 	it('keeps the journal when the entry cannot be published, and recovery publishes it once it can', async function () {
 		this.timeout(30000);
 		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
@@ -1140,5 +1186,154 @@ describe('which peers confirmed a stage', () => {
 			assert.deepStrictEqual(unconfirmedStagingPeers(replicated), [], String(replicated));
 		}
 		assert.deepStrictEqual(unconfirmedStagingPeers([null, undefined]), [], 'holes are not peers');
+	});
+
+	it('activates exactly the peers that confirmed, in either shape', () => {
+		const peers = [
+			{ node: 'flat', staged: true },
+			{ node: 'wrapped', value: { staged: true } },
+			{ node: 'old', message: 'Successfully deployed: web' },
+			null,
+		];
+		assert.deepStrictEqual(
+			confirmedStagingPeers(peers).map((peer) => peer.node),
+			['flat', 'wrapped']
+		);
+		assert.deepStrictEqual(confirmedStagingPeers(undefined), []);
+	});
+});
+
+describe('a deploy whose canary refused its release', () => {
+	const ID = '11111111-1111-1111-1111-111111111111';
+	const failures = [{ key: 'web.rest', name: 'Error', message: 'threw at load' }];
+
+	it('says which release is live again, and that no other node received it', () => {
+		const error = certificationFailure(
+			'web',
+			ID,
+			{ status: 'rejected', reason: 'web.rest: threw at load', failures, restored: 'd1', failedClosed: false },
+			{ onOrigin: true }
+		);
+		assert.equal(error.statusCode, 400);
+		assert.match(error.message, /^web was not deployed: release 1{8}-.* failed to load in its canary worker/);
+		assert.match(error.message, /Deployment d1, the release it replaced, is live again\./);
+		assert.match(error.message, /No other node received it\./);
+		assert.deepStrictEqual(error.certification, {
+			status: 'rejected',
+			reason: 'web.rest: threw at load',
+			failures,
+			restored: 'd1',
+			failed_closed: false,
+		});
+	});
+
+	it('says a first deploy is failed closed, and speaks for this node alone on a peer', () => {
+		const error = certificationFailure(
+			'web',
+			ID,
+			{ status: 'rejected', reason: 'threw at load', restored: null, failedClosed: true },
+			{ onOrigin: false }
+		);
+		assert.match(error.message, /^web was not deployed on this node:/);
+		assert.match(error.message, /failed closed on this node until it is deployed again/);
+		assert.doesNotMatch(error.message, /No other node/);
+		assert.equal(error.certification.failed_closed, true);
+		assert.equal(error.certification.restored, null);
+	});
+
+	it('reports an interrupted certification as one that could not be made', () => {
+		const error = certificationFailure(
+			'web',
+			ID,
+			{ status: 'interrupted', reason: 'the process is shutting down' },
+			{ onOrigin: true }
+		);
+		assert.match(error.message, /could not be certified: the process is shutting down/);
+		assert.equal(error.certification.status, 'interrupted');
+		assert.equal(error.certification.failed_closed, false);
+	});
+});
+
+describe('a requesting worker the rollout retires before its deploy answers', () => {
+	const { drainWhileDeploying } = require('#src/components/operations');
+	const { shutdownDrainsHaveWork, runShutdownDrains } = require('#src/components/shutdownDrain');
+	let end;
+
+	afterEach(() => end?.());
+
+	it('holds its shutdown open until the deploy answers', async () => {
+		let deploying = true;
+		end = drainWhileDeploying(() => deploying);
+		assert.equal(shutdownDrainsHaveWork(), true, 'a deploy in flight is work worth draining');
+		let drained = false;
+		const draining = runShutdownDrains(Date.now() + 60_000).then(() => (drained = true));
+		await sleep(50);
+		assert.equal(drained, false, 'the shutdown waits on the deploy');
+		deploying = false;
+		end();
+		await draining;
+		assert.equal(shutdownDrainsHaveWork(), false, 'and holds nothing once it answered');
+	});
+
+	it('stops waiting at the drain deadline', async () => {
+		end = drainWhileDeploying(() => true);
+		const startedAt = Date.now();
+		await runShutdownDrains(startedAt + 100);
+		assert.ok(Date.now() - startedAt < 5000, 'the deadline bounds the wait');
+	});
+
+	it('has main interrupt a release still undecided at its bound, and holds the shutdown until the deploy answers', async () => {
+		// What decides the release may be its own rollout, queued behind the restart retiring this worker.
+		let interrupts = 0;
+		end = drainWhileDeploying(
+			() => true,
+			() => false,
+			200,
+			async () => {
+				interrupts++;
+				return true;
+			}
+		);
+		let drained = false;
+		const draining = runShutdownDrains(Date.now() + 60_000).then(() => (drained = true));
+		await sleep(600);
+		assert.equal(interrupts, 1);
+		assert.equal(drained, false, 'its deploy answers the interruption before the worker exits');
+		end();
+		await draining;
+	});
+
+	it('holds a shutdown only as long as a canary may take when its release cannot be interrupted', async () => {
+		end = drainWhileDeploying(
+			() => true,
+			() => false,
+			200,
+			async () => false
+		);
+		const startedAt = Date.now();
+		await runShutdownDrains(startedAt + 60_000);
+		assert.ok(Date.now() - startedAt < 5000, 'an undecided release does not hold the shutdown for the drain ceiling');
+	});
+
+	it('holds a shutdown until the deploy answers once its release is decided', async () => {
+		end = drainWhileDeploying(
+			() => true,
+			() => true,
+			100
+		);
+		let drained = false;
+		const draining = runShutdownDrains(Date.now() + 60_000).then(() => (drained = true));
+		await sleep(400);
+		assert.equal(drained, false, 'past the bound, a decided release still holds it');
+		end();
+		await draining;
+	});
+
+	it('holds nothing while the deploy has not armed its certification', async () => {
+		end = drainWhileDeploying(() => false);
+		assert.equal(shutdownDrainsHaveWork(), false);
+		const startedAt = Date.now();
+		await runShutdownDrains(startedAt + 60_000);
+		assert.ok(Date.now() - startedAt < 5000, 'a shutdown mid-prepare closes as it always did');
 	});
 });

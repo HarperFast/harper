@@ -1,0 +1,561 @@
+import { threadId } from 'node:worker_threads';
+import type { Transaction as RocksTransaction, RocksDatabase } from '@harperfast/rocksdb-js';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { onMessageByType } from '../server/threads/manageThreads.ts';
+
+/**
+ * Origin-closed timestamp floor (harper-pro#922, item 1).
+ *
+ * Every key that reaches this node's `local` transaction log is reserved on its thread before the
+ * handle stages its first write, which is when rocksdb-js freezes it. Each thread publishes, in a
+ * per-root-store shared buffer, a lower bound on every key it may still append; a certifier
+ * publishes `F ≤ min(a clock sample taken first, every thread's bound)`, so no transaction can later
+ * append below `F`. Persisted before it is advertised; the issuance ratchet keeps keys unique and at
+ * or above the recovered floor after a restart behind it. Design: resources/DESIGN.md
+ * "Origin-closed timestamp floor".
+ */
+
+const SLOTS = 1024;
+// One bound word per 64-byte line: writers on neighbouring slots must not bounce a line between cores.
+const BOUND_STRIDE = 8;
+export const WORD_PROPOSED = 0;
+export const WORD_PUBLISHED = 1;
+export const WORD_RATCHET = 2;
+// Non-zero once a key may have been issued from the ratchet rather than the native clock (the clock
+// was behind a recovered floor or a runtime claim); native keys then pass through it for the rest of
+// the process, since any later hand-back to load-only admission races a fallback still in flight.
+export const WORD_STRICT = 3;
+export const WORD_INITIAL_CEILING = 4;
+// One past the highest slot ever claimed: a bounds scan stops there. Raised when a slot is claimed, before
+// the claimer reads `proposed`; a sampler raises `proposed` before it loads this, so a claim the sampler's scan
+// misses admits only keys above the sampler's value.
+export const WORD_SLOT_LIMIT = 5;
+export const HEADER_WORDS = 8;
+const THREAD_WORDS_OFFSET = HEADER_WORDS;
+const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
+const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
+const boundIndex = (slot: number) => BOUND_WORDS_OFFSET + slot * BOUND_STRIDE;
+const BUFFER_KEY = 'origin-closed-floor';
+export const ORIGIN_FLOOR_TICK_MS = 5000;
+const PENDING_RETRIES = 8;
+const MAX_TIMESTAMP = 8.64e15;
+
+export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
+
+const RETIRED_BIT = 1n << 40n;
+const RESERVATION = Symbol('originFloorReservation');
+const REGISTRY = Symbol('originFloorRegistry');
+const ISSUANCE_COVER = Symbol('localIssuanceCover');
+
+// Positive doubles order as their bit patterns read as signed 64-bit integers: a compare-and-swap
+// maximum on the bits is one on the values, and +1 on the bits is nextafter.
+const FLOAT_SCRATCH = new Float64Array(1);
+const BITS_SCRATCH = new BigInt64Array(FLOAT_SCRATCH.buffer);
+function toBits(value: number): bigint {
+	FLOAT_SCRATCH[0] = value;
+	return BITS_SCRATCH[0];
+}
+function fromBits(bits: bigint): number {
+	BITS_SCRATCH[0] = bits;
+	return FLOAT_SCRATCH[0];
+}
+const INFINITY_BITS = toBits(Infinity);
+
+/** The next representable timestamp above a positive `value`: the step the native clock breaks ties by. */
+export function timestampAbove(value: number): number {
+	return fromBits(toBits(value) + 1n);
+}
+
+function storeMaxWord(words: BigInt64Array, index: number, bits: bigint): bigint {
+	for (;;) {
+		const current = Atomics.load(words, index);
+		if (current >= bits) return current;
+		if (Atomics.compareExchange(words, index, current, bits) === current) return bits;
+	}
+}
+
+function storeMax(words: BigInt64Array, index: number, value: number): number {
+	return fromBits(storeMaxWord(words, index, toBits(value)));
+}
+
+type Reservation = { registry: ThreadRegistry; key: number; released: boolean; aroundCallerValue: boolean };
+
+/**
+ * One thread's view of one root store's floor registry. Outstanding reservations sit in a binary
+ * min-heap by key with lazy deletion: commits settle roughly oldest-first, so the released key is
+ * usually the minimum, and a rescan there would make draining a backlog quadratic.
+ */
+class ThreadRegistry {
+	readonly words: BigInt64Array;
+	readonly rootStore: RocksDatabase;
+	private slot = -1;
+	private readonly heap: Reservation[] = [];
+	private outstanding = 0;
+	private retired = false;
+	private released = 0;
+	private settledBound = Infinity;
+	private coveredThrough = 0;
+
+	constructor(rootStore: RocksDatabase) {
+		this.rootStore = rootStore;
+		const buffer = rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES));
+		// the buffer lives as long as the process: a thread running another layout would misread every slot
+		if (buffer.byteLength !== BUFFER_BYTES)
+			throw new Error(
+				`The origin-closed floor buffer has another layout (${buffer.byteLength} bytes); restart the process`
+			);
+		this.words = new BigInt64Array(buffer);
+		// a reservation's pending bound is `proposed` as it starts, so it must never be 0
+		if (Atomics.load(this.words, WORD_PROPOSED) === 0n)
+			storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());
+	}
+
+	private claimSlot(): number {
+		const owner = BigInt(threadId + 1);
+		for (let slot = 0; slot < SLOTS; slot++) {
+			const index = THREAD_WORDS_OFFSET + slot;
+			if (Atomics.load(this.words, index) === owner) return slot;
+			if (Atomics.compareExchange(this.words, index, 0n, owner) === 0n) {
+				Atomics.store(this.words, boundIndex(slot), INFINITY_BITS);
+				this.settledBound = Infinity;
+				storeMaxWord(this.words, WORD_SLOT_LIMIT, BigInt(slot + 1));
+				return slot;
+			}
+		}
+		throw new Error(`No origin-floor slot is free for thread ${threadId} on ${this.rootStore.path}`);
+	}
+
+	/**
+	 * The store closed on this thread. The slot stays this registry's until its last reservation is
+	 * released, flagged so a successor registry on the thread claims a fresh one.
+	 */
+	retire(): void {
+		if (this.retired) return;
+		this.retired = true;
+		if (this.slot < 0) return registries.delete(this) && undefined;
+		if (this.outstanding === 0) this.free();
+		else {
+			const owner = BigInt(threadId + 1);
+			Atomics.compareExchange(this.words, THREAD_WORDS_OFFSET + this.slot, owner, owner | RETIRED_BIT);
+		}
+	}
+
+	private free(): void {
+		Atomics.store(this.words, boundIndex(this.slot), INFINITY_BITS);
+		Atomics.store(this.words, THREAD_WORDS_OFFSET + this.slot, 0n);
+		this.slot = -1;
+		if (this.retired) registries.delete(this);
+	}
+
+	private minKey(): number {
+		const heap = this.heap;
+		while (heap.length > 0 && heap[0].released) {
+			this.popMin();
+			this.released--;
+		}
+		return heap.length > 0 ? heap[0].key : Infinity;
+	}
+
+	private compact(): void {
+		const live = this.heap.filter((reservation) => !reservation.released);
+		this.heap.length = 0;
+		for (const reservation of live) this.pushHeap(reservation);
+		this.released = 0;
+	}
+
+	private pushHeap(reservation: Reservation): void {
+		const heap = this.heap;
+		heap.push(reservation);
+		let index = heap.length - 1;
+		while (index > 0) {
+			const parent = (index - 1) >> 1;
+			if (heap[parent].key <= heap[index].key) break;
+			[heap[parent], heap[index]] = [heap[index], heap[parent]];
+			index = parent;
+		}
+	}
+
+	private popMin(): void {
+		const heap = this.heap;
+		const last = heap.pop()!;
+		if (heap.length === 0) return;
+		heap[0] = last;
+		let index = 0;
+		for (;;) {
+			const left = 2 * index + 1;
+			const right = left + 1;
+			let smallest = index;
+			if (left < heap.length && heap[left].key < heap[smallest].key) smallest = left;
+			if (right < heap.length && heap[right].key < heap[smallest].key) smallest = right;
+			if (smallest === index) break;
+			[heap[smallest], heap[index]] = [heap[index], heap[smallest]];
+			index = smallest;
+		}
+	}
+
+	private publish(bound: number): void {
+		if (this.slot < 0) return;
+		this.settledBound = bound;
+		Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
+	}
+
+	/**
+	 * Admit a natively minted key: it must beat the ratchet. Ordinarily that is one load, since the
+	 * ratchet is the recovered floor and native keys are unique by the native clock. Once a key has
+	 * been issued from the ratchet instead (`WORD_STRICT`), a native key also raises the ratchet to
+	 * itself by compare-and-swap, so a stale ratchet step cannot repeat a native key another thread
+	 * admitted meanwhile.
+	 */
+	private admitNative(bits: bigint): boolean {
+		for (;;) {
+			const ratchet = Atomics.load(this.words, WORD_RATCHET);
+			if (bits <= ratchet) return false;
+			if (Atomics.load(this.words, WORD_STRICT) === 0n) return true;
+			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, bits) === ratchet) return true;
+		}
+	}
+
+	/**
+	 * A unique key above every clock sample so far: the native clock's next value, or, while that
+	 * clock is still behind the ratchet (the recovered floor after a restart), the ratchet's next ulp.
+	 */
+	freshKey(): number {
+		const minted = this.rootStore.getMonotonicTimestamp();
+		if (this.admitNative(toBits(minted))) return minted;
+		// Behind the ratchet: from here on native keys go through it too, and a sample taken after that
+		// switch is ordered against every admission that saw the old mode.
+		Atomics.store(this.words, WORD_STRICT, 1n);
+		for (;;) {
+			const again = this.rootStore.getMonotonicTimestamp();
+			if (this.admitNative(toBits(again))) return again;
+			const ratchet = Atomics.load(this.words, WORD_RATCHET);
+			const next = ratchet + 1n;
+			this.covered(fromBits(next));
+			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, next) === ratchet) return fromBits(next);
+		}
+	}
+
+	/**
+	 * A key issued from the ratchet is ahead of the clock, which a restart cannot recover, so a ceiling
+	 * above it is persisted before it is used; open seeds issuance above that ceiling.
+	 */
+	private covered(key: number): number {
+		if (key > this.coveredThrough) {
+			const cover: ((key: number) => number) | undefined = (this.rootStore as any)[ISSUANCE_COVER];
+			if (cover) this.coveredThrough = cover(key);
+		}
+		return key;
+	}
+
+	/** Persist a claim's ceiling before making its floor visible to other workers. */
+	coverBeforeClaim(floor: number): void {
+		this.covered(floor);
+	}
+
+	reserve(handle: RocksTransaction, explicit: number | undefined): number {
+		const words = this.words;
+		if (this.slot < 0) this.slot = this.claimSlot();
+		// Pending until the key is decided, carrying a lower bound on it, negated: admission below compares the
+		// key against `proposed` after this store, and every outstanding key is at or above the settled bound.
+		const pending = Math.min(this.settledBound, fromBits(Atomics.load(words, WORD_PROPOSED)));
+		Atomics.store(words, boundIndex(this.slot), toBits(-pending));
+		try {
+			const current = handle.getTimestamp();
+			const bits = toBits(current);
+			// Admitting a caller's value would let two local transactions share a key, and a later mint land on
+			// it, since it may not move the ratchet (one far in the future would pin every later key). Every site
+			// that installs a caller's value on a handle hands it to `save` as `txnTime`, so a handle without
+			// `explicit` carries its own mint.
+			const admissible = explicit == null && bits >= Atomics.load(words, WORD_PROPOSED) && this.admitNative(bits);
+			const key = admissible ? current : this.freshKey();
+			if (key !== current) handle.setTimestamp(key);
+			const reservation: Reservation = { registry: this, key, released: false, aroundCallerValue: explicit != null };
+			(handle as any)[RESERVATION] = reservation;
+			this.pushHeap(reservation);
+			this.outstanding++;
+			return key;
+		} finally {
+			this.publish(this.minKey());
+		}
+	}
+
+	release(reservation: Reservation): void {
+		if (reservation.released) return;
+		reservation.released = true;
+		this.outstanding--;
+		this.released++;
+		if (this.outstanding === 0) {
+			this.heap.length = 0;
+			this.released = 0;
+			if (this.retired) return this.free();
+		} else if (this.released > 64 && this.released > this.outstanding) this.compact();
+		this.publish(this.minKey());
+	}
+
+	private slotLimit(): number {
+		return Math.min(Number(Atomics.load(this.words, WORD_SLOT_LIMIT)), SLOTS);
+	}
+
+	holders(): Array<{ threadId: number; bound: number }> {
+		const result = [];
+		const limit = this.slotLimit();
+		for (let slot = 0; slot < limit; slot++) {
+			const owner = Atomics.load(this.words, THREAD_WORDS_OFFSET + slot);
+			if (owner === 0n) continue;
+			const bound = Math.abs(fromBits(Atomics.load(this.words, boundIndex(slot))));
+			if (bound !== Infinity) result.push({ threadId: Number(owner & ~RETIRED_BIT) - 1, bound });
+		}
+		return result;
+	}
+
+	lowestOutstanding(): number {
+		return this.minKey();
+	}
+
+	/**
+	 * The lowest bound over owned slots, negated while any slot is pending: a reservation in progress (its
+	 * magnitude still bounds that thread), or a `0` — the initial word of a slot whose claimer has not stored
+	 * its first bound, and so has reserved nothing yet. A reused slot's stale word in that window only errs low.
+	 */
+	minBound(): number {
+		let min = Infinity;
+		let pending = false;
+		const limit = this.slotLimit();
+		for (let slot = 0; slot < limit; slot++) {
+			if (Atomics.load(this.words, THREAD_WORDS_OFFSET + slot) === 0n) continue;
+			const bits = Atomics.load(this.words, boundIndex(slot));
+			if (bits > 0n) {
+				const bound = fromBits(bits);
+				if (bound < min) min = bound;
+				continue;
+			}
+			pending = true;
+			const bound = -fromBits(bits);
+			if (bound > 0 && bound < min) min = bound;
+		}
+		return pending ? -min : min;
+	}
+}
+
+const registries = new Set<ThreadRegistry>();
+
+function registryFor(rootStore: RocksDatabase): ThreadRegistry {
+	let registry: ThreadRegistry = (rootStore as any)[REGISTRY];
+	if (!registry) {
+		registry = (rootStore as any)[REGISTRY] = new ThreadRegistry(rootStore);
+		registries.add(registry);
+	}
+	return registry;
+}
+
+/** The native timestamp domain: a floor outside it would seed keys `setTimestamp` rejects. */
+export function isValidFloor(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value > 0 && value < MAX_TIMESTAMP;
+}
+
+function assertValidTimestamp(value: number): void {
+	if (!(typeof value === 'number' && Number.isFinite(value) && value > 0 && value < MAX_TIMESTAMP))
+		throw new Error(`Invalid transaction timestamp: ${String(value)}`);
+}
+
+/**
+ * Reserve the key `handle` appends to the `local` log with, before its first staged write: the handle's
+ * own minted key when admissible, else a fresh one installed on the handle. `explicit` (a context or
+ * lock timestamp) is validated and stays the record version; it is never the key, which is what keeps a
+ * key unique within the `local` log. Returns the key the handle now carries.
+ */
+export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransaction, explicit?: number): number {
+	const existing: Reservation | undefined = (handle as any)[RESERVATION];
+	if (existing) return existing.key;
+	if (explicit !== undefined) assertValidTimestamp(explicit);
+	return registryFor(rootStore).reserve(handle, explicit);
+}
+
+/**
+ * The handle that re-stages a reserved handle's writes (a replay past an open iterator) takes over
+ * the reservation and its key, replacing the explicit timestamp the caller installed on it; the
+ * retained handle's own batch is never appended, so it holds nothing further.
+ */
+export function transferLocalKey(from: RocksTransaction, to: RocksTransaction): void {
+	const reservation: Reservation | undefined = (from as any)[RESERVATION];
+	if (!reservation || (to as any)[RESERVATION]) return;
+	if (to.getTimestamp() !== reservation.key) to.setTimestamp(reservation.key);
+	(from as any)[RESERVATION] = undefined;
+	(to as any)[RESERVATION] = reservation;
+}
+
+export function releaseLocalKey(handle: RocksTransaction | null | undefined): void {
+	const reservation: Reservation | undefined = handle && (handle as any)[RESERVATION];
+	if (!reservation) return;
+	(handle as any)[RESERVATION] = undefined;
+	try {
+		reservation.registry.release(reservation);
+	} catch (error) {
+		harperLogger.warn('Error releasing an origin-floor reservation', error);
+	}
+}
+
+export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
+	return (handle as any)[RESERVATION] !== undefined;
+}
+
+export function reservedLocalKey(handle: RocksTransaction | undefined): number | undefined {
+	return handle && (handle as any)[RESERVATION]?.key;
+}
+
+export function reservedAroundCallerValue(handle: RocksTransaction | undefined): boolean {
+	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
+}
+
+/** The highest key the ratchet has issued or admitted. */
+export function localIssuanceRatchet(rootStore: RocksDatabase): number {
+	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_RATCHET));
+}
+
+/**
+ * A timestamp no local append on this node is issued at: the clock's next one, or the ratchet's while it
+ * is ahead. A raw clock sample can equal a key the ratchet issued ahead of the clock once the clock
+ * catches up, and an equal version on one record reads as a re-delivery.
+ */
+export function freshLocalKey(rootStore: any): number {
+	return typeof rootStore?.getUserSharedBuffer === 'function'
+		? registryFor(rootStore).freshKey()
+		: rootStore.getMonotonicTimestamp();
+}
+
+/** Claim a record-version floor with a fresh local key, leaving all later local keys above it. */
+export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
+	const registry = registryFor(rootStore);
+	registry.coverBeforeClaim(floor);
+	storeMax(registry.words, WORD_RATCHET, fromBits(toBits(floor) - 1n));
+	return registry.freshKey();
+}
+
+/**
+ * Install per-thread coverage and seed a fresh registry above the earlier process's persisted ceiling.
+ * Later openers share that initial snapshot without consuming newly reserved headroom.
+ */
+export function seedLocalIssuance(rootStore: RocksDatabase, ceiling: number, cover: (key: number) => number): void {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	(rootStore as any)[ISSUANCE_COVER] = cover;
+	const words = registryFor(rootStore).words;
+	// Only recovery consumes the disk reserve. Later workers must not turn unused headroom into a lead.
+	const encoded = isValidFloor(ceiling) ? toBits(ceiling) : -1n;
+	const prior = Atomics.compareExchange(words, WORD_INITIAL_CEILING, 0n, encoded);
+	const initial = prior === 0n ? encoded : prior;
+	if (initial === -1n) return;
+	const recovered = fromBits(initial);
+	storeMax(words, WORD_RATCHET, recovered);
+	if (rootStore.getMonotonicTimestamp() <= recovered) Atomics.store(words, WORD_STRICT, 1n);
+}
+
+function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
+	const words = registryFor(rootStore).words;
+	storeMax(words, WORD_RATCHET, floor);
+	storeMax(words, WORD_PROPOSED, floor);
+	if (rootStore.getMonotonicTimestamp() <= floor) Atomics.store(words, WORD_STRICT, 1n);
+}
+
+/** Whether this engine can make a floor record power-loss durable before it is advertised (`syncWal`). */
+export function originFloorsDurable(rootStore: any): boolean {
+	return typeof rootStore?.syncWal === 'function';
+}
+
+export function publishOriginFloor(rootStore: RocksDatabase, floor: number): void {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	registryFor(rootStore); // every opener can retire a dead thread's bounds, floor or no floor
+	if (!isValidFloor(floor)) return;
+	raiseOriginFloorIssuance(rootStore, floor);
+	storeMax(registryFor(rootStore).words, WORD_PUBLISHED, floor);
+}
+
+/**
+ * One certification round: the clock sample and the admission bound come before the bounds are read,
+ * so a key minted or adopted after the read is above the candidate. The caller persists, then publishes.
+ * `null`: a thread was mid-reservation on every read; the caller retries after a yield, not a tick.
+ */
+export function certifyOriginFloor(rootStore: RocksDatabase): number | null | undefined {
+	const closed = sampleClosedBounds(rootStore);
+	if (!closed.settled) return null;
+	const candidate = Math.min(closed.sample, closed.bound);
+	if (toBits(candidate) <= Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED)) return;
+	return candidate;
+}
+
+/**
+ * Where a new local reader starts so it skips no key reserved now or later: `atOrAbove` is the lowest
+ * outstanding reservation (the start is just below it), and `above` is a sample every later key exceeds.
+ * A thread still mid-reservation after the retries contributes the lower bound its slot carries.
+ */
+export function localStartBound(rootStore: RocksDatabase): { atOrAbove: number } | { above: number } | undefined {
+	// a closed store's registry is retired; recreating it would retain the closed store
+	if (rootStore.status === 'closed') return;
+	// A floor published before the sample bounds every key still outstanding at the scan, and is the tighter
+	// bound when a carried one is stale. One read after the scan could pass a key the scan saw commit meanwhile.
+	const published = fromBits(Atomics.load(registryFor(rootStore).words, WORD_PUBLISHED));
+	const closed = sampleClosedBounds(rootStore);
+	const bound = Math.max(closed.bound, published);
+	return bound <= closed.sample ? { atOrAbove: bound } : { above: closed.sample };
+}
+
+/**
+ * `localStartBound` for a reader that sees only this thread's commits: the bound is this thread's own lowest
+ * outstanding reservation, read without the shared scan; `proposed` is still raised, so a handle minted earlier
+ * cannot be admitted below the sample afterwards.
+ */
+export function threadStartBound(rootStore: RocksDatabase): { atOrAbove: number } | { above: number } | undefined {
+	if (rootStore.status === 'closed') return;
+	const registry = registryFor(rootStore);
+	const words = registry.words;
+	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
+	storeMax(words, WORD_PROPOSED, sample);
+	const bound = registry.lowestOutstanding();
+	return bound <= sample ? { atOrAbove: bound } : { above: sample };
+}
+
+function sampleClosedBounds(rootStore: RocksDatabase): { sample: number; bound: number; settled: boolean } {
+	const registry = registryFor(rootStore);
+	const words = registry.words;
+	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
+	storeMax(words, WORD_PROPOSED, sample);
+	let bound = registry.minBound();
+	for (let attempt = 1; attempt < PENDING_RETRIES && bound < 0; attempt++) bound = registry.minBound();
+	return bound < 0 ? { sample, bound: -bound, settled: false } : { sample, bound, settled: true };
+}
+
+export function getOriginClosedFloor(
+	rootStore: RocksDatabase
+): { floor: number; lagMs: number; holders: Array<{ threadId: number; bound: number }> } | undefined {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	const registry = registryFor(rootStore);
+	const floor = fromBits(Atomics.load(registry.words, WORD_PUBLISHED));
+	if (!(floor > 0)) return;
+	return { floor, lagMs: Date.now() - floor, holders: registry.holders() };
+}
+
+export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
+	const registry: ThreadRegistry | undefined = (rootStore as any)?.[REGISTRY];
+	if (!registry) return;
+	registry.retire(); // leaves the retirement scan once its last reservation has freed its slot
+	(rootStore as any)[REGISTRY] = undefined;
+}
+
+/**
+ * Free a dead thread's slots. Called only after the worker's native env teardown, which closes its
+ * handles with their commits drained (main's `worker.on('exit')`); the worker's own exit event fires
+ * before that, while a queued commit can still append. One compare-and-swap per slot: an unowned
+ * slot's bound is never read, and a claimer writes its own bound after it owns the slot, so there is
+ * no window in which a stale store could erase a successor's bound.
+ */
+export function retireOriginFloorSlots(exitedThreadId: number): void {
+	const owner = BigInt(exitedThreadId + 1);
+	for (const registry of registries) {
+		for (let slot = 0; slot < SLOTS; slot++) {
+			const index = THREAD_WORDS_OFFSET + slot;
+			if (Atomics.compareExchange(registry.words, index, owner, 0n) === owner) continue;
+			Atomics.compareExchange(registry.words, index, owner | RETIRED_BIT, 0n);
+		}
+	}
+}
+
+onMessageByType(ORIGIN_FLOOR_RETIRE, (message: { threadId: number }) => retireOriginFloorSlots(message.threadId));

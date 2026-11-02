@@ -23,7 +23,7 @@ describe('Test signalling module', () => {
 		sandbox.stub(hdb_logger, 'trace');
 		itc_utils = require('#js/server/threads/itc');
 		send_itc_event_stub = sandbox.stub(itc_utils, 'sendItcEvent');
-		signalling = rewire('#src/utility/signalling');
+		signalling = rewire('#js/utility/signalling');
 	});
 
 	afterEach(() => {
@@ -33,7 +33,7 @@ describe('Test signalling module', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#src/utility/signalling');
+		rewire('#js/utility/signalling');
 	});
 
 	it('Test signalSchemaChange happy path', () => {

@@ -321,4 +321,18 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.strictEqual(txnCalls, 1);
 		assert.strictEqual(widgets._ops.filter((o) => o[0] === 'patch').length, 3);
 	});
+
+	it('supports parenthesized expressions in INSERT VALUES, UPDATE SET, and DELETE WHERE', async () => {
+		const ins = await runSql("INSERT INTO dev.widget (id, name, qty) VALUES (4, 'delta', (2 + 3) * 4), (5, 'zero', 0)");
+		assert.deepStrictEqual(ins.inserted_hashes, [4, 5]);
+		assert.strictEqual(widgets._store.get(4).qty, 20);
+
+		const upd = await runSql('UPDATE dev.widget SET qty = (qty + 5) * 2 WHERE (id = 4)');
+		assert.deepStrictEqual(upd.update_hashes, [4]);
+		assert.strictEqual(widgets._store.get(4).qty, 50);
+
+		const del = await runSql('DELETE FROM dev.widget WHERE id >= 4 AND NOT (NOT qty)');
+		assert.deepStrictEqual(del.deleted_hashes, [4]);
+		assert.strictEqual(widgets._store.has(5), true);
+	});
 });
