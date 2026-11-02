@@ -992,7 +992,7 @@ class SQLSearch {
 				table: table.as ? table.as_orig : table.tableid_orig,
 				keys: new Set(),
 			});
-			select.push(`${table.as ? table.as : table.tableid}.\`${hash}\` AS "${tableKey}.${hash}"`);
+			select.push(`${table.as ? table.as : table.tableid}.\`${hash}\` AS [${tableKey}.${hash}]`);
 
 			existingAttributes[table.as ? table.as_orig : table.tableid_orig] =
 				this.data[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`].__mergedAttributes;

@@ -174,6 +174,18 @@ describe('legacy SQL text', function () {
 		assert.ok(!Object.hasOwn(insert.into, 'tableid_orig'));
 	});
 
+	it('leaves the statement as it was when writing it throws', function () {
+		const statement = parse('SELECT d.label FROM dev.t AS d WHERE d.`count` = 1 AND d.x = 1e999');
+		const names = () => JSON.stringify([statement.columns[0], statement.from[0], statement.where]);
+		const before = names();
+		assert.throws(
+			() => assertLegacySqlText(statement),
+			(err) => err.statusCode === 400
+		);
+		assert.strictEqual(names(), before);
+		assertLegacySqlText(parse('SELECT d.label FROM dev.t AS d WHERE d.`count` = 1'));
+	});
+
 	it('refuses a string literal that has no spelling', function () {
 		assertUnwritable("SELECT 'a\\' AS v FROM dev.t");
 		assertUnwritable("UPDATE dev.t SET label = {'k':'a\\'} WHERE id = 1");
