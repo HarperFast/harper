@@ -160,7 +160,7 @@ class SQLSearch {
 			// Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
 			joinResults = await this._processJoins();
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from processJoins in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -180,7 +180,7 @@ class SQLSearch {
 			searchResults = await this._finalSQL();
 			return searchResults;
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from finalSQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -1048,6 +1048,7 @@ class SQLSearch {
 			joined = await alasql.promise(finalSqlOperation, tableData);
 			tableData = null;
 		} catch (err) {
+			if (err instanceof ClientError) throw err;
 			log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
 			log.error(err);
 			throw new Error('There was a problem processing the data.');

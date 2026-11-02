@@ -1,31 +1,34 @@
-/**
- * alasql's own LIKE compiles each pattern to a backtracking RegExp (#1930). This keeps its semantics
- * (case-insensitive, `_` excludes line terminators, `[set]` classes) on the linear matcher; characters alasql
- * leaked into that RegExp unescaped (`\`, `^`, `$`, escape + letter) are literals here.
- */
-
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { compileLikeTokens, type LikeMatcher, type LikeToken } from '../sqlEngine/expressions/like.ts';
 
 const MAX_CACHED_PATTERNS = 1000;
 const cacheByEscape = new Map<string, Map<string, LikeMatcher>>();
+let cachedPatterns = 0;
 
 function alasqlLike(pattern: unknown, value: unknown, escape: unknown = ''): boolean {
 	const patternText = String(pattern ?? '');
 	const escapeText = String(escape ?? '');
-	if (escapeText.length > 1) throw new ClientError(`LIKE ESCAPE must be a single character, got '${escapeText}'`);
-	let cache = cacheByEscape.get(escapeText);
-	if (!cache) cacheByEscape.set(escapeText, (cache = new Map()));
-	let matches = cache.get(patternText);
+	let matches = cacheByEscape.get(escapeText)?.get(patternText);
 	if (!matches) {
-		if (cache.size >= MAX_CACHED_PATTERNS) cache.clear();
+		if (escapeText.length > 1) throw new ClientError(`LIKE ESCAPE must be a single character, got '${escapeText}'`);
 		matches = compileLikeTokens(tokenizeAlasqlLike(patternText, escapeText), {
 			caseInsensitive: true,
 			oneExcludesLineTerminators: true,
 		});
+		if (cachedPatterns >= MAX_CACHED_PATTERNS) evictOldestPattern();
+		let cache = cacheByEscape.get(escapeText);
+		if (!cache) cacheByEscape.set(escapeText, (cache = new Map()));
 		cache.set(patternText, matches);
+		cachedPatterns++;
 	}
 	return matches('' + (value ?? ''));
+}
+
+function evictOldestPattern(): void {
+	const [escape, cache] = cacheByEscape.entries().next().value!;
+	cache.delete(cache.keys().next().value!);
+	if (cache.size === 0) cacheByEscape.delete(escape);
+	cachedPatterns--;
 }
 
 function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {

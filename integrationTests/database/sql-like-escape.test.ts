@@ -1,8 +1,3 @@
-/**
- * `LIKE … ESCAPE` row sets on an indexed column (#3878), and regex-backtracking LIKE patterns returning promptly
- * (#1930), under `auto`, `new` and `legacy`.
- */
-
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
@@ -114,6 +109,21 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 					deepStrictEqual([...result.update_hashes].sort(), expected);
 					deepStrictEqual(sortedIds((await readTable(client)).filter((row) => row.flag === 'hit')), expected);
 				});
+			}
+
+			for (const where of [`note LIKE 't0!' ESCAPE '!'`, `note LIKE 't0!%' ESCAPE '!!'`, `note LIKE '[z-a]%'`]) {
+				if (where.includes('[') && sqlEngine === 'new') continue;
+				for (const statement of [
+					`SELECT id FROM ${SCHEMA}.${TABLE} WHERE ${where}`,
+					`DELETE FROM ${SCHEMA}.${TABLE} WHERE ${where}`,
+				]) {
+					test(`${statement} is a 400`, async () => {
+						await reseed(client);
+						const response = await client.req().send({ operation: 'sql', sql: statement }).timeout(15_000);
+						strictEqual(response.status, 400, JSON.stringify(response.body));
+						deepStrictEqual(sortedIds(await readTable(client)), ALL_IDS);
+					});
+				}
 			}
 
 			for (const pattern of REDOS_PATTERNS) {

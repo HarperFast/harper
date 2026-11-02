@@ -172,7 +172,6 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(v2Like('%!_%', 'ab', '!'), false);
 		assert.strictEqual(v2Like('a!!b', 'a!b', '!'), true);
 		assert.strictEqual(v2Like('!a', 'a', '!'), true);
-		// The escape character may itself be a wildcard character.
 		assert.strictEqual(v2Like('100%%', '100%', '%'), true);
 		assert.strictEqual(v2Like('100%%', '100abc', '%'), false);
 	});
@@ -193,11 +192,13 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(v2Like('a__b', 'a\r\nb'), true);
 	});
 
-	it('rejects a pattern too large to compile with a client error', () => {
-		assert.throws(
-			() => v2Like('a'.repeat(100_000) + '_', 'a'),
-			(error) => error instanceof ClientError && error.statusCode === 400
-		);
+	it('matches a fixed-width run longer than one RegExp chunk', () => {
+		const run = 'a'.repeat(10_000) + 'b_';
+		assert.strictEqual(v2Like('%' + run + '%', 'x' + 'a'.repeat(10_001) + 'bzq'), true);
+		assert.strictEqual(v2Like('%' + run + '%', 'x' + 'a'.repeat(10_001) + 'cz'), false);
+		assert.strictEqual(v2Like(run + '%', 'a'.repeat(10_000) + 'bz'), true);
+		assert.strictEqual(v2Like('_'.repeat(25_000), 'x'.repeat(25_000)), true);
+		assert.strictEqual(alasql.utils.like('%' + 'Ab'.repeat(6_000) + '%', 'x' + 'aB'.repeat(6_000)), true);
 	});
 
 	it('is case-sensitive', () => {
@@ -338,9 +339,9 @@ describe('legacy alasql LIKE', () => {
 	});
 
 	it('tokenizes unclosed [ in linear time', () => {
-		assert.strictEqual(alasql.utils.like('['.repeat(5_000) + '%', '['.repeat(5_001)), true);
+		assert.strictEqual(alasql.utils.like('['.repeat(20_000) + '%', '['.repeat(20_001)), true);
 		const start = performance.now();
-		assert.throws(() => alasql.utils.like('['.repeat(200_000) + '%', 'x'), ClientError);
+		assert.strictEqual(alasql.utils.like('['.repeat(200_000) + '%', 'x'), false);
 		assert.ok(performance.now() - start < 1_000);
 	});
 });

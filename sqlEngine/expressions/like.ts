@@ -1,10 +1,6 @@
-/**
- * SQL LIKE in O(value x pattern) with no backtracking. `%` splits a pattern into fixed-width segments; the first
- * and last are anchored, and each middle segment takes its leftmost fit after the previous one. Leftmost is
- * always safe: any match that places the segment further right still matches with it shifted left.
- */
+// Leftmost placement of each middle segment is always safe: any match that places it further right still
+// matches with it shifted left, so no position is revisited.
 
-import { ClientError } from '../../utility/errors/hdbError.ts';
 import { EngineRuntimeError } from '../errors.ts';
 
 export type LikeToken =
@@ -43,49 +39,58 @@ export function compileLike(pattern: string, escape?: string): LikeMatcher {
 	return compileLikeTokens(tokenizeLike(pattern, escape));
 }
 
+interface Chunk {
+	offset: number;
+	width: number;
+	source: string;
+	sticky: RegExp;
+}
+
 interface Segment {
 	width: number;
 	/** Literal text, matched with `startsWith`/`indexOf` when the comparison is case-sensitive. */
 	text: string | undefined;
-	sticky: RegExp | undefined;
-	global: RegExp | undefined;
+	chunks: Chunk[];
+	/** Global search for the first chunk; only middle segments search. */
+	search: RegExp | undefined;
 }
+
+// Segment RegExps hold no quantifier or alternation, so they cannot backtrack. V8 fails to compile one of about
+// 50k atoms, and only on its first match, so a longer segment is split into chunks matched at fixed offsets.
+const MAX_CHUNK_WIDTH = 10_000;
+const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
 
 export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions = {}): LikeMatcher {
 	const flags = options.caseInsensitive ? 'i' : '';
 	const one = options.oneExcludesLineTerminators ? '.' : '[\\s\\S]';
 	const segments: Segment[] = [];
-	let width = 0;
 	let text: string | undefined = '';
-	let source = '';
+	let units: string[] = [];
 	const endSegment = () => {
-		const literal = text !== undefined && (!flags || width === 0);
-		// V8 fails to compile a RegExp of roughly 50k atoms, and only on its first match.
-		if (!literal && width > MAX_REGEXP_SEGMENT) {
-			throw new ClientError(`LIKE pattern has a ${width}-character run between %s; the limit is ${MAX_REGEXP_SEGMENT}`);
+		const literal = text !== undefined && (!flags || units.length === 0);
+		const chunks: Chunk[] = [];
+		if (!literal) {
+			for (let offset = 0; offset < units.length; offset += MAX_CHUNK_WIDTH) {
+				const source = units.slice(offset, offset + MAX_CHUNK_WIDTH).join('');
+				const width = Math.min(MAX_CHUNK_WIDTH, units.length - offset);
+				chunks.push({ offset, width, source, sticky: new RegExp(source, flags + 'y') });
+			}
 		}
-		segments.push({
-			width,
-			text: literal ? text : undefined,
-			sticky: literal ? undefined : new RegExp(source, flags + 'y'),
-			global: literal ? undefined : new RegExp(source, flags + 'g'),
-		});
-		width = 0;
+		segments.push({ width: units.length, text: literal ? text : undefined, chunks, search: undefined });
 		text = '';
-		source = '';
+		units = [];
 	};
 	for (const token of tokens) {
 		if (token.kind === 'any') {
 			endSegment();
 			continue;
 		}
-		width++;
 		if (token.kind === 'literal') {
 			if (text !== undefined) text += token.char;
-			source += token.char.replace(REGEXP_SYNTAX, '\\$&');
+			units.push(token.char.replace(REGEXP_SYNTAX, '\\$&'));
 		} else {
 			text = undefined;
-			source += token.kind === 'one' ? one : token.source;
+			units.push(token.kind === 'one' ? one : token.source);
 		}
 	}
 	endSegment();
@@ -97,32 +102,46 @@ export function compileLikeTokens(tokens: LikeToken[], options: LikeMatchOptions
 	const first = segments[0];
 	const last = segments[segments.length - 1];
 	const middle = segments.slice(1, -1).filter((segment) => segment.width > 0);
+	for (const segment of middle) {
+		if (segment.text === undefined) segment.search = new RegExp(segment.chunks[0].source, flags + 'g');
+	}
 	return (value) => {
 		const end = value.length - last.width;
 		if (end < first.width || !segmentMatchesAt(first, value, 0) || !segmentMatchesAt(last, value, end)) return false;
 		let position = first.width;
 		for (const segment of middle) {
-			const found = findSegment(segment, value, position);
-			if (found < 0 || found > end - segment.width) return false;
+			const found = findSegment(segment, value, position, end - segment.width);
+			if (found < 0) return false;
 			position = found + segment.width;
 		}
 		return true;
 	};
 }
 
-// Segment RegExps hold no quantifier or alternation, so they cannot backtrack.
-const MAX_REGEXP_SEGMENT = 10_000;
-const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
-
-function segmentMatchesAt(segment: Segment, value: string, start: number): boolean {
+function segmentMatchesAt(segment: Segment, value: string, start: number, fromChunk = 0): boolean {
 	if (segment.text !== undefined) return value.startsWith(segment.text, start);
-	segment.sticky!.lastIndex = start;
-	return segment.sticky!.test(value);
+	const chunks = segment.chunks;
+	for (let i = fromChunk; i < chunks.length; i++) {
+		const chunk = chunks[i];
+		chunk.sticky.lastIndex = start + chunk.offset;
+		if (!chunk.sticky.test(value)) return false;
+	}
+	return true;
 }
 
-function findSegment(segment: Segment, value: string, from: number): number {
-	if (segment.text !== undefined) return value.indexOf(segment.text, from);
-	const regex = segment.global!;
-	regex.lastIndex = from;
-	return regex.test(value) ? regex.lastIndex - segment.width : -1;
+function findSegment(segment: Segment, value: string, from: number, lastStart: number): number {
+	if (segment.text !== undefined) {
+		const found = value.indexOf(segment.text, from);
+		return found <= lastStart ? found : -1;
+	}
+	const search = segment.search!;
+	const firstWidth = segment.chunks[0].width;
+	search.lastIndex = from;
+	while (search.test(value)) {
+		const start = search.lastIndex - firstWidth;
+		if (start > lastStart) return -1;
+		if (segmentMatchesAt(segment, value, start, 1)) return start;
+		search.lastIndex = start + 1;
+	}
+	return -1;
 }
