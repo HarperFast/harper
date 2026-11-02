@@ -4059,9 +4059,9 @@ export class DatabaseTransaction implements Transaction {
 			);
 		}
 		this.abortChainAfterRetries(headTransaction);
-		// an abort rocksdb-js could not mark leaves the batch for crash replay to apply, so the outcome is unknown
 		throw new TransactionCommitConflictTimeoutError(
-			`Commit was in conflict with ongoing writes for ${elapsed}ms, exceeding the ${budget}ms limit; transaction abandoned after ${retries} retries`,
+			`Commit was in conflict with ongoing writes for ${elapsed}ms, exceeding the ${budget}ms limit; transaction abandoned after ${retries} retries` +
+				unknownOutcomeNote(headTransaction),
 			retryable && abortedWithoutLog(headTransaction)
 		);
 	}

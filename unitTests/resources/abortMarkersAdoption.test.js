@@ -295,6 +295,15 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			await holderGate;
 		});
 		await waitFor(() => holderStaged);
+		const targetDb = Blobs.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const kinds = [];
+		Transaction.prototype.commit = async function (...args) {
+			const result = await originalCommit.apply(this, args);
+			if (this.store?.db === targetDb) kinds.push(this.lastConflictKind());
+			return result;
+		};
+		restores.push(() => (Transaction.prototype.commit = originalCommit));
 		const blob = createBlob(Buffer.alloc(20000, 'r'), { saveBeforeCommit: true });
 		let write, release;
 		const context = { timestamp: OLD + 100 };
@@ -310,6 +319,7 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		await holder;
 		await mine;
 		release?.();
+		assert.ok(kinds.includes(ConflictKind.intentBeforeLog), 'an attempt is refused before its log write');
 		assert.equal(write.skipped, true, 'the newer write supersedes the retried one');
 		assert.equal((await Blobs.get(recordId)).writer, 'newer');
 		assert.throws(() => saveBlob(blob), /Blob was discarded/, 'no committed entry references the blob');
