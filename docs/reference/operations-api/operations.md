@@ -625,7 +625,7 @@ Does not require prior authentication when called with `username`/`password`. Re
 }
 ```
 
-With `role` as an inline role object, instead mints a single **scoped token** whose bearer is limited to the embedded permissions — requires an authenticated `super_user` caller; `username` is attribution only and must not name an existing user (defaults to `scoped:<minter>`); no refresh token is issued and the token cannot be revoked before expiry. See [JWT Authentication / Scoped Tokens](../security/jwt-authentication.md#scoped-tokens-inline-role).
+With `role` as an inline role object, instead mints a single **scoped token** whose bearer is limited to the embedded permissions — requires an authenticated `super_user` caller, and refuses one authenticated by a component's [Bearer validator](../http/api.md#serverregisterbearervalidatorvalidator-options); `username` is attribution only and must not name an existing user (defaults to `scoped:<minter>`); no refresh token is issued and the token cannot be revoked before expiry. See [JWT Authentication / Scoped Tokens](../security/jwt-authentication.md#scoped-tokens-inline-role).
 
 ```json
 {

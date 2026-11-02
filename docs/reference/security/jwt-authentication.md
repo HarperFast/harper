@@ -18,7 +18,7 @@ JWT authentication uses two token types:
 
 ## Create Authentication Tokens
 
-Call `create_authentication_tokens` with your Harper credentials. When the request carries a `username` and `password` in the body, no `Authorization` header is required — the operation authenticates from the body. Other shapes of this operation do need an authenticated caller: sending no credentials at all mints tokens for the user the request is already authenticated as, and [minting a scoped token](#scoped-tokens-inline-role) requires an authenticated `super_user`.
+Call `create_authentication_tokens` with your Harper credentials. When the request carries a `username` and `password` in the body, no `Authorization` header is required — the operation authenticates from the body. Other shapes of this operation do need an authenticated caller: sending no credentials at all mints tokens for the user the request is already authenticated as, and [minting a scoped token](#scoped-tokens-inline-role) requires an authenticated `super_user`. A request authenticated by a component's [Bearer validator](../http/api.md#serverregisterbearervalidatorvalidator-options) can do neither: it must send a `username` and `password` to mint ordinary tokens, and cannot mint a scoped token.
 
 ```json
 {
@@ -150,7 +150,7 @@ Behavior and constraints:
 
 ## Issuing Tokens from a Custom Resource
 
-Custom Resources can mint tokens programmatically by invoking the same operations via [`server.operation()`](../http/api.md#serveroperationoperation-context-authorize). This is useful when you want a Resource-style endpoint (e.g., `POST /IssueTokens`) instead of (or in addition to) the raw Operations API.
+Custom Resources can mint tokens programmatically by invoking the same operations via [`server.operation()`](../http/api.md#serveroperationoperation-context-authorize). This is useful when you want a Resource-style endpoint (e.g., `POST /IssueTokens`) instead of (or in addition to) the raw Operations API. As above, a caller authenticated by a [Bearer validator](../http/api.md#serverregisterbearervalidatorvalidator-options) gets a `401` from the passwordless form.
 
 ```typescript
 import { Resource, server } from 'harper';

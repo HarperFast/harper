@@ -30,7 +30,7 @@ Request and response objects follow the [WHATWG Fetch API](https://developer.moz
 
 <VersionBadge type="changed" version="v5.3.0" />
 
-Authentication runs before the default middleware chain determines route ownership. A Basic or Bearer credential that Harper recognizes establishes `request.user`. A credential that Harper does not recognize leaves `request.user` unset while its original `Authorization` header continues through the chain.
+Authentication runs before the default middleware chain determines route ownership. A Basic or Bearer credential that Harper recognizes establishes `request.user`; a component can extend the Bearer tokens Harper recognizes with [`server.registerBearerValidator()`](./api.md#serverregisterbearervalidatorvalidator-options). A credential that Harper does not recognize leaves `request.user` unset while its original `Authorization` header continues through the chain.
 
 A Harper-owned handler settles that deferred authentication failure before responding. This prevents an unrecognized credential from turning a protected Harper route into anonymous access. A handler that calls `next(request)` without claiming the route leaves the credential available to later application middleware. This allows an unmounted catch-all handler to authenticate and proxy an open-ended set of application URLs without registering each URL with `urlPath`.
 
