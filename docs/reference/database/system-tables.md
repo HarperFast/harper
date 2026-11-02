@@ -133,6 +133,12 @@ This table is managed automatically by the Data Loader. No direct interaction is
 
 ## Replication Tables
 
+### `hdb_residency_slots`
+
+<VersionBadge version="v5.4.0" />
+
+Stores one authoritative [shard map](../replication/residency.md#installed-maps) snapshot per database, keyed by `database`, with `version`, `digest`, `slots`, and complete nonoverlapping `ranges`. Install custom maps through the super-user `initialize_shard_map` operation. Active assignments cannot move, and deleting an installed map is refused. A lost or corrupted snapshot must be recovered; it is never regenerated from configuration.
+
 ### `hdb_nodes`
 
 Stores the configuration and state of known nodes in a cluster, including connection details, replication settings, and revoked certificate serial numbers.

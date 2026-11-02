@@ -247,8 +247,10 @@ All properties are optional:
 | `includeSuperseded`  | Include record mutations superseded by a later version. Defaults to `false`, or `true` when `rawEvents` is enabled. An explicit value overrides that default. <VersionBadge version="v5.3.0" /> |
 | `rawEvents`          | Return raw audit events rather than reconstructing full records. Defaults to `false`.                                                                                                           |
 | `omitCurrent`        | Do not send the current/retained record as the first update.                                                                                                                                    |
-| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                                                                                                                           |
+| `rowFilter`          | Synchronous JavaScript predicate applied to row payloads; sharded non-owner invalidations contain only indexed projections.                                                                     |
 | `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.                                                                                                            |
+
+On a sharded non-owner, `rowFilter` sees indexed fields from the invalidation payload even when a full replica is cached locally. Use indexed fields in these predicates: missing unindexed fields can suppress matching updates or satisfy a negated predicate. Do not use such a predicate to decide whether a subscriber may learn a record's id or indexed fields. See [subscription filters](../replication/residency.md#subscription-filters).
 
 #### Superseded record updates
 

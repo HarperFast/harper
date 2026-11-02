@@ -134,6 +134,12 @@ Two details matter outside a request context:
 - **`await` the `transaction()` call, and catch it.** An unawaited call lets the timer callback finish before the commit resolves, so a failed write is never observed; awaiting without a `catch` still leaves the rejection unhandled, because nothing awaits the callback itself.
 - **Guard against overlap when a job can outlast its interval.** A timer fires on schedule regardless of whether the previous run has committed, so two runs would open two transactions over the same rows. The `running` flag above skips a tick instead.
 
+### Replication confirmation
+
+Set `replicatedConfirmation` on a fresh context before calling `transaction()` to request confirmation for its writes. Pass the callback's `txn` argument to table methods to bind them explicitly. Reusing a context with an active transaction does not change that transaction's confirmation settings. See the [independent-transaction example](../replication/sharding.md#programmatic-replication-control), [uncertain-outcome behavior](../replication/sharding.md#confirmation-failure-after-a-local-commit), and [LMDB confirmation behavior](../replication/sharding.md#confirmation-outcomes).
+
+For `@sharded` tables, confirmation counts other owners in each affected owner set of the first written database; a temporary replica cannot satisfy it. `replicateTo` does not change those owners. See [declarative ownership](../replication/residency.md#ownership-reads-and-writes).
+
 ### Nesting
 
 If `transaction()` is called with a context that already has an active transaction, it reuses that transaction, executes the callback immediately, and returns. This makes `transaction()` safe to call defensively to ensure a transaction is always active.
