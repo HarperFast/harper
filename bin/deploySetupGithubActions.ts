@@ -230,14 +230,12 @@ function conjuncts(expression: string): string[] | undefined {
 
 const PULL_REQUEST_HEAD =
 	/head\.sha|head\.ref|head\.repo|head_ref|GITHUB_HEAD_REF|merge_commit_sha|refs\/pull\/|(?<![\w/])pull\/\S/;
-const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/;
+// Also matched over a whole step, since `$( )` or a quote can put the verb on a later line than `git`.
+const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/s;
 // Read over the whole step: a multi-line quote, a pipe or xargs carries a value onto a git line that shows none of it.
 const DYNAMIC_INPUT = /[$`<|]|\bxargs\b/;
 
-/**
- * Whether `text` names the PR's head where the file shows it: on its face, in an `env` value it references (nearest scope
- * first), or in a `VAR=value` in the job's scripts. Nothing else is resolved; a value this cannot read is unverified.
- */
+// Only a head the file shows outright counts; a value reached any other way is left unverified.
 function namesPullRequestHead(text: string, scopes: any[], jobScripts: string): boolean {
 	if (PULL_REQUEST_HEAD.test(text)) return true;
 	const variables = [...text.matchAll(/\benv\.(\w+)|\$\{?(\w+)/g)].map(
@@ -252,10 +250,8 @@ function namesPullRequestHead(text: string, scopes: any[], jobScripts: string): 
 }
 
 /**
- * How a job holding an identity token could end up running the PR's own code, as far as its steps show. A `git` fetch or
- * checkout in a step that takes any value the file does not spell out, or an `actions/checkout` ref given as an
- * expression, is unverified, whatever shell form carries it: reading shell has no end, and the operator can say it is
- * safe with `allow_unverified=true`.
+ * A `git` fetch or checkout in a step that takes any input is unverified rather than resolved: reading shell has no end,
+ * and the operator can vouch for it with `allow_unverified=true`.
  */
 function checkPullRequestCheckout(name: string, job: any, workflow: any, problems: string[], unsafe: string[]): void {
 	if (typeof job?.uses === 'string') {
@@ -292,8 +288,9 @@ function checkPullRequestCheckout(name: string, job: any, workflow: any, problem
 		const gitLines = lines.filter((line: string) => GIT_FETCHING_CODE.test(line));
 		if (gitLines.some((line: string) => namesPullRequestHead(line, scopes, scripts))) {
 			problems.push(headCheckout);
-		} else if (DYNAMIC_INPUT.test(step.run)) {
-			for (const line of gitLines) {
+		} else if (DYNAMIC_INPUT.test(step.run) && GIT_FETCHING_CODE.test(step.run)) {
+			const named = gitLines.length > 0 ? gitLines : lines.filter((line: string) => /\bgit\b/.test(line));
+			for (const line of named) {
 				unsafe.push(`that \`${line.trim()}\` in job "${name}" does not check out the pull request's head`);
 			}
 		}

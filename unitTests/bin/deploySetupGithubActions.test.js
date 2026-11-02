@@ -455,6 +455,7 @@ jobs:
 				['cat .pr-sha |\n            xargs git checkout', 'xargs git checkout'],
 				['git fetch --stdin origin < .pr-refs', 'git fetch --stdin origin < .pr-refs'],
 				['git checkout "\n          $SHA"', 'git checkout "'],
+				['git -C "$(\n            pwd\n          )" fetch origin "$SHA"', 'git -C "$('],
 				['git checkout main\n          ./deploy.sh "$APP_DIR"', 'git checkout main'],
 			]) {
 				const elsewhere = withDeployStep(`      - run: |\n          ${script}\n`);
