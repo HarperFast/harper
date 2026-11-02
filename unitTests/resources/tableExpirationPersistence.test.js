@@ -81,6 +81,14 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.strictEqual(Restarted.evictionMS, 300000);
 	});
 
+	it('reports what a keyed re-declaration persisted', async function () {
+		const tableName = 'ExpiryKeyedRedeclared';
+		const Created = keyed(tableName);
+		keyed(tableName, { expiration: 900, eviction: 60 });
+		await commitCatalog(Created);
+		assert.deepStrictEqual(catalogExpiration(Created), { expiration: 900, eviction: 60 });
+	});
+
 	it('leaves the catalog untouched when a re-declaration omits a persisted setting', async function () {
 		const tableName = 'ExpiryOmittedOnRedeclare';
 		const Declared = keyless(tableName, { expiration: 600 });
