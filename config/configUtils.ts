@@ -34,7 +34,12 @@ import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
-import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
+import {
+	prepareRuntimeEnvConfig,
+	hasPersistedEnvConfigState,
+	discardConfigState,
+	composeConfigFromEnv,
+} from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
@@ -348,7 +353,8 @@ function backfillMissingDefaults(
 	targetDoc: _YAML.Document,
 	defaultsDoc: _YAML.Document,
 	templateRootKeys: Set<string>,
-	prefix: string[] = []
+	prefix: string[] = [],
+	introducedRoots?: Set<string>
 ): void {
 	const defaultsNode = prefix.length === 0 ? defaultsDoc.contents : defaultsDoc.getIn(prefix, true);
 	if (!YAML.isMap(defaultsNode)) return;
@@ -356,7 +362,7 @@ function backfillMissingDefaults(
 		const key = String((pair.key as any)?.value ?? pair.key);
 		const keyPath = [...prefix, key];
 		if (!targetDoc.hasIn(keyPath)) {
-			if (prefix.length === 0 && !REQUIRED_ROOT_CONFIG_KEYS.has(key)) continue;
+			if (prefix.length === 0 && !REQUIRED_ROOT_CONFIG_KEYS.has(key) && !introducedRoots?.has(key)) continue;
 			const dotPath = keyPath.join('.');
 			const skipOptIn = prefix.length > 0 && templateRootKeys.has(prefix[0]);
 			if (skipOptIn && NESTED_BACKFILL_OPT_IN_PATHS.includes(dotPath)) continue;
@@ -549,6 +555,15 @@ function composeInstallConfig(
 	}
 
 	if (schemasArgs) setSchemasConfig(configDoc, schemasArgs);
+	if (baseConfigPath) {
+		// Originals and $union must see the defaults of sections that install will keep enabled.
+		const introducedRoots = new Set(
+			Object.entries(composeConfigFromEnv())
+				.filter(([, value]) => value !== null && typeof value === 'object' && !Array.isArray(value))
+				.map(([key]) => key)
+		);
+		backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys, [], introducedRoots);
+	}
 
 	// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables BEFORE validation
 	// This allows runtime env vars to resolve port conflicts before validation
