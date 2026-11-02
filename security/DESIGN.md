@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.ts` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, like `create_authentication_tokens` against a password, with the same three wiring points (`server/serverHelpers/serverHandlers.ts` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
 
 **The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
