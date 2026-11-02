@@ -547,6 +547,30 @@ describe('Secondary-index range select', function () {
 			}
 		});
 
+		it('yields between overflow entries a covered scan rejects', async function () {
+			const Long = table({
+				table: 'IndexRangeCoveredYieldTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'value', indexed: true },
+				],
+			});
+			try {
+				for (let id = 1; id <= 20; id++) await Long.put(id, { value: ['e'.repeat(300) + id] });
+				let yielded = false;
+				setImmediate(() => (yielded = true));
+				const result = await rows(Long, {
+					conditions: [{ attribute: 'value', comparator: 'ends_with', value: 'none' }],
+					select: ['id', 'value'],
+				});
+				assert.deepStrictEqual(result, []);
+				assert.ok(yielded, 'the scan never yielded to the event loop');
+			} finally {
+				Long.dropTable();
+			}
+		});
+
 		it('keeps a value the declared type cannot reconstruct as the index holds it', async function () {
 			const attributes = (amount, when) => [
 				{ name: 'id', isPrimaryKey: true },
@@ -609,7 +633,7 @@ describe('Secondary-index range select', function () {
 					rows(Reopened, { conditions: open, select: ['id', 'value'] })
 				);
 				// the same rows, in index order; the array row once per matching element, the object row
-				// not at all (it is not indexed), and the -0 row only as the record path reads it
+				// not at all (it is not indexed), and the -0 row as the record path reads it
 				assert.deepStrictEqual(
 					result.map(({ id }) => id),
 					loaded.map(({ id }) => id)
@@ -625,8 +649,7 @@ describe('Secondary-index range select', function () {
 						{ id: 3, value: 8 },
 					]
 				);
-				// the -0 entry is read through the record path on both engines
-				assert.equal(reads, 1);
+				assert.equal(reads, 0);
 			} finally {
 				Reopened.dropTable();
 			}
@@ -683,7 +706,7 @@ describe('Secondary-index range select', function () {
 			}
 		});
 
-		it('scans the read snapshot it started with, and leaves the index readable after an early return', async function () {
+		it('leaves the index readable after an early return, and scans its read snapshot on RocksDB', async function () {
 			const Snapshot = table({
 				table: 'IndexRangeCoveredSnapshotTest',
 				database: 'test',

@@ -924,7 +924,7 @@ interface CoveredSelect {
 	recordRead?: () => void;
 }
 
-// resources/DESIGN.md, covered selects
+// resources/DESIGN.md, Per-row read work on RocksDB index scans
 function coverIndexEntries(
 	entries: any,
 	Table: any,
@@ -938,16 +938,17 @@ function coverIndexEntries(
 	const recordRead = covered.recordRead;
 	return entries.map((entry) => {
 		const { key, value: primaryKey } = entry;
-		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB, and on RocksDB split
-		// into '\x18' and a primary key that was never stored; the record path skips that miss
-		if ((typeof key === 'object' && key !== null) || (key === '\x18' && primaryKey?.[0] === null)) return primaryKey;
 		let value = key;
-		if (attributeName && typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
+		// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB (the record stores 0), and on
+		// RocksDB split into '\x18' and a primary key that was never stored, which the record path skips
+		if (typeof key === 'object' && key !== null) value = 0;
+		else if (key === '\x18' && primaryKey?.[0] === null) return SKIP;
+		else if (attributeName && typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
 			value = entry.overflowed;
 			if (value === undefined) {
 				const record = Table.primaryStore.getEntry(primaryKey, { transaction })?.value;
 				value = record && overflowedValue(record[attributeName], key, attributeName);
-				if (value === undefined) return primaryKey;
+				if (value === undefined) return SKIP;
 			}
 		} else if (decodeValue) value = decodeValue(key);
 		recordRead?.();
@@ -958,18 +959,14 @@ function coverIndexEntries(
 	});
 }
 
-// the stored value an overflow key was cut from: the value itself, or an array element it indexes that the
-// condition matches
 function overflowedValue(stored: any, key: string, attributeName: string, filter?: (record: any) => boolean) {
-	if (!Array.isArray(stored)) return stored;
 	const prefix = key.slice(0, MAX_SEARCH_KEY_LENGTH);
-	return stored.find(
-		(element) =>
-			typeof element === 'string' &&
-			element.length > MAX_SEARCH_KEY_LENGTH &&
-			element.startsWith(prefix) &&
-			(!filter || filter({ [attributeName]: element }))
-	);
+	const indexed = (value: any) =>
+		typeof value === 'string' &&
+		value.length > MAX_SEARCH_KEY_LENGTH &&
+		value.startsWith(prefix) &&
+		(!filter || filter({ [attributeName]: value }));
+	return Array.isArray(stored) ? stored.find(indexed) : indexed(stored) ? stored : undefined;
 }
 
 const MAX_DATE_TIME = 8.64e15;
@@ -1477,24 +1474,27 @@ export function searchByIndex(
 					const { key, value } = entry;
 					const matched = coverEntries ? entry : value;
 					let recordMatcher: any;
+					let overflowEntry = false;
 					if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH && resolvedComparator !== 'sort') {
 						// if it is an overflow string, need to get the actual value from the database (a sort matches every entry)
 						recordMatcher = Table.primaryStore.getEntry(value, { transaction })?.value;
-						if (coverEntries) {
-							// a covered row stands for the element this entry indexes, so it matches only through that element
-							entry.overflowed =
-								recordMatcher && overflowedValue(recordMatcher[attribute_name], key, attribute_name, filter);
-							if (entry.overflowed === undefined) return SKIP;
-							recordMatcher = { [attribute_name]: entry.overflowed };
-						}
+						overflowEntry = coverEntries;
 					} else recordMatcher = { [attribute_name]: key };
-					if (this.isSync) return filter(recordMatcher) ? matched : SKIP;
+					// a covered row stands for the value this entry indexes, so it matches only through that value
+					const matches = overflowEntry
+						? () => {
+								entry.overflowed =
+									recordMatcher && overflowedValue(recordMatcher[attribute_name], key, attribute_name, filter);
+								return entry.overflowed !== undefined;
+							}
+						: () => filter(recordMatcher);
+					if (this.isSync) return matches() ? matched : SKIP;
 					// for filter operations, we intentionally yield the event turn so that scanning queries
 					// do not hog resources
 					return new Promise((resolve, reject) =>
 						setImmediate(() => {
 							try {
-								resolve(filter(recordMatcher) ? matched : SKIP);
+								resolve(matches() ? matched : SKIP);
 							} catch (error) {
 								reject(error);
 							}

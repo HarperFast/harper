@@ -12556,7 +12556,7 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
-	// resources/DESIGN.md, covered selects
+	// resources/DESIGN.md, Per-row read work on RocksDB index scans
 	function coveredSelectAttribute(select: any): string | undefined {
 		if (primaryKey == null) return;
 		if (typeof select === 'string') return coverableAttribute(select) ? select : undefined;
