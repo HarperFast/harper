@@ -208,85 +208,171 @@ describe('Resolved audit references fold once', function () {
 		);
 	});
 
-	it('continues known branches when an unknown-origin probe exhausts its budget', async function () {
-		if (isLMDB) return this.skip();
-		const T = createTable('visitedAuditRefsProbeLimit');
-		const root = T.primaryStore.rootStore;
-		const [fillerOrigin, predecessor, protectedOrigin, older] = ['filler', 'predecessor', 'protected', 'older'].map(
-			(name) => getIdOfRemoteNode(`probe-limit-${name}`, T.auditStore)
-		);
-		publishOriginFloor(root, Date.now() + 3_600_000);
-		await T.put('victim', { label: 'seed' });
-		const seed = T.primaryStore.getEntry('victim');
-		publishOriginFloor(root, seed.version + 5000);
-		await transaction({}, async () => {
-			for (let index = 0; index < 300; index++) await T.put(`local-${index}`, { value: index });
-		});
-		const key = T.primaryStore.getEntry('local-0').version;
-		await root.transaction((native) =>
-			recordUpdater(T.primaryStore, T.tableId, T.auditStore)(
-				'victim',
-				{ id: 'victim', label: 'seed' },
-				seed,
-				key,
-				0,
-				false,
-				{ transaction: native, nodeId: 0 }
-			)
-		);
-		const fillerContext = { source: {}, sourceApply: true, timestamp: key };
-		await transaction(fillerContext, async () => {
-			for (let index = 0; index < 900; index++) {
-				const id = `remote-${index}`;
-				const resource = await T.getResource(id, fillerContext);
-				await resource._writeUpdate(id, { id, value: index }, true, {
-					isNotification: true,
-					nodeId: fillerOrigin,
-					version: key,
+	for (const knownFrameSize of [1, 800]) {
+		it(
+			knownFrameSize === 1
+				? 'continues known branches and resets an exhausted probe budget'
+				: 'still bounds charged history after probe exhaustion',
+			async function () {
+				if (isLMDB) return this.skip();
+				const T = createTable(`visitedAuditRefsProbeLimit${knownFrameSize}`);
+				const root = T.primaryStore.rootStore;
+				const [fillerOrigin, predecessor, protectedOrigin, older] = ['filler', 'predecessor', 'protected', 'older'].map(
+					(name) => getIdOfRemoteNode(`probe-limit-${name}`, T.auditStore)
+				);
+				publishOriginFloor(root, Date.now() + 3_600_000);
+				await T.put('victim', { label: 'seed' });
+				const seed = T.primaryStore.getEntry('victim');
+				publishOriginFloor(root, seed.version + 5000);
+				await transaction({}, async () => {
+					for (let index = 0; index < 300; index++) await T.put(`local-${index}`, { value: index });
 				});
+				const key = T.primaryStore.getEntry('local-0').version;
+				async function setHead(version, refs = []) {
+					const entry = T.primaryStore.getEntry('victim');
+					await root.transaction((native) =>
+						recordUpdater(T.primaryStore, T.tableId, T.auditStore)(
+							'victim',
+							{ ...entry.value },
+							entry,
+							version,
+							0,
+							false,
+							{ transaction: native, nodeId: 0, additionalAuditRefs: refs }
+						)
+					);
+				}
+				await setHead(key);
+				const fillerContext = { source: {}, sourceApply: true, timestamp: key };
+				await transaction(fillerContext, async () => {
+					for (let index = 0; index < 900; index++) {
+						const id = `remote-${index}`;
+						const resource = await T.getResource(id, fillerContext);
+						await resource._writeUpdate(id, { id, value: index }, true, {
+							isNotification: true,
+							nodeId: fillerOrigin,
+							version: key,
+						});
+					}
+				});
+				async function deliver(nodeId, logKey, version, record, fullUpdate = false, id = 'victim') {
+					const context = { source: {}, sourceApply: true, timestamp: logKey };
+					await transaction(context, async () => {
+						const resource = await T.getResource(id, context);
+						await resource._writeUpdate(id, record, fullUpdate, { isNotification: true, nodeId, version });
+					});
+				}
+				await deliver(predecessor, key + 1000, key - 2000, { middle: true });
+				const protectedContext = { source: {}, sourceApply: true, timestamp: key + 2000 };
+				await transaction(protectedContext, async () => {
+					for (let index = 1; index < knownFrameSize; index++) {
+						const id = `protected-filler-${index}`;
+						const resource = await T.getResource(id, protectedContext);
+						await resource._writeUpdate(id, { id, value: index }, true, {
+							isNotification: true,
+							nodeId: protectedOrigin,
+							version: key - 1000,
+						});
+					}
+					const resource = await T.getResource('victim', protectedContext);
+					await resource._writeUpdate('victim', { label: 'newest' }, false, {
+						isNotification: true,
+						nodeId: protectedOrigin,
+						version: key - 1000,
+					});
+				});
+				const secondKey = key + 4000;
+				await deliver(fillerOrigin, secondKey, key - 1200, { unknown: 'new' });
+				await setHead(secondKey);
+				await deliver(predecessor, secondKey + 1000, key - 1500, { second: true });
+				await setHead(key, [
+					{ version: key + 1000, nodeId: predecessor },
+					{ version: secondKey, nodeId: 0 },
+					{ version: secondKey + 1000, nodeId: predecessor },
+					{ version: key + 2000, nodeId: protectedOrigin },
+				]);
+				assert.strictEqual(T.primaryStore.getEntry('victim').version, key);
+				assert.strictEqual(T.auditStore.get(key, T.tableId, 'victim', 0), undefined);
+				assert.strictEqual(T.auditStore.get(secondKey, T.tableId, 'victim', 0), undefined);
+				assert.strictEqual(T.auditStore.get(key + 1000, T.tableId, 'victim', predecessor).previousVersion, key);
+				assert.strictEqual(
+					T.auditStore.get(secondKey + 1000, T.tableId, 'victim', predecessor).previousVersion,
+					secondKey
+				);
+				assert.strictEqual(
+					[...T.auditStore.getRange({ start: key, exactStart: true, log: 0 })].filter(
+						(entry) => entry.txnLogKey === key
+					).length,
+					300
+				);
+				assert.strictEqual(
+					[...T.auditStore.getRange({ start: key, exactStart: true, log: fillerOrigin })].filter(
+						(entry) => entry.txnLogKey === key
+					).length,
+					900
+				);
+				const protectedFrame = [
+					...T.auditStore.getRange({ start: key + 2000, exactStart: true, log: protectedOrigin }),
+				];
+				assert.strictEqual(protectedFrame.length, knownFrameSize);
+				assert.strictEqual(protectedFrame.at(-1).recordId, 'victim');
+				const getRange = T.auditStore.getRange;
+				const reads = [];
+				const chargedReads = [];
+				try {
+					T.auditStore.getRange = function (options) {
+						const range = getRange.call(this, options);
+						const unknown = (options.start === key || options.start === secondKey) && options.log === undefined;
+						const qualified = options.start === key + 2000 && options.log === protectedOrigin;
+						if (!unknown && !qualified) return range;
+						const observation = { key: options.start, count: 0 };
+						(unknown ? reads : chargedReads).push(observation);
+						return {
+							*[Symbol.iterator]() {
+								for (const entry of range) {
+									observation.count++;
+									yield entry;
+								}
+							},
+						};
+					};
+					await deliver(older, secondKey + 2000, key - 3000, { id: 'victim', label: 'older', retained: true }, true);
+				} finally {
+					T.auditStore.getRange = getRange;
+				}
+				assert.strictEqual(reads[0]?.count, 1001, 'the first identity probe reached its limit');
+				assert.strictEqual(
+					reads.filter((read) => read.key === secondKey).length,
+					0,
+					'an exhausted probe budget opens no later unknown lookup'
+				);
+				if (knownFrameSize === 800) {
+					assert.ok(
+						chargedReads.at(-1).count > 0 && chargedReads.at(-1).count < knownFrameSize,
+						'the charged frame still stops at its budget'
+					);
+					assert.strictEqual((await T.get('victim')).retained, true);
+					return;
+				}
+				assert.deepStrictEqual(
+					{ ...(await T.get('victim')) },
+					{ id: 'victim', label: 'newest', middle: true, second: true, unknown: 'new', retained: true }
+				);
+				publishOriginFloor(root, Date.now() + 7_200_000);
+				await T.put('reset', { count: 0, omitted: true });
+				const resetSeed = T.primaryStore.getEntry('reset').version;
+				publishOriginFloor(root, resetSeed + 4000);
+				await transaction({}, async () => {
+					for (let index = 1; index < 600; index++) await T.put(`reset-filler-${index}`, { value: index });
+					await T.patch('reset', { count: add(5), label: 'newest' });
+				});
+				const resetHead = T.primaryStore.getEntry('reset').version;
+				await deliver(predecessor, resetHead - 1000, resetHead - 1000, { count: add(3) }, false, 'reset');
+				await deliver(older, resetHead - 2000, resetHead - 2000, { id: 'reset', count: 100 }, true, 'reset');
+				assert.deepStrictEqual({ ...(await T.get('reset')) }, { id: 'reset', count: 108, label: 'newest' });
 			}
-		});
-		async function deliver(nodeId, logKey, version, record, fullUpdate = false) {
-			const context = { source: {}, sourceApply: true, timestamp: logKey };
-			await transaction(context, async () => {
-				const resource = await T.getResource('victim', context);
-				await resource._writeUpdate('victim', record, fullUpdate, { isNotification: true, nodeId, version });
-			});
-		}
-		await deliver(predecessor, key + 1000, key - 2000, { middle: true });
-		await deliver(protectedOrigin, key + 2000, key - 1000, { label: 'newest' });
-		assert.strictEqual(T.primaryStore.getEntry('victim').version, key);
-		assert.strictEqual(T.auditStore.get(key, T.tableId, 'victim', 0), undefined);
-		assert.strictEqual(T.auditStore.get(key + 1000, T.tableId, 'victim', predecessor).previousVersion, key);
-		assert.strictEqual([...T.auditStore.getRange({ start: key, exactStart: true, log: 0 })].length, 300);
-		assert.strictEqual([...T.auditStore.getRange({ start: key, exactStart: true, log: fillerOrigin })].length, 900);
-		const getRange = T.auditStore.getRange;
-		const reads = [];
-		try {
-			T.auditStore.getRange = function (options) {
-				const range = getRange.call(this, options);
-				if (options.start !== key || options.log !== undefined) return range;
-				const observation = { count: 0 };
-				reads.push(observation);
-				return {
-					*[Symbol.iterator]() {
-						for (const entry of range) {
-							observation.count++;
-							yield entry;
-						}
-					},
-				};
-			};
-			await deliver(older, key + 3000, key - 3000, { id: 'victim', label: 'older', retained: true }, true);
-		} finally {
-			T.auditStore.getRange = getRange;
-		}
-		assert.strictEqual(reads[0]?.count, 1001, 'the identity probe reached its limit');
-		assert.deepStrictEqual(
-			{ ...(await T.get('victim')) },
-			{ id: 'victim', label: 'newest', middle: true, retained: true }
 		);
-	});
+	}
 
 	it('bounds a previously unseen unknown frame whose target is past the walk limit', async function () {
 		if (isLMDB) return this.skip();

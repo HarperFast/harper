@@ -6566,6 +6566,7 @@ export function makeTable(options): TableResourceClass {
 									auditHistoryMissing = true;
 							};
 							let walkSteps = 0;
+							let probeSteps = 0;
 							let auditWalkCapped = false;
 							let cappedProbeDepth: number | undefined;
 							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
@@ -6619,25 +6620,27 @@ export function makeTable(options): TableResourceClass {
 										probedAuditRef = true;
 										if (resolvedEntry?.txnLogKey !== localTime) resolvedEntry = undefined;
 										if (fullUpdate && !resolvedEntry) {
-											let probeSteps = 0;
-											for (const entry of auditStore.getRange({ start: localTime, exactStart: true, readUncommitted: true })) {
-												if (entry.txnLogKey !== localTime) break;
-												if (++probeSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
-													auditWalkCapped = true;
-													cappedProbeDepth = probeSteps;
-													break;
-												}
-												if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
-												if (entry.tableId === tableId) {
-													const entryId = entry.recordId;
-													if (entryId === undefined) auditHistoryMissing = true;
-													if (entryId === id) {
-														resolvedEntry = entry;
+											if (probeSteps >= MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+												auditHistoryMissing = true;
+												cappedProbeDepth = probeSteps;
+											} else
+												for (const entry of auditStore.getRange({ start: localTime, exactStart: true, readUncommitted: true })) {
+													if (entry.txnLogKey !== localTime) break;
+													if (++probeSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+														auditHistoryMissing = true;
+														cappedProbeDepth = probeSteps;
 														break;
 													}
+													if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+													if (entry.tableId === tableId) {
+														const entryId = entry.recordId;
+														if (entryId === undefined) auditHistoryMissing = true;
+														if (entryId === id) {
+															resolvedEntry = entry;
+															break;
+														}
+													}
 												}
-											}
-											if (auditWalkCapped) break;
 										} else {
 											resolvedEntry ??= auditStore.get(localTime, tableId, id, nodeId, true);
 										}
@@ -6958,24 +6961,13 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (!auditHistoryMissing) succeedingUpdates = frameUpdates;
 							}
-							if (auditWalkCapped) {
-								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
-								// history, seen during a replication full-copy of a large-history database — issue #1114).
-								// For full PUTs, depth counts charged frame entries, including unrelated siblings.
-								// Walking and buffering the whole chain per record OOMs the worker, so we stopped at the cap
-								// and reconcile against only the Updates collected before the cap (the fold below). That is an
-								// approximation for histories deeper than the cap — updates older than the retained window are
-								// not layered in — but the authoritative full-copy record restores exact convergence. Because we
-								// stopped before reaching txnTime, the inline duplicate detection in the walk never ran;
-								// full-copy audit-replay re-delivers writes, and re-applying one would double-apply its
-								// commutative ops. A re-delivered out-of-order write is already ruled out by the
-								// additionalAuditRefs check at the top of this block; this keyed lookup is the best-effort
-								// guard for the remaining case — a re-delivered write that was originally in-order (so it left
-								// no ref) and is now deeper than the cap. It is best-effort because the transaction-log lookup
-								// can intermittently miss an entry under load (tracked separately); the authoritative full-copy
-								// record still restores exact convergence.
+							if (auditWalkCapped || cappedProbeDepth !== undefined) {
+								// Unresolved history can hide an applied receipt; check again before replaying its operations.
+								// A subsequent full copy restores history beyond these reconciliation limits.
 								logger.warn?.(
-									'Out-of-order audit reconciliation exceeded depth cap; reconciling against collected updates only',
+									auditWalkCapped
+										? 'Out-of-order audit reconciliation exceeded depth cap; reconciling against collected updates only'
+										: 'Out-of-order audit identity probe reached its limit; reconciling available history only',
 									{
 										table: tableName,
 										id,
