@@ -18,17 +18,14 @@ describe('Resolved audit references fold once', function () {
 		[0, 2, 3, 1],
 	];
 	let receivers;
+	const createTable = (database) =>
+		table({ table: 'Counters', database, attributes: [{ name: 'id', isPrimaryKey: true }], audit: true });
 
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		receivers = orders.map((order, index) => {
-			const T = table({
-				table: 'Counters',
-				database: `visitedAuditRefs${index}`,
-				attributes: [{ name: 'id', isPrimaryKey: true }],
-				audit: true,
-			});
+			const T = createTable(`visitedAuditRefs${index}`);
 			const origins = ['fold-a', 'fold-b', 'fold-c'].map((name) => getIdOfRemoteNode(name, T.auditStore));
 			return { T, origins, order };
 		});
@@ -89,28 +86,57 @@ describe('Resolved audit references fold once', function () {
 		});
 	}
 
-	it('does not charge an already visited local frame against the walk budget again', async function () {
-		if (isLMDB) return this.skip();
-		const T = table({
-			table: 'LargeFrame',
-			database: 'visitedAuditRefsLargeFrame',
-			attributes: [{ name: 'id', isPrimaryKey: true }],
-			audit: true,
+	for (const targetFirst of [true, false]) {
+		it(`does not charge a visited local frame again (target ${targetFirst ? 'first' : 'last'})`, async function () {
+			if (isLMDB) return this.skip();
+			const T = createTable(`visitedAuditRefsLargeFrame${targetFirst}`);
+			publishOriginFloor(T.primaryStore.rootStore, Date.now() + 3_600_000);
+			await T.put('key-0', { count: 0, omitted: true });
+			const seed = T.primaryStore.getEntry('key-0').version;
+			publishOriginFloor(T.primaryStore.rootStore, seed + 4000);
+			await transaction({}, async () => {
+				if (targetFirst) await T.patch('key-0', { count: add(5), label: 'newest' });
+				for (let index = 1; index < 600; index++) await T.put(`filler-${index}`, { count: index });
+				if (!targetFirst) await T.patch('key-0', { count: add(5), label: 'newest' });
+			});
+			const head = T.primaryStore.getEntry('key-0');
+			assert.strictEqual(head.nodeId ?? 0, 0);
+			assert.strictEqual(T.auditStore.get(head.version, T.tableId, 'key-0', 0).txnLogKey, head.version);
+			assert.ok(!head.additionalAuditRefs?.length);
+			const middleOrigin = getIdOfRemoteNode('large-frame-middle', T.auditStore);
+			const olderOrigin = getIdOfRemoteNode('large-frame-older', T.auditStore);
+			async function deliver(record, nodeId, timestamp, fullUpdate) {
+				const context = { source: {}, sourceApply: true, timestamp };
+				await transaction(context, async () => {
+					const resource = await T.getResource('key-0', context);
+					await resource._writeUpdate('key-0', record, fullUpdate, {
+						isNotification: true,
+						nodeId,
+						version: timestamp,
+					});
+				});
+			}
+			await deliver({ count: add(3), label: 'middle' }, middleOrigin, seed + 3000, false);
+			assert.strictEqual((await T.get('key-0')).count, 8);
+			await deliver({ id: 'key-0', count: 100 }, olderOrigin, seed + 2000, true);
+			assert.deepStrictEqual({ ...(await T.get('key-0')) }, { id: 'key-0', count: 108, label: 'newest' });
 		});
+	}
+
+	it('bounds a previously unseen unknown frame whose target is past the walk limit', async function () {
+		if (isLMDB) return this.skip();
+		const T = createTable('visitedAuditRefsUnknownCap');
 		publishOriginFloor(T.primaryStore.rootStore, Date.now() + 3_600_000);
 		await T.put('key-0', { count: 0, omitted: true });
 		const seed = T.primaryStore.getEntry('key-0').version;
 		publishOriginFloor(T.primaryStore.rootStore, seed + 4000);
 		await transaction({}, async () => {
-			await T.patch('key-0', { count: add(5), label: 'newest' });
-			for (let index = 1; index < 600; index++) await T.put(`filler-${index}`, { count: index });
+			for (let index = 1; index < 1100; index++) await T.put(`filler-${index}`, { count: index });
+			await T.patch('key-0', { count: add(5), label: 'middle' });
 		});
-		const head = T.primaryStore.getEntry('key-0');
-		assert.strictEqual(head.nodeId ?? 0, 0);
-		assert.strictEqual(T.auditStore.get(head.version, T.tableId, 'key-0', 0).txnLogKey, head.version);
-		assert.ok(!head.additionalAuditRefs?.length);
-		const middleOrigin = getIdOfRemoteNode('large-frame-middle', T.auditStore);
-		const olderOrigin = getIdOfRemoteNode('large-frame-older', T.auditStore);
+		const largeFrame = T.primaryStore.getEntry('key-0').version;
+		const newer = getIdOfRemoteNode('unknown-cap-newer', T.auditStore);
+		const older = getIdOfRemoteNode('unknown-cap-older', T.auditStore);
 		async function deliver(record, nodeId, timestamp, fullUpdate) {
 			const context = { source: {}, sourceApply: true, timestamp };
 			await transaction(context, async () => {
@@ -118,9 +144,29 @@ describe('Resolved audit references fold once', function () {
 				await resource._writeUpdate('key-0', record, fullUpdate, { isNotification: true, nodeId, version: timestamp });
 			});
 		}
-		await deliver({ count: add(3), label: 'middle' }, middleOrigin, seed + 3000, false);
-		assert.strictEqual((await T.get('key-0')).count, 8);
-		await deliver({ id: 'key-0', count: 100 }, olderOrigin, seed + 2000, true);
-		assert.deepStrictEqual({ ...(await T.get('key-0')) }, { id: 'key-0', count: 108, label: 'newest' });
+		await deliver({ count: add(3), label: 'newest' }, newer, seed + 5000, false);
+		const originalGetRange = T.auditStore.getRange;
+		let unknownEntries = 0;
+		try {
+			T.auditStore.getRange = function (options) {
+				const range = originalGetRange.call(this, options);
+				if (options.start !== largeFrame || options.log !== undefined) return range;
+				return {
+					*[Symbol.iterator]() {
+						for (const entry of range) {
+							unknownEntries++;
+							yield entry;
+						}
+					},
+				};
+			};
+			await deliver({ id: 'key-0', count: 100, label: 'older' }, older, seed + 2000, true);
+		} finally {
+			T.auditStore.getRange = originalGetRange;
+		}
+		assert.ok(unknownEntries > 0 && unknownEntries <= 1001, `unknown frame yielded ${unknownEntries} entries`);
+		const record = await T.get('key-0');
+		assert.strictEqual(record.label, 'newest');
+		assert.strictEqual(record.omitted, true, 'a capped walk retains the existing merge fallback');
 	});
 });

@@ -6524,6 +6524,7 @@ export function makeTable(options): TableResourceClass {
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
+							const visitedAuditLogKeys = isRocksDB ? new Set<number>() : undefined;
 							let isAdditionalAuditRef = false;
 							let previousHeadOf: any;
 							let previousHead: { txnLogKey: number; nodeId: number; entry?: any };
@@ -6609,6 +6610,43 @@ export function makeTable(options): TableResourceClass {
 												transaction.hasStagedLog &&
 												(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))));
 									if (ownPendingEntry) break;
+									const revisitedLogKey = visitedAuditLogKeys?.has(localTime);
+									visitedAuditLogKeys?.add(localTime);
+									let probedAuditRef = false;
+									// Only a previously visited log key can resolve to a duplicate identity.
+									if (revisitedLogKey && nodeId == null) {
+										probedAuditRef = true;
+										if (resolvedEntry?.txnLogKey !== localTime) resolvedEntry = undefined;
+										if (resolvedEntry && visitedAuditRefs.has(`${resolvedEntry.nodeId ?? 0}:${localTime}`)) break;
+										if (fullUpdate) {
+											resolvedEntry = undefined;
+											let probeSteps = 0;
+											for (const entry of auditStore.getRange({ start: localTime, exactStart: true, readUncommitted: true })) {
+												if (entry.txnLogKey !== localTime) break;
+												if (++probeSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+													auditWalkCapped = true;
+													break;
+												}
+												if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+												if (entry.tableId === tableId) {
+													const entryId = entry.recordId;
+													if (entryId === undefined) auditHistoryMissing = true;
+													if (entryId === id) {
+														resolvedEntry = entry;
+														break;
+													}
+												}
+											}
+											if (auditWalkCapped) break;
+										} else {
+											resolvedEntry ??= auditStore.get(localTime, tableId, id, nodeId, true);
+										}
+										if (
+											resolvedEntry &&
+											visitedAuditRefs.has(`${resolvedEntry.nodeId ?? 0}:${resolvedEntry.txnLogKey ?? localTime}`)
+										)
+											break;
+									}
 									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
 									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
 									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
@@ -6623,36 +6661,38 @@ export function makeTable(options): TableResourceClass {
 										let frameComplete = false;
 										// A keyed lookup hides unreadable siblings before its first match, and a message or older
 										// version can precede newer mutations in the same frame. Read past the committed watermark.
-										for (const entry of auditStore.getRange({
-											start: localTime,
-											exactStart: true,
-											log: nodeId,
-											readUncommitted: true,
-										})) {
-											if (entry.txnLogKey !== localTime) break;
-											if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
-												auditWalkCapped = true;
-												break;
-											}
-											if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
-											if (entry.tableId === tableId) {
-												const entryId = entry.recordId;
-												if (entryId === undefined) auditHistoryMissing = true;
-												if (entryId === id) {
-													if (!auditRecord) auditRecord = entry;
-													else (extraFrameEntries ??= []).push(entry);
+										if (!probedAuditRef || resolvedEntry) {
+											for (const entry of auditStore.getRange({
+												start: localTime,
+												exactStart: true,
+												log: nodeId,
+												readUncommitted: true,
+											})) {
+												if (entry.txnLogKey !== localTime) break;
+												if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+													auditWalkCapped = true;
+													break;
 												}
-											}
-											if (auditRecord && entry.endTxn) {
-												frameComplete = true;
-												break;
+												if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+												if (entry.tableId === tableId) {
+													const entryId = entry.recordId;
+													if (entryId === undefined) auditHistoryMissing = true;
+													if (entryId === id) {
+														if (!auditRecord) auditRecord = entry;
+														else (extraFrameEntries ??= []).push(entry);
+													}
+												}
+												if (auditRecord && entry.endTxn) {
+													frameComplete = true;
+													break;
+												}
 											}
 										}
 										if (auditWalkCapped && !auditRecord) break;
 										if (auditRecord && !frameComplete) auditHistoryMissing = true;
 									} else {
 										auditRecord =
-											resolvedEntry?.txnLogKey === localTime
+											probedAuditRef || resolvedEntry?.txnLogKey === localTime
 												? resolvedEntry
 												: auditStore.get(localTime, tableId, id, nodeId, true);
 									}
