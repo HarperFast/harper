@@ -59,8 +59,8 @@ const slug = (s) =>
 		.replace(/[^\p{L}\p{N}\p{M} \-_]/gu, '')
 		.replace(/ /g, '-');
 
-// The lines of a markdown text outside code fences, as [line number, text] pairs. A fence left open hides
-// the rest of the text from every check, so its line is returned as `unclosed`.
+// Lines outside code fences, as [line number, text] pairs. A fence left open hides the rest of the text
+// from every check, so its line is returned as `unclosed`.
 function proseLines(text) {
 	const lines = [];
 	let fence;
@@ -267,10 +267,8 @@ function budgetFor(file) {
 const LINK = /\]\(([^)#\s]*)(?:#([^)\s]*))?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)/g;
 const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
 
-// Resolves every relative link in the root index and the notes: the file must exist inside the repository
-// and an anchor must match a heading there. A root list entry must link to a `##` heading and registers
-// each markdown file it links to as a note, whose `##` sections must all be indexed; a link in the root's
-// prose may target any heading and registers nothing.
+// A root list entry must link to a `##` heading and registers each markdown file it links to as a note;
+// a link in the root's prose may target any heading and registers nothing.
 function checkLinks(root, design, errors) {
 	const proseCache = new Map();
 	const prose = (file) => {
@@ -305,11 +303,10 @@ function checkLinks(root, design, errors) {
 	function* links(file) {
 		for (const [line, text] of prose(file))
 			for (const match of text.replace(CODE_SPAN, '').matchAll(LINK)) {
-				if (/^[a-z][a-z0-9+.-]*:/i.test(match[1])) continue;
-				yield { line, target: match[1], anchor: match[2], listItem: /^\s*[-*] /.test(text) };
+				if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(match[1])) continue;
+				yield { line, target: match[1], anchor: match[2], listItem: /^\s*(?:[-*+]|\d+[.)]) /.test(text) };
 			}
 	}
-	// Returns the file a link resolves to, or undefined after reporting why it does not.
 	const resolve = (from, { line, target, anchor }, level) => {
 		const file = target
 			? path.posix.normalize(

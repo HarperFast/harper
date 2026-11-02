@@ -167,6 +167,17 @@ describe('build-tools/check-design-docs.mjs', function () {
 				);
 			});
 
+			it('registers the target of an entry written with any list marker', async function () {
+				for (const marker of ['-', '*', '+', '1.', '2)'])
+					await fails(
+						{
+							'DESIGN.md': `${INDEX}${marker} [Part](lib/topic.md#part) — x\n`,
+							'lib/topic.md': `${TOPIC}\n## Other\n`,
+						},
+						/lib\/topic\.md section "Other" is not indexed/
+					);
+			});
+
 			it('indexes a repeated ## heading by its de-duplicated anchor', async function () {
 				const repeated = note('## Note');
 				await fails({ 'lib/DESIGN.md': repeated }, /section "Note" is not indexed/);
@@ -179,7 +190,7 @@ describe('build-tools/check-design-docs.mjs', function () {
 				await passes({
 					'DESIGN.md': `## lib/\n\n${INDEX}`,
 					'lib/DESIGN.md': note(
-						'### Sub heading\n[root](../DESIGN.md#lib) [self](#sub-heading) [sibling](./other.ts) [line](other.ts#L10) [web](https://example.com/x#y)'
+						'### Sub heading\n[root](../DESIGN.md#lib) [self](#sub-heading) [sibling](./other.ts) [line](other.ts#L10) [web](https://example.com/x#y) [cdn](//example.com/x#y)'
 					),
 					'lib/other.ts': 'export {};\n',
 				});
