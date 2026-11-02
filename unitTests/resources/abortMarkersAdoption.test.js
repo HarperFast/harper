@@ -72,7 +72,7 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 
 	// Each attempt of the first transaction committing to `targetTable` meets a write that committed after
 	// its snapshot (a conflict RocksDB finds at commit) while `conflicts()` says so.
-	function conflictAtCommit(targetTable, recordId, conflicts) {
+	function conflictAtCommit(targetTable, recordId, conflicts, pauseMs = 0) {
 		const targetDb = targetTable.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
 		const attempts = [];
@@ -83,6 +83,7 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			target ??= this.id;
 			if (this.id !== target) return originalCommit.apply(this, args);
 			if (conflicts(attempts.length)) {
+				if (pauseMs) await delay(pauseMs);
 				passThrough = true;
 				try {
 					await transaction({ timestamp: OLD + attempts.length + 1 }, (other) =>
@@ -146,6 +147,25 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			'a reader must skip the aborted batch'
 		);
 		assert.equal((await Audited.get(recordId)).writer, 'competitor');
+	});
+
+	it('abandons a logged commit still in conflict past the commit deadline with the 503', async function () {
+		const recordId = id('overdue');
+		await seed(Audited, recordId);
+		const priorDuration = setMaxOutstandingTxnDuration(300);
+		restores.push(() => setMaxOutstandingTxnDuration(priorDuration));
+		const attempts = conflictAtCommit(Audited, recordId, () => true, 20);
+		await assert.rejects(writeAfterRead(Audited, recordId, 'overdue'), (error) => {
+			assert.equal(error.name, 'TransactionCommitConflictTimeoutError');
+			assert.equal(error.retryable, true);
+			return true;
+		});
+		assert.ok(attempts.length > 1 && attempts.length <= 40, `${attempts.length} attempts`);
+		assert.ok(attempts.every((attempt) => attempt.logWritten));
+		assert.deepEqual(
+			auditEntries(Audited, recordId).filter((entry) => entry.txnLogKey === attempts[0].key),
+			[]
+		);
 	});
 
 	it('bounds refusals before the log write by the commit deadline (503), never the retry cap', async function () {
