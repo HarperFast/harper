@@ -763,7 +763,7 @@ export type TransactionWrite = {
 	appendedAuditEntry?: boolean;
 	// sticky: such a staging ran with abort markers off, so an aborted attempt can leave its entry readable
 	appendedUnmarkedAuditEntry?: boolean;
-	// what the audit entry a non-retry staging appended chains to: a retry appends none and restages from it
+	// what the key held when a first attempt's log batch was written: a retry appends none and restages from it
 	loggedBase?: {
 		version?: number;
 		nodeId?: number;
@@ -1636,17 +1636,35 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	private noteRetryBoundary(transaction: RocksTransaction, error?: { hasLog?: boolean }): number {
 		const txnWithRetry = transaction as RocksTransactionWithRetry;
+		const logWritten = error?.hasLog === true || transaction.logWritten();
+		if (txnWithRetry.hasStagedLog && logWritten) {
+			for (const write of this.writes)
+				if (write?.appendedTo === transaction && write.loggedBase === undefined) {
+					const entry = write.entry;
+					write.loggedBase = entry
+						? {
+								version: entry.version,
+								nodeId: entry.nodeId,
+								additionalAuditRefs: entry.additionalAuditRefs,
+							}
+						: null;
+				}
+		}
 		if (!abortMarkersEnabled()) return txnWithRetry.retries ?? 0;
 		if (transaction.lastConflictKind() === ConflictKind.atCommit)
 			txnWithRetry.commitConflicts = (txnWithRetry.commitConflicts ?? 0) + 1;
 		if (txnWithRetry.hasStagedLog) {
-			const relog = error?.hasLog !== true && !transaction.logWritten();
+			const relog = !logWritten;
 			txnWithRetry.relogOnRetry = relog;
 			if (relog) {
 				(transaction as any).logEntries = undefined;
 				(transaction as any).pendingStructureWatermarks = undefined;
 				// the batch was discarded; a re-staged entry claims the write again in save()
-				for (const write of this.writes) if (write?.appendedTo === transaction) write.appendedTo = undefined;
+				for (const write of this.writes)
+					if (write?.appendedTo === transaction) {
+						write.appendedTo = undefined;
+						write.loggedBase = undefined;
+					}
 				this.rekeyRefusedRetry(transaction);
 			}
 		}

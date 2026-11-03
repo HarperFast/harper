@@ -1200,17 +1200,7 @@ export function recordUpdater(
 							},
 							{ transaction: options.transaction, nodeId, viaNodeId }
 						);
-						noteStagedAudit(
-							options,
-							extendedType,
-							isRocksDB && type !== 'put' && type !== 'delete'
-								? {
-										version: previousVersion,
-										nodeId: replacingEntry.nodeId,
-										additionalAuditRefs: previousAdditionalAuditRefs,
-									}
-								: undefined
-						);
+						noteStagedAudit(options, extendedType);
 						return result;
 					}
 				}
@@ -1244,11 +1234,7 @@ export function recordUpdater(
 						viaNodeId,
 					}
 				);
-				noteStagedAudit(
-					options,
-					extendedType,
-					isRocksDB && type !== 'put' && type !== 'delete' ? (existingEntry ?? null) : undefined
-				);
+				noteStagedAudit(options, extendedType);
 			}
 			if (options?.tableToTrack && TRACKED_WRITE_TYPES.has(type)) {
 				recordAction(lastValueEncoding?.length ?? 1, 'db-write', options.tableToTrack, null);
@@ -1271,19 +1257,14 @@ export function recordUpdater(
 	};
 }
 // a coordinated retry's put appends nothing (unless the attempt it retries wrote no batch); its write keeps what that attempt appended
-function noteStagedAudit(
-	options: any,
-	extendedType: number,
-	loggedBase?: {
-		version?: number;
-		nodeId?: number;
-		additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
-	} | null
-) {
+function noteStagedAudit(options: any, extendedType: number) {
 	const write = options?.write;
-	if (!write || (options.transaction?.isRetry && !options.transaction.relogOnRetry)) return;
-	if (write.stagedAudit !== 'replicable') write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
-	if (loggedBase !== undefined) write.loggedBase = loggedBase;
+	if (
+		write &&
+		write.stagedAudit !== 'replicable' &&
+		(!options.transaction?.isRetry || options.transaction.relogOnRetry)
+	)
+		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 }
 export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;

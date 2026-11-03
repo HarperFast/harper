@@ -1984,10 +1984,12 @@ export function makeTable(options): TableResourceClass {
 			if (replayed.type === 'put' || replayed.type === 'delete') return refs;
 			previousVersion = replayed.previousVersion;
 			covered = replayed.previousAdditionalAuditRefs;
-			previousNodeId =
-				replayed.previousNodeId ??
-				(covered?.length ? resolveAuditHead(id, previousVersion, undefined, covered as any).nodeId : undefined);
-			hasPreviousNodeId = previousNodeId !== undefined;
+			if (base.version === previousVersion) {
+				previousNodeId =
+					replayed.previousNodeId ??
+					(covered?.length ? resolveAuditHead(id, previousVersion, undefined, covered as any).nodeId : undefined);
+				hasPreviousNodeId = previousNodeId !== undefined;
+			}
 		} else if (transaction?.isRetry && !transaction.relogOnRetry && write.loggedBase !== undefined) {
 			previousVersion = write.loggedBase?.version;
 			previousNodeId = write.loggedBase?.nodeId;

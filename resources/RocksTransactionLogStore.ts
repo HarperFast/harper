@@ -215,7 +215,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	/**
 	 * A numeric key reads the record's entry in the transaction keyed by it. Committed state can name an entry
 	 * past the log's committed watermark, which stays at the first entry whose transaction has not committed,
-	 * so callers following refs from a record or audit entry pass `readUncommitted: true`; the default reads
+	 * so callers following refs from a record or audit entry pass `readUncommitted = true`; the default reads
 	 * only up to the watermark so duplicate checks cannot count an uncommitted entry.
 	 */
 	getSync(key: any, tableId: number, recordId: any, nodeId: number, readUncommitted?: boolean) {

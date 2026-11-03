@@ -14,11 +14,23 @@ if (require.main === module) {
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, { retrycrash: { path: databasePath } });
 	mkdirSync(path.join(rootPath, 'database'), { recursive: true });
 	const { Transaction } = require('@harperfast/rocksdb-js');
+	const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 	const { table } = require('#src/resources/databases');
 	const { transaction } = require('#src/resources/transaction');
 	const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	setMainIsWorker(true);
+	let restagedFromUnflushed = false;
+	if (mode === 'replay') {
+		const originalSave = DatabaseTransaction.prototype.save;
+		DatabaseTransaction.prototype.save = function (operation) {
+			const result = originalSave.call(this, operation);
+			if (this.isReplay && operation?.key === 'r' && operation.entry?.value?.meta === 'seed') {
+				restagedFromUnflushed = true;
+			}
+			return result;
+		};
+	}
 	const Tbl = table({
 		table: 'Rows',
 		database: 'retrycrash',
@@ -50,17 +62,17 @@ if (require.main === module) {
 				await Tbl.primaryStore.rootStore.flush();
 			} else if (this === intercepted) {
 				retried = true;
+				writeFileSync(markerPath, JSON.stringify({ base, retried }));
 			}
 			return originalCommit.apply(this, args);
 		};
 		await applyFromOrigin(base + 300, { meta: 'retried' });
-		writeFileSync(markerPath, JSON.stringify({ base, retried }));
 		process.kill(process.pid, 'SIGKILL');
 	};
 
 	const reportReplay = async () => {
 		const { base, retried } = JSON.parse(readFileSync(markerPath, 'utf8'));
-		const replayed = (await Tbl.get('r'))?.meta === 'retried';
+		const replayed = restagedFromUnflushed && (await Tbl.get('r'))?.meta === 'retried';
 		await applyFromOrigin(base + 100, { title: 'older' });
 		const { title, meta } = await Tbl.get('r');
 		writeFileSync(markerPath, JSON.stringify({ retried, replayed, title, meta }));

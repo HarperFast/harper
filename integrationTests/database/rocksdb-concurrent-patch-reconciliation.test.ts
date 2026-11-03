@@ -101,7 +101,7 @@ function concurrentPatchSuite(workerCount: number, arms: Array<{ updater: string
 		});
 
 		after(async () => {
-			await Promise.all(clients.map((client) => client.close()));
+			if (clients) await Promise.all(clients.map((client) => client.close()));
 			await teardownHarper(ctx);
 		});
 
