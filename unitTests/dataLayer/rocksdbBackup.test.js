@@ -919,6 +919,56 @@ describe('rocksdbBackup', function () {
 				});
 			}
 
+			// What `cp -R` plus `chmod -R a-w` leaves: every file read-only. The directories keep their write
+			// bit only because the binding refuses a repository it cannot write.
+			function setFileModes(root, mode) {
+				(function walk(dir) {
+					for (const entry of readdirSync(dir, { withFileTypes: true })) {
+						const path = join(dir, entry.name);
+						if (entry.isDirectory()) walk(path);
+						else if (entry.isFile()) chmodSync(path, mode);
+					}
+				})(root);
+			}
+
+			function unwritable(roots) {
+				const found = [];
+				for (const root of roots) {
+					if (!existsSync(root)) continue;
+					(function walk(dir) {
+						if ((statSync(dir).mode & 0o700) !== 0o700) found.push(dir);
+						for (const entry of readdirSync(dir, { withFileTypes: true })) {
+							const path = join(dir, entry.name);
+							if (entry.isDirectory()) walk(path);
+							else if (entry.isFile() && (statSync(path).mode & 0o600) !== 0o600) found.push(path);
+						}
+					})(root);
+				}
+				return found;
+			}
+
+			for (const mode of ['offline', 'online']) {
+				it(`${mode}: restores from a repository of read-only files into a generation it can write`, async function () {
+					this.timeout(30000);
+					const backupId = await seed();
+					const backupDir = backupDirForDatabase(VERIFIED);
+					setFileModes(backupDir, 0o440);
+					try {
+						const result = await immutableRestores[mode](backupId);
+						assert.strictEqual(result.immutable_source, true);
+					} finally {
+						setFileModes(backupDir, 0o640);
+					}
+					assert.deepStrictEqual(
+						unwritable([verifiedDir(), ...getBlobPathsForDatabaseName(VERIFIED)]),
+						[],
+						"a restored file kept the repository's read-only mode"
+					);
+					assert.strictEqual(checkRestoreState(verifiedDir()), 'clear');
+					await assertRestoredFromBackup();
+				});
+			}
+
 			it('offline: records the repository on the marker, so a rerun proves its debris without a claim', async function () {
 				this.timeout(30000);
 				const backupId = await seed();

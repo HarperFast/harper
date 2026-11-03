@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fsyncSync, openSync } from 'node:fs';
 import { join } from 'node:path';
+import { chmod, readdir, stat } from 'node:fs/promises';
 import { RocksDatabase, backups } from '@harperfast/rocksdb-js';
 import { initSync, setProperty } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -124,9 +125,33 @@ async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> 
 				durable: true,
 			});
 		}
+		// a copy keeps its source's mode, and a read-only repository (`immutable_source`) would otherwise
+		// leave a generation whose transaction logs and blobs this database cannot write
+		for (const root of [args.databasePath, ...args.blobRoots]) await makeOwnerWritable(root);
 		await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
 	});
 	return inPhase('prove', () => prove(args));
+}
+
+async function makeOwnerWritable(root: string): Promise<void> {
+	let entries;
+	try {
+		await addMode(root, 0o700);
+		entries = await readdir(root, { withFileTypes: true });
+	} catch (error: any) {
+		if (error.code === 'ENOENT') return;
+		throw error;
+	}
+	for (const entry of entries) {
+		const path = join(root, entry.name);
+		if (entry.isDirectory()) await makeOwnerWritable(path);
+		else if (entry.isFile()) await addMode(path, 0o600);
+	}
+}
+
+async function addMode(path: string, bits: number): Promise<void> {
+	const { mode } = await stat(path);
+	if ((mode & bits) !== bits) await chmod(path, mode | bits);
 }
 
 /** Whether this filesystem flushes a directory's entries, which the durable writes above tolerated silently. */
