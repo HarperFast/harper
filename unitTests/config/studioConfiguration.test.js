@@ -640,15 +640,17 @@ studio:
 			});
 		}
 
-		it('replaces a root studio value that is not a map rather than reporting a write that did not land', async () => {
-			setRootConfigEntry('studio', 'hidden');
-			await setConfiguration({
-				operation: 'set_configuration',
-				studio_navigation: { logs: 'hidden' },
-				studio_landing: 'databases',
+		for (const notAMap of ['hidden', ['hidden']]) {
+			it(`replaces a root studio value of ${JSON.stringify(notAMap)} rather than reporting a write that did not land`, async () => {
+				setRootConfigEntry('studio', notAMap);
+				await setConfiguration({
+					operation: 'set_configuration',
+					studio_navigation: { logs: 'hidden' },
+					studio_landing: 'databases',
+				});
+				assert.deepStrictEqual(readRootConfig().studio, { navigation: { logs: 'hidden' }, landing: 'databases' });
 			});
-			assert.deepStrictEqual(readRootConfig().studio, { navigation: { logs: 'hidden' }, landing: 'databases' });
-		});
+		}
 
 		for (const [layer, pinned] of [
 			['HARPER_SET_CONFIG', { studio: null }],
