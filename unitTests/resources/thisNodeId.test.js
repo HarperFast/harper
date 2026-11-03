@@ -34,14 +34,30 @@ describe('getThisNodeId', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
 		});
 	}
+	// Counts lookup reads only: a mint or id-0 takeover re-reads the record inside its own transaction, which on
+	// LMDB goes through getBinary too (RocksDB reads through the transaction object).
 	function countMappingReads(auditStore) {
 		const getBinary = auditStore.getBinary;
+		const owner = auditStore.rootStore;
+		const transactionSync = owner.transactionSync;
+		let transactionDepth = 0;
 		const counter = { reads: 0 };
+		owner.transactionSync = function (...args) {
+			transactionDepth++;
+			try {
+				return transactionSync.apply(this, args);
+			} finally {
+				transactionDepth--;
+			}
+		};
 		auditStore.getBinary = function (key, ...rest) {
-			if (key === REMOTE_NODE_IDS) counter.reads++;
+			if (key === REMOTE_NODE_IDS && !transactionDepth) counter.reads++;
 			return getBinary.call(this, key, ...rest);
 		};
-		counter.restore = () => (auditStore.getBinary = getBinary);
+		counter.restore = () => {
+			auditStore.getBinary = getBinary;
+			owner.transactionSync = transactionSync;
+		};
 		return counter;
 	}
 
