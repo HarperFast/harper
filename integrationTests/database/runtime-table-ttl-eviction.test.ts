@@ -59,7 +59,7 @@ for (const engine of ['rocksdb', 'lmdb']) {
 			const records = Array.from({ length: RECORD_COUNT }, (_, i) => ({ id: i, value: `v${i}` }));
 			await operation(ctx, { operation: 'insert', database: DATABASE, table: TABLE, records });
 
-			// describe_table reads the store's entry count, never the rows
+			// describe_table counts stored entries without going through a query or GET
 			const recordCount = async () =>
 				(await operation(ctx, { operation: 'describe_table', database: DATABASE, table: TABLE })).record_count;
 			strictEqual(await recordCount(), RECORD_COUNT);
