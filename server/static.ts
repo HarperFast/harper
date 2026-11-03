@@ -1,10 +1,12 @@
 import { realpathSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { Scope } from '../components/Scope';
+import { basename, dirname, join } from 'node:path';
+import { Scope } from '../components/Scope.ts';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-import { isMatch } from 'micromatch';
+import _typestrip_micromatch from 'micromatch';
+const { isMatch } = _typestrip_micromatch;
 import send from 'send';
+import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 /**
  * The static plugin handles serving static files from the respective application directory.
@@ -119,14 +121,18 @@ function serveFile(req, path: string, scope: Scope) {
 	// The staticFiles map keys are the mount-relative URL path (leading slash stripped for matching);
 	// for a directory-index serve req.pathname is the directory, so also match the served basename.
 	const urlKey = typeof req.pathname === 'string' ? req.pathname.replace(/^\//, '') : '';
-	const basename = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+	const fileName = basename(path);
 	const { cacheControlDisabled, maxAgeMs, immutable, customCacheControl } = resolveCacheOptions(
 		scope,
 		urlKey,
-		basename
+		fileName
 	);
 
-	const stream = send(req, path, {
+	// `send` URI-decodes its path argument and 404s any dot segment, as it does for a request path. A
+	// static entry is a filesystem path chosen by the `files` globs, so `send` gets only the file's own
+	// name, with its directory as `root`: an ancestor directory never reaches the decode or dot check.
+	const stream = send(req, encodeURIComponent(fileName), {
+		root: dirname(path),
 		// suppress send's own header when we set a full override below (or when disabled)
 		cacheControl: cacheControlDisabled || customCacheControl !== undefined ? false : true,
 		maxAge: maxAgeMs,
@@ -191,6 +197,7 @@ export function handleApplication(scope: Scope) {
 	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
 	let urlPathRestartPending = false;
 	let fileSelectionChangePending = false;
+	const missingNotFoundWarned = new Set<string>();
 	let entryHandler: ReturnType<Scope['handleEntry']>;
 
 	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
@@ -337,40 +344,30 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
-					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
-					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
-					// redirect the no-slash form so relative links on the index page resolve under
-					// the mount (#1583). Query string is preserved across both redirects; compute it
-					// lazily inside each branch so the common (non-redirect) index serve stays allocation-free.
-					// Gated on the EXTERNAL base path, not the plugin-local one: a root-level static
-					// plugin (baseURLPath === '/') still needs this redirect when the application
-					// itself carries a host/urlPath mount, since the client-visible mount root is then
-					// externalBaseURLPath, not '/' (review finding).
-					if (staticFile && req.pathname === '/' && externalBaseURLPath !== '/') {
-						const originalPathname: string | undefined = (req as any).originalPathname;
-						if (originalPathname && !originalPathname.endsWith('/')) {
-							const queryIndex = (req.url as string).indexOf('?');
-							const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
-							return {
-								status: 301,
-								headers: {
-									Location: externalBaseURLPath + query,
-								},
-							};
-						}
-					}
+					// Prefix stripping makes `originalPathname` necessary to distinguish mounted roots (#1583).
+					const originalPathname: string | undefined = (req as any).originalPathname;
+					const redirectsMountRoot = !!(
+						staticFile &&
+						req.pathname === '/' &&
+						externalBaseURLPath !== '/' &&
+						originalPathname &&
+						!originalPathname.endsWith('/')
+					);
 
-					// If `null`, redirect to trailing slash. req.pathname arrives with the mount
-					// prefix stripped, so rebuild the external path for the Location header (#1583)
-					if (staticFile === null) {
-						const externalPath =
-							externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname;
+					if (redirectsMountRoot || staticFile === null) {
+						const settledCredentialRejection = settleDeferredCredentialRejection(req);
+						if (settledCredentialRejection) return settledCredentialRejection;
 						const queryIndex = (req.url as string).indexOf('?');
 						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
+						const location = redirectsMountRoot
+							? externalBaseURLPath + query
+							: (externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname) +
+								'/' +
+								query;
 						return {
 							status: 301,
 							headers: {
-								Location: externalPath + '/' + query,
+								Location: location,
 							},
 						};
 					}
@@ -391,12 +388,25 @@ export function handleApplication(scope: Scope) {
 				}
 			}
 
-			// If an entry matched, serve it
+			// Entries are watcher snapshots that can lag the disk, so a missing file is a miss, not an error.
+			let resolvedFile: string | undefined;
 			if (staticFile) {
+				try {
+					resolvedFile = resolveExisting(staticFile);
+				} catch (error) {
+					// Failed credentials answered 401 before the file was resolved; keep that over a path-bearing 500.
+					const settledCredentialRejection = settleDeferredCredentialRejection(req);
+					if (settledCredentialRejection) return settledCredentialRejection;
+					throw error;
+				}
+			}
+			if (resolvedFile) {
+				const settledCredentialRejection = settleDeferredCredentialRejection(req);
+				if (settledCredentialRejection) return settledCredentialRejection;
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
 				return {
 					handlesHeaders: true,
-					body: serveFile(req, realpathSync(staticFile), scope),
+					body: serveFile(req, resolvedFile, scope),
 				};
 			}
 
@@ -405,7 +415,8 @@ export function handleApplication(scope: Scope) {
 				return next(req);
 			}
 
-			// Otherwise, handle not found
+			const settledCredentialRejection = settleDeferredCredentialRejection(req);
+			if (settledCredentialRejection) return settledCredentialRejection;
 
 			const notFound = scope.options.get(['notFound']);
 
@@ -421,14 +432,23 @@ export function handleApplication(scope: Scope) {
 			const notFoundPath = join(scope.directory, typeof notFound === 'string' ? notFound : notFound.file);
 			const statusCode = typeof notFound === 'object' ? notFound.statusCode : 404;
 
-			if (!existsSync(notFoundPath)) {
-				throw new Error(`Not found file does not exist: ${notFoundPath}`);
+			const resolvedNotFound = resolveExisting(notFoundPath);
+			if (!resolvedNotFound) {
+				if (!missingNotFoundWarned.has(notFoundPath)) {
+					scope.logger.warn(`The static \`notFound\` file does not exist: ${notFoundPath}`);
+					missingNotFoundWarned.add(notFoundPath);
+				}
+				return {
+					status: 404,
+					body: 'File not found',
+				};
 			}
 
+			missingNotFoundWarned.delete(notFoundPath);
 			return {
 				status: statusCode,
 				handlesHeaders: true,
-				body: send(req, realpathSync(notFoundPath)),
+				body: send(req, encodeURIComponent(basename(resolvedNotFound)), { root: dirname(resolvedNotFound) }),
 			};
 		},
 		{
@@ -438,6 +458,15 @@ export function handleApplication(scope: Scope) {
 			after: after as string | undefined,
 		}
 	);
+}
+
+function resolveExisting(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch (error) {
+		if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined;
+		throw error;
+	}
 }
 
 function validateOrderingOption(

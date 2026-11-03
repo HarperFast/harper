@@ -7,11 +7,32 @@
 // resolves its inputs.
 const assert = require('node:assert');
 const path = require('node:path');
-const { resolveComponentName, resolveGitHost, storeSealedSecret } = require('#src/bin/deploySetup');
+const {
+	assertUsableComponentName,
+	resolveComponentName,
+	resolveGitHost,
+	resolveSetupComponent,
+	storeSealedSecret,
+} = require('#src/bin/deploySetup');
 const { directoryProjectName } = require('#src/utility/componentNames');
-const cliOperationsModule = require('#src/bin/cliOperations');
+const cliOperationsModule = require('#js/bin/cliOperations');
 
 describe('deploySetup', () => {
+	describe('assertUsableComponentName', () => {
+		it('accepts a name a deploy would accept', () => {
+			assert.doesNotThrow(() => assertUsableComponentName('sql-tools'));
+		});
+
+		it('rejects a name outside the deploy grammar', () => {
+			assert.throws(() => assertUsableComponentName('has space'), /not a usable component name/);
+		});
+
+		// Sealing a credential for a name deploy_component refuses leaves a secret nobody can use.
+		it('rejects a name reserved by the root config', () => {
+			assert.throws(() => assertUsableComponentName('sql'), /is reserved for Harper's "sql" configuration section/);
+		});
+	});
+
 	describe('resolveComponentName', () => {
 		it('canonicalizes an explicit project like deploy_component does', () => {
 			assert.strictEqual(resolveComponentName({ project: 'web' }), 'web');
@@ -77,6 +98,14 @@ describe('deploySetup', () => {
 				else process.env.GITHUB_SHA = savedSha;
 				fs.removeSync(root);
 			}
+		});
+	});
+
+	describe('resolveSetupComponent', () => {
+		it('accepts a component-name pattern only for a deploy credential (harper#3090)', async () => {
+			assert.strictEqual(await resolveSetupComponent({ project: 'my-app-pr-*' }, 'm', true), 'my-app-pr-*');
+			await assert.rejects(resolveSetupComponent({ project: 'my-app-pr-*' }, 'm'), /not a usable component name/);
+			await assert.rejects(resolveSetupComponent({ project: '*' }, 'm', true), /not a usable component name/);
 		});
 	});
 

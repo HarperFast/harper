@@ -31,7 +31,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-import { WORKER_COUNT, assertMultiWorker, mapBounded } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, mapBounded, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { fetchOnNewConnection } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-coherence');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -41,14 +42,12 @@ const CONCURRENCY = 24;
 
 type Rec = { id: string; name: string; counter: number };
 
-// Force a fresh connection per request (no keep-alive) so concurrent requests
-// spray across the SO_REUSEPORT worker pool instead of pinning to one worker.
 function headers(auth: string): Record<string, string> {
-	return { 'Content-Type': 'application/json', 'Authorization': auth, 'Connection': 'close' };
+	return { 'Content-Type': 'application/json', 'Authorization': auth };
 }
 
 async function putRecord(base: string, auth: string, id: string, name: string, counter: number): Promise<void> {
-	const r = await fetch(`${base}/CacheRecord/${encodeURIComponent(id)}`, {
+	const r = await fetchOnNewConnection(`${base}/CacheRecord/${encodeURIComponent(id)}`, {
 		method: 'PUT',
 		headers: headers(auth),
 		body: JSON.stringify({ id, name, counter }),
@@ -60,7 +59,7 @@ async function putRecord(base: string, auth: string, id: string, name: string, c
 }
 
 async function deleteRecord(base: string, auth: string, id: string): Promise<void> {
-	const r = await fetch(`${base}/CacheRecord/${encodeURIComponent(id)}`, {
+	const r = await fetchOnNewConnection(`${base}/CacheRecord/${encodeURIComponent(id)}`, {
 		method: 'DELETE',
 		headers: headers(auth),
 	});
@@ -71,7 +70,7 @@ async function deleteRecord(base: string, auth: string, id: string): Promise<voi
 }
 
 async function getRecord(base: string, auth: string, id: string): Promise<{ status: number; body: Rec | null }> {
-	const r = await fetch(`${base}/CacheRecord/${encodeURIComponent(id)}`, { headers: headers(auth) });
+	const r = await fetchOnNewConnection(`${base}/CacheRecord/${encodeURIComponent(id)}`, { headers: headers(auth) });
 	if (r.status === 404) {
 		await r.text().catch(() => undefined);
 		return { status: 404, body: null };
@@ -84,7 +83,7 @@ async function waitForTable(base: string, auth: string): Promise<void> {
 	const deadline = Date.now() + 60_000;
 	while (Date.now() < deadline) {
 		try {
-			const r = await fetch(`${base}/CacheRecord/probe`, { headers: headers(auth) });
+			const r = await fetchOnNewConnection(`${base}/CacheRecord/probe`, { headers: headers(auth) });
 			if (r.status < 500) {
 				await r.text().catch(() => undefined);
 				return;
@@ -99,7 +98,7 @@ async function waitForTable(base: string, auth: string): Promise<void> {
 
 suite(
 	'record-caching cross-worker coherence [rocksdb] multi-worker',
-	{ skip: SKIP || process.platform === 'win32' },
+	{ skip: SKIP || NO_MULTI_WORKER_HTTP },
 	(ctx: ContextWithHarper) => {
 		let base: string;
 		let auth: string;

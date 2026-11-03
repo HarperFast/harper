@@ -8,7 +8,7 @@ const init_paths = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/in
 const bridge =
 	require('#src/dataLayer/harperBridge/harperBridge').default.default ||
 	require('#src/dataLayer/harperBridge/harperBridge').default;
-const mount_hdb = rewire('#src/utility/mount_hdb');
+const mount_hdb = rewire('#js/utility/mount_hdb');
 const path = require('path');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -55,7 +55,7 @@ describe('test mount_hdb module', () => {
 		create_table_stub = sandbox.stub(bridge, 'createTable');
 		mount_hdb.__set__('mkdirpSync', mk_dirp_sync_stub);
 		mount_hdb.__set__('copySync', sandbox.stub());
-		mount_hdb.__set__('systemSchema_json_1', { default: test_system_schema });
+		mount_hdb.__set__('systemSchema', test_system_schema);
 	});
 
 	after(() => {

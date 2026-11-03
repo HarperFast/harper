@@ -22,6 +22,7 @@ export interface DirectCondition {
 	attribute?: string;
 	value?: unknown;
 	comparator?: string;
+	negated?: boolean;
 }
 
 export interface CompoundCondition {
@@ -116,7 +117,7 @@ function splitUnpushableNullGuards(
 		if (cond.comparator !== 'ne' && cond.comparator !== 'equals') return undefined;
 		const guard: ExprNode = {
 			kind: 'isNull',
-			negated: cond.comparator === 'ne',
+			negated: cond.comparator === 'ne' && !cond.negated,
 			expr: { kind: 'column', name: cond.attribute },
 		};
 		return { guards: [guard] };
@@ -192,6 +193,8 @@ export function conditionUsesIndex(cond: ConditionNode, attributes: IndexedAttri
 	if ('attribute' in cond && cond.attribute) {
 		const a = attributes?.find((x) => x.name === cond.attribute);
 		if (!a?.indexed) return false;
+		// searchByIndex answers a negated condition with a full scan
+		if (cond.negated) return false;
 		if (FULL_SCAN_COMPARATORS.has(cond.comparator ?? '')) return false;
 		if (cond.comparator === 'ne' && cond.value !== null) return false;
 		// A null-valued condition can only seek an index that indexes nulls.
@@ -403,21 +406,21 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		}
 		case 'isNull': {
 			if (expr.expr.kind !== 'column') return undefined;
-			return {
-				attribute: expr.expr.name,
-				comparator: expr.negated ? 'ne' : 'equals',
-				value: null,
-			};
+			// `IS NOT NULL` is the `ne null` index range, which excludes null and omitted values. An omitted value is
+			// NULL too, but no index holds an entry for it, so `IS NULL` goes as the filter-only `NOT (IS NOT NULL)`.
+			const condition: DirectCondition = { attribute: expr.expr.name, comparator: 'ne', value: null };
+			if (!expr.negated) condition.negated = true;
+			return condition;
 		}
 		case 'logical': {
-			if (expr.op !== 'or') return undefined;
+			if (expr.op !== 'or' && expr.op !== 'and') return undefined;
 			const sub: ConditionNode[] = [];
 			for (const a of expr.args) {
 				const c = leafToCondition(a);
 				if (!c) return undefined;
 				sub.push(c);
 			}
-			return { conditions: sub, operator: 'or' };
+			return { conditions: sub, operator: expr.op };
 		}
 		default:
 			return undefined;

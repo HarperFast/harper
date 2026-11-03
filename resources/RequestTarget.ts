@@ -36,6 +36,8 @@ export class RequestTarget extends URLSearchParams {
 	declare select?: Select;
 	/**	 Return an explanation of the query order */
 	declare explain?: boolean;
+	/** Request a total count of matching records for pagination (REST `Prefer: count=exact|estimated`). */
+	declare count?: 'exact' | 'estimated';
 	/**	 Force the query to be executed in the order of conditions */
 	declare enforceExecutionOrder?: boolean;
 	declare lazy?: boolean;
@@ -125,7 +127,7 @@ export class RequestTarget extends URLSearchParams {
 			if (path.endsWith('/')) {
 				this.isCollection = true;
 			}
-			this.id = decodeURIComponent(path);
+			this.id = path.includes('%') ? decodeURIComponent(path) : path;
 		} else if (this.pathname === '/') {
 			// a bare trailing slash is the documented way to address a resource's collection
 			this.isCollection = true;

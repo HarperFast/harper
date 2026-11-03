@@ -12,6 +12,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
 import { defineTable, types } from '../../dist/index.js';
+import type { RecordLockOptions, WritableRecord } from '../../dist/index.js';
 
 const { id, int, string, date } = types;
 
@@ -98,6 +99,35 @@ type _song_record = Expect<
 type _song_insert = Expect<Equal<(typeof Song)['$insert'], { title: string; albumId: string; id?: string }>>;
 type _song_query = Expect<Equal<(typeof Song)['$query'], { albumId?: string }>>;
 
+const Event = defineTable('Event', {
+	id: id.primaryKey,
+	label: string,
+	createdAt: date.indexed.createdTime,
+	updatedAt: date.nullable.updatedTime,
+	when: date.indexed.nullable,
+});
+type _event_record = Expect<
+	Equal<
+		(typeof Event)['$record'],
+		{
+			readonly id: string;
+			readonly label: string;
+			readonly createdAt: Date;
+			readonly updatedAt: Date;
+			readonly when?: Date;
+		}
+	>
+>;
+type _event_insert = Expect<Equal<(typeof Event)['$insert'], { label: string; id?: string; when?: Date }>>;
+type _event_upsert = Expect<Equal<(typeof Event)['$upsert'], { id: string; label: string; when?: Date }>>;
+type _event_patch = Expect<Equal<(typeof Event)['$patch'], { label?: string; when?: Date }>>;
+type _event_query = Expect<Equal<(typeof Event)['$query'], { createdAt?: Date; when?: Date }>>;
+// runtime semantics: #3584
+const Stamp = defineTable('Stamp', { id: id.primaryKey, stamped: date.createdTime.indexed.updatedTime });
+type _stamp_record = Expect<Equal<(typeof Stamp)['$record'], { readonly id: string; readonly stamped: Date }>>;
+type _stamp_insert = Expect<Equal<(typeof Stamp)['$insert'], { id?: string }>>;
+type _stamp_query = Expect<Equal<(typeof Stamp)['$query'], { stamped?: Date }>>;
+
 // ── Mutual pair (Book <-> Author): relationOf/hasManyOf break the const-initializer cycle ──
 //
 // Using plain `relation`/`hasMany` on BOTH sides of a mutual pair does NOT compile — TS's
@@ -152,6 +182,25 @@ async function verbs() {
 	live.name = 'Renamed'; //                                                      writable field — mutable
 }
 
+const lockOptions: RecordLockOptions = { hold: true, lease: 5000 };
+async function lockTypes() {
+	const locked: WritableRecord<TrackRecord> = await Track.lock('DtMF', lockOptions);
+	await locked.lock({ hold: true });
+	await locked.delete('other-id');
+	await locked.unlock();
+}
+
+async function searchTypes() {
+	const options = { sort: { attribute: 'vector', target: [1, 0], waitForIndexMilliseconds: 10000 } };
+	const searching = Track.search(options);
+	const querying = Track.query(options);
+	const searchedRows: AsyncIterable<TrackRecord> = await searching;
+	const queriedRows: AsyncIterable<TrackRecord> = await querying;
+	const unawaitedSearch: AsyncIterable<TrackRecord> = searching;
+	const unawaitedQuery: AsyncIterable<TrackRecord> = querying;
+	return { searchedRows, queriedRows, unawaitedSearch, unawaitedQuery };
+}
+
 // Explicit-typed forms, to show the projections stand alone too:
 const toInsert: InsertTrack = { name: 'New Album', status: 'draft', duration: 50 };
 const toReplace: UpsertTrack = { id: 'DtMF', name: 'New Album', status: 'draft' };
@@ -173,7 +222,25 @@ const bad_upsert: UpsertTrack = { name: 'x', status: 'draft' };
 const bad_enum: PatchTrack = { status: 'archived' };
 // @ts-expect-error duration is not indexed, so it is not a query key
 const bad_query: TrackQuery = { duration: 50 };
+// @ts-expect-error a timestamp chained after `.indexed` is still server-managed
+const bad_event: (typeof Event)['$insert'] = { label: 'x', createdAt: new Date() };
 // @ts-expect-error relations are not writable
 const bad_album: (typeof Album)['$insert'] = { title: 'x', tracks: [] };
 
-export { Track, Album, Book, Author, toInsert, toReplace, toPatch, filter, verbs, authorName, firstBookTitle };
+export {
+	Track,
+	Album,
+	Event,
+	Stamp,
+	Book,
+	Author,
+	toInsert,
+	toReplace,
+	toPatch,
+	filter,
+	verbs,
+	lockTypes,
+	searchTypes,
+	authorName,
+	firstBookTitle,
+};

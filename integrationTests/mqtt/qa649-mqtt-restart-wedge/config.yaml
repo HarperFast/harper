@@ -1,0 +1,6 @@
+# QA-649 — MQTT connect wedge across an HTTP-worker restart fixture.
+# Minimal table only for a REST readiness-probe route; the experiment itself is all MQTT connects.
+graphqlSchema:
+  files: '*.graphql'
+rest: true
+mqtt: true

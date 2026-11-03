@@ -14,8 +14,8 @@ Harper is a Node.js unified development platform that fuses a document database 
 
 ```bash
 # Build
-npm run build              # TypeScript → dist/ via tsconfig.build.json
-npm run build:watch        # Incremental watch build
+npm run build              # TypeScript → dist/ via build-tools/build-dist.mjs (comment-free, Latin-1 JS; .d.ts keep JSDoc)
+npm run build:watch        # Incremental watch build (plain tsc: keeps comments and non-Latin-1 text)
 
 # Lint / Format
 npm run lint               # oxlint (warnings = errors)
@@ -24,7 +24,8 @@ npm run format:write       # Prettier
 
 # Test — run specific suites
 npm run test:unit                  # All unit tests (mocha)
-npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources)
+npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources, install)
+npm run test:unit:install          # Installer suite, its own process: it closes and recreates the shared system database
 npm run test:unit:resources        # Resource layer tests
 npm run test:unit:server           # Server layer tests
 npm run test:unit:dataLayer        # Data layer tests
@@ -36,6 +37,8 @@ npm run test:unit:windows          # The Windows CI gate — a scoped slice, see
 npm run test:integration           # Full integration test suite
 ```
 
+**Resources:** CI runs this suite as three shard jobs — `test:unit:resources:core:a-n`, `test:unit:resources:core:o-z` and `test:unit:resources:indexes` — so each step budget stays spendable as the suite grows, and so a wedged run is reported in minutes (harper#2660). `:indexes` is the `*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js` files; `:core:a-n` is the files whose name starts with `a`–`n` (either case) with that pattern excluded, and `:core:o-z` is every other file with both patterns excluded, so the three are an exact partition and a newly added file lands in exactly one of them. `:core` is the union of the two `:core:*` halves, kept for local runs. `test:unit:resources` is untouched — still one mocha process over the whole suite — so `test:unit:all`, `test:unit:lmdb` and a local full run behave exactly as before. `npm run check:unit-partition` (in the lint job) resolves each script's files with mocha's own collection and fails unless the three shards partition `test:unit:resources` exactly, compiled and type-strip alike; without it a file the globs stopped covering would get LMDB execution but, `vectorIndexPlane.test.js` and `blob.test.js` aside, no default-engine (RocksDB) execution. To reproduce a red CI shard locally, run that shard's script.
+
 **Windows:** `test:unit:windows` is what the `unit-test-windows` CI job runs, and it covers only the part of the unit tree verified green on Windows. If you touch platform-specific code, run it — the Ubuntu jobs will not catch a Windows-only break. `unitTests/windowsGate.mjs` holds the scope and the list of suites still excluded, each with the reason; shrinking that list is welcome work. The gate runs one mocha process per directory and fails any group that exits without printing a summary line — keep both. A mocha run can stop advancing with nothing failed (`timeout: 0` in `.mocharc.json` means no test ever times out), in which case the event loop drains and the process exits 0 having printed no epilogue; that reads as a pass to every runner. `unitTests/mocha.init.js` fails such a run from the inside, and the gate's summary check backstops a process that never gets that far.
 
 Run a single test file directly:
@@ -44,11 +47,13 @@ Run a single test file directly:
 npx mocha unitTests/resources/mytest.js
 ```
 
-TypeScript is stripped at runtime via `--conditions=typestrip` (Node.js native type stripping) — no compilation required for development. Use `npm run test:unit:typestrip` to run tests with this mode.
+TypeScript is stripped at runtime via `--conditions=typestrip` (Node.js native type stripping). `npm run test:unit:typestrip` runs the source-compatible core subset without compilation; export-rewriting and compiled-artifact fixtures retain `#js`. Run `npm run build` followed by `npm run test:unit:typestrip:main` for the complete core selection in separate source and compiled processes.
 
-**No ambient Harper install:** a unit test must not depend on one. The Ubuntu `unit-test` job runs `harper install` before its suites; the Windows gate does not, and neither does a clean checkout — so a test that reads whatever config the machine happens to have is green on Ubuntu and red on Windows. Three suites hit exactly this: `harper_logger`/`logRotator` (no config means `logging.file` is off, and `createLogger({ path })` silently writes nothing), `globalIsolation` (`applications.allowedSpawnCommands` is empty, so `spawn('npm')` is rejected as a disallowed command), and `terminalShutdown` (`restartWorkers()` loads the root components, and `loadCertificates()` reads the config _file_, so it rejects with ENOENT). Pin what the suite needs — `unitTests/logConfigFixture.js`, `env.setProperty()`, or a `ROOTPATH` pointed at a config the test writes — instead of reading it off the machine.
+**Unit-test isolation:** every mocha run gets its own per-PID root under `unitTests/envDir/<pid>` — config file, log, keys, and every database including `system` (`unitTests/mocha.init.js` builds it before any test loads; `setupTestDBPath()` re-asserts the paths). A suite that needs the system tables to exist seeds them with `ensureSystemTables()` from `unitTests/testUtils.js` (system tables, a super_user role with an `admin` user, self-signed certs — what an install would create). After each test file, `unitTests/perFileDatabaseTeardown.js` drops every database that file created, and on RocksDB also removes one it closed but left on disk (the module header says why). So a test file must not depend on a database another file created, and must not create one in a root-level hook or test (outside any `describe`); `system`, configured databases and databases that existed before the file started are kept. Unit runs therefore stay out of an installed Harper root, can run while a local Harper is running, and work on a machine with no Harper install at all. Known carve-outs: `test:unit:apitests` still stops a running Harper first, for port reasons only (a wildcard-bound instance holds `*:9925/9926/1883`, starving the loopback-address pool); and the few test files that clear mocha.init.js's `ROOTPATH` export to exercise boot-props resolution fall back to the installed root's resolution inside their scope.
 
-**Test timing:** prefer condition-waits over fixed `delay(N)` sleeps. `await delay(N); assert(sideEffectHappened)` races against loaded runners and is the root cause of a class of flakiness (#1138). Use the shared `waitFor(condition, timeout?, interval?)` helper in `unitTests/waitFor.js` to poll until the actual condition holds. Reserve fixed sleeps for genuinely modeling elapsed time (TTL/expiry windows) or asserting a non-event (that something has _not_ happened yet).
+**No ambient Harper install:** a unit test must not depend on one. The Ubuntu `unit-test` job runs `harper install` before its suites; the Windows gate does not, and neither does a clean checkout — so a test that reads whatever config the machine happens to have is green on Ubuntu and red on Windows. Three suites hit exactly this: `harper_logger`/`logRotator` (no config means `logging.file` is off, and `createLogger({ path })` silently writes nothing), `globalIsolation` (`applications.allowedSpawnCommands` is empty, so `spawn('npm')` is rejected as a disallowed command), and `terminalShutdown` (`restartWorkers()` loads the root components, and `loadCertificates()` reads the config _file_, so it rejects with ENOENT — the harness pins a `ROOTPATH` as a fallback for this). Pin what the suite needs — `unitTests/logConfigFixture.js`, `env.setProperty()`, or a `ROOTPATH` pointed at a config the test writes — instead of reading it off the machine. `terminalShutdown`'s harness seeds `require.cache` with a no-op `loadRootComponents` (`terminalShutdownHarness.cjs`) to avoid its ~5,400-module (~34s Windows) top-level load.
+
+**Test timing:** prefer condition-waits over fixed `delay(N)` sleeps. `await delay(N); assert(sideEffectHappened)` races against loaded runners and is the root cause of a class of flakiness (#1138). Use the shared `waitFor(condition, timeout?, interval?)` helper in `unitTests/waitFor.js` to poll until the actual condition holds. Reserve fixed sleeps for genuinely modeling elapsed time (TTL/expiry windows) or asserting a non-event (that something has _not_ happened yet). The same rule has a deploy-specific lever: `deploy_component` awaits the component's `install_command`, so an integration test that needs a deployment held in a non-terminal status parks it there with a fixture whose install command waits on a file (`integrationTests/deploy/stage-swap-availability.test.ts`, `integrationTests/deploy/qa701-deployment-payload-ops.test.ts`). Pacing the payload upload does not hold that window — whether the operation is dispatched before the request body finishes arriving is runtime-dependent, and under Bun it is not.
 
 ---
 
@@ -77,9 +82,9 @@ All inbound protocols (REST, GraphQL, MQTT, NATS, WebSockets) eventually resolve
 **Resources** (`resources/`)  
 The universal abstraction. Everything that can be queried or mutated — database tables, caches, message topics, custom endpoints — extends `Resource` (`resources/Resource.ts`).
 
-Static methods (`Resource.get`, `Resource.put`, `Resource.post`, `Resource.delete`, `Resource.patch`, `Resource.subscribe`) are the entry points and are automatically wrapped with `transactional()` for transaction management. Override instance methods (`get`, `put`, etc.) for custom behavior.
+Static methods (`Resource.get`, `Resource.put`, `Resource.post`, `Resource.delete`, `Resource.patch`, `Resource.subscribe`) are the protocol entry points: the REST layer dispatches to the _class_ (`server/REST.ts`, inside a request-level `transaction()`), and the base implementations are `transactional()` wrappers that resolve an instance and delegate to the matching instance method. **New `Resource` subclasses here override instance methods** and leave the statics generic. Overriding a static entry point is a deliberate act that takes over the whole wrapper contract — including `data` resolution and the `allow*` gate — see `resources/DESIGN.md` → Conventions for the two obligations it saddles you with. Note this is _core's_ convention: the public [Harper best-practice skills](https://github.com/HarperFast/skills) tell **application** authors to implement REST verbs as statics on their own component resources; choose based on the situation.
 
-`Table.ts` is the database table implementation (4744 lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Use `resources/DESIGN.md` as a section index instead of reading top-to-bottom.**
+`Table.ts` is the database table implementation (over ten thousand lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Find code through [resources/MAP.md](resources/MAP.md) instead of reading top-to-bottom, and read the [resources/DESIGN.md](resources/DESIGN.md) note before changing code it names.**
 
 **Data Layer** (`dataLayer/`)  
 Legacy translation modules plus SQL translation (`sqlTranslator/`) via AlaSQL; these should be avoided. The storage engine is selectable via `HARPER_STORAGE_ENGINE=lmdb`.
@@ -98,17 +103,17 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ### Source — covered above
 
-- **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. Tests: `unitTests/components/`.
+- **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. **See [components/DESIGN.md](components/DESIGN.md)** (deploys, load lifecycle) and [components/mcp/DESIGN.md](components/mcp/DESIGN.md). Tests: `unitTests/components/`.
 - **`server/`** — HTTP/WS/MQTT/etc. Entry: `operationsServer.ts` (boot), `http.ts` (native HTTP). **See [server/DESIGN.md](server/DESIGN.md).** Tests: `unitTests/server/`.
-- **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/DESIGN.md](resources/DESIGN.md).** Tests: `unitTests/resources/`.
-- **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Tests: `unitTests/dataLayer/`.
-- **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. Tests: `unitTests/config/`.
-- **`utility/`** — logging, errors, helpers. Tests: `unitTests/utility/`.
+- **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/MAP.md](resources/MAP.md)** (where things are) and [resources/DESIGN.md](resources/DESIGN.md) (rules). Tests: `unitTests/resources/`.
+- **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Backup/restore and the version gate live here too: [dataLayer/DESIGN.md](dataLayer/DESIGN.md). Tests: `unitTests/dataLayer/`.
+- **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. **See [config/DESIGN.md](config/DESIGN.md).** Tests: `unitTests/config/`.
+- **`utility/`** — logging, errors, helpers. [utility/DESIGN.md](utility/DESIGN.md). Tests: `unitTests/utility/`.
 
 ### Other source folders
 
 - **`bin/`** — CLI entry points. `harper.js` is the executable; `run.js` initializes and runs the server; `cliOperations.js` translates CLI args → API operations. Tests: `unitTests/bin/`. **Don't look here for** business logic.
-- **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. Tests: `unitTests/security/`.
+- **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. **See [security/DESIGN.md](security/DESIGN.md).** Tests: `unitTests/security/`.
 - **`sqlTranslator/`** — SQL → internal operations via AlaSQL AST. Entry: `sqlTranslator/index.js` exports `evaluateSQL`, `processAST`, `convertSQLToAST`, `checkASTPermissions`. **Legacy — avoid for new code.** Tests: `unitTests/sqlTranslator/`.
 - **`validation/`** — input shape validation (Joi + `validate.js`). Entry: `validationWrapper.js`. **Not authorization** — that's in `security/`. Tests: `unitTests/validation/`.
 - **`upgrade/`** — version-upgrade orchestration. Entry: `directivesManager.js` exports `processDirectives()`. Per-version logic in `directives/`. Tests: `integrationTests/upgrade/`.
@@ -119,15 +124,15 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 - **`bin/`** — covered above (it's source).
 - **`benchmarks/`** — HNSW vector-search benchmark only (`hnsw-search.js`). Stand-alone; not part of CI.
-- **`build-tools/`** — build-pipeline scripts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
+- **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
-- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.
+- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`. **See [unitTests/AGENTS.md](unitTests/AGENTS.md)** for test-writing pitfalls (thread-global capture + absolute count).
 - **`static/`** — assets only: `defaultConfig.yaml`, `ascii_logo.txt`.
 
 ### Top-level docs to consult
 
-- **[DESIGN.md](DESIGN.md)** — running list of non-obvious internals (RecordObject prototype, getFromSource timing, blob orphan cleanup). Read this before debugging anything record-store-related.
+- **[DESIGN.md](DESIGN.md)** — index of every design note (one line each) and the rules for where a note goes. The notes themselves live in the `DESIGN.md` of the directory that owns the code; read the one for the directory you are touching.
 - **[dependencies.md](dependencies.md)** — rationale for every npm dependency. Required reading before adding a new package.
 - **[storage-format.md](storage-format.md)** — on-disk layout (RocksDB/LMDB).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — contribution workflow.
@@ -136,14 +141,29 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ## Detailed navigation
 
-For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
+Find code by symbol instead of reading files top-to-bottom:
 
-| If you are touching…                                   | Read first                                 |
-| ------------------------------------------------------ | ------------------------------------------ |
-| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md) |
-| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)       |
-| Record-store internals (commit timing, blobs, encoder) | [DESIGN.md](DESIGN.md)                     |
-| Adding a dependency                                    | [dependencies.md](dependencies.md)         |
+- **Symbols:** `npm run outline -- <file|dir>` prints a file's nested declarations (classes, functions, methods, and the declarations inside factories such as `makeTable()`) and its `// #section:` markers, with line ranges; `npm run outline -- resources/Table.ts` takes under a second. In Claude sessions the LSP tool's document and workspace symbol lookups do the same.
+- **Concepts:** a directory's `MAP.md` points each file and each question a reader brings at the symbols that answer it. Claude Code loads it through that directory's `CLAUDE.md`; Codex and Gemini do not, so read the directory's map from the list below before its source.
+- **Invariants:** the directory's `DESIGN.md`, indexed from [DESIGN.md](DESIGN.md): why the code is the way it is, kept within the byte budgets that file sets.
+
+Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked here): [resources/MAP.md](resources/MAP.md).
+
+For megafiles and complex subsystems, the design notes to read first:
+
+| If you are touching…                                   | Read first                                                 |
+| ------------------------------------------------------ | ---------------------------------------------------------- |
+| Anything in `resources/` (especially `Table.ts`)       | [resources/MAP.md](resources/MAP.md)                       |
+| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)                       |
+| Record-store internals (commit timing, blobs, encoder) | [resources/DESIGN.md](resources/DESIGN.md)                 |
+| `table.lock()`, record-lock ownership                  | [resources/record-locks.md](resources/record-locks.md)     |
+| Derived indexes, HNSW                                  | [resources/indexes/DESIGN.md](resources/indexes/DESIGN.md) |
+| Deploys, component load lifecycle                      | [components/DESIGN.md](components/DESIGN.md)               |
+| Config composition, env layers, hot reload             | [config/DESIGN.md](config/DESIGN.md)                       |
+| Backup/restore, system tables, version gate            | [dataLayer/DESIGN.md](dataLayer/DESIGN.md)                 |
+| Tokens, OIDC, TLS                                      | [security/DESIGN.md](security/DESIGN.md)                   |
+| Any other directory                                    | its `DESIGN.md`, via the index in [DESIGN.md](DESIGN.md)   |
+| Adding a dependency                                    | [dependencies.md](dependencies.md)                         |
 
 ---
 
@@ -153,11 +173,15 @@ For megafiles and complex subsystems, jump to the section index instead of readi
 
 **Resource discovery** — A component's config file maps glob patterns to URL paths. Files matching a pattern become routable resources automatically; no explicit route registration is needed.
 
-**Lazy loading** — GraphQL, secure sandboxing, and tarball extraction are imported on demand. Do not add top-level imports for these modules.
+**Lazy loading** — GraphQL, secure sandboxing, and tarball extraction are imported on demand. Do not add top-level imports for these modules. Every thread loads the startup module graph, so packages only some features need are also loaded on first use: lmdb (`require('lmdb')` where an LMDB environment is opened; type imports must be `import type`, since type stripping keeps `import { type X }` as a load), PKI.js/asn1js/easy-ocsp (only through `loadPkijs()`, which applies the Ed25519 patch first), node-forge, systeminformation and moment; lodash is imported per method (`lodash/cloneDeep.js`). `unitTests/server/startupDependencies.test.js` fails if one of the startup modules it loads (those that used to import them) loads one of them again. Source maps are off by default (`NODE_OPTIONS=--enable-source-maps` turns them on in every thread).
 
 **TypeScript + type stripping** — Source files are `.ts` but Node.js runs them directly via type stripping in development. The `dist/` directory is the compiled production artifact. Both `.ts` and legacy `.js` files coexist; new code should be `.ts`.
 
 **Minimal dependencies** — `dependencies.md` documents the rationale for every dependency. Adding a new dependency requires justification; implementing something ourselves is often preferred.
+
+**An error's class name is its error code, and it is public** — Harper's error taxonomy (`ClientError`, `ServerError`, and the rest of `utility/errors/hdbError.ts`) is a contract clients code against: the class name is documented, clients branch on it, and it guides support. So `errorToString`'s `ClassName: message` rendering is deliberate wherever a client reads it — terminal HTTP error bodies (`server/http.ts`), REST WebSocket close reasons — and `streamErrorRecord` (`server/serverHelpers/contentTypes.ts`) publishes the class name in its own `error` field for the same reason. Do not "sanitize" it away as an internal implementation detail, and treat renaming an error class as a breaking change. What must not reach a client is an internal fault's _message_ — see `AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL`, which replaces the text while keeping the code.
+
+**Use error constructors, never `handleHDBError`** — Do not use the legacy `handleHDBError` helper. Throw `new ClientError(...)`, `new ServerError(...)`, or a descriptive error subclass with the appropriate `statusCode`, and let the top-level handler report it. Preserve an original error as `cause` only when its message and stack are safe to expose; YAML parser errors can contain credentials.
 
 ---
 
@@ -197,5 +221,7 @@ source tree — which permanently shadows git's config file. Every subsequent ag
 - `contextStorage` (AsyncLocalStorage) carries per-request context (user, transaction) across async boundaries — this is how authorization and transactions work without explicit parameter threading.
 - SQL authorization (`verifyPermsAST` → `hasPermissions`) only checks the tables recorded in the statement bucket's affected-attribute map — it iterates that map, so a table missing from it is never checked, and an empty map authorizes by vacuous truth. Two rules follow. Resolve a table reference exactly once, through `sqlEngine/binder/defaultDatabase.ts`, so the authorization layer and the engine's binder cannot disagree about which `database.table` a bare name means. And when adding a new SQL construct, either record its table references in that map or make `getUnauthorizedTableRefs()` report them — an unrecorded reference is a permission bypass, not a missing feature (GHSA-5c29-q62v-jrwf).
 - Tests under `unitTests/apiTests/` require the server to be stopped first (`node ./dist/bin/harper.js stop`) — `test:unit:apitests` does this automatically.
+- Never assert on a fire-and-forget store write in the same turn that issued it. The engines disagree on read-your-writes: `PrimaryRocksDatabase` shows a pending `put` to a synchronous `getRange()`, `LMDBStore` shows it only after the commit lands (measured ~8 ms). `test:unit:resources` runs under both, so such an assertion passes locally and goes red on the `lmdb` shard alone. Poll with `unitTests/waitFor.js` instead — and where the property is "exactly once", no wait can establish it, so read the count from the producer (`onAnalyticsAggregate()` for aggregation cycles) rather than from storage.
+- A test that applies writes as a replicated origin must take its `nodeId` from `getIdOfRemoteNode(name, auditStore)`, never a literal. An id with no mapped node name is local origin (`isLocalOrigin`), so the write mints a local log key instead of using the origin's; and whether a literal id is mapped depends on which suites ran earlier against the shared `test` database, so such a suite passes or fails by shard. On a same-version tie the later node name wins (`precedesExistingVersion`), so pick names in the order the test expects.
 - `@export` annotation on a schema class auto-generates a REST API for that table — this is the primary developer-facing API.
 - Test style: write new unit tests with `assert` (the bare `node:assert` module) against real modules — **do not add new uses of `sinon` or `rewire`**. Use plain `assert`, **not** `node:assert/strict` — strict mode's deep-equality and coercion rules cause more friction and surprising failures than they prevent; plain `assert` is the house style. When a specific check genuinely needs strict/deep-strict semantics, call `assert.strictEqual`/`assert.deepStrictEqual` explicitly (both exist on plain `assert`) rather than importing `/strict`. This is lint-enforced: oxlint's `no-restricted-imports` rule rejects `node:assert/strict` and `assert/strict` imports. Older tests in `unitTests/security/` and `unitTests/utility/` still depend on them but they are not the target shape; match newer tests in `unitTests/config/*`, `unitTests/resources/*`, `unitTests/components/*`. If you can't write a test without stubbing, comment on the issue describing what's missing and stop — don't reach for sinon/rewire as a shortcut.

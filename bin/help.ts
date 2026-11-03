@@ -5,6 +5,8 @@
  * sections, and the CI/CD sample stays a verbatim, copy-pasteable line at any width.
  */
 
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
+
 const MAX_WIDTH = 120;
 const INDENT = 2; // leading spaces for command names and detail blocks
 const DASH = ' - '; // separator between a command name and its description
@@ -39,7 +41,7 @@ interface Section {
 
 const SECTIONS: Section[] = [
 	{ blocks: [{ text: 'Usage: harperdb [command]' }] },
-	{ blocks: [{ text: 'With no command, harper will simply run Harper (in the foreground)' }] },
+	{ blocks: [{ text: `With no command, harper will simply run ${PRODUCT_NAME} (in the foreground)` }] },
 	{ blocks: [{ text: 'Documentation: https://docs.harperdb.io/' }] },
 	{
 		blocks: [
@@ -60,7 +62,7 @@ const SECTIONS: Section[] = [
 					['start', 'Starts a separate background process for harperdb and CLI will exit'],
 					['stop', 'Stop the harperdb background process'],
 					['restart', 'Restart the harperdb background process'],
-					['status', 'Print the status of Harper'],
+					['status', `Print the status of ${PRODUCT_NAME}`],
 				],
 			},
 		],
@@ -73,6 +75,10 @@ const SECTIONS: Section[] = [
 					['run <path>', 'Run the application in the specified path'],
 					['dev <path>', 'Run the application in dev mode with debugging, foreground logging, no auth'],
 					['deploy', 'Deploy the application locally or remotely with target=<remote url>'],
+					[
+						'preview setup|teardown|deploy|drop|list',
+						'Set up or remove PR previews of app=<component>, and deploy, drop or list one isolated, branched copy per pr=<n>',
+					],
 				],
 			},
 		],

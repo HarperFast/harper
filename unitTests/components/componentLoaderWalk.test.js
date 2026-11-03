@@ -20,7 +20,7 @@ describe('ComponentLoader node_modules walk (#1507)', function () {
 	let baseDir;
 	let originalBasePath;
 	let originalSafeMode;
-	const env = require('#src/utility/environment/environmentManager');
+	const env = require('#js/utility/environment/environmentManager');
 
 	// One extension config key; the walk looks for node_modules/<key>, so the directory
 	// created under node_modules must match this name (key === package name, as in the

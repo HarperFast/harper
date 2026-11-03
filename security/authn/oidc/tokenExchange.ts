@@ -10,20 +10,22 @@
 import jwt from 'jsonwebtoken';
 import Joi from 'joi';
 import { createHash } from 'node:crypto';
-import { table, type Table } from '../../../resources/databases.ts';
 import { ClientError } from '../../../utility/errors/hdbError.ts';
 import { validateBySchema } from '../../../validation/validationWrapper.ts';
 import { loggerWithTag } from '../../../utility/logging/logger.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES, CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
-import { getUsersWithRolesCache } from '../../user.ts';
+import { getUserWithRole } from '../../user.ts';
 import { createOperationToken } from '../../tokenAuthentication.ts';
+import { attestedSource } from '../../../components/deploymentSource.ts';
 import { rejectToken, verifyIdentityToken } from './identityToken.ts';
 import { matchTrustPolicyClaims } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
 import { profileForIssuer, type IdentityProviderProfile } from './providers/index.ts';
 import { loadEnabledPolicies } from './trustPolicyOperations.ts';
+import { declareTokenUseTable } from './tokenUseTable.ts';
+import { sameAuthority } from '../../ciIdentity.ts';
 import type { OidcTrustPolicy, TokenClaims } from './types.ts';
 
 const logger = loggerWithTag('oidc-trust');
@@ -41,8 +43,6 @@ const REPLAY_RECORD_PADDING_MS = 120_000;
 /** Real identity tokens are ~1-2 KB; this bounds what we are willing to even parse. */
 const MAX_TOKEN_LENGTH = 8192;
 
-const TOKEN_USE_TABLE = 'hdb_oidc_token_use';
-
 /**
  * Spent identity tokens, keyed by the fingerprint below and expiring with the token, so the table
  * stays proportional to in-flight tokens rather than to deploy history and never holds a credential.
@@ -52,8 +52,6 @@ const TOKEN_USE_TABLE = 'hdb_oidc_token_use';
  * not a privilege escalation: whoever holds the token could obtain one operation token regardless.
  * What it stops is the realistic case, a token that leaks after a legitimate run and is reused
  * inside its window.
- *
- * table() also registers into `databases.system`, so the lookup finds it after the first call.
  */
 let tokenUseTable: any;
 
@@ -63,29 +61,7 @@ export function clearTokenUseTableCache(): void {
 }
 
 function getTokenUseTable(): any {
-	// Memoized per process, but `table()` is NOT skipped merely because the table already exists.
-	// The systemSchema stub and the 5.3.0 directive declare only the primary key — the `expiresAt`
-	// TTL is not expressible through CreateTableObject — so this call is what actually installs the
-	// TTL, layered on top of the bootstrap. Short-circuiting on existence would mean a table that
-	// arrived any other way (bootstrap, replication, restore, a manual create_table) never gets it,
-	// and replay records would then accumulate in a system table forever. hdb_certificate_cache
-	// does the same two-step for the same reason.
-	tokenUseTable ??= table<Table>({
-		table: TOKEN_USE_TABLE,
-		database: 'system',
-		// `audit: true` explicitly, NOT the default (which follows logging.auditLog). Auditing is the
-		// replication change feed (databases.ts: "auditing must be enabled for replication"), and
-		// replay records MUST replicate so a token spent on one node cannot be re-spent on another
-		// inside its window. Without this, an operator with logging.auditLog:false would silently lose
-		// cross-node replay protection. Its sibling hdb_oidc_trust is audited for the same reason.
-		audit: true,
-		attributes: [
-			{ name: 'id', isPrimaryKey: true },
-			{ name: 'policy_id' },
-			{ name: 'used_at' },
-			{ name: 'expiresAt', expiresAt: true, indexed: true },
-		],
-	});
+	tokenUseTable ??= declareTokenUseTable();
 	return tokenUseTable;
 }
 
@@ -137,9 +113,13 @@ async function findMatchingPolicy(
 	token: string,
 	issuer: string,
 	policies: OidcTrustPolicy[],
-	profile: IdentityProviderProfile
-): Promise<{ policy: OidcTrustPolicy; claims: TokenClaims } | undefined> {
+	profile: IdentityProviderProfile,
+	audience: unknown
+): Promise<{ policy: OidcTrustPolicy; claims: TokenClaims; conflict?: OidcTrustPolicy } | undefined> {
 	const claimsByAudience = new Map<string, TokenClaims | undefined>();
+	let matched: { policy: OidcTrustPolicy; claims: TokenClaims } | undefined;
+	// After a match, a policy for an audience the token does not name cannot match, and verifying it only logs noise.
+	const audiences = Array.isArray(audience) ? audience : [audience];
 
 	for (const policy of policies) {
 		// Re-validate specificity at exchange time. add_oidc_trust enforces these, but a stored row can
@@ -155,6 +135,7 @@ async function findMatchingPolicy(
 			continue;
 		}
 
+		if (matched && !audiences.includes(policy.audience)) continue;
 		if (!claimsByAudience.has(policy.audience)) {
 			// verifyIdentityToken logs its own reason via rejectToken, but everything jwks.ts throws
 			// (unknown kid, unreachable host, non-2xx, oversized body, bad JSON, no usable keys) is
@@ -174,10 +155,14 @@ async function findMatchingPolicy(
 		if (!claims) continue;
 
 		const mismatch = matchTrustPolicyClaims(claims, policy.claims) ?? profile.vetoClaims?.(claims, policy.claims);
-		if (!mismatch) return { policy, claims };
-		logger.debug?.(`Trust policy '${policy.id}' did not match: ${mismatch}`);
+		if (mismatch) {
+			logger.debug?.(`Trust policy '${policy.id}' did not match: ${mismatch}`);
+			continue;
+		}
+		if (!matched) matched = { policy, claims };
+		else if (!sameAuthority(matched.policy, policy)) return { ...matched, conflict: policy };
 	}
-	return undefined;
+	return matched;
 }
 
 /**
@@ -216,12 +201,10 @@ async function recordTokenUse(fingerprint: string, claims: TokenClaims, policyId
 	const useTable = getTokenUseTable();
 	if (await useTable.get(fingerprint)) rejectToken(`token ${fingerprint.slice(0, 12)} has already been exchanged`);
 
-	await useTable.put({
-		id: fingerprint,
-		policy_id: policyId,
-		used_at: Date.now(),
-		expiresAt: (claims.exp as number) * 1000 + REPLAY_RECORD_PADDING_MS,
-	});
+	await useTable.put(
+		{ id: fingerprint, policy_id: policyId, used_at: Date.now() },
+		{ expiresAt: (claims.exp as number) * 1000 + REPLAY_RECORD_PADDING_MS }
+	);
 }
 
 /**
@@ -256,16 +239,22 @@ export async function exchangeOidcToken(req: any) {
 		const policies = await loadEnabledPolicies(issuer);
 		if (policies.length === 0) rejectToken(`no enabled trust policy for issuer ${issuer}`);
 
-		const matched = await findMatchingPolicy(req.token, issuer, policies, profile);
+		const matched = await findMatchingPolicy(req.token, issuer, policies, profile, (unverified?.payload as any)?.aud);
 		if (!matched) rejectToken(`no trust policy matched a token from ${issuer}`);
-		const { policy, claims } = matched;
+		const { policy, claims, conflict } = matched;
 		audit.oidc_policy = policy.id;
 		audit.principal = profile.describePrincipal(claims);
+		if (conflict) {
+			audit.oidc_conflicting_policy = conflict.id;
+			rejectToken(
+				`trust policies '${policy.id}' and '${conflict.id}' both match ${audit.principal} with different users or ` +
+					'operations; disable or drop one, or give them distinct claims'
+			);
+		}
 
 		// Resolved before the token is spent, so a policy naming a deleted or deactivated user fails
 		// without burning a token the runner cannot re-mint.
-		const users = await getUsersWithRolesCache();
-		const user = users?.get(policy.user);
+		const user = getUserWithRole(policy.user);
 		if (!user) rejectToken(`trust policy '${policy.id}' names user '${policy.user}', which does not exist`);
 		if (user.active === false) rejectToken(`trust policy '${policy.id}' names inactive user '${policy.user}'`);
 		username = user.username;
@@ -280,7 +269,9 @@ export async function exchangeOidcToken(req: any) {
 				super_user: user.role?.permission?.super_user === true,
 				operations: policy.operations,
 			},
-			EXCHANGED_TOKEN_LIFETIME_SECONDS
+			EXCHANGED_TOKEN_LIFETIME_SECONDS,
+			// What a deploy made with this token records as its attested source.
+			attestedSource(policy.id, claims)
 		);
 		if (policy.operations?.length) audit.scoped_operations = policy.operations;
 

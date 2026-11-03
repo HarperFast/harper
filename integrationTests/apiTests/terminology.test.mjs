@@ -11,6 +11,8 @@
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
@@ -545,18 +547,24 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 	});
 
 	test('export_local starts job', async () => {
-		const r = await client
-			.req()
-			.send({
-				operation: 'export_local',
-				path: './',
-				filename: 'test_export_terminology_test',
-				format: 'json',
-				search_operation: { operation: 'search_by_hash', table: 'friends', ids: [1], get_attributes: ['*'] },
-			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
-			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
+		const exportDir = mkdtempSync(path.join(tmpdir(), 'terminology-export-'));
+		try {
+			const r = await client
+				.req()
+				.send({
+					operation: 'export_local',
+					path: exportDir,
+					filename: 'test_export_terminology_test',
+					format: 'json',
+					search_operation: { operation: 'search_by_hash', table: 'friends', ids: [1], get_attributes: ['*'] },
+				})
+				.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
+				.expect(200);
+			await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
+			assert.ok(existsSync(path.join(exportDir, 'test_export_terminology_test.json')));
+		} finally {
+			rmSync(exportDir, { recursive: true, force: true });
+		}
 	});
 
 	// ── final teardown ──────────────────────────────────────────────────────

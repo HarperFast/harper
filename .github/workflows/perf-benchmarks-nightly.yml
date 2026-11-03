@@ -8,9 +8,13 @@ name: Perf Benchmarks Nightly (self-hosted)
 #
 # Records throughput/latency trends via github-action-benchmark (pushed to the
 # gh-pages branch, same dashboard the ycsb-nightly job uses; enable GitHub Pages on
-# gh-pages to view it) and alerts on regressions. Only pushed for `--scale=nightly`
-# runs on main — a `quick`-scale manual dispatch uses far smaller record counts and
-# would read as a false regression against the nightly baseline.
+# gh-pages to view it). Only pushed for `--scale=nightly` runs on main — a
+# `quick`-scale manual dispatch uses far smaller record counts and would read as a
+# false regression against the nightly baseline.
+#
+# Regression alerting is off: on this host the night-to-night spread of these metrics on
+# unchanged code exceeds any threshold that would still catch a regression. Each nightly
+# run's job summary carries the comparison instead.
 #
 # Triggers are schedule + manual dispatch ONLY (never pull_request): the job runs
 # on a self-hosted machine, so untrusted PR code must never execute here.
@@ -46,12 +50,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
@@ -65,7 +69,7 @@ jobs:
         run: git checkout -- package-lock.json
 
       - name: Build
-        run: npm run build || true # repo currently has type errors; ignore per integration-tests.yml
+        run: npm run build
 
       - name: Verify build output
         run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
@@ -98,22 +102,21 @@ jobs:
       - name: Convert results to benchmark format
         run: node benchmarks/storage-to-benchmark-json.mts benchmarks/_results benchmarks/_bench-out
 
-      # Two suites: opposite "better" directions. auto-push only for nightly-scale runs on
-      # main so manual/quick dispatches don't pollute the trend history with incomparable
-      # numbers. Thresholds are generous to absorb self-hosted-runner variance — tune once
-      # more history has accumulated.
+      # Two suites: opposite "better" directions. Quick-scale dispatches are kept out of both
+      # the trend history and the comparison summary — their record counts make the numbers
+      # incomparable against the nightly baseline. Alert comments stay off because that POST
+      # would fail the step after the trend was already recorded.
       - name: Track throughput trend
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: Storage Benchmarks Throughput (ST-1/ST-2/ST-5)
           tool: customBiggerIsBetter
           output-file-path: benchmarks/_bench-out/throughput.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
-          comment-on-alert: true
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
           fail-on-alert: false
-          alert-threshold: '130%'
-          alert-comment-cc-users: '@kriszyp'
 
       - name: Reset local gh-pages ref before second benchmark step
         run: |
@@ -121,21 +124,20 @@ jobs:
           git branch -D gh-pages 2>/dev/null || true
 
       - name: Track latency/size trend
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: Storage Benchmarks Latency/Size (ST-1/ST-2/ST-5)
           tool: customSmallerIsBetter
           output-file-path: benchmarks/_bench-out/latency.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
-          comment-on-alert: true
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
           fail-on-alert: false
-          alert-threshold: '160%'
-          alert-comment-cc-users: '@kriszyp'
 
       - name: Upload raw benchmark logs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-benchmark-logs
           path: benchmarks/_results/

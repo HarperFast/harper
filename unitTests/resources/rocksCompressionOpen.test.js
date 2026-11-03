@@ -11,7 +11,7 @@ const {
 	toRocksCompression,
 	resetRocksCompression,
 } = require('#src/resources/databases');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 describe('storage.rocks.compression reaches a real RocksDB open', function () {
 	let dir;
@@ -37,8 +37,8 @@ describe('storage.rocks.compression reaches a real RocksDB open', function () {
 		mkdirSync(dir, { recursive: true });
 	});
 
-	afterEach(function () {
-		closeDatabase(databaseName);
+	afterEach(async function () {
+		await closeDatabase(databaseName);
 		rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -90,13 +90,13 @@ describe('storage.rocks.compression reaches a real RocksDB open', function () {
 		resetRocksCompression();
 		const initial = database({ database: databaseName });
 		assert.strictEqual(initial.compression.algorithm, 'none');
-		closeDatabase(databaseName);
+		await closeDatabase(databaseName);
 
 		setProperty(CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, 'zstd');
 		resetRocksCompression();
 		const upgraded = database({ database: databaseName });
 		assert.strictEqual(upgraded.compression.algorithm, 'zstd');
-		closeDatabase(databaseName);
+		await closeDatabase(databaseName);
 
 		const reopenedSibling = RocksDatabase.open(dir, { name: 'sibling' });
 		try {

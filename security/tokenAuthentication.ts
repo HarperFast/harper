@@ -10,32 +10,36 @@ import {
 	SYSTEM_SCHEMA_NAME,
 	SYSTEM_TABLE_NAMES,
 } from '../utility/hdbTerms.ts';
-import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
-import { findAndValidateUser, type User } from './user.ts';
+import { findAndValidateUser, getSuperUser, isLocalPrincipal, type User } from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import {
 	WORKLOAD_IDENTITY_CLAIM,
+	DEPLOY_SOURCE_CLAIM,
+	attachDeploySourceToUser,
 	attachWorkloadIdentityToUser,
 	isWorkloadIdentityPrincipal,
 	markTokenAsWorkloadIdentity,
 } from './credentialProvenance.ts';
 import { buildScopedTokenUser, syntheticRoleName } from './impersonation.ts';
+import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
-import * as signalling from '../utility/signalling.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
-import { UserEventMsg } from '../server/threads/itc.js';
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 type StringValue = SignOptions['expiresIn'];
-const OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
-const REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
+const operationTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
+const refreshTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 // Default lifetime of a login-purpose token (see TOKEN_TYPE.LOGIN below). It only exists to be
 // exchanged for a session cookie, so it defaults far shorter than an operation token; callers can
 // still override via expires_in.
@@ -179,6 +183,16 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		return createScopedToken(authObj);
 	}
 
+	const credentialFree = !authObj?.username && !authObj?.password;
+	// A token naming the local principal would be a root credential nothing can revoke. Outside the
+	// try below, which would report a missing user as invalid credentials.
+	let localMintUsername: string | undefined;
+	if (credentialFree && isLocalPrincipal(authObj?.hdb_user)) {
+		localMintUsername = (await getSuperUser())?.username;
+		if (!localMintUsername)
+			throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_USER_TO_MINT_FOR, HTTP_STATUS_CODES.CONFLICT);
+	}
+
 	let user: any;
 	try {
 		// Trusted bypass is dispatch/async-context state (set by a component calling
@@ -186,15 +200,15 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		// caller-controlled and would let anyone mint tokens for an arbitrary username
 		// without a password (see operationAuthorizationState.ts).
 		let validatePassword: boolean = !isOperationAuthorizationBypassed();
-		if (!authObj.username && !authObj.password) {
-			// A scoped-token bearer must not self-mint: its username is an unverified attribution
-			// label, and resolving it here without a password would hand out standing operation/
-			// refresh tokens for whatever real user later takes that name (privilege escalation).
-			if (authObj.hdb_user?._scopedToken) {
+		if (credentialFree) {
+			// No passwordless self-mint: a scoped token's username is an unverified attribution label (a
+			// real user created later with that name would get the standing tokens), and a bearer-validator
+			// principal would trade a component's token for longer-lived Harper tokens.
+			if (authObj.hdb_user?._scopedToken || (authObj.hdb_user as any)?._bearerValidator) {
 				throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 			}
 			// if the username and password are not provided, use the hdb_user making the request.
-			authObj.username = authObj.hdb_user?.username;
+			authObj.username = localMintUsername ?? authObj.hdb_user?.username;
 			// the password would have been checked by authHandler before getting here
 			validatePassword = false;
 		}
@@ -238,7 +252,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
+			expiresIn: (authObj.expires_in ?? operationTokenTimeout()) as StringValue,
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.OPERATION,
 		} satisfies SignOptions
@@ -248,7 +262,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: REFRESH_TOKEN_TIMEOUT,
+			expiresIn: refreshTokenTimeout(),
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.REFRESH,
 		} satisfies SignOptions
@@ -264,8 +278,6 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 
 	if (updateResult.skipped_hashes.length > 0)
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_SAVE_FAILED, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
-
-	signalling.signalUserChange(new UserEventMsg(process.pid));
 
 	return {
 		operation_token: operationToken,
@@ -285,6 +297,9 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 const MAX_SCOPED_TOKEN_LENGTH = 12288;
 
 async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
+	if ((authObj.hdb_user as any)?._bearerValidator && !isOperationAuthorizationBypassed()) {
+		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+	}
 	if (authObj.password) {
 		throw new ClientError("'password' cannot be combined with an inline 'role' object");
 	}
@@ -306,7 +321,7 @@ async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
 		},
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
+			expiresIn: (authObj.expires_in ?? operationTokenTimeout()) as StringValue,
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.SCOPED,
 		} satisfies SignOptions
@@ -346,7 +361,7 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 		refreshedPayload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: OPERATION_TOKEN_TIMEOUT as StringValue,
+			expiresIn: operationTokenTimeout(),
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.OPERATION,
 		} satisfies SignOptions
@@ -367,13 +382,15 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
  */
 export async function createOperationToken(
 	user: { username: string; super_user: boolean; operations?: string[] },
-	expiresIn: StringValue
+	expiresIn: StringValue,
+	deploySource?: Record<string, unknown>
 ): Promise<string> {
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const payload: { username: string; super_user: boolean; operations?: string[] } = {
 		username: user.username,
 		super_user: user.super_user,
 	};
+	if (deploySource) payload[DEPLOY_SOURCE_CLAIM] = deploySource;
 	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
 	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
 	// what keeps this from failing open.
@@ -394,12 +411,21 @@ export async function createOperationToken(
 	);
 }
 
-export async function validateOperationToken(token: string): Promise<any> {
-	return validateToken(token, TOKEN_TYPE.OPERATION);
+const DEFERRED_WARN_CAUSE = Symbol('deferredWarnCause');
+
+export function warnDeferredTokenRejection(error: any): void {
+	const cause = error?.[DEFERRED_WARN_CAUSE];
+	if (cause !== undefined) {
+		logger.warn(cause);
+	}
 }
 
-export async function validateRefreshToken(token: string): Promise<any> {
-	return validateToken(token, TOKEN_TYPE.REFRESH);
+export async function validateOperationToken(token: string, deferInvalidTokenWarn = false): Promise<any> {
+	return validateToken(token, TOKEN_TYPE.OPERATION, deferInvalidTokenWarn);
+}
+
+export async function validateRefreshToken(token: string, deferInvalidTokenWarn = false): Promise<any> {
+	return validateToken(token, TOKEN_TYPE.REFRESH, deferInvalidTokenWarn);
 }
 
 /**
@@ -411,9 +437,10 @@ export async function validateLoginToken(token: string): Promise<any> {
 	return validateToken(token, TOKEN_TYPE.LOGIN);
 }
 
-async function validateToken(token: string, tokenType: string): Promise<any> {
+async function validateToken(token: string, tokenType: string, deferInvalidTokenWarn = false): Promise<any> {
 	try {
 		const keys: JWTRSAKeys = await getJWTRSAKeys();
+		assertUsableVerificationKey(keys.publicKey);
 		// The OPERATION type also accepts scoped tokens, so the subject is checked after
 		// verification rather than pinned in the verify options.
 		const tokenVerified = jwt.verify(
@@ -428,18 +455,18 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 			return buildUserFromScopedToken(tokenVerified);
 		}
 		if (tokenVerified.sub !== tokenType) {
-			throw new Error('Invalid token');
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		// If a role is present, it means the token is not an operation token. The validation of
 		// the token will happen in the respective function/component that uses the token.
 		if (tokenVerified.role) {
-			throw new Error('Invalid token');
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		const user: any = await findAndValidateUser(tokenVerified.username, undefined, false);
 		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
-			throw new Error('Invalid token');
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		// Surfaced as `tokenOperations` rather than merged into role.permission.operations: that field
@@ -450,15 +477,43 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		// Provenance rides the same lift: the claim is signed, so a caller cannot strip it to look
 		// like a password-minted principal at createTokens.
 		attachWorkloadIdentityToUser(user, tokenVerified[WORKLOAD_IDENTITY_CLAIM]);
+		attachDeploySourceToUser(user, tokenVerified[DEPLOY_SOURCE_CLAIM]);
 
 		return user;
 	} catch (err) {
-		logger.warn(err);
 		if (err?.name === 'TokenExpiredError') {
-			throw new ClientError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
+			logger.warn(err);
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
+		}
+		// Only positively classified token failures may cross the route-ownership boundary as rejections.
+		if (!isTokenRejection(err)) {
+			logger.warn(err);
+			throw err;
 		}
 
-		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+		const rejection = credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+		if (deferInvalidTokenWarn) {
+			(rejection as any)[DEFERRED_WARN_CAUSE] = err;
+		} else {
+			logger.warn(err);
+		}
+		throw rejection;
+	}
+}
+
+const JWT_REJECTION_ERROR_NAMES = new Set(['JsonWebTokenError', 'NotBeforeError', 'TokenExpiredError']);
+// jsonwebtoken reports unusable verification keys and bad tokens through the same error type.
+const KEY_MATERIAL_FAULT = /secretOrPublicKey|asymmetric key|PEM routines|^error:/i;
+
+function isTokenRejection(err: any): boolean {
+	if (isCredentialRejection(err)) return true;
+	if (!JWT_REJECTION_ERROR_NAMES.has(err?.name)) return false;
+	return !KEY_MATERIAL_FAULT.test(String(err?.message ?? ''));
+}
+
+function assertUsableVerificationKey(publicKey: unknown): void {
+	if (typeof publicKey !== 'string' || !publicKey.includes('-----BEGIN')) {
+		throw new ServerError(AUTHENTICATION_ERROR_MSGS.NO_ENCRYPTION_KEYS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 	}
 }
 
@@ -470,7 +525,7 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 function buildUserFromScopedToken(claims: JwtPayload): User {
 	const embedded = (claims.role as { permission?: Record<string, unknown> })?.permission;
 	if (!embedded || typeof embedded !== 'object' || Array.isArray(embedded) || typeof claims.username !== 'string') {
-		throw new Error('Invalid token');
+		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 	const permission: Record<string, unknown> = { ...embedded, super_user: false, cluster_user: false };
 	// Hashed from the server-side downgraded clone (before the _expandedOperations Set is attached),

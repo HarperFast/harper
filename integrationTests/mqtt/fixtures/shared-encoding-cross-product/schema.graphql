@@ -1,0 +1,5 @@
+type Probe @table @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}

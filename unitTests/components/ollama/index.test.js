@@ -52,6 +52,8 @@ describe('OllamaBackend', () => {
 				stream: true,
 				tools: false,
 				adapters: false,
+				structuredOutput: true,
+				truncate: true,
 			});
 		});
 	});
@@ -133,6 +135,23 @@ describe('OllamaBackend', () => {
 			await b.embed('q', { accounting: ACCOUNTING, inputType: 'query' });
 			const sent = JSON.parse(fetch.calls[0].init.body);
 			assert.deepStrictEqual(sent.input, ['search_query: q']);
+		});
+
+		it('sends truncate: true only when the caller asks, keeping the nomic prefix in the input', async () => {
+			for (const [truncate, expected] of [
+				[true, true],
+				[false, undefined],
+				[undefined, undefined],
+			]) {
+				const fetch = mockFetch(() => jsonResponse({ embeddings: [[0], [1]] }));
+				const b = new OllamaBackend({ model: 'nomic-embed-text' }, fetch);
+				const input = Object.freeze(['a', 'b']);
+				await b.embed(input, { accounting: ACCOUNTING, inputType: 'document', truncate });
+				const sent = JSON.parse(fetch.calls[0].init.body);
+				assert.strictEqual(sent.truncate, expected, `truncate: ${truncate}`);
+				assert.strictEqual('truncate' in sent, expected !== undefined, `truncate: ${truncate}`);
+				assert.deepStrictEqual(sent.input, ['search_document: a', 'search_document: b']);
+			}
 		});
 
 		it('does not inject a prefix on non-nomic models', async () => {

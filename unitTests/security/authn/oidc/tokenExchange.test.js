@@ -12,11 +12,10 @@ testUtils.preTestPrep();
 const jwt = require('jsonwebtoken');
 const { generateKeyPairSync, createPublicKey } = require('node:crypto');
 const { exchangeOidcToken, clearTokenUseTableCache } = require('#src/security/authn/oidc/tokenExchange');
-const { addOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
+const { addOidcTrust, listOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
 const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
-const { setUsersWithRolesCache } = require('#src/security/user');
 const terms = require('#src/utility/hdbTerms');
 
 const TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
@@ -34,13 +33,16 @@ let signingJwk;
 
 function installMockTable(name, primaryKey) {
 	const rows = new Map();
+	const expiries = new Map();
 	const mock = {
 		rows,
+		expiries,
 		async get(id) {
 			return rows.get(id);
 		},
-		async put(row) {
+		async put(row, context) {
 			rows.set(row[primaryKey], row);
+			if (context?.expiresAt !== undefined) expiries.set(row[primaryKey], context.expiresAt);
 		},
 		async delete(id) {
 			return rows.delete(id);
@@ -58,13 +60,11 @@ function installMockTable(name, primaryKey) {
 }
 
 /**
- * The replay table is reached through an unconditional `table()` call, not a lookup — it has to be,
- * because the systemSchema bootstrap declares only the primary key and `table()` is what layers the
- * expiresAt TTL on top. So intercept the factory rather than seeding `databases.system`, which that
- * call would otherwise sail straight past.
+ * The replay table is reached through its `table()` declaration (tokenUseTable.ts), not a lookup, so
+ * intercept the factory rather than seeding `databases.system`, which that call would sail straight past.
  */
 function installMockTableFactory(name, mock) {
-	const databasesModule = require('#src/resources/databases');
+	const databasesModule = require('#js/resources/databases');
 	const realTable = databasesModule.table;
 	databasesModule.table = (definition) => (definition?.table === name ? mock : realTable(definition));
 	return () => (databasesModule.table = realTable);
@@ -79,7 +79,7 @@ function seedUsers() {
 	});
 	users.set('admin', { username: 'admin', active: true, role: { role: 'su', permission: { super_user: true } } });
 	users.set('retired', { username: 'retired', active: false, role: { role: 'deployer', permission: {} } });
-	return setUsersWithRolesCache(users);
+	return testUtils.seedUsers(users);
 }
 
 const asAdmin = (body) => ({
@@ -147,9 +147,10 @@ describe('exchangeOidcToken', () => {
 		restoreTableFactory();
 	});
 
-	after(() => {
+	after(async () => {
 		removeJwtKeys();
 		clearJWTRSAKeysCache();
+		await testUtils.seedUsers();
 	});
 
 	function identityToken(overrides = {}) {
@@ -211,6 +212,29 @@ describe('exchangeOidcToken', () => {
 
 		const user = await validateOperationToken(result.operation_token);
 		assert.strictEqual(user.username, 'ci-deploy');
+	});
+
+	it("signs the policy and the run's verified claims into the token, for a deploy to record as attested (harper#3061)", async () => {
+		await addPolicy();
+		const result = await exchangeOidcToken({
+			operation: 'exchange_oidc_token',
+			token: identityToken({ sha: 'a'.repeat(40), run_attempt: '2' }),
+		});
+		const expected = {
+			via: 'oidc',
+			policy: 'my-app-prod',
+			repository: 'HarperFast/my-app',
+			sha: 'a'.repeat(40),
+			ref: 'refs/heads/main',
+			workflow_ref: WORKFLOW_REF,
+			run_id: '99',
+			run_attempt: '2',
+			actor: 'octocat',
+			environment: 'production',
+		};
+		assert.deepStrictEqual(decodeJWT(result.operation_token).deploy_source, expected);
+		const user = await validateOperationToken(result.operation_token);
+		assert.deepStrictEqual(user.deploySource, expected);
 	});
 
 	// A stored row that add_oidc_trust would reject (repository pinned, but no workflow/ref gate) — as
@@ -347,10 +371,11 @@ describe('exchangeOidcToken', () => {
 		const token = identityToken();
 		await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
 
-		const [record] = [...useTable.mock.rows.values()];
+		const [[fingerprint, record]] = [...useTable.mock.rows.entries()];
 		assert.strictEqual(record.policy_id, 'my-app-prod');
-		const tokenExpiryMs = decodeJWT(token).exp * 1000;
-		assert.ok(record.expiresAt > tokenExpiryMs, 'record must outlive the token it guards');
+		assert.ok(!('expiresAt' in record), 'the expiry is record metadata, not a field');
+		// the token's expiry plus the padding that outlasts the verifier's clock tolerance
+		assert.strictEqual(useTable.mock.expiries.get(fingerprint), decodeJWT(token).exp * 1000 + 120_000);
 	});
 
 	it('rejects a token minted for a different audience', async () => {
@@ -395,17 +420,153 @@ describe('exchangeOidcToken', () => {
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
 	});
 
-	it('selects the first matching policy by id when several match', async () => {
-		await addPolicy({ id: 'zulu', user: 'admin' });
-		await addPolicy({ id: 'alpha', user: 'ci-deploy' });
-		const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() });
-		assert.strictEqual(result.policy, 'alpha');
-		assert.strictEqual(result.username, 'ci-deploy');
+	describe('when several enabled policies match one token', () => {
+		const exchange = (token = identityToken()) => exchangeOidcToken({ operation: 'exchange_oidc_token', token });
+
+		it('refuses when they name different users, whichever id sorts first, and does not spend the token', async () => {
+			for (const [first, second] of [
+				['admin', 'ci-deploy'],
+				['ci-deploy', 'admin'],
+			]) {
+				trustTable.mock.rows.clear();
+				await addPolicy({ id: 'alpha', user: first });
+				await addPolicy({ id: 'zulu', user: second });
+				await assertRejected(exchange());
+			}
+			assert.strictEqual(useTable.mock.rows.size, 0, 'a token the runner cannot re-mint must not be burned');
+		});
+
+		it('refuses when they give one user different operations', async () => {
+			for (const [first, second] of [
+				[['deploy_component'], ['drop_component']],
+				[['deploy_component'], ['deploy_component', 'drop_component']],
+				[['deploy_component'], undefined],
+			]) {
+				trustTable.mock.rows.clear();
+				await addPolicy({ id: 'alpha', operations: first });
+				await addPolicy({ id: 'zulu', operations: second });
+				await assertRejected(exchange());
+			}
+			assert.strictEqual(useTable.mock.rows.size, 0, 'a refused exchange spends no token');
+		});
+
+		it('tells a stored deny-all scope from no scope at all', async () => {
+			await addPolicy({ id: 'alpha' });
+			await addPolicy({ id: 'zulu' });
+			trustTable.mock.rows.get('zulu').operations = [];
+			await assertRejected(exchange());
+		});
+
+		it('takes the first by id when they agree on the user and the operations', async () => {
+			await addPolicy({ id: 'zulu', operations: ['drop_component', 'deploy_component'] });
+			await addPolicy({ id: 'alpha', operations: ['deploy_component', 'drop_component'] });
+			trustTable.mock.rows.get('zulu').operations = ['drop_component', 'deploy_component', 'drop_component'];
+			const result = await exchange();
+			assert.strictEqual(result.policy, 'alpha');
+			assert.strictEqual(result.username, 'ci-deploy');
+		});
+
+		it('takes the first by id when one names a permission group and the other the operations it stands for', async () => {
+			const { OPERATION_PERMISSION_GROUPS } = require('#src/utility/operationPermissions');
+			await addPolicy({ id: 'zulu', operations: ['read_only'] });
+			await addPolicy({ id: 'alpha', operations: [...OPERATION_PERMISSION_GROUPS.read_only] });
+			assert.strictEqual((await exchange()).policy, 'alpha');
+		});
+
+		it('finds a disagreement behind two that agree', async () => {
+			await addPolicy({ id: 'alpha' });
+			await addPolicy({ id: 'bravo' });
+			await addPolicy({ id: 'zulu', user: 'admin' });
+			await assertRejected(exchange());
+		});
+
+		it('counts only policies the token actually matches', async () => {
+			await addPolicy({ id: 'alpha' });
+			await addPolicy({ id: 'disabled', user: 'admin', enabled: false });
+			await addPolicy({
+				id: 'other-repo',
+				user: 'admin',
+				claims: { repository_id: '11111', workflow_ref: WORKFLOW_REF },
+			});
+			await addPolicy({ id: 'other-audience', user: 'admin', audience: 'https://other.harperdb.io:9925/' });
+			const result = await exchange();
+			assert.strictEqual(result.policy, 'alpha');
+		});
+
+		it('exchanges the same token once the disagreement is gone', async () => {
+			await addPolicy({ id: 'alpha' });
+			await addPolicy({ id: 'zulu', user: 'admin' });
+			const token = identityToken();
+			await assertRejected(exchange(token));
+			trustTable.mock.rows.delete('zulu');
+			assert.strictEqual((await exchange(token)).policy, 'alpha');
+		});
+
+		it('names a pair the exchange would refuse in list_oidc_trust', async () => {
+			await addPolicy({ id: 'alpha' });
+			await addPolicy({ id: 'zulu', user: 'admin' });
+			await addPolicy({ id: 'other-repo', claims: { repository_id: '11111', workflow_ref: WORKFLOW_REF } });
+			const { policies } = await listOidcTrust({
+				operation: 'list_oidc_trust',
+				hdb_user: { username: 'admin', role: { permission: { super_user: true } } },
+			});
+			const reasons = Object.fromEntries(policies.map((policy) => [policy.id, policy.invalid_reason]));
+			assert.match(reasons.alpha, /can match the same runs as 'zulu'/);
+			assert.match(reasons.zulu, /can match the same runs as 'alpha'/);
+			assert.strictEqual(reasons['other-repo'], undefined);
+		});
+
+		it('does not name a pair through a row the exchange would not honor', async () => {
+			await addPolicy({ id: 'alpha' });
+			trustTable.mock.rows.set('zulu', {
+				...trustTable.mock.rows.get('alpha'),
+				id: 'zulu',
+				user: 'admin',
+				enabled: 'false',
+			});
+			const { policies } = await listOidcTrust({
+				operation: 'list_oidc_trust',
+				hdb_user: { username: 'admin', role: { permission: { super_user: true } } },
+			});
+			const reasons = Object.fromEntries(policies.map((policy) => [policy.id, policy.invalid_reason]));
+			assert.strictEqual(reasons.alpha, undefined);
+			assert.ok(reasons.zulu, 'the malformed row is reported for what it is');
+			assert.deepStrictEqual(
+				policies.map((policy) => [policy.id, policy.exchangeable]),
+				[
+					['alpha', true],
+					['zulu', false],
+				]
+			);
+		});
+
+		it('says why the exchange would ignore a policy that is too broad', async () => {
+			await addPolicy({ id: 'alpha' });
+			trustTable.mock.rows.set('broad', {
+				...trustTable.mock.rows.get('alpha'),
+				id: 'broad',
+				claims: { repository_id: '67890' },
+			});
+			const { policies } = await listOidcTrust({
+				operation: 'list_oidc_trust',
+				hdb_user: { username: 'admin', role: { permission: { super_user: true } } },
+			});
+			const broad = policies.find((policy) => policy.id === 'broad');
+			assert.strictEqual(broad.exchangeable, false);
+			assert.ok(broad.invalid_reason, 'an operator can see why');
+		});
+
+		it('refuses a token with two audiences that two policies each name', async () => {
+			const otherAudience = 'https://other.harperdb.io:9925/';
+			await addPolicy({ id: 'alpha' });
+			await addPolicy({ id: 'zulu', user: 'admin', audience: otherAudience });
+			await assertRejected(exchange(identityToken({ aud: [AUDIENCE, otherAudience] })));
+		});
 	});
 
 	it('rejects a policy naming a user that no longer exists, without spending the token', async () => {
 		await addPolicy();
-		await setUsersWithRolesCache(new Map());
+		await testUtils.seedUsers();
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
 		assert.strictEqual(useTable.mock.rows.size, 0, 'a token the runner cannot re-mint must not be burned');
@@ -417,7 +578,7 @@ describe('exchangeOidcToken', () => {
 		await addPolicy();
 		const users = new Map();
 		users.set('ci-deploy', { username: 'ci-deploy', active: false, role: { role: 'deployer', permission: {} } });
-		await setUsersWithRolesCache(users);
+		await testUtils.seedUsers(users);
 
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
@@ -566,6 +727,39 @@ describe('exchangeOidcToken', () => {
 				/must pin `sub`/
 			);
 		});
+
+		it('lists two policies for different audiences as a pair only a token naming both is refused by', async () => {
+			const otherAudience = 'https://other.harperdb.io:9925/';
+			const claims = { sub: 'system:serviceaccount:prod:deployer' };
+			await addOidcTrust(
+				asAdmin({ id: 'k8s-a', issuer: GENERIC_ISSUER, audience: AUDIENCE, claims, user: 'ci-deploy' })
+			);
+			await addOidcTrust(
+				asAdmin({ id: 'k8s-b', issuer: GENERIC_ISSUER, audience: otherAudience, claims, user: 'admin' })
+			);
+			const { policies } = await listOidcTrust(asAdmin({ operation: 'list_oidc_trust' }));
+			for (const [id, rival] of [
+				['k8s-a', 'k8s-b'],
+				['k8s-b', 'k8s-a'],
+			]) {
+				assert.match(policies.find((policy) => policy.id === id).invalid_reason, new RegExp(`names both .*'${rival}'`));
+			}
+			const exchange = (aud) =>
+				exchangeOidcToken({ operation: 'exchange_oidc_token', token: serviceAccountToken({ aud }) });
+			assert.strictEqual((await exchange(AUDIENCE)).policy, 'k8s-a');
+			await assertRejected(exchange([AUDIENCE, otherAudience]));
+		});
+
+		it('names a rival on the same audience before one on another', async () => {
+			const claims = { sub: 'system:serviceaccount:prod:deployer' };
+			const generic = (id, audience, extra = {}) =>
+				addOidcTrust(asAdmin({ id, issuer: GENERIC_ISSUER, audience, claims, user: 'ci-deploy', ...extra }));
+			await generic('k8s-a', AUDIENCE);
+			await generic('k8s-b', 'https://other.harperdb.io:9925/', { user: 'admin' });
+			await generic('k8s-c', AUDIENCE, { operations: ['deploy_component'] });
+			const { policies } = await listOidcTrust(asAdmin({ operation: 'list_oidc_trust' }));
+			assert.match(policies.find((policy) => policy.id === 'k8s-a').invalid_reason, /same runs as 'k8s-c'/);
+		});
 	});
 
 	// End to end: the policy's scope reaches the minted token, so verifyPerms can narrow on it.
@@ -584,6 +778,56 @@ describe('exchangeOidcToken', () => {
 
 		const payload = JSON.parse(Buffer.from(result.operation_token.split('.')[1], 'base64url').toString('utf8'));
 		assert.strictEqual(payload.operations, undefined, 'an unscoped token must look exactly as it did before');
+	});
+
+	it("mints a preview cleanup token that drops the application's previews and deploys nothing (harper#3042)", async () => {
+		const { desiredPreviewIdentity } = require('#src/components/previewOperations');
+		const op_auth = require('#src/utility/operation_authorization');
+		const operations = require('#js/components/operations');
+		const { desired } = desiredPreviewIdentity({
+			app: 'web',
+			repository: 'HarperFast/my-app',
+			repository_id: '67890',
+			branch: 'main',
+			audience: AUDIENCE,
+		});
+		await testUtils.seedUsers(
+			new Map([
+				[
+					'web-ci-preview',
+					{
+						username: 'web-ci-preview',
+						active: true,
+						role: { role: 'web-ci-preview', permission: desired.role.permission },
+					},
+				],
+			])
+		);
+		for (const policy of desired.policies) await addOidcTrust(asAdmin(policy));
+		const run = (environment) =>
+			identityToken({
+				workflow_ref: 'HarperFast/my-app/.github/workflows/preview.yaml@refs/heads/main',
+				event_name: 'pull_request_target',
+				environment,
+			});
+		const principal = async (environment) => {
+			const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: run(environment) });
+			return { policy: result.policy, user: await validateOperationToken(result.operation_token) };
+		};
+		const allowed = (user, operation, handler, project) =>
+			op_auth.verifyPerms({ operation, project, hdb_user: user }, handler.name) === null;
+
+		const cleanup = await principal('preview-cleanup');
+		assert.strictEqual(cleanup.policy, 'github-actions-web-preview-cleanup');
+		assert.ok(allowed(cleanup.user, 'drop_component', operations.dropComponent, 'web-pr-3'));
+		assert.ok(!allowed(cleanup.user, 'deploy_component', operations.deployComponent, 'web-pr-3'));
+		assert.ok(!allowed(cleanup.user, 'drop_component', operations.dropComponent, 'web'));
+
+		const deploy = await principal('preview');
+		assert.strictEqual(deploy.policy, 'github-actions-web-preview');
+		assert.ok(allowed(deploy.user, 'deploy_component', operations.deployComponent, 'web-pr-3'));
+		assert.ok(!allowed(deploy.user, 'deploy_component', operations.deployComponent, 'web'));
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: run('production') }));
 	});
 
 	it('rejects malformed input', async () => {

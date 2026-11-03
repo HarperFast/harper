@@ -14,6 +14,8 @@
  * Examples:
  *   node benchmarks/mqtt-fanout-encoding.js                          # 200 messages, JSON
  *   node benchmarks/mqtt-fanout-encoding.js 200 application/cbor     # binary content type
+ *   node benchmarks/mqtt-fanout-encoding.js 200 pass-through         # opaque payload, as a worker
+ *                                                                    # other than the publisher's sees it
  */
 
 const { performance } = require('node:perf_hooks');
@@ -48,7 +50,18 @@ function makeMessage(index) {
 	};
 }
 
-const messages = Array.from({ length: MESSAGES }, (_, index) => makeMessage(index));
+// An opaque `{ contentType, data }` message decoded from the transaction log carries `data` as a plain
+// Uint8Array view, which serializeMessage wraps as a Buffer for mqtt-packet.
+function makePassThroughMessage(index) {
+	const bytes = Buffer.from(JSON.stringify(makeMessage(index)));
+	const log = new Uint8Array(bytes.length + 16);
+	log.set(bytes, 8);
+	return { contentType: 'application/octet-stream', data: log.subarray(8, 8 + bytes.length), recordedAt: index };
+}
+
+const messages = Array.from({ length: MESSAGES }, (_, index) =>
+	CONTENT_TYPE === 'pass-through' ? makePassThroughMessage(index) : makeMessage(index)
+);
 
 /** What every subscriber did before this change: serialize the message and generate its own packet. */
 function perSubscriberEncoding(message, subscribers, qos) {
@@ -113,7 +126,7 @@ function format(value) {
 }
 
 console.log(`MQTT fan-out encoding: ${MESSAGES} messages, content type ${CONTENT_TYPE}, MQTT v${PROTOCOL_VERSION}`);
-console.log(`message size: ${Buffer.byteLength(JSON.stringify(messages[0]))} bytes (as JSON)\n`);
+console.log(`message size: ${messages[0].data?.byteLength ?? Buffer.byteLength(JSON.stringify(messages[0]))} bytes\n`);
 
 for (const qos of [0, 1]) {
 	console.log(`QoS ${qos}${qos === 0 ? '  (payload + packet shared)' : '  (payload shared, packet per subscriber)'}`);

@@ -1,0 +1,10 @@
+type CountStarRow @table @export {
+	id: ID @primaryKey
+	dept: String
+	name: String
+	salary: Int
+}
+
+type CountStarOther @table @export {
+	id: ID @primaryKey
+}

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { warnComponentEnvConfigVars, resolveConfiguredPath } = require('#src/config/componentEnvPrepass');
-const logger = require('#src/utility/logging/harper_logger');
+const logger = require('#js/utility/logging/harper_logger');
 
 describe('componentEnvPrepass (#1513)', () => {
 	let tempRoot;

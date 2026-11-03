@@ -1,21 +1,23 @@
+import * as userRuntimeModule from '../security/user.ts';
 import type { User } from '../security/user.ts';
 import type { RecordObject } from './RecordEncoder.ts';
 import {
-	ResourceInterface,
-	SubscriptionRequest,
-	Id,
-	Context,
-	Query,
-	SourceContext,
-	RequestTargetOrId,
+	type ResourceInterface,
+	type SubscriptionRequest,
+	type Id,
+	type Context,
+	type Query,
+	type SourceContext,
+	type RequestTargetOrId,
 } from './ResourceInterface.ts';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import {
 	DatabaseTransaction,
 	isJoinableScope,
 	isReleasedTransaction,
 	type Transaction,
 } from './DatabaseTransaction.ts';
+import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -27,9 +29,23 @@ import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
+import { isFormDataIterable, resolveBody } from './resolveBody.ts';
+import { compareKeys } from 'ordered-binary';
+
+// Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
+// read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
+const WRITE_METHODS = new Set(['put', 'patch', 'delete', 'invalidate', 'update']);
+
+function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
+	// the transport has already started parsing a request body; nothing else will observe it now
+	for (const arg of args) if (typeof arg?.then === 'function') arg.then(undefined, () => {});
+	return Promise.reject(readOnlyModeError());
+}
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+export const WRITE_CONDITION = Symbol('writeCondition');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -64,6 +80,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
+	/** false: a table class evaluates HTTP write preconditions itself, from its request headers */
+	static preconditions?: boolean;
 	static description?: string;
 	static properties?: { [name: string]: JsonSchemaFragment };
 	/** Property names guaranteed to be present; nullability remains a per-property constraint. */
@@ -74,7 +92,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	/** The per-method request contract, when this resource was built via `withSchema`. */
 	static requestContract?: Contract;
 	/** Per-verb `{ query?, body? }` input schemas derived from the request contract, read by OpenAPI/MCP. */
-	static inputSchemas?: { [verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment } };
+	static inputSchemas?: {
+		[verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment; bodyRequired?: boolean };
+	};
 
 	/**
 	 * Declare a per-method request contract and get back a Resource subclass typed by it. Extend the
@@ -113,17 +133,30 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
 	 */
 	static get = transactional(
-		function (resource: any, query: RequestTarget, _request: Context, _data: any) {
+		function (resource: any, query: RequestTarget, request: Context, _data: any) {
+			const loadAsInstance = resource.constructor.loadAsInstance;
+			if (loadAsInstance && query?.select) {
+				if ((query as any).parseError) throw (query as any).parseError;
+				assertNestedQueryOptions(query.select, resource.constructor);
+			}
 			const result = resource.get?.(query);
+			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
+			if (loadAsInstance === false) {
+				return result?.then
+					? result.then((result: any) => authorizeSearchResult(result, request?.user))
+					: authorizeSearchResult(result, request?.user);
+			}
 			// for the new API we always apply select in the instance method
-			if (!resource.constructor.loadAsInstance) return result;
+			if (!loadAsInstance) return result;
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
-					if (typeof result?.map === 'function') {
+					if (Array.isArray(result)) {
+						return settleAll(result.map(transform));
+					} else if (typeof result?.map === 'function') {
 						return result.map(transform);
 					} else {
 						return transform(result);
@@ -145,24 +178,60 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
+	 * A static override receives the {@link ResourceBody} and owns its resolution and authorization.
 	 */
 	static put = transactional(
 		function (resource: any, query: RequestTarget, request: Context, data: any) {
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
-				const results = [];
-				for (const element of data) {
-					const resourceClass = resource.constructor;
-					const id = element[resourceClass.primaryKey];
-					let target = new RequestTarget();
-					target.id = id;
-					const elementResource = resourceClass.getResource(target, request, {
-						async: true,
-					});
-					if (typeof elementResource.then === 'function')
-						results.push(elementResource.then((resource) => resource.put(element, request)));
-					else results.push(elementResource.put(element, query));
+				const resourceClass = resource.constructor;
+				const primaryKey = resourceClass.primaryKey;
+				// Before dispatching anything: a malformed body must not race a sibling's write, and a bare
+				// dereference below would reach the client as a 500 carrying V8's wording. A primitive is
+				// malformed for the same reason — only a Table's own key validation rejects one later, so a
+				// plain Resource's override would otherwise be handed it.
+				for (let index = 0; index < data.length; index++) {
+					const element = data[index];
+					if (element == null || typeof element !== 'object')
+						throw new ClientError(
+							`Array element at index ${index} is ${element === null ? 'null' : typeof element}, expected a record`
+						);
 				}
-				return Promise.all(results);
+				const elementTarget = elementTargetFactory(query);
+				const results = [];
+				try {
+					for (let index = 0; index < data.length; index++) {
+						const element = data[index];
+						const target = elementTarget(element[primaryKey]);
+						const elementResource = resourceClass.getResource(target, request, {
+							async: true,
+						});
+						// `target`, not `request`: this is the target slot, and Table's back-compat shift only
+						// recognizes a RequestTarget there — a context is taken for the record.
+						// `missingMethod` rather than an unguarded call, so a resource without `put` answers 405
+						// here exactly as it does on the single-record path below.
+						if (typeof elementResource.then === 'function')
+							results.push(
+								elementResource.then((resource) =>
+									resource.put ? resource.put(element, target) : missingMethod(resource, 'put')
+								)
+							);
+						else if (elementResource.put) results.push(elementResource.put(element, target));
+						else missingMethod(elementResource, 'put');
+					}
+				} catch (error) {
+					// Settle the already-dispatched elements or a rejection among them goes unhandled. Then
+					// report the earliest-index failure, the same rule `settleElements` applies: every sibling
+					// already dispatched precedes the element that threw, so the batch reports the same failure
+					// whether that element's dispatch resolved synchronously or asynchronously.
+					return Promise.allSettled(results).then((settled) => {
+						const failed = settled.find((sibling) => sibling.status === 'rejected');
+						if (!failed) throw error;
+						throw (failed as PromiseRejectedResult).reason;
+					});
+				}
+				// Not `Promise.all`: settling the batch while a slower element is still resolving lets that
+				// element commit outside the failed batch — a partially applied array PUT.
+				return settleElements(results);
 			}
 			return resource.put
 				? resource.constructor.loadAsInstance === false
@@ -173,6 +242,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		{ hasContent: true, type: 'update', method: 'put' }
 	);
 
+	/** A static override receives the {@link ResourceBody} and owns its resolution and authorization. */
 	static patch = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
 			// TODO: Allow array like put?
@@ -257,6 +327,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		{ hasContent: false, type: 'update', method: 'invalidate' }
 	);
 
+	/** A static override receives the {@link ResourceBody} and owns its resolution and authorization. */
 	static post = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
 			if (resource.#id != null) resource.update?.(); // save any changes made during post
@@ -310,7 +381,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return result.map(transform);
+						return Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
 					}
 					return result;
 				})
@@ -341,6 +412,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						if (data.select.asArray) narrowed.asArray = true;
 						if (data.select.forceNulls) narrowed.forceNulls = true;
 					}
+					if (allowed[RELATIONSHIPS_LISTED]) narrowed[RELATIONSHIPS_LISTED] = true;
 					data.select = narrowed;
 				} else {
 					data.select = query.select;
@@ -497,12 +569,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
-	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
+	allowUpdate(user: User, record: Record, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
-	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
+	allowCreate(user: User, record: Record, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
@@ -566,11 +638,92 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 _assignPackageExport('Resource', Resource);
 
+/**
+ * allowRead implementations whose result, for a target with no caller-supplied `select`, reads only the
+ * user's role permission and the resource class, so a live-subscription recheck pass may share it across
+ * subscriptions of one class.
+ */
+export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
+
+/** @internal Captured at load, before application code can replace it. */
+export const defaultGetResource = Resource.getResource;
+
+/**
+ * @internal Registered per exact class, so subclasses never match. On NOT_HANDLED the general dispatch
+ * continues with the context resolved for the getter, so a getter must not consume its arguments.
+ */
+type PrimitiveIdGet = (id: string | number, context: Context, resourceOptions: any) => any;
+const primitiveIdGets = new WeakMap<object, PrimitiveIdGet>();
+/** @internal */
+export const NOT_HANDLED = Symbol('not-handled');
+/** @internal */
+export function registerPrimitiveIdGet(resourceClass: object, get: PrimitiveIdGet): void {
+	primitiveIdGets.set(resourceClass, get);
+}
+/** @internal */
+export function primitiveIdGetFor(resourceClass: object): PrimitiveIdGet | undefined {
+	return primitiveIdGets.get(resourceClass);
+}
+/** @internal */
+export class LoadingResource {
+	loaded: Promise<ResourceInterface>;
+	constructor(loaded: Promise<ResourceInterface>) {
+		this.loaded = loaded;
+	}
+}
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
 		camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters.slice(1))
 	);
+}
+
+/**
+ * Mint per-element targets for a fanned-out batch write. Each element needs its own object — its id
+ * must not be visible to a sibling whose dispatch resolves later — but it also needs the request's
+ * query and route metadata, which a `put()` override can read. The request's contribution is
+ * therefore resolved once here rather than deep-cloned per element, and nested metadata is shared
+ * rather than copied. `checkPermission` never carries: the collection receiver's single verdict is
+ * authoritative and per-element dispatch must not re-arm it.
+ */
+function elementTargetFactory(query: any): (id: any) => RequestTarget {
+	const base = cloneRequestTarget(query);
+	const search = base.toString();
+	// Only what the element target would not otherwise have. `RequestTarget` declares `pathname`,
+	// `search` and `sort` without `declare`, so they are own properties on every instance and would
+	// otherwise always be "carried" — overwriting what this element's own construction just derived,
+	// and making the skip below dead. A nullish own value carries no metadata either.
+	const carried: Record<string, any> = {};
+	for (const key of Object.keys(base)) {
+		if (key === 'id' || key === 'isCollection' || key === 'pathname' || key === 'search') continue;
+		const value = (base as any)[key];
+		if (value != null) carried[key] = value;
+	}
+	const hasCarried = Object.keys(carried).length > 0;
+	return (id) => {
+		const target = search ? new RequestTarget(search) : new RequestTarget();
+		if (hasCarried) Object.assign(target, carried);
+		target.id = id;
+		target.isCollection = false;
+		return target;
+	};
+}
+
+/**
+ * Report a fanned-out batch write's outcome only once every element has staged or failed its own
+ * write, so the enclosing transaction cannot unwind under one. Rejects with the first failure.
+ */
+function settleElements(results: any[]): Promise<any[]> {
+	return Promise.allSettled(results).then((settled) => {
+		const values = new Array(settled.length);
+		for (let index = 0; index < settled.length; index++) {
+			const element = settled[index];
+			if (element.status === 'rejected') throw element.reason;
+			values[index] = element.value;
+		}
+		return values;
+	});
 }
 
 /**
@@ -593,13 +746,34 @@ function transactional(
 ) {
 	applyContext.reliesOnPrototype = true;
 	const hasContent = options.hasContent;
+	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
+	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
+	// a primitive-id getter takes the second argument as the context, as only a body-less get does
+	const isGet = options.method === 'get' && hasContent === false;
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
+		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
+			return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
 		let id, query, isCollection;
 		let data;
 		// An absent argument, not a context — and not this call's data either.
 		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
 		if (isReleasedTransaction(context)) context = undefined;
+		let loadingResource: Promise<ResourceInterface> | undefined;
+		if (isGet && !context && (typeof idOrQuery === 'string' || typeof idOrQuery === 'number')) {
+			const getPrimitiveId = primitiveIdGets.get(this);
+			if (getPrimitiveId) {
+				context = dataOrContext
+					? (dataOrContext as any).getContext?.() || dataOrContext
+					: (contextStorage.getStore() ?? {});
+				dataOrContext = undefined;
+				if (isJoinableScope(context.transaction)) {
+					const result = getPrimitiveId(idOrQuery, context, options);
+					if (result instanceof LoadingResource) loadingResource = result.loaded;
+					else if (result !== NOT_HANDLED) return promiseNormalize(result, options as any);
+				}
+			}
+		}
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (hasContent) {
 			// for put, post, patch, publish, query
@@ -660,11 +834,11 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
-		if (options.method === 'query' && typeof (data as any)?.then === 'function') {
+		if (options.method === 'query' && (typeof data?.then === 'function' || isFormDataIterable(data))) {
 			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
 			// sanitization must happen before resource resolution and allowRead, not later in runAction.
 			const dataWasFirstArgument = data === idOrQuery;
-			return (data as Promise<any>).then((resolvedData) =>
+			return resolveBody(data, true, (resolvedData: any) =>
 				dataWasFirstArgument
 					? applyContext.call(this, resolvedData, context)
 					: applyContext.call(this, idOrQuery, resolvedData, context)
@@ -735,15 +909,30 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
-			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
-				query.isCollection = true;
+			// The collection inferred from the batch's null id has to survive onto the synthesized target,
+			// or the array is dispatched as one record update against a null primary key. Array-only:
+			// a null id on non-array data means auto-generate, not collection.
+			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
 		}
 		if (options.method === 'query' && data && typeof data === 'object') {
-			// QUERY executes the independently parsed body target. Make its requested projection part of
-			// the operation admission target, but remove framework-owned permission controls before either
-			// target reaches application or table code.
+			// QUERY executes the independently parsed body target. Make its requested projection (and, for an
+			// instance resource, its conditions and sort) part of the operation admission target, but remove
+			// framework-owned permission controls before either target reaches application or table code.
+			// Iterables are materialized once: admission and execution both read them.
 			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
 			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
+			if (this.loadAsInstance !== false) {
+				if (Object.prototype.hasOwnProperty.call(data, 'conditions')) {
+					if (data.conditions && !Array.isArray(data.conditions) && data.conditions[Symbol.iterator])
+						data.conditions = Array.from(data.conditions);
+					query.conditions = data.conditions;
+				} else if (data instanceof URLSearchParams) query.conditions = Array.from(data);
+				else if (data[Symbol.iterator]) {
+					if (!Array.isArray(data)) data = Array.from(data);
+					query.conditions = data;
+				}
+				if (Object.prototype.hasOwnProperty.call(data, 'sort')) query.sort = data.sort;
+			}
 		}
 		isCollection = query.isCollection;
 		if (options.method === 'post' && query.id === null && !isCollection) {
@@ -791,16 +980,15 @@ function transactional(
 		// opposite treatment:
 		//  - committed: the prior call ran to completion normally. Safe to silently start a fresh
 		//    transaction for this independent call (the case above).
-		//  - aborted due to exceeding storage.maxTransactionOpenTime (#1411, DatabaseTransaction.ts
-		//    abortDueToTimeout(), marked via the `timedOut` poison flag): the whole logical operation
+		//  - poisoned (`timedOut`, #1411; or `disconnected`, harper#2001): the whole logical operation
 		//    must fail atomically, not have this write quietly land on a brand-new transaction while
 		//    the earlier write(s) were rolled back. Joining the poisoned transaction here (instead of
-		//    starting fresh) makes the write throw transactionOpenTooLongError via addWrite()/commit()'s
-		//    poison check, correctly propagating the abort to the caller. See
+		//    starting fresh) makes the write throw transactionOpenTooLongError/requestAbortedError via
+		//    addWrite()/commit()'s poison check, correctly propagating the abort to the caller. See
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
-		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut) {
-			// we are already in a transaction (or it was poisoned by a timeout abort and must fail), proceed
-			const resource = this.getResource(query, context, resourceOptions);
+		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut || context?.transaction?.disconnected) {
+			// we are already in a transaction (or it was poisoned and must fail), proceed
+			const resource = loadingResource ?? this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
 				: promiseNormalize(authorizeActionOnResource(resource), resourceOptions);
@@ -826,6 +1014,8 @@ function transactional(
 			// 'subscribe' is the direct MQTT path; 'connect' is the SSE/WebSocket path (REST CONNECT) —
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
+			// read before allowRead, which may write a select of its own
+			const selectedByCaller = isSubscribeAction && query?.select != null;
 			const runAction = (data: any) => {
 				// Capture the complete target after the initial allowRead has narrowed it, but before
 				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
@@ -836,10 +1026,9 @@ function transactional(
 				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
-				return when(result, (subscription: any) => {
-					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context);
-					return subscription;
-				});
+				return when(result, (subscription: any) =>
+					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, selectedByCaller, context)
+				);
 			};
 			let checkPermission = false;
 			if (query.checkPermission) {
@@ -852,62 +1041,70 @@ function transactional(
 				context.authorize = false;
 				query.checkPermission = true;
 			}
-			if (checkPermission) {
-				if (loadAsInstance !== false) {
-					// do permission checks, with allow methods
-					let allowed;
-					try {
-						allowed =
-							options.type === 'read'
-								? resource.allowRead(context.user, query, context)
-								: options.type === 'update'
-									? resource.doesExist?.() === false
-										? resource.allowCreate(context.user, data, context)
-										: resource.allowUpdate(context.user, data, context)
-									: options.type === 'create'
-										? resource.allowCreate(context.user, data, context)
-										: resource.allowDelete(context.user, query, context);
-					} catch {
-						// allow* threw — fail closed rather than letting the request proceed
-						throw new AccessViolation(context.user);
-					}
-					if ((allowed as any)?.then) {
-						return (allowed as any).then(
-							(allowed) => {
-								query.checkPermission = false;
-								if (!allowed) {
+			return resolveBody(data, collectForms, authorizeResolvedBody);
+			function authorizeResolvedBody(data: any) {
+				if (checkPermission) {
+					if (loadAsInstance !== false) {
+						// do permission checks, with allow methods
+						let allowed;
+						try {
+							allowed =
+								options.type === 'read'
+									? resource.allowRead(context.user, query, context)
+									: options.type === 'update'
+										? resource.doesExist?.() === false
+											? resource.allowCreate(context.user, data, context)
+											: resource.allowUpdate(context.user, data, context)
+										: options.type === 'create'
+											? resource.allowCreate(context.user, data, context)
+											: resource.allowDelete(context.user, query, context);
+						} catch {
+							// allow* threw — fail closed rather than letting the request proceed
+							throw new AccessViolation(context.user);
+						}
+						if ((allowed as any)?.then) {
+							return (allowed as any).then(
+								(allowed) => {
+									query.checkPermission = false;
+									if (!allowed) {
+										throw new AccessViolation(context.user);
+									}
+									return runAction(data);
+								},
+								() => {
+									// async allow* rejected — fail closed
 									throw new AccessViolation(context.user);
 								}
-								return when(data, (data) => {
-									return runAction(data);
-								});
-							},
-							() => {
-								// async allow* rejected — fail closed
-								throw new AccessViolation(context.user);
-							}
-						);
-					}
-					query.checkPermission = false;
-					if (!allowed) {
-						throw new AccessViolation(context.user);
+							);
+						}
+						query.checkPermission = false;
+						if (!allowed) {
+							throw new AccessViolation(context.user);
+						}
 					}
 				}
-			}
-			return when(data, (data) => {
 				return runAction(data);
-			});
+			}
 		}
 	}
 }
 
 function authorizeSearchResult(result: any, user: any) {
-	const authorization = result?.[SEARCH_AUTHORIZATION];
+	const authorization = result?.[SEARCH_AUTHORIZATION] ?? (result?.headers && result.data?.[SEARCH_AUTHORIZATION]);
 	return authorization
 		? when(authorization, (state: any) => {
 				if (state && typeof state === 'object') {
 					if (state.error) throw state.error;
 					if (!state.allowed) throw new AccessViolation(user);
+					// only the gate itself is replaced: a transform derived from it must still run
+					const { gate } = state;
+					if (gate) {
+						if (result === gate) return state.results;
+						if (result.headers && result.data === gate) {
+							if (Object.isFrozen(result)) return { ...result, data: state.results };
+							result.data = state.results;
+						}
+					}
 				} else if (!state) throw new AccessViolation(user);
 				return result;
 			})
@@ -954,39 +1151,84 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 	return false;
 }
 
-function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
+let securityUser: typeof import('../security/user.ts') | undefined;
+
+const resolveUser = (_scope: unknown, username: string) =>
+	securityUser!.findAndValidateUser(username, undefined, false);
+
+/** Returns `subscription`, or a promise of it once a principal stale at admission has been rechecked. */
+function registerLiveSubscriptionForContext(
+	subscription: any,
+	resource: any,
+	admittedTarget: any,
+	selectedByCaller: boolean,
+	context: Context
+) {
 	const user: any = context?.user;
 	const username = user?.username;
-	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
-	if (!username) return;
-	registerLiveSubscription({
+	securityUser ??= userRuntimeModule;
+	// Internal watchers and replication have no user principal, and no record backs the local
+	// principal — nothing to re-authorize.
+	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
+	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
+	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
+	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
+	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
+	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
+	const sharedDecision =
+		!selectedByCaller &&
+		defaultAllowReads.has(resource.allowRead) &&
+		!resource.constructor._referencesRelationship?.(admittedTarget);
+	const evaluate = (principal: any) => {
+		const reTarget: any = cloneRequestTarget(admittedTarget);
+		reTarget.checkPermission = principal.role?.permission;
+		return resource.allowRead(principal, reTarget, context);
+	};
+	const handle = registerLiveSubscription({
 		subscription,
 		username,
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
-		recheck: async () => {
+		// A principal with no record provenance (a component's server.getUser on a path that does not track it)
+		// can't be checked for staleness at admission, so every tick rechecks it.
+		identityOnly: sharedDecision && (user._scopedToken || hasRecordProvenance(user)),
+		recheck: async (pass) => {
 			let fresh: any;
+			let viewer: any;
 			if (user._scopedToken) {
 				// A scoped token's identity IS its embedded role — never re-resolve its attribution
 				// username against hdb_user (it may not exist, or may name an unrelated principal
 				// created later). Expiry (authExpiresAt above) is its only revocation.
-				fresh = user;
+				fresh = viewer = user;
 			} else {
-				// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
-				// role-stripped user no longer authorizes.
-				const { findAndValidateUser } = require('../security/user');
-				fresh = await findAndValidateUser(username, undefined, false);
+				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
+				// or role-stripped user no longer authorizes.
+				fresh = await pass.memo(resolveUser, username, resolveUser);
 				if (!fresh?.role) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
-				// not the stale user captured at subscribe time.
-				if (context) (context as any).user = fresh;
+				// not the stale user captured at subscribe time. Each context gets its own view, which its
+				// code may modify.
+				viewer = cloneUserView(fresh);
+				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			const reTarget: any = cloneRequestTarget(admittedTarget);
-			reTarget.checkPermission = fresh.role?.permission;
-			return !!(await resource.allowRead(fresh, reTarget, context));
+			return !!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)));
 		},
+	});
+	let stale: boolean;
+	try {
+		stale = !isCurrentUser(user);
+	} catch {
+		stale = true;
+	}
+	if (!stale) return subscription;
+	// Admitted by records that changed before it registered, so the notification for that change may already
+	// have run without it: recheck before any delivery.
+	return handle.verify().then((outcome) => {
+		if (outcome === 'revoked') throw new AccessViolation(user);
+		// closed by its owner meanwhile, perhaps with a terminal error the caller acts on
+		return subscription;
 	});
 }
 
@@ -1010,98 +1252,306 @@ export function allowedMethods(resource: any) {
 	return allow;
 }
 
+// an inherited `__proto__` is the object's prototype (a table record's carries accessors), not data
+export function readSelectedProperty(object: any, property: string) {
+	return property === '__proto__' && !Object.hasOwn(object, property) ? undefined : object[property];
+}
 /**
  * This is responsible for handling a select query parameter/call that selects specific
  * properties from the returned record(s).
  * @param object
  * @returns
  */
-function selectFromObject(object, propertyResolvers, context) {
+function selectFromObject(object, propertyResolvers, context, selectsPrototype: boolean) {
 	// TODO: eventually we will do aggregate functions here
-	const record = object.getRecord?.();
-	if (record) {
-		const ownData = object.getChanges?.();
-		return (property) => {
-			let value, resolver;
-			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
-				return value;
-			}
-			if (ownData && property in ownData) {
-				return ownData[property];
-			} else if ((resolver = propertyResolvers?.[property])) {
-				return resolver(object, context);
-			} else return record[property];
-		};
-	} else if (propertyResolvers) {
-		return (property) => {
-			const resolver = propertyResolvers[property];
-			return resolver ? resolver(object, context) : object[property];
-		};
-	} else return (property) => object[property];
+	return (property) => readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype);
 }
+export const ownDataProperty = { value: undefined, writable: true, enumerable: true, configurable: true };
+function settleAll(results: any[]) {
+	for (let i = 0, l = results.length; i < l; i++) {
+		if (typeof results[i]?.then === 'function') return Promise.all(results);
+	}
+	return results;
+}
+export function hasNestedQueryOptions(property) {
+	return (
+		property &&
+		typeof property === 'object' &&
+		((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
+			property.operator !== undefined ||
+			property.limit !== undefined ||
+			property.offset !== undefined ||
+			(typeof property.sort === 'object' && property.sort))
+	);
+}
+
+export function assertNestedQueryOptions(select, resource) {
+	for (const property of Array.isArray(select) ? select : select ? [select] : []) {
+		if (!property || typeof property !== 'object') continue;
+		const related = resource?.propertyResolvers?.[property.name]?.definition?.tableClass;
+		if (
+			((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
+				property.operator !== undefined) &&
+			(!resource?._prepareRelationshipSelection || !related)
+		)
+			throw new ClientError('Nested query constraints require a relationship attribute');
+		assertNestedQueryOptions(property.select || (Array.isArray(property) ? property : undefined), related);
+	}
+}
+
 export function transformForSelect(select, resource) {
-	const propertyResolvers = resource.propertyResolvers;
-	const context = resource.getContext?.();
-	let subTransforms;
-	if (typeof select === 'string')
-		// if select is a single string then return property value
+	assertNestedQueryOptions(select, resource);
+	const propertyResolvers = resource?.propertyResolvers;
+	const context = resource?.getContext?.();
+	let subTransforms: Map<any, (object: any) => any>;
+	if (
+		select === '*' ||
+		(!resource && Array.isArray(select) && select.length === 1 && select[0] === '*' && !(select as any).asArray)
+	)
 		return function transform(object) {
-			if (object.then) return object.then(transform);
-			if (Array.isArray(object)) return object.map(transform);
-			return selectFromObject(object, propertyResolvers, context)(select);
+			return typeof object?.then === 'function' ? object.then(transform) : object;
 		};
-	else if (typeof select === 'object') {
-		// if it is an array, return an array
-		if (select.asArray)
-			return function transform(object) {
-				if (object.then) return object.then(transform);
-				if (Array.isArray(object)) return object.map(transform);
-				const results = [];
-				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
-				for (const property of select) {
-					results.push(getProperty(property));
-				}
-				return results;
-			};
-		const forceNulls = select.forceNulls;
+	let relationshipSelections;
+	if (resource?._prepareRelationshipSelection)
+		for (const property of Array.isArray(select) ? select : select ? [select] : []) {
+			if (propertyResolvers?.[property?.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
+				(relationshipSelections ||= Object.create(null))[property.name] = resource._prepareRelationshipSelection(
+					property,
+					context ?? contextStorage.getStore()
+				);
+			}
+		}
+	if (typeof select === 'string')
 		return function transform(object) {
-			if (object.then) return object.then(transform);
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
+			if (Array.isArray(object)) return settleAll(object.map(transform));
+			return readPropertyFromObject(object, select, propertyResolvers, context, select === '__proto__');
+		};
+	if (!Array.isArray(select) && select?.name !== undefined)
+		return function transform(object) {
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
+			if (Array.isArray(object)) return settleAll(object.map(transform));
+			return handleProperty(
+				selectFromObject(object, propertyResolvers, context, select.name === '__proto__'),
+				object
+			)(select);
+		};
+	else if (Array.isArray(select)) {
+		// if it is an array, return an array
+		const selectsPrototype = select.some((property) => (property?.name ?? property) === '__proto__');
+		if ((select as any).asArray)
+			return function transform(object) {
+				if (object == null || (!resource && typeof object !== 'object')) return object;
+				if (typeof object.then === 'function') return object.then(transform);
+				if (Array.isArray(object)) return settleAll(object.map(transform));
+				const results = [];
+				const getProperty = handleProperty(
+					selectFromObject(object, propertyResolvers, context, selectsPrototype),
+					object
+				);
+				let pending = false;
+				for (const property of select) {
+					const value = property === '*' ? object : getProperty(property);
+					if (typeof value?.then === 'function') pending = true;
+					results.push(value);
+				}
+				return pending ? Promise.all(results) : results;
+			};
+		const forceNulls = (select as any).forceNulls;
+		const selectsWildcard = select.includes('*');
+		return function transform(object) {
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
-				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
+				return settleAll(object.map((value) => (value && typeof value === 'object' ? transform(value) : value)));
+			// a tracked instance's toJSON() is its current view: record, folded pending changes and own fields
+			const wildcardSource =
+				selectsWildcard &&
+				!(ArrayBuffer.isView(object) || object instanceof Date || object instanceof Blob) &&
+				(typeof object.getRecord !== 'function'
+					? object
+					: typeof object.toJSON === 'function'
+						? object.toJSON()
+						: object.getRecord());
 			// finally the case of returning objects
 			const selectedData = {};
-			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+			const getProperty = handleProperty(
+				selectFromObject(object, propertyResolvers, context, selectsPrototype),
+				object
+			);
+			if (selectsPrototype) Object.defineProperty(selectedData, '__proto__', ownDataProperty);
 			let promises;
 			for (const property of select) {
+				if (property === '*') {
+					if (select[RELATIONSHIPS_LISTED] && resource?._copyUnlistedAttributes)
+						resource._copyUnlistedAttributes(wildcardSource || object, selectedData);
+					else if (wildcardSource)
+						for (const key in wildcardSource) {
+							const value = wildcardSource[key];
+							if (typeof value === 'function') continue;
+							if (key === '__proto__') Object.defineProperty(selectedData, key, { ...ownDataProperty, value });
+							else selectedData[key] = value;
+						}
+					continue;
+				}
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
-				if (value?.then) {
+				if (typeof value?.then === 'function') {
 					if (!promises) promises = [];
-					promises.push(value.then((value) => (selectedData[property.name || property] = value)));
+					promises.push(
+						value.then(
+							(value) => (selectedData[property.name || property] = value === undefined && forceNulls ? null : value)
+						)
+					);
 				} else selectedData[property.name || property] = value;
 			}
 			if (promises) return Promise.all(promises).then(() => selectedData);
 			return selectedData;
 		};
-	} else throw new Error('Invalid select argument type ' + typeof select);
-	function handleProperty(getProperty) {
+	} else throw new ClientError('Invalid select, expected an attribute name or a list of attributes');
+	function projectNested(property, value) {
+		if (!value || typeof value !== 'object' || value instanceof Date) return value;
+		if (typeof value.then === 'function') return value.then((value) => projectNested(property, value));
+		if (!subTransforms) subTransforms = new Map();
+		let transform = subTransforms.get(property);
+		if (!transform) {
+			transform = nestedTransform(property);
+			subTransforms.set(property, transform);
+		}
+		return transform(value);
+	}
+	function nestedTransform(property) {
+		const targetResource =
+			propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+				? propertyResolvers[property.name]?.definition?.tableClass
+				: undefined;
+		return nestedSelectTransform(property, targetResource);
+	}
+	function handleProperty(getProperty, object) {
 		return (property) => {
 			if (typeof property === 'string') {
 				return getProperty(property);
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
-					if (!subTransforms) subTransforms = {};
-					// TODO: Get the resource, cache this transform, and apply above
-					let transform = subTransforms[property.name];
-					if (!transform) {
-						const resource = propertyResolvers[property.name]?.definition?.tableClass;
-						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
-					}
-					const value = getProperty(property.name);
-					return transform(value);
+					const selection = relationshipSelections?.[property.name];
+					if (selection)
+						return selection(typeof object.getRecord === 'function' ? object.getRecord() || object : object);
+					return projectNested(property, getProperty(property.name));
 				} else return getProperty(property);
 			} else return property;
 		};
 	}
+}
+
+/** The transform for a `{ name, select?, sort?, offset?, limit? }` selector's value; `targetResource` supplies resolvers. */
+export function nestedSelectTransform(property: any, targetResource?: any): (value: any) => any {
+	const subSelect = property.select ?? (Array.isArray(property) ? property : null);
+	const innerTransform =
+		subSelect &&
+		!(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray && !subSelect[RELATIONSHIPS_LISTED])
+			? transformForSelect(subSelect, targetResource)
+			: (value) => value;
+	const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
+	for (let clause = typeof property.sort === 'object' ? property.sort : null; clause; clause = clause.next) {
+		sortClauses.push(clause);
+	}
+	const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
+	const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
+	if (sortClauses.length === 0 && offset === undefined && limit === undefined) return innerTransform;
+	return (value) =>
+		innerTransform(Array.isArray(value) ? sortAndSliceArray(value, sortClauses, offset, limit, targetResource) : value);
+}
+
+export function sortAndSliceArray(
+	resolvedValue: any[],
+	sortClauses: { attribute: string | string[]; descending?: boolean }[],
+	offset: number | undefined,
+	limit: number | undefined,
+	targetResource?: any,
+	context?: any
+): any[] {
+	let ordered = resolvedValue;
+	const clauseCount = sortClauses.length;
+	if (clauseCount > 0 && resolvedValue.length > 1) {
+		const resolvers = targetResource?.propertyResolvers;
+		const ctx = context ?? targetResource?.getContext?.();
+		const n = resolvedValue.length;
+		const orderedKeys: any[][] = new Array(clauseCount);
+		for (let c = 0; c < clauseCount; c++) {
+			const attr = sortClauses[c].attribute;
+			const col = new Array(n);
+			for (let i = 0; i < n; i++) {
+				col[i] = getComparableKey(resolvedValue[i], attr, resolvers, ctx);
+			}
+			orderedKeys[c] = col;
+		}
+		const positions = new Array<number>(n);
+		for (let i = 0; i < n; i++) positions[i] = i;
+		positions.sort((posA, posB) => {
+			for (let c = 0; c < clauseCount; c++) {
+				const keys = orderedKeys[c];
+				const diff = sortClauses[c].descending
+					? compareKeys(keys[posB], keys[posA])
+					: compareKeys(keys[posA], keys[posB]);
+				if (diff !== 0) return diff;
+			}
+			return 0;
+		});
+		ordered = new Array(n);
+		for (let i = 0; i < n; i++) ordered[i] = resolvedValue[positions[i]];
+	}
+	if (offset !== undefined || limit !== undefined) {
+		const start = offset ?? 0;
+		ordered = ordered.slice(start, limit !== undefined ? start + limit : undefined);
+	}
+	return ordered;
+}
+
+export function convertToComparableKeys(value) {
+	if (value instanceof Date) return value.getTime();
+	if (Array.isArray(value)) return value.map(convertToComparableKeys);
+	return value;
+}
+
+function readPropertyFromObject(object, property, propertyResolvers, context, selectsPrototype: boolean) {
+	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
+	let value, resolver;
+	if (record) {
+		if (Object.hasOwn(object, property) && typeof (value = object[property]) !== 'function') {
+			return value;
+		}
+		const ownData = object.getChanges?.();
+		if (ownData && Object.hasOwn(ownData, property)) {
+			value = selectsPrototype ? readSelectedProperty(ownData, property) : ownData[property];
+			return typeof value === 'function' ? undefined : value;
+		}
+	}
+	if (propertyResolvers && Object.hasOwn(propertyResolvers, property) && (resolver = propertyResolvers[property])) {
+		return resolver(object, context);
+	}
+	const source = record ?? object;
+	value = selectsPrototype ? readSelectedProperty(source, property) : source[property];
+	return typeof value === 'function' ? undefined : value;
+}
+
+function getComparableKey(item, attribute, resolvers, ctx) {
+	if (item == null || typeof item !== 'object') return undefined;
+	if (Array.isArray(attribute)) {
+		let value = item;
+		let currentResolvers = resolvers;
+		for (const part of attribute) {
+			if (value == null || typeof value !== 'object') return undefined;
+			value = readPropertyFromObject(value, part, currentResolvers, ctx, part === '__proto__');
+			currentResolvers =
+				currentResolvers && Object.hasOwn(currentResolvers, part)
+					? (currentResolvers[part]?.definition || currentResolvers[part]?.elements?.definition)?.tableClass
+							?.propertyResolvers
+					: undefined;
+		}
+		return convertToComparableKeys(value);
+	}
+	return convertToComparableKeys(readPropertyFromObject(item, attribute, resolvers, ctx, attribute === '__proto__'));
 }

@@ -2,8 +2,7 @@
  * QA-802 — Blob GC vs audit-log expiry (harper#708, "Blob GC: files not deleted on
  * audit-log expiry when using RocksDB audit store").
  *
- * #708's claim: `scheduleAuditCleanup()` (resources/auditStore.ts) branches on the audit
- * store type; for RocksDB it calls `rootStore.purgeLogs()` and returns WITHOUT ever calling
+ * #708's claim: RocksDB audit expiry purges whole transaction-log segments without calling
  * `removeAuditEntry()` — the function that invokes the blob-file delete callbacks — so blob
  * files supposedly accumulate forever once a blob-bearing record is deleted.
  *

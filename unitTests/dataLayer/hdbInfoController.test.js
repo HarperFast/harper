@@ -6,7 +6,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const assert = require('assert');
 // Need to rewire this since we have a promisified data member for search.  Remove rewire when search is asyncified.
-const hdb_info_controller_rw = rewire('#src/dataLayer/hdbInfoController');
+const hdb_info_controller_rw = rewire('#js/dataLayer/hdbInfoController');
 const insert = require('#src/dataLayer/insert');
 const { packageJson } = require('#src/utility/packageUtils');
 const harper_logger = require('#src/utility/logging/harper_logger');
@@ -51,7 +51,10 @@ describe.skip('Test hdbInfoController module ', function () {
 		sandbox = sinon.createSandbox();
 		search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
 		hdb_info_controller_rw.__set__('pSearchSearchByValue', search_stub);
-		insert_stub = sandbox.stub(insert, 'insert').resolves();
+		insert_stub = sandbox.stub(insert, 'insert').callsFake(async (insertObject) => ({
+			inserted_hashes: insertObject.records.map((record) => record.info_id),
+			skipped_hashes: [],
+		}));
 		consoleLog_stub = sandbox.stub(console, 'log').returns();
 		consoleError_stub = sandbox.stub(console, 'error').returns();
 		log_info_stub = sandbox.stub(harper_logger, 'info').returns();
@@ -65,7 +68,7 @@ describe.skip('Test hdbInfoController module ', function () {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#src/dataLayer/hdbInfoController');
+		rewire('#js/dataLayer/hdbInfoController');
 	});
 
 	describe('Test insertHdbInstallInfo() ', () => {

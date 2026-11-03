@@ -57,58 +57,67 @@ describe('CrossThread Module', function () {
 		});
 
 		it('should collect status from multiple threads', async function () {
-			this.timeout(5000); // Allow enough time for async operations
+			this.timeout(5000);
 			registry.setStatus('sharedComp', 'healthy', 'Local is healthy');
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
 
 			connectedPorts.push({ threadId: 7 }, { threadId: 8 });
 
-			// Simulate responses from other threads
-			onMessageByTypeStub.callsFake((eventType, handler) => {
-				// Simulate async responses
-				setTimeout(() => {
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 7,
-							workerIndex: 1,
-							isMainThread: false,
-							statuses: [
-								[
-									'sharedComp',
-									{
-										status: 'warning',
-										message: 'Worker 1 warning',
-										lastChecked: new Date(),
-									},
-								],
-							],
-						},
-					});
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 8,
-							workerIndex: 2,
-							isMainThread: false,
-							statuses: [
-								[
-									'sharedComp',
-									{
-										status: 'healthy',
-										message: 'Worker 2 healthy',
-										lastChecked: new Date(),
-									},
-								],
-							],
-						},
-					});
-				}, 100);
+			let handler;
+			onMessageByTypeStub.callsFake((eventType, responseHandler) => {
+				handler = responseHandler;
 			});
 
-			// Wait for collection to complete
-			const collected = await collector.collect(registry);
+			let sentinelFired = false;
+			const sentinel = new Promise((resolve) =>
+				setImmediate(() => {
+					sentinelFired = true;
+					resolve();
+				})
+			);
+
+			const collectPromise = collector.collect(registry);
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 7,
+					workerIndex: 1,
+					isMainThread: false,
+					statuses: [
+						[
+							'sharedComp',
+							{
+								status: 'warning',
+								message: 'Worker 1 warning',
+								lastChecked: new Date(),
+							},
+						],
+					],
+				},
+			});
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 8,
+					workerIndex: 2,
+					isMainThread: false,
+					statuses: [
+						[
+							'sharedComp',
+							{
+								status: 'healthy',
+								message: 'Worker 2 healthy',
+								lastChecked: new Date(),
+							},
+						],
+					],
+				},
+			});
+
+			const collected = await collectPromise;
+			assert.equal(sentinelFired, false, 'collect() should resolve before the setImmediate sentinel');
+			await sentinel;
 
 			assert.equal(collected.size, 3);
 			// In test environment with undefined workerIndex, we get main thread
@@ -132,6 +141,42 @@ describe('CrossThread Module', function () {
 			// In test environment with undefined workerIndex, we get main thread
 			assert.ok(collected.has('fallbackComp@main'));
 			assert.equal(collected.get('fallbackComp@main').status, 'error');
+		});
+
+		it('labels main-thread statuses as main when threads.count is 0 (setMainIsWorker)', async function () {
+			registry.setStatus('zeroWorkerComp', 'healthy', 'Main thread in zero-worker mode');
+			getWorkerIndexStub.restore();
+			const wasMainWorker = manageThreadsModule.getWorkerIndex() === 0;
+			manageThreadsModule.setMainIsWorker(true);
+
+			try {
+				assert.equal(manageThreadsModule.getWorkerIndex(), 0);
+
+				const collected = await collector.collect(registry);
+				assert.equal(collected.size, 1);
+				assert.equal(collected.has('zeroWorkerComp@worker-0'), false);
+				assert.ok(collected.has('zeroWorkerComp@main'));
+				assert.equal(collected.get('zeroWorkerComp@main').workerIndex, undefined);
+
+				const aggregated = StatusAggregator.aggregate(collected).get('zeroWorkerComp');
+				assert.ok(aggregated.lastChecked.main > 0);
+				assert.deepEqual(aggregated.lastChecked.workers, {});
+
+				sendItcEventStub.rejects(new Error('ITC failure'));
+				const fallback = await collector.collect(registry);
+				assert.equal(fallback.size, 1);
+				assert.equal(fallback.has('zeroWorkerComp@worker-0'), false);
+				assert.ok(fallback.has('zeroWorkerComp@main'));
+				assert.equal(fallback.get('zeroWorkerComp@main').workerIndex, undefined);
+
+				sinon.stub(manageThreadsModule, 'getWorkerIndex').returns(2);
+				const workerLocal = collector['getLocalStatusOnly'](registry, false);
+				assert.equal(workerLocal.size, 1);
+				assert.ok(workerLocal.has('zeroWorkerComp@worker-2'));
+				assert.equal(workerLocal.get('zeroWorkerComp@worker-2').workerIndex, 2);
+			} finally {
+				manageThreadsModule.setMainIsWorker(wasMainWorker);
+			}
 		});
 
 		it('should handle collection timeout', async function () {
@@ -162,48 +207,64 @@ describe('CrossThread Module', function () {
 
 			connectedPorts.push({ threadId: 7 }, { threadId: 8 });
 
-			// Track when collection completes
-			const startTime = Date.now();
-			let resolveTime;
-
 			sendItcEventStub.resolves();
 
-			// Setup response handler to send responses quickly
-			onMessageByTypeStub.callsFake((eventType, handler) => {
-				// Send responses after just 50ms (much less than 5000ms timeout)
-				setTimeout(() => {
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 7,
-							workerIndex: 1,
-							isMainThread: false,
-							statuses: [['fastComp', { status: 'healthy' }]],
-						},
-					});
-					// Second response completes the set
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 8,
-							workerIndex: 2,
-							isMainThread: false,
-							statuses: [['fastComp', { status: 'healthy' }]],
-						},
-					});
-				}, 50);
+			// A long internal timeout here, distinct from the shared collector's 1s timeout, so
+			// the pending-state check below can't race the collector's own timeout under a loaded runner
+			const earlyCollector = new CrossThreadStatusCollector(60_000);
+
+			let handler;
+			onMessageByTypeStub.callsFake((eventType, responseHandler) => {
+				handler = responseHandler;
 			});
 
-			const collected = await collector.collect(registry);
-			resolveTime = Date.now() - startTime;
+			let settled = false;
+			const collectPromise = earlyCollector.collect(registry).then((collected) => {
+				settled = true;
+				return collected;
+			});
 
-			// Should complete much faster than timeout
-			assert.ok(resolveTime < 1000, `Collection took ${resolveTime}ms, should be < 1000ms`);
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 7,
+					workerIndex: 1,
+					isMainThread: false,
+					statuses: [['fastComp', { status: 'healthy' }]],
+				},
+			});
+			await new Promise(setImmediate);
+			assert.equal(settled, false, 'collect() must wait for both eligible workers to respond');
+
+			// Second response completes the set
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 8,
+					workerIndex: 2,
+					isMainThread: false,
+					statuses: [['fastComp', { status: 'healthy' }]],
+				},
+			});
+
+			let sentinelFired = false;
+			const sentinel = new Promise((resolve) =>
+				setImmediate(() => {
+					sentinelFired = true;
+					resolve();
+				})
+			);
+
+			const collected = await collectPromise;
+			assert.equal(sentinelFired, false, 'collect() should resolve before the setImmediate sentinel');
+			await sentinel;
+
 			assert.equal(collected.size, 3); // local + 2 workers
+			earlyCollector.cleanup();
 		});
 
 		describe('expectedResponses sizing (connectedPorts-based)', function () {
-			it('sizes expectedResponses from the exact eligible broadcast-recipient count, excluding job workers', async function () {
+			it('excludes job workers from ordinary broadcasts', async function () {
 				registry.setStatus('poolComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(0);
 
@@ -211,6 +272,9 @@ describe('CrossThread Module', function () {
 				const httpPortB = { threadId: 8 };
 				const jobPort = { threadId: 9, isJobWorker: true };
 				connectedPorts.push(httpPortA, httpPortB, jobPort);
+				// Restore is the one broadcast that must reach job workers too, but that is now expressed by
+				// the caller opting in (broadcastWithStrictAcknowledgement's includeJobWorkers), not by this
+				// helper inspecting the message -- see the restore-barrier case in itcUtils.test.js.
 				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientThreadIds().size, 2);
 
 				let handler;
@@ -580,6 +644,69 @@ describe('CrossThread Module', function () {
 			assert.equal(aggregated.status, 'error');
 			assert.equal(aggregated.abnormalities.size, 1);
 			assert.equal(aggregated.abnormalities.get('service@worker-1').status, 'warning');
+		});
+
+		it('aggregates scoped component names under their own names without an empty-string key', async function () {
+			const allStatuses = new Map([
+				[
+					'@scope/app-a@main',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1000),
+						message: 'App A loaded on main',
+					},
+				],
+				[
+					'@scope/app-a.rest@main',
+					{
+						status: 'healthy',
+						lastChecked: new Date(2000),
+						message: 'App A REST loaded on main',
+					},
+				],
+				[
+					'@scope/app-b@worker-0',
+					{
+						status: 'error',
+						workerIndex: 0,
+						lastChecked: new Date(3000),
+						message: 'App B failed on worker 0',
+					},
+				],
+				[
+					'@scope/app-b@worker-0#thread-8',
+					{
+						status: 'healthy',
+						workerIndex: 0,
+						lastChecked: new Date(4000),
+						message: 'App B replacement healthy on worker 0',
+					},
+				],
+			]);
+
+			const aggregated = StatusAggregator.aggregate(allStatuses);
+
+			assert.equal(aggregated.has(''), false);
+			assert.deepEqual([...aggregated.keys()], ['@scope/app-a', '@scope/app-a.rest', '@scope/app-b']);
+
+			const appA = aggregated.get('@scope/app-a');
+			assert.equal(appA.componentName, '@scope/app-a');
+			assert.equal(appA.status, 'healthy');
+			assert.equal(appA.lastChecked.main, 1000);
+
+			const appARest = aggregated.get('@scope/app-a.rest');
+			assert.equal(appARest.componentName, '@scope/app-a.rest');
+			assert.equal(appARest.status, 'healthy');
+			assert.equal(appARest.lastChecked.main, 2000);
+
+			const appB = aggregated.get('@scope/app-b');
+			assert.equal(appB.componentName, '@scope/app-b');
+			assert.equal(appB.status, 'error');
+			assert.equal(appB.lastChecked.workers[0], 4000);
+			assert.equal(appB.abnormalities.get('@scope/app-b@worker-0').status, 'healthy');
+
+			const appAStatus = await new ComponentStatusRegistry().getAggregatedStatusFor('@scope/app-a', aggregated);
+			assert.equal(appAStatus.status, 'healthy');
 		});
 	});
 });

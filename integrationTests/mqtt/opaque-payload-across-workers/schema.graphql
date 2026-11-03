@@ -1,0 +1,4 @@
+# Non-retained publishes to Feed/* fan out to every subscriber without being stored per key.
+type Feed @table @export {
+	id: ID @primaryKey
+}

@@ -41,9 +41,15 @@ describe('bin/mcp/options.parseArgs', () => {
 		assert.equal(o.rejectUnauthorized, false);
 	});
 
-	it('rejects unknown profile values silently (default stays)', () => {
-		const o = parseArgs(['--profile', 'bogus']);
-		assert.equal(o.profile, 'operations');
+	it('throws on an unknown or missing profile value', () => {
+		assert.throws(() => parseArgs(['--profile', 'bogus']), /--profile must be/);
+		assert.throws(() => parseArgs(['--profile']), /--profile must be/);
+	});
+
+	it('throws on an empty or missing --target instead of falling back to UDS', () => {
+		assert.throws(() => parseArgs(['--target', '']), /--target requires a URL/);
+		assert.throws(() => parseArgs(['--target=']), /--target requires a URL/);
+		assert.throws(() => parseArgs(['--target']), /--target requires a URL/);
 	});
 
 	it('print-config respects --client', () => {

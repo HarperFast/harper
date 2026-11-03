@@ -1,17 +1,18 @@
 'use strict';
 
 import * as insert from '../dataLayer/insert.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 const cbInsertInsert = util.callbackify(insert.insert);
 import { search } from '../dataLayer/search.ts';
 import { update } from '../dataLayer/update.ts';
 const cbUpdateUpdate = util.callbackify(update);
 import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
 const cbDeleteTranslator = util.callbackify(deleteTranslator);
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import * as opAuth from '../utility/operation_authorization.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import alasqlFunctionImporter from './alasqlFunctionImporter.ts';
+import { assertLegacySqlText } from './legacySqlText.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
@@ -193,7 +194,14 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 				variant: parsedSqlObject.variant,
 				jsonMessage,
 				statement,
-				legacy: sqlFunction,
+				legacy: (legacyStatement, legacyCallback) => {
+					try {
+						assertLegacySqlText(parsedSqlObject.ast.statements[0]);
+					} catch (err) {
+						return legacyCallback(err);
+					}
+					sqlFunction(legacyStatement, legacyCallback);
+				},
 			},
 			(err, data) => {
 				if (err) {

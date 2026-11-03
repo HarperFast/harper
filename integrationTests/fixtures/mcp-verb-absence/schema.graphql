@@ -1,0 +1,4 @@
+type Widget @table @export {
+	id: ID @primaryKey
+	label: String
+}

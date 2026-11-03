@@ -2,16 +2,14 @@
 
 const { mkdtempSync, rmSync, writeFileSync, writeSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { once } = require('node:events');
+const Module = require('node:module');
 const { waitFor } = require('../../../waitFor.js');
 const { HARPER_CONFIG_FILE } = require('#src/utility/hdbTerms');
 process.env.HARPER_SAFE_MODE = 'true';
 
-// restartWorkers() loads the root components, and loadCertificates() reads the config FILE rather
-// than the in-memory config initTestEnvironment() sets up — with no Harper installed there is none
-// and the restart rejects with ENOENT. ROOTPATH is the lever `harper --ROOTPATH` uses to run
-// without boot properties.
+// initLogSettings() resolves config through ROOTPATH without boot properties, so use an owned root.
 const rootPath = mkdtempSync(join(tmpdir(), 'harper-terminal-shutdown-'));
 writeFileSync(join(rootPath, HARPER_CONFIG_FILE), `rootPath: ${JSON.stringify(rootPath)}\n`);
 process.env.ROOTPATH = rootPath;
@@ -25,6 +23,7 @@ process.on('exit', () => {
 });
 
 require('#src/utility/environment/environmentManager').initTestEnvironment();
+stubLoadRootComponents();
 const manageThreads = require('#js/server/threads/manageThreads');
 const { beginProcessShutdown, restartWorkers, shutdownWorkersNow, startWorker, workers } = manageThreads;
 
@@ -40,6 +39,21 @@ const WAIT_TIMEOUT_MS = 20_000;
  */
 function rejectionOf(promise) {
 	return new Promise((resolve, reject) => promise.catch(reject));
+}
+
+let loadRootComponentsCalls = 0;
+
+// The root-component loader's top level costs ~5,400 module loads (~34s on Windows).
+function stubLoadRootComponents() {
+	const manageThreadsDir = dirname(require.resolve('#js/server/threads/manageThreads'));
+	const path = require.resolve('../loadRootComponents.js', { paths: [manageThreadsDir] });
+	const stub = new Module(path, null);
+	stub.filename = path;
+	stub.loaded = true;
+	stub.exports.loadRootComponents = async () => {
+		loadRootComponentsCalls++;
+	};
+	require.cache[path] = stub;
 }
 
 async function terminalShutdown() {
@@ -58,6 +72,8 @@ async function terminalShutdown() {
 	]);
 	await shutdownWorkersNow();
 	await restart;
+	if (loadRootComponentsCalls === 0)
+		throw new Error('restartWorkers() never reached the stubbed loadRootComponents load');
 
 	let errorCode;
 	try {
@@ -111,6 +127,8 @@ async function nonOverlappingRestart() {
 	]);
 	await shutdownWorkersNow();
 	await restart;
+	if (loadRootComponentsCalls === 0)
+		throw new Error('restartWorkers() never reached the stubbed loadRootComponents load');
 	process.stdout.write(`${JSON.stringify({ starts, workersAfterShutdown: workers.length })}\n`);
 }
 
@@ -129,6 +147,8 @@ async function lateRestart() {
 	beginProcessShutdown();
 	const restartNumberBefore = manageThreads.restartNumber;
 	await restartWorkers('http');
+	if (loadRootComponentsCalls !== 0)
+		throw new Error("a late restart reloaded root components — the shutdown latch let it past #1585's ordering");
 	const restartNumberChanged = manageThreads.restartNumber !== restartNumberBefore;
 	const startsAfterLateRestart = starts;
 	const workersAfterLateRestart = workers.length;
@@ -161,8 +181,33 @@ async function scopedShutdown() {
 	process.stdout.write(`${JSON.stringify({ workerCreationAllowed: true })}\n`);
 }
 
+// A process exit reaches a worker a restart has already marked `wasShutdown` (set before that worker is
+// sent SHUTDOWN), and waits for every worker to exit.
+async function exitFanOut() {
+	const received = [];
+	const started = [0, 1].map(() =>
+		startWorker(require.resolve('./terminalExitWorker.cjs'), { name: 'exit-fan-out-test' })
+	);
+	await Promise.all(started.map((worker) => once(worker, 'message')));
+	for (const worker of started) {
+		worker.on('message', (message) => {
+			if (message?.shutdownExitDeadline !== undefined) received.push(message.shutdownExitDeadline);
+		});
+	}
+	started[0].wasShutdown = true;
+	const exitDeadline = Date.now() + WAIT_TIMEOUT_MS;
+	await manageThreads.stopWorkersForExit(exitDeadline);
+	process.stdout.write(
+		`${JSON.stringify({
+			deadlines: received.map((deadline) => deadline === exitDeadline),
+			workersAfterShutdown: workers.length,
+		})}\n`
+	);
+}
+
 const mode = process.argv[2];
 const modes = {
+	'exit-fan-out': exitFanOut,
 	'scoped': scopedShutdown,
 	'unexpected': unexpectedExit,
 	'non-overlapping': nonOverlappingRestart,

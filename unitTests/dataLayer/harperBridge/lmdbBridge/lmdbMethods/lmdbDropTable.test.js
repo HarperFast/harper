@@ -13,7 +13,7 @@ const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 let test_data = require('../../../../testData');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
 const SearchObject = require('#src/dataLayer/SearchObject');
 const SearchByHashObject = require('#src/dataLayer/SearchByHashObject');
 const DropAttributeObject = require('#src/dataLayer/DropAttributeObject');

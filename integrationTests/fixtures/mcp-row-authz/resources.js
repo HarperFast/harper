@@ -23,7 +23,7 @@ export class Doc extends tables.Doc {
 		return isSuper(user) || ownsThisRow(this, user);
 	}
 
-	// `record` may arrive as a Promise for the streamed body; resolve before use.
+	// Resource resolves the body before this hook; direct promised calls remain compatible.
 	async allowCreate(user, record, _context) {
 		if (isSuper(user)) return true;
 		const body = record && typeof record.then === 'function' ? await record : record;

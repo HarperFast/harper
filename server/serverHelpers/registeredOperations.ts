@@ -1,3 +1,4 @@
+import { operationDispatchState, type LocalOperationDispatch } from './operationDispatchState.ts';
 /**
  * Cross-thread bridge for `server.registerOperation()` (#1736).
  *
@@ -25,13 +26,14 @@ import * as terms from '../../utility/hdbTerms.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
-import { sendItcEvent } from '../threads/itc.js';
-import { hasThreadExited, onMessageByType, onThreadExit } from '../threads/manageThreads.js';
+import { sendItcEvent } from '../threads/itc.ts';
+import { hasThreadExited, onMessageByType, onThreadExit } from '../threads/manageThreads.ts';
 import {
 	registerWorkerGrantableOperation,
 	unregisterWorkerGrantableOperation,
 } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
 
@@ -47,18 +49,17 @@ const NON_FORWARDABLE_FIELDS = ['baseRequest', 'baseResponse', 'fastifyResponse'
 // Bound how long the main thread waits for a worker to finish a forwarded operation. Past the
 // operations-API connection timeout the client socket is gone anyway; this just prevents a
 // wedged-but-alive worker from leaking pending forwards forever.
-const EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+let EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+onStartup(() => {
+	EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+});
 
 // Dispatch functions injected by serverUtilities at its module load (it statically imports this
 // module, so a plain import here would be a cycle; a runtime require of a .ts path doesn't
 // survive the dist build). A worker can only receive an execute request after announcing a
 // registration — which goes through serverUtilities — so these are always set on that path.
-let localDispatch: {
-	chooseOperation: (body: any, bypassAuth?: boolean) => Function;
-	processLocalTransaction: (req: any, operationFunction: Function) => Promise<any>;
-};
-export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
-	localDispatch = dispatch;
+export function setLocalOperationDispatch(dispatch: LocalOperationDispatch) {
+	operationDispatchState.local = dispatch;
 }
 
 /** name -> threadIds of workers that registered it (main thread only) */
@@ -264,6 +265,7 @@ export async function operationExecuteRequestHandler(event: {
 	const { requestId, body, bypassAuth, originator } = event.message;
 	let response;
 	try {
+		const localDispatch = operationDispatchState.local;
 		if (!localDispatch) throw new ServerError('This worker thread cannot execute operations', 503);
 		// Authorization state travels in the trusted same-process ITC envelope, never in the
 		// caller-controlled operation body. This preserves server.operation(..., false) across

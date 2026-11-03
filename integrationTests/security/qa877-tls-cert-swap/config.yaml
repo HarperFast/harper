@@ -1,0 +1,11 @@
+# QA-877 fixture — one exported table whose only job is to give the suite a real, ops-API-reachable
+# schema-changing operation (create_attribute), which is what fans the ITC schema broadcast out to
+# every worker and makes each one run resetDatabases(). See the test file header for what that is
+# used to establish about #2004.
+#
+# TLS certificates are driven entirely through harperdb-config.yaml (tls.certificate /
+# tls.privateKey), overridden per-suite via setupHarperWithFixture's `config` option, the same way
+# cert-reload.test.ts does it.
+graphqlSchema:
+  files: '*.graphql'
+rest: true

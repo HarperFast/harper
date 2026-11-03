@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const { performance } = require('node:perf_hooks');
 const { setupTestDBPath } = require('../unitTests/testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
 
 const argv = Object.fromEntries(

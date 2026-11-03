@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
@@ -14,7 +14,7 @@ const {
 } = require('#src/resources/DatabaseTransaction');
 // A coordinatedRetry transaction (the source-apply path) signals an optimistic write conflict by
 // resolving commit() with this sentinel instead of rejecting with ERR_BUSY.
-const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
+const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 
 // A source-apply commit that fails its optimistic-conflict check must converge on retry. ERR_BUSY
 // always could: recommitting re-writes each key, re-tracking it at the current sequence, so
@@ -34,12 +34,10 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		setMainIsWorker(true);
 		const originalOpen = PrimaryRocksDatabase.prototype.open;
 		PrimaryRocksDatabase.prototype.open = function () {
-			// rocksdb-js 2.7 correctly propagates the VT and a derived memtable-history window to
-			// late-created column families. Disable both only for this family so the VT cannot catch
-			// the conflict first and a forced flush still exercises the ERR_TRY_AGAIN retry path.
+			// Bypass the VT and minimize retained history so the fixture can force ERR_TRY_AGAIN.
 			if (this.store.name === 'ConflictRetryTable/') {
 				this.store.verificationTable = false;
-				this.store.maxWriteBufferSizeToMaintain = 0;
+				this.store.maxWriteBufferSizeToMaintain = 1;
 			}
 			return originalOpen.call(this);
 		};
@@ -58,7 +56,7 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 	// Spy on commits so the test can see which attempt failed validation and confirm the retry
 	// recommitted the same transaction (same id) after the native in-place snapshot reset.
 	function spyOnCommits() {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const attempts = [];
 		Transaction.prototype.commit = function (...args) {
@@ -79,6 +77,15 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 			);
 		};
 		return { attempts, restore: () => (Transaction.prototype.commit = originalCommit) };
+	}
+
+	async function flushTransactionHistory() {
+		await SpinTable.primaryStore.flush();
+		// A positive history target retains the flushed memtable. One write schedules its trim;
+		// the next write drains it. Both must commit outside the transaction being stranded.
+		for (let i = 0; i < 2; i++) {
+			await transaction({}, () => SpinTable.put('history-trim-' + i, { id: 'history-trim-' + i }));
+		}
 	}
 
 	async function applyWithMidTransactionConflict(id, record, concurrentRecord, disturb) {
@@ -150,13 +157,12 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		const { attempts, restore } = spyOnCommits();
 		try {
 			await SpinTable.put('stranded', { id: 'stranded', writer: 'original' });
-			// flushing discards the memtable sequence history conflict validation
-			// needs, so the commit fails with ERR_TRY_AGAIN instead of ERR_BUSY
+			// Discard the memtable history so validation returns ERR_TRY_AGAIN instead of ERR_BUSY.
 			const outcome = await applyWithMidTransactionConflict(
 				'stranded',
 				{ writer: 'apply' },
 				{ writer: 'concurrent' },
-				() => SpinTable.primaryStore.flush()
+				flushTransactionHistory
 			);
 			assert.equal(outcome, 'committed', 'the stranded source-apply commit must settle');
 			// no change-feed assertion here: this write is fully superseded by the newer concurrent
@@ -186,7 +192,7 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 				'counter',
 				{ count: { __op__: 'add', value: 1 } },
 				{ count: { __op__: 'add', value: 1 } },
-				() => SpinTable.primaryStore.flush()
+				flushTransactionHistory
 			);
 			assert.equal(outcome, 'committed', 'the stranded source-apply commit must settle');
 			assert.equal(
@@ -246,7 +252,7 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 				await transaction(concurrentContext, async () => {
 					await SpinTable.patch('mixed-fresh', { count: { __op__: 'add', value: 1 } }, concurrentContext);
 				});
-				await SpinTable.primaryStore.flush();
+				await flushTransactionHistory();
 			});
 			const outcome = await Promise.race([
 				Promise.resolve(txnDone).then(

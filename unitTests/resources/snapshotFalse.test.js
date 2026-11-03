@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Regression coverage for `snapshot: false` queries (e.g. get_analytics). On RocksDB the read
 // transaction is created with snapshots disabled so a long scan does not pin a consistent

@@ -462,10 +462,5 @@ suite(
 				);
 			}
 		);
-
-		test('SUMMARY', async () => {
-			console.log('\n[QA-616 SUMMARY] see FINDINGS above for exact per-experiment verdicts.');
-			ok(true);
-		});
 	}
 );

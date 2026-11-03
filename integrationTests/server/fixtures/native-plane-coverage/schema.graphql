@@ -1,0 +1,4 @@
+type PlaneProbe @table(audit: true) @export {
+	id: Int @primaryKey
+	vector: [Float] @indexed(type: "HNSW", nativePlane: true, distance: "cosine", quantization: "int8")
+}

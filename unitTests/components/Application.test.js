@@ -8,10 +8,45 @@ testUtils.preTestPrep();
 const {
 	isSSHAuthFailure,
 	assertApplicationConfig,
+	splitAttributionOwners,
 	derivePackageIdentifier,
 	parseGitReference,
 	shouldPackLocalDirectory,
+	getEnvBuiltInComponents,
+	installApplications,
 } = require('#src/components/Application');
+
+async function withBuiltInComponents(value, run) {
+	const savedBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+	process.env.HARPER_BUILTIN_COMPONENTS = value;
+	try {
+		return await run();
+	} finally {
+		if (savedBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+		else process.env.HARPER_BUILTIN_COMPONENTS = savedBuiltIns;
+	}
+}
+
+describe('getEnvBuiltInComponents', () => {
+	it('skips incomplete declarations and preserves complete entries', async () => {
+		await withBuiltInComponents(
+			'first=@/first.js,secretCustody,=@/missing-name.js,empty=,  ,padded = @/padded.js?sig=a=b,last=@/last.js,',
+			() => {
+				assert.deepStrictEqual(getEnvBuiltInComponents(), [
+					{ name: 'first', packageIdentifier: '@/first.js' },
+					{ name: 'padded', packageIdentifier: '@/padded.js?sig=a=b' },
+					{ name: 'last', packageIdentifier: '@/last.js' },
+				]);
+			}
+		);
+	});
+
+	it('lets application installation continue past a bare declaration', async () => {
+		await withBuiltInComponents('secretCustody,valid=@/dist/utility/common_utils.js', async () => {
+			await assert.doesNotReject(installApplications());
+		});
+	});
+});
 
 describe('derivePackageIdentifier', () => {
 	it('classifies Windows drive and UNC archive paths as local files on every host', () => {
@@ -204,6 +239,57 @@ describe('parseGitReference', () => {
 			cloneUrl: 'https://example.com/owner/repo.git',
 			committish: 'feature%2Ffoo',
 		});
+	});
+});
+
+describe('splitAttributionOwners', () => {
+	// The decision behind the two paths that fail a deployment closed when its journal and its ownership
+	// sidecar name different components. Tested here rather than through either caller: one of them is only
+	// reachable when a journal appears BETWEEN two reads under a lock, which no test can stage.
+	it('reports both names, sidecar first, when the two sources disagree', () => {
+		// Both are stuck: the restore gate takes the union and blocks the sidecar's component, while
+		// settlement needs the intersection and can never clear the journal owner's.
+		assert.deepStrictEqual(splitAttributionOwners('other', 'web'), ['web', 'other']);
+	});
+
+	it('reports nothing when they agree', () => {
+		assert.strictEqual(splitAttributionOwners('web', 'web'), undefined);
+	});
+
+	it('treats an unanswerable sidecar as agreement, not disagreement', () => {
+		// The journal names its own component and can settle it, so a sidecar that cannot be read must not
+		// block that — this is the distinction that keeps an unreadable sidecar from wedging a component.
+		assert.strictEqual(splitAttributionOwners('web', undefined), undefined);
+	});
+});
+
+describe('assertApplicationConfig names', () => {
+	it('rejects a name that would collide with a deploy control file', () => {
+		// A deployment directory holds the candidate tree under the component's OWN name beside dot-prefixed
+		// control files. An application named `.activation.json` puts its tree on the journal path, where the
+		// journal write takes EEXIST as "a retry of this activation" and the swap proceeds with no journal at
+		// all — so nothing holds the legacy pass back after a crash. Nothing else validates a root-config key.
+		for (const name of ['.activation.json', '.component', '.complete', '.unsettled', '.anything']) {
+			assert.throws(
+				() => assertApplicationConfig(name, { package: 'npm:@org/app@1.0.0' }),
+				/must not begin with a dot/,
+				`${name} must be rejected`
+			);
+		}
+	});
+
+	it('rejects a name that is not a single path segment', () => {
+		// A backslash is not a separator on POSIX, so it is a legitimate single segment there — platform-
+		// dependent cases do not belong in this list.
+		for (const name of ['..', '.', 'a/b', 'a/', '']) {
+			assert.throws(() => assertApplicationConfig(name, { package: 'npm:@org/app@1.0.0' }), /Invalid application name/);
+		}
+	});
+
+	it('still accepts ordinary and scoped-looking names', () => {
+		for (const name of ['web', 'my-app', 'app_1', 'App2']) {
+			assert.doesNotThrow(() => assertApplicationConfig(name, { package: 'npm:@org/app@1.0.0' }));
+		}
 	});
 });
 

@@ -1,9 +1,10 @@
 const assert = require('node:assert');
 const sinon = require('sinon');
-const { ComponentStatusRegistry } = require('#src/components/status/ComponentStatusRegistry');
+const { ComponentStatusRegistry, serializeStatusError } = require('#src/components/status/ComponentStatusRegistry');
 const { ComponentStatus } = require('#src/components/status/ComponentStatus');
 const { COMPONENT_STATUS_LEVELS } = require('#src/components/status/types');
 const { StatusAggregator } = require('#src/components/status/crossThread');
+const { ServerError, ClientError } = require('#src/utility/errors/hdbError');
 const itcModule = require('#js/server/threads/itc');
 const manageThreadsModule = require('#js/server/threads/manageThreads');
 
@@ -419,6 +420,49 @@ describe('ComponentStatusRegistry', function () {
 			assert.equal(aggStatus.latestMessage, 'High latency detected'); // Non-healthy message preferred
 		});
 
+		it('should pair latestMessage and error from the highest-priority most-recent status entry', function () {
+			const worker0Error = new Error('Worker 0 syntax error');
+			const worker2Error = new Error('Worker 2 port conflict');
+			const allStatuses = new Map([
+				[
+					'plugin@worker-0',
+					{
+						status: 'error',
+						lastChecked: new Date(1000),
+						message: 'Worker 0 failed',
+						error: worker0Error,
+						workerIndex: 0,
+					},
+				],
+				[
+					'plugin@worker-1',
+					{
+						status: 'loading',
+						lastChecked: new Date(3000),
+						message: 'Component is loading',
+						workerIndex: 1,
+					},
+				],
+				[
+					'plugin@worker-2',
+					{
+						status: 'error',
+						lastChecked: new Date(2000),
+						message: 'Worker 2 failed',
+						error: worker2Error,
+						workerIndex: 2,
+					},
+				],
+			]);
+
+			const aggregated = StatusAggregator.aggregate(allStatuses);
+			const aggStatus = aggregated.get('plugin');
+
+			assert.equal(aggStatus.status, 'error');
+			assert.equal(aggStatus.latestMessage, 'Worker 2 failed');
+			assert.equal(aggStatus.error, worker2Error);
+		});
+
 		it('should handle status priority correctly', function () {
 			const testCases = [
 				{ statuses: ['healthy', 'healthy', 'healthy'], expected: 'healthy' },
@@ -801,6 +845,67 @@ describe('ComponentStatusRegistry', function () {
 				assert.equal(result.details['mixed.sub2'].status, COMPONENT_STATUS_LEVELS.LOADING);
 				assert.equal(result.details['mixed.sub3'], undefined); // Healthy component not in details
 			});
+
+			const entry = (key, status, latestMessage) => [
+				key,
+				{ componentName: key, status, latestMessage, lastChecked: { workers: { 0: 1000 } } },
+			];
+
+			for (const level of [COMPONENT_STATUS_LEVELS.WARNING, COMPONENT_STATUS_LEVELS.UNKNOWN]) {
+				it(`should report a lone ${level} sub-component with details`, async function () {
+					const consolidatedStatuses = new Map([
+						entry('app.ok', COMPONENT_STATUS_LEVELS.HEALTHY, 'fine'),
+						entry('app.odd', level, 'needs attention'),
+					]);
+
+					const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+					assert.equal(result.status, level);
+					assert.equal(result.message, 'app.odd: needs attention');
+					assert.deepEqual(result.details, { 'app.odd': { status: level, message: 'needs attention' } });
+				});
+
+				it(`should report a lone ${level} exact match, falling back to the level without a message`, async function () {
+					const consolidatedStatuses = new Map([entry('app', level, undefined)]);
+
+					const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+					assert.equal(result.status, level);
+					assert.equal(result.message, `app: ${level}`);
+					assert.equal(result.details.app.status, level);
+					assert.equal(result.details.app.message, level);
+				});
+			}
+
+			it('should rank warning above loading above unknown regardless of insertion order', async function () {
+				const expected = [
+					[COMPONENT_STATUS_LEVELS.UNKNOWN, COMPONENT_STATUS_LEVELS.LOADING, COMPONENT_STATUS_LEVELS.LOADING],
+					[COMPONENT_STATUS_LEVELS.LOADING, COMPONENT_STATUS_LEVELS.WARNING, COMPONENT_STATUS_LEVELS.WARNING],
+					[COMPONENT_STATUS_LEVELS.UNKNOWN, COMPONENT_STATUS_LEVELS.WARNING, COMPONENT_STATUS_LEVELS.WARNING],
+				];
+				for (const [a, b, winner] of expected) {
+					for (const order of [
+						[a, b],
+						[b, a],
+					]) {
+						const consolidatedStatuses = new Map(order.map((level, i) => entry(`app.c${i}`, level, level)));
+						const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+						assert.equal(result.status, winner, `${order.join('+')} should aggregate to ${winner}`);
+						assert.equal(Object.keys(result.details).length, 2);
+					}
+				}
+			});
+
+			it('should let error outrank warning', async function () {
+				const consolidatedStatuses = new Map([
+					entry('app.a', COMPONENT_STATUS_LEVELS.WARNING, 'warn'),
+					entry('app.b', COMPONENT_STATUS_LEVELS.ERROR, 'broke'),
+				]);
+
+				const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+			});
 		});
 
 		describe('details and message generation', function () {
@@ -908,6 +1013,254 @@ describe('ComponentStatusRegistry', function () {
 				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
 
 				assert.ok(result.message.includes('my-app.long-component-name: Component failed initialization'));
+			});
+
+			it('should include error.message cause in message and details when status has an Error instance', async function () {
+				const loadError = new Error(
+					"Could not load component 'broken-plugin' for application 'my-app' due to: TypeError: handleApplication is not a function"
+				);
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.broken-plugin',
+						{
+							componentName: 'my-app.broken-plugin',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Could not load component 'my-app.broken-plugin'",
+							error: loadError,
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(result.message, `my-app.broken-plugin: ${loadError.message}`);
+				assert.ok(result.details);
+				assert.deepEqual(result.details['my-app.broken-plugin'], {
+					status: COMPONENT_STATUS_LEVELS.ERROR,
+					message: loadError.message,
+					error: loadError.message,
+				});
+			});
+
+			it('should preserve Error subclass names and handle null-prototype error objects without throwing', async function () {
+				const typeError = new TypeError('handleApplication is not a function');
+				const serverError = new ServerError('connect failed: postgres://svc:secret@db.internal:5432/app');
+				const clientError = new ClientError('invalid plugin configuration');
+				const nullProtoError = Object.create(null);
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.plugin-a',
+						{
+							componentName: 'my-app.plugin-a',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-a' failed to load",
+							error: typeError,
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+					[
+						'my-app.plugin-b',
+						{
+							componentName: 'my-app.plugin-b',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-b' failed to load",
+							error: nullProtoError,
+							lastChecked: { workers: { 0: 2000 } },
+						},
+					],
+					[
+						'my-app.plugin-c',
+						{
+							componentName: 'my-app.plugin-c',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-c' failed to load",
+							error: serverError,
+							lastChecked: { workers: { 0: 3000 } },
+						},
+					],
+					[
+						'my-app.plugin-d',
+						{
+							componentName: 'my-app.plugin-d',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-d' failed to load",
+							error: clientError,
+							lastChecked: { workers: { 0: 4000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(result.details['my-app.plugin-a'].error, 'TypeError: handleApplication is not a function');
+				assert.equal(
+					result.details['my-app.plugin-a'].message,
+					"Component 'my-app.plugin-a' failed to load: TypeError: handleApplication is not a function"
+				);
+				assert.equal(result.details['my-app.plugin-b'].error, '[object Object]');
+				assert.equal(
+					result.details['my-app.plugin-c'].error,
+					'ServerError: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert.equal(
+					result.details['my-app.plugin-c'].message,
+					"Component 'my-app.plugin-c' failed to load: ServerError: connect failed: postgres://[REDACTED]@db.internal:5432/app"
+				);
+				assert.equal(result.details['my-app.plugin-d'].error, 'ClientError: invalid plugin configuration');
+			});
+
+			it('should deduplicate folder-level loader messages while preserving plugin-authored Could not load messages', async function () {
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.folder-load',
+						{
+							componentName: 'my-app.folder-load',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: 'Could not load my-app',
+							error: new SyntaxError('Could not load application due to Unexpected token'),
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+					[
+						'my-app.model-loader',
+						{
+							componentName: 'my-app.model-loader',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: 'Could not load weights from S3',
+							error: new Error('Could not load model: timeout'),
+							lastChecked: { workers: { 0: 2000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(
+					result.details['my-app.folder-load'].message,
+					'SyntaxError: Could not load application due to Unexpected token'
+				);
+				assert.equal(
+					result.details['my-app.model-loader'].message,
+					'Could not load weights from S3: Could not load model: timeout'
+				);
+			});
+
+			it('should redact URL passwords containing delimiter characters', function () {
+				const cases = [
+					['postgres://user:pa/ss@db.internal:5432/app', 'postgres://[REDACTED]@db.internal:5432/app'],
+					['postgres://user:pa?ss@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+					['postgres://user:pa#ss@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+					['postgres://user:pa%2Fss@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+					['postgres://user:a/b?c#d@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+				];
+				for (const [raw, expected] of cases) {
+					registry.setStatus('my-app', COMPONENT_STATUS_LEVELS.ERROR, `connect failed: ${raw} (retrying)`);
+					const message = registry.getStatus('my-app').message;
+					assert.equal(message, `connect failed: ${expected} (retrying)`);
+					assert(!message.includes('user:'));
+					assert.equal(serializeStatusError(`connect failed: ${raw}`), `connect failed: ${expected}`);
+				}
+			});
+
+			it('should leave credential-free URLs untouched and redact each URL in a multi-URL message', function () {
+				registry.setStatus('my-app', COMPONENT_STATUS_LEVELS.ERROR, 'fetch https://example.com/a/b?x=1#frag failed');
+				assert.equal(registry.getStatus('my-app').message, 'fetch https://example.com/a/b?x=1#frag failed');
+
+				registry.setStatus(
+					'my-app',
+					COMPONENT_STATUS_LEVELS.ERROR,
+					'primary postgres://u1:p/1@a.internal/db and replica https://example.com/health then https://u2:p?2@b.internal/x'
+				);
+				assert.equal(
+					registry.getStatus('my-app').message,
+					'primary postgres://[REDACTED]@a.internal/db and replica https://example.com/health then https://[REDACTED]@b.internal/x'
+				);
+			});
+
+			it('should redact embedded URL credentials in status messages at write time and deduplicate fail-closed refusals', async function () {
+				class RejectedReleaseError extends Error {
+					constructor(message) {
+						super(message);
+						this.name = 'RejectedReleaseError';
+					}
+				}
+				const rawReason =
+					'Not loading my-app: release failed canary probe: connect failed: postgres://svc:pw@db.internal:5432/app';
+				const rejectedError = new RejectedReleaseError(rawReason);
+
+				registry.markFailed('my-app', rejectedError, rejectedError.message);
+
+				const stored = registry.getStatus('my-app');
+				assert.equal(
+					stored.message,
+					'Not loading my-app: release failed canary probe: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert(!stored.message.includes('svc:pw'));
+
+				const consolidatedStatuses = new Map([
+					[
+						'my-app',
+						{
+							componentName: 'my-app',
+							status: stored.status,
+							latestMessage: stored.message,
+							error: stored.error,
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(
+					result.details['my-app'].error,
+					'RejectedReleaseError: Not loading my-app: release failed canary probe: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert.equal(
+					result.details['my-app'].message,
+					'RejectedReleaseError: Not loading my-app: release failed canary probe: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert(!result.message.includes('svc:pw'));
+			});
+
+			it('should handle string error without duplicating if already present in latestMessage', async function () {
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.plugin-a',
+						{
+							componentName: 'my-app.plugin-a',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: 'Failed to load: missing dependency',
+							error: 'missing dependency',
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+					[
+						'my-app.plugin-b',
+						{
+							componentName: 'my-app.plugin-b',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							error: 'standalone error cause',
+							lastChecked: { workers: { 0: 2000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(
+					result.message,
+					'my-app.plugin-a: Failed to load: missing dependency; my-app.plugin-b: standalone error cause'
+				);
+				assert.equal(result.details['my-app.plugin-a'].message, 'Failed to load: missing dependency');
+				assert.equal(result.details['my-app.plugin-a'].error, 'missing dependency');
+				assert.equal(result.details['my-app.plugin-b'].message, 'standalone error cause');
+				assert.equal(result.details['my-app.plugin-b'].error, 'standalone error cause');
 			});
 		});
 

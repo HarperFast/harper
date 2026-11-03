@@ -1,7 +1,7 @@
 'use strict';
 
-import * as fs from 'fs-extra';
-import * as path from 'path';
+import fs from 'fs-extra';
+import * as path from 'node:path';
 import * as YAML from 'yaml';
 
 import * as hdbTerms from '../utility/hdbTerms.ts';
@@ -10,8 +10,12 @@ import * as systemInformation from '../utility/environment/systemInformation.ts'
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as installation from '../utility/installation.ts';
 import { prettyDuration } from '../utility/common_utils.ts';
-envMgr.initSync();
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const STATUSES = {
 	RUNNING: 'running',
 	STOPPED: 'stopped',

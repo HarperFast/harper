@@ -1,0 +1,21 @@
+type Computed @table(database: "sametxnchain") @export {
+	id: ID @primaryKey
+	a: Int
+	b: Int
+	sum: Int @computed(from: "a != null && b != null ? (a + b) : null") @indexed
+}
+
+type Workflow @table(database: "sametxnchain") @export {
+	id: ID @primaryKey
+	status: String
+	seq: Int
+	owner: String
+}
+
+# audit: false so a superseded blob is referenced by nothing once its record version is replaced;
+# with an audit log the audit entry would keep it alive and the file count would not settle to 1.
+type BlobChain @table(database: "sametxnchain", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+	tag: String
+}
