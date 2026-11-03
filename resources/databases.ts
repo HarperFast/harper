@@ -5234,8 +5234,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// difference (key order, string-vs-number) does not force a needless rebuild. harper#1357
 			const canonicalIndexKey = (indexed: any) => JSON.stringify(canonicalizeIndexOptions(stripSearchOnly(indexed)));
 			// A checkpoint certifies rows indexed under the old computation (`version` is how application code signals one)
+			// `true` and `{}` both mean a bare @computed
+			const computedShape = (computed: any) =>
+				computed ? JSON.stringify(computed === true ? {} : computed) : undefined;
 			const computationChanged =
-				JSON.stringify(attributeDescriptor?.computed) !== JSON.stringify(attribute.computed) ||
+				computedShape(attributeDescriptor?.computed) !== computedShape(attribute.computed) ||
 				attributeDescriptor?.computedFromExpression !== attribute.computedFromExpression ||
 				attributeDescriptor?.version !== attribute.version;
 			const commonChanged =

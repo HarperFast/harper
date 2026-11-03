@@ -159,4 +159,15 @@ describe('re-declaring a table that adds or removes a bare @computed (harper#378
 			assert.deepStrictEqual(matches, ['k-' + i], `row k-${i} was not reindexed under the new version`);
 		}
 	});
+
+	it('does not rebuild when a bare @computed changes only between true and {}', async () => {
+		const Bare = declare('ComputedBareShape', { computed: true });
+		let lastPut;
+		for (let i = 0; i < 3; i++) lastPut = Bare.put({ id: 'k-' + i, name: 'n' + i });
+		await lastPut;
+		await Bare.indexingOperation;
+		const build = Bare.indexingOperation;
+		const Empty = declare('ComputedBareShape', { computed: {} });
+		assert.strictEqual(Empty.indexingOperation, build, 'an equivalent bare declaration must not rebuild');
+	});
 });
