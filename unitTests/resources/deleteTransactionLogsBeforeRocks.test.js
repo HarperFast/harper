@@ -8,7 +8,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, getDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { getAuditFloor } = require('#src/resources/auditStore');
 // the floor is read off a table's (database-scoped) audit store; there is no Table-level accessor
@@ -95,11 +95,16 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 	});
 
 	it('purges nothing when the store closes while the WAL sync is pending', async () => {
-		const stores = [TableA.primaryStore, TableB.primaryStore];
+		// every table in the database: the operation purges through the first RocksDB table it finds
+		const stores = Object.values(getDatabases()[DB]).map((tbl) => tbl.primaryStore);
 		const originals = stores.map((store) => ({ syncWal: store.syncWal, purgeLogs: store.purgeLogs }));
+		let syncs = 0;
 		let purges = 0;
 		for (const store of stores) {
-			store.syncWal = async () => Object.defineProperty(store, 'status', { value: 'closing', configurable: true });
+			store.syncWal = async () => {
+				syncs++;
+				Object.defineProperty(store, 'status', { value: 'closing', configurable: true });
+			};
 			store.purgeLogs = () => {
 				purges++;
 				return [];
@@ -107,6 +112,7 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 		}
 		try {
 			const results = await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp: Date.now() + 1000 });
+			assert.strictEqual(syncs, 1);
 			assert.strictEqual(purges, 0);
 			assert.strictEqual(results.log_files_deleted, 0);
 		} finally {
