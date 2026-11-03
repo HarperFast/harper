@@ -541,6 +541,9 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				const byBudget = group([{ attribute: 'budget', value: DEPT.budget }]);
 				assertRefused(await byConditions('empOnly', byName), 'group on an unreadable table', 'Dept');
 				assertRefused(await byConditions('restricted', byBudget), 'group on an unreadable attribute', 'Dept.budget');
+				const allowedBudget = await byConditions('full', byBudget);
+				strictEqual(allowedBudget.status, 200, JSON.stringify(allowedBudget.body));
+				deepStrictEqual(allowedBudget.body, [{ id: EMP.id }]);
 				const allowed = await byConditions('restricted', byName);
 				strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
 				deepStrictEqual(allowed.body, [{ id: EMP.id }]);
