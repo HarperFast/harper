@@ -209,6 +209,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
+	/** See `getSync` for when to pass `followingCommittedRef`. */
 	get(key: any, tableId: number, recordId: any, nodeId: number, followingCommittedRef?: boolean) {
 		return this.getSync(key, tableId, recordId, nodeId, followingCommittedRef);
 	}
