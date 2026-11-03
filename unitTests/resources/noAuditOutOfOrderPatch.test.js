@@ -25,6 +25,7 @@ describe('out-of-order patch on an audit:false table', () => {
 	let revalidatedExpiresAt;
 	let sourceGate;
 	let sourceCalled;
+	let sourceError;
 	let nextId = 1;
 
 	before(async () => {
@@ -52,6 +53,7 @@ describe('out-of-order patch on an audit:false table', () => {
 				context.expiresAt = revalidatedExpiresAt;
 				sourceCalled?.();
 				await sourceGate;
+				if (sourceError) throw sourceError;
 				return { status: 304, headers: {} };
 			},
 		});
@@ -519,6 +521,30 @@ describe('out-of-order patch on an audit:false table', () => {
 			await resource.ensureLoaded();
 			await resource._writeUpdate(id, { tag: 'latest' }, false, {});
 		});
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		const record = await NoAuditSourced.get(id);
+		assert.strictEqual(record.tag, 'latest');
+		assert.strictEqual(record.count, 13);
+	});
+
+	itOnLmdb('a patch through a resource a stale-on-error fallback loaded keeps the identity list', async function () {
+		this.timeout(10000);
+		const id = `noaudit-${nextId++}`;
+		await NoAuditSourced.put(id, { tag: 'base', count: 10 });
+		const now = Date.now();
+		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
+		await NoAuditSourced.patch(id, { tag: 'expired' }, { timestamp: now + 100, expiresAt: 0 });
+		sourceError = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+		try {
+			const context = { timestamp: now + 150 };
+			await transaction(context, async () => {
+				const resource = await NoAuditSourced.getResource(id, context);
+				await resource.ensureLoaded();
+				await resource._writeUpdate(id, { tag: 'latest' }, false, {});
+			});
+		} finally {
+			sourceError = undefined;
+		}
 		await NoAuditSourced.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: now + 50 });
 		const record = await NoAuditSourced.get(id);
 		assert.strictEqual(record.tag, 'latest');

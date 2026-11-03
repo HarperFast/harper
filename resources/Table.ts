@@ -6143,8 +6143,8 @@ export function makeTable(options): TableResourceClass {
 					// RocksDB anyway. (harper-pro#480)
 					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 					// Ahead of the version comparison, which an LMDB merge's older stored version (#3388) can invert.
-					// Only the committed list counts, and only with no earlier staged body: a same-transaction write
-					// shares this identity and a body it staged was replaced, so a re-delivery's patches apply again.
+					// Only when no earlier write in this transaction staged a change: those writes share this identity,
+					// and a re-delivery whose earlier put re-applies must re-apply its patches on the new body.
 					if (!audit && !fullUpdate && !priorChange) {
 						// A first attempt has staged nothing but unchanged publishes, whose list is the committed one
 						const committedRefs = (
@@ -13116,6 +13116,7 @@ export function makeTable(options): TableResourceClass {
 								key: id,
 								version: existingVersion,
 								value: existingRecord,
+								receivedIdentityRefs: audit ? undefined : existingIdentityRefs,
 							} as any);
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
 						} else reject(error);
