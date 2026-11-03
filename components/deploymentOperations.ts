@@ -85,9 +85,7 @@ function redactCredentials(value: any): any {
 	if (typeof value === 'string') return redactUrlCredentials(value);
 	if (Array.isArray(value)) return value.map(redactCredentials);
 	if (value === null || typeof value !== 'object') return value;
-	const redacted = {};
-	for (const key in value) redacted[key] = redactCredentials(value[key]);
-	return redacted;
+	return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactCredentials(entry)]));
 }
 
 export async function handleListDeployments(req: ListRequest = {}): Promise<{ deployments: any[]; total: number }> {
