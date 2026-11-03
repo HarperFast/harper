@@ -304,6 +304,123 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		await relogAfterRefusal(Audited);
 	});
 
+	// `mine` writes `recordId` while `holder` holds a write intent on it, so mine's first commit is refused
+	// before its log write; the holder then commits or gives up and mine retries.
+	async function refuseOnHeldIntent(targetTable, recordId, { holderCommits, mineContext = {}, patch = false }) {
+		const targetDb = targetTable.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const attempts = [];
+		let holderId, holderVersion;
+		let submitted = false;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb || this.id === holderId) return originalCommit.apply(this, args);
+			submitted = true;
+			const result = await originalCommit.apply(this, args);
+			attempts.push({ kind: this.lastConflictKind(), logWritten: this.logWritten(), key: this.getTimestamp() });
+			return result;
+		};
+		restores.push(() => (Transaction.prototype.commit = originalCommit));
+		let releaseHolder;
+		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
+		const holderContext = {};
+		const holder = transaction(holderContext, async () => {
+			await targetTable.put({ id: recordId, writer: 'holder' }, holderContext);
+			const write = holderContext.transaction.writes.find((candidate) => candidate.key === recordId);
+			await holderContext.transaction.save(write);
+			holderId = holderContext.transaction.transaction.id;
+			holderVersion = holderContext.transaction.timestamp;
+			await holderGate;
+			if (!holderCommits) throw new Error('holder gives up');
+		});
+		holder.catch(() => {});
+		await waitFor(() => holderId !== undefined);
+		const mine = transaction(mineContext, async () => {
+			await targetTable.get(recordId, mineContext);
+			if (patch) await targetTable.patch(recordId, { writer: 'mine' }, mineContext);
+			else await targetTable.put({ id: recordId, writer: 'mine' }, mineContext);
+		});
+		await waitFor(() => submitted);
+		await delay(20); // the native intent check runs on the commit thread after submission
+		releaseHolder();
+		await mine;
+		if (holderCommits) await holder;
+		else await assert.rejects(holder, /holder gives up/);
+		assert.equal(attempts.length, 2);
+		assert.deepEqual(
+			{ kind: attempts[0].kind, logWritten: attempts[0].logWritten },
+			{ kind: ConflictKind.intentBeforeLog, logWritten: false }
+		);
+		assert.equal(attempts[1].logWritten, true);
+		return { attempts, holderVersion };
+	}
+
+	describe('a retry refused before its log write', function () {
+		let Stamped;
+		before(function () {
+			Stamped = table({
+				table: 'AbortMarkersStamped',
+				database: 'abortMarkersStamped',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'writer' },
+					{ name: 'created', assignCreatedTime: true },
+					{ name: 'updated', assignUpdatedTime: true },
+				],
+				audit: true,
+			});
+		});
+		beforeEach(function () {
+			const priorIntents = setWriteIntentsForTests(true);
+			restores.push(() => setWriteIntentsForTests(priorIntents ?? false));
+		});
+
+		it('stamps the created and updated times of a create at the version it commits under', async function () {
+			const recordId = id('stamped-create');
+			const { attempts } = await refuseOnHeldIntent(Stamped, recordId, { holderCommits: false });
+			assert.ok(attempts[1].key > attempts[0].key, 'the re-logged retry takes a fresh key');
+			const entry = Stamped.primaryStore.getEntry(recordId);
+			assert.equal(entry.version, attempts[1].key);
+			assert.deepEqual(
+				{ writer: entry.value.writer, created: entry.value.created, updated: entry.value.updated },
+				{ writer: 'mine', created: entry.version, updated: entry.version }
+			);
+		});
+
+		for (const patch of [false, true]) {
+			it(`keeps the created time of the record a concurrent creator committed first (${patch ? 'patch' : 'put'})`, async function () {
+				const recordId = id('stamped-raced');
+				const { attempts, holderVersion } = await refuseOnHeldIntent(Stamped, recordId, { holderCommits: true, patch });
+				const entry = Stamped.primaryStore.getEntry(recordId);
+				assert.equal(entry.version, attempts[1].key);
+				assert.ok(entry.version > holderVersion, 'the retry commits after the holder');
+				assert.deepEqual(
+					{ writer: entry.value.writer, created: entry.value.created, updated: entry.value.updated },
+					{ writer: 'mine', created: holderVersion, updated: entry.version }
+				);
+			});
+		}
+
+		// The caller's timestamp stays the version and the retry re-logs under the key it reserved: only the
+		// base changed, so only created time moves.
+		it('keeps the created time of a concurrent creator under an explicit timestamp', async function () {
+			const recordId = id('stamped-explicit');
+			const timestamp = Date.now() + 60000;
+			const { attempts, holderVersion } = await refuseOnHeldIntent(Stamped, recordId, {
+				holderCommits: true,
+				mineContext: { timestamp },
+			});
+			assert.equal(attempts[1].key, attempts[0].key);
+			const entry = Stamped.primaryStore.getEntry(recordId);
+			assert.equal(entry.version, timestamp);
+			assert.deepEqual(
+				{ writer: entry.value.writer, created: entry.value.created, updated: entry.value.updated },
+				{ writer: 'mine', created: holderVersion, updated: timestamp }
+			);
+			const entries = auditEntries(Stamped, recordId).filter((entry) => entry.txnLogKey === attempts[1].key);
+			assert.equal(entries.length, 1);
+		});
+	});
+
 	it('turns write intents on from storage.rocks.transactionLogWriteIntents', async function () {
 		const env = require('#src/utility/environment/environmentManager');
 		const configured = env.get('storage_rocks_transactionLogWriteIntents');
