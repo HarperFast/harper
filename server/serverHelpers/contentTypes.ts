@@ -1078,7 +1078,7 @@ function formatCsvCell(value: any) {
 	}
 	// Serialize objects and arrays as JSON
 	if (typeof value === 'object') {
-		return value instanceof Date ? value.toISOString() : JSON.stringify(value);
+		return value instanceof Date ? (value.toJSON() ?? '') : JSON.stringify(value);
 	}
 	return value;
 }

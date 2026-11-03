@@ -7434,8 +7434,8 @@ export function makeTable(options): TableResourceClass {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
 								resolvedResults = await self.search(target);
-								if (earlyColumns && resolvedResults?.getColumns) {
-									const resolvedColumns = resolvedResults.getColumns();
+								if (earlyColumns) {
+									const resolvedColumns = resolvedResults?.getColumns ? resolvedResults.getColumns() : getColumns();
 									earlyColumns.splice(0, earlyColumns.length, ...resolvedColumns);
 									if (resolvedColumns.scalar) earlyColumns.scalar = true;
 									else delete earlyColumns.scalar;
