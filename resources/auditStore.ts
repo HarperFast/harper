@@ -950,9 +950,20 @@ function recordedEntry(recorded: LogPurgeBounds, name: string): LogPurgeEntry {
 }
 
 /** A log's bound as recorded, raised to the native purge horizon once the log has not been quiet within it. */
-function exposedBound(recorded: LogPurgeBounds, name: string, nativeHorizon: number): number {
+function exposedBound(
+	recorded: LogPurgeBounds,
+	name: string,
+	nativeHorizon: number,
+	oldestKey?: () => number | undefined
+): number {
 	const [bound, quietAt] = recordedEntry(recorded, name);
-	return Math.max(recorded.epoch, bound, quietAt < nativeHorizon ? nativeHorizon : 0);
+	let native = 0;
+	if (quietAt < nativeHorizon) {
+		// the native purge removes a log's oldest segments first, so a key that survives bounds what went before it
+		const oldest = oldestKey?.();
+		native = oldest === undefined ? nativeHorizon : Math.min(nativeHorizon, oldest);
+	}
+	return Math.max(recorded.epoch, bound, native);
 }
 
 // Uncommitted entries too: a batch already written can commit and become purgeable before the prune runs.
@@ -1028,14 +1039,16 @@ function observeLogPurgeBounds(
 		return undefined;
 	}
 	for (const name of names) {
-		const known = exposedBound(recorded, name, nativeHorizon);
 		const [, quietAt] = recordedEntry(recorded, name);
+		let known: number;
 		let quietMaximum: number | undefined;
 		try {
-			quietMaximum = quietLogMaximum(rootStore.useLog(name), reach, known);
+			const log = rootStore.useLog(name);
+			known = exposedBound(recorded, name, nativeHorizon, () => firstLogKeyFrom(log, 0));
+			quietMaximum = quietLogMaximum(log, reach, known);
 		} catch (error) {
 			warnContained(`Error reading transaction log ${name} to bound a prune`, error);
-			observed.set(name, [Math.max(known, reach), quietAt]);
+			observed.set(name, [Math.max(exposedBound(recorded, name, nativeHorizon), reach), quietAt]);
 			continue;
 		}
 		if (quietMaximum !== undefined) observed.set(name, [quietMaximum, now]);
@@ -1161,11 +1174,17 @@ export function getLogPurgeBound(auditStore: any, logNames?: Iterable<string>): 
 	const nativeHorizon = nativePurgeHorizon(auditStore, Date.now());
 	if (nativeHorizon === undefined) return undefined;
 	try {
+		const rootStore = auditStore.rootStore;
+		let listed: Set<string> | undefined;
+		const boundOf = (name: string) =>
+			exposedBound(recorded, name, nativeHorizon, () => {
+				listed ??= new Set(rootStore.listLogs());
+				return listed.has(name) ? firstLogKeyFrom(rootStore.useLog(name), 0) : undefined;
+			});
 		let scopeBound = recorded.epoch;
-		for (const name of logNames ?? auditStore.rootStore.listLogs())
-			scopeBound = Math.max(scopeBound, exposedBound(recorded, name, nativeHorizon));
-		if (!logNames)
-			for (const name in recorded.logs) scopeBound = Math.max(scopeBound, exposedBound(recorded, name, nativeHorizon));
+		const names = typeof logNames === 'string' ? [logNames] : logNames;
+		for (const name of names ?? rootStore.listLogs()) scopeBound = Math.max(scopeBound, boundOf(name));
+		if (!names) for (const name in recorded.logs) scopeBound = Math.max(scopeBound, boundOf(name));
 		return scopeBound;
 	} catch (error) {
 		warnContained('Error reading the transaction-log purge bounds', error);

@@ -271,6 +271,34 @@ describe('per-log purge bounds', function () {
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['long-retention-origin']), lastKey);
 	});
 
+	it('bounds a log that went idle after its quiet pass by the key that survives, not the native horizon', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable(400 * DAY_MS);
+		const retention = nativeRetention(Table.auditStore);
+		const origin = getIdOfRemoteNode('went-idle-origin', Table.auditStore);
+		// the last write, now just past the native horizon, came after a quiet pass that is older still
+		const lastKey = Date.now() - retention - 3_600_000;
+		await applyAsOrigin(Table, 'last', { nodeId: origin, logKey: lastKey });
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		record.logs['went-idle-origin'] = [lastKey - DAY_MS, lastKey - 7_200_000];
+		record.observedAt = Date.now();
+		writeRecord(Table.auditStore, record);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['went-idle-origin']), lastKey);
+		// an audit retention as long as the native one: the pass's cutoff is at the native horizon
+		raiseAuditFloor(Table.auditStore, Date.now() - retention, true);
+		assert.strictEqual(recordedLogs(Table.auditStore)['went-idle-origin'][0], lastKey);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['went-idle-origin']), lastKey);
+	});
+
+	it('reads a single log name passed as a string', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		await Table.put('named', { name: 'x' });
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, 'local'), getLogPurgeBound(Table.auditStore, ['local']));
+	});
+
 	it('rewrites a quiet time older than half the native retention, keeping the bound', async function () {
 		if (isLMDB) return this.skip();
 		const Table = backdatedTable();
