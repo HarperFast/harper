@@ -15,7 +15,6 @@ import {
 	errorForLog as harperErrorForLog,
 } from '../../utility/logging/harper_logger.ts';
 import { Blob } from '../../resources/blob.ts';
-import { buildSelectColumns } from '../../resources/Resource.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
@@ -26,6 +25,37 @@ let JSONParse: typeof JSON.parse = parse;
 let COMPRESSION_THRESHOLD: number | undefined;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
+
+export type ColumnsList = string[] & { scalar?: true; asArray?: true };
+
+export function isScalarSelect(select: any): boolean {
+	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
+}
+
+export function isTupleSelect(select: any): boolean {
+	return Array.isArray(select) && Boolean((select as any).asArray);
+}
+
+export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {
+	if (currentSelect) {
+		const columns: ColumnsList = [];
+		const asArray = isTupleSelect(currentSelect);
+		for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
+			if (column === '*' && !asArray) {
+				if (!attributes?.length) return undefined;
+				for (const attribute of attributes)
+					if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+			} else columns.push((column as any).name || column);
+		}
+		if (isScalarSelect(currentSelect)) columns.scalar = true;
+		else if (asArray) columns.asArray = true;
+		return columns;
+	}
+	return (attributes || [])
+		.filter((attribute) => !attribute.computed && !attribute.relationship)
+		.map((attribute) => attribute.name);
+}
 
 type StreamStartup = {
 	result: Promise<{ failed?: true; error?: unknown }>;

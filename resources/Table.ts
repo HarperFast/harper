@@ -55,10 +55,6 @@ import {
 	Resource,
 	SEARCH_AUTHORIZATION,
 	WRITE_CONDITION,
-	isScalarSelect,
-	isTupleSelect,
-	buildSelectColumns,
-	type ColumnsList,
 	transformForSelect,
 	nestedSelectTransform,
 	defaultAllowReads,
@@ -306,7 +302,13 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction.ts';
-import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
+import {
+	contentTypes,
+	isScalarSelect,
+	isTupleSelect,
+	buildSelectColumns,
+	type ColumnsList,
+} from '../server/serverHelpers/contentTypes.ts';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
 import {
 	persistedFullTextIndexNames,
