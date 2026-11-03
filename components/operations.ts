@@ -621,6 +621,15 @@ async function deployComponent(req?: any) {
 				HTTP_STATUS_CODES.FORBIDDEN
 			);
 		}
+		// Only an enable mints a generation, so a staged build stamped with another, or with none, is one a disable revoked
+		// or a role from before generations built, which no fence can name.
+		const generation = componentGrant.constraints?.generation;
+		if (generation !== undefined && preview.generation !== generation) {
+			throw new ClientError(
+				`'${req.project}' was not activated: it was built before previews of ${preview.app} were last enabled`,
+				HTTP_STATUS_CODES.FORBIDDEN
+			);
+		}
 	};
 	const previewCap = previewCapOf(componentGrant);
 	const previewCapName = previewCap === undefined ? undefined : "this role's component grant's maxPreviews";

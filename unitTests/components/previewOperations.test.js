@@ -235,7 +235,7 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			permission: { ...role.permission, component_deploy: { ...role.permission.component_deploy, constraints } },
 		});
 		const legacy =
-			/role "opslegacy-ci-preview" predates revocation generations, .* disable previews and enable them again/;
+			/role "opslegacy-ci-preview" predates revocation generations, .* disable previews, and again once that lists none inProgress, .* then enable them again/;
 		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opslegacy', hdb_user: SU });
 		assert.strictEqual(policy.enabled, false);
 		assert.match(policy.problems.join(), legacy);
@@ -250,7 +250,24 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			'the rerun wrote nothing'
 		);
 
-		await disablePreviews({ operation: 'disable_previews', app: 'opslegacy', hdb_user: SU });
+		// A deploy the old role started, which goes live unfenced if it gets past its admission.
+		const { databases } = require('#src/resources/databases');
+		await databases.system.hdb_deployment.put({
+			deployment_id: 'opslegacy-in-flight',
+			project: 'opslegacy-pr-1',
+			status: 'pending',
+			preview: { app: 'opslegacy', pr: 1 },
+		});
+		try {
+			const disabled = await disablePreviews({ operation: 'disable_previews', app: 'opslegacy', hdb_user: SU });
+			assert.deepStrictEqual(disabled.inProgress, ['opslegacy-pr-1']);
+			assert.match(disabled.message, /predated revocation generations, .* disable previews again once none is/);
+		} finally {
+			await databases.system.hdb_deployment.delete('opslegacy-in-flight');
+		}
+		const again = await disablePreviews({ operation: 'disable_previews', app: 'opslegacy', hdb_user: SU });
+		assert.strictEqual(again.inProgress, undefined);
+		assert.doesNotMatch(again.message, /predated/, 'with the role gone, the rerun has nothing more to say');
 		const reenabled = await enablePreviews(enableRequest('opslegacy'));
 		assert.strictEqual(reenabled.enabled, true, JSON.stringify(reenabled.problems));
 		assert.match(reenabled.grant.constraints.generation, /^[\w-]{8,}$/);

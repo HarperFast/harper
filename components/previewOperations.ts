@@ -336,7 +336,9 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		} else if (grant.constraints.generation === undefined) {
 			problems.push(
 				`role "${names.role}" predates revocation generations, so disabling previews cannot fence a preview it ` +
-					'built that is still swapping in or reaching a peer: disable previews and enable them again'
+					'built that is still swapping in or reaching a peer: disable previews, and again once that lists none ' +
+					'inProgress, to drop any that went live meanwhile, then enable them again (one a peer timed out on can ' +
+					'still go live until it expires)'
 			);
 		}
 		const operations = role.permission?.operations;
@@ -591,11 +593,17 @@ export async function disablePreviews(req: any) {
 			removed.push(`role ${names.role}`);
 		}
 		const inProgress = await previewsInProgress(req.app);
+		const message =
+			removed.length + dropped.length > 0
+				? `Disabled previews of ${req.app}`
+				: `Previews of ${req.app} were not enabled; nothing changed`;
 		return {
 			message:
-				removed.length + dropped.length > 0
-					? `Disabled previews of ${req.app}`
-					: `Previews of ${req.app} were not enabled; nothing changed`,
+				role && generation === undefined
+					? `${message}, but role ${names.role} predated revocation generations, so a preview it built that is in ` +
+						'progress, or that a peer timed out on, can still go live until it expires: disable previews again once ' +
+						'none is in progress'
+					: message,
 			app: req.app,
 			dropped,
 			removed,
