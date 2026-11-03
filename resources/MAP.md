@@ -15,6 +15,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `replayLogs.ts`, `replayLogsGuards.ts` — crash replay of the transaction logs
 - `transactionBroadcast.ts`, `IterableEventQueue.ts` — commit notification fan-out; subscription queues
 - `subscriptionCheckpoint.ts`, `originClosedFloor.ts` — per-origin subscription checkpoints; the certified local log floor
+- `transactionLogAbortMarkers.ts` — the process-latched abort-marker and write-intent settings (`latchAbortMarkers`, `latchWriteIntents`)
 - `search.ts` — FIQL parsing, condition planning and estimation, index scans, joins
 - `blob.ts` — file-backed blobs: saving, compression, cleanup, reclamation
 - `tracked.ts`, `crdt.ts` — tracked-instance changes; CRDT operations and history reconstruction
@@ -49,6 +50,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - replication apply loop → `sourcedFrom` in Table.ts
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts
 - transaction timeouts and long-held handles → `startMonitoringTxns` in DatabaseTransaction.ts; longLivedTransactions.ts
+- conflict retry cap, deadline, aborting a logged commit → `noteRetryBoundary`, `mustRetryLoggedCommit` in DatabaseTransaction.ts
 - residency, stubs, replicas → `getResidency`, `_storeReplica` in Table.ts; residencyMaps.ts
 - table create, schema change, drop → `table()`, `runIndexing` in databases.ts; `dropTable`, `updatedAttributes` in Table.ts
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts

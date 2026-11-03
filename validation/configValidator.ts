@@ -580,6 +580,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				preloadRequire: Joi.alternatives([string, array.items(string)])
 					.allow(null)
 					.optional(),
+				shutdownTimeout: number.min(0).optional().empty(null),
 				v8Flags: Joi.alternatives([v8Flag, array.items(v8Flag)])
 					.allow(null)
 					.optional(),

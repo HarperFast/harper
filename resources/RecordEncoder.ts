@@ -1271,10 +1271,14 @@ export function recordUpdater(
 		}
 	};
 }
-// a coordinated retry's put appends nothing; its write keeps what the attempt it retries appended
+// a coordinated retry's put appends nothing (unless the attempt it retries wrote no batch); its write keeps what that attempt appended
 function noteStagedAudit(options: any, extendedType: number) {
 	const write = options?.write;
-	if (write && write.stagedAudit !== 'replicable' && !options.transaction?.isRetry)
+	if (
+		write &&
+		write.stagedAudit !== 'replicable' &&
+		(!options.transaction?.isRetry || options.transaction.relogOnRetry)
+	)
 		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 }
 export function removeEntry(store: any, entry: any, options?: any) {

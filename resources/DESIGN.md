@@ -113,7 +113,7 @@ Each encoder has its own `StoreRecordObject` prototype, so getters stay per tabl
 
 ## Struct mode is gated to primary DBIs (downgrade compatibility)
 
-v4 (msgpackr v1) reads struct headers `0x20–0x3f` as integers, so a struct-encoded `__dbis__` breaks a v5→v4 downgrade. `OpenDBIObject` allows structs only on primary stores (opt-in); `databases.ts` forces them on for custom-index object stores. `RecordEncoder` bails the write hook (`_writeStruct = () => 0`), never clears it: clearing moves the fixint boundary, so the read hook would misread `0x20–0x3f`. The read hook stays, and structon's `prepareStructures` saves records-mode structures as the plain array v4 reads (`recordEncoder.test.js`).
+v4 (msgpackr v1) reads struct headers `0x20-0x3f` as integers, so a struct-encoded `__dbis__` breaks a v5→v4 downgrade. `OpenDBIObject` allows structs only on primary stores (opt-in); `databases.ts` forces them on for custom-index object stores. `RecordEncoder` bails the write hook (`_writeStruct = () => 0`), never clears it: clearing moves the fixint boundary, so the read hook would misread `0x20-0x3f`. The read hook stays, and structon's `prepareStructures` saves records-mode structures as the plain array v4 reads (`recordEncoder.test.js`).
 
 ## Non-`initStore` structure saves read inside their own transaction
 
@@ -146,8 +146,8 @@ Closing the owning handle releases a fill's lock, so `releaseRecordLock` ignores
 
 Pre-commit blob files land before a commit that can still skip the write.
 
-- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip, and passes `write` to `updateRecord` for `stagedAudit`). Skips include a duplicate tie, a newer put, a losing no-audit full update, a no-audit patch that ties the head, meets a head with no record, is already received or keeps nothing, a losing invalidate, relocate or delete, and a source version change. A skipped write's `replicatedConfirmation` falls back to the stored version (harper#3182), so an unmarked skip looks like a write that replicates nothing.
-- Skips are cleaned after commit, never inline: a retry can make the skipped write win. Abort cleans all but files a durable log or audit entry owns (`hasDurableLog`, `blobsAuditReferenced`) and writes of another in-flight handle.
+- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip, and passes `write` to `updateRecord` for `stagedAudit`). Skips: duplicate tie; newer put; losing no-audit full update; no-audit patch tying the head, meeting a recordless head, already received or keeping nothing; losing invalidate, relocate or delete; source version change. A skipped write's `replicatedConfirmation` falls back to the stored version (harper#3182), so an unmarked skip looks like a write that replicates nothing.
+- Skips are cleaned after commit, never inline: a retry can make the skipped write win. Abort cleans all but files a durable log or audit entry owns (`abortedWithoutLog`, `blobsAuditReferenced`) and writes of another in-flight handle.
 - `cleanupUnusedBlobs(blobs, retainedFileIds)` spares the committed record's files. A deleted file tombstones its `Blob`, so `saveBlob` throws on it (#2062).
 - `cleanupOrphans` scans every retained audit value: history owns its files.
 - `evict()` and source-miss removals unlink only from their own commit, for the version and expiry they read (`evictionBlobs.test.js`).
@@ -169,10 +169,10 @@ Pre-commit blob files land before a commit that can still skip the write.
 - The owner's commit chains on `monitorCommit`. The pre-commit phase is spared `COMMIT_PHASE_GRACE` ticks (`sourceApply`/`isReplay` without limit): its writes are sealed, and poisoning there once reported success after unlinking blobs.
 - After the pre-commit await, the commit rechecks liveness or resolves as a phantom. **The monitor never aborts a submitted native commit.**
 - `timeoutBudget` is a sticky floor that chained links inherit.
-- Conflict retries get one deadline per logical commit (503 `TransactionCommitConflictTimeoutError`), not per attempt: the per-attempt clock (`trackOutstandingCommit`) drives `checkOverloaded()` shedding and must stay per attempt.
-- **A handle with a durable log entry is never aborted on retry** (harper#3236): that orphans an entry replay applies (`noAbortAfterTxnLog.test.js`).
+- Conflict retries get one deadline per logical commit (503 `TransactionCommitConflictTimeoutError`); the per-attempt clock (`trackOutstandingCommit`) drives `checkOverloaded()` shedding.
+- **Abort markers let a retry abort a logged handle and dedup trust its log** (harper#3236; `mustRetryLoggedCommit`, `mayReadOwnOrphan`). After a restart dedup waits ~3d for older log files to purge; meanwhile a twin delivery may double-count.
 - Each hop of a sealed commit cascade gets a full idle window, never the previous hop's remainder (`renewChainForNativeCommit`).
-- Long-lived handles are reported from main only, because rocksdb-js's registry is process-global (`runLongLivedTransactionSweep`, past `storage.longTransactionReportThreshold`; `0` disables); workers attribute their own by the same id (`reportIfLongLived`). Stuck-commit logs list holders from every database regardless of age: the verification table is one process-wide array (`longLivedTransactions.test.js`).
+- Long-lived handles are reported from main only: rocksdb-js's registry is process-global (`runLongLivedTransactionSweep`, past `storage.longTransactionReportThreshold`); workers attribute their own by the same id (`reportIfLongLived`). Stuck-commit logs list holders from every database regardless of age: the verification table is one process-wide array (`longLivedTransactions.test.js`).
 
 ## A client disconnect cancels the request's writes
 

@@ -227,6 +227,7 @@ import {
 	getAuditResumeFloor,
 	isResumablePosition,
 	getDatabaseGeneration,
+	auditHistoryAbortMarked,
 } from './auditStore.ts';
 import {
 	acquireFullTextClearFence,
@@ -5916,6 +5917,13 @@ export function makeTable(options): TableResourceClass {
 					// from the last attempt's skipped state launders when a recommit round self-skips
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
+					// Only an entry appended with abort markers off can be this write's own orphan: with markers a
+					// committed reader skips an aborted batch and stops before an unresolved one. Until the log
+					// holding this write's identity is all marker-era, another attempt's orphan can still match it,
+					// which a first attempt that ran in order never looked up.
+					const mayReadOwnOrphan =
+						stagedOwnAuditEntry &&
+						(write.appendedUnmarkedAuditEntry === true || !auditHistoryAbortMarked(auditStore, options?.nodeId));
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.completeResidencyRecord = undefined;
@@ -6202,15 +6210,13 @@ export function makeTable(options): TableResourceClass {
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard. Never when this write staged in a prior
-							// failed attempt: that attempt already appended this write's own audit entry, so the lookup
-							// would find it and skip the write as "already applied" when the record was never committed.
-							// A recommit of the same transaction survived that skip only because the old write batch
-							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							// check above remains the read-your-writes guard. Not when `mayReadOwnOrphan`: a recommit of the
+							// same transaction survived skipping its own orphan only because the old write batch still carried
+							// the put; a fresh-transaction replay would drop it.
 							// For a write whose identity is not its key this finds an entry keyed at its explicit value: one
 							// written before every local key was minted, or one whose minted key equals it. A hit still needs
 							// both stored clocks to match.
-							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
+							if (isRocksDB && !replaying && !mayReadOwnOrphan && dedupVersionCouldBeRetained(receivedLogKey)) {
 								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -6348,11 +6354,9 @@ export function makeTable(options): TableResourceClass {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
-							// Never a duplicate for a write that staged in a prior failed attempt: that attempt already
-							// appended this write's own audit entry, so the lookup would match it while the record was
-							// never committed (see the up-front keyed dedup above).
+							// Never a duplicate for a write that may read its own orphan (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
-								if (replaying || stagedOwnAuditEntry) return false;
+								if (replaying || mayReadOwnOrphan) return false;
 								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								return (
@@ -6433,7 +6437,7 @@ export function makeTable(options): TableResourceClass {
 									if (
 										isRocksDB &&
 										!replaying &&
-										!stagedOwnAuditEntry &&
+										!mayReadOwnOrphan &&
 										localTime === appendedLogKey &&
 										precedesExistingVersion(
 											txnTime,
@@ -6462,7 +6466,7 @@ export function makeTable(options): TableResourceClass {
 													// an unmapped origin's key is filed in `local` under a minted key, so it never takes
 													// this branch: its equal version is a re-delivery.
 													precedesAudited = appendedLogKey > localTime ? 1 : -1;
-												} else if (replaying || stagedOwnAuditEntry) {
+												} else if (replaying || mayReadOwnOrphan) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
 													// the write itself, not proof that its primary-store mutation committed.
 													precedesAudited = 1;
@@ -6532,7 +6536,7 @@ export function makeTable(options): TableResourceClass {
 											if (precedes === 0) {
 												if (localTime !== appendedLogKey && !identityIsNotKey) {
 													precedes = appendedLogKey > localTime ? 1 : -1;
-												} else if (replaying || stagedOwnAuditEntry) {
+												} else if (replaying || mayReadOwnOrphan) {
 													precedes = 1;
 												} else {
 													write.skipped = true;
