@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, CHECKPOINT_ALGORITHM } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('re-declaring a table that adds or removes a bare @computed (harper#3782)', () => {
@@ -85,5 +85,49 @@ describe('re-declaring a table that adds or removes a bare @computed (harper#378
 			['score'],
 			'a stale resolver masked the re-added attribute'
 		);
+	});
+
+	it('drops a schema-generated resolver when the expression goes away, and keeps an application resolver', async () => {
+		const Expression = declare('ComputedExpressionRemoved', { computed: {}, computedFromExpression: 'name' });
+		assert.strictEqual(typeof Expression.userResolvers.score, 'function');
+		assert.ok(!Expression.requiresApplicationCodeToReplicate());
+
+		const Bare = declare('ComputedExpressionRemoved', { computed: true });
+		await Bare.indexingOperation;
+		assert.strictEqual(Bare.userResolvers.score, undefined, 'the removed expression kept resolving');
+		assert.deepStrictEqual(Bare.unresolvedComputedIndexes(), ['score']);
+
+		Bare.setComputedAttribute('score', (record) => record.name);
+		const Again = declare('ComputedExpressionRemoved', { computed: true });
+		assert.strictEqual(typeof Again.userResolvers.score, 'function', 'an unchanged bare declaration lost its resolver');
+		assert.deepStrictEqual(Again.unresolvedComputedIndexes(), []);
+	});
+
+	it('does not resume a certified checkpoint built under the previous computation', async () => {
+		const Before = declare('ComputedCheckpoint', { computed: {}, computedFromExpression: 'name' });
+		let lastPut;
+		for (let i = 0; i < 5; i++) lastPut = Before.put({ id: 'k-' + i, name: 'n' + i });
+		await lastPut;
+		await Before.indexingOperation;
+		await catalogFlushed(Before);
+		const key = 'ComputedCheckpoint/score';
+		const interrupted = {
+			...Before.dbisDB.getSync(key),
+			indexingPID: 999999,
+			lastIndexedKey: 'k-2',
+			checkpointCertified: 'k-2',
+			checkpointAlgorithm: CHECKPOINT_ALGORITHM,
+		};
+		const written = Before.dbisDB.put(key, interrupted);
+		if (written?.then) await written;
+
+		const After = declare('ComputedCheckpoint', { computed: {}, computedFromExpression: 'id' });
+		await After.indexingOperation;
+		for (let i = 0; i < 5; i++) {
+			const matches = [];
+			for await (const record of After.search({ conditions: [{ attribute: 'score', value: 'k-' + i }] }))
+				matches.push(record.id);
+			assert.deepStrictEqual(matches, ['k-' + i], `row k-${i} was not reindexed under the new expression`);
+		}
 	});
 });
