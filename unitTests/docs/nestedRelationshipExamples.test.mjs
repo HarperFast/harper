@@ -1,6 +1,4 @@
-// The nested-relationship examples in the reference are the requests and responses that
-// integrationTests/resources/nested-relationship-docs.test.ts executes; this keeps the Markdown
-// equal to that fixture.
+// integrationTests/resources/nested-relationship-docs.test.ts executes these documented examples.
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
@@ -8,12 +6,23 @@ import ts from 'typescript';
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const fixture = '../../integrationTests/resources/nested-relationship-docs/';
 const examples = JSON.parse(read(fixture + 'examples.json'));
-const rest = read('../../docs/reference/rest/querying.md')
-	.split('### Filtering and Paging Each Relationship')[1]
-	.split('### Many-to-Many Relationships')[0];
-const resource = read('../../docs/reference/resources/resource-api.md')
-	.split('#### Constraining related records')[1]
-	.split('### `sort`')[0];
+function between(file, start, end) {
+	const text = read(file);
+	const from = text.indexOf(start);
+	const to = text.indexOf(end, from);
+	assert(from >= 0 && to > from, `${file} no longer has the section from "${start}" to "${end}"`);
+	return text.slice(from, to);
+}
+const rest = between(
+	'../../docs/reference/rest/querying.md',
+	'### Filtering and Paging Each Relationship',
+	'### Many-to-Many Relationships'
+);
+const resource = between(
+	'../../docs/reference/resources/resource-api.md',
+	'#### Constraining related records',
+	'### `sort`'
+);
 const blocks = (source, language) =>
 	[...source.matchAll(new RegExp('```' + language + '\\n([\\s\\S]*?)```', 'g'))].map((match) => match[1].trim());
 const normalize = (text) => text.replace(/\s+/g, ' ').trim();
