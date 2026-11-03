@@ -12,7 +12,7 @@ if [ ${#cores[@]} -eq 0 ]; then
 fi
 
 if ! command -v gdb >/dev/null; then
-	if ! { sudo timeout 60 apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive timeout 60 apt-get install -y -qq --no-install-recommends gdb; } >/dev/null; then
+	if ! { sudo timeout 60 apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive timeout 60 apt-get install -y -qq --no-install-recommends gdb; } >/dev/null 2>&1; then
 		echo "::error::gdb could not be installed; ${#cores[@]} core file(s) not analyzed"
 		ls -la "$dir"
 		exit 0
