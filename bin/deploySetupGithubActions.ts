@@ -234,18 +234,27 @@ const PULL_REQUEST_HEAD =
 const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/s;
 // Read over the whole step: a multi-line quote, a pipe or xargs carries a value onto a git line that shows none of it.
 const DYNAMIC_INPUT = /[$`<|]|\bxargs\b/;
+const COMMAND_ASSIGNMENTS =
+	/(^|[;&|({]|\b(?:then|do|else|export|local|declare|readonly)\b)(?:\s*\w+=(?:"[^"]*"|'[^']*'|\$\{\{[^}]*\}\}|[^\s;&|"'])*)+/g;
 
-// Only a head the file shows outright counts; a value reached any other way is left unverified.
-function namesPullRequestHead(text: string, scopes: any[], jobScripts: string): boolean {
-	if (PULL_REQUEST_HEAD.test(text)) return true;
-	const variables = [...text.matchAll(/\benv\.(\w+)|\$\{?(\w+)/g)].map(
-		([, inExpression, inShell]) => inExpression ?? inShell
-	);
-	return variables.some((variable) => {
+/** Whether a script names the variable other than to read it, as an assignment, `read`, `for` or `printf -v` does. */
+function maySetVariable(script: string, variable: string): boolean {
+	return new RegExp(String.raw`(?<!\$\{?[#!]?|env\.)\b${variable}\b`).test(script);
+}
+
+/**
+ * Only a head the file shows outright counts: in the command itself, or in the `env:` value of a variable that no
+ * script able to replace it touches. A shell assignment's scope and order are not read, so its value is unverified.
+ */
+function namesPullRequestHead(text: string, scopes: any[], earlierScripts: string, ownScript = ''): boolean {
+	const command = text.replace(COMMAND_ASSIGNMENTS, '$1');
+	if (PULL_REQUEST_HEAD.test(command)) return true;
+	return [...command.matchAll(/\benv\.(\w+)|\$\{?(\w+)/g)].some(([, inExpression, inShell]) => {
+		const variable = inExpression ?? inShell;
+		// `${{ env.X }}` is filled in before the step's shell starts; an earlier step can still write X to GITHUB_ENV.
+		if (maySetVariable(inExpression ? earlierScripts : `${earlierScripts}\n${ownScript}`, variable)) return false;
 		const value = scopes.map((scope) => scope?.env?.[variable]).find((candidate) => candidate !== undefined);
-		if (value !== undefined && PULL_REQUEST_HEAD.test(String(value))) return true;
-		const assignment = new RegExp(String.raw`\b${variable}=((?:"[^"]*"|'[^']*'|\$\{\{[^}]*\}\}|[^\s;&|"'])*)`, 'g');
-		return [...jobScripts.matchAll(assignment)].some(([, assigned]) => PULL_REQUEST_HEAD.test(assigned));
+		return value !== undefined && PULL_REQUEST_HEAD.test(String(value));
 	});
 }
 
@@ -259,17 +268,18 @@ function checkPullRequestCheckout(name: string, job: any, workflow: any, problem
 		return;
 	}
 	const steps = asList(job?.steps) as any[];
-	const scripts = steps.map((step) => (typeof step?.run === 'string' ? step.run : '')).join('\n');
+	const scripts = steps.map((step) => (typeof step?.run === 'string' ? step.run : ''));
 	const headCheckout =
 		`job "${name}" holds an identity token and a step checks out the pull request's head, so a PR's code would ` +
 		'run with the preview identity';
-	for (const step of steps) {
+	for (const [index, step] of steps.entries()) {
 		const scopes = [step, job, workflow];
+		const earlierScripts = scripts.slice(0, index).join('\n');
 		if (typeof step?.uses === 'string' && /^actions\/checkout@/i.test(step.uses.trim())) {
 			for (const field of ['ref', 'repository']) {
 				const value = step.with?.[field];
 				if (value === undefined) continue;
-				if (namesPullRequestHead(String(value), scopes, scripts)) {
+				if (namesPullRequestHead(String(value), scopes, earlierScripts)) {
 					problems.push(
 						`job "${name}" holds an identity token and checks out the pull request's head (${field}: ${value}), so a ` +
 							`PR's code would run with the preview identity`
@@ -286,7 +296,7 @@ function checkPullRequestCheckout(name: string, job: any, workflow: any, problem
 			continue;
 		}
 		const gitLines = lines.filter((line: string) => GIT_FETCHING_CODE.test(line));
-		if (gitLines.some((line: string) => namesPullRequestHead(line, scopes, scripts))) {
+		if (gitLines.some((line: string) => namesPullRequestHead(line, scopes, earlierScripts, step.run))) {
 			problems.push(headCheckout);
 		} else if (DYNAMIC_INPUT.test(step.run) && GIT_FETCHING_CODE.test(step.run)) {
 			const named = gitLines.length > 0 ? gitLines : lines.filter((line: string) => /\bgit\b/.test(line));
@@ -339,15 +349,53 @@ function checkSameRepositoryCondition(
 	);
 }
 
+const ACTION_IS_CLOSED = /^(?:github\.event\.action\s*==\s*'closed'|'closed'\s*==\s*github\.event\.action)$/i;
+const ACTION_IS_NOT_CLOSED = /^(?:github\.event\.action\s*!=\s*'closed'|'closed'\s*!=\s*github\.event\.action)$/i;
+
+/**
+ * Whether a job runs when a pull request closes: false when its condition, or a needed job's, excludes `closed`, and
+ * undefined when it says anything else than that it runs for a closed same-repository pull request.
+ */
+function runsOnClose(name: string, jobs: Record<string, any>, path = new Set<string>()): boolean | undefined {
+	if (path.has(name) || !jobs[name]) return undefined;
+	const condition = jobCondition(jobs[name]);
+	if (condition) {
+		const terms = conjuncts(withoutEnclosingParentheses(condition));
+		if (terms?.some((term) => ACTION_IS_NOT_CLOSED.test(term))) return false;
+		if (!terms?.every((term) => ACTION_IS_CLOSED.test(term) || SAME_REPOSITORY_TERM.test(term))) return undefined;
+	}
+	// With no status function in the condition, a needed job that is skipped skips this one.
+	let runs: boolean | undefined = true;
+	for (const needed of asList(jobs[name]?.needs)) {
+		const neededRuns = runsOnClose(String(needed), jobs, new Set(path).add(name));
+		if (neededRuns === false) return false;
+		if (neededRuns === undefined) runs = undefined;
+	}
+	return runs;
+}
+
 /** A closed PR's preview lasts until it expires unless a job drops it, and `closed` is not a default event type. */
 function checkCleanupPath(workflow: any, filter: any, cleanupEnvironment: string, unverified: string[]): void {
-	const jobs: any[] = Object.values(workflow?.jobs ?? {});
-	const cleanupJob = jobs.some((job) => environmentName(job) === cleanupEnvironment);
-	if (cleanupJob && asList(filter?.types).includes('closed')) return;
-	const why = cleanupJob
-		? 'its pull_request_target types leave out closed'
-		: `no job here runs in "${cleanupEnvironment}"`;
-	unverified.push(`that a closed pull request's preview is dropped before it expires, since ${why}`);
+	const jobs: Record<string, any> = workflow?.jobs ?? {};
+	const cleanupJobs = Object.keys(jobs).filter((name) => environmentName(jobs[name]) === cleanupEnvironment);
+	const dropped = "that a closed pull request's preview is dropped before it expires";
+	if (cleanupJobs.length === 0) {
+		unverified.push(`${dropped}, since no job here runs in "${cleanupEnvironment}"`);
+		return;
+	}
+	if (!asList(filter?.types).includes('closed')) {
+		unverified.push(`${dropped}, since its pull_request_target types leave out closed`);
+		return;
+	}
+	const runs = cleanupJobs.map((name) => runsOnClose(name, jobs));
+	if (runs.includes(true)) return;
+	const named = (names: string[]) => names.map((name) => `job "${name}"`).join(' or ');
+	const unknown = cleanupJobs.filter((_, index) => runs[index] === undefined);
+	unverified.push(
+		unknown.length > 0
+			? `that ${named(unknown)} runs when a pull request closes, which is what drops its preview before it expires`
+			: `${dropped}, since ${named(cleanupJobs)} does not run when a pull request closes`
+	);
 }
 
 /**
