@@ -24,6 +24,7 @@ const INSTALL_TABLE = 'hdb_user';
 const ROLE = 'system_table_reader_role';
 const LEGACY_ROLE = ROLE + '_legacy';
 const LEGACY_READER = { username: 'legacy_system_reader', password: 'Legacy-pw-2120!' };
+const SUPER_READER = { username: 'system_table_super_user', password: 'Super-pw-2120!' };
 const READER = { username: 'system_table_reader', password: 'Reader-pw-2120!' };
 
 // 403 specifically, not "401 or 403": accepting 401 would let a broken credential or a regression
@@ -96,6 +97,19 @@ suite(
 					active: true,
 				})
 				.expect(200);
+			await client
+				.req()
+				.send({ operation: 'add_user', role: 'super_user', ...SUPER_READER, active: true })
+				.expect(200);
+			await client
+				.reqAs(createHeaders(SUPER_READER.username, SUPER_READER.password))
+				.send({
+					operation: 'describe_table',
+					database: 'system',
+					table: COMPONENT_TABLE,
+					skip_record_count: true,
+				})
+				.expect(200);
 		});
 
 		after(async () => {
@@ -136,7 +150,7 @@ suite(
 		for (const impersonate of [
 			{ role: { permission: { super_user: true, system: { tables: { [COMPONENT_TABLE]: { read: true } } } } } },
 			{ role_name: ROLE },
-			{ username: READER.username },
+			{ username: SUPER_READER.username },
 		]) {
 			test(`impersonation ${Object.keys(impersonate)[0]} cannot grant system access`, async () => {
 				await client
@@ -164,6 +178,19 @@ suite(
 				.expect(200);
 			strictEqual(info.body.role.role, LEGACY_ROLE);
 			strictEqual(info.body.role.permission.system, undefined);
+		});
+
+		test('the legacy user cannot read a system table using its stored grant', async () => {
+			await client
+				.reqAs(createHeaders(LEGACY_READER.username, LEGACY_READER.password))
+				.send({
+					operation: 'search_by_hash',
+					database: 'system',
+					table: COMPONENT_TABLE,
+					hash_values: ['no-such-status-id'],
+					get_attributes: ['*'],
+				})
+				.expect(FORBIDDEN);
 		});
 
 		test('a legacy named-role grant cannot authorize a system-table write through impersonation', async () => {
