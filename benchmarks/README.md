@@ -342,3 +342,45 @@ cannot change what is stored, keep a tolerance (`--max-error-rate`).
 Shutdown is likewise gated: sizes are measured after Harper exits, and a final memtable flush cut
 short by `SIGKILL` loses SST bytes the benchmark would report as the codec being smaller. The runner
 gives shutdown `--shutdown-grace` (default 120s) and fails the run if the process had to be killed.
+
+## Full-text query admission
+
+Run the opt-in [Table admission benchmark](full-text-admission.cjs) from the repository root:
+
+```sh
+npm ci
+npm run build
+node node_modules/mocha/bin/mocha.js benchmarks/full-text-admission.cjs
+```
+
+The repository Mocha configuration supplies an isolated per-process database root and exposes
+GC. The benchmark uses the existing test native binding to make an index ready, then calls the
+real compiled `Table._prepareQueryConditions` with restricted field permissions. It does not
+measure the native search engine. No running Harper installation or loopback setup is needed.
+
+Each request is fresh. Cases combine 2 or 16 source fields, 0/1/32/127 optional clauses, and
+default or explicit optional-clause fields. The zero-clause pair is intentionally identical.
+Each case warms up for 1,000 iterations, then runs five samples of 5,000 iterations; sample
+order reverses on alternate rounds. GC runs before each sample when available. `ADMISSION`
+JSON lines report runtime/platform, every sample, and the median microseconds per request.
+
+Timing includes request construction and a clause-count assertion. It excludes index setup,
+native execution, networking, concurrent requests and the forced GC before samples; allocation
+and in-sample GC costs are not separately measured. These sample means are not request p99
+latencies, and this is not an end-to-end or before/after regression benchmark.
+
+Historical scratch-run medians on macOS ARM64, Node 24.16.0, at `3d4a1dc58`:
+
+| Source fields | Optional clauses | Default fields (µs) | Explicit fields (µs) |
+| ------------- | ---------------- | ------------------- | -------------------- |
+| 2             | 1                | 0.59                | 1.07                 |
+| 2             | 32               | 5.09                | 9.07                 |
+| 2             | 127              | 17.62               | 27.47                |
+| 16            | 1                | 1.42                | 3.61                 |
+| 16            | 32               | 25.02               | 74.46                |
+| 16            | 127              | 99.02               | 279.33               |
+
+Other tests were active during that run; the last case ranged from 168–573 µs across samples.
+Treat these as observations, not performance thresholds. Compare revisions using the same
+benchmark, runtime and machine under similar load, retaining all samples. Older revisions
+without optional scoring cannot provide an equivalent baseline for those cases.
