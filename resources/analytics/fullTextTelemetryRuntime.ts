@@ -17,13 +17,12 @@ let operatorPolicy = resolveFullTextTelemetryPolicy(undefined);
 let started = false;
 let stopWatching: (() => void) | undefined;
 let removeListener: (() => void) | undefined;
-let enabledSince = 0;
 let persistenceActive = false;
 let nextWarningAt = 0;
 
 export const fullTextTelemetryCollector = new FullTextTelemetryCollector({
 	onPending: () => {
-		if (operatorPolicy.enabled && checkAnalyticsEnabled()) requestAnalyticsFlush();
+		if (operatorPolicy.enabled && checkAnalyticsEnabled(false)) requestAnalyticsFlush();
 	},
 	onError: () => {
 		if (Date.now() < nextWarningAt) return;
@@ -34,14 +33,16 @@ export const fullTextTelemetryCollector = new FullTextTelemetryCollector({
 
 export function setFullTextAnalyticsEnabled(enabled: boolean): void {
 	const next = operatorPolicy.enabled && enabled;
-	if (next && !persistenceActive) enabledSince = Date.now();
 	persistenceActive = next;
 	fullTextTelemetryCollector.setOperatorPolicy({ ...operatorPolicy, enabled: next });
 }
 
 export function acceptsFullTextTelemetryRow(row: Record<string, unknown>): boolean {
 	return (
-		persistenceActive && checkAnalyticsEnabled() && typeof row.sampledAt === 'number' && row.sampledAt >= enabledSince
+		persistenceActive &&
+		checkAnalyticsEnabled(false) &&
+		typeof row.sampledAt === 'number' &&
+		Number.isFinite(row.sampledAt)
 	);
 }
 
@@ -49,18 +50,19 @@ export function initializeFullTextTelemetry(): void {
 	if (started) return;
 	started = true;
 	removeListener = addAnalyticsListener((metrics) => {
+		if (!persistenceActive || !checkAnalyticsEnabled(false)) return;
 		const rows = fullTextTelemetryCollector.takeRows();
-		if (operatorPolicy.enabled && checkAnalyticsEnabled()) metrics.push(...rows);
+		metrics.push(...rows);
 	});
 	stopWatching = watchFullTextTelemetryConfiguration((value) => {
 		const next = resolveFullTextTelemetryPolicy(value);
 		operatorPolicy = next;
-		setFullTextAnalyticsEnabled(checkAnalyticsEnabled());
+		setFullTextAnalyticsEnabled(checkAnalyticsEnabled(false));
 	});
 }
 
 export function subscribeFullTextTelemetry(
-	callback: (sample: FullTextTelemetrySample) => void | Promise<void>,
+	callback: (sample: FullTextTelemetrySample) => void | PromiseLike<void>,
 	options?: Omit<Partial<FullTextTelemetryPolicy>, 'enabled'>
 ): () => void {
 	initializeFullTextTelemetry();

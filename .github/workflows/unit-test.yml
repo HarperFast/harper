@@ -332,6 +332,8 @@ jobs:
         run: >-
           npx mocha
           unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTelemetry.test.js
+          unitTests/resources/nativeFullTextTelemetryClose.test.js
+          unitTests/resources/nativeFullTextTelemetryWorkers.test.js
           unitTests/resources/nativeFullTextTableSearch.test.js
           unitTests/resources/nativeFullTextIndexSchemaUpgrade.test.js
           unitTests/resources/nativeFullTextIndexUpgradeWorkers.test.js

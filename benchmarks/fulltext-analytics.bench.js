@@ -28,7 +28,7 @@ it(`qualifies actual Harper fulltext analytics (${configuration.profile})`, asyn
 	await ensureSystemTables();
 	const binding = await loadFullTextNativeBinding();
 	const runtime = await binding.runtimeInfo();
-	assert.strictEqual(runtime.packageVersion, '0.9.0');
+	assert.strictEqual(runtime.packageVersion, require('../package.json').optionalDependencies['@harperfast/fulltext']);
 	const path = getConfigFilePath();
 	const savedConfig = readFileSync(path, 'utf8');
 	const products = [];
@@ -229,6 +229,7 @@ it(`qualifies actual Harper fulltext analytics (${configuration.profile})`, asyn
 			cpu,
 			eventLoop: {
 				utilization: utilization.utilization,
+				samples: eventLoop.count,
 				meanDelayMilliseconds: eventLoop.mean / 1e6,
 				maxDelayMilliseconds: eventLoop.max / 1e6,
 				p99DelayMilliseconds: eventLoop.percentile(99) / 1e6,

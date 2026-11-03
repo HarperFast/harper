@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process';
-import { execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, createWriteStream, existsSync, readdirSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +23,7 @@ for (let i = 2; i < process.argv.length; i += 2) {
 		options[name] = number;
 	}
 }
-options.output ??= `/Users/kyle/WebstormProjects/tmp/fulltext-analytics-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+if (!options.output) throw new Error('An explicit --output directory is required');
 if (existsSync(options.output) && readdirSync(options.output).length)
 	throw new Error('Use a fresh or empty --output directory to preserve prior qualification evidence');
 mkdirSync(options.output, { recursive: true });
@@ -42,6 +41,10 @@ const fingerprintFiles = [
 	'resources/analytics/fullTextTelemetry.ts',
 	'resources/analytics/fullTextTelemetryRuntime.ts',
 	'config/fullTextTelemetryConfiguration.ts',
+	'dist/resources/analytics/fullTextTelemetry.js',
+	'dist/resources/analytics/fullTextTelemetryRuntime.js',
+	'dist/resources/analytics/write.js',
+	'dist/resources/indexes/fullTextNativeBinding.js',
 ];
 source.fileSha256 = Object.fromEntries(
 	fingerprintFiles.map((file) => [
@@ -84,22 +87,46 @@ async function spawnMocha(profile, pair) {
 		],
 		{ cwd: repository, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] }
 	);
-	child.stdout.pipe(log, { end: false });
-	child.stderr.pipe(log, { end: false });
+	const MAX_LOG_BYTES = 2 * 1024 * 1024;
+	let logBytes = 0;
+	let droppedLogBytes = 0;
+	let logError;
+	log.once('error', (error) => {
+		logError = error.code ?? error.message;
+		child.kill('SIGTERM');
+	});
+	function capture(chunk) {
+		const retained = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - logBytes));
+		if (retained.length && !log.destroyed) log.write(retained);
+		logBytes += retained.length;
+		droppedLogBytes += chunk.length - retained.length;
+	}
+	child.stdout.on('data', capture);
+	child.stderr.on('data', capture);
 	let timedOut = false;
+	let killTimer;
 	const timer = setTimeout(() => {
 		timedOut = true;
 		child.kill('SIGTERM');
+		killTimer = setTimeout(() => child.kill('SIGKILL'), 5000).unref();
 	}, options.duration + 120_000);
-	const result = await new Promise((resolveChild, reject) => {
-		child.once('error', reject);
-		child.once('exit', (code, signal) => resolveChild({ code, signal }));
+	const result = await new Promise((resolveChild) => {
+		child.once('error', (error) => resolveChild({ code: null, signal: null, spawnError: error.message }));
+		child.once('close', (code, signal) => resolveChild({ code, signal }));
 	}).finally(() => {
 		clearTimeout(timer);
-		log.end();
+		clearTimeout(killTimer);
 	});
-	writeFileSync(join(directory, 'launcher-result.json'), JSON.stringify({ ...result, timedOut }, null, 2));
-	if (result.code !== 0 || timedOut || !existsSync(join(directory, 'result.json')))
+	await new Promise((resolveLog) => (log.destroyed ? resolveLog() : log.end(resolveLog)));
+	writeFileSync(
+		join(directory, 'launcher-result.json'),
+		JSON.stringify(
+			{ ...result, timedOut, logError, logBytes, droppedLogBytes, maximumLogBytes: MAX_LOG_BYTES },
+			null,
+			2
+		)
+	);
+	if (result.code !== 0 || timedOut || logError || !existsSync(join(directory, 'result.json')))
 		throw new Error(`${profile} pair ${pair} failed; retained ${directory}`);
 	return JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
 }

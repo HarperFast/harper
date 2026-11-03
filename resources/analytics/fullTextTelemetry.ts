@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ConfigureTelemetryOptions, FullTextTelemetry } from '@harperfast/fulltext/native';
+import { METRIC } from './metadata.ts';
 
 export type FullTextTelemetryPolicy = Required<ConfigureTelemetryOptions> & {
 	enabled: boolean;
@@ -71,7 +72,7 @@ type Entry = {
 	warned: boolean;
 };
 type Consumer = {
-	callback: (sample: FullTextTelemetrySample) => void | Promise<void>;
+	callback: (sample: FullTextTelemetrySample) => void | PromiseLike<void>;
 	policy: FullTextTelemetryPolicy;
 	busy: boolean;
 };
@@ -155,7 +156,7 @@ export class FullTextTelemetryCollector {
 	}
 
 	subscribe(
-		callback: (sample: FullTextTelemetrySample) => void | Promise<void>,
+		callback: (sample: FullTextTelemetrySample) => void | PromiseLike<void>,
 		options: Omit<Partial<FullTextTelemetryPolicy>, 'enabled'> = {}
 	): () => void {
 		if (typeof callback !== 'function') throw new TypeError('A full-text telemetry consumer must be a function');
@@ -227,12 +228,32 @@ export class FullTextTelemetryCollector {
 
 	beforeClose(handle: object): void {
 		const entry = this.#registered.get(handle);
-		if (entry) this.#registration(entry).beforeClose();
+		if (entry) this.#closeHook(() => this.#registration(entry).beforeClose());
 	}
 
 	afterClose(handle: object): void {
 		const entry = this.#registered.get(handle);
-		if (entry) this.#registration(entry).afterClose();
+		if (entry) this.#closeHook(() => this.#registration(entry).afterClose());
+	}
+
+	closeFailed(handle: object): void {
+		const entry = this.#registered.get(handle);
+		if (!entry) return;
+		entry.closing = false;
+		this.#closeHook(() => {
+			if (this.collecting) this.#observe(entry);
+			this.#schedule();
+		});
+	}
+
+	#closeHook(action: () => void) {
+		try {
+			action();
+		} catch {
+			try {
+				this.#onError();
+			} catch {}
+		}
 	}
 
 	takeRows(): FullTextTelemetryRow[] {
@@ -256,22 +277,36 @@ export class FullTextTelemetryCollector {
 	}
 
 	#updatePolicy() {
-		clearTimeout(this.#timer);
-		this.#timer = undefined;
 		this.#revision++;
 		const demands = [...this.#consumers].map((consumer) => consumer.policy);
 		if (this.#operator.enabled) demands.push(this.#operator);
-		this.#policy = {
+		const previous = this.#policy;
+		const next = {
 			enabled: demands.length > 0,
-			intervalMilliseconds: Math.min(...demands.map((policy) => policy.intervalMilliseconds), 2_147_483_647),
+			intervalMilliseconds: demands.length
+				? Math.min(...demands.map((policy) => policy.intervalMilliseconds))
+				: DEFAULT_FULL_TEXT_TELEMETRY_POLICY.intervalMilliseconds,
 			histograms: demands.some((policy) => policy.histograms),
 			snapshotBytes: demands.some((policy) => policy.snapshotBytes),
 		};
+		if (
+			previous.enabled === next.enabled &&
+			previous.intervalMilliseconds === next.intervalMilliseconds &&
+			previous.histograms === next.histograms &&
+			previous.snapshotBytes === next.snapshotBytes
+		) {
+			this.#prune();
+			return;
+		}
+		clearTimeout(this.#timer);
+		this.#timer = undefined;
+		this.#policy = next;
+		const recordingChanged = previous.histograms !== next.histograms || previous.snapshotBytes !== next.snapshotBytes;
 		let offset = 0;
 		const step = this.#policy.intervalMilliseconds / Math.max(1, this.#entries.size);
 		for (const entry of this.#entries) {
-			entry.configured = false;
-			if (!entry.closing) this.#configure(entry);
+			if (recordingChanged) entry.configured = false;
+			if (!entry.closing && !entry.configured) this.#configure(entry);
 			entry.nextAt = performance.now() + step * ++offset;
 		}
 		this.#prune();
@@ -320,6 +355,10 @@ export class FullTextTelemetryCollector {
 			entry.observedAt = performance.now();
 			entry.warned = false;
 			if (!snapshot.available && entry.closing) entry.group.complete = false;
+			if (snapshot.available && !entry.closing && !entry.group.complete) {
+				entry.group.series = randomUUID();
+				entry.group.complete = true;
+			}
 			this.#publish(entry, snapshot);
 		} catch {
 			this.#failed(entry, 'collection-error');
@@ -329,14 +368,14 @@ export class FullTextTelemetryCollector {
 	#publish(entry: Entry, snapshot?: FullTextTelemetry, error?: FullTextTelemetrySample['error'], stage?: 'closing') {
 		const sampledAt = Date.now();
 		const revision = this.#revision;
-		if (this.#operator.enabled) {
+		if (this.#operator.enabled && stage !== 'closing') {
 			let newest = entry;
 			for (const candidate of entry.group.entries)
 				if (!candidate.closing && candidate.flat && (newest.closing || candidate.observedAt > newest.observedAt))
 					newest = candidate;
 			const row: FullTextTelemetryRow = {
 				...newest.flat?.gauges,
-				metric: 'fulltext',
+				metric: METRIC.FULL_TEXT,
 				path: entry.group.index,
 				method: entry.group.role,
 				perThread: true,
@@ -346,7 +385,7 @@ export class FullTextTelemetryCollector {
 				complete: entry.group.complete,
 				collectionError: error ?? null,
 				droppedRows: this.#droppedRows.toString(),
-				observationAgeMilliseconds: entry.observedAt ? performance.now() - entry.observedAt : null,
+				observationAgeMilliseconds: newest.observedAt ? performance.now() - newest.observedAt : null,
 				activeHandles: [...entry.group.entries].filter((candidate) => !candidate.closing).length,
 				closingHandles: [...entry.group.entries].filter((candidate) => candidate.closing).length,
 				available: !error && snapshot?.available === true,
@@ -373,7 +412,6 @@ export class FullTextTelemetryCollector {
 			if (!this.#pending.has(entry.group) && this.#pending.size >= this.#maxPendingRows) {
 				const oldest = this.#pending.keys().next().value!;
 				this.#pending.delete(oldest);
-				oldest.complete = false;
 				this.#droppedRows++;
 				row.droppedRows = this.#droppedRows.toString();
 				this.#prune();
@@ -398,7 +436,7 @@ export class FullTextTelemetryCollector {
 				});
 				if (result && typeof result.then === 'function') {
 					consumer.busy = true;
-					void result
+					void Promise.resolve(result)
 						.catch(() => {
 							try {
 								this.#onError();

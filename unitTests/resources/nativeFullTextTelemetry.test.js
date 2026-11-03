@@ -35,12 +35,12 @@ describe('Published full-text telemetry collection', function () {
 		binding = await loadFullTextNativeBinding();
 	});
 	beforeEach(() => {
-		collector = new FullTextTelemetryCollector();
 		handles = [];
+		collector = new FullTextTelemetryCollector();
 	});
 	afterEach(async () => {
-		collector.stop();
-		for (const handle of handles.reverse()) await handle.close({ mode: 'rollback' });
+		collector?.stop();
+		for (const handle of handles?.reverse() ?? []) await handle.close({ mode: 'rollback' });
 	});
 	async function writer() {
 		const options = {
@@ -108,6 +108,16 @@ describe('Published full-text telemetry collection', function () {
 		assert.strictEqual(resumed.native_snapshotBytesEnabled, true);
 		assert.strictEqual(resumed.native_reader_snapshotBytesPending, true);
 		assert.doesNotThrow(() => JSON.stringify(resumed));
+		collector.setOperatorPolicy({ enabled: true, histograms: true });
+		await handle.search({ text: 'widget' });
+		collector.collect(handle);
+		const recordingAgain = row();
+		assert.strictEqual(recordingAgain.series, first.series);
+		assert.strictEqual(recordingAgain.native_operations_search_completed, '4');
+		assert.strictEqual(
+			recordingAgain.native_operations_search_execution_histogram_count,
+			(histogramCount + 1n).toString()
+		);
 	});
 	it('unions removable consumer options without persisting consumer-only observations', async () => {
 		const { index } = await writer();
@@ -162,6 +172,11 @@ describe('Published full-text telemetry collection', function () {
 		assert.strictEqual(before.native_operations_search_completed, '2');
 		assert.strictEqual(before.native_reader_documents, '1');
 		collector.beforeClose(first);
+		assert.deepStrictEqual(
+			collector.takeRows(),
+			[],
+			'pausing a retiring peer must not publish a false unavailable row'
+		);
 		collector.collect(first);
 		await first.close();
 		collector.afterClose(first);
@@ -181,6 +196,36 @@ describe('Published full-text telemetry collection', function () {
 		const current = row();
 		assert.strictEqual(current.series, before.series);
 		assert.strictEqual(current.native_operations_search_completed, '4');
+	});
+	it('starts a usable new series after reader retirement lost terminal coverage while collection was off', async () => {
+		const { options } = await writer();
+		const first = await reader(options);
+		const second = await reader(options);
+		collector.register(first, 'catalog.Product/search', 'reader');
+		collector.register(second, 'catalog.Product/search', 'reader');
+		collector.setOperatorPolicy({ enabled: true });
+		await first.search({ text: 'widget' });
+		await second.search({ text: 'widget' });
+		collector.collect(first);
+		collector.collect(second);
+		const before = row();
+		collector.setOperatorPolicy({ enabled: false });
+		collector.beforeClose(first);
+		await first.close();
+		collector.afterClose(first);
+		collector.setOperatorPolicy({ enabled: true });
+		collector.collect(second);
+		const resumed = row();
+		assert.strictEqual(resumed.complete, true);
+		assert.notStrictEqual(resumed.series, before.series);
+		await second.search({ text: 'widget' });
+		collector.collect(second);
+		const next = row();
+		assert.strictEqual(next.series, resumed.series);
+		assert.strictEqual(
+			BigInt(next.native_operations_search_completed) - BigInt(resumed.native_operations_search_completed),
+			1n
+		);
 	});
 	it('contains rejected asynchronous consumers with one callback in flight', async () => {
 		const { index } = await writer();
@@ -204,6 +249,24 @@ describe('Published full-text telemetry collection', function () {
 		remove();
 		reject(new Error('removed consumer failed'));
 		await Promise.resolve();
+	});
+	it('releases the consumer slot after a promise-like callback without catch or finally methods', async () => {
+		const { index } = await writer();
+		collector.register(index, 'catalog.Product/search', 'writer');
+		let calls = 0;
+		const remove = collector.subscribe(() => {
+			calls++;
+			return { then: (resolve) => queueMicrotask(resolve) };
+		});
+		try {
+			collector.collect(index);
+			await waitFor(() => {
+				collector.collect(index);
+				return calls === 2;
+			});
+		} finally {
+			remove();
+		}
 	});
 	it('contains a real closed-handle configuration failure without poisoning other handles', async () => {
 		const { index } = await writer();
@@ -231,6 +294,9 @@ describe('Published full-text telemetry collection', function () {
 		const rows = collector.takeRows();
 		assert.strictEqual(rows.length, 2);
 		assert.strictEqual(rows.at(-1).droppedRows, '1');
+		collector.collect(handles[0]);
+		const recovered = collector.takeRows().find((value) => value.path === 'catalog.Product0/search');
+		assert.strictEqual(recovered.complete, true, 'dropping a pending observation does not lose cumulative counters');
 	});
 	it('uses exact uint64 deltas above safe integer range and across wrap', () => {
 		const previous = (1n << 63n) + 1n;
@@ -280,15 +346,20 @@ describe('Harper full-text analytics lifecycle and persistence', function () {
 		const analyticsRead = require('#src/resources/analytics/read');
 		const { table, databases } = require('#src/resources/databases');
 		const { fullTextDerivedIndexReadiness } = require('#src/resources/derivedIndexes');
-		const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+		const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
+		const { server } = require('#src/server/Server');
 		const { getConfigFilePath } = require('#src/config/configUtils');
 		const { fullTextTelemetryCollector: live } = require('#src/resources/analytics/fullTextTelemetryRuntime');
 		setupTestDBPath();
-		setMainIsWorker(true);
 		const file = getConfigFilePath();
 		const original = fs.readFileSync(file, 'utf8');
 		const config = YAML.parse(original);
 		const wasEnabled = analytics.checkAnalyticsEnabled();
+		const wasMainWorker = getWorkerIndex() !== undefined;
+		const originalGlobals = ['databases', 'server'].map((name) => [
+			name,
+			Object.getOwnPropertyDescriptor(global, name),
+		]);
 		let Product;
 		const label = `telemetry-live-${Date.now()}`;
 		function change(enabled) {
@@ -326,6 +397,9 @@ describe('Harper full-text analytics lifecycle and persistence', function () {
 			return found.sort();
 		}
 		try {
+			setMainIsWorker(true);
+			global.databases = databases;
+			global.server = server;
 			analytics.setAnalyticsEnabled(true);
 			Product = table({
 				database: label,
@@ -395,13 +469,24 @@ describe('Harper full-text analytics lifecycle and persistence', function () {
 				10000
 			);
 		} finally {
-			fs.writeFileSync(file, original);
-			await waitFor(() => !live.collecting, 5000);
-			if (Product) {
-				await Product.fullTextQueryIndexes.catalogSearch.customIndex.close();
-				await Product.derivedIndexRuntime?.close();
+			try {
+				fs.writeFileSync(file, original);
+				await waitFor(() => !live.collecting, 5000);
+			} finally {
+				try {
+					if (Product) {
+						await Product.fullTextQueryIndexes.catalogSearch.customIndex.close();
+						await Product.derivedIndexRuntime?.close();
+					}
+				} finally {
+					analytics.setAnalyticsEnabled(wasEnabled);
+					setMainIsWorker(wasMainWorker);
+					for (const [name, descriptor] of originalGlobals) {
+						if (descriptor) Object.defineProperty(global, name, descriptor);
+						else delete global[name];
+					}
+				}
 			}
-			analytics.setAnalyticsEnabled(wasEnabled);
 		}
 	});
 });

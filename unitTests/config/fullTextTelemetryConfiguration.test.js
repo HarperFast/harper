@@ -13,12 +13,12 @@ const { waitFor } = require('../waitFor');
 const PARAM = 'analytics_fullText';
 const root = (fullText) => ({ analytics: { fullText } });
 
-// Every observer here uses a real file and shared-watcher implementation; no native binding is loaded.
 describe('Live full-text telemetry configuration', function () {
 	this.timeout(20_000);
 	let directory, file, watcher, stop, saved, savedOverrides, savedEnv;
 	beforeEach(() => {
-		saved = structuredClone(env.get(PARAM));
+		directory = saved = savedOverrides = savedEnv = undefined;
+		saved = { value: structuredClone(env.get(PARAM)) };
 		savedOverrides = Object.entries(env.getConfigOverrides() ?? {}).filter(
 			([key]) => key === PARAM || key.startsWith(PARAM + '_')
 		);
@@ -33,14 +33,16 @@ describe('Live full-text telemetry configuration', function () {
 		stop?.();
 		watcher?.close();
 		stop = watcher = undefined;
-		for (const [key, value] of Object.entries(savedEnv)) {
+		for (const [key, value] of Object.entries(savedEnv ?? {})) {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		}
-		env.refreshConfigSubtree(PARAM, root({ enabled: Symbol('previous') }), {}, resolveFullTextTelemetryPolicy);
-		updateConfigObject(PARAM, saved);
-		for (const [name, value] of savedOverrides) env.setProperty(name, value);
-		rmSync(directory, { recursive: true, force: true });
+		if (savedOverrides) {
+			env.refreshConfigSubtree(PARAM, root({ enabled: Symbol('previous') }), {}, resolveFullTextTelemetryPolicy);
+		}
+		if (saved) updateConfigObject(PARAM, saved.value);
+		for (const [name, value] of savedOverrides ?? []) env.setProperty(name, value);
+		if (directory) rmSync(directory, { recursive: true, force: true });
 	});
 	function observe(value, samples) {
 		writeFileSync(file, stringify(root(value)));
@@ -99,6 +101,12 @@ describe('Live full-text telemetry configuration', function () {
 		await waitFor(() => samples.at(-1)?.enabled === true);
 		writeFileSync(file, stringify(root({ enabled: false, intervalMilliseconds: 3000 })));
 		await waitFor(() => watcher.config?.analytics.fullText.intervalMilliseconds === 3000);
+		assert.strictEqual(samples.at(-1).intervalMilliseconds, 2000);
+		let unavailable = false;
+		watcher.once('unavailable', () => (unavailable = true));
+		rmSync(file);
+		await waitFor(() => unavailable);
+		assert.strictEqual(samples.at(-1).enabled, true);
 		assert.strictEqual(samples.at(-1).intervalMilliseconds, 2000);
 	});
 	for (const override of [

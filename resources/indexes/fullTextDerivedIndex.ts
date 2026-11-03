@@ -794,9 +794,18 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (!closeOperation) {
 			fullTextTelemetryCollector.beforeClose(engine);
 			try {
-				closeOperation = engine.close(options).finally(() => fullTextTelemetryCollector.afterClose(engine));
+				closeOperation = engine.close(options).then(
+					(result) => {
+						fullTextTelemetryCollector.afterClose(engine);
+						return result;
+					},
+					(error) => {
+						fullTextTelemetryCollector.closeFailed(engine);
+						throw error;
+					}
+				);
 			} catch (error) {
-				fullTextTelemetryCollector.afterClose(engine);
+				fullTextTelemetryCollector.closeFailed(engine);
 				throw error;
 			}
 			this.#closeOperations.set(engine, closeOperation);

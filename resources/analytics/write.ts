@@ -53,12 +53,13 @@ let analyticsGeneration = 0;
 onStartup(() => {
 	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 	analyticsReadOnlyChecked = false;
-	setFullTextAnalyticsEnabled(checkAnalyticsEnabled());
+	setFullTextAnalyticsEnabled(checkAnalyticsEnabled(false));
 });
 
 // Check read-only mode lazily to avoid circular dependency at module load time. The event loop
 // sampler starts here rather than at load, so a read-only worker never runs it.
-export function checkAnalyticsEnabled(): boolean {
+export function checkAnalyticsEnabled(startSampler = true): boolean {
+	if (!startSampler) return analyticsEnabled && !isReadOnlyMode();
 	if (!analyticsReadOnlyChecked) {
 		analyticsReadOnlyChecked = true;
 		if (isReadOnlyMode()) analyticsEnabled = false;
@@ -1383,16 +1384,21 @@ function recordAnalytics(message, worker?) {
 	// Skip writes in read-only mode
 	if (isReadOnlyMode()) return;
 	const report = message.report;
-	report.metrics = report.metrics.filter(
-		(metric) => metric.metric !== METRIC.FULL_TEXT || acceptsFullTextTelemetryRow(metric)
-	);
 	report.threadId = worker?.threadId || threadId;
 	// Add system information stats as well
-	for (const metric of report.metrics) {
+	let retained;
+	for (let i = 0; i < report.metrics.length; i++) {
+		const metric = report.metrics[i];
+		if (metric.metric === METRIC.FULL_TEXT && !acceptsFullTextTelemetryRow(metric)) {
+			retained ??= report.metrics.slice(0, i);
+			continue;
+		}
+		retained?.push(metric);
 		if (metric.metric === 'bytes-sent') {
 			totalBytesProcessed += metric.mean * metric.count;
 		}
 	}
+	if (retained) report.metrics = retained;
 	report.totalBytesProcessed = totalBytesProcessed;
 	if (worker && !isBun) {
 		report.metrics.push({

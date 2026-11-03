@@ -4,11 +4,11 @@ import { overlayRootEnvConfig } from './harperConfigEnvVars.ts';
 import { get, refreshConfigSubtree } from '../utility/environment/environmentManager.ts';
 import { resolveFullTextTelemetryPolicy } from '../resources/analytics/fullTextTelemetry.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 const logger = loggerWithTag('fulltext-telemetry');
-const PARAM = 'analytics_fullText';
+const PARAM = CONFIG_PARAMS.ANALYTICS_FULL_TEXT;
 
-/** Observe only telemetry settings; invalid edits retain the last valid policy. */
 export function watchFullTextTelemetryConfiguration(
 	apply: (value: unknown) => void,
 	watcher: RootConfigWatcher = getSharedRootConfigWatcher()
@@ -41,8 +41,9 @@ export function watchFullTextTelemetryConfiguration(
 	function unavailable() {
 		if (stopped) return;
 		try {
-			applyPolicy(refreshConfigSubtree(PARAM, previousRoot, {}, resolveFullTextTelemetryPolicy));
-			previousRoot = {};
+			const root = structuredClone(overlayRootEnvConfig({}) ?? {});
+			applyPolicy(refreshConfigSubtree(PARAM, previousRoot, root, resolveFullTextTelemetryPolicy));
+			previousRoot = root;
 		} catch {
 			report();
 		}
