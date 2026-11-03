@@ -245,10 +245,7 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		} finally {
 			spy.restore();
 		}
-		assert.ok(
-			spy.reads.some((read) => read.committedRead),
-			'an eager same-key publish forces the committed read'
-		);
+		assert.deepEqual(spy.reads, [], 'the publish runs after the put, so the put reads no committed base');
 		assert.equal(await puts(), putsBefore, 'the re-delivered put must not be logged again');
 		assert.equal((await T.get('r')).name, 'first');
 	});

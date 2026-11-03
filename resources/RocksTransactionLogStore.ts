@@ -82,7 +82,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	 * @param options - Options for save
 	 */
 	put(suggestedKey: any, auditRecord: AuditRecord | Uint8Array, options: any) {
-		if (options.transaction.isRetry) {
+		if (options.transaction.isRetry && !options.transaction.relogOnRetry) {
 			// do not record transaction entries on retry
 			return;
 		}
@@ -209,18 +209,24 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
-	get(key: any, tableId: number, recordId: any, nodeId: number) {
-		return this.getSync(key, tableId, recordId, nodeId);
+	get(key: any, tableId: number, recordId: any, nodeId: number, readUncommitted?: boolean) {
+		return this.getSync(key, tableId, recordId, nodeId, readUncommitted);
 	}
-	getSync(key: any, tableId: number, recordId: any, nodeId: number) {
+	/**
+	 * A numeric key reads the record's entry in the transaction keyed by it. Committed state can name an entry
+	 * past the log's committed watermark, which stays at the first entry whose transaction has not committed,
+	 * so callers following refs from a record or audit entry pass `readUncommitted = true`; the default reads
+	 * only up to the watermark so duplicate checks cannot count an uncommitted entry.
+	 */
+	getSync(key: any, tableId: number, recordId: any, nodeId: number, readUncommitted?: boolean) {
 		if (typeof key === 'number') {
 			if (typeof tableId !== 'number') throw new Error('tableId must be a number');
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			// this a request for a transaction log entry by a timestamp
+			// this is a request for a transaction log entry by a timestamp
 			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
-			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
+			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId, readUncommitted })) {
 				if (entry.txnLogKey !== key) return; // no longer in this transaction
 				if (entry.recordId === recordId && entry.tableId === tableId && (!sharedLog || entry.nodeId === nodeId)) {
 					return entry;

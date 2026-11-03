@@ -124,6 +124,7 @@ const AUTHENTICATION_ERROR_MSGS = {
 	INVALID_BODY: 'invalid body',
 	TOKEN_EXPIRED: 'token expired',
 	REFRESH_TOKEN_SAVE_FAILED: 'unable to store refresh_token',
+	NO_USER_TO_MINT_FOR: 'no user to mint a token for; create a user first',
 };
 
 const OPERATION_AUTH_ERROR_MSGS = {
@@ -142,6 +143,10 @@ const OPERATION_AUTH_ERROR_MSGS = {
 	UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
 	UNRESOLVED_SQL_TABLE:
 		'This operation is not authorized: the statement references a table that could not be resolved to a single database. Qualify the table with its database name (e.g. `database.table`).',
+	UNRESOLVED_SQL_COLUMN: (columns: string[]) =>
+		`This operation is not authorized: the statement qualifies ${columns.join(', ')} with a table name or alias that does not identify exactly one table in the statement.`,
+	SQL_ROW_ACCESSOR:
+		'This operation is not authorized: the statement reads whole rows through `_`, `SELECT VALUE`/`ROW`, a JavaScript expression, a `?` or `$n` parameter or a JSON literal that sets `__proto__`, which attribute permissions cannot be applied to. Name the attributes to read instead.',
 	USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
 	DROP_SYSTEM:
 		"The 'system' database, tables and records are used internally by Harper and cannot be updated or removed.",
@@ -205,6 +210,8 @@ const USER_ERROR_MSGS = {
 	LAST_SUPER_USER:
 		'Rejected: this change would leave the instance with no active super_user. Grant super_user to another active user first.',
 	ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`,
+	RESERVED_USERNAME: (user) =>
+		`'${user}' is a reserved username: it identifies requests trusted by their transport (authorizeLocal, the operations domain socket)`,
 	USER_ALREADY_EXISTS: (user) => `User ${user} already exists`,
 	USER_NOT_EXIST: (user) => `User ${user} does not exist`,
 };

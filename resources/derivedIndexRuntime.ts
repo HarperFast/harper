@@ -1773,19 +1773,23 @@ class DerivedIndexRunner {
 		this.#boundaryPending = false;
 		// A waiter that observes the covering clock must also observe this durable publication revision.
 		if (offeredIndex > 0) this.#publicationChanged();
+		let coverage: CoverageCapture | undefined;
+		let bound = true;
 		for (let i = offeredIndex; i >= 0; i--) {
-			const coverage = this.#offeredCursors[i].coverage;
-			if (coverage) {
-				this.#publishCoverage(coverage);
+			const candidate = this.#offeredCursors[i].coverage;
+			if (candidate) {
+				coverage = bound || !candidate.bound ? candidate : { time: candidate.time, positions: candidate.positions };
 				break;
 			}
+			if (this.#offeredCursors[i].mutations > 0) bound = false;
 		}
 		if (offeredIndex > 0) {
 			// The backend dropped coverage with the old vector, so the next bound capture is not throttled.
 			this.#lastPersistedCoverageTime = 0n;
 			this.#offeredCursors.splice(0, offeredIndex);
-			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
+		if (coverage) this.#publishCoverage(coverage);
+		if (offeredIndex > 0 && !this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		if (offeredIndex > 0 || sameCursor(cursor, this.#offered)) this.#lastCaughtUpAt = this.#options.now();
 		return true;
 	}

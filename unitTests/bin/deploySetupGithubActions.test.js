@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const {
 	buildWorkflowRef,
 	canonicalWorkflowPath,
+	checkPreviewWorkflowFile,
 	checkWorkflowFile,
 	deriveCiNames,
 	planReconcile,
@@ -21,6 +22,7 @@ const {
 	GITHUB_ACTIONS_ISSUER,
 } = require('#src/bin/deploySetupGithubActions');
 const { buildRequest } = require('#src/bin/cliOperations');
+const { starterPreviewWorkflow } = require('#src/bin/previewSetup');
 
 const desired = () => ({
 	role: { role: 'web-ci-deploy', permission: { super_user: false, operations: [...CI_DEPLOY_OPERATIONS] } },
@@ -266,6 +268,342 @@ jobs:
 		});
 	});
 
+	describe('checkPreviewWorkflowFile', () => {
+		const starter = starterPreviewWorkflow({ app: 'shop', branch: 'main' });
+		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
+		const sameRepository = ' && github.event.pull_request.head.repo.full_name == github.repository';
+		const deployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
+		const withDeployStep = (step) =>
+			starter.replace(
+				'      - run: npm install --global harper@^5.4\n',
+				`${step}      - run: npm install --global harper@^5.4\n`
+			);
+		const problemsOf = (content, branch) => check(content, branch).problems.join('\n');
+
+		it('accepts the starter workflow setup writes', () => {
+			assert.deepStrictEqual(check(starter), { problems: [], unverified: [], unsafe: [] });
+		});
+
+		it('refuses a workflow with no pull_request_target trigger', () => {
+			assert.match(
+				problemsOf(starter.replace('pull_request_target:', 'pull_request:')),
+				/no pull_request_target trigger/
+			);
+			assert.match(problemsOf('on: push\njobs: {}\n'), /no pull_request_target trigger/);
+		});
+
+		it('refuses a branch filter that leaves out the default branch, and cannot read a pattern', () => {
+			assert.match(problemsOf(starter, 'trunk'), /pull requests into main, not "trunk"/);
+			assert.deepStrictEqual(check(starter.replace('branches: ["main"]', "branches: ['release/**']")).unverified, [
+				'that release/** matches "main"',
+			]);
+		});
+
+		it('refuses a job in the environment that would run for fork pull requests', () => {
+			assert.match(
+				problemsOf(starter.replace(deployIf, "    if: github.event.action != 'closed'\n")),
+				/job "deploy" runs for pull requests from forks/
+			);
+			assert.match(problemsOf(starter.replace(deployIf, '')), /job "deploy" runs for pull requests from forks/);
+		});
+
+		it('takes neither head.repo.fork nor a test inside an || as excluding forks', () => {
+			const forkFalse = starter.replace(deployIf, '    if: ${{ !github.event.pull_request.head.repo.fork }}\n');
+			assert.deepStrictEqual(check(forkFalse).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const either = starter.replace(
+				deployIf,
+				`    if: github.event.action == 'opened' ||${sameRepository.slice(3)}\n`
+			);
+			assert.deepStrictEqual(check(either).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const needs = starter.replace(deployIf, '    needs: [gate]\n');
+			assert.deepStrictEqual(check(needs).unsafe, ['that job "deploy" excludes fork pull requests']);
+		});
+
+		it('follows needs into a job that excludes forks, unless the job runs past it being skipped', () => {
+			const gate = `  gate:\n${deployIf}    runs-on: ubuntu-latest\n`;
+			const gated = starter.replace(deployIf, '    needs: [gate]\n').replace('jobs:\n', `jobs:\n${gate}`);
+			assert.deepStrictEqual(check(gated), { problems: [], unverified: [], unsafe: [] });
+			const always = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: always()\n');
+			assert.deepStrictEqual(check(always).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const labeled = gated.replace(
+				'    needs: [gate]\n',
+				"    needs: [gate]\n    if: success() || github.event.action == 'labeled'\n"
+			);
+			assert.deepStrictEqual(check(labeled).unsafe, ['that job "deploy" excludes fork pull requests']);
+			const capitalized = gated.replace('    needs: [gate]\n', '    needs: [gate]\n    if: Always()\n');
+			assert.deepStrictEqual(check(capitalized).unsafe, ['that job "deploy" excludes fork pull requests']);
+		});
+
+		it('cannot read a condition that names the head repository without plainly admitting only it', () => {
+			for (const condition of [
+				'${{ !(github.event.pull_request.head.repo.full_name == github.repository) }}',
+				'(github.event.pull_request.head.repo.full_name == github.repository) == false',
+				'${{ !!github.event.pull_request.head.repo.fork }}',
+			]) {
+				const negated = starter.replace(deployIf, `    if: ${condition}\n`);
+				assert.deepStrictEqual(check(negated), {
+					problems: [],
+					unverified: [],
+					unsafe: ['that job "deploy" excludes fork pull requests'],
+				});
+			}
+		});
+
+		it('checks every job that holds the identity token, whatever its environment', () => {
+			const expression = starter.replace('    environment: preview-cleanup\n', '    environment: ${{ inputs.env }}\n');
+			const unguarded = expression.replace(
+				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				''
+			);
+			assert.match(problemsOf(unguarded), /job "cleanup" runs for pull requests from forks/);
+		});
+
+		it('refuses a workflow in which no job in the environment may request an identity token', () => {
+			const noToken = starter.replace(
+				'      id-token: write\n      pull-requests: read\n',
+				'      pull-requests: read\n'
+			);
+			assert.match(problemsOf(noToken), /no job in the "preview" environment has `permissions: id-token: write`/);
+			const cleanupNoToken = starter.replace(
+				'      id-token: write\n      pull-requests: read\n    env:',
+				'      pull-requests: read\n    env:'
+			);
+			assert.match(problemsOf(cleanupNoToken), /job "cleanup" runs in "preview-cleanup" without/);
+		});
+
+		it("refuses a job holding the identity token that checks out the pull request's head", () => {
+			for (const ref of ['${{ github.event.pull_request.head.sha }}', '${{ github.head_ref }}', 'refs/pull/7/merge']) {
+				const checkout = withDeployStep(`      - uses: actions/checkout@v5\n        with:\n          ref: ${ref}\n`);
+				assert.match(
+					problemsOf(checkout),
+					/job "deploy" holds an identity token and checks out the pull request's head/,
+					ref
+				);
+			}
+			const fork = withDeployStep(
+				'      - uses: actions/checkout@v5\n        with:\n          repository: ${{ github.event.pull_request.head.repo.full_name }}\n'
+			);
+			assert.match(problemsOf(fork), /checks out the pull request's head \(repository/);
+			for (const run of ['gh pr checkout "$PR"', 'git fetch origin pull/$PR/head && git checkout FETCH_HEAD']) {
+				assert.match(
+					problemsOf(withDeployStep(`      - run: ${run}\n`)),
+					/a step checks out the pull request's head/,
+					run
+				);
+			}
+		});
+
+		it("refuses a git command whose variable holds the pull request's head, wherever env sets it", () => {
+			const stepEnv = '        env:\n          REF: ${{ github.event.pull_request.head.sha }}\n';
+			for (const step of [
+				'      - run: git fetch origin "$SHA" && git checkout "$SHA"\n',
+				'      - run: git checkout ${{ env.SHA }}\n',
+				'      - run: |\n          git checkout \\\n            "${SHA}"\n',
+				`      - run: git switch --detach "$REF"\n${stepEnv}`,
+				'      - run: git fetch origin "$GITHUB_HEAD_REF"\n',
+				'      - run: git checkout ${{ inputs.sha || env.SHA }}\n',
+				'      - run: git fetch origin "$REF"\n        env:\n          REF: pull/42/head\n',
+				'      - run: git fetch origin ${{ github.event.pull_request.merge_commit_sha }}\n',
+				"      - run: git fetch origin ${{ format('refs/pull/{0}/head', github.event.number) }} && git checkout FETCH_HEAD\n",
+				'      - run: git -C $(cd .; pwd) fetch origin "${{ github.event.pull_request.head.sha }}"\n',
+				'      - run: git -C $(cd .; pwd) fetch origin "$SHA"\n',
+				'      - run: git -C `cd .; pwd` fetch origin "$SHA"\n',
+				'      - run: git fetch 2>&1 origin "$SHA"\n',
+				'      - run: git fetch origin "a;b" "$SHA"\n',
+				'      - run: git fetch origin "a\\";b" "$SHA"\n',
+				'      - run: git fetch origin a\\;b "$SHA"\n',
+				'      - run: git fetch <&- origin "$SHA"\n',
+				'      - run: FOO="\\"bar" git fetch origin "${{ github.event.pull_request.head.sha }}"\n',
+				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ env.SHA }}\n',
+				'      - run: |\n          SHA=main\n          git checkout ${{ env.SHA }}\n',
+				'      - run: git checkout ${{ env.SHA }}\n      - run: echo "SHA=main" >> "$GITHUB_ENV"\n',
+			]) {
+				assert.match(problemsOf(withDeployStep(step)), /checks out the pull request's head/, step);
+			}
+			const workflowEnv = withDeployStep('      - run: git checkout "$HEAD"\n').replace(
+				'env:\n',
+				'env:\n  HEAD: ${{ github.event.pull_request.head.ref }}\n'
+			);
+			assert.match(problemsOf(workflowEnv), /a step checks out the pull request's head/);
+		});
+
+		it('cannot verify a git command that carries anything but literal text, and accepts a literal one', () => {
+			const unverified = (command) => `that \`${command}\` in job "deploy" does not check out the pull request's head`;
+			for (const command of [
+				'git checkout "$TARGET"',
+				'git checkout "$(gh pr view "$PR" --json headRefOid -q .headRefOid)"',
+				'git checkout `cat .pr-sha`',
+				'git fetch origin "$GITHUB_SHA"',
+				'git fetch origin "$BRANCH_NAME"',
+				'git checkout main && ./deploy.sh "$APP_DIR"',
+				'git checkout ${{ github.event.pull_request.base.sha }}',
+				'git fetch origin ${{ github.base_ref }}',
+				'git clone "https://x:${{ secrets.TOOLS_TOKEN }}@github.com/acme/tools" "$RUNNER_TEMP/tools"',
+			]) {
+				const step = withDeployStep(`      - run: ${command}\n        env:\n          BRANCH_NAME: main\n`);
+				assert.deepStrictEqual(check(step), { problems: [], unverified: [], unsafe: [unverified(command)] }, command);
+			}
+			for (const command of ['git checkout main', 'git fetch origin main && git checkout FETCH_HEAD']) {
+				const literal = withDeployStep(`      - run: ${command}\n`);
+				assert.deepStrictEqual(check(literal), { problems: [], unverified: [], unsafe: [] }, command);
+			}
+			const alias = withDeployStep('      - run: git checkout "$REF"\n        env:\n          REF: ${{ env.SHA }}\n');
+			assert.deepStrictEqual(check(alias), {
+				problems: [],
+				unverified: [],
+				unsafe: [unverified('git checkout "$REF"')],
+			});
+			for (const [script, gitLine] of [
+				['cat .pr-sha |\n            xargs git checkout', 'xargs git checkout'],
+				['git fetch --stdin origin < .pr-refs', 'git fetch --stdin origin < .pr-refs'],
+				['git checkout "\n          $SHA"', 'git checkout "'],
+				['git -C "$(\n            pwd\n          )" fetch origin "$SHA"', 'git -C "$('],
+				['git checkout main\n          ./deploy.sh "$APP_DIR"', 'git checkout main'],
+			]) {
+				const elsewhere = withDeployStep(`      - run: |\n          ${script}\n`);
+				assert.deepStrictEqual(
+					check(elsewhere),
+					{ problems: [], unverified: [], unsafe: [unverified(gitLine)] },
+					script
+				);
+			}
+			const fromGithubEnv = withDeployStep(
+				'      - run: echo "BRANCH_NAME=$(cat .pr-branch)" >> "$GITHUB_ENV"\n      - run: git checkout ${{ env.BRANCH_NAME }}\n        env:\n          BRANCH_NAME: main\n'
+			);
+			assert.deepStrictEqual(check(fromGithubEnv).unsafe, [
+				'that `git checkout ${{ env.BRANCH_NAME }}` in job "deploy" does not check out the pull request\'s head',
+			]);
+			const mentioned = withDeployStep(
+				'      - run: |\n          echo "Deploying BRANCH_NAME=${{ github.base_ref }} at ${{ github.event.pull_request.head.sha }}"\n          git checkout "$BRANCH_NAME"\n        env:\n          BRANCH_NAME: main\n'
+			);
+			assert.deepStrictEqual(check(mentioned).problems, [], 'what else the line says is not the value');
+			for (const script of [
+				'for TARGET in main; do git checkout "$TARGET"; done',
+				'printf -v TARGET %s "$(cat .pr-sha)" && git checkout "$TARGET"',
+			]) {
+				const set = withDeployStep(`      - run: ${script}\n        env:\n          TARGET: main\n`);
+				assert.strictEqual(check(set).unsafe.length, 1, script);
+			}
+			const overwritten = withDeployStep(
+				'      - run: |\n          BRANCH_NAME=$(cat .pr-branch)\n          git checkout "$BRANCH_NAME"\n        env:\n          BRANCH_NAME: main\n'
+			);
+			assert.deepStrictEqual(check(overwritten).unsafe, [
+				'that `git checkout "$BRANCH_NAME"` in job "deploy" does not check out the pull request\'s head',
+			]);
+		});
+
+		it("leaves a variable a script assigns unverified, whatever step or order assigns the pull request's head", () => {
+			const head = '${{ github.event.pull_request.head.sha }}';
+			const unverified = (command) => [
+				`that \`${command}\` in job "deploy" does not check out the pull request's head`,
+			];
+			for (const [steps, command] of [
+				[
+					`      - run: git checkout "$REF"\n        env:\n          REF: main\n      - run: REF=${head}; echo "$REF"\n`,
+					'git checkout "$REF"',
+				],
+				[
+					`      - run: |\n          REF=${head}\n          REF=main\n          git checkout "$REF"\n`,
+					'git checkout "$REF"',
+				],
+				[
+					`      - run: REF=${head}; REF=main; git checkout "$REF"\n`,
+					'REF=' + head + '; REF=main; git checkout "$REF"',
+				],
+				[`      - run: |\n          REF=${head}\n          git checkout "$REF"\n`, 'git checkout "$REF"'],
+				[
+					`      - run: |\n          REF=main\n          git checkout "$REF"\n        env:\n          REF: ${head}\n`,
+					'git checkout "$REF"',
+				],
+				[`      - run: |\n          read -r SHA < .base-sha\n          git checkout "$SHA"\n`, 'git checkout "$SHA"'],
+				[`      - run: echo "SHA=main" >> "$GITHUB_ENV"\n      - run: git checkout "$SHA"\n`, 'git checkout "$SHA"'],
+			]) {
+				assert.deepStrictEqual(
+					check(withDeployStep(steps)),
+					{ problems: [], unverified: [], unsafe: unverified(command) },
+					steps
+				);
+			}
+		});
+
+		it("notes a workflow that leaves a closed pull request's preview until it expires", () => {
+			const noCleanup = starter.slice(0, starter.indexOf('  cleanup:\n'));
+			assert.deepStrictEqual(check(noCleanup), {
+				problems: [],
+				unverified: [
+					`that a closed pull request's preview is dropped before it expires, since no job here runs in "preview-cleanup"`,
+				],
+				unsafe: [],
+			});
+			const notOnClose = starter.replace(
+				'types: [opened, reopened, synchronize, closed]',
+				'types: [opened, reopened, synchronize]'
+			);
+			assert.deepStrictEqual(check(notOnClose).unverified, [
+				"that a closed pull request's preview is dropped before it expires, since its pull_request_target types leave out closed",
+			]);
+		});
+
+		it('notes a cleanup job that cannot run when a pull request closes, or whose condition it cannot read', () => {
+			const cleanupIf =
+				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n";
+			const excluded = starter.replace(cleanupIf, deployIf);
+			assert.deepStrictEqual(check(excluded), {
+				problems: [],
+				unverified: [
+					`that a closed pull request's preview is dropped before it expires, since job "cleanup" does not run when a pull request closes`,
+				],
+				unsafe: [],
+			});
+			const afterDeploy = starter.replace(cleanupIf, `${cleanupIf}    needs: [deploy]\n`);
+			assert.deepStrictEqual(check(afterDeploy).unverified, check(excluded).unverified);
+			const unknown = `that job "cleanup" runs when a pull request closes, which is what drops its preview before it expires`;
+			for (const condition of [
+				"github.event.action == 'closed' && github.event.pull_request.merged",
+				"always() && github.event.action == 'closed'",
+				"github.event.action == 'closed' || github.event.action == 'labeled'",
+			]) {
+				const unread = starter.replace(cleanupIf, `    if: ${condition}${sameRepository}\n`);
+				assert.deepStrictEqual(check(unread).unverified, [unknown], condition);
+			}
+			const gate = `  gate:\n${cleanupIf}    runs-on: ubuntu-latest\n`;
+			const gated = starter.replace(cleanupIf, '    needs: [gate]\n').replace('jobs:\n', `jobs:\n${gate}`);
+			assert.deepStrictEqual(check(gated), { problems: [], unverified: [], unsafe: [] });
+			const looped = gated.replace(`  gate:\n${cleanupIf}`, `  gate:\n${cleanupIf}    needs: [cleanup]\n`);
+			assert.deepStrictEqual(check(looped).unverified, [unknown]);
+		});
+
+		it("accepts a checkout of the workflow's own branch, and cannot read a ref given as an expression", () => {
+			assert.deepStrictEqual(check(withDeployStep('      - uses: actions/checkout@v5\n')).problems, []);
+			const expression = withDeployStep(
+				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ inputs.ref }}\n'
+			);
+			assert.deepStrictEqual(check(expression).unsafe, [
+				'that job "deploy"\'s checkout ref (${{ inputs.ref }}) is not the pull request\'s head',
+			]);
+			for (const ref of ['${{ vars.PR_REF }}', '${{ secrets.PR_REF }}']) {
+				const hidden = withDeployStep(`      - uses: actions/checkout@v5\n        with:\n          ref: ${ref}\n`);
+				assert.strictEqual(check(hidden).unsafe.length, 1, ref);
+			}
+		});
+
+		it('writes the options it is given into the deploy, and still passes', () => {
+			const shaped = starterPreviewWorkflow({
+				app: 'shop',
+				branch: 'trunk',
+				domain: 'previews.example.com',
+				credential: true,
+				shared: true,
+			});
+			assert.match(
+				shaped,
+				/harper preview deploy app=shop pr="\$PR" branch="\$BRANCH" by_ref=true ref="\$SHA" domain=previews\.example\.com credential=true branchedDatabases=false/
+			);
+			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });
+			assert.match(shaped, /if \[ "\$\{after%% \*\}" = closed \]; then harper preview drop app=shop/);
+		});
+	});
+
 	describe('roleDifference / userDifference / policyDifferences', () => {
 		it('accepts records exactly as setup would create them', () => {
 			assert.strictEqual(roleDifference(matchingRole(), desired().role), undefined);
@@ -339,6 +677,26 @@ jobs:
 				policy: 'create',
 				conflicts: [],
 			});
+		});
+
+		it("refuses, before writing, a policy another component's policy would make the exchange refuse", () => {
+			const api = { ...matchingPolicy(), id: 'github-actions-api', user: 'api-ci-deploy' };
+			const plan = planReconcile({ roles: [], users: [], policies: [api] }, desired());
+			assert.match(
+				plan.conflicts.join(),
+				/Trust policy "github-actions-api", for user "api-ci-deploy", can match the same runs/
+			);
+			for (const skipped of [{ enabled: false }, { exchangeable: false }]) {
+				const plan = planReconcile({ roles: [], users: [], policies: [{ ...api, ...skipped }] }, desired());
+				assert.deepStrictEqual(plan.conflicts, [], 'the exchange would not count this policy');
+			}
+			const deleted = {
+				...api,
+				exchangeable: true,
+				invalid_reason: "names user 'api-ci-deploy', which does not exist",
+			};
+			const counted = planReconcile({ roles: [], users: [], policies: [deleted] }, desired());
+			assert.strictEqual(counted.conflicts.length, 1, 'the exchange refuses before it resolves the user');
 		});
 
 		it('leaves records that already match, so a rerun changes nothing', () => {

@@ -27,6 +27,8 @@ import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
+import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
+import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
@@ -35,6 +37,7 @@ import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { enableCompileCache } from '../server/threads/compileCache.ts';
 
 let pmUtils;
 let cmdArgs;
@@ -67,14 +70,16 @@ function addExitListeners() {
 			beginProcessShutdown();
 			removeHdbPid();
 		});
-		const exit = () => {
-			beginProcessShutdown();
-			removeHdbPid();
-			process.exit(0);
-		};
-		process.on('SIGINT', exit);
-		process.on('SIGQUIT', exit);
-		process.on('SIGTERM', exit);
+		// The pid file stays until 'exit': while draining, the instance is still running and a repeated
+		// `harper stop` is the second signal.
+		const onSignal = createTerminationHandler({
+			getTimeoutMs: getProcessShutdownTimeoutMs,
+			shutdown: shutdownProcess,
+			exit: () => process.exit(0),
+		});
+		process.on('SIGINT', onSignal);
+		process.on('SIGQUIT', onSignal);
+		process.on('SIGTERM', onSignal);
 	}
 }
 
@@ -100,10 +105,12 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
 	});
 	hdbLogger.debug('Checking to make sure hdb is installed');
+	let installedDuringInit = false;
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
 			await install();
+			installedDuringInit = true;
 		} catch (err) {
 			console.error(INSTALL_ERR, err);
 			hdbLogger.error(err);
@@ -112,13 +119,13 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	}
 
 	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
-	// we do not need to update/backup the config file on run.
-	if (!calledByInstall) {
+	// or auto-install just ran above, we do not need to update/backup the config file on run.
+	if (!calledByInstall && !installedDuringInit) {
 		// If run is called with cmd/env vars we create a backup of config and update config file.
 		let parsedArgs = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
 
-		// If HARPER_SET_CONFIG is present, filter out any config keys that are set in it
-		// to prevent individual env vars from overriding explicit runtime configuration
+		// If HARPER_CONFIG or HARPER_SET_CONFIG is present, filter out any config keys that are set
+		// in them to prevent individual env vars from overriding explicit runtime configuration
 		const { filterArgsAgainstRuntimeConfig } = await import('../config/harperConfigEnvVars.ts');
 		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
 
@@ -235,6 +242,9 @@ async function main(calledByInstall = false) {
 			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
+		// after bin/harper.ts's earlier call: covers a fresh install, entries that call main() directly, and a rootPath
+		// that initialize() just moved
+		enableCompileCache(env.get(terms.CONFIG_PARAMS.ROOTPATH));
 
 		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
 
@@ -253,6 +263,11 @@ async function main(calledByInstall = false) {
 			process.env.DEV_MODE
 				? 1
 				: (env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdbTerms.CONFIG_PARAMS.THREADS))
+		);
+		// after main settled interrupted deploys and every pool worker reported what it loaded
+		import('../components/operations.ts').then(
+			({ retryPendingBranchRemovals }) => retryPendingBranchRemovals(),
+			(error) => hdbLogger.error(error)
 		);
 
 		if (!isScripted) started();

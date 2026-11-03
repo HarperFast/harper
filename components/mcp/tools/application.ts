@@ -96,7 +96,9 @@ interface ResourceClassLike {
 	/** Present when built via `Resource.withSchema` (RFC 0001, Pillar 2) — drives typed tool schemas + binding. */
 	requestContract?: unknown;
 	/** Per-verb `{ query?, body? }` JSON-Schema fragments derived from the request contract. */
-	inputSchemas?: { [verb: string]: { query?: JsonSchemaFragmentLike; body?: JsonSchemaFragmentLike } };
+	inputSchemas?: {
+		[verb: string]: { query?: JsonSchemaFragmentLike; body?: JsonSchemaFragmentLike; bodyRequired?: boolean };
+	};
 	mcp?: { annotations?: { [verb: string]: ToolAnnotationsLike } };
 	get?: (target: unknown, request: unknown, data?: unknown) => unknown;
 	put?: (target: unknown, data: unknown, request: unknown) => unknown;
@@ -267,15 +269,16 @@ function contractInputSchema(ResourceClass: ResourceClassLike, contractVerb: str
 		properties[param] = { type: 'string', description: `Path parameter :${param}.` };
 		required.push(param);
 	}
-	const merge = (fragment: JsonSchemaFragmentLike | undefined, allowNull: boolean) => {
+	const merge = (fragment: JsonSchemaFragmentLike | undefined, allowNull: boolean, promoteRequired: boolean) => {
 		if (!fragment?.properties) return;
 		for (const [key, sub] of Object.entries(fragment.properties)) {
 			properties[key] = toJsonSchemaNullability(sub, false, allowNull);
 		}
+		if (!promoteRequired) return;
 		for (const key of fragment.required ?? []) if (!required.includes(key)) required.push(key);
 	};
-	merge(input?.query, false);
-	merge(input?.body, true);
+	merge(input?.query, false, true);
+	merge(input?.body, true, input?.bodyRequired !== false);
 	const schema: { type: string; properties: Record<string, unknown>; required?: string[] } = {
 		type: 'object',
 		properties,
@@ -322,21 +325,24 @@ function applyContractInputs(
  * contract resource those non-body keys are already bound onto the target by {@link applyContractInputs};
  * strip them here so the remaining object is the request body the contract's `additionalProperties:false`
  * body schema will accept (otherwise a bound `id`/query key poisons body validation). Non-contract
- * resources pass through unchanged.
+ * resources pass through unchanged. An `.optional` body with no keys left is omitted (`undefined`),
+ * as an unframed HTTP request would be, rather than validated as `{}`.
  */
 function contractBody(
 	a: Record<string, unknown>,
 	ResourceClass: ResourceClassLike,
 	contractVerb: string
-): Record<string, unknown> {
+): Record<string, unknown> | undefined {
 	if (!ResourceClass.requestContract) return a;
+	const input = ResourceClass.inputSchemas?.[contractVerb];
 	const exclude = new Set(pathParamNames(ResourceClass.path));
-	const queryProps = ResourceClass.inputSchemas?.[contractVerb]?.query?.properties;
-	if (queryProps) for (const key of Object.keys(queryProps)) exclude.add(key);
-	if (exclude.size === 0) return a;
-	const body: Record<string, unknown> = {};
-	for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
-	return body;
+	if (input?.query?.properties) for (const key of Object.keys(input.query.properties)) exclude.add(key);
+	let body = a;
+	if (exclude.size > 0) {
+		body = {};
+		for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
+	}
+	return input?.bodyRequired === false && Object.keys(body).length === 0 ? undefined : body;
 }
 
 /** A compiled parameterised route (e.g. `/widget/:id`), stored outside the base Map. */

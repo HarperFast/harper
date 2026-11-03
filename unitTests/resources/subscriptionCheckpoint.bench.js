@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { persistOriginClosedFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
-const { captureCertifiedFloors } = require('#src/resources/subscriptionCheckpoint');
+const { captureCertifiedFloors, writeCopyBounds } = require('#src/resources/subscriptionCheckpoint');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -52,10 +52,7 @@ describe('checkpoint origin-state read', function () {
 			});
 			if (p < COPY_BOUND_ROWS) {
 				// below every route's start, so the routes still qualify and only the read is measured
-				T.dbisDB.putSync(
-					[Symbol.for('copyBound'), peerId],
-					Object.fromEntries(origins.map((id) => [id, floor - 2000]))
-				);
+				await writeCopyBounds(rootStore, peerId, { raise: new Map(origins.map((id) => [id, floor - 2000])) });
 			}
 		}
 		const start = process.hrtime.bigint();

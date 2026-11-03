@@ -517,52 +517,31 @@ export class RecordEncoder extends StructonEncoder {
 				// We must report a non-commit as `false` (not the buggy `undefined`, which msgpackr
 				// reads as success and then writes a record referencing a structure that was never
 				// saved → later "Record id is not defined" on decode). Returning `false` makes msgpackr
-				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
-				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
-				// trie, re-mints, and re-saves — so the record always references a persisted structure.
+				// re-pack against the durable dictionary, so the record always references a persisted structure.
 				const sharedStructuresKey = this.isRocksDB
 					? [Symbol.for('structures'), this.name]
 					: targetStore.store.sharedStructuresKey;
 				const encodedStructures = asBinary(structuresEncoder.encode(structures));
-				const resetUncommittedStructures = () => {
-					if (this.structures) {
-						this.structures.length = (this as any).lastNamedStructuresLength || 0;
-						(this.structures as any).sharedLength = this.structures.length;
-						delete (this.structures as any).transitions;
-						(this.structures as any).uninitialized = true;
-					}
-				};
-				let incompatible = false;
-				let committed: boolean | undefined;
-				try {
-					committed = targetStore.transactionSync(
-						(txn) => {
-							const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
-							let existingStructures: any;
-							if (existingStructuresBuffer?.length) {
-								existingStructures = this.decode(existingStructuresBuffer);
-								if (!existingStructures || typeof existingStructures !== 'object') {
-									throw new Error(`Failed to decode existing structures for ${this.name ?? 'unnamed store'}`);
-								}
+				const committed = targetStore.transactionSync(
+					(txn) => {
+						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
+						let existingStructures: any;
+						if (existingStructuresBuffer?.length) {
+							existingStructures = this.decode(existingStructuresBuffer);
+							if (!existingStructures || typeof existingStructures !== 'object') {
+								throw new Error(`Failed to decode existing structures for ${this.name ?? 'unnamed store'}`);
 							}
-							if (typeof isCompatible == 'function') {
-								if (!isCompatible(existingStructures)) {
-									incompatible = true;
-									return false;
-								}
-							} else if (existingStructures && existingStructures.length !== isCompatible) {
-								incompatible = true;
-								return false;
-							}
-							txn.putSync(sharedStructuresKey, encodedStructures);
-							return true;
-						},
-						{ retryOnBusy: true }
-					);
-				} catch (error) {
-					resetUncommittedStructures();
-					throw error;
-				}
+						}
+						if (typeof isCompatible == 'function') {
+							if (!isCompatible(existingStructures)) return false;
+						} else if (existingStructures && existingStructures.length !== isCompatible) {
+							return false;
+						}
+						txn.putSync(sharedStructuresKey, encodedStructures);
+						return true;
+					},
+					{ retryOnBusy: true }
+				);
 				// Only record the structure update once the txn has actually committed. Setting it
 				// inside the callback would leave it dangling on an aborted txn and could flag a
 				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
@@ -570,9 +549,6 @@ export class RecordEncoder extends StructonEncoder {
 					this.structureUpdate = structures;
 					this.checkStructureCapacity();
 					return true;
-				}
-				if (!incompatible) {
-					resetUncommittedStructures();
 				}
 				return false;
 			} else {
@@ -794,6 +770,18 @@ export function handleLocalTimeForGets(store, rootStore) {
 	store.rootStore = rootStore;
 	store.encoder.rootStore = rootStore;
 	store.decoder = store.encoder;
+	// the store's prototype carries the computed-attribute getters
+	const asRecordObject = (value) =>
+		value?.constructor === Object
+			? assignStoredFields(new store.encoder.structPrototype.constructor(), value, store.encoder)
+			: value;
+	if (store.cache) {
+		// the WeakRef lmdb-js makes of this value cannot be retargeted, so it must be the promoted record
+		const cacheSetValue = store.cache.setValue;
+		store.cache.setValue = function (key, value, expirationPriority) {
+			return cacheSetValue.call(this, key, asRecordObject(value), expirationPriority);
+		};
+	}
 	const storeGetEntry = store.getEntry;
 
 	store.getEntry = function (id, options) {
@@ -821,12 +809,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
 		function withEntry(entry) {
 			if (entry.value) {
-				if (entry.value.constructor === Object) {
-					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
-					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					assignStoredFields(entry.value, originalValue, store.encoder);
-				}
+				entry.value = asRecordObject(entry.value);
 				entryMap.set(entry.value, entry); // allow the record to access the entry
 			}
 			entry.key = id;
@@ -874,14 +857,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (lastMetadata.expiresAt >= 0) entry.expiresAt = lastMetadata.expiresAt;
 				lastMetadata = null;
 			}
-			if (entry.value) {
-				if (entry.value.constructor === Object) {
-					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
-					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					assignStoredFields(entry.value, originalValue, store.encoder);
-				}
-			}
+			if (entry.value) entry.value = asRecordObject(entry.value);
 			return entry;
 		});
 	};
@@ -1046,6 +1022,7 @@ export function recordUpdater(
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
+		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
 		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
 		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
 		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
@@ -1074,11 +1051,12 @@ export function recordUpdater(
 			if (previousResidencySlot !== undefined && (previousResidencySlot !== residencySlot || type === 'delete'))
 				extendedType |= HAS_PREVIOUS_RESIDENCY_SLOT;
 			const residencyId = options?.residencyId; //getResidency(record, previousResidencyId);
-			if (residencyId) {
-				residencyIdAtNextEncoding = residencyId;
+			const recordResidencyId = options?.recordResidencyId !== undefined ? options.recordResidencyId : residencyId;
+			if (recordResidencyId) {
+				residencyIdAtNextEncoding = recordResidencyId;
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
-				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
+			if (residencyId) extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			const recordNodeId = options?.recordNodeId ?? options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
 			if (recordNodeId >= 0) {
 				nodeIdAtNextEncoding = recordNodeId;
@@ -1104,7 +1082,8 @@ export function recordUpdater(
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;
 				if (!previousResidencyId) previousResidencyId = 0;
 			}
-			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
+			if (options?.auditExpiresAt === undefined ? assignMetadata & HAS_EXPIRATION : auditExpiresAt >= 0)
+				extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
 			if (options?.copyFrame) extendedType |= COPIED_RECORD;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
@@ -1159,7 +1138,7 @@ export function recordUpdater(
 					let replacingEntry;
 					if (isRocksDB && existingEntry.additionalAuditRefs) {
 						for (const ref of existingEntry.additionalAuditRefs) {
-							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
+							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId, true);
 							if (
 								candidate?.version === existingEntry.version &&
 								(candidate.nodeId ?? 0) === (existingEntry.nodeId ?? 0)
@@ -1171,7 +1150,7 @@ export function recordUpdater(
 						}
 					}
 					replacingEntry ??= isRocksDB
-						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId)
+						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId, true)
 						: replacingAuditEntry;
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
@@ -1191,7 +1170,7 @@ export function recordUpdater(
 								previousResidencyId,
 								residencySlot,
 								previousResidencySlot,
-								expiresAt,
+								expiresAt: auditExpiresAt,
 								structureVersion,
 								previousAdditionalAuditRefs,
 							},
@@ -1217,7 +1196,7 @@ export function recordUpdater(
 						previousResidencyId,
 						residencySlot,
 						previousResidencySlot,
-						expiresAt,
+						expiresAt: auditExpiresAt,
 						structureVersion,
 						originatingOperation: options?.originatingOperation,
 						previousAdditionalAuditRefs,
@@ -1253,10 +1232,14 @@ export function recordUpdater(
 		}
 	};
 }
-// a coordinated retry's put appends nothing; its write keeps what the attempt it retries appended
+// a coordinated retry's put appends nothing (unless the attempt it retries wrote no batch); its write keeps what that attempt appended
 function noteStagedAudit(options: any, extendedType: number) {
 	const write = options?.write;
-	if (write && write.stagedAudit !== 'replicable' && !options.transaction?.isRetry)
+	if (
+		write &&
+		write.stagedAudit !== 'replicable' &&
+		(!options.transaction?.isRetry || options.transaction.relogOnRetry)
+	)
 		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 }
 export function removeEntry(store: any, entry: any, options?: any) {

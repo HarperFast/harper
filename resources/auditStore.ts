@@ -19,6 +19,7 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { asBinary } from './asBinary.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { endSubscriptionsFromEarlierHandles } from './transactionBroadcast.ts';
+import { abortMarkersEnabled } from './transactionLogAbortMarkers.ts';
 import {
 	ORIGIN_FLOOR_TICK_MS,
 	certifyOriginFloor,
@@ -26,6 +27,7 @@ import {
 	isValidFloor,
 	publishOriginFloor,
 	originFloorsDurable,
+	seedLocalIssuance,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
 
@@ -190,6 +192,15 @@ const AUDIT_RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
  * and read at open to bound every key issued afterwards. RocksDB only.
  */
 const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
+/**
+ * Above every local key the issuance ratchet handed out ahead of the clock (a record-lock claim, or
+ * keys behind a recovered floor). Written before such a key is used and read at open to seed issuance,
+ * so a restart before the clock passes them cannot issue them again. RocksDB only.
+ */
+const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
+const ABORT_MARKED_RECHECK_MS = 60_000;
+// Amortize durability barriers across keys; restart seeds above this whole reserve.
+const ISSUANCE_CEILING_HEADROOM_MS = 1000;
 
 function isRocksStore(store: any): boolean {
 	return store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
@@ -234,7 +245,11 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
-	if (isRocksStore(auditStore)) publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
+	establishAbortMarkedHistory(auditStore);
+	if (isRocksStore(auditStore)) {
+		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
+		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
+	}
 	endSubscriptionsFromEarlierHandles(auditStore, isRocksStore(auditStore));
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
@@ -990,6 +1005,43 @@ export function persistOriginClosedFloor(auditStore: any, floor: number): void {
 	);
 }
 
+export function readLocalIssuanceCeiling(auditStore: any): number {
+	const ceiling = decodeAuditFloor(auditStore.getBinary(LOCAL_ISSUANCE_CEILING_KEY));
+	return isValidFloor(ceiling) ? ceiling : 0;
+}
+
+let issuanceCeilingErrorLoggedAt = -Infinity;
+
+export function coverLocalIssuance(auditStore: any, key: number): number {
+	const ceiling = isValidFloor(key + ISSUANCE_CEILING_HEADROOM_MS) ? key + ISSUANCE_CEILING_HEADROOM_MS : key;
+	let stored = ceiling;
+	try {
+		commitAuditMetadata(
+			auditStore,
+			(read) => {
+				const existing = decodeAuditFloor(read(LOCAL_ISSUANCE_CEILING_KEY));
+				if (Number.isFinite(existing) && existing >= ceiling) {
+					stored = existing;
+					return undefined;
+				}
+				return [[LOCAL_ISSUANCE_CEILING_KEY, encodeAuditFloor(ceiling)]];
+			},
+			'local issuance ceiling'
+		);
+		// A WAL append alone can be lost after another node observes an issued key. An existing ceiling
+		// also needs this barrier: its writer may not have completed its flush yet.
+		(auditStore.rootStore ?? auditStore).flushSync({ allowWriteStall: true });
+		return stored;
+	} catch (error) {
+		const now = performance.now();
+		if (now - issuanceCeilingErrorLoggedAt >= 60_000) {
+			issuanceCeilingErrorLoggedAt = now;
+			warnContained('Error recording the local issuance ceiling', error);
+		}
+		throw error;
+	}
+}
+
 export interface DatabaseGeneration {
 	/** Thirty-two lowercase hex characters. */
 	id: string;
@@ -1099,6 +1151,61 @@ export function establishDatabaseGeneration(auditStore: any): void {
 	} catch (error) {
 		warnContained('Error establishing the database generation', error);
 	}
+}
+
+function isEmptyLog(log: any): boolean {
+	for (const _entry of log.query({ start: 0, readUncommitted: true })) return false;
+	return true;
+}
+
+/**
+ * Record at open, per transaction log, the file this process started writing in. Every batch in a later
+ * file was written with abort markers on, so a committed reader returns it only if it committed; an
+ * earlier file can hold an orphan of a logged attempt aborted with markers off, by this build or any other.
+ * Nothing is persisted: a record could not tell whether an older build wrote the log since.
+ */
+export function establishAbortMarkedHistory(auditStore: any): void {
+	auditStore.abortMarkedHistory = undefined;
+	if (!isRocksStore(auditStore) || !abortMarkersEnabled()) return;
+	try {
+		const rootStore = auditStore.rootStore;
+		const baseline = new Map<string, number>();
+		for (const name of rootStore.listLogs()) {
+			const log = rootStore.useLog(name);
+			if (!isEmptyLog(log)) baseline.set(name, log.getStats().currentSequenceNumber);
+		}
+		auditStore.abortMarkedHistory = { baseline, recheckAt: new Map<string, number>() };
+	} catch (error) {
+		warnContained('Error recording which transaction-log files predate abort markers', error);
+	}
+}
+
+/**
+ * Whether every batch a committed reader can return from the log holding `nodeId`'s entries was written
+ * with abort markers on: the files that predate this process have been purged. Rechecked at most once a
+ * minute per log until it holds.
+ */
+export function auditHistoryAbortMarked(auditStore: any, nodeId: number | undefined): boolean {
+	const history = auditStore?.abortMarkedHistory;
+	if (!history) return false;
+	const name: string = ((nodeId && auditStore.logById(nodeId)) || auditStore.log).name;
+	const sequence = history.baseline.get(name);
+	if (sequence === undefined) return true;
+	const now = performance.now();
+	if (now < (history.recheckAt.get(name) ?? -Infinity)) return false;
+	history.recheckAt.set(name, now + ABORT_MARKED_RECHECK_MS);
+	try {
+		const rootStore = auditStore.rootStore;
+		if (rootStore.listLogs().includes(name)) {
+			const stats = rootStore.useLog(name).getStats();
+			if (stats.fileCount > 0 && stats.oldestSequenceNumber <= sequence) return false;
+		}
+	} catch (error) {
+		warnContained('Error checking which transaction-log files predate abort markers', error);
+		return false;
+	}
+	history.baseline.delete(name);
+	return true;
 }
 
 /**

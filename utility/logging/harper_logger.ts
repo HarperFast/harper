@@ -254,27 +254,30 @@ function applyLogSettings(rootConfigObject: any) {
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
-	const externalLogOptions = normalizeLogOptions(logOptions.external);
-	if (externalLogOptions) {
-		updateLogger(externalLogger, externalLogOptions);
-		for (let [name, component] of mainLogger.components) {
-			if (!normalizeLogOptions(rootConfigObject[name]?.logging) && component.isExternal)
-				updateLogger(component, externalLogOptions, name);
-		}
-	}
+	// an unrecognized level leaves the main logger unchanged, so it must not reach logLevel either
+	if (LOG_LEVEL_HIERARCHY[logOptions.level]) logLevel = logOptions.level;
 	for (const name in rootConfigObject) {
-		// we now scan each component to see if it has logging individual configured
-		const component = rootConfigObject[name];
 		// `myComponent:` with nothing under it parses to null, and an async listener's TypeError
 		// escapes the watcher's emit guard as an unhandled rejection.
-		const componentLogging = normalizeLogOptions(component?.logging);
-		if (componentLogging) {
-			updateLogger(mainLogger.forComponent(name), componentLogging, name);
-		} else if (mainLogger.hasComponent(name)) {
-			const componentLogger = mainLogger.forComponent(name);
-			updateLogger(componentLogger, (componentLogger.isExternal && externalLogOptions) ?? logOptions, name);
+		if (normalizeLogOptions(rootConfigObject[name]?.logging)) mainLogger.forComponent(name);
+	}
+	updateComponentLoggers(rootConfigObject, normalizeLogOptions(logOptions.external));
+}
+
+function updateComponentLoggers(configObject: any, externalLogOptions: any) {
+	for (const [name, componentLogger] of mainLogger.components) {
+		const componentLogOptions =
+			normalizeLogOptions(configObject?.[name]?.logging) ??
+			(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
+			{};
+		try {
+			updateLogger(componentLogger, componentLogOptions, name);
+		} catch (err) {
+			console.error(err);
+			updateLogger(componentLogger, {}, name);
 		}
 	}
+	if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
 }
 
 /**
@@ -456,7 +459,12 @@ if (typeof module !== 'undefined') {
 		info,
 		debug,
 		trace,
-		logLevel,
+		get logLevel() {
+			return logLevel;
+		},
+		set logLevel(level) {
+			logLevel = level;
+		},
 		loggerWithTag,
 		suppressLogging,
 		initLogSettings,
@@ -610,19 +618,7 @@ export function initLogSettings(forceInit = false) {
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
 			const externalLogOptions = normalizeLogOptions(configObject?.logging?.external);
-			for (const [name, componentLogger] of mainLogger.components) {
-				const componentLogOptions =
-					normalizeLogOptions(configObject?.[name]?.logging) ??
-					(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
-					{};
-				try {
-					updateLogger(componentLogger, componentLogOptions, name);
-				} catch (err) {
-					console.error(err);
-					updateLogger(componentLogger, {}, name);
-				}
-			}
-			if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
+			updateComponentLoggers(configObject, externalLogOptions);
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
 				// Bun will crash with the segfault handler, ironically.
 				// Dynamic import works in both CJS and ESM (type-strip); require() is not
@@ -673,10 +669,7 @@ export function initLogSettings(forceInit = false) {
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
-			for (const [name, componentLogger] of mainLogger.components) {
-				updateLogger(componentLogger, {}, name);
-			}
-			externalLogger.tag = null; // don't tag by default
+			updateComponentLoggers(undefined, undefined);
 			// The streams are this branch's only sink, so it needs the same EPIPE/EIO listeners the
 			// configured path installs below: `harper install | head -1` closes the reader, and the
 			// async error would otherwise land on a stream with none and take the install down. The
@@ -2477,6 +2470,9 @@ const loggerExports = {
 	trace,
 	get logLevel() {
 		return logLevel;
+	},
+	set logLevel(level) {
+		logLevel = level;
 	},
 	loggerWithTag,
 	suppressLogging,

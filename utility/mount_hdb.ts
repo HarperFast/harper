@@ -12,7 +12,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import { systemSchema as builtinSystemSchema } from './systemSchema.js';
 const systemSchema: Record<string, any> = builtinSystemSchema;
 
-export default async function mountHdb(hdbPath: string) {
+export default async function mountHdb(hdbPath: string, beforeCreateTables?: () => void) {
 	hdbLogger.trace('Mounting Harper');
 
 	makeDirectory(hdbPath);
@@ -23,6 +23,8 @@ export default async function mountHdb(hdbPath: string) {
 	makeDirectory(path.join(hdbPath, 'components'));
 	copySync(path.join(PACKAGE_ROOT, 'static/README.md'), path.join(hdbPath, 'README.md'));
 
+	beforeCreateTables?.();
+	initPaths.resetPaths();
 	await createTables();
 }
 

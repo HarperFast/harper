@@ -1,0 +1,8 @@
+type Stream @table(audit: true) @export {
+	id: ID @primaryKey
+	value: Int
+}
+type Other @table(audit: true) @export {
+	id: ID @primaryKey
+	value: Int
+}

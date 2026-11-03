@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
-const { RequestTarget } = require('#src/resources/RequestTarget');
+const { RequestTarget, markDispatchTarget } = require('#src/resources/RequestTarget');
 const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const database = 'selector_authorization';
@@ -108,8 +108,19 @@ describe('relationship selector authorization isolation', function () {
 	after(function () {
 		setMainIsWorker(previousMainIsWorker);
 	});
-	async function read(method, selection, user, permission = user.role.permission, select = ['id', selection]) {
-		const target = { id: 'p1', select, checkPermission: permission };
+	async function read(
+		method,
+		selection,
+		user,
+		permission = user.role.permission,
+		select = ['id', selection],
+		owned = false
+	) {
+		const target = Object.assign(owned ? markDispatchTarget(new RequestTarget('/p1')) : {}, {
+			id: 'p1',
+			select,
+			checkPermission: permission,
+		});
 		if (method === 'get') return Parent.get(target, { user });
 		delete target.id;
 		target.conditions = [{ attribute: 'id', comparator: 'equals', value: 'p1' }];
@@ -180,11 +191,36 @@ describe('relationship selector authorization isolation', function () {
 			assert.deepStrictEqual(await read(method, selection, broadUser), expected(broadUser));
 			assertUnchanged(selection, original);
 		});
-		it(`${method} retains explicit trusted nested permission controls`, async function () {
+		it(`${method} uses the requesting authority without changing a nested permission template`, async function () {
+			for (const [user, staleUser] of [
+				[broadUser, restrictedUser],
+				[restrictedUser, broadUser],
+			]) {
+				const selection = selectors.object();
+				selection.checkPermission = staleUser.role.permission;
+				const original = structuredClone(selection);
+				assert.deepStrictEqual(await read(method, selection, user), expected(user));
+				assertUnchanged(selection, original);
+			}
+		});
+		it(`${method} isolates a frozen selector with iterable conditions and a sort`, async function () {
 			const selection = selectors.object();
-			selection.checkPermission = restrictedUser.role.permission;
+			selection.conditions = new Set([{ attribute: 'id', comparator: 'equals', value: 'c1' }]);
+			selection.sort = { attribute: 'id' };
 			const original = structuredClone(selection);
-			assert.deepStrictEqual(await read(method, selection, broadUser), expected(restrictedUser));
+			freeze(selection);
+			for (const user of [restrictedUser, broadUser])
+				assert.deepStrictEqual(await read(method, selection, user), expected(user));
+			assertUnchanged(selection, original);
+		});
+		it(`${method} isolates an application selector attached to transport-owned roots`, async function () {
+			const selection = selectors.object();
+			const original = structuredClone(selection);
+			for (const user of [broadUser, restrictedUser, broadUser])
+				assert.deepStrictEqual(
+					await read(method, selection, user, user.role.permission, ['id', selection], true),
+					expected(user)
+				);
 			assertUnchanged(selection, original);
 		});
 		it(`${method} still omits a related table the caller cannot read`, async function () {

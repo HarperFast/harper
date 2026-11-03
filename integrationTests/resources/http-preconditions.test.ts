@@ -178,6 +178,28 @@ for (const preconditionLocks of [true, false]) {
 				}
 			});
 
+			test('a tracked handler applies addTo and an assignment under If-Match, and rejects a stale one', async () => {
+				ok((await request('PUT', 'tracked', { n: 10, holders: 0 })).ok);
+				const read = await request('GET', 'tracked');
+				const etag = read.headers.get('etag');
+				ok(etag);
+				await read.text();
+				const patch = (ifMatch: string, body: object) =>
+					fetch(`${base}/ConditionalTrackedCounter/tracked`, {
+						method: 'PATCH',
+						headers: { 'Authorization': auth, 'Content-Type': 'application/json', 'If-Match': ifMatch },
+						body: JSON.stringify(body),
+						signal: AbortSignal.timeout(15_000),
+					});
+				const stale = await patch('"stale"', { add: 5, holders: 1 });
+				strictEqual(stale.status, 412, await stale.text());
+				const matched = await patch(etag, { add: 5, holders: 2 });
+				strictEqual(matched.status, 204, await matched.text());
+				const stored = (await (await request('GET', 'tracked')).json()) as { n: number; holders: number };
+				strictEqual(stored.n, 15);
+				strictEqual(stored.holders, 2);
+			});
+
 			test('a handler that skips the write and throws a success Response gets 501', async () => {
 				ok((await request('PUT', 'short-circuit', { n: 1 })).ok);
 				const response = await fetch(`${base}/ConditionalShortCircuit/short-circuit`, {

@@ -7,6 +7,7 @@ import {
 	DatabaseClosingError,
 	DatabaseShardingHeldError,
 	hdbErrors,
+	AccessViolation,
 } from '../../utility/errors/hdbError.ts';
 import {
 	table,
@@ -94,6 +95,8 @@ export class ResourceBridge extends BridgeMethods {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
 					value: c.value !== undefined ? c.value : c.search_value, // null is valid value
+					...(c.fuzzyDistance === undefined ? null : { fuzzyDistance: c.fuzzyDistance }),
+					...(c.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: c.fuzzyTranspositions }),
 					...(c.fields === undefined ? null : { fields: c.fields }),
 					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
 					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
@@ -182,21 +185,8 @@ export class ResourceBridge extends BridgeMethods {
 	async dropAttribute(dropAttributeObj) {
 		const Table = getTable(dropAttributeObj);
 		await Table.removeAttributes([dropAttributeObj.attribute]);
-		if (!Table.schemaDefined) {
-			// legacy behavior of deleting all the property values
-			const property = dropAttributeObj.attribute;
-			let resolution;
-			const deleteRecord = (key, record, version): Promise<void> => {
-				record = { ...record };
-				delete record[property];
-				return Table.primaryStore.put(key, record, version);
-			};
-			for (const { key, value: record, version } of Table.primaryStore.getRange({ start: true, versions: true })) {
-				resolution = deleteRecord(key, record, version);
-				await new Promise((resolve) => setImmediate(resolve));
-			}
-			await resolution;
-		}
+		// legacy behavior of deleting all the property values
+		if (!Table.schemaDefined) await Table.stripAttributeValues([dropAttributeObj.attribute]);
 		return `successfully deleted ${dropAttributeObj.schema}.${dropAttributeObj.table}.${dropAttributeObj.attribute}`;
 	}
 
@@ -459,7 +449,7 @@ export class ResourceBridge extends BridgeMethods {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 		const validationError = searchValidator(searchObject, 'hashes');
 		if (validationError) {
-			throw validationError;
+			throwSearchValidationError(validationError);
 		}
 		return getRecords(searchObject);
 	}
@@ -488,7 +478,7 @@ export class ResourceBridge extends BridgeMethods {
 
 		const validationError = searchValidator(searchObject, 'value');
 		if (validationError) {
-			throw validationError;
+			throwSearchValidationError(validationError);
 		}
 
 		const table = getTable(searchObject);
@@ -496,7 +486,7 @@ export class ResourceBridge extends BridgeMethods {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
 		let value: any = searchObject.value;
-		if (value.includes?.('*')) {
+		if (typeof value === 'string' && value.includes('*')) {
 			if (value.startsWith('*')) {
 				if (value.endsWith('*')) {
 					if (value !== '*') {
@@ -535,6 +525,7 @@ export class ResourceBridge extends BridgeMethods {
 				select: getSelect(searchObject, table),
 			} as any,
 			{
+				user: searchObject.hdb_user,
 				onlyIfCached: (searchObject as any).onlyIfCached,
 				noCacheStore: (searchObject as any).noCacheStore,
 				noCache: (searchObject as any).noCache,
@@ -745,7 +736,11 @@ export class ResourceBridge extends BridgeMethods {
 	}
 }
 
-function getSelect({ get_attributes }: any, table: any) {
+function throwSearchValidationError(validationError: any): never {
+	throw typeof validationError.statusCode === 'number' ? validationError : new ClientError(validationError.message);
+}
+
+function getSelect({ get_attributes, hdb_user }: any, table: any) {
 	if (get_attributes) {
 		if (get_attributes[0] === '*') {
 			const metadata = get_attributes.slice(1).filter((name) => name === '$score' || name === '$highlights');
@@ -756,6 +751,24 @@ function getSelect({ get_attributes }: any, table: any) {
 					.map((attribute) => attribute.name),
 				...metadata,
 			];
+		}
+		const permission = hdb_user?.role?.permission;
+		if (
+			table.hasRelationships &&
+			permission &&
+			!permission.super_user &&
+			get_attributes.some((property) =>
+				typeof property === 'object' ? property !== null : table.propertyResolvers?.[property]?.definition?.tableClass
+			)
+		) {
+			const context = { user: hdb_user };
+			get_attributes = table._inReadAdmission(() =>
+				get_attributes.map((property) => {
+					const authorized = table._authorizeRelatedSelection(property, hdb_user, permission, context);
+					if (authorized === false) throw new AccessViolation(hdb_user);
+					return authorized;
+				})
+			);
 		}
 		get_attributes.forceNulls = true;
 		return get_attributes;

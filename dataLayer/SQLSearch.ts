@@ -12,6 +12,7 @@ import uniqBy from 'lodash/uniqBy.js';
 import alasql from 'alasql';
 alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
+import { generatedName } from '../sqlTranslator/legacySqlText.ts';
 import clone from 'clone';
 import RecursiveIterator from 'recursive-iterator';
 import log from '../utility/logging/harper_logger.ts';
@@ -992,7 +993,7 @@ class SQLSearch {
 				table: table.as ? table.as_orig : table.tableid_orig,
 				keys: new Set(),
 			});
-			select.push(`${table.as ? table.as : table.tableid}.\`${hash}\` AS "${tableKey}.${hash}"`);
+			select.push(`${table.as ? table.as : table.tableid}.\`${hash}\` AS ${generatedName(`${tableKey}.${hash}`)}`);
 
 			existingAttributes[table.as ? table.as_orig : table.tableid_orig] =
 				this.data[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`].__mergedAttributes;

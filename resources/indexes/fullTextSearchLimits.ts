@@ -1,5 +1,39 @@
 import type { NativeFullTextRuntimeBudget } from './fullTextNativeBinding.ts';
 
+export type FullTextQueryLimits = Readonly<{
+	maxQueryTerms: number;
+	maxQueryClauses: number;
+	maxFuzzyDistance: number;
+}>;
+
+export const DEFAULT_FULL_TEXT_QUERY_LIMITS: FullTextQueryLimits = Object.freeze({
+	maxQueryTerms: 64,
+	maxQueryClauses: 256,
+	maxFuzzyDistance: 1,
+});
+
+export function resolveFullTextQueryLimits(value: unknown): FullTextQueryLimits {
+	if (value === undefined) return DEFAULT_FULL_TEXT_QUERY_LIMITS;
+	const config = object(value, 'storage.fullText.query');
+	const result = {} as Record<string, number>;
+	for (const [name, fallback] of Object.entries(DEFAULT_FULL_TEXT_QUERY_LIMITS)) {
+		let value = config[name] === undefined ? fallback : config[name];
+		if (typeof value === 'string' && /^\d+$/.test(value)) value = Number(value);
+		if (name === 'maxFuzzyDistance' && value === 0) result[name] = 0;
+		else result[name] = positiveInteger(value, `storage.fullText.query.${name}`);
+	}
+	for (const name of Object.keys(config))
+		if (!Object.hasOwn(DEFAULT_FULL_TEXT_QUERY_LIMITS, name))
+			throw new TypeError(`Unknown storage.fullText.query option '${name}'`);
+	for (const [name, ceiling] of [
+		['maxQueryTerms', 1024],
+		['maxQueryClauses', 4096],
+		['maxFuzzyDistance', 2],
+	] as const)
+		if (result[name] > ceiling) throw new TypeError(`storage.fullText.query.${name} must not exceed ${ceiling}`);
+	return Object.freeze(result) as FullTextQueryLimits;
+}
+
 export type FullTextSearchLimits = Readonly<{
 	requestBudgetMilliseconds: number;
 	maxRawHitsPerRequest: number;
@@ -38,7 +72,7 @@ export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimit
 			`storage.fullText.runtime.${name}`
 		);
 	for (const name of Object.keys(config))
-		if (!Object.hasOwn(DEFAULT_FULL_TEXT_SEARCH_LIMITS, name))
+		if (name !== 'query' && !Object.hasOwn(DEFAULT_FULL_TEXT_SEARCH_LIMITS, name))
 			throw new TypeError(`Unknown storage.fullText option '${name}'`);
 	for (const name of Object.keys(runtime))
 		if (!Object.hasOwn(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime, name))

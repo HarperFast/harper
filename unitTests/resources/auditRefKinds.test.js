@@ -95,13 +95,12 @@ describe('Audit references state their kind', () => {
 				}
 				return originalCommit.apply(this, args);
 			};
-			// the holder's first stamp is K(2), which is also the next key minted
-			holder = await T.lock('held', { hold: true, lease: 15_000 }, { timestamp: K(2) });
+			holder = await T.lock('held', { hold: true, lease: 15_000 }, { timestamp: K(3) });
 			holder.set('name', 'first');
 			await holder.save();
 			assert.ok(conflicted, 'the first save must have been retried');
 			const first = T.primaryStore.getEntry('held');
-			assert.deepEqual([first.version, entriesFor(T, 'held').at(-1).txnLogKey], [K(2), K(2)]);
+			assert.deepEqual([first.version, entriesFor(T, 'held').at(-1).txnLogKey], [K(3), K(3)]);
 			holder.set('name', 'second');
 			await holder.save();
 			const second = T.primaryStore.getEntry('held');

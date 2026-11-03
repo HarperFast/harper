@@ -11,7 +11,12 @@ testUtils.preTestPrep();
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const validator = require('#js/components/operationsValidation');
-const { deployComponent, dropComponent, getComponents } = require('#js/components/operations');
+const {
+	deployComponent,
+	dropComponent,
+	getComponents,
+	retryPendingBranchRemovals,
+} = require('#js/components/operations');
 const { handleListDeployments, handleGetDeployment } = require('#src/components/deploymentOperations');
 const { stagingRetentionMaxCountOf } = require('#src/components/Application');
 const {
@@ -24,6 +29,7 @@ const {
 const {
 	admitPreviewActivation,
 	assertPreviewCapacity,
+	fencePreviewGeneration,
 	listLocalPreviews,
 	sweepExpiredPreviews,
 } = require('#src/components/previews');
@@ -149,12 +155,12 @@ describe('PR preview metadata (harper#3048)', () => {
 			await fs.rm(root, { recursive: true, force: true });
 		});
 
-		async function candidate(component, pr) {
+		async function candidate(component, pr, overrides) {
 			const dir = path.join(root, '.candidates', component);
 			await fs.mkdir(dir, { recursive: true });
 			await fs.writeFile(
 				path.join(dir, DEPLOYMENT_PROVENANCE_FILE),
-				formatDeploymentProvenance(component, `d-${component}`, preview(pr))
+				formatDeploymentProvenance(component, `d-${component}`, preview(pr, overrides))
 			);
 			return dir;
 		}
@@ -189,6 +195,129 @@ describe('PR preview metadata (harper#3048)', () => {
 			await admitPreviewActivation('shop-production', plain, async () => {}, 1, root);
 			const two = await candidate('shop-pr-2', 2);
 			await admitPreviewActivation('shop-pr-2', two, async () => {}, undefined, root);
+		});
+	});
+
+	describe('the revocation fence (harper#3613)', () => {
+		let root;
+		beforeEach(async () => {
+			root = await fs.mkdtemp(path.join(os.tmpdir(), 'preview-fence-'));
+		});
+		afterEach(async () => {
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		async function candidate(component, pr, generation) {
+			const dir = path.join(root, '.candidates', component);
+			await fs.mkdir(dir, { recursive: true });
+			await fs.writeFile(
+				path.join(dir, DEPLOYMENT_PROVENANCE_FILE),
+				formatDeploymentProvenance(component, `d-${component}`, preview(pr, generation ? { generation } : {}))
+			);
+			return dir;
+		}
+		const fenced = (component, dir, activate = async () => {}) =>
+			admitPreviewActivation(component, dir, activate, null, root, undefined, undefined, true);
+
+		it('refuses a build whose identity generation was revoked on this node, with no cap', async () => {
+			await fencePreviewGeneration('shop', 'g1', root);
+			await assert.rejects(fenced('shop-pr-1', await candidate('shop-pr-1', 1, 'g1')), (error) => {
+				assert.strictEqual(error.statusCode, 403);
+				assert.match(error.message, /'shop-pr-1' was not activated: previews of shop .* were disabled/);
+				return true;
+			});
+			await fenced('shop-pr-2', await candidate('shop-pr-2', 2, 'g2'));
+			await fenced('shop-pr-3', await candidate('shop-pr-3', 3));
+		});
+
+		it('waits for a swap holding the lock, so what it made live is there when the fence returns', async () => {
+			const dir = await candidate('shop-pr-1', 1, 'g1');
+			let entered;
+			let release;
+			const inSwap = new Promise((resolve) => (entered = resolve));
+			const gate = new Promise((resolve) => (release = resolve));
+			const swap = fenced('shop-pr-1', dir, async () => {
+				entered();
+				await gate;
+				await fs.mkdir(path.join(root, 'shop-pr-1'));
+			});
+			let fenceDone = false;
+			let fence;
+			try {
+				await Promise.race([
+					inSwap,
+					new Promise((_, reject) => setTimeout(() => reject(new Error('the swap never started')), 10_000)),
+				]);
+				fence = fencePreviewGeneration('shop', 'g1', root).then(() => (fenceDone = true));
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				assert.strictEqual(fenceDone, false, 'the fence waits for the swap');
+			} finally {
+				release();
+			}
+			await Promise.all([swap, fence]);
+			assert.ok(await fs.stat(path.join(root, 'shop-pr-1')), 'the swap finished before the fence was recorded');
+		});
+
+		it('refuses, rather than skipping the fence, when it cannot read what a candidate is', async () => {
+			const dir = path.join(root, '.candidates', 'shop-pr-5');
+			await fs.mkdir(path.join(dir, DEPLOYMENT_PROVENANCE_FILE), { recursive: true });
+			let activated = false;
+			await assert.rejects(fenced('shop-pr-5', dir, async () => (activated = true)));
+			assert.strictEqual(activated, false);
+			await fs.mkdir(path.join(root, '.candidates', 'shop-pr-6'), { recursive: true });
+			await fenced('shop-pr-6', path.join(root, '.candidates', 'shop-pr-6'));
+		});
+
+		it('takes the lock from a worker of this process that died holding it, rather than waiting it out', async () => {
+			const {
+				COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+				componentPreparationLockPaths,
+			} = require('#src/components/componentPreparationLock');
+			const { lockRoot, lockName } = componentPreparationLockPaths(path.join(root, '.preview-admission-shop'));
+			await fs.mkdir(lockRoot, { recursive: true, mode: 0o700 });
+			const orphan = path.join(lockRoot, `${lockName}.ticket.1.crashed-worker.json`);
+			const plantOrphan = () =>
+				fs.writeFile(
+					orphan,
+					JSON.stringify({
+						pid: process.pid,
+						threadId: 987654,
+						processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+						token: 'crashed-worker',
+						ticket: 1,
+						purpose: 'preview admission for shop',
+					})
+				);
+			const promptly = async (work, what) => {
+				let timer;
+				try {
+					return await Promise.race([
+						work,
+						new Promise((_, reject) => {
+							timer = setTimeout(() => reject(new Error(`${what} waited behind the dead worker's ticket`)), 10_000);
+						}),
+					]);
+				} finally {
+					clearTimeout(timer);
+				}
+			};
+
+			await plantOrphan();
+			await promptly(fencePreviewGeneration('shop', 'g1', root), 'the fence');
+			await assert.rejects(fs.stat(orphan), { code: 'ENOENT' });
+			await plantOrphan();
+			await promptly(fenced('shop-pr-2', await candidate('shop-pr-2', 2, 'g2')), 'the activation');
+			await assert.rejects(fs.stat(orphan), { code: 'ENOENT' });
+		});
+
+		it('keeps every generation it was given, durably, and refuses an unreadable fence', async () => {
+			await fencePreviewGeneration('shop', 'g1', root);
+			await fencePreviewGeneration('shop', 'g2', root);
+			await fencePreviewGeneration('shop', 'g1', root);
+			const file = path.join(root, '.preview-revoked', 'shop.json');
+			assert.deepStrictEqual(JSON.parse(await fs.readFile(file, 'utf8')), ['g1', 'g2']);
+			await fs.writeFile(file, 'not json');
+			await assert.rejects(fenced('shop-pr-4', await candidate('shop-pr-4', 4, 'g3')));
 		});
 	});
 
@@ -261,6 +390,51 @@ describe('PR preview metadata (harper#3048)', () => {
 			const dropped = await drop('shop-pr-13', renewed.deployment_id);
 			assert.strictEqual(dropped.componentRemoved, true);
 			assert.ok(!(await listLocalPreviews()).some((live) => live.component === 'shop-pr-13'));
+		});
+
+		it('discards the fork of a swept preview past a removal that failed, without dropping that preview again (harper#3463)', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0 || process.env.HARPER_STORAGE_ENGINE === 'lmdb') {
+				return this.skip(); // forks are RocksDB-only, and root ignores the permission that makes the removal fail
+			}
+			const { existsSync, chmodSync, mkdirSync, writeFileSync } = require('node:fs');
+			const { table, resolveBranchPath } = require('#src/resources/databases');
+			const { getOrCreateBranch } = require('#src/resources/branchDatabase');
+			const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+			const { waitFor } = require('../waitFor.js');
+			table({ database: 'previewbase', table: 'Rows', attributes: [{ name: 'id', isPrimaryKey: true }] });
+			await deploy({ project: 'shop-pr-14', preview: preview(14, { expiresAt: '2000-01-01T00:00:00.000Z' }) });
+			const mainWasWorker = getWorkerIndex() === 0;
+			setMainIsWorker(true);
+			try {
+				await (await getOrCreateBranch('previewbase', 'shop-pr-14')).close();
+			} finally {
+				setMainIsWorker(mainWasWorker);
+			}
+			const branchPath = resolveBranchPath('previewbase', 'shop-pr-14');
+			const forks = path.dirname(branchPath);
+			const hold = path.join(branchPath, 'hold');
+			mkdirSync(hold);
+			writeFileSync(path.join(hold, 'keep'), '');
+			chmodSync(hold, 0o555);
+			const drop = (project, ifDeploymentId) => dropComponent({ operation: 'drop_component', project, ifDeploymentId });
+			try {
+				assert.deepStrictEqual(await sweepExpiredPreviews(drop, Date.now()), ['shop-pr-14']);
+				assert.ok(
+					!(await listLocalPreviews()).some((live) => live.component === 'shop-pr-14'),
+					'no sweep lists it again'
+				);
+				assert.ok(existsSync(forks), 'its fork is still on disk');
+				assert.ok(existsSync(path.join(forks, '`removal-pending`')), "the sweep's drop recorded the removal it owes");
+				await retryPendingBranchRemovals?.();
+				assert.ok(existsSync(forks), 'a pass cannot remove it either');
+			} finally {
+				for (const dir of [hold, path.join(`${branchPath}\`removing\``, 'hold')]) {
+					if (existsSync(dir)) chmodSync(dir, 0o755);
+				}
+			}
+
+			await drop('never-here');
+			await waitFor(() => !existsSync(forks), { timeout: 10000, interval: 50, message: 'the fork was left on disk' });
 		});
 
 		it('is not shown for a deploy that carried none', async () => {

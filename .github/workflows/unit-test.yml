@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '[22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
-        shard: [main, components, server, resources-core-a-q, resources-core-r-z, resources-indexes, lmdb]
+        shard: [main, components, server, resources-core-a-n, resources-core-o-z, resources-indexes, lmdb]
         # harper#3349: LMDB segfaults intermittently in this shard, and every leg gates `Unit Test`.
         exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"shard":"lmdb","node-version":24}]' || '[]') }}
         # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
@@ -67,16 +67,16 @@ jobs:
             timeout: 8
           - shard: server
             script: test:unit:main:server
+            timeout: 10
+          - shard: resources-core-a-n
+            script: test:unit:resources:core:a-n
+            timeout: 9
+          - shard: resources-core-o-z
+            script: test:unit:resources:core:o-z
             timeout: 8
-          - shard: resources-core-a-q
-            script: test:unit:resources:core:a-q
-            timeout: 8
-          - shard: resources-core-r-z
-            script: test:unit:resources:core:r-z
-            timeout: 6
           - shard: resources-indexes
             script: test:unit:resources:indexes
-            timeout: 6
+            timeout: 8
           - shard: lmdb
             script: test:unit:lmdb
             timeout: 9
@@ -136,6 +136,16 @@ jobs:
         timeout-minutes: ${{ matrix.timeout }}
         run: npm run ${{ matrix.script }}
 
+      # Its own process: the suite runs real installs, which close and recreate the `system`
+      # database the other suites share, and the user-change subscriptions on it back off for up to a
+      # minute each time that happens. Runs on the lightest shard so no shard's step sum passes the job cap.
+      # Its first CI run (2026-10-23) completed in 12-19s; 3m is the smallest cap that absorbs one such
+      # back-off, not a 1.5x derivation.
+      - name: 'Unit tests: install'
+        if: "!cancelled() && matrix.shard == 'resources-indexes' && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 3
+        run: npm run test:unit:install
+
       - name: 'Unit tests: apitests'
         if: "!cancelled() && matrix.shard == 'components' && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 3
@@ -144,7 +154,8 @@ jobs:
   unit-test-source:
     name: Native Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 28
+    # Above the `core` shard's step-cap sum (32), so a stall fails a step rather than cancelling the job.
+    timeout-minutes: 33
     strategy:
       fail-fast: false
       matrix:
@@ -152,27 +163,27 @@ jobs:
         # run the .ts sources directly; they run with Node 22 nightly. Caps follow the rule on the
         # `unit-test` job.
         node-version: ${{ fromJSON((github.event_name == 'schedule' || github.event.inputs.node-version == 'all' || github.event_name == 'push' && github.ref_name != 'main') && '["22.18.0", "24.0.0", 22, 24, 26]' || github.event.inputs.node-version && format('[{0}]', github.event.inputs.node-version) || '[24, 26]') }}
-        shard: [core, resources-core-a-q, resources-core-r-z, resources-indexes]
+        shard: [core, resources-core-a-n, resources-core-o-z, resources-indexes]
         include:
           - shard: core
             script: test:unit:typestrip
-            timeout: 10
-          - shard: resources-core-a-q
-            script: test:unit:typestrip:resources:core:a-q
+            timeout: 15
+          - shard: resources-core-a-n
+            script: test:unit:typestrip:resources:core:a-n
+            timeout: 9
+          - shard: resources-core-o-z
+            script: test:unit:typestrip:resources:core:o-z
             timeout: 8
-          - shard: resources-core-r-z
-            script: test:unit:typestrip:resources:core:r-z
-            timeout: 6
           - shard: resources-indexes
             script: test:unit:typestrip:resources:indexes
-            timeout: 6
+            timeout: 8
     steps:
       - name: Checkout code
         timeout-minutes: 3
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Node.js
         timeout-minutes: 5
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
@@ -277,7 +288,7 @@ jobs:
 
   uws-tcp-macos:
     name: uWS TCP uploads (macOS, Node.js v26)
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -308,7 +319,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -326,16 +337,16 @@ jobs:
         run: npm run build
 
       - name: Verify the published native binding loads
-        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || (await binding.runtimeInfo()).queryApiVersion !== 4) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and query API 4 contract');"
+        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); const info = await binding.runtimeInfo(); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || info.nativeAbiVersion !== 13 || info.queryApiVersion !== 7) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and native ABI 13 and query API 7 contract');"
 
       - name: Native full-text lifecycle test
         run: >-
           npx mocha
           unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js
           unitTests/resources/nativeFullTextTableSearch.test.js
-          unitTests/resources/nativeFullTextSchemaUpgrade.test.js
-          unitTests/resources/nativeFullTextUpgradeWorkers.test.js
-          unitTests/resources/nativeFullTextUpgradeCrash.test.js
+          unitTests/resources/nativeFullTextIndexSchemaUpgrade.test.js
+          unitTests/resources/nativeFullTextIndexUpgradeWorkers.test.js
+          unitTests/resources/nativeFullTextIndexUpgradeCrash.test.js
           --forbid-pending --fail-zero
 
   # The one required check for this workflow: branch protection names this job rather than the

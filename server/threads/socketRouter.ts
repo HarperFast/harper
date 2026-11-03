@@ -21,7 +21,7 @@ import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
 import { getFullTextRuntimeConfiguration } from '../../resources/indexes/fullTextRuntimeConfiguration.ts';
-import { setActiveWorkerPools } from './workerPools.ts';
+import { isWorkerPoolActive, setActiveWorkerPools, workerPoolDecision } from './workerPools.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { isMainThread } from 'node:worker_threads';
 import { join } from 'node:path';
@@ -113,7 +113,8 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			threadCount = effectiveHttpThreadCount(threadCount);
 			if (!dedicatedPoolsStarted) {
 				dedicatedPools = admittedWorkerPools(threadCount);
-				setActiveWorkerPools(dedicatedPools.map((pool) => pool.type));
+				const types = dedicatedPools.map((pool) => pool.type);
+				setActiveWorkerPools(types, replicationThreadCount(threadCount).explicit ? [] : types);
 			}
 			await loadRootComponents();
 			if (isProcessShuttingDown()) return [];
@@ -129,11 +130,27 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		const isolated = admitIsolatedWorkers([...isolatedSlots.keys()], failedClosed);
 		if (dedicatedPools.length > 0) dedicatedWorkerCount = 0;
 		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
-		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+		let heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+		const httpSlots = [];
 		for (let i = 0; i < threadCount; i++) {
 			const slot = startWorkerSlot(i, threadCount, undefined, heapShareCount);
+			httpSlots.push(slot);
 			workerSlots.push(slot);
 			poolSlots.push(slot);
+		}
+		const poolDecision = workerPoolDecision();
+		if (poolDecision) {
+			// A worker becomes ready only once admitted, which waits on the decision; so this ends either way.
+			await Promise.race([poolDecision, Promise.all(httpSlots.map((slot) => slot.ready))]);
+			if (isProcessShuttingDown()) return [];
+			const declined = dedicatedPools.filter((pool) => !isWorkerPoolActive(pool.type));
+			if (declined.length > 0) {
+				dedicatedPools = dedicatedPools.filter((pool) => isWorkerPoolActive(pool.type));
+				for (const pool of declined) dedicatedWorkerCount -= pool.count;
+				heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+				for (const slot of httpSlots) slot.setHeapShareCount(heapShareCount);
+			}
+			dedicatedPoolsStarted = true; // decided once per process, admitted or not
 		}
 		// Dedicated pools are numbered past the HTTP pool for the same reason isolated workers are.
 		for (const pool of dedicatedPools) {

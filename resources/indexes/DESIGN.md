@@ -26,8 +26,7 @@ Node ids are the sound source. They are allocated monotonically from a `getUserS
 so the counter (or one reverse seek to the largest id) gives the node count in O(1), unaffected by
 how many times a node has been rewritten. Deletes leave it reading high until a rebuild, which only
 makes ef slightly generous. A file-primary (`nativePlane`) index keeps no node-id keys in its store
-at all — the plane slot carries the primary key — so its count is the plane's id high-water, which
-reads the same way (allocation high-water, generous after deletes until a rebuild).
+— the plane slot carries the primary key — so its count is the plane's id high-water, read the same way.
 
 Note the unit: the JS index store holds two keys per record — the graph node and the primary-key
 mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that
@@ -44,9 +43,8 @@ graphs searched at the full `ef` on every layer it changed recall@10 at only one
 
 The connection-building pass in `index()` is not routing — it selects the edges that get stored — so
 it keeps `efConstruction`. The insert-side descent does alter stored graphs, recoverable only by a
-reindex; its A/B (`benchmarks/hnsw-scale.js --build-upper-ef=100` restores the previous index-time
-descent) found the two builds indistinguishable on every measured metric (#2125), as expected: the
-upper layers are sparse enough that a greedy walk reaches the same entry point.
+reindex; its A/B (`benchmarks/hnsw-scale.js --build-upper-ef=100`, #2125) found the two builds
+indistinguishable: the upper layers are sparse enough that a greedy walk reaches the same entry point.
 
 Greedy-equals-full is statistical, not per-graph: rare level layouts route to a different layer-0
 entry point and displace the tail of the top-k (~2-3% of random 600-node graphs in the unit test's
@@ -61,12 +59,9 @@ necessarily a routing regression.
 
 The connection-building pass selects each node's stored edges from a candidate list of
 `efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
-way no search-side setting can compensate: at 1M nodes, sweeping the search `ef` from 512 to 1536
-moved recall@10 only from 0.935 to 0.957 (0.967 set) at 4.7x the latency — the missing neighbours
-were not deep in the candidate list, they were unreachable. Rebuilding the identical corpus with
-`efConstruction` 200 restored recall and made queries _faster_ at the same `ef` (better-selected
-edges route more directly); quantization was a minor term beside construction quality. Full sweep in
-#2180.
+way no search-side setting can compensate: the missing neighbours are unreachable, not deep in the
+candidate list, so a larger search `ef` buys little recall at a large latency cost, while a larger
+`efConstruction` restores recall and makes queries _faster_ at the same `ef` (sweep in #2180).
 
 So when the schema does not configure `efConstruction`, it scales as `AUTO_EF_BASE * sqrt(nodes /
 AUTO_EFC_REF)`, capped at `AUTO_EFC_MAX`. The healthy write path reads the count directly from the
@@ -111,9 +106,8 @@ the graph crossed a scale threshold keep their original edges — the scale appl
 that point on. A reindex in a live process rebuilds roughly uniformly (the id counter keeps its
 high-water mark), but a reindex after a restart re-seeds the counter from the largest id in the
 rebuilding store and therefore repeats the ramp — its first 250K nodes rebuild at the base efC.
-Later inserts add reverse edges to older nodes, but a default-ramp 1M build has not been compared
-directly with the uniform-200 A/B; the larger default-ramp runs (#2181) kept the measured neighbours
-reachable at 2M and 5M without proving uniform convergence.
+Later inserts add reverse edges to older nodes, but convergence to a uniform build is unproven: the
+default-ramp runs (#2181) kept the measured neighbours reachable at 2M and 5M.
 
 Deletes have a separate tail-latency cost: connectivity repair can synchronously reinsert an orphan
 and up to 256 nodes from a severed island. Those reinserts use the current auto-scaled efC, so the
@@ -147,11 +141,10 @@ puts a store lookup back on every query whose `limit` exceeds the table — the 
 whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
 traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
 
-The filter budget deliberately does not follow a limit-derived `ef`. It is computed from the `ef`
-the index resolved for itself, with an automatically scaled `ef` capped at `AUTO_EF_MAX` before it is
-multiplied by `filterExpansion`; explicit schema or per-query `ef` values remain authoritative.
-Multiplying the budget by a caller's `limit` would turn a filtered vector query into a record-loading
-scan wearing an index's clothes.
+The filter budget deliberately does not follow a limit-derived `ef`: it is the index's own resolved
+`ef` (capped as in the [auto-scale note](#efconstruction-and-the-search-ef-ceiling-both-auto-scale-with-the-graph))
+times `filterExpansion`. Multiplying it by a caller's `limit` would turn a filtered vector query into a
+record-loading scan wearing an index's clothes.
 
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
@@ -189,7 +182,11 @@ ranges plan again.
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
 is that ratio at the warm, regression-safe end of the measured range; `MAX_CANDIDATE_KEYS` and half the
-node count cap the synchronous scan. A complete set derives the visit budget from its selectivity,
+node count cap the synchronous scan, and the set is declined up front when the planner's
+`estimated_count` exceeds that key budget. An equality's count is exact; a range on a RocksDB index is a
+statistical estimate (a skip-list sample while the index is memtable-resident), so near the budget
+identical data can take either path. Both admit only matching records, but their visit budgets differ,
+so approximate recall can too. A complete set derives the visit budget from its selectivity,
 widening the `filterExpansion` budget by at most `ALLOW_SET_BUDGET_MAX_WIDENING` and never narrowing it;
 a configured `filterExpansion` stays authoritative. `CandidateKeySet` is the one identity rule for both
 the scan's intersection and admission. A node-id bitset for the native plane is not built: the
@@ -257,13 +254,12 @@ offered progress. The intended wake for a waiting runner is the lock's own unloc
 waiters the same way. **Temporarily** the lock is taken without one: rocksdb-js before 2.9.1 queued
 that callback as a thread-safe function of the caller's env, and on Node 22 one left behind by a
 worker that was `terminate()`d aborts the process when another thread unlocks (Harper's thread
-manager terminates workers on restart). The pinned 2.10.0 includes the fix
-(HarperFast/rocksdb-js#849, released in 2.9.1), but the workaround is not yet reverted: successors
-are woken by the releasing owner's `notify()` on the `derived-index:<id>:wake` buffer (the readiness
-buffer when the registration has no generation-specific readiness id) and, for an owner that died
-without releasing, by a retry timer (`lockRetryMilliseconds`, 5 s by default); the releasing runner
-ignores the one notification it caused, and a runner already parked on that timer does not re-probe
-the lock on commit wakes. The callback path is simpler and picks up a dead owner immediately.
+manager terminates workers on restart). The pinned rocksdb-js has the fix (HarperFast/rocksdb-js#849),
+but the workaround is not yet reverted: successors are woken by the releasing owner's `notify()` on
+the `derived-index:<id>:wake` buffer (the readiness buffer when the registration has no
+generation-specific readiness id) and, for an owner that died without releasing, by a retry timer
+(`lockRetryMilliseconds`, 5 s by default); the releasing runner ignores the one notification it
+caused, and a runner already parked on that timer does not re-probe the lock on commit wakes.
 
 Configuration-level database aliases can load several table classes over the same physical audit
 store, index column family and plane file. They must not run that backend more than once. Registration
@@ -352,8 +348,7 @@ The contract is `DerivedIndexBackend` and `DerivedIndexBatch` in `derivedIndexRu
 comments state each hook's obligation. Three facts they do not: `records` and `bytes` are
 non-enumerable (a backend that spreads or clones the batch loses them), `bytes` is an estimate, and
 `through` is also absent while a transaction is still open (see Bounded delivery). What an ownership
-handoff has to fence is work
-that survives a method return — a queued apply, a barrier that completes later, a cursor that
+handoff has to fence is work that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
 bounded by the runner's turn budget (the runtime cannot bound work it does not perform): the
@@ -538,11 +533,10 @@ that id's exact-epoch token from surviving readers on the path and remembers tha
 delayed pause for that retired id cannot reinstall its fence on a successor. A readiness id never seen
 on this worker is still accepted, so a successor reset fences a predecessor reader on a worker whose
 schema refresh is late. Closing attachments remain registered until their readers drain, and a duplicate
-attachment for the same readiness id keeps the fence. This closes both handoff directions without
-assuming an ordering between generation-local epochs. Retirement uses an explicit synthetic token that
-still pauses every reader because it is not tied to a generation attachment. If the native
-reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
-rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
+attachment for the same readiness id keeps the fence. Retirement uses an explicit synthetic token that
+still pauses every reader because it is not tied to a generation attachment. If the native reader
+violates its contract by rejecting close, Harper logs the failure and proceeds with reset rather than
+wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 
 Weights and highlighting are query configuration. Changing either refreshes readers without rotating
 the persisted generation. Analyzer behavior, stop words, positions, surface terms, synonyms, source
@@ -562,15 +556,15 @@ Each page yields after at most 256 estimated source and companion-index point re
 
 Harper does not configure native `filterFields` or send native `filter` or `candidateIds` payloads. Candidate planning, companion-index probes and the authoritative record predicate remain Harper-owned; the wrapper's candidate limits do not cap those mechanisms.
 
-Keep the first batch on `reader.search` so a filled bounded ordinary query stays in the native ordinary-search lane. Fulltext 0.7.0 classifies every traversal call as expensive (`protocol::search_is_expensive`), sharing the process permit budget and expensive per-index queue with deep/fuzzy work. A native-reader microbenchmark alone misses that admission/isolation difference. Unbounded exact-total queries already use expensive admission. The released classifier is [protocol.rs:449–472](https://github.com/HarperFast/fulltext/blob/v0.7.0/src/protocol.rs#L449-L472); [native.rs:477–478](https://github.com/HarperFast/fulltext/blob/v0.7.0/src/native.rs#L477-L478) selects its queue.
+Keep the first batch on `reader.search` so a filled bounded ordinary query stays in the native ordinary-search lane. Fulltext 0.8.0 classifies every traversal call as expensive (`protocol::search_is_expensive`), sharing the process permit budget and expensive per-index queue with deep/fuzzy work. Unbounded exact-total queries already use expensive admission. The released [per-handle classifier](https://github.com/HarperFast/fulltext/blob/v0.8.0/src/protocol.rs#L615) uses the handle's query policy.
 
 When more hits are needed, switch to `searchPage` on the same reader. Ordinary search supplies no continuation, so validate and skip its bounded prefix before processing new hits. Native order is descending score then ascending native document-ID UTF-8 bytes; disagreement, repeated boundaries or empty pages claiming continuations fail closed. The real-addon regression verifies the collectors agree across modes and page sizes.
 
 Byte-aware batch sizes adapt to filter yield. Oversized responses retry the unchanged boundary at a smaller size under the same deadline. Exhausting the snapshot returns remaining eligible rows. `maxRawHitsPerRequest` caps fetched hits including bounded replay; `maxResultsPerRequest` independently caps retained offset plus limit. Both default to 10,000. Before replay, the first page total supplies a lower bound on the new hits needed to fill or exhaust the request; reject immediately if even that work plus replay cannot fit. Use the smaller of the remaining target and remaining native total so a shorter exhausted result remains valid. A lower-bound total equal to the first batch does not prove that additional hits exist, so only replay can be reserved; traversal must distinguish actual exhaustion from more matches before rejecting. Hitting a bound before exhaustion or filling the requested page throws an explicit error. These are not bounds on Tantivy scorer visits or uninterrupted query construction. Unbounded queries that reach a result/work ceiling must use a limit; they never silently return the retained prefix.
 
-Harper requires Fulltext 0.7.0, native ABI 9 and Query API 4. Traversal response capacity reserves 82 bytes before hits plus 13 bytes per versioned hit before ID/version strings; advertised page and response limits determine the batch ceiling.
+Harper requires Fulltext 0.8.0, native ABI 13 and Query API 7. Traversal response capacity reserves 93 bytes before hits plus 13 bytes per versioned hit before ID/version strings; advertised page and response limits determine the batch ceiling.
 
-Read request policy from its three registered leaf parameters and runtime policy from `storage_fullText_runtime`. The legacy flattener does not retain camel-case aggregate containers such as `storage_fullText`; using that aggregate silently selects defaults. HTTP request settings follow normal worker-restart semantics; native runtime settings remain captured for the full process.
+Read request policy from its three registered leaf parameters and runtime policy from `storage_fullText_runtime`. The legacy flattener does not retain camel-case aggregate containers such as `storage_fullText`; using that aggregate silently selects defaults. HTTP request settings follow normal worker-restart semantics; native runtime settings remain captured for the full process. Generated configuration omits `storage.fullText.query`; the resolver supplies defaults and preserves partial overrides. `storage.fullText.query` uses that same snapshot for reader term/clause policy and the fuzzy preview maximum; writer limits and persisted identity stay unchanged. Retrieval and highlighting retain the same fuzzy leaf controls.
 
 REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering. Exact count requests return `recordCount: null` and `recordCountExact: false` for full-text custom-index traversal; estimated counts may use the planner unless an opaque row/vector filter suppresses them. Native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. Each request releases its reader lease in `finally`. Separate limit/offset requests execute independently and may see different publications; Harper retains no search state between requests.
 
@@ -678,46 +672,39 @@ remain synchronous; the adapter opens a start gate only on consumption, so unuse
 wait or traversal. A zero-size page skips native work. The iterable library can pull one extra source
 row at a page boundary; an exact boundary between branches can therefore start the next branch.
 
-Waiting queries publish no HTTP coverage header: a header sent before consumption cannot certify the
-pending work. The caller must consume results and check streamed errors. A JSON array stream that fails
-writes an error element such as `{ "error": "DerivedIndexLagError: ..." }` as a diagnostic and is then
-aborted without its closing `]` ([server/DESIGN.md](../../server/DESIGN.md#streaming-startup-errors));
-an error a `mapError` mapper recovers is instead a row with a separate `message` field. SSE/NDJSON use
-their existing terminal error records. HTTP 200 alone is not evidence of successful completion. Prefix
-rows can precede a later branch error. Count pages materialize before headers and can still return an
-error status. First-item HTTP status deferral is a
-separate follow-up (#2670), not a guarantee here. Direct custom-index arrays retain `indexCoverage`;
-ordinary native promises expose it before awaiting, while waiting promises expose it on resolved arrays
-except for the zero-size fast path, which skips certification and carries no proof.
+Waiting queries publish no HTTP coverage header: headers precede consumption and cannot certify pending
+work. Consume results and check completion; HTTP 200 alone proves nothing. JSON errors abort without `]`
+after a best-effort diagnostic ([streaming errors](../../server/DESIGN.md#streaming-startup-errors)).
+`mapError` recovery yields a row with a separate `message`; SSE/NDJSON retain terminal errors. Prefix rows
+can precede later errors. Count pages materialize before headers and can return error status; other first-item
+status deferral remains #2670. Direct custom-index arrays retain `indexCoverage`; ordinary native promises
+expose it before await, waiting promises on resolved arrays, except zero-size pages (no certification).
 
 Waiting consumes the ordinary transaction timeout without special monitor renewal. An expired read
 snapshot fails with `ReadSnapshotExpiredError`; timed-out staged writes retain their existing 422
 failure and rollback. The adapter uses the captured snapshot for materialization and guards predicate
-reads, so it never recreates a snapshot after waiting. Dropping an unconsumed iterable starts no work;
-once consuming, close its iterator or abort the request to cancel. Lag rejection never invalidates a
-healthy plane. The default/strict no-wait lag rejection remains HTTP 503.
+reads, so it never recreates a snapshot after waiting. Lag rejection never invalidates a healthy
+plane. The default/strict no-wait lag rejection remains HTTP 503.
 File-primary node-to-record mappings are read from current storage, just like the native graph itself:
 an older record snapshot must not hide mappings published after a record already visible in that snapshot.
 Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
 
-The runner captures the RocksDB process-wide transaction clock (`getMonotonicTimestamp()`) before listing
-physical logs and polling their committed
-prefixes. It synchronously adds discovered logs to the audit store's worker-local map. A capture is
-usable only when each stats snapshot's committed position equals its written head: an earlier unfinished
-transaction can hide later committed transactions behind the readable prefix. The native statistics
-counter alone is insufficient here (it can remain nonzero at an equal head). Positions include both file
-sequence and byte offset; cursor timestamps and origin clocks are never ordered or subtracted to prove
-freshness.
+The runner captures the RocksDB process-wide transaction clock (`getMonotonicTimestamp()`) before
+listing physical logs and polling their committed prefixes. It synchronously adds discovered logs to
+the audit store's worker-local map. A capture is usable only when each stats snapshot's committed
+position equals its written head: an earlier unfinished transaction can hide later committed
+transactions behind the readable prefix. The native statistics counter alone is insufficient here (it
+can remain nonzero at an equal head). Positions include both file sequence and byte offset; cursor
+timestamps and origin clocks are never ordered or subtracted to prove freshness.
 
 After a poll reaches the end with no undelivered records, the capture is associated with its offered
 cursor. Reconciliation publishes it only when that cursor, or a later entry in the ordered offered queue,
 is durable. Unrelated-only progress may publish without a new barrier only if **all** non-durable
 registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
 be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
-optional `coverage` field in the existing durable cursor value, kept by a later cursor write only while
-it keeps the same vector, persisted only from an idle pass's capture or carried onto a purged-anchor floor
-conversion, which reflects the same commits (see the purged-anchor paragraph under cursors), and removed
-with the cursor before reset. No native file format changes.
+optional `coverage` field in the existing durable cursor value, kept and persisted under the binding
+rules in [Ownership and wake-up](#ownership-and-wake-up), and removed with the cursor before reset. No
+native file format changes.
 
 Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic, except
 that a durable vector advance resets the cadence, since the backend dropped the old vector's coverage. The
@@ -950,8 +937,11 @@ to `HnswDerivedIndexBackend`:
 
 - `deliver()` enqueues and returns `accepted` (or `deferred` at 64 MiB queued); an applier drains
   in 5 ms `setImmediate` slices. Each `records` entry (last-write-wins per key) becomes one
-  `applyDerivedValue(pk, vector | undefined, version)`: the stored mapping's signature short-circuits
-  an unchanged vector, an older observation is discarded, otherwise the old node is removed and the
+  `applyDerivedValue(pk, vector | undefined, version)`: the mapping's signature short-circuits an
+  unchanged vector — published, or still pending from this process, since a rebuild's scan overlaps
+  its log replay and the plane tombstones a removed node without re-linking its neighbours (only a
+  pending mapping read back from storage is re-inserted, as its node may not have survived a crash) —
+  an older observation is discarded, otherwise the old node is removed and the
   new vector inserted — with the primary key in its slot, so it is searchable at once — and the
   `pk -> node` mapping written **pending**. The store holds no `node -> pk` entries: hits and
   predicate candidates carry their keys out of the plane, and a query deduplicates by key for the

@@ -490,4 +490,52 @@ describe('Test searchValidator module', () => {
 			assert.match(err.message, /^unknown attribute '/);
 		}
 	});
+
+	it('allows null, scalars, Date, BigInt, Buffer, plain objects, and non-wildcard arrays in search_by_value and rejects arrays containing "*"', () => {
+		for (const validValue of [
+			null,
+			'',
+			'abc',
+			'*',
+			0,
+			Number.MAX_SAFE_INTEGER + 100,
+			true,
+			new Date('2025-01-01T00:00:00Z'),
+			123n,
+			Buffer.from([0x2a]),
+			[],
+			['a', 'b'],
+			{},
+			{ nested: 'value' },
+		]) {
+			assert.strictEqual(
+				searchValidator(
+					{
+						schema: 'searchValidatorTest',
+						table: 'test',
+						attribute: 'name',
+						value: validValue,
+						get_attributes: ['id', 'name'],
+					},
+					'value'
+				),
+				undefined
+			);
+		}
+
+		for (const invalidValue of [['*'], ['a', '*']]) {
+			const err = searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					attribute: 'name',
+					value: invalidValue,
+					get_attributes: ['id', 'name'],
+				},
+				'value'
+			);
+			assert.ok(err instanceof Error);
+			assert.strictEqual(err.message, "'value' must not be an array containing '*'");
+		}
+	});
 });

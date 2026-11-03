@@ -1,0 +1,5 @@
+type DataLoaderProduct @table @export {
+	sku: String @primaryKey
+	name: String
+	price: Int
+}

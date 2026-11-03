@@ -37,6 +37,17 @@ analytics record, whose `time` is an end-of-cycle stamp, so a restart mid-drain 
 the backlog; and `storeMetric` discards `table.put()`'s result, so the cursor advances past raw
 records whose aggregate rows failed to commit. Both need a cursor persisted with the rows.
 
+## A reset ends the window that was being flushed too (`resources/analytics/write.ts`)
+
+After `setAnalyticsEnabled()` returns, no listener or sink on that thread receives a sample recorded on
+it before the call; other threads keep their own windows. Dropping `activeActions` and the timer covers
+the window still being recorded, and the queue-depth high-water marks restart with it.
+`flushAnalytics()` has already rotated the previous window out and yields once per action, so it also
+captures `analyticsGeneration`, which every reset advances, and stops after a yield, before each
+listener and before the sink once it changes. A listener that resets keeps the report it was handed, as
+do the listeners before it; later listeners and the sink do not get it. Pinned by the three in-flight
+cases in `../../unitTests/resources/analytics/aggregationCycle.test.js`.
+
 ## Per-thread rows carry a `thread` attribute under their own metric name (`resources/analytics/write.ts`)
 
 A raw entry marked `perThread: true` is rolled up per `(metric, path, method, type, threadId)` and stored as one row per thread with `thread` set, the way `path`, `method` and `type` are dimensions. `event-loop-delay` is recorded that way by every thread that has `perf_hooks.monitorEventLoopDelay` (Bun does not): a histogram at 20 ms (`server/eventLoopDelay.ts`). The flush reads and resets it before its first yield. A window that opens after an idle gap, more than `analyticsDelay` since the last flush, or at boot, resets it again, so a report's delay covers its own window and a stall during the gap is not reported (`server/DESIGN.md`); a window that opens sooner keeps the histogram, so under sustained load only the flush resets it. A reset discards the interval up to the next firing, so a stall that begins in the same loop turn as a reset is not measured, and if it runs past the deadline the report has no `event-loop-delay` entry. The flush reads one timer turn after its deadline, so a stall that began after the sampler's last firing and ran past the deadline is in that report. The sampled metrics in `PER_THREAD_METRICS` are additionally rolled up once per thread, across all their keys, under a second name (`duration` as `duration-by-thread`, with its `count` and count-weighted `mean`), never as extra rows of their own metric: a consumer that sums every `duration` row would double count. One row per thread per period keeps the cost bounded by the thread count rather than by the number of paths, methods and operation names, so there is no switch; the per-path detail for each thread stays in the raw reports for the raw retention. Rows stay flat scalars because the Grafana datasource's Go backend has no case for an object-valued attribute and panics on one.

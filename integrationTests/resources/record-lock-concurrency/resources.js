@@ -89,6 +89,14 @@ export class ConditionalCounter extends tables.Counter {
 	}
 }
 
+export class ConditionalTrackedCounter extends tables.Counter {
+	patch(data) {
+		this.addTo('n', data.add);
+		this.holders = data.holders;
+		return this.save();
+	}
+}
+
 export class ConditionalShortCircuit extends tables.Counter {
 	patch() {
 		throw new Response('ok', { status: 200 });

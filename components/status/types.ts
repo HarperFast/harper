@@ -20,6 +20,15 @@ export type ComponentStatusLevel = (typeof COMPONENT_STATUS_LEVELS)[keyof typeof
 
 export type ComponentStatusSource = 'log' | 'explicit' | 'health-check';
 
+/** Worst-first order; the first level present is the aggregate status. */
+export const STATUS_PRIORITY: readonly ComponentStatusLevel[] = [
+	COMPONENT_STATUS_LEVELS.ERROR,
+	COMPONENT_STATUS_LEVELS.WARNING,
+	COMPONENT_STATUS_LEVELS.LOADING,
+	COMPONENT_STATUS_LEVELS.UNKNOWN,
+	COMPONENT_STATUS_LEVELS.HEALTHY,
+];
+
 /**
  * Component status information as a plain object
  */
@@ -100,7 +109,7 @@ export interface WorkerComponentStatuses {
  * Used for components that may have multiple sub-components (e.g., application-template.rest, application-template.static)
  */
 export interface ComponentApplicationStatus {
-	/** Overall aggregated status (error > loading > loaded > healthy) */
+	/** Overall aggregated status (error > warning > loading > unknown > healthy) */
 	status: ComponentStatusLevel;
 	/** Descriptive message with details when not healthy */
 	message: string;

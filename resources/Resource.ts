@@ -42,6 +42,7 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 	return Promise.reject(readOnlyModeError());
 }
 
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 export const WRITE_CONDITION = Symbol('writeCondition');
 
@@ -78,6 +79,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
+	/** false: a table class evaluates HTTP write preconditions itself, from its request headers */
+	static preconditions?: boolean;
 	static description?: string;
 	static properties?: { [name: string]: JsonSchemaFragment };
 	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
@@ -406,6 +409,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						if (data.select.asArray) narrowed.asArray = true;
 						if (data.select.forceNulls) narrowed.forceNulls = true;
 					}
+					if (allowed[RELATIONSHIPS_LISTED]) narrowed[RELATIONSHIPS_LISTED] = true;
 					data.select = narrowed;
 				} else {
 					data.select = query.select;
@@ -638,6 +642,33 @@ _assignPackageExport('Resource', Resource);
  */
 export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
 
+/** @internal Captured at load, before application code can replace it. */
+export const defaultGetResource = Resource.getResource;
+
+/**
+ * @internal Registered per exact class, so subclasses never match. On NOT_HANDLED the general dispatch
+ * continues with the context resolved for the getter, so a getter must not consume its arguments.
+ */
+type PrimitiveIdGet = (id: string | number, context: Context, resourceOptions: any) => any;
+const primitiveIdGets = new WeakMap<object, PrimitiveIdGet>();
+/** @internal */
+export const NOT_HANDLED = Symbol('not-handled');
+/** @internal */
+export function registerPrimitiveIdGet(resourceClass: object, get: PrimitiveIdGet): void {
+	primitiveIdGets.set(resourceClass, get);
+}
+/** @internal */
+export function primitiveIdGetFor(resourceClass: object): PrimitiveIdGet | undefined {
+	return primitiveIdGets.get(resourceClass);
+}
+/** @internal */
+export class LoadingResource {
+	loaded: Promise<ResourceInterface>;
+	constructor(loaded: Promise<ResourceInterface>) {
+		this.loaded = loaded;
+	}
+}
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -714,6 +745,8 @@ function transactional(
 	const hasContent = options.hasContent;
 	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
 	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
+	// a primitive-id getter takes the second argument as the context, as only a body-less get does
+	const isGet = options.method === 'get' && hasContent === false;
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
@@ -724,6 +757,21 @@ function transactional(
 		// An absent argument, not a context — and not this call's data either.
 		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
 		if (isReleasedTransaction(context)) context = undefined;
+		let loadingResource: Promise<ResourceInterface> | undefined;
+		if (isGet && !context && (typeof idOrQuery === 'string' || typeof idOrQuery === 'number')) {
+			const getPrimitiveId = primitiveIdGets.get(this);
+			if (getPrimitiveId) {
+				context = dataOrContext
+					? (dataOrContext as any).getContext?.() || dataOrContext
+					: (contextStorage.getStore() ?? {});
+				dataOrContext = undefined;
+				if (isJoinableScope(context.transaction)) {
+					const result = getPrimitiveId(idOrQuery, context, options);
+					if (result instanceof LoadingResource) loadingResource = result.loaded;
+					else if (result !== NOT_HANDLED) return promiseNormalize(result, options as any);
+				}
+			}
+		}
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (hasContent) {
 			// for put, post, patch, publish, query
@@ -868,11 +916,24 @@ function transactional(
 			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
 		}
 		if (options.method === 'query' && data && typeof data === 'object') {
-			// QUERY executes the independently parsed body target. Make its requested projection part of
-			// the operation admission target, but remove framework-owned permission controls before either
-			// target reaches application or table code.
+			// QUERY executes the independently parsed body target. Make its requested projection (and, for an
+			// instance resource, its conditions and sort) part of the operation admission target, but remove
+			// framework-owned permission controls before either target reaches application or table code.
+			// Iterables are materialized once: admission and execution both read them.
 			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
 			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
+			if (this.loadAsInstance !== false) {
+				if (Object.prototype.hasOwnProperty.call(data, 'conditions')) {
+					if (data.conditions && !Array.isArray(data.conditions) && data.conditions[Symbol.iterator])
+						data.conditions = Array.from(data.conditions);
+					query.conditions = data.conditions;
+				} else if (data instanceof URLSearchParams) query.conditions = Array.from(data);
+				else if (data[Symbol.iterator]) {
+					if (!Array.isArray(data)) data = Array.from(data);
+					query.conditions = data;
+				}
+				if (Object.prototype.hasOwnProperty.call(data, 'sort')) query.sort = data.sort;
+			}
 		}
 		isCollection = query.isCollection;
 		if (options.method === 'post' && query.id === null && !isCollection) {
@@ -928,7 +989,7 @@ function transactional(
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
 		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut || context?.transaction?.disconnected) {
 			// we are already in a transaction (or it was poisoned and must fail), proceed
-			const resource = this.getResource(query, context, resourceOptions);
+			const resource = loadingResource ?? this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
 				: promiseNormalize(authorizeActionOnResource(resource), resourceOptions);
@@ -1051,6 +1112,15 @@ function authorizeSearchResult(result: any, user: any) {
 				if (state && typeof state === 'object') {
 					if (state.error) throw state.error;
 					if (!state.allowed) throw new AccessViolation(user);
+					// only the gate itself is replaced: a transform derived from it must still run
+					const { gate } = state;
+					if (gate) {
+						if (result === gate) return state.results;
+						if (result.headers && result.data === gate) {
+							if (Object.isFrozen(result)) return { ...result, data: state.results };
+							result.data = state.results;
+						}
+					}
 				} else if (!state) throw new AccessViolation(user);
 				return result;
 			})
@@ -1112,15 +1182,19 @@ function registerLiveSubscriptionForContext(
 ) {
 	const user: any = context?.user;
 	const username = user?.username;
-	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
-	if (!username) return subscription;
+	securityUser ??= userRuntimeModule;
+	// Internal watchers and replication have no user principal, and no record backs the local
+	// principal — nothing to re-authorize.
+	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	securityUser ??= userRuntimeModule;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
-	// A select written by authorization names no relationship, so the default allowRead's result still
-	// reads only the role's table permission; a caller's select can reach related tables' allowRead.
-	const sharedDecision = !selectedByCaller && defaultAllowReads.has(resource.allowRead);
+	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
+	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
+	const sharedDecision =
+		!selectedByCaller &&
+		defaultAllowReads.has(resource.allowRead) &&
+		!resource.constructor._referencesRelationship?.(admittedTarget);
 	const evaluate = (principal: any) => {
 		const reTarget: any = cloneRequestTarget(admittedTarget);
 		reTarget.checkPermission = principal.role?.permission;
@@ -1228,7 +1302,7 @@ export function hasNestedQueryOptions(property) {
 }
 
 export function assertNestedQueryOptions(select, resource) {
-	for (const property of Array.isArray(select) ? select : []) {
+	for (const property of Array.isArray(select) ? select : select ? [select] : []) {
 		if (!property || typeof property !== 'object') continue;
 		const related = resource?.propertyResolvers?.[property.name]?.definition?.tableClass;
 		if (
@@ -1255,8 +1329,8 @@ export function transformForSelect(select, resource) {
 		};
 	let relationshipSelections;
 	if (resource?._prepareRelationshipSelection)
-		for (const property of Array.isArray(select) ? select : []) {
-			if (propertyResolvers?.[property.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
+		for (const property of Array.isArray(select) ? select : select ? [select] : []) {
+			if (propertyResolvers?.[property?.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
 				(relationshipSelections ||= Object.create(null))[property.name] = resource._prepareRelationshipSelection(
 					property,
 					context ?? contextStorage.getStore()
@@ -1264,12 +1338,21 @@ export function transformForSelect(select, resource) {
 			}
 		}
 	if (typeof select === 'string')
-		// if select is a single string then return property value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return settleAll(object.map(transform));
 			return readPropertyFromObject(object, select, propertyResolvers, context, select === '__proto__');
+		};
+	if (!Array.isArray(select) && select?.name !== undefined)
+		return function transform(object) {
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
+			if (Array.isArray(object)) return settleAll(object.map(transform));
+			return handleProperty(
+				selectFromObject(object, propertyResolvers, context, select.name === '__proto__'),
+				object
+			)(select);
 		};
 	else if (Array.isArray(select)) {
 		// if it is an array, return an array
@@ -1318,7 +1401,9 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				if (property === '*') {
-					if (wildcardSource)
+					if (select[RELATIONSHIPS_LISTED] && resource?._copyUnlistedAttributes)
+						resource._copyUnlistedAttributes(wildcardSource || object, selectedData);
+					else if (wildcardSource)
 						for (const key in wildcardSource) {
 							const value = wildcardSource[key];
 							if (typeof value === 'function') continue;
@@ -1381,7 +1466,8 @@ export function transformForSelect(select, resource) {
 export function nestedSelectTransform(property: any, targetResource?: any): (value: any) => any {
 	const subSelect = property.select ?? (Array.isArray(property) ? property : null);
 	const innerTransform =
-		subSelect && !(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray)
+		subSelect &&
+		!(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray && !subSelect[RELATIONSHIPS_LISTED])
 			? transformForSelect(subSelect, targetResource)
 			: (value) => value;
 	const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
