@@ -90,9 +90,9 @@ describe('TTL cleanup scan interval', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		const originalSetTimeout = global.setTimeout;
-		let timers = 0;
+		const delays = [];
 		global.setTimeout = (callback, delay, ...args) => {
-			timers++;
+			delays.push(delay);
 			return originalSetTimeout(callback, delay, ...args);
 		};
 		let Hydrated;
@@ -102,7 +102,10 @@ describe('TTL cleanup scan interval', () => {
 			global.setTimeout = originalSetTimeout;
 		}
 		try {
-			assert.strictEqual(timers, 1);
+			assert.strictEqual(Hydrated.expirationMS, 0);
+			// the first scan lands within one interval, a quarter of the eviction window
+			assert.strictEqual(delays.length, 1);
+			assert(delays[0] <= 10_000, `the first scan is ${delays[0]}ms out`);
 		} finally {
 			Hydrated.cleanup();
 		}
