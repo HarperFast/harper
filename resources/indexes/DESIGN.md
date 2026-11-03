@@ -472,17 +472,14 @@ does not silently omit the declared index.
 
 ### Full-text query plane
 
-Each declared full-text index can lazily open a read-only native handle beside its derived-index writer. Readers
-are keyed by native path, readiness id and owner epoch. A process-wide atomic publication generation
-invalidates stale handles and notifies peer workers. A warm reader reloads in the background after a
-notification, while every query still samples the generation and reloads on mismatch; notification
-delivery is an optimization, not a correctness dependency. Workers that never query an index open no
-reader or publication subscription. The shared derived-index runtime allocates this publication state
-only for backends with external reader snapshots; HNSW does not pay for it. A waiting query samples the
-generation after its coverage wait, so the data-publication bump that precedes the covering watermark
-is included in reader acquisition. The wrapper refreshes the reader's committed payload with the
-searcher, and Harper keeps that decoded checkpoint on the reader slot so coverage always describes the
-snapshot being searched.
+Each full-text index lazily opens a read-only native handle beside its writer, keyed by native path,
+readiness id and owner epoch. A process-wide atomic publication generation invalidates stale readers
+and notifies peers. Idle readers reload after notification; queries also check the generation, so lost
+notifications cannot affect correctness. Workers that never query open no reader or subscription.
+Only backends with external snapshots allocate this shared state; HNSW does not. Waiting queries sample
+the generation after coverage settles, including the publication preceding its watermark. The wrapper
+refreshes the committed payload with the searcher; Harper caches that decoded checkpoint on the reader
+slot so coverage describes the searched snapshot.
 Coverage-only publications do not change the document set: the runtime permits them only after every
 accepted index mutation through that capture is durable. The shared live watermark may therefore wake a
 waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
@@ -554,7 +551,7 @@ Search hits carry the source record version. Harper reads the authoritative reco
 
 Each page yields after at most 256 estimated source and companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate; wider equality plans use the authoritative record predicate. The requested visible `offset + limit` is bounded independently by `maxResultsPerRequest` and the raw-hit budget, not the native ordinary result window. Raising raw work for restrictive filters does not raise the retained-record target. One reader lease keeps every native batch in a request on the same snapshot.
 
-Cold scoring-capability loading uses the reader-acquisition cap in a separate stage before coverage waiting. Timeout never starts a reader; a subsequent strict-coverage query may still need a refresh. Warm scoring checks remain synchronous. Capability mismatch is a non-retryable `FULL_TEXT_SCORING_UNSUPPORTED` 503; a stalled cold load is a retryable `FULL_TEXT_INITIALIZATION_TIMEOUT` 503 (`fullTextQueryIndex.test.js`, `fullTextDerivedIndexes.test.js`).
+Cold capability loading and reader acquisition have separate caps. Timeout opens no reader; a strict retry may still need refresh. Warm scoring checks are synchronous. Errors: `FULL_TEXT_SCORING_UNSUPPORTED` (503, not retryable), `FULL_TEXT_INITIALIZATION_TIMEOUT` (503, retryable); tests: `fullTextQueryIndex.test.js` and `fullTextDerivedIndexes.test.js`.
 
 Harper does not configure native `filterFields` or send native `filter` or `candidateIds` payloads. Candidate planning, companion-index probes and the authoritative record predicate remain Harper-owned; the wrapper's candidate limits do not cap those mechanisms.
 
