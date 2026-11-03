@@ -26,6 +26,7 @@ import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../se
 import { isLocalPeerAddress } from '../server/serverHelpers/peerAddress.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
+import { localIssuanceRatchet } from '../resources/originClosedFloor.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
 	authenticationChallenge,
@@ -574,11 +575,21 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 		if (!this.sessionId)
 			return Promise.reject(new VersionConflictError(getSessionTable().tableName, ifVersion, undefined, true));
 		try {
-			// Bypass the request's retained snapshot after an external refresh wait.
+			// Read the latest committed row outside the request snapshot.
 			const store = getSessionTable().primaryStore;
 			store.resetReadTxn?.();
 			const entry = store.getEntry(this.sessionId, COMMITTED_SESSION_READ);
 			const liveEntry = entry?.value != null && !(entry.expiresAt != null && entry.expiresAt < Date.now());
+			if (liveEntry && Object.prototype.hasOwnProperty.call(entry.value, 'version'))
+				return Promise.reject(
+					new VersionConflictError(
+						getSessionTable().tableName,
+						ifVersion,
+						entry.version,
+						false,
+						'session data contains the reserved version field'
+					)
+				);
 			if (!liveEntry || entry.version !== ifVersion)
 				return Promise.reject(
 					new VersionConflictError(getSessionTable().tableName, ifVersion, liveEntry ? entry.version : undefined, true)
@@ -587,9 +598,14 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 				return Promise.reject(
 					new VersionConflictError(getSessionTable().tableName, ifVersion, entry.version, false, 'version reused')
 				);
-			// RocksDB stamps native transactions with a separate clock from LMDB's JS clock.
-			const nextWriteTime = store.getMonotonicTimestamp?.() ?? getNextMonotonicTime();
-			if (entry.version >= nextWriteTime)
+			const hasNativeClock = typeof store.getMonotonicTimestamp === 'function';
+			const nextWriteTime = hasNativeClock ? store.getMonotonicTimestamp() : getNextMonotonicTime();
+			if (
+				entry.version >= nextWriteTime &&
+				(!hasNativeClock ||
+					typeof store.rootStore?.getUserSharedBuffer !== 'function' ||
+					entry.version > localIssuanceRatchet(store.rootStore))
+			)
 				return Promise.reject(
 					new VersionConflictError(
 						getSessionTable().tableName,
