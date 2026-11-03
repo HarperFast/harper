@@ -25,6 +25,8 @@ describe('System role permission boundary', () => {
 		logger.initLogSettings(true);
 		await databases.system.hdb_role.delete(ROLE);
 		await databases.system.hdb_role.delete(ROLE + '_rejected');
+		await databases.system.hdb_user.delete(ROLE + '_first');
+		await databases.system.hdb_user.delete(ROLE + '_second');
 	});
 
 	for (const operation of ['add_role', 'alter_role']) {
@@ -54,11 +56,19 @@ describe('System role permission boundary', () => {
 					{ id: ROLE, role: ROLE, permission: { super_user: false, operations: ['describe_database'], system } },
 				],
 			});
+			await insert.insert({
+				operation: 'insert',
+				schema: 'system',
+				table: 'hdb_user',
+				records: ['first', 'second'].map((suffix) => ({ username: ROLE + '_' + suffix, role: ROLE, active: true })),
+			});
 			const logs = [];
 			logger.setMainLogger(logger.createLogger({ level: 'warn', writeToLog: (line) => logs.push(line) }));
 			let reported;
 			if (read === 'listUsers') {
-				await user.listUsers();
+				const users = await user.listUsers();
+				assert.strictEqual(users.get(ROLE + '_first').role.permission.system.tables.hdb_user.read, false);
+				assert.strictEqual(users.get(ROLE + '_second').role.permission.system.tables.hdb_user.read, false);
 				reported = await roles.getRoleByName(ROLE);
 			} else if (read === 'userInfo') {
 				reported = (await user.userInfo({ hdb_user: { username: 'legacy', role: { id: ROLE } } })).role;
