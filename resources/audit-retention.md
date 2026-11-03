@@ -116,7 +116,8 @@ upper bound on every key any prune removed from the named logs.
   that retention and `logPurgeBoundsCover` rewrites a `quietAt` older than half of it, so an idle log on
   a running node never reaches the horizon. A node down longer than the native retention resyncs once.
 - **`epoch` bounds what tracking never saw**: the floor, or the native horizon if later, when the
-  record was created (a log the native purge emptied may no longer be listed). A log emptied before that reads as purged through it, which forces one conservative resync.
+  record was created, and the native horizon again when a pass follows a gap longer than the native
+  retention (a log created and emptied in that gap is neither recorded nor necessarily listed). A log emptied before that reads as purged through it, which forces one conservative resync.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.

@@ -1,5 +1,3 @@
-// Mapping writes re-read inside their transaction, so two workers minting at once cannot hand one id to two
-// names or drop each other's additions (harper-pro#1235: receivers mint names for a sender's unnamed origins).
 const assert = require('node:assert');
 const { pack, unpack } = require('msgpackr');
 const { setupTestDBPath } = require('../testUtils');

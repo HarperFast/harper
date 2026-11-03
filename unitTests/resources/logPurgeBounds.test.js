@@ -141,7 +141,6 @@ describe('per-log purge bounds', function () {
 		const quietPass = Date.now();
 		raiseAuditFloor(Table.auditStore, quietPass, true);
 		await Table.put('after', { name: 'x' });
-		// the next pass's cutoff is below the quiet pass, so nothing it can remove is newer than `before`
 		raiseAuditFloor(Table.auditStore, quietPass - 1000, true);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), newest);
 	});
@@ -165,7 +164,6 @@ describe('per-log purge bounds', function () {
 		raiseAuditFloor(Table.auditStore, quietPass - 1000, true);
 		await Table.put('last', { name: 'x' });
 		const followerAt = Math.max(...localLogKeys(Table.auditStore));
-		// passes while the write is inside the window, then once it has aged out
 		await tick();
 		raiseAuditFloor(Table.auditStore, quietPass + 1, true);
 		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) <= followerAt);
@@ -200,38 +198,62 @@ describe('per-log purge bounds', function () {
 		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= horizon);
 	});
 
-	it('bounds a log rocksdb-js purged on reopen, after its node was down past that retention', async function () {
-		if (isLMDB) return this.skip();
-		const database = `logPurgeBounds_${databaseCount++}`;
-		const open = () =>
-			table({
-				table: 'Bounded',
-				database,
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
-				audit: true,
+	for (const recorded of [true, false]) {
+		it(`bounds a ${recorded ? 'recorded' : 'never-recorded'} log rocksdb-js purged on reopen, after its node was down past that retention`, async function () {
+			if (isLMDB) return this.skip();
+			const database = `logPurgeBounds_${databaseCount++}`;
+			const open = () =>
+				table({
+					table: 'Bounded',
+					database,
+					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+					audit: true,
+				});
+			let Table = open();
+			const downSince = Date.now() - nativeRetention(Table.auditStore) - DAY_MS;
+			const floor = downSince - DAY_MS;
+			writeMetadata(Table.auditStore, AUDIT_FLOOR_KEY, floorBytes(floor));
+			// the last pass came before one more write to the origin, and then the node went down
+			writeRecord(Table.auditStore, {
+				epoch: floor,
+				cutoff: floor,
+				observedAt: floor,
+				logs: recorded ? { 'down-origin': [floor - 1, floor] } : {},
 			});
-		let Table = open();
-		const downSince = Date.now() - nativeRetention(Table.auditStore) - DAY_MS;
-		const floor = downSince - DAY_MS;
-		writeMetadata(Table.auditStore, AUDIT_FLOOR_KEY, floorBytes(floor));
-		// the origin's last quiet pass came before one more write, and then the node went down
-		writeRecord(Table.auditStore, {
-			epoch: floor,
-			cutoff: floor,
-			observedAt: floor,
-			logs: { 'down-origin': [floor - 1, floor] },
+			const origin = getIdOfRemoteNode('down-origin', Table.auditStore);
+			await applyAsOrigin(Table, 'last-write', { nodeId: origin, logKey: downSince });
+			const logDir = path.join(Table.auditStore.rootStore.path, 'transaction_logs', 'down-origin');
+			assert.ok(await closeDatabase(database));
+			for (const file of fs.readdirSync(logDir))
+				fs.utimesSync(path.join(logDir, file), downSince / 1000, downSince / 1000);
+			Table = open();
+			// a version of rocksdb-js that also drops an emptied log from its listing
+			const listLogs = Table.auditStore.rootStore.listLogs;
+			if (!recorded)
+				Table.auditStore.rootStore.listLogs = function () {
+					return listLogs.call(this).filter((name) => name !== 'down-origin');
+				};
+			const remaining = [...Table.auditStore.rootStore.useLog('down-origin').query({ start: 0 })];
+			assert.strictEqual(remaining.length, 0, 'precondition: reopening purged the aged log');
+			raiseAuditFloor(Table.auditStore, Date.now() - 1000, true);
+			assert.ok(getLogPurgeBound(Table.auditStore, ['down-origin']) >= downSince);
+			assert.ok(getLogPurgeBound(Table.auditStore) >= downSince);
+			Table.auditStore.rootStore.listLogs = listLogs;
 		});
-		const origin = getIdOfRemoteNode('down-origin', Table.auditStore);
-		await applyAsOrigin(Table, 'last-write', { nodeId: origin, logKey: downSince });
-		const logDir = path.join(Table.auditStore.rootStore.path, 'transaction_logs', 'down-origin');
-		assert.ok(await closeDatabase(database));
-		for (const file of fs.readdirSync(logDir))
-			fs.utimesSync(path.join(logDir, file), downSince / 1000, downSince / 1000);
-		Table = open();
-		const remaining = [...Table.auditStore.rootStore.useLog('down-origin').query({ start: 0 })];
-		assert.strictEqual(remaining.length, 0, 'precondition: reopening purged the aged log');
-		raiseAuditFloor(Table.auditStore, Date.now() - 1000, true);
-		assert.ok(getLogPurgeBound(Table.auditStore, ['down-origin']) >= downSince);
+	}
+
+	it('reads a log named after an Object.prototype key like any other', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		const bound = Date.now() - 60_000;
+		record.logs = { constructor: [bound, Date.now()] };
+		record.observedAt = Date.now();
+		writeRecord(Table.auditStore, record);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['constructor', 'toString']), bound);
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['constructor', 'toString']), bound);
 	});
 
 	it('rewrites a quiet time older than half the native retention, keeping the bound', async function () {
@@ -364,7 +386,6 @@ describe('per-log purge bounds', function () {
 		await Table.put('stale', { name: 'x' });
 		raiseAuditFloor(Table.auditStore, Date.now() + 1000);
 		assert.notStrictEqual(getLogPurgeBound(Table.auditStore, scope('local')), undefined);
-		// an older binary's prune raises the floor and nothing else
 		const olderPrune = Date.now() + 120_000;
 		writeMetadata(Table.auditStore, AUDIT_FLOOR_KEY, floorBytes(olderPrune));
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), undefined);

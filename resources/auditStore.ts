@@ -921,7 +921,7 @@ function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
 
 // past the native horizon too: a log that rocksdb-js emptied before tracking began may not be listed at all
 function freshLogPurgeBounds(floor: number, nativeHorizon = 0): LogPurgeBounds {
-	return { epoch: Math.max(floor, nativeHorizon), cutoff: floor, observedAt: 0, logs: {} };
+	return { epoch: Math.max(floor, nativeHorizon), cutoff: floor, observedAt: 0, logs: Object.create(null) };
 }
 
 /**
@@ -936,7 +936,7 @@ function trustedLogPurgeBounds(auditStore: any, floor: number): LogPurgeBounds |
 
 // a log no pass has recorded did not exist at the last one
 function recordedEntry(recorded: LogPurgeBounds, name: string): LogPurgeEntry {
-	return recorded.logs[name] ?? [0, recorded.observedAt];
+	return (Object.hasOwn(recorded.logs, name) && recorded.logs[name]) || [0, recorded.observedAt];
 }
 
 /** A log's bound as recorded, raised to the native purge horizon once the log has not been quiet within it. */
@@ -1052,7 +1052,7 @@ function logPurgeBoundsCover(
 	const refreshBefore = nativeHorizon > 0 ? (now + nativeHorizon) / 2 : 0;
 	if (recorded.observedAt < refreshBefore) return false;
 	for (const [name, [bound, quietAt]] of observed) {
-		const entry = recorded.logs[name];
+		const entry = Object.hasOwn(recorded.logs, name) ? recorded.logs[name] : undefined;
 		if (!entry || bound > Math.max(recorded.epoch, entry[0]) || (quietAt > entry[1] && entry[1] < refreshBefore))
 			return false;
 	}
@@ -1074,8 +1074,11 @@ function raisedLogPurgeBounds(
 ): Uint8Array | undefined {
 	if (!Number.isFinite(floor)) return undefined;
 	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(floor, nativeHorizon);
-	const epoch = observed ? base.epoch : Math.max(base.epoch, cutoff);
-	const logs = { ...base.logs };
+	let epoch = observed ? base.epoch : Math.max(base.epoch, cutoff);
+	// a log created after the last pass and emptied by the native purge since is neither listed nor recorded
+	if (observed && nativeHorizon !== undefined && base.observedAt < nativeHorizon)
+		epoch = Math.max(epoch, nativeHorizon);
+	const logs = Object.assign(Object.create(null), base.logs);
 	for (const [name, [bound, quietAt]] of observed ?? []) {
 		const [baseBound, baseQuietAt] = logs[name] ?? [0, 0];
 		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt)];
