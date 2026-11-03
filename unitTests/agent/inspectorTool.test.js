@@ -161,3 +161,12 @@ describe('agent/inspectorTool — live CDP round-trip', () => {
 		assert.equal(typeof out.totalMs, 'number');
 	});
 });
+
+describe('agent/inspectorTool INSPECTOR_TOOL_NAMES (harper#3993)', () => {
+	const { INSPECTOR_TOOL_NAMES } = require('#src/agent/tools/inspectorTool');
+
+	it('names every tool buildInspectorTools returns, so composeToolset reserves them all', () => {
+		const built = buildInspectorTools({ debugEnabled: false, getWorkerCount: () => 0 }).map((t) => t.def.name);
+		assert.deepStrictEqual(built.sort(), Object.values(INSPECTOR_TOOL_NAMES).sort());
+	});
+});

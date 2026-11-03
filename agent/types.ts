@@ -104,6 +104,18 @@ export interface AgentScopes {
 /** Resolved `agent.httpFetch`: on, off, or limited to the listed hosts. Fixed at boot. */
 export type HttpFetchConfig = boolean | { allow: string[] };
 
+/** Resolved `agent.tools`: which operator-only tool groups the toolset composes. Fixed at boot. */
+export interface AgentToolSwitches {
+	/** `read_file`, `write_file`, `list_dir`, `grep_files`, `tail_file`. */
+	filesystem: boolean;
+	/** `schedule_followup`. */
+	schedule: boolean;
+	/** The `inspector_*` tools. */
+	inspector: boolean;
+	/** `harper_best_practice`, and the best-practices overview in the system prompt. */
+	bestPractices: boolean;
+}
+
 export interface AgentConfig {
 	enabled: boolean;
 	provider?: string;
@@ -122,6 +134,7 @@ export interface AgentConfig {
 	componentsScope?: string;
 	configScope?: string;
 	httpFetch: HttpFetchConfig;
+	tools: AgentToolSwitches;
 	/** Operator text appended to the agent's system prompt (after the built-in grounding + best practices). */
 	systemPromptAppend?: string;
 }

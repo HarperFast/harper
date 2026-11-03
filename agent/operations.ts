@@ -68,7 +68,17 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 			execute: async (op) => setAgentConfig(op, deps),
 			requiresSuperUser: true,
 		},
+		{
+			name: OPERATIONS_ENUM.GET_AGENT_CONFIG,
+			execute: async () => getAgentConfig(deps),
+			requiresSuperUser: true,
+		},
 	];
+}
+
+/** The effective configuration: the boot-time keys as resolved, and the runtime-tunable keys as last set. */
+function getAgentConfig(deps: OperationDeps): AgentConfig {
+	return structuredClone(deps.getConfig());
 }
 
 async function agentPrompt(op: any, deps: OperationDeps) {
@@ -192,7 +202,7 @@ async function approveAgentAction(op: any, deps: OperationDeps) {
 }
 
 async function setAgentConfig(op: any, deps: OperationDeps) {
-	for (const key of ['httpFetch', 'componentsScope', 'configScope']) {
+	for (const key of ['httpFetch', 'componentsScope', 'configScope', 'tools']) {
 		if (op?.[key] !== undefined) {
 			throw new ClientError(`agent.${key} is fixed at startup; change it in the config file and restart`, 400);
 		}

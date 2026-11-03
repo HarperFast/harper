@@ -54,6 +54,7 @@ describe('agent/mcpTools registerAgentMcpTools', () => {
 		assert.ok(names.includes('list_agent_sessions'));
 		// set_agent_config is intentionally NOT exposed over MCP.
 		assert.ok(!names.includes('set_agent_config'));
+		assert.ok(!names.includes('get_agent_config'));
 	});
 
 	it('lists for super_users and scoped delegation roles, not for restricted users', () => {

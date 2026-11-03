@@ -22,7 +22,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { Models } from '../resources/models/Models.ts';
 import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
 import { workers } from '../server/threads/manageThreads.ts';
-import { composeToolset } from './toolset.ts';
+import { ALL_TOOL_SWITCHES_ON, composeToolset } from './toolset.ts';
 import { buildInspectorTools } from './tools/inspectorTool.ts';
 import { buildHttpFetchTool, operationsApiPortsFrom, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
 import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
@@ -42,7 +42,7 @@ import {
 } from './loop.ts';
 import { parseBudgetCap, parseMaxTurns } from './budget.ts';
 import { appendMessage, getSession } from './session.ts';
-import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
+import type { AgentConfig, AgentScopes, AgentTool, AgentToolSwitches, HttpFetchConfig } from './types.ts';
 
 const log = harperLogger.loggerWithTag('agent');
 
@@ -58,6 +58,7 @@ const DEFAULT_CONFIG: AgentConfig = {
 	allowDestructive: false,
 	user: 'hdb_agent',
 	httpFetch: true,
+	tools: ALL_TOOL_SWITCHES_ON,
 };
 
 interface StartOpts {
@@ -81,6 +82,7 @@ interface StartOpts {
 	componentsScope?: string;
 	configScope?: string;
 	httpFetch?: unknown;
+	tools?: unknown;
 	systemPromptAppend?: string;
 }
 
@@ -123,9 +125,8 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	// Harper best-practices skill (@harperfast/skills): the SKILL.md overview goes in the system prompt;
 	// the `harper_best_practice` tool serves the detailed rules on demand. Both degrade to nothing if the
 	// package isn't resolvable, so the agent still runs without it.
-	const bestPracticesOverview = loadBestPracticesOverview();
-	const bestPracticeTool = buildBestPracticeTool();
-	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
+	const bestPracticesOverview = config.tools.bestPractices ? loadBestPracticesOverview() : undefined;
+	const bestPracticeTool = config.tools.bestPractices ? buildBestPracticeTool() : undefined;
 
 	// Built from the boot config, never `liveConfig`: no runtime config change can widen what it reaches.
 	const httpFetchTool = buildHttpFetchTool(config.httpFetch, resolveOperationsApiPorts());
@@ -133,16 +134,23 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	// The grounding + best-practices portion of the system prompt is static for the component's
 	// lifetime (scopes don't change), so build it once here; only the operator's per-run
 	// `systemPromptAppend` is folded on at run time in `startRun`.
-	const staticSystemPrompt = buildStaticSystemPrompt(scopes, httpFetchTool !== undefined, bestPracticesOverview);
+	const staticSystemPrompt = buildStaticSystemPrompt(
+		scopes,
+		httpFetchTool !== undefined,
+		bestPracticesOverview,
+		config.tools
+	);
 
 	function compose(): ReturnType<typeof composeToolset> {
+		// `tools` comes from the boot config, like `httpFetchTool`: a recompose never widens the operator set.
 		return composeToolset({
 			allowDestructive: liveConfig.allowDestructive,
+			tools: config.tools,
 			httpFetchTool,
+			bestPracticeTool,
 			onFollowup: (sessionId, prompt) => handleFollowup(sessionId, prompt),
 			inspectorTools,
 			registryTools,
-			extraTools,
 		});
 	}
 
@@ -277,7 +285,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	registerAgentMcpTools(operations);
 
 	log.info?.(
-		`Agent component initialized with ${composed.tools.length} tools (http_fetch: ${describeHttpFetch(config.httpFetch)})`
+		`Agent component initialized with ${composed.tools.length} tools (http_fetch: ${describeHttpFetch(config.httpFetch)}${describeToolsOff(config.tools)})`
 	);
 }
 
@@ -298,9 +306,19 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 export function buildStaticSystemPrompt(
 	scopes: AgentScopes,
 	httpFetchAvailable: boolean,
-	bestPracticesOverview?: string
+	bestPracticesOverview?: string,
+	tools: AgentToolSwitches = ALL_TOOL_SWITCHES_ON
 ): string {
-	const fetchSurface = httpFetchAvailable ? 'HTTP fetch against this server, ' : '';
+	const surfaces = [
+		'Harper database/cluster operations',
+		...(tools.filesystem ? ['scoped filesystem tools'] : []),
+		...(httpFetchAvailable ? ['HTTP fetch against this server'] : []),
+		...(tools.schedule ? ['followup scheduling'] : []),
+		...(tools.inspector ? ['(when available) V8 inspector tools for debugging worker threads'] : []),
+		...(tools.bestPractices ? ['a Harper best-practices lookup'] : []),
+	];
+	const surfaceList =
+		surfaces.length === 1 ? surfaces[0] : `${surfaces.slice(0, -1).join(', ')}, and ${surfaces.at(-1)}`;
 	const verifyStep = httpFetchAvailable
 		? 'verify by querying the REST endpoint via an HTTP fetch against this server'
 		: 'verify the result through the operations tools';
@@ -309,20 +327,31 @@ export function buildStaticSystemPrompt(
 		: scopes.configFile
 			? `read-only, a single file — address it as "${scopes.configFile}": ${join(scopes.configDir, scopes.configFile)}`
 			: `read-only: ${scopes.configDir}`;
+	const guidance = [
+		'Prefer the operations tools for database/cluster actions',
+		...(tools.filesystem ? ['use the filesystem tools for app source'] : []),
+	].join('; ');
+	const bestPracticeGuidance = tools.bestPractices
+		? ' When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool.'
+		: '';
 	const parts = [
 		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
-		`You operate this instance for an operator through the tools provided to you: Harper database/cluster operations, scoped filesystem tools, ${fetchSurface}followup scheduling, and (when available) V8 inspector tools for debugging worker threads plus a Harper best-practices lookup. Consult the provided tool schemas for the exact set and their parameters.`,
+		`You operate this instance for an operator through the tools provided to you: ${surfaceList}. Consult the provided tool schemas for the exact set and their parameters.`,
 		'',
-		'Filesystem scopes (the fs tools take a `root` naming one of these; paths are relative to it):',
-		`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
-		`- logs — read-only: ${scopes.logDir}`,
-		`- config — ${configScope}`,
-		"Key material is refused in every scope: the fs tools never read *.pem, *.key or .jwtPass files, anything in Harper's keys or ssh directories, or text holding a PEM private key, and never write into those directories.",
-		'',
+		...(tools.filesystem
+			? [
+					'Filesystem scopes (the fs tools take a `root` naming one of these; paths are relative to it):',
+					`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
+					`- logs — read-only: ${scopes.logDir}`,
+					`- config — ${configScope}`,
+					"Key material is refused in every scope: the fs tools never read *.pem, *.key or .jwtPass files, anything in Harper's keys or ssh directories, or text holding a PEM private key, and never write into those directories.",
+					'',
+				]
+			: []),
 		`A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL \`.graphql\` with \`@table\`/\`@export\`, or \`config.yaml\` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then ${verifyStep}.`,
-		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool. Be concise and verify your work.',
+		`${guidance}.${bestPracticeGuidance} Be concise and verify your work.`,
 	];
-	if (bestPracticesOverview) {
+	if (tools.bestPractices && bestPracticesOverview) {
 		parts.push('', '=== Harper best practices (overview) ===', bestPracticesOverview);
 	}
 	return parts.join('\n');
@@ -430,8 +459,56 @@ export function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.componentsScope !== undefined && { componentsScope: String(opts.componentsScope) }),
 		...(opts.configScope !== undefined && { configScope: String(opts.configScope) }),
 		...(opts.httpFetch !== undefined && { httpFetch: resolveHttpFetchOrDisable(opts.httpFetch) }),
+		...(opts.tools !== undefined && { tools: resolveToolSwitches(opts.tools) }),
 		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};
+}
+
+const ALL_TOOL_SWITCHES_OFF: Readonly<AgentToolSwitches> = Object.freeze({
+	filesystem: false,
+	schedule: false,
+	inspector: false,
+	bestPractices: false,
+});
+
+/**
+ * A malformed `agent.tools` turns groups off, never on: a value that is not a boolean turns its group
+ * off, and an unknown key or a non-object turns every group off, since a misspelled key may have been
+ * meant to turn one off. The error says what to correct.
+ */
+export function resolveToolSwitches(raw: unknown): AgentToolSwitches {
+	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+		log.error?.(
+			`agent.tools must be an object of booleans, got ${JSON.stringify(raw)}; every operator tool group is off until it is corrected`
+		);
+		return ALL_TOOL_SWITCHES_OFF;
+	}
+	const unknownKeys = Object.keys(raw).filter((key) => !Object.hasOwn(ALL_TOOL_SWITCHES_ON, key));
+	if (unknownKeys.length > 0) {
+		log.error?.(
+			`agent.tools has unknown key(s): ${unknownKeys.join(', ')}; every operator tool group is off until it is corrected`
+		);
+		return ALL_TOOL_SWITCHES_OFF;
+	}
+	const switches = { ...ALL_TOOL_SWITCHES_ON };
+	for (const key of Object.keys(switches) as (keyof AgentToolSwitches)[]) {
+		const value = (raw as Record<string, unknown>)[key];
+		if (value === undefined || value === true) continue;
+		if (value !== false) {
+			log.error?.(
+				`agent.tools.${key} must be true or false, got ${JSON.stringify(value)}; the group is off until it is corrected`
+			);
+		}
+		switches[key] = false;
+	}
+	return switches;
+}
+
+function describeToolsOff(tools: AgentToolSwitches): string {
+	const off = Object.entries(tools)
+		.filter(([, on]) => !on)
+		.map(([group]) => group);
+	return off.length > 0 ? `; off: ${off.join(', ')}` : '';
 }
 
 function resolveMaxTokens(raw: unknown): number {

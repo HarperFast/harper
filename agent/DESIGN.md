@@ -2,7 +2,7 @@
 
 The built-in Harper agent component.
 
-**Read this when:** changing the agent's toolset, the `http_fetch` tool, the filesystem tools or their scopes, what `set_agent_config` can patch, how the loop ends a run, how tool results reach the transcript, or how a run records and caps model usage.
+**Read this when:** changing the agent's toolset or its `agent.tools` switches, the `http_fetch` tool, the filesystem tools or their scopes, what `set_agent_config` can patch, how the loop ends a run, how tool results reach the transcript, or how a run records and caps model usage.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -17,6 +17,15 @@ The agent reads untrusted text (table rows, logs, component source) with the sam
 - **The instance's Operations API ports are always blocked.** `startOnMainThread` supplies the configured plain and secure Operations API ports to `http_fetch`. The target check refuses either port regardless of hostname, HTTP method or `agent.httpFetch.allow`, and repeats the check on every redirect. Operations work must use the RBAC-filtered registry tools instead.
 
 Host matching compares canonical forms. Targets and allow entries both go through `URL` host parsing, so case, IDNA and IPv4 shorthand compare equal. The metadata and link-local blocklist checks IP literals with `net.BlockList`, which also catches their IPv4-mapped IPv6 spellings. Allow entries compare as strings, so an IPv4 entry does not admit its IPv4-mapped form; that direction fails closed. The check is by host name only. A permitted name that resolves to an internal address is not caught.
+
+## The operator tool groups are fixed at boot and their names stay reserved (`agent/toolset.ts`)
+
+The filesystem, schedule, inspector and best-practice tools run at process privilege whatever `agent.user` is, and `allowDestructive` removes only the ones marked destructive, so `agent.tools.{filesystem,schedule,inspector,bestPractices}` is the operator's bound on which of them the model can call at all (harper#3993). The same two things keep it from being widened as `agent.httpFetch`'s bound above:
+
+- **Boot-time only.** `mergeConfig` resolves the switches once (`resolveToolSwitches`), `compose()` passes `config.tools`, never `liveConfig`, so the recompose `set_agent_config` triggers by flipping `allowDestructive` reuses them, and `set_agent_config` rejects a `tools` patch before applying anything. `get_agent_config` reports them so an embedding application can check at startup; it is `requiresSuperUser` and, like `set_agent_config`, outside the `agent` permission group and the MCP agent tools. The keys are in `CONFIG_PARAMS` (`agent_tools_*`) for env vars, CLI flags and `set_configuration`, which take effect on restart.
+- **Every operator-only name is reserved whether or not its group is composed.** `OPERATOR_TOOL_NAMES` is built from the tool modules' own names (`fsTools`, `SCHEDULE_TOOL_NAME`, `INSPECTOR_TOOL_NAMES`, `HTTP_FETCH_TOOL_NAME`, `BEST_PRACTICE_TOOL_NAME`), so a tool added to a group is reserved with it. Registry tools are matched by name, and an extra is injected by name, so freeing `read_file` would let an operations or extra tool of that name take the slot with different runtime assumptions: both are filtered against the set before composition.
+
+A malformed value turns groups off, never on: a non-boolean turns its group off, and an unknown key or a non-object turns every group off, because a misspelled key may have been meant to turn one off and the three it did not name would otherwise default on. The system prompt describes only the groups that are on (`buildStaticSystemPrompt`), as it already omits HTTP fetch. Pinned by the `composeToolset` and `mergeConfig` tests in `unitTests/agent/` and by `integrationTests/server/agent-tool-switches.test.ts`.
 
 ## The fs tools never return key material, and `config` is the config file (`agent/tools/fsTools.ts`)
 
