@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process');
 const { join } = require('node:path');
 const alasql = require('alasql');
 const { compileExpr } = require('#src/sqlEngine/expressions/compile');
+const { tokenizeLike } = require('#src/sqlEngine/expressions/like');
 const { whereToConditions } = require('#src/sqlEngine/optimizer/whereToConditions');
 const { normalizeStatement } = require('#src/sqlEngine/parser/normalizer');
 const { EngineRuntimeError, EngineUnsupportedError } = require('#src/sqlEngine/errors');
@@ -193,13 +194,35 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(v2Like('a__b', 'a\r\nb'), false);
 	});
 
-	it('matches a fixed-width run longer than one RegExp chunk', () => {
-		const run = 'a'.repeat(10_000) + 'b_';
-		assert.strictEqual(v2Like('%' + run + '%', 'x' + 'a'.repeat(10_001) + 'bzq'), true);
-		assert.strictEqual(v2Like('%' + run + '%', 'x' + 'a'.repeat(10_001) + 'cz'), false);
-		assert.strictEqual(v2Like(run + '%', 'a'.repeat(10_000) + 'bz'), true);
-		assert.strictEqual(v2Like('_'.repeat(25_000), 'x'.repeat(25_000)), true);
-		assert.strictEqual(alasql.utils.like('%' + 'Ab'.repeat(6_000) + '%', 'x' + 'aB'.repeat(6_000)), true);
+	it('matches a segment of exactly 10,000 characters between wildcards', () => {
+		const run = 'a'.repeat(9_998) + 'b_';
+		assert.strictEqual(v2Like('%' + run + '%', 'x' + 'a'.repeat(9_999) + 'bzq'), true);
+		assert.strictEqual(v2Like('%' + run + '%', 'x' + 'a'.repeat(9_999) + 'cz'), false);
+		assert.strictEqual(v2Like(run + '%', 'a'.repeat(9_998) + 'bz'), true);
+		assert.strictEqual(v2Like('_'.repeat(10_000), 'x'.repeat(10_000)), true);
+		assert.strictEqual(v2Like('%' + 'a'.repeat(10_000) + '%', 'x' + 'a'.repeat(10_000)), true);
+		assert.strictEqual(v2Like('!%'.repeat(10_000), '%'.repeat(10_000), '!'), true);
+		assert.strictEqual(alasql.utils.like('%' + 'Ab'.repeat(5_000) + '%', 'x' + 'aB'.repeat(5_000)), true);
+		assert.strictEqual(alasql.utils.like('%' + '[ab]'.repeat(10_000) + '%', 'x' + 'ab'.repeat(5_000)), true);
+	});
+
+	it('rejects a segment wider than 10,000 characters on both engines', () => {
+		const tooWide = (error) => error instanceof ClientError && error.statusCode === 400 && /10000/.test(error.message);
+		for (const pattern of [
+			'%' + '_'.repeat(10_001) + 'c%',
+			'%' + 'a'.repeat(10_000) + '_b%',
+			'a'.repeat(10_001) + '%',
+			'%' + 'a'.repeat(10_001),
+			'_'.repeat(10_001),
+			'%' + '!%'.repeat(10_001) + '%',
+		]) {
+			assert.throws(() => tokenizeLike(pattern, '!'), tooWide);
+			assert.throws(() => v2Like(pattern, 'a', '!'), tooWide);
+			assert.throws(() => alasql.utils.like(pattern, 'a', '!'), tooWide);
+		}
+		assert.throws(() => alasql.utils.like('%' + '[ab]'.repeat(10_001) + '%', 'a'), tooWide);
+		assert.strictEqual(v2Like(('a'.repeat(10_000) + '%').repeat(3), 'a'.repeat(30_000)), true);
+		assert.strictEqual(alasql.utils.like(('a'.repeat(10_000) + '%').repeat(3), 'a'.repeat(30_000)), true);
 	});
 
 	it('is case-sensitive', () => {
@@ -343,10 +366,10 @@ describe('legacy alasql LIKE', () => {
 	});
 
 	it('tokenizes unclosed [ in linear time', () => {
-		assert.strictEqual(alasql.utils.like('['.repeat(20_000) + '%', '['.repeat(20_001)), true);
+		assert.strictEqual(alasql.utils.like('['.repeat(10_000) + '%', '['.repeat(10_001)), true);
 		// Linear: ~60 ms. Rescanning for `]` at every `[` (quadratic): ~50 s.
 		const start = performance.now();
-		assert.strictEqual(alasql.utils.like('['.repeat(200_000) + '%', 'x'), false);
+		assert.strictEqual(alasql.utils.like(('['.repeat(5_000) + '%').repeat(40), 'x'), false);
 		assert.ok(performance.now() - start < 10_000);
 	});
 });
@@ -354,15 +377,19 @@ describe('legacy alasql LIKE', () => {
 describe('LIKE cost is linear in the value (#1930)', function () {
 	const fixture = join(__dirname, 'fixtures', 'likeTiming.js');
 	const CASES = [
-		['%_%_%_%_%_%_%_%_%_%_%_%_%_%_Z', 'a'],
-		['%a%a%a%a%a%a%a%a%a%a%a%a%a%aZ', 'a'],
-		['%' + 'a'.repeat(200) + '_b%', 'a'],
+		['%_%_%_%_%_%_%_%_%_%_%_%_%_%_Z', 'a', 10_000],
+		['%a%a%a%a%a%a%a%a%a%a%a%a%a%aZ', 'a', 10_000],
+		['%' + 'a'.repeat(200) + '_b%', 'a', 10_000],
+		['%' + '_'.repeat(9_999) + 'c%', 'a', 100_000],
+		['%' + 'a'.repeat(9_998) + '_b%', 'a', 100_000],
 	];
 
 	for (const engine of ['v2', 'legacy']) {
-		for (const [pattern, valueChar] of CASES) {
-			it(`${engine}: ${pattern.length > 40 ? pattern.slice(0, 40) + '…' : pattern} against 10,000 characters`, () => {
-				const child = spawnSync(process.execPath, [...process.execArgv, fixture, engine, pattern, valueChar, '10000'], {
+		for (const [pattern, valueChar, valueLength] of CASES) {
+			const shown = pattern.length > 40 ? pattern.slice(0, 40) + '…' : pattern;
+			it(`${engine}: ${shown} against ${valueLength.toLocaleString('en-US')} characters`, () => {
+				const args = [...process.execArgv, fixture, engine, pattern, valueChar, String(valueLength)];
+				const child = spawnSync(process.execPath, args, {
 					encoding: 'utf8',
 					timeout: 20_000,
 				});

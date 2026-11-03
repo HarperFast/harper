@@ -8,17 +8,28 @@ export type LikeToken =
 
 export type LikeMatcher = (value: string) => boolean;
 
+// Each segment between `%` wildcards becomes one RegExp, and V8 fails to compile one of about 50k atoms (only on
+// its first exec, not at construction).
+export const MAX_LIKE_SEGMENT_WIDTH = 10_000;
+export const LIKE_SEGMENT_TOO_WIDE = `LIKE pattern must not have more than ${MAX_LIKE_SEGMENT_WIDTH} characters between % wildcards`;
+
 export function tokenizeLike(pattern: string, escape?: string): LikeToken[] {
 	const tokens: LikeToken[] = [];
+	let width = 0;
 	for (let i = 0; i < pattern.length; i++) {
 		const char = pattern[i];
+		if (char === '%' && char !== escape) {
+			tokens.push({ kind: 'any' });
+			width = 0;
+			continue;
+		}
+		if (++width > MAX_LIKE_SEGMENT_WIDTH) throw new EngineRuntimeError(LIKE_SEGMENT_TOO_WIDE);
 		if (char === escape) {
 			if (++i === pattern.length) {
 				throw new EngineRuntimeError(`LIKE pattern must not end with the escape character '${escape}'`);
 			}
 			tokens.push({ kind: 'literal', char: pattern[i] });
-		} else if (char === '%') tokens.push({ kind: 'any' });
-		else if (char === '_') tokens.push({ kind: 'one' });
+		} else if (char === '_') tokens.push({ kind: 'one' });
 		else tokens.push({ kind: 'literal', char });
 	}
 	return tokens;
@@ -34,25 +45,16 @@ export function compileLike(pattern: string, escape?: string): LikeMatcher {
 	return compileLikeTokens(tokenizeLike(pattern, escape));
 }
 
-interface Chunk {
-	offset: number;
-	width: number;
-	source: string;
-	sticky: RegExp;
-}
-
 interface Segment {
 	width: number;
 	text: string | undefined;
-	chunks: Chunk[];
-	search: RegExp | undefined;
+	source: string;
+	regExp: RegExp | undefined;
 }
 
-// Segment RegExps hold no quantifier or alternation, so they cannot backtrack. V8 fails to compile one of about
-// 50k atoms, and only on its first match, so a longer segment is split into chunks matched at fixed offsets.
-const MAX_CHUNK_WIDTH = 10_000;
 const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
 
+// Segment RegExps hold no quantifier or alternation, so they cannot backtrack.
 export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false): LikeMatcher {
 	const flags = caseInsensitive ? 'i' : '';
 	const segments: Segment[] = [];
@@ -60,15 +62,7 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	let units: string[] = [];
 	const endSegment = () => {
 		const literal = text !== undefined && (!flags || units.length === 0);
-		const chunks: Chunk[] = [];
-		if (!literal) {
-			for (let offset = 0; offset < units.length; offset += MAX_CHUNK_WIDTH) {
-				const source = units.slice(offset, offset + MAX_CHUNK_WIDTH).join('');
-				const width = Math.min(MAX_CHUNK_WIDTH, units.length - offset);
-				chunks.push({ offset, width, source, sticky: new RegExp(source, flags + 'y') });
-			}
-		}
-		segments.push({ width: units.length, text: literal ? text : undefined, chunks, search: undefined });
+		segments.push({ width: units.length, text: literal ? text : undefined, source: units.join(''), regExp: undefined });
 		text = '';
 		units = [];
 	};
@@ -87,15 +81,17 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	}
 	endSegment();
 
-	if (segments.length === 1) {
-		const only = segments[0];
-		return (value) => value.length === only.width && segmentMatchesAt(only, value, 0);
-	}
 	const first = segments[0];
 	const last = segments[segments.length - 1];
 	const middle = segments.slice(1, -1).filter((segment) => segment.width > 0);
+	for (const segment of new Set([first, last])) {
+		if (segment.text === undefined) segment.regExp = new RegExp(segment.source, flags + 'y');
+	}
 	for (const segment of middle) {
-		if (segment.text === undefined) segment.search = new RegExp(segment.chunks[0].source, flags + 'g');
+		if (segment.text === undefined) segment.regExp = new RegExp(segment.source, flags + 'g');
+	}
+	if (segments.length === 1) {
+		return (value) => value.length === first.width && segmentMatchesAt(first, value, 0);
 	}
 	return (value) => {
 		const end = value.length - last.width;
@@ -110,30 +106,20 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	};
 }
 
-function segmentMatchesAt(segment: Segment, value: string, start: number, fromChunk = 0): boolean {
+function segmentMatchesAt(segment: Segment, value: string, start: number): boolean {
 	if (segment.text !== undefined) return value.startsWith(segment.text, start);
-	const chunks = segment.chunks;
-	for (let i = fromChunk; i < chunks.length; i++) {
-		const chunk = chunks[i];
-		chunk.sticky.lastIndex = start + chunk.offset;
-		if (!chunk.sticky.test(value)) return false;
-	}
-	return true;
+	const sticky = segment.regExp!;
+	sticky.lastIndex = start;
+	return sticky.test(value);
 }
 
 function findSegment(segment: Segment, value: string, from: number, lastStart: number): number {
-	if (segment.text !== undefined) {
-		const found = value.indexOf(segment.text, from);
-		return found <= lastStart ? found : -1;
+	let found: number;
+	if (segment.text !== undefined) found = value.indexOf(segment.text, from);
+	else {
+		const search = segment.regExp!;
+		search.lastIndex = from;
+		found = search.test(value) ? search.lastIndex - segment.width : -1;
 	}
-	const search = segment.search!;
-	const firstWidth = segment.chunks[0].width;
-	search.lastIndex = from;
-	while (search.test(value)) {
-		const start = search.lastIndex - firstWidth;
-		if (start > lastStart) return -1;
-		if (segmentMatchesAt(segment, value, start, 1)) return start;
-		search.lastIndex = start + 1;
-	}
-	return -1;
+	return found <= lastStart ? found : -1;
 }

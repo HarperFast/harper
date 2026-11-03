@@ -1,5 +1,11 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { compileLikeTokens, type LikeMatcher, type LikeToken } from '../sqlEngine/expressions/like.ts';
+import {
+	compileLikeTokens,
+	LIKE_SEGMENT_TOO_WIDE,
+	MAX_LIKE_SEGMENT_WIDTH,
+	type LikeMatcher,
+	type LikeToken,
+} from '../sqlEngine/expressions/like.ts';
 
 const MAX_CACHED_PATTERNS = 1000;
 const cacheByEscape = new Map<string, Map<string, LikeMatcher>>();
@@ -35,8 +41,15 @@ function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
 	const tokens: LikeToken[] = [];
 	// Once no closing `]` remains, every later `[` is a literal: searching again would make the scan quadratic.
 	let unclosed = false;
+	let width = 0;
 	for (let i = 0; i < pattern.length; i++) {
 		const char = pattern[i];
+		if (char === '%' && char !== escape) {
+			tokens.push({ kind: 'any' });
+			width = 0;
+			continue;
+		}
+		if (++width > MAX_LIKE_SEGMENT_WIDTH) throw new ClientError(LIKE_SEGMENT_TOO_WIDE);
 		if (char === escape) {
 			if (++i === pattern.length) {
 				throw new ClientError(`LIKE pattern must not end with the escape character '${escape}'`);
@@ -51,8 +64,7 @@ function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
 			}
 			tokens.push({ kind: 'class', source: classSource(pattern.slice(i + 1, close), escape) });
 			i = close;
-		} else if (char === '%') tokens.push({ kind: 'any' });
-		else if (char === '_') tokens.push({ kind: 'one' });
+		} else if (char === '_') tokens.push({ kind: 'one' });
 		else tokens.push({ kind: 'literal', char });
 	}
 	return tokens;

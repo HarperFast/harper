@@ -115,13 +115,16 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 				`note LIKE 't0!%' ESCAPE '!!'`,
 				`note LIKE 't0%' ESCAPE ''`,
 				`note LIKE '[z-a]%'`,
+				`note LIKE '%${'_'.repeat(10_001)}c%'`,
+				`ip LIKE 't%' AND note LIKE '%${'a'.repeat(10_000)}_b%'`,
 			]) {
 				if (where.includes('[') && sqlEngine === 'new') continue;
 				for (const statement of [
 					`SELECT id FROM ${SCHEMA}.${TABLE} WHERE ${where}`,
 					`DELETE FROM ${SCHEMA}.${TABLE} WHERE ${where}`,
 				]) {
-					test(`${statement} is a 400`, async () => {
+					const shown = statement.replace(/(.)\1{20,}/g, (run, char) => `${char}×${run.length}`);
+					test(`${shown} is a 400`, async () => {
 						await reseed(client);
 						const response = await client.req().send({ operation: 'sql', sql: statement }).timeout(15_000);
 						strictEqual(response.status, 400, JSON.stringify(response.body));
