@@ -401,7 +401,6 @@ export type ReplayedIds = Map<number, Map<number, Set<string | null | undefined>
 interface ReplayGate {
 	after?: number;
 	ids?: ReplayedIds;
-	floorUntilDrain?: boolean;
 }
 
 /** The record's key encoding: distinct ids never share one, and routing text would merge `['a', 'b']` with `'a/b'`. */
@@ -455,14 +454,14 @@ export function handOffReplay(subscription: any, after: number | undefined, ids:
 	schedulePass(subscriptions);
 }
 
-/** A certified subscription takes every live entry once the backlog dispatched with its floor drains. */
+/**
+ * A certified subscription takes every live entry: a floor would drop a late commit below it that a certificate
+ * then passes. The replay's identities stay until the next clean drain.
+ */
 export function releaseReplayFloor(subscription: any): void {
 	const gate = subscription.replayGate;
-	const subscriptions = subscription.subscriptions?.tables?.envs;
-	if (!gate || !subscriptions) return;
-	gate.floorUntilDrain = true;
-	(subscriptions.replayTails ??= new Set()).add(subscription);
-	schedulePass(subscriptions);
+	if (gate?.ids) gate.after = undefined;
+	else subscription.replayGate = undefined;
 }
 
 /**
@@ -772,7 +771,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			if (subscriptions.replayTails) {
 				for (const subscription of subscriptions.replayTails) {
 					const gate = subscription.replayGate;
-					if (gate.after === undefined || gate.floorUntilDrain) subscription.replayGate = undefined;
+					if (gate.after === undefined) subscription.replayGate = undefined;
 					else gate.ids = undefined;
 				}
 				subscriptions.replayTails = undefined;
