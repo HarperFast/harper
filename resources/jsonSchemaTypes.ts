@@ -13,6 +13,15 @@
 
 import logger from '../utility/logging/harper_logger.ts';
 
+/** Keep malformed metadata isolated even when a getter throws a non-Error value. */
+export function schemaErrorMessage(error: unknown): string {
+	try {
+		return error instanceof Error ? error.message : String(error);
+	} catch {
+		return 'unreadable schema error';
+	}
+}
+
 export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
 export type JsonSchemaType = 'string' | 'integer' | 'number' | 'boolean' | 'object' | 'array' | 'null';

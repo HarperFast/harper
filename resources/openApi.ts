@@ -11,6 +11,7 @@ import {
 	projectPropertiesToAttributes,
 	resolveAttributes,
 	resolveDeclaredType,
+	schemaErrorMessage,
 } from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
@@ -21,7 +22,7 @@ function warnInvalidResourceSchema(resource: unknown, path: string, error: unkno
 		if (warnedInvalidResourceSchemas.has(resource)) return;
 		warnedInvalidResourceSchemas.add(resource);
 	}
-	harperLogger.warn(`OpenAPI skipped invalid schema for resource "${path}": ${(error as Error).message}`);
+	harperLogger.warn(`OpenAPI skipped invalid schema for resource "${path}": ${schemaErrorMessage(error)}`);
 }
 
 /**

@@ -460,6 +460,29 @@ describe('mcp/resources', () => {
 			assert.match(res.reason, /cycle/);
 		});
 
+		it('contains null and unprintable metadata getter failures', async () => {
+			for (const error of [
+				null,
+				{
+					toString() {
+						throw null;
+					},
+				},
+			]) {
+				class Broken {
+					static databaseName = 'data';
+					static tableName = 'broken';
+					static get properties() {
+						throw error;
+					}
+				}
+				_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+				const res = await readResource({ uri: 'harper://schema/data/broken', user: SUPER, profile: 'application' });
+				assert.equal(res.ok, false);
+				assert.match(res.reason, /invalid schema for data\.broken/);
+			}
+		});
+
 		it('does not publish hidden static properties through the schema resource', async () => {
 			class PrivateFields {}
 			PrivateFields.databaseName = 'data';

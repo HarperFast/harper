@@ -43,7 +43,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { encodeCursor } from './pagination.ts';
-import { filterAttributeTree, resolveAttributes } from '../../resources/jsonSchemaTypes.ts';
+import { filterAttributeTree, resolveAttributes, schemaErrorMessage } from '../../resources/jsonSchemaTypes.ts';
 import {
 	customResourceCompletionValues,
 	listCustomResources,
@@ -842,7 +842,7 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 		const visibleAttributes = filterAttributeTree(attributes);
 		filteredAttributes = filterAttributesByPermissions(visibleAttributes, perm?.attribute_permissions);
 	} catch (error) {
-		return { ok: false, reason: `invalid schema for ${db}.${table}: ${(error as Error).message}` };
+		return { ok: false, reason: `invalid schema for ${db}.${table}: ${schemaErrorMessage(error)}` };
 	}
 	const body = {
 		database: db,
