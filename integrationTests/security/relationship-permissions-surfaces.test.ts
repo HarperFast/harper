@@ -180,7 +180,7 @@ suite(
 			status: number;
 			events: number;
 			closed: boolean;
-			closedBy?: 'server' | 'test';
+			closedBy?: 'server' | 'test' | 'error';
 			abort: () => void;
 		}
 		async function subscribe(as: Principal, path: string): Promise<Stream> {
@@ -219,8 +219,10 @@ suite(
 						buffered = frames.pop()!;
 						stream.events += frames.filter((frame) => /(^|\n)data:/.test(frame)).length;
 					}
-				} catch {}
-				stream.closedBy = controller.signal.aborted ? 'test' : 'server';
+					stream.closedBy = 'server';
+				} catch {
+					stream.closedBy = controller.signal.aborted ? 'test' : 'error';
+				}
 				stream.closed = true;
 			})();
 			return stream;
