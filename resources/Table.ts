@@ -14699,9 +14699,6 @@ const ELEMENT_VALUE_COMPARATORS = new Set([
 	'gtlt',
 	'gtle',
 ]);
-/**
- * Convert a condition operand with the declared type of the attribute it is compared against
- */
 function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
 	// an array attribute's value comparators compare each immediate element; pattern
 	// comparators (contains, starts_with, ends_with) keep matching the operand as text
