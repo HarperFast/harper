@@ -7907,8 +7907,8 @@ export function makeTable(options): TableResourceClass {
 					select !== undefined &&
 					!postOrdering &&
 					!recordAccess &&
-					!residencyPolicy &&
-					(context as Context)?.replicateFrom !== false
+					(context as Context)?.replicateFrom !== false &&
+					!residencyPolicy
 						? coveredSelectAttribute(select)
 						: undefined;
 				const entries = executeConditions(
@@ -8964,7 +8964,7 @@ export function makeTable(options): TableResourceClass {
 						return SKIP;
 					}
 					if (
-						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // reload from source if invalidated or evicted
+						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
 						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
 						if (context.onlyIfCached) {
