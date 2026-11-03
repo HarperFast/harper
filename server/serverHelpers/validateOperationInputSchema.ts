@@ -54,8 +54,10 @@ export function normalizeOperationInputSchema(inputSchema: unknown): { schema?: 
 		if ('error' in dialect) return dialect;
 		const validator = getValidator(dialect);
 		const schemaToValidate = dialect.schemaId ? { ...schema, $schema: dialect.schemaId } : schema;
-		if (!validator.validateSchema(schemaToValidate)) {
-			return { error: validator.errorsText(validator.errors) };
+		try {
+			validator.compile(schemaToValidate);
+		} finally {
+			validator.removeSchema(schemaToValidate);
 		}
 		return { schema: schemaToValidate };
 	} catch (error) {

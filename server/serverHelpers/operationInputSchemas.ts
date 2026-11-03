@@ -1,18 +1,9 @@
 /**
- * JSON Schemas attached to built-in operation registrations.
- *
- * Operation validation is distributed across Joi and legacy validators and
- * cannot currently be projected mechanically to JSON Schema. These schemas
- * are hand-authored for protocol introspection.
- *
- * Each schema follows MCP convention: `type: 'object'` at the top, with
- * `properties` declared and a small `required` list when applicable.
- * Optional fields are listed but not required, so an LLM can call the
- * minimum-viable form.
- */
-
-/**
- * Map of built-in operation name → input schema. Keys mirror `OPERATIONS_ENUM` values.
+ * Transitional introspection schemas; runtime validation remains authoritative.
+ * Replace these projections with contracts shared by validation and registration
+ * when the Joi, legacy and inline validators have a common schema representation.
+ * Protocol-facing descriptions stay in MCP; these contracts also serve other registrants.
+ * operationInputSchemas.test.js checks representative Joi-backed contracts for drift.
  */
 export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 	// ─── describe_* ───────────────────────────────────────────────────────
@@ -246,7 +237,7 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 			schema: { type: 'string', description: 'Legacy alias for `database`.' },
 			table: { type: 'string' },
 			from: { type: 'number', description: 'Inclusive lower-bound transaction timestamp (ms).' },
-			until: { type: 'number', description: 'Exclusive upper-bound transaction timestamp (ms).' },
+			to: { type: 'number', description: 'Exclusive upper-bound transaction timestamp (ms).' },
 			limit: { type: 'number', minimum: 1 },
 		},
 		required: ['table'],
@@ -290,10 +281,11 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 				description: 'Attribute names to project; defaults to all.',
 			},
 			start_time: {
-				type: ['number', 'string'],
-				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
+				type: 'number',
+				exclusiveMinimum: 0,
+				description: 'Epoch milliseconds — inclusive window start.',
 			},
-			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
+			end_time: { type: 'number', exclusiveMinimum: 0, description: 'Epoch milliseconds — exclusive window end.' },
 			log: {
 				type: 'string',
 				description: 'Transaction log name to filter on (rocksdb-txnlog-stats metric).',
@@ -318,10 +310,11 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 				description: 'Attribute names to project; defaults to all.',
 			},
 			start_time: {
-				type: ['number', 'string'],
-				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
+				type: 'number',
+				exclusiveMinimum: 0,
+				description: 'Epoch milliseconds — inclusive window start.',
 			},
-			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
+			end_time: { type: 'number', exclusiveMinimum: 0, description: 'Epoch milliseconds — exclusive window end.' },
 			log: {
 				type: 'string',
 				description: 'Transaction log name to filter on (rocksdb-txnlog-stats metric).',

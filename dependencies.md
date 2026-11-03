@@ -25,9 +25,9 @@ Generally, dependencies are added by simply adding them to the dependencies list
 ## ajv
 
 - Need for usage: Validates JSON Schema metadata supplied when operations are registered, before that metadata can be exposed to MCP clients. This keeps a malformed component schema from breaking `tools/list` while preserving the operation handler.
-- Size and overlap: Ajv is already present transitively through Fastify; declaring Fastify's existing 8.18.0 resolution directly makes Harper's runtime use explicit without changing its schema compiler version or adding a package family. Fastify's internal compiler is not a public standalone schema-validation API. Future upgrades must check both consumers.
-- Performance and memory: Loaded lazily when `server.registerOperation()` supplies or inherits schema metadata and never on the operation dispatch hot path. Built-in schemas are checked in CI; their boot-time attachment skips runtime validation.
-- Security and environment: Pure JavaScript, no native build or global mutation. Component schemas larger than 64 KiB are rejected before parsing and meta-validation, and are not passed through Ajv's code generator.
+- Size and overlap: Declaring Ajv 8.20.0 directly consolidates the four existing Ajv 8.x copies at the highest version already present, including Fastify's own resolution. Re-resolution also moves ESLint's dev-only Ajv from 6.14.0 to 6.15.0. Fastify's internal compiler is not a public standalone schema-validation API. Future upgrades must check both consumers.
+- Performance and memory: Loaded lazily when `server.registerOperation()` supplies schema metadata and never on the operation dispatch hot path. Built-in schemas are checked in CI; their boot-time attachment skips runtime validation.
+- Security and environment: Pure JavaScript, no native build or global mutation. Component schemas larger than 64 KiB are rejected before parsing and compilation. Compilation verifies self-contained references; no remote schemas are fetched.
 - Eventual removal: Remove the direct dependency if operation contracts move to a schema facility already owned by Harper or a stable public validator supplied by the runtime.
 
 ## react-native-fs (removed from the published tree, not a dependency)

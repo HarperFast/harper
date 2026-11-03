@@ -24,10 +24,9 @@
  * `cluster_status`) cannot have entries here — their authoritative
  * description belongs alongside their implementation.
  *
- * Transitional status: this catalog is the in-core fill until #878
- * (introspectable operations registry) ships, at which point each
- * operation's description lives with its schema and its handler in one
- * place and this file is retired.
+ * Protocol-facing help stays in MCP; reusable input contracts belong to the
+ * operation registry. A future shared validator/registration contract can own
+ * both without moving MCP-specific guidance into runtime validation.
  */
 export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// ─── DEFAULT_ALLOW: describe_* ────────────────────────────────────────

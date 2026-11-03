@@ -26,7 +26,6 @@ import * as terms from '../../utility/hdbTerms.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
-import { sendItcEvent } from '../threads/itc.ts';
 import { hasThreadExited, onMessageByType, onThreadExit } from '../threads/manageThreads.ts';
 import {
 	registerWorkerGrantableOperation,
@@ -186,8 +185,12 @@ export function getRemoteOperationInputSchema(name: string): RemoteOperationSche
 	if (!schemas?.size) return { issue: 'missing' };
 	let firstSchema: object | undefined;
 	let canonical: string | undefined;
+	let missingSchema = false;
 	for (const workerSchema of schemas.values()) {
-		if (!workerSchema.inputSchema) return { issue: 'missing' };
+		if (!workerSchema.inputSchema) {
+			missingSchema = true;
+			continue;
+		}
 		if (canonical === undefined) {
 			firstSchema = workerSchema.inputSchema;
 			canonical = workerSchema.canonical;
@@ -195,7 +198,7 @@ export function getRemoteOperationInputSchema(name: string): RemoteOperationSche
 			return { issue: 'inconsistent' };
 		}
 	}
-	return { inputSchema: firstSchema };
+	return missingSchema ? { issue: 'missing' } : { inputSchema: firstSchema };
 }
 
 function canonicalJson(value: object): string {

@@ -55,3 +55,11 @@ server.registerOperation({
 		};
 	},
 });
+
+server.registerOperation({
+	name: 'component_registered_bad_schema',
+	inputSchema: { type: 'object', properties: { value: { $ref: '#/definitions/Missing' } } },
+	execute: async function componentRegisteredBadSchema() {
+		return { ok: true };
+	},
+});

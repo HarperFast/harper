@@ -253,19 +253,15 @@ worker's `chooseOperation`. MCP exposes a worker-registered operation only while
 advertises the same schema, so a rolling deploy cannot pair one generation's schema with another
 generation's handler.
 
-An operation intended for protocol introspection should pass a JSON Schema object as
-`inputSchema` to `server.registerOperation()`. When the caller omits it, registration uses the schema
-shipped for that operation name, if one exists. MCP does not advertise an allowed operation without
-either source of metadata, and direct calls by name are unavailable through MCP as well; the
-operation remains available through the operations API. Registration clones and validates component
-schema metadata without changing the handler's own input validation. `parametersSchema` is legacy
-REST metadata and is not used for MCP tools.
+An operation intended for protocol introspection passes its own self-contained JSON Schema as
+`inputSchema` to `server.registerOperation()`. Registration clones and compiles it without changing
+the handler's validation. A component never inherits a contract by name, even when it replaces a
+built-in. `parametersSchema` is legacy REST metadata, not MCP input metadata.
 
-Before v5.3, an operation named by `mcp.operations.allow` was exposed with a permissive object schema
-when no curated schema existed. Existing deployments that need that behavior can name the affected
-operations in `mcp.operations.allowSchemaless`; the explicit opt-in advertises `{ type: 'object' }`
-and leaves validation to the operation handler. It never overrides conflicting schemas announced by
-live workers during a rolling deploy.
+MCP requires schema metadata for default/glob matches. A literal `mcp.operations.allow` entry opts
+that operation into a permissive object contract if it lacks metadata, preserving existing explicit
+operator choices. Neither form overrides conflicting schemas from live workers. See the registry
+and MCP operation tests for registration isolation, reference validation and opt-in behavior.
 
 ## Resource ↔ HTTP boundary
 

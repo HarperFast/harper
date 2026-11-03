@@ -35,9 +35,9 @@ describe('Test serverUtilities.js module ', () => {
 	});
 
 	it('attaches every built-in operation schema to its live registry entry', function () {
-		const { isOperationAllowed } = require('#src/components/mcp/tools/operations');
+		const { _isOperationAllowedForTest } = require('#src/components/mcp/tools/operations');
 		for (const [name, operation] of serverUtilities.OPERATION_FUNCTION_MAP) {
-			if (!isOperationAllowed(name, {})) continue;
+			if (!_isOperationAllowedForTest(name, {})) continue;
 			assert.ok(operation.inputSchema, `default-allowed operation '${name}' must carry an input schema`);
 		}
 	});
@@ -1168,19 +1168,17 @@ describe('Test serverUtilities.js module ', () => {
 			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
 		});
 
-		it('uses the shipped schema when a named operation omits inputSchema', function () {
-			const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+		it('does not inherit a catalog schema when a component uses the same name', function () {
 			const name = 'get_metrics';
-			server.registerOperation({ name, execute: async () => ({}) });
-
-			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
-			assert.notEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
-			server.registerOperation({ name, execute: async () => ({}) });
-			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
-			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+			try {
+				server.registerOperation({ name, execute: async () => ({ custom: true }) });
+				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, undefined);
+			} finally {
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+			}
 		});
 
-		it('prefers an explicit inputSchema over the shipped schema', function () {
+		it('stores an explicit component schema without name-based inheritance', function () {
 			const name = 'get_metrics';
 			const inputSchema = { type: 'object', properties: { custom: { type: 'string' } } };
 			server.registerOperation({ name, execute: async () => ({}), inputSchema });
@@ -1241,6 +1239,8 @@ describe('Test serverUtilities.js module ', () => {
 					{ type: 'object', $schema: 'https://example.com/json-schema.org/draft-07/schema' },
 				],
 				['test_meta_invalid_schema_op', { type: 'object', required: 'value' }],
+				['test_unresolved_ref_op', { type: 'object', properties: { value: { $ref: '#/definitions/Missing' } } }],
+				['test_external_ref_op', { type: 'object', properties: { value: { $ref: 'https://example.invalid/schema' } } }],
 				['test_oversized_schema_metadata_op', { type: 'object', description: 'x'.repeat(64 * 1024) }],
 				[
 					'test_circular_schema_metadata_op',

@@ -62,7 +62,6 @@ type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) =>
 
 interface OperationsConfig {
 	allow?: readonly string[];
-	allowSchemaless?: readonly string[];
 	deny?: readonly string[];
 }
 type RemoteOperationSchema = { inputSchema?: object; issue?: 'missing' | 'inconsistent' };
@@ -296,7 +295,7 @@ function matchesAny(operation: string, patterns: readonly string[] | undefined):
 	return false;
 }
 
-export function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
+function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
 	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
 	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
 	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
@@ -305,13 +304,13 @@ export function isOperationAllowed(operation: string, config: OperationsConfig):
 	return true;
 }
 
+export const _isOperationAllowedForTest = isOperationAllowed;
+
 function getOperationsConfig(): OperationsConfig {
 	const allow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
-	const allowSchemaless = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOWSCHEMALESS);
 	const deny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
 	return {
 		allow: Array.isArray(allow) ? (allow as readonly string[]) : undefined,
-		allowSchemaless: Array.isArray(allowSchemaless) ? (allowSchemaless as readonly string[]) : undefined,
 		deny: Array.isArray(deny) ? (deny as readonly string[]) : undefined,
 	};
 }
@@ -499,7 +498,10 @@ function buildRegisteredOperationToolDef(
 	issue: RemoteOperationSchema['issue'] = 'missing'
 ): ToolDef | undefined {
 	if (!operation.inputSchema) {
-		if (issue !== 'inconsistent' && matchesAny(operationName, config.allowSchemaless)) {
+		if (
+			issue !== 'inconsistent' &&
+			config.allow?.some((pattern) => !pattern.includes('*') && pattern === operationName)
+		) {
 			return buildOperationToolDef(operationName, { type: 'object' });
 		}
 		const warningKey = `${operationName}:${issue}`;
@@ -509,7 +511,7 @@ function buildRegisteredOperationToolDef(
 			const message =
 				issue === 'inconsistent'
 					? `MCP operations profile: '${operationName}' is registered by workers with different inputSchema values; withholding it until they agree`
-					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; pass inputSchema to server.registerOperation() or add it to mcp.operations.allowSchemaless`;
+					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; pass inputSchema to server.registerOperation() or name it literally in mcp.operations.allow`;
 			harperLogger.warn(message);
 		}
 		return undefined;

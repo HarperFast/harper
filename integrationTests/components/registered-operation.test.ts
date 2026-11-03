@@ -85,7 +85,10 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 				threads: { count: 2 },
 				logging: { console: true, level: 'error' },
 				mcp: {
-					operations: { mountPath: '/mcp', allow: ['component_registered_echo', 'component_registered_stream'] },
+					operations: {
+						mountPath: '/mcp',
+						allow: ['component_registered_echo', 'component_registered_error', 'component_registered_*'],
+					},
 				},
 			},
 		});
@@ -106,7 +109,7 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		strictEqual(body.username, ctx.harper.admin.username);
 	});
 
-	test('registered inputSchema is exposed through MCP tools/list', async () => {
+	test('worker schemas and literal schema-less opt-ins survive MCP list and call', async () => {
 		const init = await mcp({
 			jsonrpc: '2.0',
 			id: 1,
@@ -133,8 +136,57 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		strictEqual(
 			body.result.tools.some(({ name }) => name === 'component_registered_stream'),
 			false,
-			'schema-less operations must not be advertised'
+			'glob-matched schema-less operations must not be advertised'
 		);
+		strictEqual(
+			body.result.tools.some(({ name }) => name === 'component_registered_bad_schema'),
+			false
+		);
+		deepStrictEqual(body.result.tools.find(({ name }) => name === 'component_registered_error')?.inputSchema, {
+			type: 'object',
+		});
+
+		const call = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 3,
+				method: 'tools/call',
+				params: { name: 'component_registered_echo', arguments: { value: 'mcp-worker-echo' } },
+			},
+			sessionId
+		);
+		strictEqual(call.status, 200);
+		const called = (await call.json()) as {
+			result: { structuredContent: { echoed: string; executedOnMainThread: boolean } };
+		};
+		strictEqual(called.result.structuredContent.echoed, 'mcp-worker-echo');
+		strictEqual(called.result.structuredContent.executedOnMainThread, false);
+
+		const errorCall = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 4,
+				method: 'tools/call',
+				params: { name: 'component_registered_error', arguments: {} },
+			},
+			sessionId
+		);
+		strictEqual(errorCall.status, 200);
+		const failed = (await errorCall.json()) as { result: { isError: boolean; content: Array<{ text: string }> } };
+		strictEqual(failed.result.isError, true);
+		ok(failed.result.content.some(({ text }) => text.includes('deliberate failure from component operation')));
+
+		const hiddenCall = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 5,
+				method: 'tools/call',
+				params: { name: 'component_registered_bad_schema', arguments: {} },
+			},
+			sessionId
+		);
+		const hidden = (await hiddenCall.json()) as { error: { message: string } };
+		ok(hidden.error.message.includes('Unknown tool'), JSON.stringify(hidden));
 	});
 
 	test('repeated calls keep working (round-robin across registering workers)', async () => {

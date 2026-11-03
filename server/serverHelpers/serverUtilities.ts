@@ -191,7 +191,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 }
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
-const BUILT_IN_OPERATION_NAMES = new Set(OPERATION_FUNCTION_MAP.keys());
 
 export type OperationDefinition = {
 	name: string;
@@ -242,12 +241,7 @@ function registerOperation(operationDefinition: OperationDefinition) {
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
 		declaredPermissionNames.add(name);
 	}
-	const schemaMetadata =
-		inputSchema ??
-		(!BUILT_IN_OPERATION_NAMES.has(name as any) && Object.hasOwn(OPERATION_INPUT_SCHEMAS, name)
-			? OPERATION_INPUT_SCHEMAS[name]
-			: undefined);
-	const normalizedSchema = normalizeOperationInputSchema(schemaMetadata);
+	const normalizedSchema = normalizeOperationInputSchema(inputSchema);
 	if (normalizedSchema.error) {
 		operationLog.warn(`Operation '${name}' inputSchema ignored: ${normalizedSchema.error}`);
 	}

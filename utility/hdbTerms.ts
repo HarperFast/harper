@@ -667,7 +667,6 @@ export const CONFIG_PARAMS = {
 	MCP_OPERATIONS_ENABLED: 'mcp_operations_enabled',
 	MCP_OPERATIONS_MOUNTPATH: 'mcp_operations_mountPath',
 	MCP_OPERATIONS_ALLOW: 'mcp_operations_allow',
-	MCP_OPERATIONS_ALLOWSCHEMALESS: 'mcp_operations_allowSchemaless',
 	MCP_OPERATIONS_DENY: 'mcp_operations_deny',
 	MCP_OPERATIONS_MAXTOOLS: 'mcp_operations_maxTools',
 	MCP_OPERATIONS_RATELIMIT_PERTOOLPERSECOND: 'mcp_operations_rateLimit_perToolPerSecond',

@@ -257,8 +257,8 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(dropTable.annotations?.readOnlyHint, undefined);
 	});
 
-	it('does not expose an allowed operation without registered schema metadata', () => {
-		envOverrides.mcp_operations_allow = ['nonstandard_op'];
+	it('does not expose a glob-allowed operation without registered schema metadata', () => {
+		envOverrides.mcp_operations_allow = ['nonstandard_*'];
 		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, null]]));
 		registerOperationsTools();
 		assert.equal(getTool('nonstandard_op'), undefined);
@@ -292,16 +292,44 @@ describe('mcp/tools/operations — registration', () => {
 
 	it('allows an operator to opt a named schema-less operation into the permissive contract', () => {
 		envOverrides.mcp_operations_allow = ['insert'];
-		envOverrides.mcp_operations_allowSchemaless = ['insert'];
 		_setOperationFunctionMapForTest(makeOpMap([['insert', null, null]]));
 		registerOperationsTools();
 
 		assert.deepEqual(getTool('insert').inputSchema, { type: 'object' });
 	});
 
-	it('does not let allowSchemaless override conflicting worker schemas', () => {
+	it('withholds default schema-less operations even when the default allow entry is literal', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['get_status', null, null]]));
+		registerOperationsTools();
+		assert.equal(getTool('get_status'), undefined);
+	});
+
+	it('preserves literal schema-less opt-ins alongside globs and still applies deny', () => {
+		envOverrides.mcp_operations_allow = ['insert', 'update', 'search_*'];
+		envOverrides.mcp_operations_deny = ['update'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['insert', null, null],
+				['update', null, null],
+				['search_custom', null, null],
+			])
+		);
+		registerOperationsTools();
+		assert.deepEqual(getTool('insert').inputSchema, { type: 'object' });
+		assert.equal(getTool('update'), undefined);
+		assert.equal(getTool('search_custom'), undefined);
+	});
+
+	it('preserves literal schema-less opt-ins for worker registrations', () => {
 		envOverrides.mcp_operations_allow = ['worker_op'];
-		envOverrides.mcp_operations_allowSchemaless = ['worker_op'];
+		_setOperationFunctionMapForTest(new Map());
+		_setRemoteOperationInputSchemasForTest([['worker_op', { issue: 'missing' }]]);
+		registerOperationsTools();
+		assert.deepEqual(getTool('worker_op').inputSchema, { type: 'object' });
+	});
+
+	it('does not let a literal allow entry override conflicting worker schemas', () => {
+		envOverrides.mcp_operations_allow = ['worker_op'];
 		_setOperationFunctionMapForTest(new Map());
 		_setRemoteOperationInputSchemasForTest([['worker_op', { issue: 'inconsistent' }]]);
 		registerOperationsTools();
@@ -320,7 +348,8 @@ describe('mcp/tools/operations — registration', () => {
 	});
 
 	it('advertises the get_status components opt-in', () => {
-		_setOperationFunctionMapForTest(makeOpMap([['get_status', null]]));
+		const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+		_setOperationFunctionMapForTest(makeOpMap([['get_status', null, OPERATION_INPUT_SCHEMAS.get_status]]));
 		registerOperationsTools();
 		assert.equal(getTool('get_status').inputSchema.properties.components.type, 'boolean');
 	});

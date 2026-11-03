@@ -388,7 +388,6 @@ export function configValidator(configJson, skipFsValidation = false) {
 		enabled: boolean.optional().prefs({ convert: false }),
 		mountPath: string.optional().default('/mcp'),
 		allow: array.items(string).optional(),
-		allowSchemaless: array.items(string).optional(),
 		deny: array.items(string).optional(),
 		maxTools: number.min(1).optional(),
 		rateLimit: mcpRateLimitSchema.optional(),
