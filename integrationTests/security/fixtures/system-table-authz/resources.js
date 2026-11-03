@@ -12,8 +12,6 @@ server.registerOperation({
 		return {
 			executedOnMainThread: isMainThread,
 			username: op.hdb_user?.username ?? null,
-			// Proves the permissions survived the clone with their contents intact, not merely that
-			// the request arrived.
 			sawSystemTables: Object.keys(systemTables).length,
 			statusReadable: systemTables.hdb_status?.read ?? null,
 			statusInsertable: systemTables.hdb_status?.insert ?? null,

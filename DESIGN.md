@@ -745,3 +745,5 @@ consumers such as `jsResource` request a restart on their logical `change` or `u
 ## System permissions on roles
 
 `permission.system` is derived from `super_user` and the live system-table registry. Role API validation and roles-file preflight reject declarations under that key. `withoutSystemGrants` normalizes legacy role response copies for role lookup, listing and user info; cache assembly derives the managed map separately. Reads never write cleanup to storage: worker cache reloads must not overwrite a concurrent role alteration. The next alteration that replaces the permission object removes the stored declaration. Legacy warnings occur once per role revision per worker thread. Impersonation reinstalls the managed map after downgrading role flags, including for cached superusers.
+
+Upgrade requirement: remove `permission.system` declarations from role API requests and roles files before deploying. These declarations now fail validation; a roles file containing one is rejected before any role in it is applied. Legacy stored blocks remain inert until a permission replacement.

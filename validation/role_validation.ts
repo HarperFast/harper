@@ -120,7 +120,12 @@ function customValidate(object, constraints) {
 
 	for (let item in object.permission) {
 		if (item === terms.SYSTEM_SCHEMA_NAME) {
-			addPermError(HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED, validationErrors, undefined, undefined);
+			addPermError(
+				`Role '${object.role ?? object.id}': ${HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED}`,
+				validationErrors,
+				undefined,
+				undefined
+			);
 			continue;
 		}
 		if (ROLE_TYPES.indexOf(item as any) < 0) {
