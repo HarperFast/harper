@@ -16,7 +16,7 @@ For the full list of configurable options, see [Configuration Options](./options
 
 ## Set Configuration
 
-Modifies one or more Harper configuration parameters. **Most changes require a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect** (a [restart](../operations-api/operations.md#restart) for `threads.v8Flags`). A change to `replication.threads` takes effect only on a full `restart`.
+Modifies one or more Harper configuration parameters. **Most changes require a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect** (a [restart](../operations-api/operations.md#restart) for `threads.v8Flags`, [`storage.rocks.transactionLogAbortMarkers`](../database/storage-tuning.md#storagerockstransactionlogabortmarkers) and [`storage.rocks.transactionLogWriteIntents`](../database/storage-tuning.md#storagerockstransactionlogwriteintents)). A change to `replication.threads` takes effect only on a full `restart`.
 
 Full-text request work limits (`storage.fullText.maxRawHitsPerRequest`, `storage.fullText.maxResultsPerRequest` and `storage.fullText.requestBudgetMilliseconds`) take effect in HTTP workers after `restart_service` or a full restart. Changes to `storage.fullText.runtime` require a full Harper process restart; `restart_service` does not replace the native process budget. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
@@ -86,7 +86,7 @@ To restart the whole cluster afterward, follow with [restart_service](../operati
 }
 ```
 
-`restart_service` restarts only worker threads, which keep the process's V8 flags. A change to [`threads.v8Flags`](./options.md#applying-v8-flags) takes effect only after a [restart](../operations-api/operations.md#restart), sent to each node in turn.
+`restart_service` restarts only worker threads, which keep the process's V8 flags and its `storage.rocks.transactionLogAbortMarkers` and `storage.rocks.transactionLogWriteIntents` values. A change to [`threads.v8Flags`](./options.md#applying-v8-flags), [`storage.rocks.transactionLogAbortMarkers`](../database/storage-tuning.md#storagerockstransactionlogabortmarkers) or [`storage.rocks.transactionLogWriteIntents`](../database/storage-tuning.md#storagerockstransactionlogwriteintents) takes effect only after a [restart](../operations-api/operations.md#restart), sent to each node in turn.
 
 ---
 

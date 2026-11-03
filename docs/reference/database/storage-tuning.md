@@ -45,6 +45,8 @@ Beginning with v5.2.1, Harper tracks every outstanding commit attempt for this c
 
 The [`transaction-commit-time` metric](../analytics/overview.md#storage-metrics) provides the corresponding commit-latency distribution, but only records each attempt after it settles.
 
+The same duration also limits how long one write keeps retrying conflicts with other writes before it fails with a different HTTP 503, code `TRANSACTION_COMMIT_CONFLICT_TIMEOUT`. See [`storage.rocks.transactionLogAbortMarkers`](#storagerockstransactionlogabortmarkers) for which writes this applies to.
+
 Lower this in latency-sensitive systems where it is better to shed load early than to let request queues grow. Raise it when occasional disk-write bursts are expected and the application can tolerate longer commit latency.
 
 ```yaml
@@ -306,6 +308,50 @@ Controls behavior when memtable memory reaches `writeBufferManagerSize`:
 The default (`true`) strictly bounds total memtable memory, applying write backpressure rather than letting memtables overshoot — which also keeps bulk ingest from outrunning the memtable flush/conflict-check window. Set to `false` for a soft cap when write-latency smoothness matters more than a strict memory bound and brief overshoot during bursts is acceptable.
 
 This option is the only `WriteBufferManager` setting that can be changed at runtime — `costToCache` is fixed at first creation.
+
+## RocksDB Transaction Log
+
+### `storage.rocks.transactionLogAbortMarkers`
+
+<VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" />
+
+Type: `boolean`
+
+Default: `true`
+
+Applies only when `storage.engine` is `rocksdb`. Harper writes a transaction's entry to the [transaction log](./transaction.md) before the transaction commits. With this setting on, when a transaction fails after that point, its entry is marked aborted, and every reader of the log skips it: replication, subscriptions, [`read_audit_log`](./transaction.md#read_audit_log), and replay after a crash. A transaction is still replayed on restart if the process crashes before it commits or is marked, including when a disk error delays its marker.
+
+It also bounds a write that keeps conflicting with other writes. The write fails with HTTP `500` after 40 commit conflicts, or with HTTP `503` and code `TRANSACTION_COMMIT_CONFLICT_TIMEOUT` once it has been in conflict for longer than [`storage.maxTransactionQueueTime`](#storagemaxtransactionqueuetime), whichever comes first. A `503` that carries `retryable: false` may have been partly applied, so do not resend that request as is. Writes applied from replication or a caching source, and a transaction part of which has already committed, still retry until they commit.
+
+Set it to `false` to keep the 5.3 behavior, where a write whose log entry was already written retries without limit. Any value other than `false`, `0`, `no` or `off` leaves it on. Harper reads the setting once per process, so a change takes effect after a [`restart`](../operations-api/operations.md#restart) of each node, or a process or container restart. [`restart_service`](../operations-api/operations.md#restart_service) restarts only worker threads and does not apply it.
+
+**Downgrades:** Harper 5.3.4 and earlier cannot read abort markers and would treat a marked transaction as committed. Do not run them on a node's database files, or a backup of them, after the node has run 5.4 with this setting on. Harper 5.3.5 and later read the markers. Setting it to `false` later stops new markers but does not remove ones already written.
+
+```yaml
+storage:
+  rocks:
+    transactionLogAbortMarkers: false
+```
+
+### `storage.rocks.transactionLogWriteIntents`
+
+<VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" />
+
+Type: `boolean`
+
+Default: `false`
+
+When `true`, a commit that would conflict with a write from an older transaction that is still open is refused before it writes its transaction-log entry, or before it commits if an earlier attempt already wrote that entry. It then waits for that transaction to commit or abort, and retries. A refused attempt does not count toward the 40-conflict limit of [`transactionLogAbortMarkers`](#storagerockstransactionlogabortmarkers).
+
+This shortens the longest waits when many transactions write the same records at once. It adds retries and lowers throughput when transactions are large or contention is low, so leave it off unless overlapping writes to the same records see long commit delays.
+
+It has no effect when `transactionLogAbortMarkers` is `false`. Like that setting, it is read once per process: a change takes effect after a [`restart`](../operations-api/operations.md#restart) of each node, not [`restart_service`](../operations-api/operations.md#restart_service).
+
+```yaml
+storage:
+  rocks:
+    transactionLogWriteIntents: true
+```
 
 ## Storage Reclamation
 

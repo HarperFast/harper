@@ -208,7 +208,9 @@ outstanding commit on a thread exceeds
 (default 45s), Harper rejects new record updates and publishes from new application requests on that
 thread with `Outstanding write transactions have too long of queue, please try again later` (HTTP
 503). Deletes and writes applied from a canonical source (e.g. replication or a caching source)
-bypass this check.
+bypass this check. The same duration also limits how long a write keeps retrying conflicts with other
+writes, which fails with a separate 503, code `TRANSACTION_COMMIT_CONFLICT_TIMEOUT`; see
+[`storage.rocks.transactionLogAbortMarkers`](../database/storage-tuning.md#storagerockstransactionlogabortmarkers).
 
 <VersionBadge type="changed" version="v5.2.1" />
 
