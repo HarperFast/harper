@@ -5,6 +5,10 @@ const {
 	runShutdownDrains,
 	getShutdownDrainCeilingMs,
 	boundedTerminateDelay,
+	getProcessShutdownTimeoutMs,
+	shutdownDrainDeadline,
+	tightenShutdownDrains,
+	CLOSE_RESERVE_MS,
 } = require('#src/components/shutdownDrain');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -144,6 +148,76 @@ describe('shutdownDrain', () => {
 			// point is it waited ~the deadline rather than resolving immediately, and didn't hang.
 			assert.ok(elapsed >= 120, `expected >= 120ms, got ${elapsed}`);
 			assert.ok(elapsed < 2000, `expected < 2000ms, got ${elapsed}`);
+		});
+
+		it('ends at a tightened deadline, and a later tightening never extends it', async () => {
+			track({ hasWork: () => true, drain: () => new Promise(() => {}) });
+			const start = Date.now();
+			const running = runShutdownDrains(start + 60_000);
+			tightenShutdownDrains(start + 150);
+			tightenShutdownDrains(start + 60_000);
+			await running;
+			const elapsed = Date.now() - start;
+			assert.ok(elapsed >= 120, `expected >= 120ms, got ${elapsed}`);
+			assert.ok(elapsed < 2000, `expected < 2000ms, got ${elapsed}`);
+		});
+
+		it('ignores a tightening when no drain run is in progress', async () => {
+			tightenShutdownDrains(Date.now());
+			let drained = false;
+			track({ hasWork: () => true, drain: async () => void (drained = true) });
+			await runShutdownDrains(Date.now() + 10_000);
+			assert.equal(drained, true);
+		});
+	});
+
+	describe('shutdownDrainDeadline', () => {
+		const NOW = 1_000_000;
+		it('is the ceiling when no process exit deadline is given', () => {
+			assert.equal(shutdownDrainDeadline(NOW, 600_000), NOW + 600_000);
+		});
+		it('leaves the close reserve before a process exit deadline', () => {
+			assert.equal(shutdownDrainDeadline(NOW, 600_000, NOW + 8000), NOW + 8000 - CLOSE_RESERVE_MS);
+		});
+		it('keeps the ceiling when the exit deadline is further out', () => {
+			assert.equal(shutdownDrainDeadline(NOW, 1000, NOW + 60_000), NOW + 1000);
+		});
+		it('is never before now', () => {
+			assert.equal(shutdownDrainDeadline(NOW, 600_000, NOW + 1000), NOW);
+		});
+	});
+
+	describe('getProcessShutdownTimeoutMs', () => {
+		const devMode = process.env.DEV_MODE;
+		afterEach(() => {
+			env.setProperty(CONFIG_PARAMS.THREADS_SHUTDOWNTIMEOUT, undefined);
+			if (devMode === undefined) delete process.env.DEV_MODE;
+			else process.env.DEV_MODE = devMode;
+		});
+
+		it('defaults to 8 s, and 30 s under harper dev, when unset or blank', () => {
+			delete process.env.DEV_MODE;
+			for (const unset of [undefined, null, '', '  ']) {
+				env.setProperty(CONFIG_PARAMS.THREADS_SHUTDOWNTIMEOUT, unset);
+				assert.equal(getProcessShutdownTimeoutMs(), 8000);
+			}
+			process.env.DEV_MODE = 'true';
+			assert.equal(getProcessShutdownTimeoutMs(), 30_000);
+		});
+		it('coerces a numeric string and passes 0 (exit at once) through', () => {
+			env.setProperty(CONFIG_PARAMS.THREADS_SHUTDOWNTIMEOUT, '20000');
+			assert.strictEqual(getProcessShutdownTimeoutMs(), 20_000);
+			env.setProperty(CONFIG_PARAMS.THREADS_SHUTDOWNTIMEOUT, 0);
+			assert.strictEqual(getProcessShutdownTimeoutMs(), 0);
+		});
+		it('clamps to the max timer and falls back on a non-finite or negative value', () => {
+			delete process.env.DEV_MODE;
+			env.setProperty(CONFIG_PARAMS.THREADS_SHUTDOWNTIMEOUT, 1e12);
+			assert.equal(getProcessShutdownTimeoutMs(), 2_147_483_647);
+			for (const bad of ['abc', -1, Infinity]) {
+				env.setProperty(CONFIG_PARAMS.THREADS_SHUTDOWNTIMEOUT, bad);
+				assert.equal(getProcessShutdownTimeoutMs(), 8000);
+			}
 		});
 	});
 });

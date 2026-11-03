@@ -152,6 +152,12 @@ describe('proxyProtocol decodeProxyHeader', () => {
 		assert.strictEqual(decode([0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8]), '1:2:3:4:5:6:7:8');
 	});
 
+	it('writes an IPv4-mapped v2 TCP6 source as Node does', () => {
+		const mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1];
+		const decision = decodeProxyHeader(buildV2Header({ family: 0x21, srcIp: mapped, srcPort: 1 }));
+		assert.strictEqual(decision.srcIp, '::ffff:127.0.0.1');
+	});
+
 	it('returns incomplete for partial v2 headers (signature, length, body)', () => {
 		const header = buildV2Header({ tlvs: [sslTlv(), tlv(0xe2, CLIENT_DER)] });
 		assert.strictEqual(decodeProxyHeader(header.subarray(0, 5)).kind, 'incomplete');

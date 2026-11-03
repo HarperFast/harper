@@ -163,6 +163,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 
 		await Company.put({ id: 'co-split', group: 'g1' });
 		await Company.put({ id: 'co-match', group: 'g1' });
+		for (let i = 0; i < 40; i++) await Company.put({ id: `co-empty-${i}`, group: 'g1' });
 		await Department.put({ id: 'dept-split', companyId: 'co-split', name: 'Split Dept' });
 		// two to-many hops wide enough that resolving them together would exceed one read window
 		await Company.put({ id: 'co-wide', group: 'wide-co' });
@@ -322,7 +323,53 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			}
 		});
 
-		it('sibling conditions met by different children match the parent but select only children meeting both', async function () {
+		it('rejects a parent by the related key alone, loading no related record, when other conditions share the relationship', async function () {
+			const reads = spyPrimaryReads(ColdChild);
+			try {
+				for (const name of ['linkedChildren']) {
+					clearValueMap(ColdChild);
+					const rows = await collect(
+						Parent.search({
+							conditions: [
+								{ attribute: 'group', value: 'g1' },
+								{ attribute: [name, 'id'], value: 'nobody' },
+								{ attribute: [name, 'label'], comparator: 'starts_with', value: 'match' },
+							],
+							enforceExecutionOrder: true,
+							select: ['id'],
+						})
+					);
+					assert.deepStrictEqual(rows, [], name);
+				}
+				assert.strictEqual(reads.sync + reads.async, 0);
+				// a key that matches does not bypass the other conditions on the same related record
+				for (const [prefix, expected] of [
+					['match', ['parent-1']],
+					['zzz', []],
+				])
+					assert.deepStrictEqual(
+						(
+							await collect(
+								Parent.search({
+									conditions: [
+										{ attribute: 'group', value: 'g1' },
+										{ attribute: ['linkedChildren', 'id'], value: 'c2' },
+										{ attribute: ['linkedChildren', 'label'], comparator: 'starts_with', value: prefix },
+									],
+									enforceExecutionOrder: true,
+									select: ['id'],
+								})
+							)
+						).map((row) => row.id),
+						expected,
+						prefix
+					);
+			} finally {
+				reads.restore();
+			}
+		});
+
+		it('sibling conditions met only by different children do not match the parent', async function () {
 			const rows = await collect(
 				Parent.search({
 					conditions: [
@@ -333,10 +380,10 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'children', select: ['id'] }],
 				})
 			);
-			assert.deepStrictEqual(rows, [{ id: 'parent-3', children: [] }]);
+			assert.deepStrictEqual(rows, []);
 		});
 
-		it('branches of an OR group never narrow each other, whichever row is evaluated first', async function () {
+		it('a condition inside an OR group decides rows and never narrows the selected children', async function () {
 			const rows = await collect(
 				Parent.search({
 					conditions: [
@@ -357,10 +404,11 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 				rows.map((row) => row.id),
 				['or-a', 'or-b']
 			);
-			assert.deepStrictEqual(rows[1].children, [{ id: 'c8' }]);
+			assert.deepStrictEqual(rows[0].children, [{ id: 'c7' }]);
+			assert.deepStrictEqual(rows[1].children, [{ id: 'c8' }, { id: 'c9' }]);
 		});
 
-		it('a nested selection with a limit sees an OR-scope restriction registered while rows are filtered', async function () {
+		it('a nested selection with a limit is not narrowed by a condition inside an OR group', async function () {
 			const rows = await collect(
 				Parent.search({
 					conditions: [
@@ -377,7 +425,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					select: ['id', { name: 'children', limit: 10, select: ['id'] }],
 				})
 			);
-			assert.deepStrictEqual(rows[1], { id: 'or-b', children: [{ id: 'c8' }] });
+			assert.deepStrictEqual(rows[1], { id: 'or-b', children: [{ id: 'c8' }, { id: 'c9' }] });
 		});
 
 		it('a related table without a primary-key field selects matched records by their entry key', async function () {
@@ -429,6 +477,15 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					departments: [{ id: 'dept-match', employees: [{ id: 'emp-match-1', role: 'eng', active: true }] }],
 				},
 			]);
+		});
+
+		it('a two-hop path that leads by estimate keeps the lead ahead of a local index', async function () {
+			const hop = (attribute, value) => ({ attribute: ['departments', 'employees', attribute], value });
+			const conditions = [hop('role', 'eng'), hop('active', true), { attribute: 'group', value: 'g1' }];
+			const ids = async (options) => (await collect(Company.search({ conditions, ...options }))).map((row) => row.id);
+			assert.deepStrictEqual(await ids({ enforceExecutionOrder: true, allowFullScan: true }), ['co-match']);
+			conditions.unshift(conditions.pop());
+			assert.deepStrictEqual(await ids({ allowFullScan: false }), ['co-match']);
 		});
 
 		it('a non-leading two-hop condition restricts the nested select()', async function () {

@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { searchByIndex } = require('#src/resources/search');
+const { searchByIndex, relationshipRestriction } = require('#src/resources/search');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -415,7 +415,7 @@ describe('Queries read related records asynchronously', () => {
 						ColdParent,
 						{ filtered }
 					);
-					filtered.children.filters = [switching];
+					relationshipRestriction(filtered, 'children').filters = [switching];
 					const ids = [];
 					if (sync) for (const id of results) ids.push(id);
 					else for await (const id of results) ids.push(id);
@@ -443,7 +443,24 @@ describe('Queries read related records asynchronously', () => {
 			assert.equal(childReads.sync, 0);
 		});
 
-		it('select of a filtered relationship on a row whose foreign key is null', async function () {
+		it('select of a many-to-many relationship with a nested sort keeps the filter of a relationship condition that does not lead', async function () {
+			const results = await collect(
+				ColdParent.search({
+					enforceExecutionOrder: true,
+					conditions: [
+						firstFourParents,
+						{ attribute: ['children', 'label'], comparator: 'starts_with', value: 'label 1' },
+					],
+					select: ['id', { name: 'children', select: ['name'], sort: { attribute: 'name' } }],
+				})
+			);
+			assert.deepEqual(results, [
+				{ id: 'parent-2', children: [{ name: 'child 10' }] },
+				{ id: 'parent-3', children: [{ name: 'child 11' }] },
+			]);
+		});
+
+		it('select of a relationship a condition inside an OR constrains, on a row whose foreign key is null', async function () {
 			const results = await collect(
 				ColdParent.search({
 					conditions: [
@@ -459,7 +476,10 @@ describe('Queries read related records asynchronously', () => {
 					select: ['id', { name: 'children', select: ['name'] }],
 				})
 			);
-			assert.deepEqual(results, [{ id: 'parent-1', children: [{ name: 'child 9' }] }, { id: 'parent-null' }]);
+			assert.deepEqual(results, [
+				{ id: 'parent-1', children: [{ name: 'child 5' }, { name: 'child 9' }] },
+				{ id: 'parent-null', children: null },
+			]);
 			assert.equal(childReads.sync, 0);
 		});
 
@@ -535,7 +555,7 @@ describe('Queries read related records asynchronously', () => {
 			);
 			let release;
 			let laterCalls = 0;
-			filtered.children.filters = [
+			relationshipRestriction(filtered, 'children').filters = [
 				Object.assign(() => true, { maybeAsync: () => new Promise((resolve) => (release = resolve)) }),
 				() => ++laterCalls > 0,
 			];

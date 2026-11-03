@@ -1,4 +1,4 @@
-import { recordAction, recordActionBinary } from '../../resources/analytics/write.ts';
+import { checkAnalyticsEnabled, recordAction, recordActionBinary } from '../../resources/analytics/write.ts';
 import fp from 'fastify-plugin';
 
 const ESTIMATED_HEADER_SIZE = 200; // it is very expensive to actually measure HTTP response header size (we change it
@@ -32,7 +32,7 @@ export default fp(
 			if (receivedAt !== undefined) recordAction(startTransfer - receivedAt, 'request-time', action, method, type);
 			// TODO: Remove the "success" metric, since we have switch to using recording responses by status code
 			recordActionBinary(reply.raw.statusCode < 400, 'success', action, method, type);
-			recordActionBinary(1, 'response_' + reply.raw.statusCode, action, method, type);
+			if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + reply.raw.statusCode, action, method, type);
 			let bytesSent = ESTIMATED_HEADER_SIZE;
 			if (payload?.pipe) {
 				// if we are sending a stream, track the bytes sent and wait for when it completes

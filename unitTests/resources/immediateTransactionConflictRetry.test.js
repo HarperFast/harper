@@ -6,6 +6,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 const { transaction } = require('#src/resources/transaction');
+const { setAbortMarkersForTests } = require('#src/resources/transactionLogAbortMarkers');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -46,7 +47,10 @@ describe('ImmediateTransaction conflict retry', () => {
 	// ERR_BUSY on the first `failFirst` native commits against the test table's db, then real commits;
 	// records the native transaction id of every attempt so the test can see which transaction each
 	// retry used. `beforeReject` runs before the first rejection, to age the holder's lease meanwhile.
+	// A forced conflict never reaches RocksDB, so with abort markers on it would read as an attempt that
+	// wrote no log batch; it models the markers-off path.
 	function conflictCommits({ failFirst = 1, beforeReject, targetTable = Locked } = {}) {
+		const priorAbortMarkers = setAbortMarkersForTests(false);
 		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = targetTable.primaryStore.store.db;
@@ -68,6 +72,7 @@ describe('ImmediateTransaction conflict retry', () => {
 		pendingRestores.push(() => {
 			Transaction.prototype.commit = originalCommit;
 			Transaction.prototype.abort = originalAbort;
+			setAbortMarkersForTests(priorAbortMarkers ?? true);
 		});
 		return { attempts, aborted };
 	}

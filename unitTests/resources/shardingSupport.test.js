@@ -114,6 +114,7 @@ const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const descriptor = Object.getOwnPropertyDescriptor(Transaction.prototype, 'usesAbortMarkers');
 		Object.defineProperty(Transaction.prototype, 'usesAbortMarkers', { configurable: true, value: () => true });
 		env.setProperty('replication_experimentalAttributeSlots', true);
+		env.setProperty('storage_rocks_transactionLogAbortMarkers', false);
 		try {
 			await assert.rejects(
 				loadGQLSchema(schema('disabled_markers', '@sharded(slots: 2, by: "tag")')),

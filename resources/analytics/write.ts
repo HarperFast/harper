@@ -47,6 +47,7 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+let analyticsGeneration = 0;
 
 onStartup(() => {
 	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
@@ -64,6 +65,7 @@ export function checkAnalyticsEnabled(): boolean {
 	return analyticsEnabled;
 }
 
+/** Resets this thread's analytics window; other threads keep their own. */
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
 	if (enabled) startEventLoopDelayMonitor();
@@ -74,6 +76,8 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsStart = 0;
 	lastFlushAt = 0;
 	activeActions = new Map();
+	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
+	analyticsGeneration++;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -204,6 +208,7 @@ function sendAnalytics() {
 
 async function flushAnalytics() {
 	sendAnalyticsTimeout = null;
+	const generation = analyticsGeneration;
 	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
 	// an entry already reported, and dropped with it.
 	const reportingActions = activeActions;
@@ -264,6 +269,7 @@ async function flushAnalytics() {
 			);
 		}
 		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
+		if (generation !== analyticsGeneration) return;
 	}
 	const memoryUsage = process.memoryUsage();
 	metrics.push({
@@ -300,8 +306,10 @@ async function flushAnalytics() {
 		maxDepth: queueDepths.readMaxDepth,
 	});
 	for (const listener of analyticsListeners) {
+		if (generation !== analyticsGeneration) return;
 		listener(metrics);
 	}
+	if (generation !== analyticsGeneration) return;
 	if (parentPort)
 		parentPort.postMessage({
 			type: ANALYTICS_REPORT_TYPE,

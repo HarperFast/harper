@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { Resources } = require('#src/resources/Resources');
 const { transaction } = require('#src/resources/transaction');
+const { restrictRelationship } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { handleApplication } = require('#src/server/REST');
 const { Request } = require('#src/server/serverHelpers/Request');
@@ -680,10 +681,12 @@ describe('nested relationship constraints', function () {
 			resolve = done;
 		});
 		await transaction({}, async () => {
+			const filtered = {};
+			restrictRelationship(filtered, 'child', { filters: [], fromRecord: () => pending });
 			const selection = Parent._prepareRelationshipSelection(
 				{ name: 'child', limit: 1, select: ['id', 'observed'] },
 				{},
-				{ child: { fromRecord: () => pending } }
+				filtered
 			);
 			const result = selection({ id: 'p1', childId: 'c1' });
 			selection.return();

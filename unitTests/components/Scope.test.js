@@ -51,6 +51,25 @@ describe('Scope', () => {
 		}
 	});
 
+	it('runs its teardown once when closed again (a repeated SHUTDOWN)', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
+		await scope.ready;
+		let closes = 0;
+		scope.on('close', () => void closes++);
+		const first = scope.close();
+		assert.strictEqual(scope.close(), first);
+		await first;
+		await scope.close();
+		assert.equal(closes, 1);
+	});
+
 	it('should create a default entry handler', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
 

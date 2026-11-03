@@ -182,6 +182,61 @@ export async function fetchSecretsPublicKey(transport: any): Promise<{ publicKey
 	return { publicKey, fingerprint };
 }
 
+export async function resolveDeployToken(req: any, provider: 'github' | 'npm'): Promise<string> {
+	let token: string | undefined = req.token;
+	if (!token && provider === 'github') {
+		const host = resolveGitHost(req.host ?? 'github.com');
+		// Bound to the host being provisioned: `gh auth token` with no `--hostname` returns whichever
+		// host gh considers default, which for a GHE host is the wrong account's token.
+		const ghToken = tryCommand('gh', ['auth', 'token', '--hostname', host]);
+		// A fine-grained PAT is offered FIRST, and is therefore the default selection. What gets
+		// sealed here is durable and replayed on every cold deploy and rollback, so it should be
+		// the narrowest credential that does the job — one repo, Contents: Read-only. A `gh` CLI
+		// session token is one keypress cheaper but typically carries repo/read:org/gist/workflow
+		// across the whole account, so offering it first would make least privilege the path of
+		// most resistance.
+		const choices: Array<{ name: string; value: string }> = [
+			{ name: 'Paste a fine-grained PAT (Contents: Read-only on this repo) — recommended', value: 'paste' },
+		];
+		// Offered only when gh actually holds a token for *this* host, so choosing it can't fall back
+		// to another host's credential.
+		if (ghToken) {
+			choices.push({ name: `Use your gh CLI session token for ${host} (broad account scopes)`, value: 'gh' });
+		}
+		const how =
+			choices.length === 1
+				? 'paste'
+				: await prompts.select({
+						message: 'How should I get the GitHub token?',
+						choices,
+					});
+		if (how === 'gh') {
+			console.log(
+				chalk.yellow(
+					'Note: your gh CLI token usually carries broad account scopes (repo, read:org, gist,\n' +
+						'  workflow) and is long-lived. It will be stored encrypted and reused for future\n' +
+						'  deploys and rollbacks of this component. A fine-grained PAT is the safer choice.'
+				)
+			);
+			token = ghToken;
+		} else {
+			console.log(
+				chalk.gray(
+					`Create one at https://${host}/settings/personal-access-tokens/new\n` +
+						'  Repository access → only your repo; Permissions → Contents: Read-only.'
+				)
+			);
+			token = await prompts.password({ message: 'Paste the token:', mask: '*' });
+		}
+	} else if (!token) {
+		console.log(chalk.gray('Tip: `npm token create --read-only` mints a granular npm token from the CLI.'));
+		token = await prompts.password({ message: 'Paste the npm token:', mask: '*' });
+	}
+	token = typeof token === 'string' ? token.trim() : undefined;
+	if (!token) throw cliError('No token was provided; nothing to store.');
+	return token;
+}
+
 /**
  * Sources a token for `provider` (asking for it unless `req.token` carries one), seals it with `key` and stores it as
  * the secret a deploy of `component` derives, granted to `component` — a name, or a pattern ending in `*`.
@@ -195,68 +250,16 @@ export async function sealDeployCredential(
 ): Promise<{ secretName: string; grants: string[]; credentialKey: string; credentialEntry: Record<string, string> }> {
 	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
 	let credentialEntry: Record<string, string>;
-	let token: string | undefined = req.token;
-
 	if (provider === 'github') {
 		const host = resolveGitHost(req.host ?? 'github.com');
 		credentialKey = host;
-		if (!token) {
-			// Bound to the host being provisioned: `gh auth token` with no `--hostname` returns whichever
-			// host gh considers default, which for a GHE host is the wrong account's token.
-			const ghToken = tryCommand('gh', ['auth', 'token', '--hostname', host]);
-			// A fine-grained PAT is offered FIRST, and is therefore the default selection. What gets
-			// sealed here is durable and replayed on every cold deploy and rollback, so it should be
-			// the narrowest credential that does the job — one repo, Contents: Read-only. A `gh` CLI
-			// session token is one keypress cheaper but typically carries repo/read:org/gist/workflow
-			// across the whole account, so offering it first would make least privilege the path of
-			// most resistance.
-			const choices: Array<{ name: string; value: string }> = [
-				{ name: 'Paste a fine-grained PAT (Contents: Read-only on this repo) — recommended', value: 'paste' },
-			];
-			// Offered only when gh actually holds a token for *this* host, so choosing it can't fall back
-			// to another host's credential.
-			if (ghToken) {
-				choices.push({ name: `Use your gh CLI session token for ${host} (broad account scopes)`, value: 'gh' });
-			}
-			const how =
-				choices.length === 1
-					? 'paste'
-					: await prompts.select({
-							message: 'How should I get the GitHub token?',
-							choices,
-						});
-			if (how === 'gh') {
-				console.log(
-					chalk.yellow(
-						'Note: your gh CLI token usually carries broad account scopes (repo, read:org, gist,\n' +
-							'  workflow) and is long-lived. It will be stored encrypted and reused for future\n' +
-							'  deploys and rollbacks of this component. A fine-grained PAT is the safer choice.'
-					)
-				);
-				token = ghToken;
-			} else {
-				console.log(
-					chalk.gray(
-						`Create one at https://${host}/settings/personal-access-tokens/new\n` +
-							'  Repository access → only your repo; Permissions → Contents: Read-only.'
-					)
-				);
-				token = await prompts.password({ message: 'Paste the token:', mask: '*' });
-			}
-		}
 		credentialEntry = { host };
 	} else {
 		const registry = typeof req.registry === 'string' && req.registry ? req.registry : 'registry.npmjs.org';
 		credentialKey = registry;
-		if (!token) {
-			console.log(chalk.gray('Tip: `npm token create --read-only` mints a granular npm token from the CLI.'));
-			token = await prompts.password({ message: 'Paste the npm token:', mask: '*' });
-		}
 		credentialEntry = req.scope ? { registry, scope: req.scope } : { registry };
 	}
-
-	token = typeof token === 'string' ? token.trim() : undefined;
-	if (!token) throw cliError('No token was provided; nothing to store.');
+	const token = await resolveDeployToken(req, provider);
 
 	// 3. Seal the token locally. Only ciphertext leaves this machine.
 	const envelope = ENV_ENCRYPTED_PREFIX + encryptEnvelope(token, publicKey, fingerprint);

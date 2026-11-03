@@ -181,8 +181,33 @@ async function scopedShutdown() {
 	process.stdout.write(`${JSON.stringify({ workerCreationAllowed: true })}\n`);
 }
 
+// A process exit reaches a worker a restart has already marked `wasShutdown` (set before that worker is
+// sent SHUTDOWN), and waits for every worker to exit.
+async function exitFanOut() {
+	const received = [];
+	const started = [0, 1].map(() =>
+		startWorker(require.resolve('./terminalExitWorker.cjs'), { name: 'exit-fan-out-test' })
+	);
+	await Promise.all(started.map((worker) => once(worker, 'message')));
+	for (const worker of started) {
+		worker.on('message', (message) => {
+			if (message?.shutdownExitDeadline !== undefined) received.push(message.shutdownExitDeadline);
+		});
+	}
+	started[0].wasShutdown = true;
+	const exitDeadline = Date.now() + WAIT_TIMEOUT_MS;
+	await manageThreads.stopWorkersForExit(exitDeadline);
+	process.stdout.write(
+		`${JSON.stringify({
+			deadlines: received.map((deadline) => deadline === exitDeadline),
+			workersAfterShutdown: workers.length,
+		})}\n`
+	);
+}
+
 const mode = process.argv[2];
 const modes = {
+	'exit-fan-out': exitFanOut,
 	'scoped': scopedShutdown,
 	'unexpected': unexpectedExit,
 	'non-overlapping': nonOverlappingRestart,

@@ -1676,7 +1676,9 @@ describe('Record locks (harper#483)', () => {
 		// Within storage.maxLockClockSkew, so admissions claim their stamps from the local key ratchet.
 		// That ratchet is process-wide, so the suite waits for the clock to pass the last one.
 		let aheadUntil = 0;
-		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil, Date.now() + aheadMs));
+		// Two calls in the same millisecond would otherwise share a value, and an earlier test's admission
+		// at it has already moved the ratchet past it.
+		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil + 1, Date.now() + aheadMs));
 		after(async () => {
 			if (isLMDB) return;
 			const rootStore = LockTest.primaryStore.rootStore;

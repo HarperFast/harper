@@ -5,6 +5,7 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import * as jobs from './jobs.ts';
+import { settleAbandonedJob } from './jobOwnership.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
@@ -142,11 +143,7 @@ async function runJob(runnerMessage: any, operation: any) {
 async function launchJobThread(job_id: any) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
-		threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
-			autoRestart: false,
-			name: 'job',
-			env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
-		});
+		startJobWorker(job_id);
 	} else {
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.START_JOB,
@@ -154,14 +151,30 @@ async function launchJobThread(job_id: any) {
 		});
 	}
 }
+
+function jobWorkerOptions(jobId: any) {
+	const settleOnUnownedExit = () =>
+		settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error));
+	return {
+		autoRestart: false,
+		name: hdbTerms.THREAD_TYPES.JOB,
+		env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${jobId}` },
+		onUnexpectedExit: settleOnUnownedExit,
+		onPermanentStop: settleOnUnownedExit,
+	};
+}
+
+function startJobWorker(jobId: any) {
+	return threadsStart.startWorker(
+		join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`),
+		jobWorkerOptions(jobId)
+	);
+}
+
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.START_JOB, async (message) => {
 		try {
-			threadsStart.startWorker(join(RUNTIME_SRC_ROOT, `server/jobs/jobProcess${RUNTIME_FILE_EXT}`), {
-				autoRestart: false,
-				name: 'job',
-				env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },
-			});
+			startJobWorker(message.jobId);
 		} catch (e) {
 			log.error(`Failed to start worker for job ${message.jobId}:`, e);
 			try {
@@ -178,4 +191,4 @@ if (isMainThread) {
 	});
 }
 
-export { parseMessage, RunnerMessage };
+export { parseMessage, RunnerMessage, jobWorkerOptions };
