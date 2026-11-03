@@ -379,20 +379,63 @@ describe('per-log purge bounds', function () {
 		assert.ok(quietAt > aging + 1000, 'the quiet time moved to this pass');
 	});
 
-	it('records each log through the boot purge', async function () {
+	function bootPurge(Table, retention) {
+		let queries = 0;
+		const restore = interceptQueries(Table.auditStore.rootStore, (name, log, options) => {
+			queries++;
+			return log.query(options);
+		});
+		const configured = auditRetention;
+		setAuditRetention(retention);
+		try {
+			purgeAgedLogs(Table.auditStore.rootStore);
+		} finally {
+			setAuditRetention(configured);
+			restore();
+		}
+		return queries;
+	}
+
+	it('keeps a log a retention pass saw quiet at its bound through the boot purge, reading no log', async function () {
 		if (isLMDB) return this.skip(); // LMDB has no log purge
 		const Table = backdatedTable();
 		for (let i = 0; i < 3; i++) await Table.put(`boot-${i}`, { name: 'x' });
 		const newest = Math.max(...localLogKeys(Table.auditStore));
-		const retention = auditRetention;
 		await tick();
-		setAuditRetention(0);
-		try {
-			purgeAgedLogs(Table.auditStore.rootStore);
-		} finally {
-			setAuditRetention(retention);
-		}
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		const [, quietAt] = recordedLogs(Table.auditStore).local;
+		// a boot cutoff just below the quiet time
+		assert.strictEqual(bootPurge(Table, Date.now() - quietAt + 1000), 0);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['local']), newest);
+	});
+
+	it('bounds a log written since its last quiet pass by the boot cutoff, reading no log', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		await Table.put('before-pass', { name: 'x' });
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		await Table.put('after-pass', { name: 'x' });
+		const newest = Math.max(...localLogKeys(Table.auditStore));
+		await tick();
+		const bootedAt = Date.now();
+		assert.strictEqual(bootPurge(Table, 0), 0);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= Math.max(newest, bootedAt));
+	});
+
+	it('writes a later quiet time on every pass, even when nothing else changes', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		await Table.put('idle', { name: 'x' });
+		await tick();
+		const cutoff = Date.now();
+		raiseAuditFloor(Table.auditStore, cutoff, true);
+		const [bound, firstQuiet] = recordedLogs(Table.auditStore).local;
+		await tick();
+		raiseAuditFloor(Table.auditStore, cutoff, true);
+		const [sameBound, laterQuiet] = recordedLogs(Table.auditStore).local;
+		assert.strictEqual(sameBound, bound);
+		assert.ok(laterQuiet > firstQuiet, `${laterQuiet} > ${firstQuiet}`);
 	});
 
 	it('records a cutoff ahead of the clock as the epoch rather than observing the logs', async () => {

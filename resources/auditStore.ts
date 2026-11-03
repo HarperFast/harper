@@ -789,9 +789,12 @@ export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
  *
  * The same transaction raises the per-log purge bounds. A retention prune (`observeLogs`), whose cutoff
  * is a retention period in the past, records each log's own capped maximum; any other prune can remove
- * keys of transactions still committing near its cutoff, so it records the cutoff for every log.
+ * keys of transactions still committing near its cutoff, so it records the cutoff for every log. Without
+ * `readLogs` (the boot purge) the bounds come from the record alone: a log query maps the files it reads,
+ * and a mapping outlives the purge of its file until garbage collection, so reading logs about to be purged
+ * would keep their disk space allocated.
  */
-export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = false): void {
+export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = false, readLogs = true): void {
 	// Throw rather than no-op on a bound we will not store: audit keys are raw float64, so NaN and
 	// negatives (sign bit set) sort ABOVE every real timestamp and a range ending there spans the whole
 	// log — declining the floor silently would leave the prune deleting everything. `-0` and a non-number
@@ -838,7 +841,7 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 			)
 		) {
 			const base = recorded ?? freshLogPurgeBounds(floor, nativeHorizon);
-			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now);
+			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now, readLogs);
 		}
 		const resume = resumeTracked ? auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY) : undefined;
 		if (
@@ -873,7 +876,8 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 				cutoff,
 				observedBounds,
 				nativeHorizon,
-				now
+				now,
+				readLogs
 			);
 			if (bounds) writes.push([LOG_PURGE_BOUNDS_KEY, bounds]);
 			return writes;
@@ -1026,7 +1030,8 @@ function observeLogPurgeBounds(
 	cutoff: number,
 	recorded: LogPurgeBounds,
 	nativeHorizon: number,
-	now: number
+	now: number,
+	readLogs: boolean
 ): Map<string, LogPurgeEntry> | undefined {
 	const observed = new Map<string, LogPurgeEntry>();
 	if (!isRocksStore(auditStore)) {
@@ -1052,8 +1057,13 @@ function observeLogPurgeBounds(
 		return undefined;
 	}
 	for (const name of names) {
-		const [, quietAt] = recordedEntry(recorded, name);
+		const [, quietAt, recordedMaximum] = recordedEntry(recorded, name);
 		const known = exposedBound(recorded, name, nativeHorizon);
+		// anything written since a quiet time at or past the reach is beyond this prune
+		if (!readLogs) {
+			observed.set(name, [quietAt >= reach ? known : Math.max(known, reach), quietAt, recordedMaximum]);
+			continue;
+		}
 		try {
 			const log = rootStore.useLog(name);
 			const quietMaximum = quietLogMaximum(log, reach, known);
@@ -1078,9 +1088,10 @@ function observeLogPurgeBounds(
 }
 
 /**
- * Whether the record already says what a prune at `cutoff` would write. A quiet time older than half the native
- * retention is rewritten, so with a pass every quarter of it (`scheduleAuditCleanup`) an idle log never falls
- * behind the native horizon.
+ * Whether the record already says what a prune at `cutoff` would write. A later quiet time is always written, so
+ * an idle log's quiet time trails the last pass by at most one interval (`scheduleAuditCleanup`): it stays within
+ * the native retention, and the boot purge, which reads no log, keeps its exact bound after a restart shorter
+ * than the retention window less one interval.
  */
 function logPurgeBoundsCover(
 	recorded: LogPurgeBounds | undefined,
@@ -1095,13 +1106,7 @@ function logPurgeBoundsCover(
 	if (recorded.observedAt < refreshBefore) return false;
 	for (const [name, [bound, quietAt, maxKey]] of observed) {
 		const entry = Object.hasOwn(recorded.logs, name) ? recorded.logs[name] : undefined;
-		if (
-			!entry ||
-			bound > Math.max(recorded.epoch, entry[0]) ||
-			maxKey > entry[2] ||
-			(quietAt > entry[1] && entry[1] < refreshBefore)
-		)
-			return false;
+		if (!entry || bound > Math.max(recorded.epoch, entry[0]) || maxKey > entry[2] || quietAt > entry[1]) return false;
 	}
 	return true;
 }
@@ -1117,7 +1122,8 @@ function raisedLogPurgeBounds(
 	cutoff: number,
 	observed: Map<string, LogPurgeEntry> | undefined,
 	nativeHorizon: number | undefined,
-	now: number
+	now: number,
+	logsRead = true
 ): Uint8Array | undefined {
 	if (!Number.isFinite(floor)) return undefined;
 	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(floor, nativeHorizon);
@@ -1137,7 +1143,9 @@ function raisedLogPurgeBounds(
 		const merged = baseMaxKey === UNKNOWN_MAXIMUM ? maxKey : Math.max(baseMaxKey, maxKey);
 		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt), merged];
 	}
-	return pack({ epoch, cutoff: Math.max(base.cutoff, cutoff), observedAt: observed ? now : base.observedAt, logs });
+	// each maxKey is a log's largest key at observedAt, which only a pass that read the logs advances
+	const observedAt = observed && logsRead ? now : base.observedAt;
+	return pack({ epoch, cutoff: Math.max(base.cutoff, cutoff), observedAt, logs });
 }
 
 /** rocksdb-js's own transaction-log retention in ms: 0 on LMDB or when it has none, undefined when unreadable. */
@@ -1697,7 +1705,7 @@ export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	if (isReadOnlyMode()) return [];
 	const before = retentionCutoff();
 	// The audit store is reachable this early because initStores opens it before replayLogs runs this.
-	raiseAuditFloor((rootStore as any).auditStore, before, true);
+	raiseAuditFloor((rootStore as any).auditStore, before, true, false);
 	return rootStore.purgeLogs({ before });
 }
 
