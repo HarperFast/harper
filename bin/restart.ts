@@ -114,7 +114,8 @@ async function restart(req: any) {
 				// and shut down.
 				if (req.drain) {
 					hdbLogger.debug('Draining workers and the main thread before restarting');
-					await shutdownProcess(Date.now() + drainMs);
+					// bounded here too, where the watchdog does not run (no HARPER_EXIT_ON_RESTART)
+					await Promise.race([shutdownProcess(Date.now() + drainMs), delay(drainMs + hdbTerms.RESTART_TIMEOUT_MS)]);
 				} else {
 					hdbLogger.debug('Shutdown workers');
 					await shutdownWorkersNow();
@@ -131,6 +132,8 @@ async function restart(req: any) {
 					hdbLogger.warn(`Exiting ${PRODUCT_NAME} process to trigger a container restart`);
 					process.exit(0);
 				}
+				// safe mode a restore recovery chose belongs to this boot; the next one decides again
+				if (process.env.HARPER_SAFE_MODE === 'restore-unpublished') delete process.env.HARPER_SAFE_MODE;
 				// now launch the new process and exit this process
 				await (await import('./run.ts')).launch(true);
 			} catch (error) {

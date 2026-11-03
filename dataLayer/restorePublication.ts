@@ -208,7 +208,8 @@ function admitOverEarlierReceipt(databaseDir: string, databaseName: string): Res
 			409
 		);
 	}
-	if (earlier.route === 'on_restart') {
+	// a terminal restart restore is no longer scheduled, so any restore may take its target over
+	if (earlier.route === 'on_restart' && earlier.state !== 'terminal') {
 		throw new ClientError(
 			`Database '${databaseName}' has a pending restart restore (job ${earlier.job_id ?? earlier.operation_id}, ${earlier.state}); use restore_backup resume=true, cancel=true, or another backup_id with on_restart=true`,
 			409
@@ -291,7 +292,12 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 				// earlier backup may be the blocked database's only usable recovery source. A pin on this
 				// attempt's own backup is reused; the rest are retired once this attempt commits.
 				const inherited = new Set(
-					[restorePinId(databaseDir), earlier?.source_pin_id, ...(earlier?.superseded_pin_ids ?? [])].filter(Boolean)
+					[
+						restorePinId(databaseDir),
+						earlier?.source_pin_id,
+						earlier?.pre_restore_pin_id,
+						...(earlier?.superseded_pin_ids ?? []),
+					].filter(Boolean)
 				);
 				// immutable_source writes nothing in the repository, so it neither reuses nor retires a pin there;
 				// the earlier pins lapse on their own once nothing marks or records the target
@@ -615,9 +621,11 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 			} else if (receipt.route === 'on_restart' && receipt.state !== 'terminal') {
 				const { runRestartAttempt } = await import('./restoreIntent.ts');
 				if (await runRestartAttempt(receipt)) published = true;
-				else if (receipt.job_id) owned.add(receipt.job_id);
+				// still scheduled, so its job is the receipt's; a terminal one already settled its job as failed
+				else if (receipt.job_id && !restartRestoreIsTerminal(receipt)) owned.add(receipt.job_id);
 			} else if (receipt.route === 'on_restart' && receipt.job_id) {
-				owned.add(receipt.job_id);
+				// terminal: the job failed when the receipt did, but that settle may not have landed
+				await settleRestoreJob(receipt, hdbTerms.JOB_STATUS_ENUM.ERROR);
 			} else if (claimAbandonedBeforeDestruction(receipt) && dropAbandonedClaim(receipt)) {
 				// the pre-startup pass can find the lock still held by an exiting predecessor or orphaned child
 				published = true;
@@ -633,6 +641,13 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 	return owned;
 }
 
+function restartRestoreIsTerminal(receipt: RestoreReceipt): boolean {
+	const read = readRestoreReceipt(receipt.database_path);
+	return (
+		read.kind === 'valid' && read.receipt.operation_id === receipt.operation_id && read.receipt.state === 'terminal'
+	);
+}
+
 /**
  * Whether this boot must start without components: a restart restore that ran out of attempts, or one
  * that began replacing its target and has not published. The restart route exists because a component
@@ -640,7 +655,9 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
  * write the unproved generation.
  */
 export function unpublishedRestoreBlocksComponents(): string | undefined {
-	for (const { read } of scanRestoreReceipts()) {
+	for (const { file, read } of scanRestoreReceipts()) {
+		// what an unreadable record would have restored, or how far, is unknown
+		if (read.kind === 'unreadable') return file;
 		if (read.kind !== 'valid' || read.receipt.route !== 'on_restart') continue;
 		const { receipt } = read;
 		if (receipt.state === 'terminal') return receipt.database;

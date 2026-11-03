@@ -41,6 +41,7 @@ const { readBackupPins } = require('#src/dataLayer/backupRepository');
 const {
 	acquireRestoreLock,
 	checkRestoreState,
+	droppingMarkerPath,
 	markRestoreDestructive,
 	releaseRestoreLock,
 	restoreLockHeldExclusively,
@@ -370,6 +371,35 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
+		it('refuses a database whose drop has begun, as every restore claim does', async function () {
+			const fixture = await seededDatabase();
+			await closeDatabase(fixture.name);
+			const dropping = droppingMarkerPath(fixture.dir);
+			mkdirSync(join(dropping, '..'), { recursive: true });
+			writeFileSync(dropping, 'a drop in progress');
+			try {
+				await assert.rejects(
+					requestRestore(fixture.name, { on_restart: true }),
+					(error) => error.statusCode === 409 && /incomplete drop/.test(error.message)
+				);
+				assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			} finally {
+				rmSync(dropping, { force: true });
+			}
+		});
+
+		it('starts the boot in safe mode while a restore record cannot be read', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			writeFileSync(restoreReceiptPath(fixture.dir), '{"version":1,"state":');
+			try {
+				assert.ok(unpublishedRestoreBlocksComponents(), 'what it would have restored, or how far, is unknown');
+			} finally {
+				await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			}
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
+		});
+
 		it('refuses on a node with replication peers, recording nothing', async function () {
 			const fixture = await seededDatabase();
 			const nodes = getDatabases().system[SYSTEM_TABLE_NAMES.NODE_TABLE_NAME];
@@ -598,6 +628,59 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
+		it('goes terminal without another attempt when the last one killed the process', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			// three attempts started and none recorded an outcome: each one took the process down
+			rewriteReceipt(fixture.dir, { attempts: 3 });
+
+			assert.deepStrictEqual([...(await boot(fixture.name))], []);
+
+			const terminal = receiptOf(fixture.dir);
+			assert.strictEqual(terminal.state, 'terminal');
+			assert.strictEqual(terminal.attempts, 3, 'no fourth attempt');
+			assert.match(terminal.last_error, /did not finish/);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.ERROR);
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), fixture.name);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
+		it('goes terminal when the live database cannot be backed up, and replaces it once told to keep no copy', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			await requestRestore(fixture.name, { on_restart: true, backup_id: backupId });
+			await closeDatabase(fixture.name);
+			// the most common reason to restore: the live database no longer opens
+			writeFileSync(join(fixture.dir, 'CURRENT'), 'MANIFEST-999999\n');
+
+			await boot(fixture.name);
+
+			const terminal = receiptOf(fixture.dir);
+			assert.strictEqual(terminal.state, 'terminal', 'retrying would reopen the same directory');
+			assert.strictEqual(terminal.attempts, 1);
+			assert.match(terminal.last_error, /retain_previous=false/);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'nothing was replaced');
+
+			await requestRestore(fixture.name, { on_restart: true, backup_id: backupId, retain_previous: false });
+			await boot(fixture.name);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
+		it('settles a terminal restore whose job settle never landed, instead of leaving the job to its receipt', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'terminal', last_error: 'out of attempts' });
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS, 'precondition');
+
+			assert.deepStrictEqual([...(await boot(fixture.name))], [], 'no longer owned, so the sweep may take it');
+
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.ERROR);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
 		it('only finishes a committed receipt, never applying it again', async function () {
 			const fixture = await seededDatabase();
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
@@ -680,7 +763,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
-		it('supersedes a pending restore with a different backup, which takes no rollback copy', async function () {
+		it('supersedes a pending restore with a different backup, taking its own rollback copy since it inherits none', async function () {
 			const fixture = await seededDatabase({ backups: 2 });
 			const [first, second] = fixture.backupIds;
 			const original = await requestRestore(fixture.name, { on_restart: true, backup_id: first });
@@ -691,7 +774,11 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const receipt = receiptOf(fixture.dir);
 			assert.notStrictEqual(receipt.operation_id, originalOperation);
 			assert.strictEqual(receipt.superseded_from, originalOperation);
-			assert.strictEqual(receipt.retain_previous, false);
+			assert.strictEqual(
+				receipt.retain_previous,
+				true,
+				'the displaced restore never ran, so it took no copy to inherit'
+			);
 			assert.strictEqual(receipt.backup_id, second);
 			assert.strictEqual(receipt.job_id, replacement.jobId);
 			assert.strictEqual(receipt.source_pin_id, `restore-intent-${receipt.operation_id}`);
@@ -711,11 +798,13 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			await boot(fixture.name);
 
+			const settled = await job(replacement.jobId);
+			assert.strictEqual(settled.status, JOB_STATUS_ENUM.COMPLETE);
+			assert.ok(Number.isInteger(settled.result.pre_restore_backup_id), 'the live generation was kept');
 			assert.deepStrictEqual(
 				(await listBackupsInDir(fixture.backupDir)).map((backup) => backup.backupId),
-				fixture.backupIds
+				[...fixture.backupIds, settled.result.pre_restore_backup_id]
 			);
-			assert.strictEqual((await job(replacement.jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 			assert.deepStrictEqual(pinsOf(fixture), [], 'the displaced source retires once its successor commits');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[1]);
 		});
@@ -975,7 +1064,9 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const result = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 
 			assert.strictEqual(result.still_blocked, true);
-			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			const kept = receiptOf(fixture.dir);
+			assert.strictEqual(kept.state, 'terminal', 'kept as terminal, so components stay off the unproved generation');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), fixture.name);
 			assert.strictEqual(checkRestoreState(fixture.dir), 'incomplete');
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.ERROR);
 			const pins = readBackupPins(fixture.backupDir);
@@ -996,8 +1087,10 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				);
 			}
 
-			// an ordinary restore still recovers it, and the cancelled restore's pins lapse with the marker
+			// an ordinary restore takes the terminal one over and recovers it, retiring its pins on commit
 			await restoreBackupOffline(fixture.name, backupId);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 			await deleteBackupOffline(fixture.name, preRestoreId);
 			await deleteBackupOffline(fixture.name, unprovable);

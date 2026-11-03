@@ -19,7 +19,7 @@ describe('recordJobResult', function () {
 			new DeferredJobCompletion('restore-intent', 'runs at the next startup', { backup_id: 3 }, afterRecorded)
 		);
 
-		assert.strictEqual(continuation, afterRecorded);
+		assert.strictEqual(continuation.afterRecorded, afterRecorded);
 		assert.deepStrictEqual(jobObj, {
 			id: 'job-1',
 			status: JOB_STATUS_ENUM.IN_PROGRESS,
@@ -69,8 +69,12 @@ describe('jobProcess', function () {
 			application.getEnvBuiltInComponents = () => [];
 			serverUtilities.getOperationFunction = () => ({
 				job_operation_function: async () =>
-					new DeferredJobCompletion('restore-intent', 'runs at the next startup', undefined, () =>
-						parentPort.postMessage({ type: 'continued' })
+					new DeferredJobCompletion(
+						'restore-intent',
+						'runs at the next startup',
+						undefined,
+						() => parentPort.postMessage({ type: 'continued' }),
+						() => parentPort.postMessage({ type: 'withdrawn' })
 					),
 			});
 			require(workerData.jobProcess);
@@ -115,10 +119,11 @@ describe('jobProcess', function () {
 		]);
 	});
 
-	it('does not continue when the row could not record the deferral, so the row never reads as abandoned', async function () {
+	it('withdraws instead of continuing when the row could not record the deferral', async function () {
 		const messages = await runJobWorker({ updateJobFails: true });
 		assert.deepStrictEqual(messages, [
 			{ type: 'updateJob', status: JOB_STATUS_ENUM.IN_PROGRESS, deferred_to: 'restore-intent' },
+			{ type: 'withdrawn' },
 		]);
 	});
 });

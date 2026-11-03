@@ -21,6 +21,7 @@ import { readAllManifests, readBackupManifest } from './backupManifest.ts';
 import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
 import {
 	acquireRestoreLock,
+	databaseDropMarkerPresent,
 	releaseRestoreLock,
 	restoreMarkerPresent,
 	restoreSourceId,
@@ -46,7 +47,7 @@ import {
 } from './restorePublication.ts';
 import { listBackupsInDir, resolveCompleteBackup, restorePinId, restoreSourceHint } from './rocksdbBackup.ts';
 
-export const RESTORE_INTENT_OWNER = 'restore-intent';
+const RESTORE_INTENT_OWNER = 'restore-intent';
 // room beyond the live size, since a backup also writes its transaction logs and blob snapshot
 const PRE_RESTORE_SPACE_MARGIN = 1.1;
 
@@ -101,14 +102,21 @@ async function assertRoomForPreRestoreBackup(databaseName: string, databaseDir: 
 }
 
 function claimTarget(databaseName: string, databaseDir: string): RestoreLock {
+	let lock: RestoreLock;
 	try {
-		return acquireRestoreLock(databaseDir);
+		lock = acquireRestoreLock(databaseDir);
 	} catch (error: any) {
 		if (error.statusCode === 409) {
 			throw new ClientError(`Cannot reserve database '${databaseName}' for a restart restore: ${error.message}`, 409);
 		}
 		throw error;
 	}
+	// as claimRestore refuses: a drop that has begun owns the directory until it finishes
+	if (databaseDropMarkerPresent(databaseDir)) {
+		releaseRestoreLock(lock);
+		throw new ClientError(`Database '${databaseName}' has an incomplete drop; retry drop_database first`, 409);
+	}
+	return lock;
 }
 
 function requestDrainedRestart(): void {
@@ -124,8 +132,28 @@ function deferredUntilRestart(receipt: RestoreReceipt, message: string): Deferre
 		RESTORE_INTENT_OWNER,
 		message,
 		{ database: receipt.database, backup_id: receipt.backup_id, operation_id: receipt.operation_id },
-		requestDrainedRestart
+		requestDrainedRestart,
+		() => withdrawUnrecordedRestore(receipt)
 	);
+}
+
+/**
+ * The job row could not record the deferral, so the job will read as failed: a receipt still pending
+ * would run the restore at some later, unrelated restart. Withdrawn only while it is still this
+ * operation's and nothing has started.
+ */
+function withdrawUnrecordedRestore(receipt: RestoreReceipt): void {
+	const lock = acquireRestoreLock(receipt.database_path);
+	try {
+		const read = readRestoreReceipt(receipt.database_path);
+		if (read.kind !== 'valid' || read.receipt.operation_id !== receipt.operation_id || read.receipt.state !== 'pending')
+			return;
+		removeRestoreReceipt(lock, receipt.operation_id);
+		releaseReceiptPins(read.receipt);
+		logger.error(`The restart restore of '${receipt.database}' was withdrawn: its job could not record it`);
+	} finally {
+		releaseRestoreLock(lock);
+	}
 }
 
 /** The pins an earlier receipt on this target holds, which stay until this restore commits. */
@@ -146,7 +174,8 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 	let displaced: RestoreReceipt | undefined;
 	try {
 		assertNoReplicationPeers(databaseName);
-		if (request.retainPrevious) await assertRoomForPreRestoreBackup(databaseName, databaseDir, backupDir);
+		if (request.retainPrevious && !restoreMarkerPresent(databaseDir) && existsSync(join(databaseDir, 'CURRENT')))
+			await assertRoomForPreRestoreBackup(databaseName, databaseDir, backupDir);
 		await withBackupRepositoryLock(backupDir, databaseName, async () => {
 			let selected: Awaited<ReturnType<typeof resolveCompleteBackup>>;
 			try {
@@ -192,7 +221,10 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					job_id: request.jobId,
 					requested_by: request.requestedBy,
 					max_attempts: DEFAULT_RESTORE_MAX_ATTEMPTS,
-					retain_previous: earlierRestart || nothingToRetain ? false : request.retainPrevious,
+					// a supersede keeps the rollback copy it inherits instead of taking a second one; with none to
+					// inherit it takes its own, so the live generation is never replaced without one by accident
+					retain_previous:
+						nothingToRetain || earlierRestart?.pre_restore_backup_id !== undefined ? false : request.retainPrevious,
 					superseded_from: displaced?.operation_id,
 					// a supersede is how an operator rolls back, so it keeps the rollback copy it inherits
 					pre_restore_backup_id: earlierRestart?.pre_restore_backup_id,
@@ -288,12 +320,20 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 				);
 			}
 			cancelled = read.receipt;
-			// a target this restore began replacing stays blocked by its marker, and its pins stay with it:
-			// they name the database, so they lapse with the marker once a restore succeeds
-			const releasePins = !restoreMarkerPresent(databaseDir);
-			// the receipt first: an unpinned source under a receipt that still schedules a restore can be purged
-			removeRestoreReceipt(lock, cancelled.operation_id);
-			if (releasePins) releaseReceiptPins(cancelled);
+			if (restoreMarkerPresent(databaseDir)) {
+				// it began replacing the target, so the target stays blocked and its pins stay; the receipt stays
+				// too, as terminal, so this boot and the next keep components off the unproved generation
+				writeRestoreReceipt(lock, {
+					...cancelled,
+					state: 'terminal',
+					pre_terminal_state: undefined,
+					last_error: 'cancelled after it began replacing the database',
+				});
+			} else {
+				// the receipt first: an unpinned source under a receipt that still schedules a restore can be purged
+				removeRestoreReceipt(lock, cancelled.operation_id);
+				releaseReceiptPins(cancelled);
+			}
 		}
 	} finally {
 		releaseRestoreLock(lock);
@@ -324,24 +364,30 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 		receipt = writeRestoreReceipt(lock, { ...receipt, pre_restore_started_at: Date.now() });
 	}
 	if (backupId === undefined) {
-		({ backupId } = await runRestoreChild<{ backupId: number }>(
-			'pre-restore-backup',
-			{
-				databaseName: receipt.database,
-				databasePath: receipt.database_path,
-				backupDir: receipt.backup_dir,
-				operationId: receipt.operation_id,
-			},
-			{
-				databasePath: receipt.database_path,
-				receipt: {
+		try {
+			({ backupId } = await runRestoreChild<{ backupId: number }>(
+				'pre-restore-backup',
+				{
+					databaseName: receipt.database,
 					databasePath: receipt.database_path,
+					backupDir: receipt.backup_dir,
 					operationId: receipt.operation_id,
-					attempt: receipt.attempts,
-					state: 'pending',
 				},
-			}
-		));
+				{
+					databasePath: receipt.database_path,
+					receipt: {
+						databasePath: receipt.database_path,
+						operationId: receipt.operation_id,
+						attempt: receipt.attempts,
+						state: 'pending',
+					},
+				}
+			));
+		} catch (error) {
+			throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), {
+				preRestoreBackupFailed: true,
+			});
+		}
 	}
 	const pinId = preRestorePinId(receipt.operation_id);
 	await withBackupRepositoryLock(receipt.backup_dir, receipt.database, async () => {
@@ -364,6 +410,9 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 }
 
 async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: string, terminal: boolean) {
+	// what this attempt already recorded (the pre-restore checkpoint) is newer than the caller's copy
+	const current = readRestoreReceipt(lock.dbPath);
+	if (current.kind === 'valid' && current.receipt.operation_id === receipt.operation_id) receipt = current.receipt;
 	const failed = writeRestoreReceipt(lock, {
 		...receipt,
 		last_error: reason,
@@ -385,6 +434,16 @@ async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: s
 export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 	const lock = acquireRestoreLock(found.database_path);
 	lock.source = restoreSourceId(found.backup_dir);
+	// an attempt that killed the process never recorded its failure, so the limit is checked before
+	// starting another, not only after one fails
+	if (found.attempts >= (found.max_attempts ?? DEFAULT_RESTORE_MAX_ATTEMPTS)) {
+		try {
+			await failAttempt(lock, found, found.last_error ?? 'the previous attempt did not finish', true);
+		} finally {
+			releaseRestoreLock(lock);
+		}
+		return false;
+	}
 	let receipt: RestoreReceipt;
 	try {
 		// counted before any native work, so an attempt that kills the process still moves toward terminal
@@ -403,13 +462,21 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 			await failAttempt(lock, receipt, error.message, true);
 			return false;
 		}
-		if (
-			receipt.state === 'pending' &&
-			receipt.retain_previous &&
-			!receipt.superseded_from &&
-			receipt.pre_restore_backup_id === undefined
-		) {
-			receipt = await adoptOrTakePreRestoreBackup(lock, receipt);
+		if (receipt.state === 'pending' && receipt.retain_previous && receipt.pre_restore_backup_id === undefined) {
+			try {
+				receipt = await adoptOrTakePreRestoreBackup(lock, receipt);
+			} catch (error: any) {
+				if (!error?.preRestoreBackupFailed) throw error;
+				// retrying reopens the same directory, so a database the backup cannot read stays unrestorable
+				// until the operator chooses to replace it without a copy
+				await failAttempt(
+					lock,
+					receipt,
+					`could not take the pre-restore backup (${error?.message ?? error}); to replace '${receipt.database}' without a rollback copy, request it again with retain_previous=false`,
+					true
+				);
+				return false;
+			}
 		}
 		const blobRoots = getBlobPathsForDatabaseName(receipt.database);
 		const { manifest, waived } = await resolveCompleteBackup(

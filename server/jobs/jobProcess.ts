@@ -36,7 +36,7 @@ const JOB_ID = JOB_NAME.substring(4);
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
-	let afterRecorded: (() => void) | undefined;
+	let continuation: ReturnType<typeof recordJobResult>;
 	try {
 		env.initSync();
 		harperLogger.notify('Starting job:', JOB_ID);
@@ -74,7 +74,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		);
 		harperLogger.trace('Result from job:', JOB_ID, results);
 
-		afterRecorded = recordJobResult(jobObj, results);
+		continuation = recordJobResult(jobObj, results);
 		if (jobObj.status === hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS) {
 			harperLogger.notify('Job', JOB_ID, 'continues after this worker:', jobObj.message);
 		} else {
@@ -100,16 +100,13 @@ const JOB_ID = JOB_NAME.substring(4);
 			harperLogger.error('Error updating job record on job worker exit:', updateErr);
 		}
 		// only once the row says what continues it: a restart before that would leave the row to read as abandoned
-		if (afterRecorded && recorded) {
+		const next = recorded ? continuation?.afterRecorded : continuation?.onNotRecorded;
+		if (next) {
 			try {
-				afterRecorded();
-			} catch (afterError) {
-				harperLogger.error('Error continuing job after recording it:', afterError);
+				next();
+			} catch (continueError) {
+				harperLogger.error('Error continuing job after recording it:', continueError);
 			}
-		} else if (afterRecorded) {
-			harperLogger.error(
-				`Job ${JOB_ID} was not recorded as deferred, so it was not continued; it runs at the next restart`
-			);
 		}
 		// Release this worker's RocksDB handles before it exits. A job worker opens the whole
 		// database graph via getDatabases(); rocksdb-js's registry is process-global and a thread
