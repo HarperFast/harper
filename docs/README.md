@@ -2,7 +2,7 @@
 
 This directory holds the source of the Harper v5 [reference](https://docs.harperdb.io/reference/v5) and the release notes of the open minor release. A PR that changes behavior changes its docs here, in the same PR.
 
-The site itself — theme, the Learn and Fabric sections, the archived v4 reference, older release notes, redirects for old URLs, search and deployment — lives in [HarperFast/documentation](https://github.com/HarperFast/documentation). Its build assembles the published pages from this directory and from `docs/` in [HarperFast/harper-pro](https://github.com/HarperFast/harper-pro), and redeploys within about 15 minutes of a change to either on `main`.
+The site itself — theme, the Learn and Fabric sections, the archived v4 reference, older release notes, redirects for old URLs, search and deployment — lives in [HarperFast/documentation](https://github.com/HarperFast/documentation). Its build assembles the published pages from this directory and from `docs/` in [HarperFast/harper-pro](https://github.com/HarperFast/harper-pro), and redeploys when what it publishes changes ([when docs publish](#when-docs-publish)).
 
 ```
 docs/
@@ -54,11 +54,22 @@ HARPER_DOCS_PATH=../harper npm run dev        # live reload of edits here
 HARPER_DOCS_PATH=../harper npm run build      # fails on broken links, as CI does
 ```
 
-`HARPER_PRO_DOCS_PATH` does the same for a harper-pro checkout; a repo without a path is fetched at the latest release (`HARPER_PRO_DOCS_REF=main` fetches `main` instead). CI runs that build on every PR that changes `docs/`, against harper-pro at the PR's base branch, and uploads the built site as an artifact.
+`HARPER_PRO_DOCS_PATH` does the same for a harper-pro checkout; a harper-pro without a path is fetched at what the site publishes (`HARPER_PRO_DOCS_REF=main` fetches `main` instead). CI runs that build on every PR that changes `docs/`, against harper-pro at the PR's base branch, and uploads the built site as an artifact.
 
 ## When docs publish
 
-The site publishes the latest stable release of harper-pro and the same tag of harper, so docs merged with a change on `main` go live when the release containing it ships. A correction to docs that are already live goes in a PR milestoned to that release line; it is cherry-picked there and goes live with the next patch release.
+The site publishes harper-pro's latest published stable release, with harper's docs at the commit its `core` submodule points to, so docs merged with a change on `main` go live when the release containing it ships. A correction to docs that are already live goes in a PR milestoned to that release line; it is cherry-picked there and goes live with the next patch release.
+
+To publish a correction before then, tag a harper-pro commit `docs/<release>-<n>`, numbering from 1 for each release (`docs/v5.3.5-1`, then `docs/v5.3.5-2`). The site publishes the highest such tag of its current release, and the next release replaces it. A `docs/` tag runs no release workflow.
+
+- Everything in that commit's `docs/` publishes. Tag the release branch head when every docs change on it since the release is ready to go live; otherwise tag a commit on top of the release tag with only the correction:
+
+  ```bash
+  git switch --detach v5.3.5 && git cherry-pick <correction>
+  git tag docs/v5.3.5-1 && git push origin docs/v5.3.5-1
+  ```
+
+- A correction in harper publishes only once harper-pro's `core` points to a harper commit containing it, so commit that `core` bump in harper-pro and tag the result. A harper commit made on top of its release tag needs pushing too (a tag of the same name keeps it fetchable).
 
 ## Reference Section Structure
 
