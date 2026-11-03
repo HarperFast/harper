@@ -336,6 +336,7 @@ describe('per-log purge bounds', function () {
 		} finally {
 			restore();
 		}
+		assert.ok(probes <= 1000, `${probes} probes: the maximum search did not stop`);
 		assert.strictEqual(recordedLogs(Table.auditStore).local[2], Number.MAX_SAFE_INTEGER);
 	});
 
