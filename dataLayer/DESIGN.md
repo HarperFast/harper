@@ -85,7 +85,8 @@ What keeps that safe:
   attempt's partial directory.
 - **Closure is verified, not assumed.** The restore `close` phase waits for every recipient — job
   workers included — to acknowledge or exit (else a retryable 409 after 30 s); the parent then polls
-  the process-global `getRegistryStatus()` until the path has no instance.
+  the process-global `getRegistryStatus()` until the path has no instance. The close resolves names
+  by directory and also closes any root a rescan detached from the catalog.
 - **The close fences blob work, not just handles.** Blob roots live outside RocksDB and saves,
   reclamations and `cleanup_orphan_blobs` walks settle on their own, so each worker refuses saves
   under every name it holds the directory by, stops reclamation and orphan walks, awaits dispatched
