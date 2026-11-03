@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Usage: print-core-backtraces.sh <core-dir>
+# Prints the native backtrace of every core file in <core-dir>. Always exits 0: the crashed step's
+# own failure is the job's outcome. Frame arguments are not printed because job logs are public.
+set -u
+
+dir=${1:?core directory}
+shopt -s nullglob
+cores=("$dir"/core.*)
+if [ ${#cores[@]} -eq 0 ]; then
+	echo "No core files in $dir: no process crashed, or its core could not be written."
+	exit 0
+fi
+
+if ! command -v gdb >/dev/null; then
+	if ! { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb; } >/dev/null; then
+		echo "::error::gdb could not be installed; ${#cores[@]} core file(s) not analyzed"
+		ls -la "$dir"
+		exit 0
+	fi
+fi
+
+for core in "${cores[@]}"; do
+	exe=$(file -L -b "$core" | sed -n "s/.*execfn: '\([^']*\)'.*/\1/p")
+	[ -x "$exe" ] || exe=$(command -v node)
+	echo "::group::Native backtrace of $(basename "$core") ($exe, $(du -hL "$core" | cut -f1))"
+	# the faulting thread first, so a backtrace that fails to unwind elsewhere cannot cost it
+	timeout 180 gdb -q -batch -nx \
+		-iex 'set pagination off' -iex 'set print frame-arguments none' -iex 'set print thread-events off' \
+		-ex 'bt' -ex 'x/6i $pc' -ex 'info threads' -ex 'thread apply all bt' -ex 'info sharedlibrary' \
+		"$exe" "$core" 2>&1
+	status=$?
+	[ $status -eq 0 ] || echo "::warning::gdb exited $status on $(basename "$core")"
+	echo "::endgroup::"
+done
+exit 0
