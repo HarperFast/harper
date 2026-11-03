@@ -382,6 +382,8 @@ interface RepositoryInfo {
 	fullName: string;
 	defaultBranch?: string;
 	private?: boolean;
+	/** Whether the account that looked it up can push; GitHub reports it only to a signed-in caller. */
+	canPush?: boolean;
 }
 
 function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
@@ -392,6 +394,7 @@ function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
 		fullName: data.full_name,
 		defaultBranch: typeof data.default_branch === 'string' ? data.default_branch : undefined,
 		private: typeof data.private === 'boolean' ? data.private : undefined,
+		canPush: data.permissions ? data.permissions.push === true || data.permissions.admin === true : undefined,
 	};
 }
 
@@ -565,6 +568,7 @@ export interface GithubRepository {
 	defaultBranch?: string;
 	private?: boolean;
 	lookedUp: boolean;
+	canPush?: boolean;
 }
 
 export async function resolveGithubRepository(
@@ -594,6 +598,7 @@ export async function resolveGithubRepository(
 		defaultBranch: info?.defaultBranch,
 		private: info?.private,
 		lookedUp: info !== undefined,
+		canPush: info?.canPush,
 	};
 }
 
@@ -625,6 +630,38 @@ export function readCheckoutWorkflow(
 		return { path, content: readFileSync(path, 'utf8') };
 	} catch (error) {
 		throw cliError(`Couldn't read ${workflow}: ${(error as Error).message}`);
+	}
+}
+
+/** Permission to create the variable shows only when it is created. */
+export function assertGithubVariableSettable(
+	repository: GithubRepository,
+	name: string,
+	audience: string,
+	allowUnverified: boolean
+): void {
+	const { fullName, canPush } = repository;
+	let current = readGithubVariable(fullName, name);
+	// GitHub also answers 404 to a caller that cannot see a repository's variables, not only for one that is not there.
+	if (current.state === 'absent' && canPush !== true) {
+		current = {
+			state: 'unknown',
+			reason: `GitHub answered 404, which shows it is unset only to an account that can push to ${fullName}`,
+		};
+	}
+	const action = variableAction(current, audience);
+	if (action === 'conflict') {
+		throw cliError(
+			`The ${name} variable on ${fullName} is ${withoutCredentials((current as { value: string }).value)}, so its ` +
+				`workflows deploy there. To deploy to ${audience} instead, set it with:\n` +
+				`  gh variable set ${name} --repo ${fullName} --body ${audience}\nNothing was changed.`
+		);
+	}
+	if (action === 'unknown' && !allowUnverified) {
+		throw cliError(
+			`Setup could not read the ${name} variable on ${fullName} (${(current as { reason: string }).reason}). Fix that, ` +
+				'or pass allow_unverified=true to set it yourself afterwards. Nothing was changed.'
+		);
 	}
 }
 

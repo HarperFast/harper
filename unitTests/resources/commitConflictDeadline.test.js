@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getOutstandingCommits, resetStuckCommitLogCooldownForTests } = require('#src/resources/DatabaseTransaction');
+const { setAbortMarkersForTests } = require('#src/resources/transactionLogAbortMarkers');
 const { setRegistryStatusForTests } = require('#src/resources/longLivedTransactions');
 const harperLogger = require('#js/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
@@ -291,8 +292,10 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		assert.deepStrictEqual(getOutstandingCommits(), { count: 0, oldestAgeMs: undefined }, 'no commit left tracked');
 	});
 
-	it('never abandons a durably logged commit past the conflict budget, logging the overdue diagnostic once', async function () {
+	it('never abandons a durably logged commit past the conflict budget with abort markers off, logging the overdue diagnostic once', async function () {
 		this.timeout(20000);
+		const priorAbortMarkers = setAbortMarkersForTests(false);
+		pendingRestores.push(() => setAbortMarkersForTests(priorAbortMarkers ?? true));
 		resetStuckCommitLogCooldownForTests();
 		const errorLines = [];
 		const originalError = harperLogger.error;
