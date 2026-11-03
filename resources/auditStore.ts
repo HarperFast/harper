@@ -330,7 +330,7 @@ export function openAuditStore(rootStore) {
 						const before = retentionCutoff(1 + passCleanupPriority * passCleanupPriority);
 						raiseAuditFloor(auditStore, before, true);
 						// the floor and purge bounds reach disk before the files they account for are unlinked;
-						// the boot purge and manual prunes do not wait yet (harper#3947)
+						// the synchronous boot purge does not wait yet (harper#3947)
 						if (originFloorsDurable(auditStore.rootStore)) await auditStore.rootStore.syncWal();
 						if (!cleanupStopped && !storeClosing()) auditStore.rootStore.purgeLogs({ before });
 					} else {
