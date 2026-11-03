@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ConfigureTelemetryOptions, FullTextTelemetry } from '@harperfast/fulltext/native';
 import { METRIC } from './metadata.ts';
 
@@ -114,6 +114,17 @@ export function flattenFullTextTelemetry(snapshot: FullTextTelemetry): FlatSnaps
 	}
 	visit(snapshot, []);
 	return { counters, gauges };
+}
+
+export function fullTextTelemetryIndexLabel(database: string, table: string, index: string): string {
+	const components = [database, table, index];
+	const encode = (value: string) => encodeURIComponent(value).replaceAll('.', '%2E');
+	try {
+		return `${encode(database)}.${encode(table)}/${encode(index)}`;
+	} catch (error) {
+		if (!(error instanceof URIError)) throw error;
+		return `index:${createHash('sha256').update(JSON.stringify(components)).digest('hex')}`;
+	}
 }
 
 export class FullTextTelemetryCollector {

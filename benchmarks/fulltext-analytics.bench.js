@@ -82,8 +82,8 @@ it(`qualifies actual Harper fulltext analytics (${configuration.profile})`, asyn
 					attribute: 'catalogSearch',
 					comparator: 'matches',
 					value: 'widget',
-					maxIndexLagMilliseconds: 0,
-					waitForIndexMilliseconds: 5000,
+					maxIndexLagMilliseconds: configuration.maxIndexLag,
+					...(configuration.maxIndexLag === 0 ? { waitForIndexMilliseconds: 5000 } : null),
 				},
 			],
 			limit: 4,
@@ -214,6 +214,8 @@ it(`qualifies actual Harper fulltext analytics (${configuration.profile})`, asyn
 			writerDelayMilliseconds: 50,
 			configuredDurationMilliseconds: configuration.duration,
 			configuredIntervalMilliseconds: configuration.interval,
+			maxIndexLagMilliseconds: configuration.maxIndexLag,
+			waitForIndexMilliseconds: configuration.maxIndexLag === 0 ? 5000 : null,
 			histograms: false,
 			snapshotBytes: false,
 			startupWarmupMilliseconds: 2000,
@@ -247,7 +249,21 @@ it(`qualifies actual Harper fulltext analytics (${configuration.profile})`, asyn
 	} catch (error) {
 		writeFileSync(
 			join(configuration.output, 'failure.json'),
-			JSON.stringify({ name: error.name, message: error.message, stack: error.stack }, null, 2)
+			JSON.stringify(
+				{
+					name: error.name,
+					message: error.message,
+					stack: error.stack,
+					causes:
+						error instanceof AggregateError
+							? error.errors
+									.slice(0, 8)
+									.map((cause) => ({ name: cause.name, message: cause.message, stack: cause.stack }))
+							: undefined,
+				},
+				null,
+				2
+			)
 		);
 		throw error;
 	} finally {

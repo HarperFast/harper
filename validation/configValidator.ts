@@ -448,7 +448,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 				intervalMilliseconds: number.integer().min(1000).max(2147483647).optional(),
 				histograms: boolean.optional(),
 				snapshotBytes: boolean.optional(),
-			}).optional(),
+			})
+				.strict()
+				.optional(),
 		}),
 		replication: Joi.object({
 			hostname: bareHostConstraints,

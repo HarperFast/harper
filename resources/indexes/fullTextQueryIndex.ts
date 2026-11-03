@@ -1062,7 +1062,16 @@ export class FullTextQueryIndex {
 					fullTextTelemetryCollector.beforeClose(slot.reader);
 					return slot.reader.close();
 				})
-				.finally(() => fullTextTelemetryCollector.afterClose(slot.reader))
+				.then(
+					(result) => {
+						fullTextTelemetryCollector.afterClose(slot.reader);
+						return result;
+					},
+					(error) => {
+						fullTextTelemetryCollector.closeFailed(slot.reader);
+						throw error;
+					}
+				)
 				.then((result) => {
 					this.#retiredReaderSlots.delete(slot);
 					if (result?.cleanupError) this.#warnReaderClose(result.cleanupError);

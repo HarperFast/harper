@@ -11,6 +11,7 @@ const {
 	resolveFullTextTelemetryPolicy,
 	fullTextNativeCounterDelta,
 	flattenFullTextTelemetry,
+	fullTextTelemetryIndexLabel,
 } = require('#src/resources/analytics/fullTextTelemetry');
 
 const limits = {
@@ -79,6 +80,35 @@ describe('Published full-text telemetry collection', function () {
 		assert.deepStrictEqual(collector.takeRows(), []);
 		assert.strictEqual((await index.search({ text: 'widget' })).hits.length, 1);
 		assert.strictEqual(index.telemetry().native.histogramsEnabled, false);
+	});
+	it('keeps delimiter-bearing index identities in separate series', async () => {
+		const labels = [
+			fullTextTelemetryIndexLabel('a.b', 'c', 'search'),
+			fullTextTelemetryIndexLabel('a', 'b.c', 'search'),
+			fullTextTelemetryIndexLabel('a%2Eb', 'c', 'search'),
+			fullTextTelemetryIndexLabel('a', 'b/c', 'search'),
+		];
+		assert.strictEqual(new Set(labels).size, labels.length);
+		assert.strictEqual(fullTextTelemetryIndexLabel('catalog', 'Product', 'search'), 'catalog.Product/search');
+		assert.strictEqual(fullTextTelemetryIndexLabel('catalog', 'Product', '😀'), 'catalog.Product/%F0%9F%98%80');
+		const illFormed = ['\ud800', '\ud801', '\ufffd'].map((index) => fullTextTelemetryIndexLabel('a', 'b', index));
+		assert.strictEqual(new Set(illFormed).size, illFormed.length);
+		assert.match(illFormed[0], /^index:[a-f0-9]{64}$/);
+		const { options } = await writer();
+		collector.setOperatorPolicy({ enabled: true });
+		for (const label of labels) {
+			const handle = await reader(options);
+			collector.register(handle, label, 'reader');
+			await handle.search({ text: 'widget' });
+			collector.collect(handle);
+		}
+		const rows = collector.takeRows();
+		assert.strictEqual(new Set(rows.map((row) => row.series)).size, labels.length);
+		assert.deepStrictEqual(
+			rows.map((row) => row.path),
+			labels
+		);
+		assert.ok(rows.every((row) => row.native_operations_search_completed === '1'));
 	});
 	it('enables, pauses and resumes the same reader with cumulative gap counts and independent options', async () => {
 		const { options } = await writer();
@@ -468,6 +498,21 @@ describe('Harper full-text analytics lifecycle and persistence', function () {
 					),
 				10000
 			);
+			const { subscribeFullTextTelemetry } = require('#src/resources/analytics/fullTextTelemetryRuntime');
+			let closing = false;
+			let closed;
+			const removeReaderConsumer = subscribeFullTextTelemetry((sample) => {
+				if (sample.index !== writer.path || sample.role !== 'reader') return;
+				if (sample.stage === 'closing') closing = true;
+				if (sample.snapshot?.available && sample.snapshot.native.state === 'closed') closed = sample.snapshot;
+			});
+			try {
+				await Product.fullTextQueryIndexes.catalogSearch.customIndex.close();
+				assert.strictEqual(closing, true);
+				assert.strictEqual(closed?.native.operations.close.completed, 1n);
+			} finally {
+				removeReaderConsumer();
+			}
 		} finally {
 			try {
 				fs.writeFileSync(file, original);

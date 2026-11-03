@@ -20,15 +20,19 @@ let removeListener: (() => void) | undefined;
 let persistenceActive = false;
 let nextWarningAt = 0;
 
+function reportFailure() {
+	if (Date.now() < nextWarningAt) return;
+	nextWarningAt = Date.now() + 60_000;
+	try {
+		logger.warn?.('Could not configure, collect or deliver full-text telemetry');
+	} catch {}
+}
+
 export const fullTextTelemetryCollector = new FullTextTelemetryCollector({
 	onPending: () => {
 		if (operatorPolicy.enabled && checkAnalyticsEnabled(false)) requestAnalyticsFlush();
 	},
-	onError: () => {
-		if (Date.now() < nextWarningAt) return;
-		nextWarningAt = Date.now() + 60_000;
-		logger.warn?.('A full-text telemetry observation or consumer failed');
-	},
+	onError: reportFailure,
 });
 
 export function setFullTextAnalyticsEnabled(enabled: boolean): void {
@@ -48,17 +52,22 @@ export function acceptsFullTextTelemetryRow(row: Record<string, unknown>): boole
 
 export function initializeFullTextTelemetry(): void {
 	if (started) return;
-	started = true;
-	removeListener = addAnalyticsListener((metrics) => {
+	const listener = addAnalyticsListener((metrics) => {
 		if (!persistenceActive || !checkAnalyticsEnabled(false)) return;
 		const rows = fullTextTelemetryCollector.takeRows();
 		metrics.push(...rows);
 	});
-	stopWatching = watchFullTextTelemetryConfiguration((value) => {
-		const next = resolveFullTextTelemetryPolicy(value);
-		operatorPolicy = next;
-		setFullTextAnalyticsEnabled(checkAnalyticsEnabled(false));
-	});
+	try {
+		stopWatching = watchFullTextTelemetryConfiguration((value) => {
+			operatorPolicy = resolveFullTextTelemetryPolicy(value);
+			setFullTextAnalyticsEnabled(checkAnalyticsEnabled(false));
+		});
+		removeListener = listener;
+		started = true;
+	} catch {
+		listener();
+		reportFailure();
+	}
 }
 
 export function subscribeFullTextTelemetry(
@@ -77,7 +86,7 @@ export function registerNativeFullTextTelemetry(handle: unknown, index: string, 
 		const label = Buffer.byteLength(index) <= 256 ? index : `index:${createHash('sha256').update(index).digest('hex')}`;
 		fullTextTelemetryCollector.register(native, label, role);
 	} catch {
-		logger.warn?.('Could not register a full-text telemetry handle');
+		reportFailure();
 	}
 }
 

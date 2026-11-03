@@ -5,15 +5,21 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const options = { duration: 70_000, indexes: 4, pairs: 2, interval: 60_000, output: undefined };
-const bounds = { duration: [100, 3_600_000], indexes: [1, 16], pairs: [1, 10], interval: [1000, 2_147_483_647] };
+const options = { duration: 70_000, indexes: 4, pairs: 2, interval: 60_000, maxIndexLag: 0, output: undefined };
+const bounds = {
+	duration: [100, 3_600_000],
+	indexes: [1, 16],
+	pairs: [1, 10],
+	interval: [1000, 2_147_483_647],
+	maxIndexLag: [0, 60_000],
+};
 for (let i = 2; i < process.argv.length; i += 2) {
 	if (!process.argv[i].startsWith('--')) throw new Error('Benchmark options must use --name value');
 	const name = process.argv[i].slice(2);
 	const value = process.argv[i + 1];
 	if (!Object.hasOwn(options, name) || value === undefined)
 		throw new Error(
-			'Use --duration milliseconds --indexes 1..16 --pairs 1..10 --interval milliseconds --output directory'
+			'Use --duration milliseconds --indexes 1..16 --pairs 1..10 --interval milliseconds --maxIndexLag milliseconds --output directory'
 		);
 	if (name === 'output') options.output = resolve(value);
 	else {

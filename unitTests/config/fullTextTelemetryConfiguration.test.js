@@ -7,6 +7,8 @@ const { watchFullTextTelemetryConfiguration } = require('#src/config/fullTextTel
 const { resolveFullTextTelemetryPolicy } = require('#src/resources/analytics/fullTextTelemetry');
 const env = require('#src/utility/environment/environmentManager');
 const { updateConfigObject } = require('#src/config/configUtils');
+const { configValidator } = require('#src/validation/configValidator');
+const { readRootConfig } = require('../rootConfigFixture');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 
@@ -49,6 +51,25 @@ describe('Live full-text telemetry configuration', function () {
 		watcher = new RootConfigWatcher(file);
 		stop = watchFullTextTelemetryConfiguration((policy) => samples.push(policy), watcher);
 	}
+	it('rejects quoted telemetry values consistently at validation and live application', () => {
+		for (const value of [
+			{ enabled: 'true' },
+			{ histograms: 'false' },
+			{ snapshotBytes: 'true' },
+			{ intervalMilliseconds: '1000' },
+		]) {
+			const config = { ...readRootConfig(), analytics: { fullText: value } };
+			assert.match(configValidator(config, true).error?.message, /analytics\.fullText/);
+			assert.throws(() => resolveFullTextTelemetryPolicy(value));
+		}
+		assert.strictEqual(
+			configValidator(
+				{ ...readRootConfig(), analytics: { fullText: { enabled: true, intervalMilliseconds: 1000 } } },
+				true
+			).error,
+			undefined
+		);
+	});
 	it('enables, retains a valid policy after an invalid edit, disables and unsubscribes', async () => {
 		const samples = [];
 		observe({ enabled: true, intervalMilliseconds: 1000 }, samples);
