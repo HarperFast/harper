@@ -31,9 +31,8 @@ env:
 
 # Each shard job bounds its test step below its own job bound: a step timeout FAILS the step, so
 # the `if: failure()` Harper-log upload still runs, while a job timeout CANCELS it and skips the
-# upload. The legacy/upgrade package installs put npm's debug logs (written incrementally, so a
-# killed install keeps them) under that upload's root, so it also covers an install that fails or
-# times out.
+# upload. The legacy/upgrade package installs keep npm's debug logs under that upload's root; npm
+# writes them incrementally, so a killed install keeps them.
 jobs:
   documentation-fixture-parity:
     name: Documentation fixture parity
