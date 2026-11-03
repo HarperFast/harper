@@ -404,32 +404,58 @@ describe('Secondary-index range select', function () {
 			);
 		});
 
-		it('returns an expired row until eviction removes it', async function () {
-			const Expiring = table({
-				table: 'IndexRangeCoveredExpiryTest',
-				database: 'test',
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'score', indexed: true }, { name: 'label' }],
+		it('returns an expired row until eviction removes it, from every select', async function () {
+			const attributes = [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'score', indexed: true, type: 'Int' },
+				{ name: 'label' },
+			];
+			const Expiring = table({ table: 'IndexRangeCoveredExpiryTest', database: 'test', attributes });
+			const Cached = table({ table: 'IndexRangeCoveredExpiryCacheTest', database: 'test', attributes });
+			let sourceGets = 0;
+			Cached.sourcedFrom({
+				get(id) {
+					sourceGets++;
+					return { id, score: 5, label: 'refreshed' };
+				},
 			});
 			try {
-				await Expiring.put({ id: 1, score: 5, label: 'kept' });
-				await Expiring.put({ id: 2, score: 5, label: 'expired' }, { expiresAt: Date.now() - 1000 });
 				const condition = [{ attribute: 'score', value: 5 }];
-				await assertCovered(Expiring, { conditions: condition, select: ['id', 'score'] }, [
-					{ id: 1, score: 5 },
-					{ id: 2, score: 5 },
-				]);
-				// the RocksDB record-loading path keeps hiding it (LMDB's does not reliably)
-				if (!isLMDB)
+				const stored = [
+					{ id: 1, label: 'kept' },
+					{ id: 2, label: 'expired' },
+				];
+				for (const Table of [Expiring, Cached]) {
+					await Table.put({ id: 1, score: 5, label: 'kept' });
+					await Table.put({ id: 2, score: 5, label: 'expired' }, { expiresAt: Date.now() - 1000 });
+					await assertCovered(Table, { conditions: condition, select: ['id', 'score'] }, [
+						{ id: 1, score: 5 },
+						{ id: 2, score: 5 },
+					]);
 					assert.deepStrictEqual(
-						(await rows(Expiring, { conditions: condition })).map(({ id, label }) => ({ id, label })),
-						[{ id: 1, label: 'kept' }]
+						await rows(Table, { conditions: condition, select: ['id', 'label'] }, { onlyIfCached: true }),
+						stored
 					);
+				}
+				assert.equal(sourceGets, 0);
+				assert.deepStrictEqual(await rows(Expiring, { conditions: condition, select: ['id', 'label'] }), stored);
+				assert.deepStrictEqual(
+					rowsSync(Expiring, { conditions: [{ attribute: 'label', value: 'expired' }], select: ['id', 'label'] }),
+					[{ id: 2, label: 'expired' }]
+				);
+				assert.equal(await Expiring.get(2), undefined);
+				assert.deepStrictEqual(await rows(Cached, { conditions: condition, select: ['id', 'label'] }), [
+					{ id: 1, label: 'kept' },
+					{ id: 2, label: 'refreshed' },
+				]);
+				assert.equal(sourceGets, 1);
 			} finally {
 				Expiring.dropTable();
+				Cached.dropTable();
 			}
 		});
 
-		it('decodes index values by the declared type and returns what the index holds otherwise', async function () {
+		it('decodes index values by the declared type, and an undeclared bigint id as a number', async function () {
 			const nonNull = [{ attribute: 'when', comparator: 'gt', value: new Date(Date.UTC(2026, 0, 1)) }];
 			const expectedWhen = (await rows(Covered, { conditions: nonNull })).map(({ id, when }) => ({ id, when }));
 			await assertCovered(Covered, { conditions: nonNull, select: ['id', 'when'] }, expectedWhen);
@@ -446,100 +472,180 @@ describe('Secondary-index range select', function () {
 				{ id: 4, big: 4000n },
 				{ id: 5, big: 5000n },
 			]);
-			const tagged = [{ attribute: 'tags', comparator: 'between', value: ['t1', 't2'] }];
-			const taggedIds = (await rows(Covered, { conditions: tagged, select: ['id', 'label'] })).map(({ id }) => id);
-			const { result: tagRows, reads } = await withReads(Covered, () =>
-				rows(Covered, { conditions: tagged, select: ['id', 'tags'] })
-			);
-			assert.equal(reads, 0);
-			assert.deepStrictEqual(
-				tagRows.map(({ id }) => id),
-				taggedIds
-			);
-			for (const { id, tags } of tagRows) {
-				assert.ok(tags === 't1' || tags === 't2');
-				assert.ok([`t${id % 3}`, `t${(id % 3) + 1}`].includes(tags));
-			}
-
 			const Loose = table({
 				table: 'IndexRangeCoveredLooseTest',
 				database: 'test',
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value', indexed: true }, { name: 'label' }],
 			});
 			try {
-				const text256 = 'a'.repeat(256);
-				const text257 = 'a'.repeat(257);
 				await Loose.put(10n, { value: 1, label: 'bigint id' });
-				await Loose.put(2, { value: new Date(Date.UTC(2026, 0, 2)), label: 'date' });
-				await Loose.put(3, { value: ['p', 'q'], label: 'array' });
-				await Loose.put(4, { value: 99n, label: 'bigint value' });
-				await Loose.put(5, { value: text256, label: '256' });
-				await Loose.put(6, { value: text257, label: '257' });
-				const value = (condition) => [{ attribute: 'value', ...condition }];
-				assert.deepStrictEqual(await rows(Loose, { conditions: value({ value: 1 }), select: ['id', 'label'] }), [
-					{ id: 10n, label: 'bigint id' },
-				]);
-				await assertCovered(Loose, { conditions: value({ value: 1 }), select: ['id', 'value'] }, [
-					{ id: 10, value: 1 },
-				]);
-				await assertCovered(Loose, { conditions: value({ value: Date.UTC(2026, 0, 2) }), select: ['id', 'value'] }, [
-					{ id: 2, value: Date.UTC(2026, 0, 2) },
-				]);
-				await assertCovered(
-					Loose,
-					{ conditions: value({ comparator: 'between', value: ['p', 'q'] }), select: ['id', 'value'] },
+				await Loose.put(2, { value: 1, label: 'number id' });
+				assert.deepStrictEqual(
+					await rows(Loose, { conditions: [{ attribute: 'value', value: 1 }], select: ['id', 'label'] }),
 					[
-						{ id: 3, value: 'p' },
-						{ id: 3, value: 'q' },
+						{ id: 2, label: 'number id' },
+						{ id: 10n, label: 'bigint id' },
 					]
 				);
-				await assertCovered(Loose, { conditions: value({ value: 99 }), select: ['id', 'value'] }, [
-					{ id: 4, value: 99 },
+				await assertCovered(Loose, { conditions: [{ attribute: 'value', value: 1 }], select: ['id'] }, [
+					{ id: 2 },
+					{ id: 10 },
 				]);
-				await assertCovered(Loose, { conditions: value({ value: text256 }), select: ['id', 'value'] }, [
+			} finally {
+				Loose.dropTable();
+			}
+		});
+
+		it('loads the record for an attribute whose declared type can hold an array', async function () {
+			const Lists = table({
+				table: 'IndexRangeCoveredListTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'tags', indexed: true, elements: { type: 'String' } },
+					{ name: 'anything', indexed: true, type: 'Any' },
+					{ name: 'untyped', indexed: true },
+					{ name: 'ref', indexed: true, type: 'ID' },
+				],
+			});
+			try {
+				const list = ['x', 'y'];
+				await Lists.put(1, { tags: list, anything: list, untyped: list, ref: list });
+				await Lists.put(2, { tags: ['y'], anything: 'y', untyped: 'y', ref: 'y' });
+				for (const attribute of ['tags', 'anything', 'untyped', 'ref']) {
+					const condition = [{ attribute, value: 'x' }];
+					const { result, reads } = await withReads(Lists, () =>
+						rows(Lists, { conditions: condition, select: ['id', attribute] })
+					);
+					assert.deepStrictEqual(result, [{ id: 1, [attribute]: list }], attribute);
+					assert.equal(reads, 1, attribute);
+					await assertCovered(Lists, { conditions: condition, select: ['id'] }, [{ id: 1 }]);
+				}
+				await assertCovered(
+					Lists,
+					{ conditions: [{ attribute: 'tags', comparator: 'ge', value: 'x' }], select: ['id'] },
+					[{ id: 1 }, { id: 2 }]
+				);
+			} finally {
+				Lists.dropTable();
+			}
+		});
+
+		it('recovers a long value from its record, matching it by the prefix the index stores', async function () {
+			const Text = table({
+				table: 'IndexRangeCoveredTextTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'value', indexed: true, type: 'String' },
+					{ name: 'label' },
+				],
+			});
+			try {
+				const text256 = 'a'.repeat(256);
+				const text257 = 'a'.repeat(257);
+				await Text.put(5, { value: text256, label: '256' });
+				await Text.put(6, { value: text257, label: '257' });
+				const value = (condition) => [{ attribute: 'value', ...condition }];
+				await assertCovered(Text, { conditions: value({ value: text256 }), select: ['id', 'value'] }, [
 					{ id: 5, value: text256 },
 				]);
 				const prefixed = value({ comparator: 'starts_with', value: 'aaa' });
-				const { result, reads } = await withReads(Loose, () =>
-					rows(Loose, { conditions: prefixed, select: ['id', 'value'] })
+				const { result, reads } = await withReads(Text, () =>
+					rows(Text, { conditions: prefixed, select: ['id', 'value'] })
 				);
 				assert.deepStrictEqual(result, [
 					{ id: 5, value: text256 },
 					{ id: 6, value: text257 },
 				]);
 				assert.equal(reads, 1);
-				await assertCovered(Loose, { conditions: prefixed, select: ['id'] }, [{ id: 5 }, { id: 6 }]);
-				const long = 'b'.repeat(300);
-				await Loose.put(7, { value: ['bb', long], label: 'mixed array' });
-				await Loose.put(11n, { value: 'b'.repeat(299), label: 'bigint id, long value' });
-				const mixed = await withReads(Loose, () =>
-					rows(Loose, { conditions: value({ comparator: 'starts_with', value: 'bb' }), select: ['id', 'value'] })
-				);
-				assert.deepStrictEqual(mixed.result, [
-					{ id: 7, value: 'bb' },
-					{ id: 7, value: long },
-					{ id: 11, value: 'b'.repeat(299) },
-				]);
-				assert.equal(mixed.reads, 2);
+				await assertCovered(Text, { conditions: prefixed, select: ['id'] }, [{ id: 5 }, { id: 6 }]);
+				await Text.put(11n, { value: 'b'.repeat(299), label: 'bigint id, long value' });
 				const prefix = 'd'.repeat(256);
-				await Loose.put(8, { value: ['c'.repeat(260), 'match-me-c'], label: 'one long element' });
-				await Loose.put(9, { value: [prefix + '1', prefix + '2'], label: 'shared prefix' });
-				const endsWith = await withReads(Loose, () =>
-					rows(Loose, { conditions: value({ comparator: 'ends_with', value: 'me-c' }), select: ['id', 'value'] })
-				);
-				assert.deepStrictEqual(endsWith.result, [{ id: 8, value: 'match-me-c' }]);
-				const shared = await withReads(Loose, () =>
-					rows(Loose, { conditions: value({ value: prefix + '2' }), select: ['id', 'value'] })
+				await Text.put(8, { value: prefix + '1' });
+				await Text.put(9, { value: prefix + '2' });
+				const shared = await withReads(Text, () =>
+					rows(Text, { conditions: value({ value: prefix + '2' }), select: ['id', 'value'] })
 				);
 				assert.deepStrictEqual(shared.result, [{ id: 9, value: prefix + '2' }]);
-				assert.equal(shared.reads, 1);
-				const sorted = (await rows(Loose, { sort: { attribute: 'value' } })).map(({ id }) => ({ id: Number(id) }));
-				await assertCovered(Loose, { sort: { attribute: 'value' }, select: ['id'] }, sorted);
-				const sortedValues = await rows(Loose, { sort: { attribute: 'value' }, select: ['id', 'value'] });
+				assert.equal(shared.reads, 2);
+				assert.deepStrictEqual(
+					await rows(Text, { conditions: value({ comparator: 'starts_with', value: 'bb' }), select: ['id', 'value'] }),
+					[{ id: 11, value: 'b'.repeat(299) }]
+				);
+				const sorted = (await rows(Text, { sort: { attribute: 'value' } })).map(({ id }) => ({ id: Number(id) }));
+				await assertCovered(Text, { sort: { attribute: 'value' }, select: ['id'] }, sorted);
+				const sortedValues = await rows(Text, { sort: { attribute: 'value' }, select: ['id', 'value'] });
 				assert.ok(sortedValues.some(({ id, value }) => id === 6 && value === text257));
-				assert.ok(!sortedValues.some(({ value }) => typeof value === 'string' && value.endsWith('\uffff')));
+				assert.ok(!sortedValues.some(({ value }) => value.endsWith('\uffff')));
 			} finally {
-				Loose.dropTable();
+				Text.dropTable();
+			}
+		});
+
+		it('matches a long value whose index prefix ends in half of a surrogate pair', async function () {
+			const Split = table({
+				table: 'IndexRangeCoveredSplitTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name', indexed: true, type: 'String' },
+					{ name: 'tags', indexed: true, elements: { type: 'String' } },
+					{ name: 'note' },
+				],
+			});
+			try {
+				const z = (count) => 'Z'.repeat(count);
+				const values = [
+					z(255) + '😀rest',
+					z(255) + '😎rest',
+					z(255) + '\ufffdrest',
+					z(255) + 'arest',
+					z(254) + '😀rest',
+					z(256) + '😀rest',
+					z(256),
+					z(257),
+					'Z😀',
+				];
+				for (let i = 0; i < values.length; i++)
+					await Split.put(i + 1, { name: values[i], tags: [values[i]], note: `note-${i + 1}` });
+				const byIndex = await rows(Split, {
+					conditions: [{ attribute: 'name', comparator: 'starts_with', value: 'Z' }],
+					select: ['id', 'name', 'note'],
+				});
+				assert.deepStrictEqual(
+					byIndex.map(({ id, name }) => ({ id, name })).sort((a, b) => a.id - b.id),
+					values.map((name, i) => ({ id: i + 1, name }))
+				);
+				for (const read of [rows, rowsSync]) {
+					const startsWith = [{ attribute: 'name', comparator: 'starts_with', value: 'Z' }];
+					assert.deepStrictEqual(
+						await read(Split, { conditions: startsWith, select: ['id', 'name'] }),
+						byIndex.map(({ id, name }) => ({ id, name }))
+					);
+					assert.deepStrictEqual(
+						await read(Split, { conditions: startsWith, select: ['id'] }),
+						byIndex.map(({ id }) => ({ id }))
+					);
+					for (let i = 0; i < 3; i++) {
+						const exact = [{ attribute: 'name', value: values[i] }];
+						assert.deepStrictEqual(await read(Split, { conditions: exact, select: ['id'] }), [{ id: i + 1 }]);
+						assert.deepStrictEqual(await read(Split, { conditions: exact, select: ['id', 'name'] }), [
+							{ id: i + 1, name: values[i] },
+						]);
+						assert.deepStrictEqual(
+							await read(Split, { conditions: [{ attribute: 'tags', value: values[i] }], select: ['id'] }),
+							[{ id: i + 1 }]
+						);
+					}
+					const tags = await read(Split, {
+						conditions: [{ attribute: 'tags', comparator: 'starts_with', value: 'Z' }],
+						select: ['id'],
+					});
+					assert.equal(tags.length, values.length);
+				}
+			} finally {
+				Split.dropTable();
 			}
 		});
 
@@ -591,13 +697,12 @@ describe('Secondary-index range select', function () {
 				await Paths.put(2, { paths: [long('a'), long('match')] });
 				const query = { conditions: [{ attribute: 'paths', comparator: 'ends_with', value: 'match' }] };
 				for (const reverse of [false, true]) {
-					assert.deepStrictEqual(await rows(Paths, { ...query, reverse, select: ['id', 'paths'] }), [
-						...(reverse ? [] : [{ id: 2, paths: long('match') }]),
-						{ id: 1, paths: 'z-match' },
-						...(reverse ? [{ id: 2, paths: long('match') }] : []),
-					]);
 					assert.deepStrictEqual(
 						rowsSync(Paths, { ...query, reverse, select: ['id'] }).map(({ id }) => id),
+						reverse ? [1, 2] : [2, 1]
+					);
+					assert.deepStrictEqual(
+						(await rows(Paths, { ...query, reverse, select: ['id'] })).map(({ id }) => id),
 						reverse ? [1, 2] : [2, 1]
 					);
 				}
@@ -644,7 +749,7 @@ describe('Secondary-index range select', function () {
 			}
 		});
 
-		it('serves a reopened table holding non-scalar and -0 values under an untyped index', async function () {
+		it('serves an id select on a reopened table holding non-scalar and -0 values under an untyped index', async function () {
 			const databaseName = 'covered_reopen';
 			const declare = () =>
 				table({
@@ -663,39 +768,29 @@ describe('Secondary-index range select', function () {
 				await closeDatabase(databaseName);
 				resetDatabases();
 				Reopened = declare();
+				const recordPath = (conditions, select) => rows(Reopened, { conditions, select, rowFilter: () => true });
 				const open = [{ attribute: 'value', comparator: 'gt', value: 4 }];
-				const { result, reads } = await withReads(Reopened, () =>
-					rows(Reopened, { conditions: open, select: ['id', 'value'] })
-				);
-				// in index order: the array row once per matching element and the object row not at all (it is
-				// not indexed)
+				const { result, reads } = await withReads(Reopened, () => rows(Reopened, { conditions: open, select: ['id'] }));
+				assert.deepStrictEqual(result, await recordPath(open, ['id']));
 				assert.deepStrictEqual(
 					result.filter(({ id }) => typeof id === 'number' && id !== 5),
-					[
-						{ id: 1, value: 5 },
-						{ id: 3, value: 6 },
-						{ id: 2, value: 7 },
-						{ id: 3, value: 8 },
-					]
+					[{ id: 1 }, { id: 3 }, { id: 2 }, { id: 3 }]
 				);
-				// a -0 entry decodes like a real null-led id under '\x18', so both go through the record path and
-				// return exactly what it returns
-				const recordPath = await rows(Reopened, { conditions: open, select: ['id', 'value'], rowFilter: () => true });
-				const delegated = ({ id }) => id === 5 || Array.isArray(id);
-				assert.deepStrictEqual(result.filter(delegated), recordPath.filter(delegated));
 				assert.ok(result.some(({ id }) => Array.isArray(id) && id[0] === null && id[1] === 7));
+				// the two -0-shaped entries, which take the record path
 				assert.equal(reads, 2);
+				assert.deepStrictEqual(
+					await rows(Reopened, { conditions: open, select: ['id', 'value'] }),
+					await recordPath(open, ['id', 'value'])
+				);
 				for (const condition of [
 					{ attribute: 'value', comparator: 'ge', value: -1 },
 					{ attribute: 'value', comparator: 'in', value: [0] },
 				]) {
-					const covered = await rows(Reopened, { conditions: [condition], select: ['id', 'value'] });
-					const loadedRows = await rows(Reopened, {
-						conditions: [condition],
-						select: ['id', 'value'],
-						rowFilter: () => true,
-					});
-					assert.deepStrictEqual(covered.filter(delegated), loadedRows.filter(delegated));
+					assert.deepStrictEqual(
+						await rows(Reopened, { conditions: [condition], select: ['id'] }),
+						await recordPath([condition], ['id'])
+					);
 				}
 			} finally {
 				Reopened.dropTable();
@@ -706,7 +801,11 @@ describe('Secondary-index range select', function () {
 			const Stubs = table({
 				table: 'IndexRangeCoveredStubTest',
 				database: 'test',
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'score', indexed: true }, { name: 'label' }],
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'label' },
+				],
 			});
 			try {
 				await Stubs.put(1, { score: 5, label: 'one' });
@@ -740,9 +839,11 @@ describe('Secondary-index range select', function () {
 					for (const metric of metrics)
 						if (metric.metric === 'db-read' && metric.path === 'IndexRangeCoveredTest') reads.push(metric);
 				});
-				const tagged = [{ attribute: 'tags', comparator: 'between', value: ['t1', 't2'] }];
 				const { result, reads: primaryReads } = await withReads(Covered, () =>
-					rows(Covered, { conditions: tagged, select: ['id', 'tags'] })
+					rows(Covered, {
+						conditions: [{ attribute: 'score', comparator: 'between', value: [2, 6] }],
+						select: ['id', 'score'],
+					})
 				);
 				assert.equal(primaryReads, 0);
 				await waitFor(() => reads.length > 0, { timeout: 10_000, message: 'no analytics report was flushed' });
@@ -759,7 +860,8 @@ describe('Secondary-index range select', function () {
 				database: 'test',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
-					{ name: 'score', indexed: true },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'text', indexed: true, type: 'String' },
 				],
 			});
 			try {
@@ -783,20 +885,20 @@ describe('Secondary-index range select', function () {
 					assert.deepStrictEqual(scanned, before);
 					// an overflow row's value is read in the same snapshot as its index entry
 					const long = (suffix) => 'f'.repeat(300) + suffix;
-					await Snapshot.put(7, { score: long('a') });
-					await Snapshot.put(8, { score: long('b') });
+					await Snapshot.put(7, { text: long('a') });
+					await Snapshot.put(8, { text: long('b') });
 					const overflowQuery = {
-						conditions: [{ attribute: 'score', comparator: 'starts_with', value: 'fff' }],
-						select: ['id', 'score'],
+						conditions: [{ attribute: 'text', comparator: 'starts_with', value: 'fff' }],
+						select: ['id', 'text'],
 					};
 					const overflow = Snapshot.search(overflowQuery)[Symbol.asyncIterator]();
 					const overflowRows = [(await overflow.next()).value];
-					await Snapshot.put(8, { score: long('changed') });
+					await Snapshot.put(8, { text: long('changed') });
 					for (let step = await overflow.next(); !step.done; step = await overflow.next())
 						overflowRows.push(step.value);
 					assert.deepStrictEqual(overflowRows, [
-						{ id: 7, score: long('a') },
-						{ id: 8, score: long('b') },
+						{ id: 7, text: long('a') },
+						{ id: 8, text: long('b') },
 					]);
 					await Snapshot.delete(7);
 					await Snapshot.delete(8);

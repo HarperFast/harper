@@ -919,7 +919,7 @@ describe('nested relationship constraints', function () {
 			covered.push(row);
 		assert.deepStrictEqual(covered, [{ id: 'a', score: 0 }]);
 		assert.strictEqual(loads, 1);
-		// a row guard keeps the top-level read on the record path the nested selection takes
+		// a row guard turns coverage off
 		const direct = [];
 		for await (const row of C.search({
 			sort: { attribute: 'score' },

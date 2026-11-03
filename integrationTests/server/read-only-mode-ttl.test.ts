@@ -1,7 +1,7 @@
 /**
- * A read-only server (`storage.readOnly`) answers for an expired record on a table with no source as if it were
- * absent, and leaves it on disk (harper#474); a covered select, which reads no record, still returns it
- * (resources/DESIGN.md). Runs on whichever engine HARPER_STORAGE_ENGINE selects.
+ * A read-only server (`storage.readOnly`) answers a get for an expired record on a table with no source as if it
+ * were absent, and leaves it on disk (harper#474); a query returns it until eviction, which a read-only server
+ * never runs (resources/DESIGN.md). Runs on whichever engine HARPER_STORAGE_ENGINE selects.
  *
  *   npm run test:integration -- "integrationTests/server/read-only-mode-ttl.test.ts"
  */
@@ -72,22 +72,16 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 		for (let i = 0; i < 3; i++) await client.reqRest('/Session/expired').expect(404);
 	});
 
-	test('a query by an indexed attribute omits it when it loads the record', async () => {
-		const response = await client.reqRest('/Session/?name=ttl&select(id,expiresAt)').expect(200);
-		deepStrictEqual(
-			response.body.map((row: any) => row.id),
-			['live']
-		);
+	test('a query by an indexed attribute returns it, whether or not it loads the record', async () => {
+		const loaded = await client.reqRest('/Session/?name=ttl&select(id,expiresAt)').expect(200);
+		deepStrictEqual(loaded.body.map((row: any) => row.id).sort(), ['expired', 'live']);
+		const covered = await client.reqRest('/Session/?name=ttl&select(id)').expect(200);
+		deepStrictEqual([...covered.body].sort(), ['expired', 'live']);
 	});
 
-	test('a covered select returns it until eviction, which a read-only server never runs', async () => {
-		const response = await client.reqRest('/Session/?name=ttl&select(id)').expect(200);
-		deepStrictEqual([...response.body].sort(), ['expired', 'live']);
-	});
-
-	test('a query with no index to use omits it', async () => {
+	test('a query with no index to use returns it', async () => {
 		const response = await client.reqRest('/Session/?id=ne=nothing&select(id)').expect(200);
-		deepStrictEqual(response.body, ['live']);
+		deepStrictEqual([...response.body].sort(), ['expired', 'live']);
 	});
 
 	test('a live record on the same table is still served', async () => {
@@ -98,14 +92,13 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 		strictEqual((await client.reqRest('/Plain/live').expect(200)).body.name, 'ttl');
 	});
 
-	test('an only-if-cached query of a caching table resolves a relationship to it as missing', async () => {
+	test('an only-if-cached query of a caching table resolves a relationship to it as stored', async () => {
 		const response = await client
 			.reqRest('/SessionRef/?select(id,session{id,name})')
 			.set('Cache-Control', 'only-if-cached')
 			.expect(200);
 		const sessions = Object.fromEntries(response.body.map((row: any) => [row.id, row.session]));
-		deepStrictEqual(sessions.live, { id: 'live', name: 'ttl' });
-		ok(sessions.expired == null, JSON.stringify(response.body));
+		deepStrictEqual(sessions, { live: { id: 'live', name: 'ttl' }, expired: { id: 'expired', name: 'ttl' } });
 	});
 
 	test('the 404 for it carries no Last-Modified, and a live record keeps its validators', async () => {

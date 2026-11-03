@@ -192,9 +192,9 @@ Consumers trust `context.replicateTo`/`replicatedConfirmation`, set by applicati
 
 A read-only process stages no writes: every producer passes `DatabaseTransaction.admitRequestWrite()` (405). `transactional()` refuses table writes early, never `post`, `publish`, `copy` or `move`. Producers running before `addWrite` refuse themselves: `lock()`, numeric `getNewId()`, `addAttributes` and TTL eviction (`readOnlyModeWrites.test.js`).
 
-## A past-expiry record on a sourceless table is gone before eviction
+## A past-expiry record stays queryable until eviction
 
-Eviction trails expiry. Until then, a table without a source get treats an expired record as absent (`isHiddenExpiry`) in get, only-if-cached (504), search (uncovered), subscribe and `withLocalEntry` (no `ETag`). Write-path loads, `relationship.from` (`getSync`) and `includeExpired` (SQL UPDATE/DELETE) still see it. Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
+Eviction trails expiry. Until then search returns an expired record as stored, so covered and loaded selects agree; a caching table refreshes it unless only-if-cached or `includeExpired` (SQL writes). With no source get, get, only-if-cached get (504), subscribe and `withLocalEntry` (no `ETag`) treat it as absent (`isHiddenExpiry`). Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
 
 ## RocksDB range activity and snapshot expiration
 
@@ -202,7 +202,7 @@ Eviction trails expiry. Until then, a table without a source get treats an expir
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not the caller's options (`uncachedRead` and cache-disabled reads forward it); add options there. A covered select (`coverIndexEntries`) reads no record (overflow keys aside): expired rows stay until eviction, undeclared bigint ids are numbers, arrays give the matching element. Pinned by `indexRangeSelect.test.js`.
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not the caller's options (`uncachedRead` and cache-disabled reads forward it); add options there. A covered select (`coverIndexEntries`) reads no record (overflow keys aside); it covers only attributes declared scalar (`SCALAR_TYPES`, schema trusted). Undeclared bigint ids read as numbers (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 

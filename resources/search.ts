@@ -925,7 +925,7 @@ interface CoveredSelect {
 }
 
 // ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB and as key '\x18' with a null-led primary
-// key on RocksDB (as a real [null, …] id can too): such an entry is left to the record path, as on main
+// key on RocksDB (as a real [null, …] id can too): such an entry is left to the record path
 function negativeZeroShape(key: any, primaryKey: any): boolean {
 	return (typeof key === 'object' && key !== null) || (key === '\x18' && primaryKey?.[0] === null);
 }
@@ -1035,19 +1035,18 @@ function coverIndexEntries(
 	});
 }
 
-// the stored value (or array element) an index key was made from: a truncated overflow key matches by prefix
 function overflowedValue(stored: any, key: string, attributeName: string, filter?: (record: any) => boolean) {
 	const prefix = key.slice(0, MAX_SEARCH_KEY_LENGTH);
-	const overflow = key.length > MAX_SEARCH_KEY_LENGTH;
 	const indexed = (value: any) =>
 		typeof value === 'string' &&
-		(overflow ? value.length > MAX_SEARCH_KEY_LENGTH && value.startsWith(prefix) : value === key) &&
+		value.length > MAX_SEARCH_KEY_LENGTH &&
+		// the key is stored as UTF-8, which writes a surrogate left unpaired by the cut as U+FFFD
+		(value.startsWith(prefix) || value.slice(0, MAX_SEARCH_KEY_LENGTH).toWellFormed() === prefix) &&
 		(!filter || filter({ [attributeName]: value }));
 	return Array.isArray(stored) ? stored.find(indexed) : indexed(stored) ? stored : undefined;
 }
 
 const MAX_DATE_TIME = 8.64e15;
-// An index holds a Date as its time and a BigInt as a number whenever the number is exact.
 function declaredTypeDecoder(attribute: any): ((key: any) => any) | undefined {
 	switch ((attribute?.elements ?? attribute)?.type) {
 		case 'Date':

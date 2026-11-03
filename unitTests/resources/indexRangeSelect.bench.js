@@ -30,7 +30,7 @@ describe('Benchmark: secondary-index range select', function () {
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'score', indexed: true },
+				{ name: 'score', indexed: true, type: 'Int' },
 				{ name: 'name' },
 				{ name: 'category' },
 				{ name: 'payload' },

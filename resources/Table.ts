@@ -356,6 +356,8 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
+// declared types `validate` holds to one value: `ID` admits an array of strings
+const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
@@ -8960,9 +8962,9 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired && hasExpired(entry))
+						// a query never hides an expired record; a caching table refreshes it (resources/DESIGN.md)
+						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
-						// should expiration really apply?
 						if (context.onlyIfCached) {
 							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;
 							return {
@@ -12573,9 +12575,12 @@ export function makeTable(options): TableResourceClass {
 	function coverableAttribute(name: string): boolean {
 		if (name === primaryKey) return true;
 		const index = Object.hasOwn(indices, name) ? indices[name] : undefined;
+		const attribute = findAttribute(attributes, name);
 		return (
 			index !== undefined &&
 			!index.customIndex &&
+			SCALAR_TYPES.has(attribute?.type) &&
+			!attribute.elements &&
 			!propertyResolvers?.[name] &&
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
