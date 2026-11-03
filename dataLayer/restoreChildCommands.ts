@@ -119,7 +119,8 @@ async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> 
 	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));
 	await inPhase('apply', async () => {
 		await announceDestruction();
-		const roots = [args.databasePath, ...args.blobRoots];
+		// an engine-only backup leaves the live blob roots as they are, so it has no reason to touch them
+		const roots = args.manifest.blobs ? [args.databasePath, ...args.blobRoots] : [args.databasePath];
 		// a copy keeps its source's mode, so a read-only repository (`immutable_source`) yields read-only
 		// transaction logs and blobs: before the purge, so debris an earlier attempt left can be removed,
 		// and after the copy, so the new generation is one this database can write

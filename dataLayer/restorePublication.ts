@@ -282,7 +282,9 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 				const inherited = new Set(
 					[restorePinId(databaseDir), earlier?.source_pin_id, ...(earlier?.superseded_pin_ids ?? [])].filter(Boolean)
 				);
-				const held = preexisting ? readBackupPins(backupDir).filter((pin) => inherited.has(pin.pin_id)) : [];
+				// immutable_source writes nothing in the repository, so it neither reuses nor retires a pin there;
+				// the earlier pins lapse on their own once nothing marks or records the target
+				const held = preexisting && pinId ? readBackupPins(backupDir).filter((pin) => inherited.has(pin.pin_id)) : [];
 				const same = pinId ? held.find((pin) => pin.backup_id === selected.backupId) : undefined;
 				const supersededPinIds = held.filter((pin) => pin !== same).map((pin) => pin.pin_id);
 				if (pinId) {

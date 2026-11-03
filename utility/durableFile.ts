@@ -35,13 +35,6 @@ export function pathPresent(path: string): boolean {
 	}
 }
 
-/**
- * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: Windows and
- * some filesystems reject it — at the open on some, at the fsync on others — and both have to be
- * tolerated or every durable write throws there. The codes that mean "unsupported" rather than
- * "failed" live in `./fsync.ts`, so this cannot drift from the other callers making that same
- * distinction; `restoreMarker.ts` used that set before this helper existed.
- */
 /** `fsyncDirectory` for a caller that must keep its event loop free, such as a job worker flushing a tree. */
 export async function fsyncDirectoryAsync(directory: string): Promise<void> {
 	let handle: FileHandle;
@@ -60,6 +53,13 @@ export async function fsyncDirectoryAsync(directory: string): Promise<void> {
 	}
 }
 
+/**
+ * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: Windows and
+ * some filesystems reject it — at the open on some, at the fsync on others — and both have to be
+ * tolerated or every durable write throws there. The codes that mean "unsupported" rather than
+ * "failed" live in `./fsync.ts`, so this cannot drift from the other callers making that same
+ * distinction; `restoreMarker.ts` used that set before this helper existed.
+ */
 export function fsyncDirectory(directory: string): void {
 	let directoryFd: number;
 	try {
