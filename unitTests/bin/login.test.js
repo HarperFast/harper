@@ -148,8 +148,6 @@ describe('Login', () => {
 		});
 	});
 
-	// The server's JSON reply is untrusted (harper#1928): the CLI already knows where it connected, so
-	// the saved credentials, last_target and every printed target are that client-chosen URL.
 	describe('saved identity is the client-selected target', () => {
 		const testDir = path.join(os.tmpdir(), `harper-test-login-identity-${Date.now()}`);
 		// #js: replacing a module export only works on the compiled build, which keeps this file in that lane

@@ -106,8 +106,6 @@ describe('CLI Credentials', () => {
 	});
 });
 
-// harper#1927: a project's `.env` is not a trusted source for where a credential-bearing CLI command
-// connects, how it authenticates, or whether TLS is verified.
 describe('loadCliDotenv', () => {
 	const projectDir = path.join(os.tmpdir(), `harper-test-cli-dotenv-${Date.now()}`);
 	const guardedKeys = [
@@ -123,6 +121,9 @@ describe('loadCliDotenv', () => {
 		'CLI_TARGET_REFRESH_TOKEN',
 		'ACTIONS_ID_TOKEN_REQUEST_URL',
 		'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+		'GITHUB_REPOSITORY',
+		'HOME',
+		'USERPROFILE',
 		'NODE_TLS_REJECT_UNAUTHORIZED',
 		'NODE_USE_ENV_PROXY',
 		'HTTP_PROXY',
@@ -170,7 +171,6 @@ describe('loadCliDotenv', () => {
 				return true;
 			});
 			assert.strictEqual(process.env[key], undefined);
-			// all-or-nothing: a safe key ahead of the refused one is not applied either
 			assert.strictEqual(process.env.SAFE_SETTING, undefined);
 		});
 	}

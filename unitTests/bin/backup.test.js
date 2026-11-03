@@ -250,9 +250,7 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 	});
 });
 
-// harper#1927: a project .env that would choose the target or credentials stops a backup command
-// before it routes anywhere. Ignoring the keys instead would turn a remote restore/delete into an
-// offline one against this machine's files.
+// Ignoring the keys instead would turn a remote restore/delete into an offline one on local files.
 describe('backup.ts refuses a project .env target or credential before routing', () => {
 	const projectDir = path.join(os.tmpdir(), `harper-test-backup-dotenv-${Date.now()}`);
 	const envKeys = ['HARPER_CLI_TARGET', 'CLI_TARGET', 'HARPER_CLI_PASSWORD'];

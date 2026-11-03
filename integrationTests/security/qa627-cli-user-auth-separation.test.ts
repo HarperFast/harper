@@ -102,7 +102,6 @@ suite(
 			delete base.DOTENV_CONFIG_PATH;
 			try {
 				const { stdout, stderr } = await execFileAsync(process.execPath, [HARPER_BIN, ...args], {
-					// cliOperations() reads the cwd `.env`, and refuses one that sets a CLI credential.
 					cwd: cliHome,
 					env: { ...base, HOME: cliHome, USERPROFILE: cliHome, ...env },
 					timeout: 20_000,

@@ -1298,9 +1298,7 @@ describe('cliOperations', () => {
 		});
 	});
 
-	// harper#1927: a project .env that would pick the destination or credentials stops the command
-	// before anything is sent — including to an explicit target=, which a .env username/password or
-	// token would otherwise still authenticate against.
+	// Refused even beside an explicit target=, which a .env credential would otherwise authenticate to.
 	describe('project .env cannot choose the target or credentials', () => {
 		const projectDir = path.join(testDir, 'project');
 		const envKeys = ['HARPER_CLI_TARGET', 'HARPER_CLI_OPERATION_TOKEN', 'HARPER_CLI_REFRESH_TOKEN', 'CLI_TARGET'];

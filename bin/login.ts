@@ -131,8 +131,7 @@ export async function login(
 	const response = await cliOperations(req, true);
 
 	if (response && response.operation_token) {
-		// The reply is the server's to shape, so its `target` is ignored: the credentials belong to the
-		// target this CLI connected to.
+		// Never the reply's `target`: the server must not choose which target its tokens are saved under.
 		try {
 			saveCredentials(target, {
 				operation_token: response.operation_token,

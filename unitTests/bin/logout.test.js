@@ -60,7 +60,6 @@ describe('Logout command', () => {
 		assert.ok(loaded.targets['https://cluster2.com:9925/']);
 	});
 
-	// Logout reads no environment, so a project .env neither blocks it nor leaks into process.env.
 	it('clears credentials in a directory whose .env names a target', async () => {
 		const projectDir = path.join(testDir, 'project');
 		fs.ensureDirSync(projectDir);
