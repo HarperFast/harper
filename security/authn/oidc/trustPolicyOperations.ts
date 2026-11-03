@@ -355,11 +355,13 @@ export async function listOidcTrust(req: any) {
 		const rival = honored.find(
 			(other) => other !== policy && policiesOverlap(policy, other) && !sameAuthority(policy, other)
 		);
-		if (rival) {
-			policy.invalid_reason =
-				`can match the same runs as '${rival.id}', which gives them a different user or operations, so the ` +
-				'exchange refuses those runs';
-		}
+		if (!rival) continue;
+		policy.invalid_reason =
+			rival.audience === policy.audience
+				? `can match the same runs as '${rival.id}', which gives them a different user or operations, so the ` +
+					'exchange refuses those runs'
+				: `can match a token that names both its audience and '${rival.id}'s, and '${rival.id}' gives it a ` +
+					'different user or operations, so the exchange refuses such a token';
 	}
 
 	return { policies };

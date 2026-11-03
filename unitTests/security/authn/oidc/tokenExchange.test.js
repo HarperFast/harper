@@ -727,6 +727,28 @@ describe('exchangeOidcToken', () => {
 				/must pin `sub`/
 			);
 		});
+
+		it('lists two policies for different audiences as a pair only a token naming both is refused by', async () => {
+			const otherAudience = 'https://other.harperdb.io:9925/';
+			const claims = { sub: 'system:serviceaccount:prod:deployer' };
+			await addOidcTrust(
+				asAdmin({ id: 'k8s-a', issuer: GENERIC_ISSUER, audience: AUDIENCE, claims, user: 'ci-deploy' })
+			);
+			await addOidcTrust(
+				asAdmin({ id: 'k8s-b', issuer: GENERIC_ISSUER, audience: otherAudience, claims, user: 'admin' })
+			);
+			const { policies } = await listOidcTrust(asAdmin({ operation: 'list_oidc_trust' }));
+			for (const [id, rival] of [
+				['k8s-a', 'k8s-b'],
+				['k8s-b', 'k8s-a'],
+			]) {
+				assert.match(policies.find((policy) => policy.id === id).invalid_reason, new RegExp(`names both .*'${rival}'`));
+			}
+			const exchange = (aud) =>
+				exchangeOidcToken({ operation: 'exchange_oidc_token', token: serviceAccountToken({ aud }) });
+			assert.strictEqual((await exchange(AUDIENCE)).policy, 'k8s-a');
+			await assertRejected(exchange([AUDIENCE, otherAudience]));
+		});
 	});
 
 	// End to end: the policy's scope reaches the minted token, so verifyPerms can narrow on it.
