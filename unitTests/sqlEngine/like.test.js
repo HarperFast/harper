@@ -283,6 +283,10 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		// Past 64 `_`, legacy matches `_` against a placeholder noncharacter, which the value may hold.
 		for (const like of [v2Like, (pattern, value) => alasql.utils.like(pattern, value)]) {
 			assert.strictEqual(like('%a' + run + '%', 'a' + '\uffff'.repeat(70)), true);
+			// The match starts in the first search window and ends in the second: 4 x 70 = 280.
+			const straddling = 'x'.repeat(245) + 'a' + '\uffff'.repeat(68) + 'b';
+			assert.strictEqual(like('%a' + '_'.repeat(68) + 'b%', straddling + 'yz'), true);
+			assert.strictEqual(like('%a' + '_'.repeat(68) + 'b%', straddling.slice(0, -1) + 'c' + 'yz'), false);
 			for (const ones of [64, 65]) {
 				const value = 'a' + '\uffff'.repeat(ones) + 'b';
 				assert.strictEqual(like('a' + '_'.repeat(ones) + 'b', value), true);
@@ -581,6 +585,7 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		['a' + '_'.repeat(65) + 'b%', '\uffff', 10_000_000, '', 'legacy'],
 		['%a' + '_'.repeat(65) + 'b', '\uffff', 10_000_000, '', 'legacy'],
 		['_'.repeat(65) + 'a%', '\uffff'.repeat(65) + 'a', 10_000_000, '', '', true],
+		['%a' + '_'.repeat(65) + 'b%', 'a' + '\uffff'.repeat(65) + 'b', 10_000_000, '', '', true],
 		// Finding where the line ends must not cost the value for each segment.
 		[('%' + 'a'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
 	];

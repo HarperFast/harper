@@ -52,6 +52,10 @@ interface Segment {
 	regExp: RegExp | undefined;
 	// No unit matches a line terminator, so no match contains one.
 	lineFree: boolean;
+	// Set when `_` is `[^placeholder]`: the segment matches the value with each placeholder replaced by the
+	// substitute. No other unit tells the two apart, so segments without `_` match the value as is.
+	placeholder: string;
+	substitute: string;
 }
 
 const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
@@ -115,6 +119,7 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 		}
 		const wildcard = units.length > 0 && units.every((token) => token.kind === 'one');
 		const literal = text !== undefined && (!flags || units.length === 0);
+		const hasOne = !wildcard && units.some((token) => token.kind === 'one');
 		return {
 			width: units.length,
 			wildcard,
@@ -124,6 +129,8 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 					? undefined
 					: new RegExp(source, flags + (index === 0 || index === segmentTokens.length - 1 ? 'y' : 'g')),
 			lineFree,
+			placeholder: hasOne ? placeholder : '',
+			substitute: hasOne ? substitute : '',
 		};
 	});
 
@@ -131,22 +138,14 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	const last = segments[segments.length - 1];
 	const middle = segments.slice(1, -1).filter((segment) => segment.width > 0);
 	if (segments.length === 1) {
-		return (value) => value.length === first.width && segmentMatchesAt(first, value, 0, placeholder, substitute);
+		return (value) => value.length === first.width && segmentMatchesAt(first, value, 0);
 	}
 	return (value) => {
 		const end = value.length - last.width;
-		if (
-			end < first.width ||
-			!segmentMatchesAt(first, value, 0, placeholder, substitute) ||
-			!segmentMatchesAt(last, value, end, placeholder, substitute)
-		) {
-			return false;
-		}
-		if (middle.length === 0) return true;
-		const subject = substitutePlaceholder(value, placeholder, substitute);
+		if (end < first.width || !segmentMatchesAt(first, value, 0) || !segmentMatchesAt(last, value, end)) return false;
 		let position = first.width;
 		for (const segment of middle) {
-			const found = findSegment(segment, subject, position, end - segment.width);
+			const found = findSegment(segment, value, position, end - segment.width);
 			if (found < 0) return false;
 			position = found + segment.width;
 		}
@@ -154,8 +153,8 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	};
 }
 
-function substitutePlaceholder(value: string, placeholder: string, substitute: string): string {
-	return placeholder && value.includes(placeholder) ? value.replaceAll(placeholder, substitute) : value;
+function substitutePlaceholder(segment: Segment, value: string): string {
+	return value.includes(segment.placeholder) ? value.replaceAll(segment.placeholder, segment.substitute) : value;
 }
 
 function placeholderPair(literals: Set<string>, classes: RegExp[]): [string, string] | undefined {
@@ -168,19 +167,12 @@ function placeholderPair(literals: Set<string>, classes: RegExp[]): [string, str
 	return undefined;
 }
 
-// Substitutes only the units the segment covers, so a row the anchors reject costs no pass over the value.
-function segmentMatchesAt(
-	segment: Segment,
-	value: string,
-	start: number,
-	placeholder: string,
-	substitute: string
-): boolean {
+function segmentMatchesAt(segment: Segment, value: string, start: number): boolean {
 	if (segment.wildcard) return true;
 	if (segment.text !== undefined) return value.startsWith(segment.text, start);
 	const sticky = segment.regExp!;
-	if (placeholder) {
-		value = substitutePlaceholder(value.slice(start, start + segment.width), placeholder, substitute);
+	if (segment.placeholder) {
+		value = substitutePlaceholder(segment, value.slice(start, start + segment.width));
 		start = 0;
 	}
 	sticky.lastIndex = start;
@@ -192,6 +184,7 @@ function findSegment(segment: Segment, value: string, from: number, lastStart: n
 	let found: number;
 	if (segment.wildcard) found = from;
 	else if (segment.text !== undefined) found = value.indexOf(segment.text, from);
+	else if (segment.placeholder) return findWithPlaceholder(segment, value, from, lastStart);
 	else if (segment.lineFree && width > DIRECT_SEARCH_WIDTH) {
 		return findBetweenLineTerminators(segment, value, from, lastStart);
 	} else {
@@ -221,6 +214,22 @@ function findBetweenLineTerminators(segment: Segment, value: string, from: numbe
 			start = scanEnd - width + 1;
 			size *= 2;
 		}
+	}
+	return -1;
+}
+
+// Rewrites the placeholder in windows of doubling size, so a match near `from` costs about the width rather
+// than the value.
+function findWithPlaceholder(segment: Segment, value: string, from: number, lastStart: number): number {
+	const { width } = segment;
+	const end = lastStart + width;
+	for (let start = from, size = 4 * width; start <= lastStart; size *= 2) {
+		const windowEnd = Math.min(end, start + size);
+		const window = substitutePlaceholder(segment, value.slice(start, windowEnd));
+		const found = search(segment.regExp!, width, window, 0, window.length);
+		if (found >= 0) return start + found;
+		if (windowEnd === end) return -1;
+		start = windowEnd - width + 1;
 	}
 	return -1;
 }
