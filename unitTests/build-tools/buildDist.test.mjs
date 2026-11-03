@@ -118,6 +118,15 @@ it('builds native telemetry declarations without the optional fulltext package',
 	const configPath = join(root, 'tsconfig.build.json');
 	const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
 	const config = ts.parseJsonConfigFileContent(configFile.config, ts.sys, root);
+	const optionalImports = config.fileNames.flatMap((file) =>
+		ts
+			.preProcessFile(ts.sys.readFile(file), true, true)
+			.importedFiles.filter(
+				({ fileName }) => fileName === '@harperfast/fulltext' || fileName.startsWith('@harperfast/fulltext/')
+			)
+			.map(({ fileName }) => `${file}: ${fileName}`)
+	);
+	assert.deepStrictEqual(optionalImports, []);
 	const options = { ...config.options, noEmit: false, declaration: true, emitDeclarationOnly: true };
 	const host = ts.createCompilerHost(options);
 	const optionalPackage = /[/\\]node_modules[/\\]@harperfast[/\\]fulltext(?:[/\\]|$)/;

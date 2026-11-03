@@ -122,8 +122,11 @@ export function flattenFullTextTelemetry(snapshot: FullTextTelemetrySnapshot): F
 			return;
 		} else return;
 		if (
-			/^native_operations_[A-Za-z]+_dispatched$/.test(name) ||
-			/^native_queues_[A-Za-z]+_(commands|bytes|maxCommands|maxBytes|oldestAgeNanoseconds)$/.test(name)
+			path.length === 4 &&
+			path[0] === 'native' &&
+			(path[1] === 'operations' || path[1] === 'queues') &&
+			(/^native_operations_[A-Za-z]+_dispatched$/.test(name) ||
+				/^native_queues_[A-Za-z]+_(commands|bytes|maxCommands|maxBytes|oldestAgeNanoseconds)$/.test(name))
 		)
 			aggregateGauges.set(name, typeof value === 'bigint' && value >= 0n ? value : null);
 	}
