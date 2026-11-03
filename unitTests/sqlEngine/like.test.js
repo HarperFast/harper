@@ -464,6 +464,7 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.utils.like('12%', 12345), true);
 		// A pattern that is not a string matches nothing, as in v2.
 		assert.strictEqual(alasql.utils.like(123, '123'), false);
+		assert.throws(() => alasql.utils.like(123, '123', '!!'), ClientError);
 		assert.strictEqual(compileExpr(likeExpr(123)).eval({ v: '123' }), null);
 	});
 
