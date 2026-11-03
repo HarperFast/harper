@@ -7386,7 +7386,7 @@ export function makeTable(options): TableResourceClass {
 			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			let effectiveSelect: any;
-			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes);
+			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
@@ -7401,6 +7401,7 @@ export function makeTable(options): TableResourceClass {
 					const gatedResults: any = new ExtendedIterable();
 					let resolvedResults: any;
 					let earlyColumns: ColumnsList | undefined;
+					gatedResults.pendingAuth = true;
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
 							if (!resolved) return { allowed: false };
@@ -7409,6 +7410,7 @@ export function makeTable(options): TableResourceClass {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
 								resolvedResults = await self.search(target);
+								delete gatedResults.pendingAuth;
 								if (earlyColumns) {
 									const resolvedColumns = resolvedResults?.getColumns ? resolvedResults.getColumns() : getColumns();
 									earlyColumns.splice(0, earlyColumns.length, ...resolvedColumns);

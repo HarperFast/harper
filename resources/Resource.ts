@@ -182,16 +182,10 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
-					const getColumns = () => buildSelectColumns(select, resource.constructor?.attributes);
 					if (Array.isArray(result)) {
-						return when(settleAll(result.map(transform)), (resolved: any) => {
-							resolved.getColumns = getColumns;
-							return resolved;
-						});
+						return settleAll(result.map(transform));
 					} else if (typeof result?.map === 'function') {
-						const mapped = result.map(transform);
-						mapped.getColumns = getColumns;
-						return mapped;
+						return result.map(transform);
 					} else {
 						return transform(result);
 					}

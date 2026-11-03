@@ -1496,13 +1496,25 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(customInstanceRecordScalar.status, 200);
 			assert.strictEqual(customInstanceRecordScalar.text, '"id"\n"1"\n');
 
+			const customInstanceCollectionScalar = await restGet('/CustomInstanceList/?select(id)', { accept: 'text/csv' });
+			assert.strictEqual(customInstanceCollectionScalar.status, 200);
+			assert.strictEqual(customInstanceCollectionScalar.text, '"id"\n"1"\n"2"\n');
+
 			const customScalarCsv = await restGet('/CustomScalar/z-1?select(id)', { accept: 'text/csv' });
 			assert.strictEqual(customScalarCsv.status, 200);
 			assert.strictEqual(customScalarCsv.text, '"id"\n"z-1"\n');
 
+			const customIgnoredSelectCsv = await restGet('/CustomScalar/z-1?select(label)', { accept: 'text/csv' });
+			assert.strictEqual(customIgnoredSelectCsv.status, 200);
+			assert.strictEqual(customIgnoredSelectCsv.text, '"id","label"\n"z-1","custom"\n');
+
 			const nestedSummaryCsv = await restGet('/NestedSummary/z-1', { accept: 'text/csv' });
 			assert.strictEqual(nestedSummaryCsv.status, 200);
 			assert.strictEqual(nestedSummaryCsv.text, '"name","inStock"\n"Zeta-1","true"\n');
+
+			const nestedSummaryWithSelectCsv = await restGet('/NestedSummary/z-1?select(name)', { accept: 'text/csv' });
+			assert.strictEqual(nestedSummaryWithSelectCsv.status, 200);
+			assert.strictEqual(nestedSummaryWithSelectCsv.text, '"name","inStock"\n"Zeta-1","true"\n');
 
 			const missingCsv = await restGet('/Plain/does-not-exist?select(id)', { accept: 'text/csv' });
 			assert.strictEqual(missingCsv.status, 404);

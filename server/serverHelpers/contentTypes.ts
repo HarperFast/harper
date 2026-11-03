@@ -108,35 +108,45 @@ mediaTypes.set('application/x-msgpack', {
 	deserialize: unpack,
 	q: 0.9,
 });
+function hasFrameworkSelect(resource: any): boolean {
+	return Boolean(resource?.attributes || resource?.loadAsInstance === true);
+}
+
 mediaTypes.set('text/csv', {
 	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
 		const hasOwnColumns = typeof data?.getColumns === 'function';
-		const singleRecordColumns =
-			!hasOwnColumns && !target?.isCollection && target?.select
+		const frameworkSelect = !hasOwnColumns && target?.select && hasFrameworkSelect(resource);
+		const selectColumns = frameworkSelect ? buildSelectColumns(target.select, resource?.attributes) : undefined;
+		const fallbackColumns =
+			!hasOwnColumns && !frameworkSelect && target?.select
 				? buildSelectColumns(target.select, resource?.attributes)
 				: undefined;
-		if (singleRecordColumns && data != null) {
-			return toCsvStream([data.toJSON ? data.toJSON() : data], singleRecordColumns);
+		if (frameworkSelect && !target?.isCollection && data != null) {
+			return toCsvStream([data.toJSON ? data.toJSON() : data], selectColumns);
 		}
-		return toCsvStream(data, singleRecordColumns);
+		return toCsvStream(data, selectColumns, fallbackColumns);
 	},
 	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
 		const hasOwnColumns = typeof data?.getColumns === 'function';
-		const singleRecordColumns =
-			!hasOwnColumns && !target?.isCollection && target?.select
+		const frameworkSelect = !hasOwnColumns && target?.select && hasFrameworkSelect(resource);
+		const selectColumns = frameworkSelect ? buildSelectColumns(target.select, resource?.attributes) : undefined;
+		const fallbackColumns =
+			!hasOwnColumns && !frameworkSelect && target?.select
 				? buildSelectColumns(target.select, resource?.attributes)
 				: undefined;
-		const columns = hasOwnColumns ? data.getColumns() : singleRecordColumns;
+		const columns = hasOwnColumns ? data.getColumns() : selectColumns;
 		if (
 			data != null &&
 			!hasOwnColumns &&
-			(typeof data !== 'object' || (!data[Symbol.iterator] && !data[Symbol.asyncIterator]) || singleRecordColumns)
+			(typeof data !== 'object' ||
+				(!data[Symbol.iterator] && !data[Symbol.asyncIterator]) ||
+				(frameworkSelect && !target?.isCollection))
 		) {
 			data = [data.toJSON ? data.toJSON() : data];
 		}
-		return toCsvStream(data, columns);
+		return toCsvStream(data, columns, fallbackColumns);
 	},
 	q: 0.1,
 });
@@ -1108,16 +1118,18 @@ function formatCsvCell(value: any) {
  * @param data
  * @returns stream
  */
-export function toCsvStream(data, columns?) {
+export function toCsvStream(data, columns?, fallbackColumns?) {
 	const isRowIterable =
 		typeof data === 'object' && data !== null && Boolean(data[Symbol.iterator] || data[Symbol.asyncIterator]);
 	const source = isRowIterable ? data : [data];
+	const hint = columns ?? data?.getColumns?.() ?? fallbackColumns;
+	const mapNullRow = Boolean(hint?.scalar || data == null || !hint || data?.pendingAuth);
 	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
 	const readStream = Readable.from(
 		openOnFirstStep(
 			() => source,
 			Boolean(source[Symbol.asyncIterator]),
-			(value) => value ?? ''
+			mapNullRow ? (value) => value ?? '' : undefined
 		)
 	);
 
@@ -1132,7 +1144,11 @@ export function toCsvStream(data, columns?) {
 			try {
 				if (!headerWritten) {
 					if (!fields) {
-						fields = data?.getColumns?.() || (typeof chunk === 'object' && chunk !== null ? Object.keys(chunk) : null);
+						fields =
+							data?.getColumns?.() ||
+							(typeof chunk === 'object' && chunk !== null && !Array.isArray(chunk)
+								? Object.keys(chunk)
+								: fallbackColumns || (Array.isArray(chunk) ? Object.keys(chunk) : null));
 					}
 					if (fields) {
 						const scalar = Boolean(fields.scalar);
