@@ -75,7 +75,13 @@ const engines = [
 		canAbort: false,
 		open(dir) {
 			const env = open(new OpenEnvironmentObject(dir));
-			const db = env.openDB('Shapes', { ...new OpenDBIObject(false, false), randomAccessStructure: true });
+			let db;
+			try {
+				db = env.openDB('Shapes', { ...new OpenDBIObject(false, false), randomAccessStructure: true });
+			} catch (error) {
+				env.close();
+				throw error;
+			}
 			db.encoder.useVersions = false;
 			return {
 				db,
