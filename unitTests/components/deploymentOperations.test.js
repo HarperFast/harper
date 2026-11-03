@@ -306,6 +306,24 @@ describe('deployment reads and package URL credentials', () => {
 		});
 	}
 
+	it('hides the credential from a live SSE tail of a caller who is not a super_user', async () => {
+		const { DeploymentRecorder } = require('#src/components/deploymentRecorder');
+		const deployEmitter = new ProgressEmitter();
+		const recorder = await DeploymentRecorder.create({ project: 'app', emitter: deployEmitter });
+		const sse = new ProgressEmitter();
+		const forwarded = [];
+		sse.subscribe((event) => forwarded.push(event));
+
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, hdb_user: NON_SUPER_USER, progress: sse });
+		await new Promise((resolve) => setImmediate(resolve));
+		deployEmitter.emit('error', { message: `Failed to clone package ${PACKAGE}` });
+		await recorder.finish('failed', new Error(`Failed to clone package ${PACKAGE}`));
+		await tail;
+
+		assert.ok(forwarded.some((event) => event.event === 'error'));
+		assert.ok(!JSON.stringify(forwarded).includes(SECRET), JSON.stringify(forwarded));
+	});
+
 	it('returns the package identifier as deployed to a super_user', async () => {
 		const got = await handleGetDeployment({ deployment_id: 'd-cred', hdb_user: SUPER_USER });
 		assert.strictEqual(got.package_identifier, PACKAGE);

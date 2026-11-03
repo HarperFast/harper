@@ -652,11 +652,9 @@ async function runNpmPack(
 	let packResult: Array<{ filename: string; name?: unknown; version?: unknown; integrity?: unknown }>;
 	try {
 		packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
-	} catch (err) {
+	} catch {
 		throw new Error(
-			redactUrlCredentials(
-				`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
-			)
+			redactUrlCredentials(`Failed to parse npm pack output for ${application.packageIdentifier}:\nstdout: ${stdout}`)
 		);
 	}
 	if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
@@ -6217,10 +6215,6 @@ function spawnWithEnv(
 		childProcess.stdout.on('data', (chunk) => {
 			// buffer stdout for later resolve
 			stdout += chunk.toString();
-			// log stdout lines immediately
-			logger
-				.loggerWithTag(`${applicationName}:spawn:${command}:stdout`)
-				.debug?.(redactUrlCredentials(chunk.toString()));
 			stdoutSplitter?.push(chunk);
 		});
 
@@ -6237,6 +6231,8 @@ function spawnWithEnv(
 			didFlushOutput = true;
 			stdoutSplitter?.flush();
 			stderrSplitter?.flush();
+			// Whole, not per chunk: a URL split across two chunks has no scheme in the second for redaction to find.
+			if (stdout) printStd(applicationName, command, stdout, 'stdout');
 		};
 
 		childProcess.on('error', (error) => {

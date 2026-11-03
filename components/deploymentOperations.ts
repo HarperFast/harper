@@ -76,7 +76,7 @@ function stripBlob(row: any): any {
 }
 
 // A super user deployed with the package's credential and may redeploy from it; anyone else sees no URL credential
-// anywhere in a deployment, including rows recorded before messages were redacted where they are built.
+// anywhere in a deployment row or event, whichever release or peer wrote it.
 function visibleTo(hdbUser: unknown, value: any): any {
 	return (hdbUser as PayloadRequest['hdb_user'])?.role?.permission?.super_user ? value : redactCredentials(value);
 }
@@ -104,7 +104,7 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 	for await (const row of table.search(conditions)) {
 		if (componentGrant && !grantCoversComponent(componentGrant, row.project)) continue;
 		if (req.sha != null && row?.source?.sha !== req.sha) continue;
-		collected.push(visibleTo(req.hdb_user, stripBlob(row)));
+		collected.push(stripBlob(row));
 	}
 	// Newest first by started_at; ties broken by deployment_id for stability.
 	collected.sort(
@@ -114,7 +114,8 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 	const total = collected.length;
 	const offset = Math.max(0, req.offset ?? 0);
 	const limit = req.limit != null ? Math.max(0, req.limit) : collected.length;
-	return { deployments: collected.slice(offset, offset + limit), total };
+	const deployments = collected.slice(offset, offset + limit).map((row) => visibleTo(req.hdb_user, row));
+	return { deployments, total };
 }
 
 // A deployment whose release went live on the node that received it; a rolling one may still be reaching the others.
