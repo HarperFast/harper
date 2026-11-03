@@ -473,7 +473,7 @@ const ALL_TOOL_SWITCHES_OFF: Readonly<AgentToolSwitches> = Object.freeze({
 /**
  * A malformed `agent.tools` turns groups off, never on: a value that is not a boolean turns its group
  * off, and an unknown key or a non-object turns every group off, since a misspelled key may have been
- * meant to turn one off. The error says what to correct.
+ * meant to turn one off.
  */
 export function resolveToolSwitches(raw: unknown): AgentToolSwitches {
 	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
