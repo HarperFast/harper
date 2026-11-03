@@ -148,93 +148,133 @@ describe('Login', () => {
 		});
 	});
 
-	describe('.env modifications', () => {
-		const testDir = path.join(os.tmpdir(), `harper-test-env-${Date.now()}`);
+	// The server's JSON reply is untrusted (harper#1928): the CLI already knows where it connected, so
+	// the saved credentials, last_target and every printed target are that client-chosen URL.
+	describe('saved identity is the client-selected target', () => {
+		const testDir = path.join(os.tmpdir(), `harper-test-login-identity-${Date.now()}`);
+		// #js: replacing a module export only works on the compiled build, which keeps this file in that lane
+		const cliOperationsModule = require('#js/bin/cliOperations');
+		const { loadCredentials } = require('#src/bin/cliCredentials');
+		const spoofed = 'https://attacker.example:9925/';
 		let originalCwd;
 		let originalExit;
-		let originalStdoutWrite;
-
-		// Mock cliOperations
-		const cliOperationsModule = require('#js/bin/cliOperations');
 		let originalCliOperations;
+		let originalConsoleLog;
+		let originalStdoutWrite;
+		let originalStderrWrite;
+		let loginCalls;
+		let output;
 
 		before(() => {
-			if (!fs.existsSync(testDir)) {
-				fs.mkdirSync(testDir, { recursive: true });
-			}
+			fs.mkdirSync(testDir, { recursive: true });
 			originalCwd = process.cwd;
 			process.cwd = () => testDir;
-
 			originalExit = process.exit;
 			process.exit = (code) => {
-				if (code !== 0) {
-					throw new Error('process.exit:' + code);
-				}
+				if (code !== 0) throw new Error('process.exit:' + code);
 			};
-
-			originalStdoutWrite = process.stdout.write;
-			process.stdout.write = () => {};
-
 			originalCliOperations = cliOperationsModule.cliOperations;
-			cliOperationsModule.cliOperations = async (req) => {
-				if (req.operation === 'create_authentication_tokens') {
-					return {
-						operation_token: 'mock-token',
-						refresh_token: 'mock-refresh',
-						target: req.target,
-					};
-				}
-				return {};
+			cliOperationsModule.cliOperations = async () => {
+				loginCalls++;
+				return {
+					operation_token: 'op-tok',
+					refresh_token: 'ref-tok',
+					target: spoofed,
+					resolvedTarget: spoofed,
+				};
 			};
 		});
 
 		after(() => {
 			process.cwd = originalCwd;
 			process.exit = originalExit;
-			process.stdout.write = originalStdoutWrite;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
 		});
 
 		beforeEach(() => {
-			const envPath = path.join(testDir, '.env');
-			if (fs.existsSync(envPath)) {
-				fs.unlinkSync(envPath);
-			}
-			// Clear relevant env vars
-			delete process.env.CLI_TARGET;
-			delete process.env.HARPER_CLI_TARGET;
-			delete process.env.CLI_TARGET_PASSWORD;
+			loginCalls = 0;
+			fs.rmSync(path.join(isolatedHome, '.harperdb', 'credentials.json'), { force: true });
+			fs.rmSync(path.join(testDir, '.env'), { force: true });
+			process.env.HARPER_CLI_PASSWORD = 'password';
+		});
+
+		afterEach(() => {
 			delete process.env.HARPER_CLI_PASSWORD;
-			delete process.env.CLI_TARGET_USERNAME;
-			delete process.env.HARPER_CLI_USERNAME;
+			delete process.env.HARPER_CLI_TARGET;
 		});
 
-		it('should append HARPER_CLI_TARGET with a leading newline if .env does not end with one', async () => {
-			const envPath = path.join(testDir, '.env');
-			fs.writeFileSync(envPath, 'EXISTING_VAR=value'); // No trailing newline
+		async function captureLogin(...args) {
+			output = { stdout: '', stderr: '' };
+			originalStdoutWrite = process.stdout.write;
+			originalStderrWrite = process.stderr.write;
+			originalConsoleLog = console.log;
+			process.stdout.write = (chunk) => {
+				output.stdout += String(chunk);
+				return true;
+			};
+			process.stderr.write = (chunk) => {
+				output.stderr += String(chunk);
+				return true;
+			};
+			console.log = (...parts) => {
+				output.stdout += `${parts.join(' ')}\n`;
+			};
+			try {
+				return await login(...args);
+			} finally {
+				process.stdout.write = originalStdoutWrite;
+				process.stderr.write = originalStderrWrite;
+				console.log = originalConsoleLog;
+			}
+		}
 
-			// Both targetArg and usernameArg are provided, password from env — inquirer is never called.
-			process.env.HARPER_CLI_PASSWORD = 'password';
-			await login('example.com', 'mockuser');
+		it('saves the tokens and last_target under the target the CLI connected to, not response.target', async () => {
+			await captureLogin('example.com', 'mockuser');
 
-			const envContent = fs.readFileSync(envPath, 'utf8');
-			// The fix added `\nHARPER_CLI_TARGET=${resolvedTarget}\n`
-			// So it should be `EXISTING_VAR=value\nHARPER_CLI_TARGET=https://example.com:9925/\n`
-			assert.strictEqual(envContent, 'EXISTING_VAR=value\nHARPER_CLI_TARGET=https://example.com:9925/\n');
+			const credentials = loadCredentials();
+			assert.deepStrictEqual(Object.keys(credentials.targets), ['https://example.com:9925/']);
+			assert.strictEqual(credentials.last_target, 'https://example.com:9925/');
+			assert.ok(output.stdout.includes('Successfully logged in to https://example.com:9925/'), output.stdout);
+			assert.ok(!output.stdout.includes('attacker'), output.stdout);
 		});
 
-		it('should append HARPER_CLI_TARGET normally if .env ends with a newline', async () => {
+		it('emits the client target in --for-ci output', async () => {
+			const originalIsTty = process.stdin.isTTY;
+			process.stdin.isTTY = false;
+			try {
+				await captureLogin('example.com', 'mockuser', { forCi: true });
+			} finally {
+				process.stdin.isTTY = originalIsTty;
+			}
+
+			assert.strictEqual(
+				output.stdout,
+				'HARPER_CLI_TARGET=https://example.com:9925/\nHARPER_CLI_REFRESH_TOKEN=ref-tok\n'
+			);
+			assert.ok(!output.stderr.includes('attacker'), output.stderr);
+		});
+
+		it('leaves a project .env byte-for-byte unchanged and does not create one', async () => {
+			await captureLogin('example.com', 'mockuser');
+			assert.strictEqual(fs.existsSync(path.join(testDir, '.env')), false);
+
 			const envPath = path.join(testDir, '.env');
-			fs.writeFileSync(envPath, 'EXISTING_VAR=value\n'); // Has trailing newline
+			fs.writeFileSync(envPath, 'EXISTING_VAR=value');
+			await captureLogin('example.com', 'mockuser');
+			assert.strictEqual(fs.readFileSync(envPath, 'utf8'), 'EXISTING_VAR=value');
+		});
 
-			process.env.HARPER_CLI_PASSWORD = 'password';
-			await login('example.com', 'mockuser');
-
-			const envContent = fs.readFileSync(envPath, 'utf8');
-			// It will result in `EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n`
-			// This is acceptable as it ensures the new entry is on its own line.
-			assert.strictEqual(envContent, 'EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n');
+		it('refuses before contacting anything when the project .env supplies the target', async () => {
+			fs.writeFileSync(path.join(testDir, '.env'), `HARPER_CLI_TARGET=${spoofed}\n`);
+			await assert.rejects(captureLogin('example.com', 'mockuser'), (error) => {
+				assert.strictEqual(error.statusCode, 400);
+				assert.match(error.message, /HARPER_CLI_TARGET/);
+				assert.ok(!error.message.includes('attacker'), error.message);
+				return true;
+			});
+			assert.strictEqual(loginCalls, 0);
+			assert.strictEqual(process.env.HARPER_CLI_TARGET, undefined);
 		});
 	});
 

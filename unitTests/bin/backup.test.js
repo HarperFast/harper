@@ -249,3 +249,111 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 		});
 	});
 });
+
+// harper#1927: a project .env that would choose the target or credentials stops a backup command
+// before it routes anywhere. Ignoring the keys instead would turn a remote restore/delete into an
+// offline one against this machine's files.
+describe('backup.ts refuses a project .env target or credential before routing', () => {
+	const projectDir = path.join(os.tmpdir(), `harper-test-backup-dotenv-${Date.now()}`);
+	const envKeys = ['HARPER_CLI_TARGET', 'CLI_TARGET', 'HARPER_CLI_PASSWORD'];
+	let saved;
+	let calls;
+
+	beforeEach(() => {
+		fs.ensureDirSync(projectDir);
+		saved = {
+			argv: process.argv,
+			cwd: process.cwd,
+			loadCredentials: cliCredentialsModule.loadCredentials,
+			getHdbPid: processMgmtModule.getHdbPid,
+			offline: Object.fromEntries(OFFLINE_FUNCTIONS.map((name) => [name, rocksdbBackupModule[name]])),
+			cliOperations: cliOperationsModule.cliOperations,
+			resolveRequestOptions: cliOperationsModule.resolveRequestOptions,
+			httpRequest: commonUtilsModule.httpRequest,
+			initConfig: configUtilsModule.initConfig,
+			log: console.log,
+			env: Object.fromEntries(envKeys.map((key) => [key, process.env[key]])),
+		};
+		for (const key of envKeys) delete process.env[key];
+		process.cwd = () => projectDir;
+		console.log = () => {};
+		configUtilsModule.initConfig = () => {};
+		cliCredentialsModule.loadCredentials = () => ({ last_target: null, targets: {} });
+		processMgmtModule.getHdbPid = () => null;
+		calls = [];
+		for (const name of OFFLINE_FUNCTIONS) {
+			rocksdbBackupModule[name] = async () => {
+				calls.push(name);
+				return {};
+			};
+		}
+		cliOperationsModule.cliOperations = async () => {
+			calls.push('cliOperations');
+		};
+		cliOperationsModule.resolveRequestOptions = async () => {
+			calls.push('resolveRequestOptions');
+			return { options: {} };
+		};
+		commonUtilsModule.httpRequest = async () => {
+			calls.push('httpRequest');
+			throw new Error('no network in this test');
+		};
+	});
+
+	afterEach(() => {
+		process.argv = saved.argv;
+		process.cwd = saved.cwd;
+		cliCredentialsModule.loadCredentials = saved.loadCredentials;
+		processMgmtModule.getHdbPid = saved.getHdbPid;
+		Object.assign(rocksdbBackupModule, saved.offline);
+		cliOperationsModule.cliOperations = saved.cliOperations;
+		cliOperationsModule.resolveRequestOptions = saved.resolveRequestOptions;
+		commonUtilsModule.httpRequest = saved.httpRequest;
+		configUtilsModule.initConfig = saved.initConfig;
+		console.log = saved.log;
+		for (const key of envKeys) {
+			if (saved.env[key] === undefined) delete process.env[key];
+			else process.env[key] = saved.env[key];
+		}
+		fs.removeSync(projectDir);
+	});
+
+	const commands = [
+		'create_backup',
+		'list_backups',
+		'verify_backup',
+		'delete_backup',
+		'purge_backups',
+		'restore_backup',
+		'get_backup',
+	];
+	for (const envLine of ['HARPER_CLI_TARGET=https://remote.example:9925', 'HARPER_CLI_PASSWORD=planted']) {
+		for (const command of commands) {
+			it(`${command} with "${envLine.split('=')[0]}" in .env exits with an error, touching neither the network nor local files`, async () => {
+				fs.writeFileSync(path.join(projectDir, '.env'), `${envLine}\n`);
+				process.argv = ['node', 'harper', command, 'backup_id=1', `out=${path.join(projectDir, 'out.tar')}`];
+				await assert.rejects(runBackupCommand(command), (error) => {
+					assert.strictEqual(error.statusCode, 400);
+					assert.ok(error.message.includes(envLine.split('=')[0]), error.message);
+					return true;
+				});
+				assert.deepStrictEqual(calls, []);
+			});
+		}
+	}
+
+	it('still runs offline when the .env holds only unrelated settings', async () => {
+		fs.writeFileSync(path.join(projectDir, '.env'), 'APP_SETTING=1\n');
+		process.argv = ['node', 'harper', 'list_backups'];
+		await runBackupCommand('list_backups');
+		assert.deepStrictEqual(calls, ['listBackupsOffline']);
+	});
+
+	it('forwards to an exported remote target as before', async () => {
+		process.env.HARPER_CLI_TARGET = 'https://remote.example:9925';
+		fs.writeFileSync(path.join(projectDir, '.env'), 'HARPER_CLI_TARGET=https://other.example:9925\n');
+		process.argv = ['node', 'harper', 'delete_backup', 'backup_id=1'];
+		await runBackupCommand('delete_backup');
+		assert.deepStrictEqual(calls, ['cliOperations']);
+	});
+});

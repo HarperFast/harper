@@ -159,6 +159,15 @@ const SECTIONS: Section[] = [
 				].join(' '),
 				indent: 4,
 			},
+			{
+				text: [
+					'The target and credentials come from target=, auth_username=/auth_password=, your shell or CI',
+					"environment (HARPER_CLI_TARGET, HARPER_CLI_USERNAME, HARPER_CLI_REFRESH_TOKEN, ...), or 'harper login'.",
+					'A .env file in the current directory cannot set them: the CLI stops with an error if it tries, so a',
+					'cloned project cannot redirect your credentials.',
+				].join(' '),
+				indent: 4,
+			},
 		],
 	},
 ];

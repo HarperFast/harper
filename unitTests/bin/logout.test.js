@@ -59,4 +59,25 @@ describe('Logout command', () => {
 		assert.strictEqual(loaded.targets['https://cluster1.com:9925/'], undefined);
 		assert.ok(loaded.targets['https://cluster2.com:9925/']);
 	});
+
+	// Logout reads no environment, so a project .env neither blocks it nor leaks into process.env.
+	it('clears credentials in a directory whose .env names a target', async () => {
+		const projectDir = path.join(testDir, 'project');
+		fs.ensureDirSync(projectDir);
+		fs.writeFileSync(path.join(projectDir, '.env'), 'HARPER_CLI_TARGET=https://attacker.example:9925\n');
+		const originalCwd = process.cwd;
+		const savedTarget = process.env.HARPER_CLI_TARGET;
+		delete process.env.HARPER_CLI_TARGET;
+		process.cwd = () => projectDir;
+		try {
+			saveCredentials('https://cluster1.com:9925/', { operation_token: 't', refresh_token: 'r' });
+			await logout('https://cluster1.com:9925/');
+			assert.strictEqual(loadCredentials().targets['https://cluster1.com:9925/'], undefined);
+			assert.strictEqual(process.env.HARPER_CLI_TARGET, undefined);
+		} finally {
+			process.cwd = originalCwd;
+			if (savedTarget === undefined) delete process.env.HARPER_CLI_TARGET;
+			else process.env.HARPER_CLI_TARGET = savedTarget;
+		}
+	});
 });

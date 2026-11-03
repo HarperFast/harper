@@ -1,4 +1,3 @@
-import dotenv from 'dotenv';
 ('use strict');
 
 import { createWriteStream } from 'node:fs';
@@ -10,7 +9,7 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { buildRequest, cliOperations, resolveRequestOptions } from './cliOperations.ts';
-import { loadCredentials, normalizeTarget } from './cliCredentials.ts';
+import { loadCliDotenv, loadCredentials, normalizeTarget } from './cliCredentials.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { initConfig } from '../config/configUtils.ts';
@@ -40,11 +39,9 @@ const NON_DESTRUCTIVE_COMMANDS = new Set<string>([
  * exception — it streams a live snapshot from a running server and has no offline form.
  */
 export async function runBackupCommand(command: string): Promise<void> {
-	// Load .env before anything reads process.env — useOperationApi and resolveRequestOptions key
-	// the local-vs-remote routing off HARPER_CLI_TARGET/CLI_TARGET, and without this a `.env`-
-	// configured remote target would be invisible, silently running a destructive op locally
-	// (cliOperations does the same on its first line).
-	dotenv.config();
+	// Before anything reads process.env: useOperationApi routes local-vs-remote off the target
+	// variables, so a .env target must stop the command here rather than be ignored into a local run.
+	loadCliDotenv();
 	const request = buildRequest();
 	const databaseName = request.database || 'data';
 
