@@ -72,13 +72,13 @@ describe('TTL cleanup scan interval', () => {
 				{ name: 'kind', indexed: true },
 			],
 		});
-		const writtenAt = Date.now();
 		await Table.put(1, { id: 1, kind: 'a' });
 		await Table.primaryStore.committed;
-		await sleep(writtenAt + 100 - Date.now());
+		const { expiresAt } = Table.primaryStore.getEntry(1);
+		await sleep(expiresAt + 10 - Date.now());
 		const rows = [];
 		for await (const row of Table.search({ conditions: [{ attribute: 'kind', value: 'a' }] })) rows.push(row);
-		assert(Date.now() < writtenAt + 2_000, 'the query ran after the eviction window opened');
+		assert(Date.now() < expiresAt + 2_000, 'the query ran after the eviction window opened');
 		assert.deepStrictEqual(
 			rows.map((row) => row.id),
 			[1]
