@@ -16,6 +16,8 @@ import assert from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/delegated-query-reuse');
 const PASSWORD = 'Reuse-query-4410!';
@@ -99,7 +101,7 @@ suite('Delegated reads reusing one query object', (ctx: ContextWithHarper) => {
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: { threads: { count: 1 } },
+			config: { threads: { count: 1 }, mcp: { application: { mountPath: '/mcp' } } },
 			env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
 		});
 		admin = basic(ctx.harper.admin.username, ctx.harper.admin.password);
@@ -134,6 +136,43 @@ suite('Delegated reads reusing one query object', (ctx: ContextWithHarper) => {
 			assert.deepStrictEqual(await searchOne('SearchFreshRoot', basic(user)), expectedFor(user));
 		}
 	});
+
+	for (const permission of ['object', 'true']) {
+		test(`MCP delegated reads isolate shared selectors with checkPermission ${permission}`, async () => {
+			const clients = new Map<string, Client>();
+			try {
+				for (const user of [BROAD, RESTRICTED]) {
+					const client = new Client({ name: 'selector-reuse', version: '1.0.0' }, { capabilities: {} });
+					clients.set(user, client);
+					await client.connect(
+						new StreamableHTTPClientTransport(new URL('/mcp', ctx.harper.httpURL), {
+							requestInit: { headers: { Authorization: basic(user) } },
+						})
+					);
+				}
+				for (const order of [
+					[BROAD, RESTRICTED, BROAD],
+					[RESTRICTED, BROAD, RESTRICTED],
+				]) {
+					for (const ownership of ['cloned', 'shared']) {
+						for (const user of order) {
+							const result = await clients.get(user)!.readResource({
+								uri: `selectors:///${permission}/${ownership}/${order[0]}/${user}`,
+							});
+							assert.strictEqual(result.contents.length, 1);
+							const content = result.contents[0];
+							assert.ok('text' in content);
+							const { record, select } = JSON.parse(content.text as string);
+							assert.deepStrictEqual(record, expectedFor(user), `${permission}/${ownership}/${user}`);
+							assert.deepStrictEqual(select, AUTHORED_SELECT, 'the authored selector remains unchanged');
+						}
+					}
+				}
+			} finally {
+				await Promise.all([...clients.values()].map((client) => client.close()));
+			}
+		});
+	}
 
 	test('search, broad then restricted: restricted never receives the department secret', async () => {
 		assert.deepStrictEqual(await searchOne('SearchBroadFirst', basic(BROAD)), expectedFor(BROAD));

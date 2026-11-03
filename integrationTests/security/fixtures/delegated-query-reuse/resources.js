@@ -48,6 +48,32 @@ export class SearchFreshRoot extends Resource {
 	}
 }
 
+const MCP_SELECTORS = new Map();
+export class SelectorDocs extends Resource {
+	static mcpResources = [
+		{
+			uriTemplate: 'selectors:///{permission}/{ownership}/{order}/{principal}',
+			name: 'delegated selector projection',
+			mimeType: 'application/json',
+			method: 'readSelector',
+		},
+	];
+	async readSelector({ permission, ownership, order }, context) {
+		const key = `${permission}/${ownership}/${order}`;
+		let select = MCP_SELECTORS.get(key);
+		if (!select) MCP_SELECTORS.set(key, (select = employeeSelect()));
+		const record = await tables.ReuseEmployee.get(
+			{
+				id: 'e1',
+				select: ownership === 'cloned' ? structuredClone(select) : select,
+				checkPermission: permission === 'object' ? context.user.role.permission : true,
+			},
+			context
+		);
+		return { text: JSON.stringify({ record, select }), mimeType: 'application/json' };
+	}
+}
+
 // A nested selector shared by a user-facing table resource and trusted server code.
 const INTERNAL_SELECT = employeeSelect();
 export class SharedSelectorCard extends tables.ReuseEmployee {
