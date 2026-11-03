@@ -69,7 +69,6 @@ describe('Array-valued property scoping', () => {
 		it('parses a chained condition onto the previous condition', () => {
 			const parsed = parseQuery('sizes=ge=175&=le=180');
 			assert.strictEqual(parsed.conditions.length, 1);
-			// untyped FIQL values stay strings at parse time; query planning converts both legs
 			assert.deepStrictEqual(parsed.conditions[0], {
 				comparator: 'ge',
 				attribute: 'sizes',

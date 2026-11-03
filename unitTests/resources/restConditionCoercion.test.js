@@ -5,9 +5,6 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
-// REST condition values arrive as strings; each must be converted with the declared type of the
-// attribute it is compared against (resources/DESIGN.md → "Chained query conditions scope one array
-// element; FIQL tokens always advance").
 describe('REST condition value conversion', () => {
 	let Brand, Product;
 
