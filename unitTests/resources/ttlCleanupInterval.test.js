@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { makeTable } = require('#src/resources/Table');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
+const { setTimeout: sleep } = require('node:timers/promises');
 
 // The cleanup scan is what removes an expired record: reads return it until then. Its interval has to come
 // from the table's TTL whichever way the TTL was set. A worker that learns of a table from the catalog (a
@@ -58,6 +59,32 @@ describe('TTL cleanup scan interval', () => {
 		await Table.put(1, { id: 1 });
 		await Table.primaryStore.committed;
 		await waitFor(() => !stored(Table, 1), { timeout: 5000, message: 'the expired record was never evicted' });
+	});
+
+	it('an expired record stays queryable until the scan evicts it', async () => {
+		const Table = table({
+			table: 'TtlGrace',
+			database: 'test',
+			expiration: 0.05,
+			eviction: 2,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'kind', indexed: true },
+			],
+		});
+		const writtenAt = Date.now();
+		await Table.put(1, { id: 1, kind: 'a' });
+		await Table.primaryStore.committed;
+		await sleep(writtenAt + 100 - Date.now());
+		const rows = [];
+		for await (const row of Table.search({ conditions: [{ attribute: 'kind', value: 'a' }] })) rows.push(row);
+		assert(Date.now() < writtenAt + 2_000, 'the query ran after the eviction window opened');
+		assert.deepStrictEqual(
+			rows.map((row) => row.id),
+			[1]
+		);
+		assert(stored(Table, 1), 'a query does not evict');
+		await waitFor(() => !stored(Table, 1), { timeout: 10_000, message: 'the expired record was never evicted' });
 	});
 
 	it('the number form keeps a configured scanInterval', () => {
