@@ -252,9 +252,24 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(alasql.utils.like('%[^a]' + run + '%', '\n\n' + 'b'.repeat(69) + '\n'), false);
 		assert.strictEqual(v2Like('%' + run + '%', 'ab\n' + 'c'.repeat(70)), true);
 		assert.strictEqual(v2Like('%' + run + '%', 'ab\n' + 'c'.repeat(69) + '\nd'), false);
+		// A terminator under the second run only, or under a later candidate's run.
+		const half = '_'.repeat(35);
+		assert.strictEqual(v2Like('%\n' + half + '\n' + half + '%', '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(35)), true);
+		assert.strictEqual(
+			v2Like('%\n' + half + '\n' + half + '%', '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(10) + '\n' + 'a'.repeat(24)),
+			false
+		);
+		assert.strictEqual(
+			v2Like('%\n' + run.slice(1) + '%', 'a'.repeat(200) + '\n' + 'a'.repeat(30) + '\n' + 'a'.repeat(38)),
+			false
+		);
+		// The match starts where the second search window does: 4 x 70 - 70 + 1.
+		const straddling = 'a'.repeat(211) + '\n' + 'b'.repeat(69) + 'c'.repeat(500);
+		assert.strictEqual(v2Like('%\n' + run.slice(1) + '%', straddling), true);
+		assert.strictEqual(alasql.utils.like('%\n' + run.slice(1) + '%', straddling), true);
 	});
 
-	it('confirms a candidate where a different line terminator or a U+FFFF stands', () => {
+	it("keeps a different line terminator or a U+FFFF in the value distinct from the pattern's", () => {
 		const run = '_'.repeat(70);
 		const a = 'a'.repeat(70);
 		assert.strictEqual(v2Like('%' + run + '\n%', a + '\r'), false);
@@ -495,6 +510,8 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		// Units that accept a line terminator: the search must still move each run of _ past one.
 		['%' + '\n'.repeat(5_000) + '_'.repeat(5_000) + '%', '\n', 300_000],
 		['%' + '_'.repeat(5_000) + '[^a]' + '_'.repeat(4_999) + '%', 'a'.repeat(4_998) + '\n', 1_000_000, '', 'legacy'],
+		['%[^\n]' + '_'.repeat(9_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', 'legacy'],
+		['%[b\n-]' + '_'.repeat(9_999) + '%', 'c', 1_000_000, '', 'legacy'],
 	];
 
 	for (const engine of ['v2', 'legacy']) {
