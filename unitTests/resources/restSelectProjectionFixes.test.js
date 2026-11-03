@@ -1380,6 +1380,13 @@ describe('REST and operations API select projection fixes', function () {
 			let directCsv = '';
 			for await (const chunk of toCsvStream(unawaitedGated)) directCsv += chunk;
 			assert.strictEqual(directCsv, '"id","note"\n"z-1","n1"\n');
+
+			const directTarget2 = new RequestTarget('?id=z-1&select(id)');
+			directTarget2.checkPermission = true;
+			const unawaitedGated2 = new PlainAsyncRewriting(undefined, {}).search(directTarget2);
+			let eagerColumnsCsv = '';
+			for await (const chunk of toCsvStream(unawaitedGated2, unawaitedGated2.getColumns())) eagerColumnsCsv += chunk;
+			assert.strictEqual(eagerColumnsCsv, '"id","note"\n"z-1","n1"\n');
 		});
 
 		it('uses post-highlight keyed shape when full-text highlights widen a scalar select(id)', async function () {

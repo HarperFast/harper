@@ -857,7 +857,7 @@ function openOnFirstStep(
 			if (closed) return { value: undefined, done: true };
 			if (step.done) return step;
 			const { value } = step;
-			if (typeof value?.then === 'function') {
+			if (!async && typeof value?.then === 'function') {
 				return {
 					value: value.then((settled) => (closed ? settled : mapValue(settled))),
 					done: false,
@@ -1078,7 +1078,7 @@ function formatCsvCell(value: any) {
 	}
 	// Serialize objects and arrays as JSON
 	if (typeof value === 'object') {
-		return JSON.stringify(value);
+		return value instanceof Date ? value.toISOString() : JSON.stringify(value);
 	}
 	return value;
 }
@@ -1090,9 +1090,14 @@ function formatCsvCell(value: any) {
  */
 export function toCsvStream(data, columns?) {
 	const source = data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data];
+	const hint = columns ?? data?.getColumns?.();
 	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
 	const readStream = Readable.from(
-		openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator]), (value) => value ?? '')
+		openOnFirstStep(
+			() => source,
+			Boolean(source[Symbol.asyncIterator]),
+			hint?.scalar || data == null ? (value) => value ?? '' : undefined
+		)
 	);
 
 	let headerWritten = false;
@@ -1106,9 +1111,7 @@ export function toCsvStream(data, columns?) {
 			try {
 				if (!headerWritten) {
 					if (!fields) {
-						fields =
-							data?.getColumns?.() ||
-							(typeof chunk === 'object' && chunk !== null ? Object.keys(chunk) : null);
+						fields = data?.getColumns?.() || (typeof chunk === 'object' && chunk !== null ? Object.keys(chunk) : null);
 					}
 					if (fields) {
 						const scalar = Boolean(fields.scalar);
@@ -1117,9 +1120,7 @@ export function toCsvStream(data, columns?) {
 							? (row) => [formatCsvCell(row)]
 							: asArray
 								? (row) =>
-										Array.isArray(row)
-											? fields.map((_, index) => formatCsvCell(row[index]))
-											: [formatCsvCell(row)]
+										Array.isArray(row) ? fields.map((_, index) => formatCsvCell(row[index])) : [formatCsvCell(row)]
 								: (row) => fields.map((field) => formatCsvCell(row[field]));
 						this.push(escapeCsvRow(fields, true) + '\n');
 						headerWritten = true;

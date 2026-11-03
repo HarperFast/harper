@@ -1060,10 +1060,24 @@ describe('contentTypes – pass-through envelopes', function () {
 });
 
 describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', function () {
-	it('formats scalar columns including null, undefined, 0, false, and arrays without stream truncation', async function () {
+	it('formats scalar columns including null, undefined, 0, false, Date, and arrays without stream truncation', async function () {
 		const columns = Object.assign(['id'], { scalar: true });
-		const syncOut = await streamToString(toCsvStream(['z-1', null, undefined, 0, false, ['a', 'b'], 'z-2'], columns));
-		assert.strictEqual(syncOut, '"id"\n"z-1"\n""\n""\n0\n"false"\n"[""a"",""b""]"\n"z-2"\n');
+		const sampleDate = new Date('2026-11-03T00:00:00.000Z');
+		const syncOut = await streamToString(
+			toCsvStream(['z-1', null, undefined, 0, false, sampleDate, ['a', 'b'], 'z-2'], columns)
+		);
+		assert.strictEqual(
+			syncOut,
+			'"id"\n"z-1"\n""\n""\n0\n"false"\n"2026-11-03T00:00:00.000Z"\n"[""a"",""b""]"\n"z-2"\n'
+		);
+
+		function* syncPromiseSource() {
+			yield Promise.resolve('z-1');
+			yield Promise.resolve(null);
+			yield Promise.resolve('z-2');
+		}
+		const syncPromiseOut = await streamToString(toCsvStream(syncPromiseSource(), columns));
+		assert.strictEqual(syncPromiseOut, '"id"\n"z-1"\n""\n"z-2"\n');
 
 		async function* asyncSource() {
 			yield 'z-1';

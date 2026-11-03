@@ -1486,6 +1486,29 @@ function isScalarSelect(select: any): boolean {
 	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
 }
 
+function isTupleSelect(select: any): boolean {
+	return Array.isArray(select) && Boolean((select as any).asArray);
+}
+
+function buildSelectColumns(currentSelect: any, attributes: any[]): ColumnsList {
+	if (currentSelect) {
+		const columns: ColumnsList = [];
+		const asArray = isTupleSelect(currentSelect);
+		for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
+			if (column === '*' && !asArray) {
+				for (const attribute of attributes)
+					if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+			} else columns.push((column as any).name || column);
+		}
+		if (isScalarSelect(currentSelect)) columns.scalar = true;
+		else if (asArray) columns.asArray = true;
+		return columns;
+	}
+	return attributes
+		.filter((attribute) => !attribute.computed && !attribute.relationship)
+		.map((attribute) => attribute.name);
+}
+
 function selectRequestsProperty(select: any, propertyName: string): boolean {
 	if (!select) return false;
 	const selected = Array.isArray(select) ? select : [select];
@@ -7388,25 +7411,7 @@ export function makeTable(options): TableResourceClass {
 			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			let effectiveSelect: any;
-			const getColumns = (): ColumnsList => {
-				const currentSelect = effectiveSelect ?? target.select;
-				if (currentSelect) {
-					const columns: ColumnsList = [];
-					const asArray = Boolean(currentSelect.asArray);
-					for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
-						if (column === '*' && !asArray) {
-							for (const attribute of attributes)
-								if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
-						} else columns.push((column as any).name || column);
-					}
-					if (isScalarSelect(currentSelect)) columns.scalar = true;
-					else if (asArray) columns.asArray = true;
-					return columns;
-				}
-				return attributes
-					.filter((attribute) => !attribute.computed && !attribute.relationship)
-					.map((attribute) => attribute.name);
-			};
+			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes);
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
@@ -7420,6 +7425,7 @@ export function makeTable(options): TableResourceClass {
 					const self = this;
 					const gatedResults: any = new ExtendedIterable();
 					let resolvedResults: any;
+					let earlyColumns: ColumnsList | undefined;
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
 							if (!resolved) return { allowed: false };
@@ -7428,6 +7434,14 @@ export function makeTable(options): TableResourceClass {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
 								resolvedResults = await self.search(target);
+								if (earlyColumns && resolvedResults?.getColumns) {
+									const resolvedColumns = resolvedResults.getColumns();
+									earlyColumns.splice(0, earlyColumns.length, ...resolvedColumns);
+									if (resolvedColumns.scalar) earlyColumns.scalar = true;
+									else delete earlyColumns.scalar;
+									if (resolvedColumns.asArray) earlyColumns.asArray = true;
+									else delete earlyColumns.asArray;
+								}
 								return { allowed: true, results: resolvedResults, gate: gatedResults };
 							} catch (error) {
 								return { allowed: true, error };
@@ -7436,7 +7450,8 @@ export function makeTable(options): TableResourceClass {
 						() => ({ allowed: false })
 					);
 					gatedResults.selectApplied = true;
-					gatedResults.getColumns = () => (resolvedResults?.getColumns ? resolvedResults.getColumns() : getColumns());
+					gatedResults.getColumns = () =>
+						resolvedResults?.getColumns ? resolvedResults.getColumns() : (earlyColumns ??= getColumns());
 					gatedResults.iterate = (options: any = {}) => {
 						const asynchronous = options === true || options?.async;
 						const iterationOptions = options === true ? { async: true } : { ...options, async: true };
@@ -8661,6 +8676,7 @@ export function makeTable(options): TableResourceClass {
 				select === '__proto__' ||
 				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
 			const scalarSelect = isScalarSelect(select);
+			const tupleSelect = isTupleSelect(select);
 			let relationshipSelections;
 			for (const attribute of Array.isArray(select) ? select : select?.name !== undefined ? [select] : []) {
 				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
@@ -8890,37 +8906,35 @@ export function makeTable(options): TableResourceClass {
 							selectAttribute(select, (value) => {
 								selected = value;
 							});
+						} else if (tupleSelect) {
+							selected = [];
+							select.forEach((attribute, index) => {
+								if (attribute === '*') selected[index] = record;
+								else selectAttribute(attribute, (value) => (selected[index] = value));
+							});
 						} else if (Array.isArray(select)) {
-							if ((select as any).asArray) {
-								selected = [];
-								select.forEach((attribute, index) => {
-									if (attribute === '*') selected[index] = record;
-									else selectAttribute(attribute, (value) => (selected[index] = value));
-								});
-							} else {
-								selected = {};
-								if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
-								const forceNulls = (select as any).forceNulls;
-								for (const attribute of select) {
-									if (attribute === '*') {
-										if (select[RELATIONSHIPS_LISTED]) TableResource._copyUnlistedAttributes(record, selected);
-										else
-											for (const key in record) {
-												const value = record[key];
-												if (typeof value === 'function') continue;
-												if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
-												else selected[key] = value;
-											}
-									} else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
-										let value = record[attribute];
-										if (typeof value === 'function') value = undefined;
-										selected[attribute] = value === undefined && forceNulls ? null : value;
-									} else
-										selectAttribute(attribute, (value, attribute_name) => {
-											if (value === undefined && forceNulls) value = null;
-											selected[attribute_name] = value;
-										});
-								}
+							selected = {};
+							if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
+							const forceNulls = (select as any).forceNulls;
+							for (const attribute of select) {
+								if (attribute === '*') {
+									if (select[RELATIONSHIPS_LISTED]) TableResource._copyUnlistedAttributes(record, selected);
+									else
+										for (const key in record) {
+											const value = record[key];
+											if (typeof value === 'function') continue;
+											if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
+											else selected[key] = value;
+										}
+								} else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
+									let value = record[attribute];
+									if (typeof value === 'function') value = undefined;
+									selected[attribute] = value === undefined && forceNulls ? null : value;
+								} else
+									selectAttribute(attribute, (value, attribute_name) => {
+										if (value === undefined && forceNulls) value = null;
+										selected[attribute_name] = value;
+									});
 							}
 						} else throw new ClientError('Invalid select' + select);
 					} catch (error) {
