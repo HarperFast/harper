@@ -2,9 +2,11 @@
 // The property every test defends is one-directional: the bound may sit above what a prune removed (a resync
 // that was not needed), never below it.
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { pack, unpack } = require('msgpackr');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, closeDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -173,6 +175,40 @@ describe('per-log purge bounds', function () {
 		const horizon = Date.now() - nativeRetention(Table.auditStore);
 		assert.ok(recordedLogs(Table.auditStore).local[0] >= horizon);
 		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= horizon);
+	});
+
+	it('bounds a log rocksdb-js purged on reopen, after its node was down past that retention', async function () {
+		if (isLMDB) return this.skip();
+		const database = `logPurgeBounds_${databaseCount++}`;
+		const open = () =>
+			table({
+				table: 'Bounded',
+				database,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+		let Table = open();
+		const downSince = Date.now() - nativeRetention(Table.auditStore) - DAY_MS;
+		const floor = downSince - DAY_MS;
+		writeMetadata(Table.auditStore, AUDIT_FLOOR_KEY, floorBytes(floor));
+		// the origin's last quiet pass came before one more write, and then the node went down
+		writeRecord(Table.auditStore, {
+			epoch: floor,
+			cutoff: floor,
+			observedAt: floor,
+			logs: { 'down-origin': [floor - 1, floor] },
+		});
+		const origin = getIdOfRemoteNode('down-origin', Table.auditStore);
+		await applyAsOrigin(Table, 'last-write', { nodeId: origin, logKey: downSince });
+		const logDir = path.join(Table.auditStore.rootStore.path, 'transaction_logs', 'down-origin');
+		assert.ok(await closeDatabase(database));
+		for (const file of fs.readdirSync(logDir))
+			fs.utimesSync(path.join(logDir, file), downSince / 1000, downSince / 1000);
+		Table = open();
+		const remaining = [...Table.auditStore.rootStore.useLog('down-origin').query({ start: 0 })];
+		assert.strictEqual(remaining.length, 0, 'precondition: reopening purged the aged log');
+		raiseAuditFloor(Table.auditStore, Date.now() - 1000, true);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['down-origin']) >= downSince);
 	});
 
 	it('rewrites a quiet time older than half the native retention, keeping the bound', async function () {
