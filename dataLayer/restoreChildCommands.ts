@@ -119,15 +119,18 @@ async function applyAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> 
 	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));
 	await inPhase('apply', async () => {
 		await announceDestruction();
+		const roots = [args.databasePath, ...args.blobRoots];
+		// a copy keeps its source's mode, so a read-only repository (`immutable_source`) yields read-only
+		// transaction logs and blobs: before the purge, so debris an earlier attempt left can be removed,
+		// and after the copy, so the new generation is one this database can write
+		for (const root of roots) await makeOwnerWritable(root);
 		await backups.restore(args.backupDir, args.databasePath, { backupId: args.backupId, mode: 'purgeAllFiles' });
 		if (args.manifest.blobs) {
 			await restoreBlobSnapshot(args.backupDir, args.backupId, args.sourceDatabase, args.blobRoots, {
 				durable: true,
 			});
 		}
-		// a copy keeps its source's mode, and a read-only repository (`immutable_source`) would otherwise
-		// leave a generation whose transaction logs and blobs this database cannot write
-		for (const root of [args.databasePath, ...args.blobRoots]) await makeOwnerWritable(root);
+		for (const root of roots) await makeOwnerWritable(root);
 		await stampDatabaseDirectory(args.databasePath, { carriesLog: true });
 	});
 	return inPhase('prove', () => prove(args));

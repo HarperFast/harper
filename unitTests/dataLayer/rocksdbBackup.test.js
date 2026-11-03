@@ -969,6 +969,31 @@ describe('rocksdbBackup', function () {
 				});
 			}
 
+			it('offline: purges a target an earlier attempt left read-only, and restores it', async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				await immutableRestores.offline(backupId);
+				// what a restore that copied read-only files and then failed leaves behind
+				const logs = join(verifiedDir(), 'transaction_logs');
+				setFileModes(logs, 0o440);
+				const readOnlyDirs = [];
+				(function walk(dir) {
+					for (const entry of readdirSync(dir, { withFileTypes: true })) {
+						if (entry.isDirectory()) walk(join(dir, entry.name));
+					}
+					readOnlyDirs.push(dir);
+				})(logs);
+				for (const dir of readOnlyDirs) chmodSync(dir, 0o555);
+				try {
+					await immutableRestores.offline(backupId);
+				} finally {
+					for (const dir of readOnlyDirs.reverse()) if (existsSync(dir)) chmodSync(dir, 0o755);
+				}
+				assert.deepStrictEqual(unwritable([verifiedDir()]), []);
+				assert.strictEqual(checkRestoreState(verifiedDir()), 'clear');
+				await assertRestoredFromBackup();
+			});
+
 			it('offline: records the repository on the marker, so a rerun proves its debris without a claim', async function () {
 				this.timeout(30000);
 				const backupId = await seed();
