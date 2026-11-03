@@ -14,6 +14,7 @@ This directory contains single-node storage and throughput benchmarks for Harper
 | **Compression**    | `compression/`                    | RocksDB codec comparison: on-disk size and throughput per codec                                             |
 | WebSocket scale    | [`ws-scale/`](ws-scale/README.md) | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
 | Lockdown           | `lockdown/`                       | Per-mode `applications.lockdown` cost in a worker: holey-array string building, msgpackr decode             |
+| Full-text admission | [`full-text-admission.cjs`](full-text-admission.cjs) | Table query preparation with optional scoring and per-field authorization |
 
 The three new benchmarks (ST-1, ST-2, ST-5) address gaps called out in §6.3 of the
 Harper Release Testing Strategy and §5 of the v5 Integration Test Plan.
@@ -355,17 +356,19 @@ node node_modules/mocha/bin/mocha.js benchmarks/full-text-admission.cjs
 
 The repository Mocha configuration supplies an isolated per-process database root and exposes
 GC. The benchmark uses the existing test native binding to make an index ready, then calls the
-real compiled `Table._prepareQueryConditions` with restricted field permissions. It does not
-measure the native search engine. No running Harper installation or loopback setup is needed.
+real compiled `Table._prepareQueryConditions` with an explicit attribute permission allowlist
+that permits every indexed field. It does not measure denied-field handling. It does not
+measure the native search engine. Use the default RocksDB engine; unset any inherited `HARPER_STORAGE_ENGINE=lmdb` override.
+No running Harper installation or loopback setup is needed.
 
 Each request is fresh. Cases combine 2 or 16 source fields, 0/1/32/127 optional clauses, and
-default or explicit optional-clause fields. The zero-clause pair is intentionally identical.
+default or explicit optional-clause fields. The zero-clause control runs once per field width.
 Each case warms up for 1,000 iterations, then runs five samples of 5,000 iterations; sample
 order reverses on alternate rounds. GC runs before each sample when available. `ADMISSION`
 JSON lines report runtime/platform, every sample, and the median microseconds per request.
 
 Timing includes request construction and a clause-count assertion. It excludes index setup,
-native execution, networking, concurrent requests and the forced GC before samples; allocation
+query compilation, reader acquisition, native execution, networking, concurrent requests and the forced GC before samples; allocation
 and in-sample GC costs are not separately measured. These sample means are not request p99
 latencies, and this is not an end-to-end or before/after regression benchmark.
 
