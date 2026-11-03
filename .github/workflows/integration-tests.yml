@@ -31,7 +31,8 @@ env:
 
 # Each shard job bounds its test step below its own job bound: a step timeout FAILS the step, so
 # the `if: failure()` Harper-log upload still runs, while a job timeout CANCELS it and skips the
-# upload.
+# upload. The legacy/upgrade package installs keep npm's debug logs under that upload's root; npm
+# writes them incrementally, so a killed install keeps them.
 jobs:
   documentation-fixture-parity:
     name: Documentation fixture parity
@@ -159,24 +160,40 @@ jobs:
 
       - name: Install harperdb@4 for legacy tests
         timeout-minutes: 5
+        env:
+          NPM_CONFIG_LOGLEVEL: http
+          NPM_CONFIG_TIMING: 'true'
+          NPM_CONFIG_LOGS_DIR: /tmp/harper-integration-test-logs/npm-installs
         run: |
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
       - name: Install harper@5.1.22 for cross-version upgrade tests
         timeout-minutes: 5
+        env:
+          NPM_CONFIG_LOGLEVEL: http
+          NPM_CONFIG_TIMING: 'true'
+          NPM_CONFIG_LOGS_DIR: /tmp/harper-integration-test-logs/npm-installs
         run: |
           mkdir -p /tmp/harper-legacy-51
           npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
 
       - name: Install harper@5.3.0-beta.2 for pre-release upgrade tests
         timeout-minutes: 5
+        env:
+          NPM_CONFIG_LOGLEVEL: http
+          NPM_CONFIG_TIMING: 'true'
+          NPM_CONFIG_LOGS_DIR: /tmp/harper-integration-test-logs/npm-installs
         run: |
           mkdir -p /tmp/harper-legacy-530-prerelease
           npm install --ignore-scripts --prefix /tmp/harper-legacy-530-prerelease harper@5.3.0-beta.2
 
       - name: Install harper@5.2.15 and harper@5.3.1 for minor upgrade and rollback tests
         timeout-minutes: 5
+        env:
+          NPM_CONFIG_LOGLEVEL: http
+          NPM_CONFIG_TIMING: 'true'
+          NPM_CONFIG_LOGS_DIR: /tmp/harper-integration-test-logs/npm-installs
         run: |
           mkdir -p /tmp/harper-prev-minor-52 /tmp/harper-prev-minor-53
           npm install --ignore-scripts --prefix /tmp/harper-prev-minor-52 harper@5.2.15
@@ -286,6 +303,10 @@ jobs:
 
       - name: Install harperdb@4 for legacy tests
         timeout-minutes: 5
+        env:
+          NPM_CONFIG_LOGLEVEL: http
+          NPM_CONFIG_TIMING: 'true'
+          NPM_CONFIG_LOGS_DIR: ${{ runner.temp }}/harper-integration-test-logs/npm-installs
         run: npm install --ignore-scripts --prefix "${{ runner.temp }}/harperdb-legacy" harperdb@4
 
       - name: Run Integration Test Shard ${{ matrix.shard }}
@@ -393,12 +414,20 @@ jobs:
 
       - name: Install harperdb@4 for legacy tests
         timeout-minutes: 5
+        env:
+          NPM_CONFIG_LOGLEVEL: http
+          NPM_CONFIG_TIMING: 'true'
+          NPM_CONFIG_LOGS_DIR: /tmp/harper-integration-test-logs/npm-installs
         run: |
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
       - name: Install harper@5.1.22 for cross-version upgrade tests
         timeout-minutes: 5
+        env:
+          NPM_CONFIG_LOGLEVEL: http
+          NPM_CONFIG_TIMING: 'true'
+          NPM_CONFIG_LOGS_DIR: /tmp/harper-integration-test-logs/npm-installs
         run: |
           mkdir -p /tmp/harper-legacy-51
           npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
