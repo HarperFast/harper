@@ -205,7 +205,9 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 					deleted: oddIds,
 				},
 				{
-					statement: `DELETE FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note LIKE '%${'_'.repeat(5_000)}!_${'_'.repeat(4_999)}%' ESCAPE '!'`,
+					// Bun's RegExp engine retries a run of `_` before a literal at every start (value × run), so the
+					// runs stay short here; v2 and legacy take ~1.2 s per statement at 5,000 on Bun, ~40 ms on Node.
+					statement: `DELETE FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note LIKE '%${'_'.repeat(500)}!_${'_'.repeat(499)}%' ESCAPE '!'`,
 					check: (body) => deepStrictEqual(body.deleted_hashes, []),
 				},
 			];
