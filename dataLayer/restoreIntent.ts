@@ -45,7 +45,13 @@ import {
 	releaseReceiptPins,
 	settleRestoreJob,
 } from './restorePublication.ts';
-import { listBackupsInDir, resolveCompleteBackup, restorePinId, restoreSourceHint } from './rocksdbBackup.ts';
+import {
+	isRocksDbLockError,
+	listBackupsInDir,
+	resolveCompleteBackup,
+	restorePinId,
+	restoreSourceHint,
+} from './rocksdbBackup.ts';
 
 const RESTORE_INTENT_OWNER = 'restore-intent';
 // room beyond the live size, since a backup also writes its transaction logs and blob snapshot
@@ -146,10 +152,25 @@ function withdrawUnrecordedRestore(receipt: RestoreReceipt): void {
 	const lock = acquireRestoreLock(receipt.database_path);
 	try {
 		const read = readRestoreReceipt(receipt.database_path);
-		if (read.kind !== 'valid' || read.receipt.operation_id !== receipt.operation_id || read.receipt.state !== 'pending')
+		if (
+			read.kind !== 'valid' ||
+			read.receipt.operation_id !== receipt.operation_id ||
+			read.receipt.state === 'committed'
+		)
 			return;
-		removeRestoreReceipt(lock, receipt.operation_id);
-		releaseReceiptPins(read.receipt);
+		if (restoreMarkerPresent(receipt.database_path)) {
+			// an earlier attempt already began replacing the target: it stays blocked, its pins stay with it, and
+			// the terminal receipt keeps components off it until a restore succeeds
+			writeRestoreReceipt(lock, {
+				...read.receipt,
+				state: 'terminal',
+				pre_terminal_state: undefined,
+				last_error: 'its job could not record the restart restore',
+			});
+		} else {
+			removeRestoreReceipt(lock, receipt.operation_id);
+			releaseReceiptPins(read.receipt);
+		}
 		logger.error(`The restart restore of '${receipt.database}' was withdrawn: its job could not record it`);
 	} finally {
 		releaseRestoreLock(lock);
@@ -357,8 +378,9 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreReceipt): Promise<RestoreReceipt> {
 	let backupId: number | undefined;
 	if (receipt.pre_restore_started_at !== undefined) {
+		const engineBackups = new Set((await listBackupsInDir(receipt.backup_dir)).map((backup) => backup.backupId));
 		for (const [id, manifest] of await readAllManifests(receipt.backup_dir)) {
-			if (manifest.pre_restore_for === receipt.operation_id) backupId = id;
+			if (manifest.pre_restore_for === receipt.operation_id && engineBackups.has(id)) backupId = id;
 		}
 	} else {
 		receipt = writeRestoreReceipt(lock, { ...receipt, pre_restore_started_at: Date.now() });
@@ -466,7 +488,8 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 			try {
 				receipt = await adoptOrTakePreRestoreBackup(lock, receipt);
 			} catch (error: any) {
-				if (!error?.preRestoreBackupFailed) throw error;
+				// a lock conflict means something still holds the directory, which a later attempt may not find
+				if (!error?.preRestoreBackupFailed || isRocksDbLockError(error.cause ?? error)) throw error;
 				// retrying reopens the same directory, so a database the backup cannot read stays unrestorable
 				// until the operator chooses to replace it without a copy
 				await failAttempt(

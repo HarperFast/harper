@@ -19,6 +19,7 @@ import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './
 import type { BackupManifest } from './backupManifest.ts';
 import {
 	RESTORE_META_DIR,
+	RESTORING_MARKER_SUFFIX,
 	acquireRestoreLock,
 	clearRestoringMarker,
 	markRestoreDestructive,
@@ -655,6 +656,18 @@ function restartRestoreIsTerminal(receipt: RestoreReceipt): boolean {
  * write the unproved generation.
  */
 export function unpublishedRestoreBlocksComponents(): string | undefined {
+	// a marker with no receipt beside it: its record was lost or removed unreadable, so what replaced the
+	// target, and how far, is unknown
+	for (const root of databaseRoots()) {
+		const metaDir = join(root, RESTORE_META_DIR);
+		if (!existsSync(metaDir)) continue;
+		const names = new Set(readdirSync(metaDir));
+		for (const name of names) {
+			if (!name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
+			const key = name.slice(0, -RESTORING_MARKER_SUFFIX.length);
+			if (!names.has(key + RESTORE_RECEIPT_SUFFIX)) return join(metaDir, name);
+		}
+	}
 	for (const { file, read } of scanRestoreReceipts()) {
 		// what an unreadable record would have restored, or how far, is unknown
 		if (read.kind === 'unreadable') return file;

@@ -35,6 +35,8 @@ try {
 }
 const RESTART_RESPONSE = `Restarting ${PRODUCT_NAME}. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
+// setTimeout fires at once past a signed 32-bit delay
+const MAX_TIMER_MS = 2 ** 31 - 1;
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 let calledFromCli;
@@ -103,7 +105,7 @@ async function restart(req: any) {
 				const drainMs = req.drain ? getProcessShutdownTimeoutMs() : 0;
 				if (
 					process.env.HARPER_EXIT_ON_RESTART &&
-					!(await armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS + drainMs)) &&
+					!(await armRestartExitWatchdog(Math.min(hdbTerms.RESTART_TIMEOUT_MS + drainMs, MAX_TIMER_MS))) &&
 					process.platform === 'linux'
 				)
 					hdbLogger.error('Restart exit watchdog is unavailable; restart teardown is unbounded');
@@ -115,7 +117,10 @@ async function restart(req: any) {
 				if (req.drain) {
 					hdbLogger.debug('Draining workers and the main thread before restarting');
 					// bounded here too, where the watchdog does not run (no HARPER_EXIT_ON_RESTART)
-					await Promise.race([shutdownProcess(Date.now() + drainMs), delay(drainMs + hdbTerms.RESTART_TIMEOUT_MS)]);
+					await Promise.race([
+						shutdownProcess(Date.now() + drainMs),
+						delay(Math.min(drainMs + hdbTerms.RESTART_TIMEOUT_MS, MAX_TIMER_MS)),
+					]);
 				} else {
 					hdbLogger.debug('Shutdown workers');
 					await shutdownWorkersNow();

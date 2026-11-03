@@ -371,6 +371,37 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
+		it("keeps a half-replaced target blocked and pinned when a supersede's job cannot record it", async function () {
+			const fixture = await seededDatabase({ backups: 2 });
+			const [first, second] = fixture.backupIds;
+			await requestRestore(fixture.name, { on_restart: true, backup_id: first, retain_previous: false });
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'applying', attempts: 1 }, { marker: true });
+			const { result } = await requestRestore(fixture.name, { on_restart: true, backup_id: second });
+			const pinsBefore = pinsOf(fixture);
+
+			// what the job worker runs when the row write fails
+			result.onNotRecorded();
+
+			const kept = receiptOf(fixture.dir);
+			assert.strictEqual(kept.state, 'terminal');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), true);
+			assert.deepStrictEqual(pinsOf(fixture), pinsBefore, 'every source stays pinned');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), fixture.name);
+			await restoreBackupOffline(fixture.name, first);
+		});
+
+		it('withdraws a pending restore that never began when its job cannot record it', async function () {
+			const fixture = await seededDatabase();
+			const { result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+
+			result.onNotRecorded();
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
+		});
+
 		it('refuses a database whose drop has begun, as every restore claim does', async function () {
 			const fixture = await seededDatabase();
 			await closeDatabase(fixture.name);
@@ -1110,6 +1141,22 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			await boot(fixture.name);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+		});
+
+		it('keeps components off a half-replaced database after its unreadable record is removed', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'applying', attempts: 1 }, { marker: true });
+			writeFileSync(restoreReceiptPath(fixture.dir), '{"version":1,"state":');
+
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'the target was being replaced');
+			assert.ok(unpublishedRestoreBlocksComponents(), 'the marker alone still starts the boot in safe mode');
+			await restoreBackupOffline(fixture.name, fixture.backupIds[0]);
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
 		});
 
 		it('removes a receipt that cannot be read', async function () {
