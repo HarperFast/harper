@@ -81,7 +81,8 @@ export function normalizeTarget(target: string): string {
 
 /**
  * Environment names that choose where a CLI command connects, which credential it sends or which
- * saved login it reads, whether the connection is verified, or which repository deploy setup trusts.
+ * saved login it reads, whether the connection is verified, or which repository and commit deploy
+ * uses and trusts.
  * Upper case: Windows environment names are case-insensitive, and Node reads lowercase proxy names too.
  */
 const CLI_TRUST_ENV_KEYS = new Set([
@@ -93,6 +94,9 @@ const CLI_TRUST_ENV_KEYS = new Set([
 	'ACTIONS_ID_TOKEN_REQUEST_URL',
 	'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
 	'GITHUB_REPOSITORY',
+	'GITHUB_SHA',
+	'GITHUB_REF',
+	'GITHUB_EVENT_PATH',
 	'HOME',
 	'USERPROFILE',
 	'NODE_TLS_REJECT_UNAUTHORIZED',
@@ -117,7 +121,7 @@ export function loadCliDotenv(): void {
 	if (refused.length > 0) {
 		const them = refused.length === 1 ? 'it' : 'them';
 		throw new ClientError(
-			`${refused.join(', ')} must not come from the .env file in ${process.cwd()}: a project's .env no longer ` +
+			`${refused.join(', ')} must not come from a .env or .env.vault file in ${process.cwd()}: a project's .env no longer ` +
 				`sets the Harper CLI's target, credentials or connection settings (earlier 'harper login' versions ` +
 				`added HARPER_CLI_TARGET there). Remove ${them} from that file, then set ${them} in your shell or CI ` +
 				`environment, pass target=<url>, or rely on the target 'harper login <url>' saves.`

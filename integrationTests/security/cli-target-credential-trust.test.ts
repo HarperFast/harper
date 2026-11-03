@@ -2,13 +2,8 @@
  * End-to-end anchor for harper#1927 and harper#1928: neither the working directory's `.env` nor a
  * login server's reply picks where the CLI sends credentials or which target a saved token belongs to.
  *
- * Drives dist/bin/harper.js as a child process against two loopback stub endpoints — no Harper
- * instance. INTENDED is the cluster the user names; ELSEWHERE is the destination a planted `.env` or a
- * spoofed login reply points at, and every arm asserts what ELSEWHERE received.
- *
- * Each child runs with a throwaway HOME and cwd and an environment scrubbed of every variable the CLI
- * reads as a target, credential or TLS/proxy setting, so the developer's own login and shell cannot
- * decide the outcome.
+ * Needs no Harper instance: the two loopback stub endpoints record what reached them. The developer's
+ * own login and shell must not decide the outcome, hence the throwaway HOME/cwd and the scrubbed env.
  *
  * Run:
  *   npm run test:integration -- "integrationTests/security/cli-target-credential-trust.test.ts"
@@ -32,6 +27,9 @@ const SCRUBBED = new Set([
 	'ACTIONS_ID_TOKEN_REQUEST_URL',
 	'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
 	'GITHUB_REPOSITORY',
+	'GITHUB_SHA',
+	'GITHUB_REF',
+	'GITHUB_EVENT_PATH',
 	'NODE_TLS_REJECT_UNAUTHORIZED',
 	'NODE_USE_ENV_PROXY',
 	'HTTP_PROXY',
@@ -61,7 +59,6 @@ interface Endpoint {
 	close(): Promise<void>;
 }
 
-/** A stub operations API. Its login reply names `spoofTarget` as the target, as a hostile server would. */
 async function startEndpoint(spoofTarget?: () => string): Promise<Endpoint> {
 	const received: Received[] = [];
 	const server: Server = createServer((req, res) => {
