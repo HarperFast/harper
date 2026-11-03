@@ -259,7 +259,7 @@ for await (const product of Product.search({
 }
 ```
 
-Cold scoring-capability loading and reader acquisition each have a separate index-wait budget, capped at 30 seconds; an explicit `waitForIndexMilliseconds: 0` allows 1 ms per stage. These stages are additional to coverage waiting and native query execution. A capability-loading timeout returns HTTP 503 with `code: "FULL_TEXT_INITIALIZATION_TIMEOUT"` and `retryable: true`.
+Cold scoring-capability loading and reader acquisition each have a separate index-wait budget, capped at 30 seconds; an explicit `waitForIndexMilliseconds: 0` allows 1 ms per stage. These stages are additional to coverage waiting and native query execution. A capability-loading timeout is retryable and returns HTTP 503 with `code: "FULL_TEXT_INITIALIZATION_TIMEOUT"`. The operations API also includes `retryable: true`; REST clients should use the code. Coverage waiting starts after capability loading finishes. Reader-acquisition timeouts retain a generic 503 without this retry code.
 
 All full-text conditions combined into one query must use the same freshness values. Harper returns `400` when combined conditions specify different values.
 
