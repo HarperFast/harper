@@ -29,6 +29,7 @@ const {
 const {
 	admitPreviewActivation,
 	assertPreviewCapacity,
+	fencePreviewGeneration,
 	listLocalPreviews,
 	sweepExpiredPreviews,
 } = require('#src/components/previews');
@@ -154,12 +155,12 @@ describe('PR preview metadata (harper#3048)', () => {
 			await fs.rm(root, { recursive: true, force: true });
 		});
 
-		async function candidate(component, pr) {
+		async function candidate(component, pr, overrides) {
 			const dir = path.join(root, '.candidates', component);
 			await fs.mkdir(dir, { recursive: true });
 			await fs.writeFile(
 				path.join(dir, DEPLOYMENT_PROVENANCE_FILE),
-				formatDeploymentProvenance(component, `d-${component}`, preview(pr))
+				formatDeploymentProvenance(component, `d-${component}`, preview(pr, overrides))
 			);
 			return dir;
 		}
@@ -194,6 +195,87 @@ describe('PR preview metadata (harper#3048)', () => {
 			await admitPreviewActivation('shop-production', plain, async () => {}, 1, root);
 			const two = await candidate('shop-pr-2', 2);
 			await admitPreviewActivation('shop-pr-2', two, async () => {}, undefined, root);
+		});
+	});
+
+	describe('the revocation fence (harper#3613)', () => {
+		let root;
+		beforeEach(async () => {
+			root = await fs.mkdtemp(path.join(os.tmpdir(), 'preview-fence-'));
+		});
+		afterEach(async () => {
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		async function candidate(component, pr, generation) {
+			const dir = path.join(root, '.candidates', component);
+			await fs.mkdir(dir, { recursive: true });
+			await fs.writeFile(
+				path.join(dir, DEPLOYMENT_PROVENANCE_FILE),
+				formatDeploymentProvenance(component, `d-${component}`, preview(pr, generation ? { generation } : {}))
+			);
+			return dir;
+		}
+		const fenced = (component, dir, activate = async () => {}) =>
+			admitPreviewActivation(component, dir, activate, null, root, undefined, undefined, true);
+
+		it('refuses a build whose identity generation was revoked on this node, with no cap', async () => {
+			await fencePreviewGeneration('shop', 'g1', root);
+			await assert.rejects(fenced('shop-pr-1', await candidate('shop-pr-1', 1, 'g1')), (error) => {
+				assert.strictEqual(error.statusCode, 403);
+				assert.match(error.message, /'shop-pr-1' was not activated: previews of shop .* were disabled/);
+				return true;
+			});
+			await fenced('shop-pr-2', await candidate('shop-pr-2', 2, 'g2'));
+			await fenced('shop-pr-3', await candidate('shop-pr-3', 3));
+		});
+
+		it('waits for a swap holding the lock, so what it made live is there when the fence returns', async () => {
+			const dir = await candidate('shop-pr-1', 1, 'g1');
+			let entered;
+			let release;
+			const inSwap = new Promise((resolve) => (entered = resolve));
+			const gate = new Promise((resolve) => (release = resolve));
+			const swap = fenced('shop-pr-1', dir, async () => {
+				entered();
+				await gate;
+				await fs.mkdir(path.join(root, 'shop-pr-1'));
+			});
+			let fenceDone = false;
+			let fence;
+			try {
+				await Promise.race([
+					inSwap,
+					new Promise((_, reject) => setTimeout(() => reject(new Error('the swap never started')), 10_000)),
+				]);
+				fence = fencePreviewGeneration('shop', 'g1', root).then(() => (fenceDone = true));
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				assert.strictEqual(fenceDone, false, 'the fence waits for the swap');
+			} finally {
+				release();
+			}
+			await Promise.all([swap, fence]);
+			assert.ok(await fs.stat(path.join(root, 'shop-pr-1')), 'the swap finished before the fence was recorded');
+		});
+
+		it('refuses, rather than skipping the fence, when it cannot read what a candidate is', async () => {
+			const dir = path.join(root, '.candidates', 'shop-pr-5');
+			await fs.mkdir(path.join(dir, DEPLOYMENT_PROVENANCE_FILE), { recursive: true });
+			let activated = false;
+			await assert.rejects(fenced('shop-pr-5', dir, async () => (activated = true)));
+			assert.strictEqual(activated, false);
+			await fs.mkdir(path.join(root, '.candidates', 'shop-pr-6'), { recursive: true });
+			await fenced('shop-pr-6', path.join(root, '.candidates', 'shop-pr-6'));
+		});
+
+		it('keeps every generation it was given, durably, and refuses an unreadable fence', async () => {
+			await fencePreviewGeneration('shop', 'g1', root);
+			await fencePreviewGeneration('shop', 'g2', root);
+			await fencePreviewGeneration('shop', 'g1', root);
+			const file = path.join(root, '.preview-revoked', 'shop.json');
+			assert.deepStrictEqual(JSON.parse(await fs.readFile(file, 'utf8')), ['g1', 'g2']);
+			await fs.writeFile(file, 'not json');
+			await assert.rejects(fenced('shop-pr-4', await candidate('shop-pr-4', 4, 'g3')));
 		});
 	});
 

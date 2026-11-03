@@ -16,17 +16,18 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 ## An audit record carries two clocks; identity is (nodeId, log key), never a version
 
-`AuditRecord.version` drives last-writer-wins, `@updatedTime` and ETags; `txnLogKey` drives identity, `auditStore.get(logKey, tableId, id, nodeId)` and resume cursors. They diverge for source fills, applied writes and caller timestamps; such a RocksDB record reaches its head via `additionalAuditRefs`.
+`AuditRecord.version` drives last-writer-wins, `@updatedTime` and ETags; `txnLogKey` drives identity, `auditStore.get(logKey, tableId, id, nodeId)` and resume cursors. When they diverge (source fills, applied writes, caller times), `additionalAuditRefs` finds the head.
 
-- `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps a tombstone of unknown identity, as a version compare would let one write destroy another's.
-- An applied RocksDB write stores its received version, per write (`TransactionWrite.recordVersion`), under the origin's log key.
-- A ref states its kind: `additionalAuditRefs` holds log keys, `receivedIdentityRefs` received identities (bit 31, `RECEIVED_IDENTITY_REF`), which address no entry, never enter an audit entry, and are an unaudited record's only re-delivery proof. A branch's log key does not bound its version, so the walk reads every non-head branch. An `identityIsNotKey` write records its head as a log-key ref even when key and version are equal. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
-- An LMDB merge keeps the older version: it is `LMDBTransaction.commit`'s `ifVersion` token (`noAuditOutOfOrderPatch.test.js`).
-- Duplicates are judged by committed identity (read outside the transaction after a same-key relocate or publish restamps the base); only a minted key marks a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
-- `FULL_WRITE_HEAD`: the head replaced the whole record, unchanged since; any other write, a base-copy frame included, clears it. An older write skips the walk only while the floor is known and both it and `fullWriteHeadKey` are at or above it (`fullWriteHead.test.js`).
-- A numeric log selector only looks a log up (`useLog` would create it); `local` reads filter by `nodeId`, received-key dedup skips unnamed ids, and a named-log miss never falls back to `local` (`auditLog.test.js`).
-- Equal versions tie (0) only within one origin; others order by node name, named above unnamed, then local id. Only the head's own entry, in a same-origin tie, may resolve a 0 (`precedesAudited`, `equalVersionOriginOrder.test.js`).
-- Replay applies stored versions; a replay transaction ends at `endTxn`, a log change or a key change, never by key alone; one a corrupt frame cut short is discarded (`replayCommitBoundaries.test.js`).
+- `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps unknown-identity tombstones, as version compares let one write destroy another's.
+- Applied RocksDB writes store their version (`TransactionWrite.recordVersion`) at the origin log key.
+- `additionalAuditRefs` holds log keys; `receivedIdentityRefs` (bit 31, `RECEIVED_IDENTITY_REF`) holds received identities (addressing no entry, omitted from audit entries, proving unaudited re-delivery). Walks read all non-head branches (log keys never bound versions). `identityIsNotKey` writes record the head as a log-key ref even if key == version. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
+- LMDB merges keep the older version (`LMDBTransaction.commit` `ifVersion`, `noAuditOutOfOrderPatch.test.js`).
+- Duplicates use committed identity (read outside the txn after a same-key relocate/publish restamps the base); only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
+- RocksDB logs once; the watermark stalls at uncommitted entries, so ref walks set `readUncommitted` (dedup does not), and retries/replays add the base head and missed refs (`withRefsMissedByLoggedEntry`), head last. Gaps: `crdt` and `subscribe` walk `previousVersion` (`retryAuditChain.test.js`).
+- `FULL_WRITE_HEAD`: the head replaced the record, unchanged since; any other write (base-copy frames included) clears it. Older writes skip the walk only if they and `fullWriteHeadKey` >= a known floor (`fullWriteHead.test.js`).
+- Numeric log selectors only look up (`useLog` creates); `local` reads filter by `nodeId`, received-key dedup skips unnamed ids, and named-log misses never fall back to `local` (`auditLog.test.js`).
+- Equal versions tie (0) only within one origin; others order by node name (named > unnamed), then local id. Only the head's own same-origin entry resolves 0 (`precedesAudited`, `equalVersionOriginOrder.test.js`).
+- Replay applies stored versions; replay transactions end at `endTxn` or log/key change (never key alone), dropping truncated frames (`replayCommitBoundaries.test.js`).
 
 ## Request admission authorizes exactly what the dispatch runs
 
@@ -86,7 +87,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## A relationship read is authorized against the related table
 
-Each relationship step needs `read` on the related table and attribute (`Table._readDenial`). **The search layer checks nothing**, so REST `allowRead` (`_authorizeRelatedSelection`), `verifyPerms` (after `normalizeSearchRequest`) and `ResourceBridge.getSelect` check the query that will run. A `*` select of `@enumerable` relationships is rewritten unless `_readableInFull`, whose answer lasts one admission and one permission source. Live subscriptions referencing a relationship skip the shared verdict (`_referencesRelationship`). SQL and subscription deliveries are not covered (harper#3509; `permissions.test.js`).
+`_readDenial` gates relationship steps/scalar properties. Search has no general read gate: REST `allowRead`, `verifyPerms`, `ResourceBridge.getSelect` admit; nested rechecks require `checkPermission`. Root ops use normalized `attribute`, nested `[0] ?? attribute`. Enumerable `*` rewrites unless `_readableInFull` (per admission/principal); relationship rechecks are unshared. Uncovered: subscription delivery, [SQL](https://github.com/HarperFast/harper/issues/3509), [root predicates](https://github.com/HarperFast/harper/issues/3903). Tests: `permissions.test.js`, `relationshipSelectionReadPermissions.test.js`.
 
 ## Typed, discoverable resources
 
@@ -257,7 +258,7 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## The RocksDB codec is a deployment setting, resolved once per process
 
-`DB::Open` opens every column family at once, and a family's codec cannot change while open, so `getRocksCompression()` resolves one codec before the first open and freezes it; opens pass `compressionForAllColumnFamilies`, and per-table `compression` selects nothing. A fresh install stages it before `mountHdb()`. Existing files keep their codec until rewritten (`compact({ bottommost: true })`). Native WAL stays on for the root and `__dbis__` (`rocksCompressionOpen.test.js`).
+`DB::Open` opens families together, so `getRocksCompression()` freezes one codec; `compressionForAllColumnFamilies` applies it, ignoring per-table `compression`. Install stages the full config with `stageInstallConfig()` before `mountHdb()`, validates before `createTables()`, and persists it without worker overrides. Existing files retain codecs until rewritten (`compact({ bottommost: true })`). Native WAL stays on for root and `__dbis__` (`rocksCompressionOpen.test.js`).
 
 ## Schema migration and `runIndexing` internals
 

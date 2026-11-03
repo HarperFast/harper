@@ -118,22 +118,26 @@ let selfExitTimer;
 // An extended self-exit deadline requested by a drain (absolute epoch ms), honored regardless of whether
 // it is recorded before or after the SHUTDOWN handler arms the timer (the two race across listeners).
 let selfExitDrainDeadline = 0;
+// Set when the process is exiting on a signal (absolute epoch ms). Every shutdown backstop, on either side,
+// waits at least this long: the process deadline is the bound then, not the restart timers.
+let processExitDeadline = 0;
 _assignPackageExport('threads', connectedPorts);
 
 // Worker-side: (re)arm the self-exit backstop `delay` ms out, but never earlier than a drain deadline
 // already requested via extendShutdownDeadline (so ordering between the SHUTDOWN handler and the drain
 // extension doesn't matter).
 function armSelfExit(delay?: any) {
+	const { MAX_TIMER_MS } = shutdownDrainRuntimeModule;
 	if (selfExitDrainDeadline) {
 		// selfExitDrainDeadline is already clamped to the configured ceiling (see boundedTerminateDelay),
 		// but adding threadTerminationTimeout headroom on top can push the sum back over the max timer
 		// value at the extreme end of that ceiling, silently defeating the overflow guard.
-		const { MAX_TIMER_MS } = shutdownDrainRuntimeModule;
 		delay = Math.max(
 			delay,
 			Math.min(Math.max(0, selfExitDrainDeadline - Date.now()) + threadTerminationTimeout, MAX_TIMER_MS)
 		);
 	}
+	if (processExitDeadline) delay = Math.max(delay, Math.min(processExitDeadline - Date.now(), MAX_TIMER_MS));
 	if (selfExitTimer) clearTimeout(selfExitTimer);
 	selfExitTimer = setTimeout(() => {
 		harperLogger.warn('Thread did not voluntarily terminate', threadId);
@@ -208,6 +212,10 @@ export {
 	ownsStoreExpiration,
 	workersForApplication,
 	stopWorker,
+	stopWorkersForExit,
+	getProcessExitDeadline,
+	whenWorkersStoppedForExit,
+	runLocalShutdownListeners,
 	encodeRestartScope,
 	decodeRestartScope,
 	onMessageByType,
@@ -344,41 +352,89 @@ function workersForApplication(application?: any) {
  * the same backstop the rolling restart uses (FORCE_EXIT on Bun, where terminate() segfaults), and
  * resolve once it has exited. Marked as shut down first so its exit does not start a replacement.
  */
-function stopWorker(worker?: any) {
+function stopWorker(worker?: any, exitDeadline?: number) {
 	worker.wasPermanentlyStopped = true;
 	worker.wasShutdown = true;
 	return new Promise<any>((resolve) => {
-		const armTerminate = (delay) =>
-			setTimeout(() => {
-				harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-				if (isBun) {
-					try {
-						worker.postMessage({ type: FORCE_EXIT });
-					} catch {}
-				} else {
-					worker.terminate();
-				}
-			}, delay).unref();
-		let timeout = armTerminate(threadTerminationTimeout * 2);
+		armWorkerTerminate(worker, threadTerminationTimeout * 2);
 		worker.extendTerminateDeadline = (deadlineMs) => {
-			clearTimeout(timeout);
 			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = shutdownDrainRuntimeModule;
-			timeout = armTerminate(
+			armWorkerTerminate(
+				worker,
 				boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
 			);
 		};
 		worker.on('exit', () => {
-			clearTimeout(timeout);
+			clearTimeout(worker.terminateTimer);
 			worker.extendTerminateDeadline = undefined;
 			resolve(undefined);
 		});
 		try {
-			worker.postMessage({ restartNumber: restartNumber, type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN });
+			worker.postMessage({
+				restartNumber: restartNumber,
+				type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
+				exitDeadline: exitDeadline ?? (processExitDeadline || undefined),
+			});
 		} catch {
-			clearTimeout(timeout);
+			clearTimeout(worker.terminateTimer);
 			resolve(undefined); // already gone
 		}
 	});
+}
+
+/**
+ * Force-terminate `worker` after `delay` ms unless it exits first (FORCE_EXIT on Bun, where terminate()
+ * segfaults). A worker has one such timer: arming replaces whatever a restart or an earlier stop armed.
+ */
+function armWorkerTerminate(worker: any, delay: number) {
+	clearTimeout(worker.terminateTimer);
+	if (processExitDeadline) delay = Math.max(delay, processExitDeadline - Date.now());
+	worker.terminateTimer = setTimeout(
+		() => {
+			harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+			if (isBun) {
+				try {
+					worker.postMessage({ type: FORCE_EXIT });
+				} catch {}
+			} else {
+				worker.terminate();
+			}
+		},
+		Math.min(delay, shutdownDrainRuntimeModule.MAX_TIMER_MS)
+	).unref();
+}
+
+let workersStoppedForExit: Promise<unknown> = Promise.resolve();
+/**
+ * Process exit: SHUTDOWN with the exit deadline to every live worker, resolving once all have exited. Not
+ * filtered by `wasShutdown`: a restart sets it before it sends SHUTDOWN, and a repeat is harmless.
+ */
+function stopWorkersForExit(exitDeadline: number) {
+	processExitDeadline = exitDeadline;
+	workersStoppedForExit = Promise.all([...workers].map((worker) => stopWorker(worker, exitDeadline)));
+	return workersStoppedForExit;
+}
+
+function getProcessExitDeadline(): number | undefined {
+	return processExitDeadline || undefined;
+}
+
+function whenWorkersStoppedForExit() {
+	return workersStoppedForExit;
+}
+
+/**
+ * Main thread: run this thread's own SHUTDOWN listeners, which no message ever reaches here (a worker gets
+ * them from its parent). Only the SHUTDOWN type, each isolated, so one failing listener skips no other.
+ */
+function runLocalShutdownListeners(message: any) {
+	for (const listener of listenersByType.get(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN) ?? []) {
+		try {
+			listener(message, null);
+		} catch (error) {
+			harperLogger.error('Error in a shutdown listener', error);
+		}
+	}
 }
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
@@ -2090,9 +2146,11 @@ function postShutdown(worker) {
 	// An exited worker can still accept a message without complaint, and its exit would never come again.
 	if (!workers.includes(worker)) return false;
 	try {
+		// a restart still retiring workers after a process exit began must not close their scopes early
 		worker.postMessage({
 			restartNumber: restartNumber,
 			type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
+			exitDeadline: processExitDeadline || undefined,
 		});
 	} catch (err) {
 		if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') return false;
@@ -2107,26 +2165,13 @@ function postShutdown(worker) {
 function whenShutDownWorkerExits(worker, onProgress, onExit?: any) {
 	return new Promise<void>((resolve) => {
 		// in case the exit inside the thread doesn't timeout, force it from the outside
-		const armTerminate = (delay) =>
-			setTimeout(() => {
-				harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-				if (isBun) {
-					// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
-					try {
-						worker.postMessage({ type: FORCE_EXIT });
-					} catch {}
-				} else {
-					worker.terminate();
-				}
-			}, delay).unref();
-		let timeout = armTerminate(threadTerminationTimeout * 2);
+		armWorkerTerminate(worker, threadTerminationTimeout * 2);
 		// The worker can push this backstop out while it gracefully drains in-flight work (e.g. a
 		// replication blob send) before exiting. It only asks when it actually has such work, so a
 		// worker hung for an unrelated reason is still force-killed on the normal short timeout.
 		// This timer is armed synchronously above, in the same tick as the SHUTDOWN post, so the
 		// worker's EXTEND request can only arrive after it exists.
 		worker.extendTerminateDeadline = (deadlineMs) => {
-			clearTimeout(timeout);
 			// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
 			// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 			// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
@@ -2137,13 +2182,13 @@ function whenShutDownWorkerExits(worker, onProgress, onExit?: any) {
 				threadTerminationTimeout * 2,
 				getShutdownDrainCeilingMs()
 			);
-			timeout = armTerminate(delay);
+			armWorkerTerminate(worker, delay);
 			// The worker is telling us it has work still moving and how long it may take, so pass that
 			// on: a caller waiting on the restart must not treat a live drain as a stalled one.
 			onProgress?.(Date.now() + delay);
 		};
 		worker.on('exit', () => {
-			clearTimeout(timeout);
+			clearTimeout(worker.terminateTimer);
 			onProgress?.();
 			worker.extendTerminateDeadline = undefined;
 			onExit?.();
@@ -3437,6 +3482,7 @@ if (isMainThread) {
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
 		restartNumber = message.restartNumber;
+		if (message.exitDeadline) processExitDeadline = message.exitDeadline;
 		beginProcessShutdown();
 		parentPort.unref(); // remove this handle
 		armSelfExit(threadTerminationTimeout);

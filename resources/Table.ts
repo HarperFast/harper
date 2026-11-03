@@ -228,6 +228,7 @@ import {
 	isResumablePosition,
 	getDatabaseGeneration,
 	auditHistoryAbortMarked,
+	type AuditRecord,
 } from './auditStore.ts';
 import {
 	acquireFullTextClearFence,
@@ -1958,6 +1959,69 @@ export function makeTable(options): TableResourceClass {
 			},
 		});
 	}
+	/**
+	 * A write staged without appending a log entry, a conflict retry or a crash replay, stores its record from
+	 * an entry appended earlier, which chains to the head read then. When the commit base has moved past it,
+	 * the record's `refs` gain what the out-of-order walk needs to reach the base: its refs the entry does not
+	 * carry and its head, behind this write's own head key. A put or delete entry ends every walk.
+	 */
+	function withRefsMissedByLoggedEntry(
+		refs: Array<{ version: number; nodeId: number }> | undefined,
+		id: Id,
+		base: Partial<Entry> | undefined,
+		ownKey: number,
+		write: any,
+		transaction: any,
+		options: any
+	): Array<{ version: number; nodeId: number }> | undefined {
+		if (!isRocksDB || !base) return refs;
+		let previousVersion: number | undefined,
+			previousNodeId: number | undefined,
+			hasPreviousNodeId = false,
+			covered: Array<{ version?: number; nodeId?: number }> | undefined;
+		const replayed: AuditRecord | undefined = options?.auditEntry;
+		if (replayed) {
+			if (replayed.type === 'put' || replayed.type === 'delete') return refs;
+			previousVersion = replayed.previousVersion;
+			covered = replayed.previousAdditionalAuditRefs;
+			if (base.version === previousVersion) {
+				previousNodeId =
+					replayed.previousNodeId ??
+					(covered?.length ? resolveAuditHead(id, previousVersion, undefined, covered as any).nodeId : undefined);
+				hasPreviousNodeId = previousNodeId !== undefined;
+			}
+		} else if (transaction?.isRetry && !transaction.relogOnRetry && write.loggedBase !== undefined) {
+			previousVersion = write.loggedBase?.version;
+			previousNodeId = write.loggedBase?.nodeId;
+			hasPreviousNodeId = write.loggedBase !== null;
+			covered = write.loggedBase?.additionalAuditRefs;
+		} else return refs;
+		const head =
+			base.version === previousVersion && (!hasPreviousNodeId || (base.nodeId ?? 0) === (previousNodeId ?? 0))
+				? undefined
+				: resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
+		const isHead = (ref: { version: number; nodeId?: number }) =>
+			head !== undefined && ref.version === head.txnLogKey && (ref.nodeId ?? 0) === (head.nodeId ?? 0);
+		const missed: Array<{ version: number; nodeId: number }> = [];
+		for (const ref of base.additionalAuditRefs ?? []) {
+			if (!isHead(ref) && (!covered || auditRefIndex(covered, ref.version, ref.nodeId) < 0)) missed.push(ref);
+		}
+		if (missed.length === 0 && !head) return refs;
+		refs ??= [];
+		const ownIndex = auditRefIndex(refs, ownKey, options?.nodeId);
+		if (ownIndex > 0) refs.unshift(refs.splice(ownIndex, 1)[0]);
+		else if (ownIndex < 0) refs.unshift({ version: ownKey, nodeId: options?.nodeId });
+		for (const ref of missed) if (auditRefIndex(refs, ref.version, ref.nodeId) < 0) refs.push(ref);
+		// last: over budget the encoder drops refs from the front, after the first
+		if (head) {
+			const headIndex = auditRefIndex(refs, head.txnLogKey, head.nodeId);
+			if (headIndex !== 0) {
+				if (headIndex > 0) refs.splice(headIndex, 1);
+				refs.push({ version: head.txnLogKey, nodeId: head.nodeId });
+			}
+		}
+		return refs;
+	}
 	function resolveAuditHead(
 		id: Id,
 		version: number | undefined,
@@ -1987,7 +2051,7 @@ export function makeTable(options): TableResourceClass {
 				if (visited.has(identity)) continue;
 				visited.add(identity);
 				yield;
-				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
+				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId, true);
 				if (!entry) continue;
 				if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
 					return { txnLogKey: ref.version, nodeId: ref.nodeId, entry };
@@ -2001,7 +2065,7 @@ export function makeTable(options): TableResourceClass {
 		if (referencedHead) return referencedHead;
 		if (version != null) {
 			yield;
-			const directHead = auditStore.getSync(version, tableId, id, nodeId);
+			const directHead = auditStore.getSync(version, tableId, id, nodeId, true);
 			if (directHead?.version === version && (nodeId == null || (directHead.nodeId ?? 0) === nodeId))
 				return { txnLogKey: version, nodeId, entry: directHead };
 		}
@@ -2324,6 +2388,11 @@ export function makeTable(options): TableResourceClass {
 			// authority comes from the request being authorized, never from the selection itself
 			if (checkPermission) property.checkPermission = checkPermission;
 			else delete property.checkPermission;
+			if (
+				Array.isArray(property.conditions) &&
+				someConditionPath(property.conditions, property, user, true, relatedTable)
+			)
+				throw new AccessViolation(user);
 			for (let sort = typeof property.sort === 'object' && property.sort; sort; sort = sort.next) {
 				const path = Array.isArray(sort.attribute) ? sort.attribute : [sort.attribute];
 				if (relatedTable._readDenial(path, user, property)) return false;
@@ -4764,8 +4833,20 @@ export function makeTable(options): TableResourceClass {
 							tableToTrack: isCopyApply ? null : tableName,
 							recordVersion: txnTime,
 							additionalAuditRefs:
-								!isCopyApply && isRocksDB && audit && txnLogKey !== txnTime
-									? [{ version: txnLogKey, nodeId: options?.nodeId }]
+								!isCopyApply && isRocksDB && audit
+									? transaction?.isRetry || options?.auditEntry
+										? withRefsMissedByLoggedEntry(
+												txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
+												id,
+												existingEntry,
+												txnLogKey,
+												write,
+												transaction,
+												options
+											)
+										: txnLogKey !== txnTime
+											? [{ version: txnLogKey, nodeId: options?.nodeId }]
+											: undefined
 									: undefined,
 							localOnly: options?.localOnly,
 						},
@@ -4874,8 +4955,20 @@ export function makeTable(options): TableResourceClass {
 							write,
 							recordVersion: txnTime,
 							additionalAuditRefs:
-								isRocksDB && audit && txnLogKey !== txnTime
-									? [{ version: txnLogKey, nodeId: options?.nodeId }]
+								isRocksDB && audit
+									? transaction?.isRetry || options?.auditEntry
+										? withRefsMissedByLoggedEntry(
+												txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
+												id,
+												existingEntry,
+												txnLogKey,
+												write,
+												transaction,
+												options
+											)
+										: txnLogKey !== txnTime
+											? [{ version: txnLogKey, nodeId: options?.nodeId }]
+											: undefined
 									: undefined,
 							localOnly: options?.localOnly,
 						},
@@ -6028,7 +6121,7 @@ export function makeTable(options): TableResourceClass {
 					// directions; the table default is the final fallback. -1 means no expiration.
 					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
 					let auditExpiresAt: number | undefined;
-					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
+					let additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					let receivedIdentityRefs: Array<{ version: number; nodeId: number }> | undefined;
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
 					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
@@ -6071,6 +6164,7 @@ export function makeTable(options): TableResourceClass {
 							}
 						}
 						let hasOwnPendingHead = false;
+						let readsOwnStaging = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -6106,10 +6200,8 @@ export function makeTable(options): TableResourceClass {
 							// transaction to this key: every write in it shares one log key, so the ref that write left is
 							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
 							// and stages nothing. Nor when a retry reads back its own prior staging, recognized by its head
-							// ref being the key minted for this handle (a committed competitor carries another minted head;
-							// in an origin's log a competing delivery shares the key, so only a minted key can tell).
+							// ref being the key minted for this handle.
 							let refBase: Partial<Entry> | undefined;
-							let readsOwnStaging = false;
 							if (!priorChange) {
 								refBase =
 									identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
@@ -6155,6 +6247,8 @@ export function makeTable(options): TableResourceClass {
 								) {
 									hasOwnPendingHead = true;
 								}
+							} else if (readsOwnStaging && precedesExisting === 0 && transaction.hasStagedLog) {
+								hasOwnPendingHead = true;
 							}
 							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
 							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
@@ -6208,7 +6302,8 @@ export function makeTable(options): TableResourceClass {
 							// the put; a fresh-transaction replay would drop it.
 							// For a write whose identity is not its key this finds an entry keyed at its explicit value: one
 							// written before every local key was minted, or one whose minted key equals it. A hit still needs
-							// both stored clocks to match.
+							// both stored clocks to match. Committed entries only, here and in `isReDeliveredDuplicate`: another
+							// delivery's entry whose transaction has not committed is no proof the write applied.
 							if (isRocksDB && !replaying && !mayReadOwnOrphan && dedupVersionCouldBeRetained(receivedLogKey)) {
 								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
@@ -6368,6 +6463,17 @@ export function makeTable(options): TableResourceClass {
 									const auditIdentity = `${nodeId ?? 0}:${localTime}`;
 									if (visitedAuditRefs.has(auditIdentity)) break;
 									visitedAuditRefs.add(auditIdentity);
+									// An earlier same-key write in this transaction is not in the committed log yet; an uncommitted read
+									// on retry would see this handle's own unresolved batch from the failed attempt.
+									const ownPendingEntry =
+										localTime === appendedLogKey &&
+										((hasOwnPendingHead && !isAdditionalAuditRef) ||
+											((priorStaged || readsOwnStaging) &&
+												isRocksDB &&
+												!replaying &&
+												transaction.hasStagedLog &&
+												(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))));
+									if (ownPendingEntry) break;
 									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
 									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
 									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
@@ -6381,8 +6487,13 @@ export function makeTable(options): TableResourceClass {
 									if (isRocksDB && fullUpdate) {
 										let frameComplete = false;
 										// A keyed lookup hides unreadable siblings before its first match, and a message or older
-										// version can precede newer mutations in the same frame.
-										for (const entry of auditStore.getRange({ start: localTime, exactStart: true, log: nodeId })) {
+										// version can precede newer mutations in the same frame. Read past the committed watermark.
+										for (const entry of auditStore.getRange({
+											start: localTime,
+											exactStart: true,
+											log: nodeId,
+											readUncommitted: true,
+										})) {
 											if (entry.txnLogKey !== localTime) break;
 											if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
 												auditWalkCapped = true;
@@ -6408,20 +6519,11 @@ export function makeTable(options): TableResourceClass {
 										auditRecord =
 											resolvedEntry?.txnLogKey === localTime
 												? resolvedEntry
-												: auditStore.get(localTime, tableId, id, nodeId);
+												: auditStore.get(localTime, tableId, id, nodeId, true);
 									}
 									resolvedEntry = undefined;
 									if (!auditRecord) {
-										// An earlier same-key write in this transaction is not in the committed log yet.
-										const ownPendingEntry =
-											localTime === appendedLogKey &&
-											((hasOwnPendingHead && !isAdditionalAuditRef) ||
-												(priorStaged &&
-													isRocksDB &&
-													!replaying &&
-													transaction.hasStagedLog &&
-													(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))));
-										if (!ownPendingEntry) auditHistoryMissing = true;
+										auditHistoryMissing = true;
 										break;
 									}
 									isAdditionalAuditRef = false;
@@ -7014,6 +7116,24 @@ export function makeTable(options): TableResourceClass {
 						} else if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
+					if (
+						isRocksDB &&
+						audit &&
+						!isCopyApply &&
+						!fullUpdate &&
+						precedesExisting > 0 &&
+						(transaction?.isRetry || options?.auditEntry)
+					)
+						additionalAuditRefs =
+							withRefsMissedByLoggedEntry(
+								additionalAuditRefs,
+								id,
+								existingEntry,
+								appendedLogKey,
+								write,
+								transaction,
+								options
+							) ?? additionalAuditRefs;
 					// A write whose received identity is not its key keeps that identity on the record too, so a
 					// re-delivery matches it without a walk that may stop short.
 					if (
@@ -9642,7 +9762,7 @@ export function makeTable(options): TableResourceClass {
 								if (!isActive()) return;
 							}
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
-							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
+							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
@@ -9974,7 +10094,19 @@ export function makeTable(options): TableResourceClass {
 							tableToTrack: tableName,
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
-								appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
+								transaction?.isRetry || options?.auditEntry
+									? withRefsMissedByLoggedEntry(
+											appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
+											id,
+											existingEntry,
+											appendedLogKey,
+											write,
+											transaction,
+											options
+										)
+									: appendedLogKey !== txnTime
+										? [{ version: appendedLogKey, nodeId: options?.nodeId }]
+										: undefined,
 						},
 						'message',
 						false,
@@ -11910,8 +12042,13 @@ export function makeTable(options): TableResourceClass {
 		if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
 		const attribute_permissions = tablePermission.attribute_permissions;
 		const property = target?.property;
+		if (
+			property !== undefined &&
+			attribute_permissions?.length > 0 &&
+			TableResource._readDenial([property], user, target)
+		)
+			return false;
 		if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
-			if (attribute_permissions?.length > 0 && TableResource._readDenial([property], user, target)) return false;
 			const selection = TableResource._authorizeRelatedSelection(
 				target.select == null ? property : { name: property, select: target.select },
 				user,
@@ -12032,13 +12169,23 @@ export function makeTable(options): TableResourceClass {
 		conditions: Iterable<any>,
 		target: RequestTarget,
 		user: User,
-		checkDenial: boolean
+		checkDenial: boolean,
+		relatedTable?: TableResourceClass
 	): boolean {
 		for (const condition of conditions) {
+			if (condition?.conditions) {
+				if (someConditionPath(condition.conditions, target, user, checkDenial, relatedTable)) return true;
+				continue;
+			}
+			const attribute = condition?.[0] ?? condition?.attribute;
 			if (
-				condition?.conditions
-					? someConditionPath(condition.conditions, target, user, checkDenial)
-					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, target, user, checkDenial)
+				relatedTable
+					? relatedTable._readDenial(
+							Array.isArray(attribute) ? attribute : [attribute ?? relatedTable.primaryKey],
+							user,
+							target
+						) !== undefined
+					: relationshipPathMatches(attribute, target, user, checkDenial)
 			)
 				return true;
 		}
@@ -14030,7 +14177,7 @@ export function makeTable(options): TableResourceClass {
 				let record = 'entry' in head && head.entry;
 				if (!record) {
 					yield;
-					record = auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
+					record = auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId, true);
 				}
 				if (!record) break;
 				for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) {
@@ -14456,7 +14603,7 @@ function isBranchRef(ref: { version: number; nodeId?: number }, head: { txnLogKe
 	return ref.version !== head.txnLogKey || (ref.nodeId ?? 0) !== (head.nodeId ?? 0);
 }
 
-function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, version: number, nodeId?: number): number {
+function auditRefIndex(refs: Array<{ version?: number; nodeId?: number }>, version: number, nodeId?: number): number {
 	for (let index = 0; index < refs.length; index++) {
 		if (refs[index].version === version && (refs[index].nodeId ?? 0) === (nodeId ?? 0)) return index;
 	}
