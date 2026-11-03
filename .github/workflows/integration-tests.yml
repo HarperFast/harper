@@ -34,23 +34,6 @@ env:
 # upload. The legacy/upgrade package installs keep npm's debug logs under that upload's root; npm
 # writes them incrementally, so a killed install keeps them.
 jobs:
-  documentation-fixture-parity:
-    name: Documentation fixture parity
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '26'
-          package-manager-cache: false
-      - name: Test fixture fetch reliability
-        run: node --test .github/scripts/github-fixture-fetch.test.mjs
-      - name: Compare companion fixtures
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node --test .github/scripts/nested-relationship-fixture-parity.test.mjs
-
   generate-node-version-matrix:
     name: Generate Node Version Matrix
     runs-on: ubuntu-latest
