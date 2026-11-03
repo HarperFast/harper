@@ -749,6 +749,17 @@ describe('exchangeOidcToken', () => {
 			assert.strictEqual((await exchange(AUDIENCE)).policy, 'k8s-a');
 			await assertRejected(exchange([AUDIENCE, otherAudience]));
 		});
+
+		it('names a rival on the same audience before one on another', async () => {
+			const claims = { sub: 'system:serviceaccount:prod:deployer' };
+			const generic = (id, audience, extra = {}) =>
+				addOidcTrust(asAdmin({ id, issuer: GENERIC_ISSUER, audience, claims, user: 'ci-deploy', ...extra }));
+			await generic('k8s-a', AUDIENCE);
+			await generic('k8s-b', 'https://other.harperdb.io:9925/', { user: 'admin' });
+			await generic('k8s-c', AUDIENCE, { operations: ['deploy_component'] });
+			const { policies } = await listOidcTrust(asAdmin({ operation: 'list_oidc_trust' }));
+			assert.match(policies.find((policy) => policy.id === 'k8s-a').invalid_reason, /same runs as 'k8s-c'/);
+		});
 	});
 
 	// End to end: the policy's scope reaches the minted token, so verifyPerms can narrow on it.

@@ -352,9 +352,11 @@ export async function listOidcTrust(req: any) {
 	});
 	for (const policy of honored) {
 		if (policy.invalid_reason) continue;
-		const rival = honored.find(
+		const rivals = honored.filter(
 			(other) => other !== policy && policiesOverlap(policy, other) && !sameAuthority(policy, other)
 		);
+		// One on the same audience refuses every token the two share, not only one naming both audiences.
+		const rival = rivals.find((other) => other.audience === policy.audience) ?? rivals[0];
 		if (!rival) continue;
 		policy.invalid_reason =
 			rival.audience === policy.audience
