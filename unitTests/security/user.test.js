@@ -454,6 +454,16 @@ describe('user.ts Unit Tests', () => {
 			}
 		});
 
+		it('should remove cached superuser system access when impersonating that user', async () => {
+			const { applyImpersonation } = require('#src/security/impersonation');
+			const original = await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD);
+			assert.strictEqual(original.role.permission.system.tables[COMPONENT_TABLE].read, true);
+			const impersonated = await applyImpersonation(original, { username: SUPER_USER });
+			assert.strictEqual(impersonated.role.permission.system.tables[COMPONENT_TABLE].read, false);
+			assert.strictEqual(original.role.permission.system.tables[COMPONENT_TABLE].read, true);
+			assert.strictEqual((await cachedRolePermissions(SUPER_USER)).system.tables[COMPONENT_TABLE].read, true);
+		});
+
 		it('should expose the shape hasPermissions reads, keyed by table name', async () => {
 			// hasPermissions itself is unreachable from a CJS test: operation_authorization.ts:406
 			// reassigns module.exports and drops it from the require surface. The end-to-end check

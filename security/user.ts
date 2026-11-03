@@ -400,8 +400,8 @@ function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePerm
 	let tables = systemTablesByReadPerm.get(readPerm);
 	if (!tables) {
 		tables = {};
-		systemTablesByReadPerm.set(readPerm, tables);
 		syncSystemTables(tables, readPerm);
+		systemTablesByReadPerm.set(readPerm, tables);
 	}
 	return tables;
 }
@@ -437,7 +437,6 @@ export function appendSystemTablesToRole(userRole: UserRole) {
 		return;
 	}
 	userRole.permission.system = {
-		...userRole.permission.system,
 		tables: systemTablesPermissions(!!userRole.permission.super_user),
 	};
 }

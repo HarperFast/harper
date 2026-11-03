@@ -39,10 +39,25 @@ describe('roles entry events', () => {
 				absolutePath: '/app/roles.yaml',
 				contents: Buffer.from('first:\n  super_user: false\nlegacy:\n  system:\n    hdb_user:\n      read: true\n'),
 			}),
-			(error) => error.statusCode === 400 && /managed by Harper/.test(error.message)
+			(error) => error.statusCode === 400 && /Role 'legacy'.*managed by Harper/.test(error.message)
 		);
 		assert.deepStrictEqual(applied, []);
 	});
+
+	for (const contents of ['', '# No roles yet\n', '---\n']) {
+		it(`accepts an empty roles document ${JSON.stringify(contents)}`, async () => {
+			const harness = testScope();
+			const applied = [];
+			handleApplication(harness.scope, async (role) => applied.push(role.role));
+			await harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(contents),
+			});
+			assert.deepStrictEqual(applied, []);
+		});
+	}
 
 	it('ignores directory and unlink events without reading file contents', async () => {
 		const harness = testScope();

@@ -22,6 +22,8 @@ const COMPONENT_TABLE = 'hdb_status';
 const INSTALL_TABLE = 'hdb_user';
 
 const ROLE = 'system_table_reader_role';
+const LEGACY_ROLE = ROLE + '_legacy';
+const LEGACY_READER = { username: 'legacy_system_reader', password: 'Legacy-pw-2120!' };
 const READER = { username: 'system_table_reader', password: 'Reader-pw-2120!' };
 
 // 403 specifically, not "401 or 403": accepting 401 would let a broken credential or a regression
@@ -47,6 +49,38 @@ suite(
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
 			client = createApiClient(ctx.harper);
 			readerHeaders = createHeaders(READER.username, READER.password);
+			await client
+				.req()
+				.send({
+					operation: 'insert',
+					database: 'system',
+					table: 'hdb_role',
+					records: [
+						{
+							id: LEGACY_ROLE,
+							role: LEGACY_ROLE,
+							permission: {
+								super_user: false,
+								system: {
+									tables: {
+										[COMPONENT_TABLE]: {
+											read: true,
+											insert: true,
+											update: true,
+											delete: true,
+											attribute_permissions: [],
+										},
+									},
+								},
+							},
+						},
+					],
+				})
+				.expect(200);
+			await client
+				.req()
+				.send({ operation: 'add_user', role: LEGACY_ROLE, ...LEGACY_READER, active: true })
+				.expect(200);
 
 			await client
 				.req()
@@ -118,6 +152,32 @@ suite(
 					.expect(FORBIDDEN);
 			});
 		}
+
+		test('legacy role grants are omitted from list_roles and user_info', async () => {
+			const listed = await client.req().send({ operation: 'list_roles' }).expect(200);
+			const role = listed.body.find((role: { role: string }) => role.role === LEGACY_ROLE);
+			strictEqual(role.permission.system, undefined);
+			strictEqual(role.permission.super_user, false);
+			const info = await client
+				.reqAs(createHeaders(LEGACY_READER.username, LEGACY_READER.password))
+				.send({ operation: 'user_info' })
+				.expect(200);
+			strictEqual(info.body.role.role, LEGACY_ROLE);
+			strictEqual(info.body.role.permission.system, undefined);
+		});
+
+		test('a legacy named-role grant cannot authorize a system-table write through impersonation', async () => {
+			await client
+				.req()
+				.send({
+					operation: 'insert',
+					database: 'system',
+					table: COMPONENT_TABLE,
+					records: [{ id: 'legacy-impersonation-write' }],
+					impersonate: { role_name: LEGACY_ROLE },
+				})
+				.expect(FORBIDDEN);
+		});
 
 		test('describe_database lists the component-created table', async () => {
 			const response = await client.req().send({ operation: 'describe_database', database: 'system' }).expect(200);

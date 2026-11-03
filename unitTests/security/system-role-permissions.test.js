@@ -75,6 +75,8 @@ describe('System role permission boundary', () => {
 			} else if (read === 'listRoles') {
 				reported = (await roles.listRoles()).find((role) => role.id === ROLE);
 			} else reported = await roles.getRoleByName(ROLE);
+			assert.strictEqual(reported.id, ROLE);
+			assert.strictEqual(reported.role, ROLE);
 			assert.deepStrictEqual(reported.permission, { super_user: false, operations: ['describe_database'] });
 			const stored = await databases.system.hdb_role.get(ROLE);
 			assert.ok(stored.permission.system, 'reads must not race a concurrent alter_role with a cleanup write');
@@ -94,9 +96,13 @@ describe('System role permission boundary', () => {
 			records: [{ id: ROLE, role: ROLE, permission: { super_user: false, system } }],
 		});
 		const admin = { username: 'admin', active: true, role: { permission: { super_user: true } } };
-		for (const payload of [{ role: { permission: { super_user: true, system } } }, { role_name: ROLE }]) {
+		for (const payload of [
+			{ role: { permission: { super_user: true, system: { ...system, describe: false } } } },
+			{ role_name: ROLE },
+		]) {
 			const result = await applyImpersonation(admin, payload);
 			assert.strictEqual(result.role.permission.super_user, false);
+			assert.strictEqual(result.role.permission.system.describe, undefined);
 			assert.strictEqual(result.role.permission.system.tables.hdb_user.read, false);
 			assert.strictEqual(result.role.permission.system.tables.hdb_user.insert, false);
 		}
