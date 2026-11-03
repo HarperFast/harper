@@ -81,8 +81,9 @@ export function normalizeTarget(target: string): string {
 
 /**
  * Environment names the CLI process itself reads to pick its target, credential, saved-login file,
- * TLS/proxy behaviour, or the GitHub repository and commit it deploys and trusts. Upper case: Windows
- * environment names are case-insensitive, and Node reads lowercase proxy names too.
+ * TLS/proxy behaviour, or the `GITHUB_*` deploy inputs. Not what git or gh read when the CLI runs them:
+ * see bin/DESIGN.md. Upper case: Windows environment names are case-insensitive, and Node reads
+ * lowercase proxy names too.
  */
 const CLI_TRUST_ENV_KEYS = new Set([
 	'HARPER_CLI_TARGET',

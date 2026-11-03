@@ -191,7 +191,9 @@ describe('loadCliDotenv', () => {
 		});
 	}
 
-	it('refuses a lowercase spelling even when the upper-case name is inherited', () => {
+	// On Windows the inherited upper-case name IS the lower-case one, so the file supplies nothing there.
+	it('refuses a lowercase spelling even when the upper-case name is inherited', function () {
+		if (process.platform === 'win32') this.skip();
 		process.env.HTTPS_PROXY = 'http://inherited.example:8080';
 		writeEnv('https_proxy=http://attacker.example:8080\n');
 		assert.throws(loadCliDotenv, /https_proxy/);

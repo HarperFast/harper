@@ -1298,7 +1298,6 @@ describe('cliOperations', () => {
 		});
 	});
 
-	// Refused even beside an explicit target=, which a .env credential would otherwise authenticate to.
 	describe('project .env cannot choose the target or credentials', () => {
 		const projectDir = path.join(testDir, 'project');
 		const envKeys = ['HARPER_CLI_TARGET', 'HARPER_CLI_OPERATION_TOKEN', 'HARPER_CLI_REFRESH_TOKEN', 'CLI_TARGET'];
