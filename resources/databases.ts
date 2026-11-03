@@ -701,6 +701,8 @@ const PEER_REDEFINABLE_FIELDS = [
 	'version',
 	'elements',
 	'properties',
+	'computed',
+	'computedFromExpression',
 	'embed',
 	'decide',
 ];
@@ -5239,6 +5241,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
+				JSON.stringify(attributeDescriptor.computed) !== JSON.stringify(attribute.computed) ||
+				attributeDescriptor.computedFromExpression !== attribute.computedFromExpression ||
 				// Include `embed` so a source/model change refreshes the embed registry.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
 			// any metadata difference (drives persistence). `decide` is compared here and not in
