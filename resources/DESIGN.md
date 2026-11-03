@@ -194,7 +194,7 @@ A read-only process stages no writes: every producer passes `DatabaseTransaction
 
 ## A past-expiry record stays queryable until eviction
 
-Eviction (`scheduleCleanup`) trails expiry (`ttlCleanupInterval.test.js`). Search returns an expired record as stored (covered selects too); a caching table's loaded select refreshes it unless only-if-cached or `includeExpired` (SQL). With no source get, get, only-if-cached get (504), subscribe and `withLocalEntry` (no `ETag`) hide it (`isHiddenExpiry`). Expiry resolves at commit (option, context, field, default); an out-of-order write keeps its base's expiry (`onlyIfCachedExpiry.test.js`).
+Eviction (`scheduleCleanup`) trails expiry (`ttlCleanupInterval.test.js`). Search returns expired rows as stored (covered selects too); a caching table's loaded select refreshes unless only-if-cached or `includeExpired` (SQL). With no source get, get, only-if-cached (504), subscribe and `withLocalEntry` (no `ETag`) hide it (`isHiddenExpiry`). Expiry resolves at commit (option, context, field, default); out-of-order writes keep their base's expiry (`onlyIfCachedExpiry.test.js`).
 
 ## RocksDB range activity and snapshot expiration
 
@@ -202,7 +202,7 @@ Eviction (`scheduleCleanup`) trails expiry (`ttlCleanupInterval.test.js`). Searc
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not caller options (`uncachedRead` forwards it); add options there. `coverIndexEntries` reads no record (overflow and `-0` keys aside); it covers attributes declared scalar (`SCALAR_TYPES`) or untyped/`ID` PKs; unvalidated values and untyped/`ID` `[x]` or bigint ids keep index form (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not caller options (`uncachedRead` forwards it); add options there. `coverIndexEntries` reads no record (overflow and `-0` keys aside), covering `SCALAR_TYPES` and untyped/`ID` PKs; unvalidated values (save `Date`/`BigInt` ints, which decode) and untyped/`ID` `[x]` or bigint ids keep index form (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 

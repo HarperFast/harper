@@ -7903,14 +7903,13 @@ export function makeTable(options): TableResourceClass {
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
 			try {
-				// resources/DESIGN.md, Per-row read work on RocksDB index scans (and A past-expiry record stays queryable until eviction)
 				const coveredAttribute =
 					select !== undefined &&
 					!postOrdering &&
 					!recordAccess &&
 					!residencyPolicy &&
 					(context as any)?.replicateFrom !== false
-						? coveredSelectAttribute(select)
+						? coveredSelectAttribute(select) // covers caching tables too; expired entries stay in index form (DESIGN.md)
 						: undefined;
 				const entries = executeConditions(
 					conditions,
@@ -8966,8 +8965,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						// resources/DESIGN.md, A past-expiry record stays queryable until eviction (scheduleCleanup)
-						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
+						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry)) // sourceless tables return expired entries until scheduleCleanup evicts them (DESIGN.md)
 					) {
 						if (context.onlyIfCached) {
 							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;
