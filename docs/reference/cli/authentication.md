@@ -13,7 +13,7 @@ The Harper CLI handles authentication differently for local and remote operation
 
 Available since: v4.1.0
 
-For local operations (operations executed on the same machine where Harper is installed), the CLI communicates with Harper via Unix domain sockets instead of HTTP. Domain socket requests are automatically authenticated as the superuser, so no additional authentication parameters are required.
+For local operations (operations executed on the same machine where Harper is installed), the CLI communicates with Harper via Unix domain sockets instead of HTTP. Domain socket requests are automatically authorized as a super user, so no additional authentication parameters are required. From v5.4.0, these requests run as the built-in [`local` user](../security/configuration.md#local-request-identity), independently of stored users.
 
 **Example**:
 

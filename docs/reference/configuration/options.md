@@ -139,7 +139,7 @@ authentication:
   refreshTokenTimeout: 30d
 ```
 
-- `authorizeLocal` — Auto-authorize loopback requests as superuser; _Default_: `true`
+- `authorizeLocal` — Auto-authorize loopback requests as superuser; _Default_: `true`. From v5.4.0, these requests run as the built-in [`local` user](../security/configuration.md#local-request-identity).
 - `cacheTTL` — Session cache duration (ms); _Default_: `30000`
 - `enableSessions` — Cookie-based sessions; _Default_: `true`
 - `operationTokenTimeout` — Access token lifetime; _Default_: `1d`

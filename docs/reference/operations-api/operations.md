@@ -552,7 +552,7 @@ Returns all users.
 
 ### `user_info`
 
-Returns data for the currently authenticated user.
+Returns data for the currently authenticated user. From v5.4.0, [locally trusted requests](../security/configuration.md#local-request-identity) report `username: "local"` for the built-in super user.
 
 ```json
 { "operation": "user_info" }
@@ -624,6 +624,12 @@ Does not require prior authentication when called with `username`/`password`. Re
 	"password": "my-password"
 }
 ```
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+When both `username` and `password` are omitted from a [locally trusted request](../security/configuration.md#local-request-identity), Harper issues tokens for the first active stored user, in username order, whose role has the `super_user` permission. The role need not be named `super_user`. The operation and refresh tokens carry that stored user's normal claims, and the mint replaces that user's stored refresh token, as before. No token is issued for the built-in `local` identity.
+
+If no such stored user exists, the operation fails with HTTP 409: `no user to mint a token for; create a user first`. For ordinary tokens, supplying a `username` still requires its `password`, even on a local connection.
 
 With `role` as an inline role object, instead mints a single **scoped token** whose bearer is limited to the embedded permissions — requires an authenticated `super_user` caller, and refuses one authenticated by a component's [Bearer validator](../http/api.md#serverregisterbearervalidatorvalidator-options); `username` is attribution only and must not name an existing user (defaults to `scoped:<minter>`); no refresh token is issued and the token cannot be revoked before expiry. See [JWT Authentication / Scoped Tokens](../security/jwt-authentication.md#scoped-tokens-inline-role).
 
