@@ -219,9 +219,7 @@ suite(
 						buffered = frames.pop()!;
 						stream.events += frames.filter((frame) => /(^|\n)data:/.test(frame)).length;
 					}
-				} catch {
-					// ended without a final chunk
-				}
+				} catch {}
 				stream.closedBy = controller.signal.aborted ? 'test' : 'server';
 				stream.closed = true;
 			})();
@@ -466,6 +464,7 @@ suite(
 			test('revoking the related table closes the subscription conditioned on it and leaves a sibling open', async () => {
 				const related = await liveSubscription('revocable', '/Emp/?dept.budget=gt=0', EMPS.length);
 				const sibling = await liveSubscription('revocable', '/Emp/?level=gt=0', EMPS.length);
+				ok(!related.closed, 'the relationship-conditioned stream closed before alter_role');
 
 				const altered = await op('super', {
 					operation: 'alter_role',
@@ -489,6 +488,7 @@ suite(
 				strictEqual(ungranted.status, 403);
 				const related = await liveSubscription('attrRevocable', '/Emp/?dept.label=Eng', 1);
 				const sibling = await liveSubscription('attrRevocable', '/Emp/?level=gt=0', EMPS.length);
+				ok(!related.closed, 'the attribute-conditioned stream closed before alter_role');
 
 				const altered = await op('super', {
 					operation: 'alter_role',
