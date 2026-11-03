@@ -115,6 +115,7 @@ import {
 	completedReplayThrough,
 	drainCount,
 	handOffReplay,
+	releaseReplayFloor,
 	replayRecordKey,
 	requestDrain,
 	type ReplayedIds,
@@ -9200,9 +9201,7 @@ export function makeTable(options): TableResourceClass {
 					// a certified subscription takes every live entry from here: the key gate would drop a late
 					// lower-key commit that a floor then certifies as delivered
 					subscription.ungated = true;
-					const gate = subscription.replayGate;
-					if (gate?.ids) gate.after = undefined;
-					else subscription.replayGate = undefined;
+					releaseReplayFloor(subscription);
 				};
 				const filtersWithoutKey = Boolean(rowFilter || eventFilter) && !request.filterKey;
 				const checkpointScopeId = scope();
@@ -9477,9 +9476,9 @@ export function makeTable(options): TableResourceClass {
 									reloadPending = true;
 									if (handsOff) noteReplayed(auditRecord, null);
 								} else if (thisId == null || isReload || isDescendantId(thisId, id)) {
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									// as live: the broadcast drops a merged write while the replay runs, so this is its delivery
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, handsOff);
 									if (event) {
-										// only what produced an event: a merged write the replay skips is delivered live
 										if (handsOff) noteReplayed(auditRecord, isReload ? null : replayRecordKey(id));
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;

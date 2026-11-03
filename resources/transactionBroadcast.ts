@@ -10,6 +10,7 @@ import {
 	type CertifiedFloors,
 } from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
+import { toBufferKey } from 'ordered-binary';
 import type { Id } from './ResourceInterface.ts';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
@@ -396,25 +397,23 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 	}
 }
 
-/** origin node id → transaction-log key → `replayRecordKey` of each record */
-export type ReplayedIds = Map<number, Map<number, Set<any>>>;
+export type ReplayedIds = Map<number, Map<number, Set<string | null | undefined>>>;
 interface ReplayGate {
 	after?: number;
 	ids?: ReplayedIds;
+	/** a certified subscription's floor holds only until the backlog its registration found is dispatched */
+	floorUntilDrain?: boolean;
 }
 
-/** A record id as a set member; routing text would merge `['a', 'b']` with `'a/b'`. */
-export function replayRecordKey(recordId: any): any {
-	return typeof recordId === 'object' && recordId !== null ? JSON.stringify(recordId) : recordId;
+/** The record's key encoding: distinct ids never share one, and routing text would merge `['a', 'b']` with `'a/b'`. */
+export function replayRecordKey(recordId: any): string | undefined {
+	// an id that failed to decode has no encoding
+	return recordId === undefined ? undefined : toBufferKey(recordId).toString('latin1');
 }
 
-function replayHandled(ids: ReplayedIds, auditRecord: any, timestamp: number, recordKey: any): boolean {
-	return (
-		ids
-			.get(auditRecord.nodeId ?? 0)
-			?.get(timestamp)
-			?.has(recordKey) === true
-	);
+function replayHandled(ids: ReplayedIds, auditRecord: any, timestamp: number, isReload: boolean): boolean {
+	const records = ids.get(auditRecord.nodeId ?? 0)?.get(timestamp);
+	return records !== undefined && records.has(isReload ? null : replayRecordKey(auditRecord.recordId));
 }
 
 /**
@@ -454,6 +453,16 @@ export function handOffReplay(subscription: any, after: number | undefined, ids:
 	if (!subscriptions || (after === undefined && !ids)) return;
 	subscription.replayGate = { after, ids };
 	if (!ids) return;
+	(subscriptions.replayTails ??= new Set()).add(subscription);
+	schedulePass(subscriptions);
+}
+
+/** A certified subscription takes every live entry once the backlog dispatched with its floor drains. */
+export function releaseReplayFloor(subscription: any): void {
+	const gate = subscription.replayGate;
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!gate || !subscriptions) return;
+	gate.floorUntilDrain = true;
 	(subscriptions.replayTails ??= new Set()).add(subscription);
 	schedulePass(subscriptions);
 }
@@ -662,8 +671,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 										if (
 											gate !== undefined &&
 											(gate.after >= timestamp ||
-												(gate.ids !== undefined &&
-													replayHandled(gate.ids, auditRecord, timestamp, replayRecordKey(recordId))))
+												(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, false)))
 										)
 											continue;
 									} else if (subscription.startTime >= timestamp) continue;
@@ -721,7 +729,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 									if (
 										gate !== undefined &&
 										(gate.after >= timestamp ||
-											(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, null)))
+											(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, true)))
 									)
 										continue;
 								} else if (subscription.startTime >= timestamp) continue;
@@ -767,7 +775,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			if (subscriptions.replayTails) {
 				for (const subscription of subscriptions.replayTails) {
 					const gate = subscription.replayGate;
-					if (gate.after === undefined) subscription.replayGate = undefined;
+					if (gate.after === undefined || gate.floorUntilDrain) subscription.replayGate = undefined;
 					else gate.ids = undefined;
 				}
 				subscriptions.replayTails = undefined;
