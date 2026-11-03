@@ -92,22 +92,29 @@ Things that are easy to get wrong here:
 
 A replication source must tell a follower that missed purged entries from one whose source simply
 wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
-never existed or were removed. `Symbol.for('log-purge-bounds')` holds `{ epoch, cutoff, logs }`, and
-`getLogPurgeBound` returns an upper bound on every key any prune removed from the named logs.
+never existed or were removed. `Symbol.for('log-purge-bounds')` holds
+`{ epoch, cutoff, observedAt, logs: { name: [bound, quietAt] } }`, and `getLogPurgeBound` returns an
+upper bound on every key any prune removed from the named logs.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
-  every prune path. A retention pass (`observeLogs`) records each log's `min(maximum key, cutoff)`,
-  probing with `readUncommitted` so a batch written but not yet committed is covered. Any other prune
-  (`deleteHistory`, `delete_transaction_logs_before`) can remove keys of transactions still committing
-  near its cutoff, so it raises `epoch` to the cutoff instead.
-- **`epoch` bounds what tracking never saw**: the floor when the record was created. A log emptied
-  before that reads as purged through the floor, which forces one conservative resync.
+  every prune path. A retention pass (`observeLogs`) probes each log with `readUncommitted`: a log with
+  no entry at or past the cutoff is quiet, bounded by its largest key, and `quietAt` becomes now. Any
+  other prune (`deleteHistory`, `delete_transaction_logs_before`) raises `epoch` to its cutoff.
+- **RocksDB removes whole segments by mtime**, so a log written past the cutoff since its last quiet pass
+  is bounded by the cutoff plus `CLOCK_AHEAD_MARGIN_MS` (keys minted ahead of the clock, or on a peer's).
+  One written since a quiet pass at or past the cutoff keeps its bound: every segment the prune can
+  remove was last written before that pass.
+- **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not
+  set) when a log opens, closes or rotates, including the file being appended to. That cannot reach past
+  `bound` while `quietAt` is within the native retention; once it is not, `exposedBound` adds the native
+  horizon, in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
+  that retention and `logPurgeBoundsCover` rewrites a `quietAt` older than half of it, so an idle log on
+  a running node never reaches the horizon. A node down longer than the native retention resyncs once.
+- **`epoch` bounds what tracking never saw**: the floor (plus the margin on RocksDB) when the record was
+  created. A log emptied before that reads as purged through it, which forces one conservative resync.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.
-- **Answers only for logs nothing was written to above their bound.** rocksdb-js also purges aged
-  segments natively when a write rotates a log, outside `raiseAuditFloor`; an unwritten log cannot
-  rotate. A written log gets `undefined`, and the caller keeps its time-based rule.
 - Not fsynced before the files go: power loss can lose the record with the floor it shares a
   transaction with ([harper#3947](https://github.com/HarperFast/harper/issues/3947)).
 

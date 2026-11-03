@@ -14,6 +14,9 @@ const {
 	getLogPurgeBound,
 	raiseAuditFloor,
 	stampDatabaseGeneration,
+	purgeAgedLogs,
+	setAuditRetention,
+	auditRetention,
 } = require('#src/resources/auditStore');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -29,6 +32,8 @@ function freshTable() {
 		audit: true,
 	});
 }
+
+const DAY_MS = 86_400_000;
 
 function writeMetadata(auditStore, key, bytes) {
 	const root = auditStore.rootStore;
@@ -58,6 +63,33 @@ function localLogKeys(auditStore) {
 
 const scope = (name) => (isLMDB ? undefined : [name]);
 
+function nativeRetention(auditStore) {
+	return auditStore.rootStore.useLog('local').getStats().config.retentionMs;
+}
+
+function writeRecord(auditStore, record) {
+	writeMetadata(auditStore, LOG_PURGE_BOUNDS_KEY, pack(record));
+}
+
+// a database whose floor is `age` old, so a bound read within its first minute is not just the new epoch
+function backdatedTable(age = 3_600_000) {
+	const Table = freshTable();
+	const floor = Date.now() - age;
+	writeMetadata(Table.auditStore, AUDIT_FLOOR_KEY, floorBytes(floor));
+	writeRecord(Table.auditStore, { epoch: floor, cutoff: floor, observedAt: 0, logs: {} });
+	return Table;
+}
+
+// a log handle that counts or fails queries, passing the retention through
+function interceptQueries(rootStore, query) {
+	const useLog = rootStore.useLog;
+	rootStore.useLog = function (name) {
+		const log = useLog.call(this, name);
+		return { getStats: () => log.getStats(), query: (options) => query(name, log, options) };
+	};
+	return () => (rootStore.useLog = useLog);
+}
+
 function recordedLogs(auditStore) {
 	return unpack(auditStore.getBinary(LOG_PURGE_BOUNDS_KEY)).logs;
 }
@@ -70,40 +102,108 @@ describe('per-log purge bounds', function () {
 		setMainIsWorker(true);
 	});
 
-	it('starts a new database at its floor, before any prune', () => {
+	it('bounds a new database by its epoch and what it holds once a retention pass has seen it', () => {
 		const { auditStore } = freshTable();
-		const bound = getLogPurgeBound(auditStore, scope('local'));
-		assert.strictEqual(bound, getAuditFloor(auditStore), 'nothing was purged above the floor stamped at open');
+		raiseAuditFloor(auditStore, Date.now() + 1000, true);
+		const { epoch } = unpack(auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		assert.strictEqual(getLogPurgeBound(auditStore, scope('local')), Math.max(epoch, ...localLogKeys(auditStore)));
+	});
+
+	it('bounds a log no retention pass has seen by the epoch and the native horizon', async function () {
+		if (isLMDB) return this.skip(); // no native purge
+		const Table = backdatedTable(400 * DAY_MS);
+		await Table.put('unseen', { name: 'x' });
+		const bound = getLogPurgeBound(Table.auditStore, ['local']);
+		assert.ok(bound >= getAuditFloor(Table.auditStore));
+		assert.ok(bound >= Date.now() - nativeRetention(Table.auditStore));
 	});
 
 	it('keeps an idle log at its exact newest key, not at the cutoff', async () => {
-		const Table = freshTable();
+		const Table = backdatedTable();
 		for (let i = 0; i < 5; i++) await Table.put(`idle-${i}`, { name: 'x' });
 		const newest = Math.max(...localLogKeys(Table.auditStore));
 		raiseAuditFloor(Table.auditStore, Date.now() + 60_000, true);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), newest);
-		// a follower caught up on this idle log sits exactly at that key and missed nothing
 	});
 
-	it('caps an active log at the cutoff, and answers nothing for a log written above its bound', async () => {
+	it('keeps an idle log at its bound after a new write while its quiet pass is past the cutoff', async () => {
+		const Table = backdatedTable();
+		await Table.put('before', { name: 'x' });
+		const newest = Math.max(...localLogKeys(Table.auditStore));
+		const quietPass = Date.now();
+		raiseAuditFloor(Table.auditStore, quietPass + 1000, true);
+		await Table.put('after', { name: 'x' });
+		// the next pass's cutoff is below the quiet pass, so nothing it can remove is newer than `before`
+		raiseAuditFloor(Table.auditStore, quietPass - 1000, true);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), newest);
+	});
+
+	it('takes the cutoff and more for a log written through a whole retention window', async function () {
+		if (isLMDB) return this.skip(); // one key-ordered store, removed by key
 		const Table = freshTable();
 		await Table.put('older', { name: 'x' });
 		const cutoff = Date.now();
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		await Table.put('newer', { name: 'x' });
 		raiseAuditFloor(Table.auditStore, cutoff, true);
-		assert.strictEqual(recordedLogs(Table.auditStore)[isLMDB ? '' : 'local'], cutoff);
-		// rotation of a written log can purge natively, outside the record, so the source keeps its old rule
-		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), undefined);
+		// a segment last written before the cutoff can hold keys up to the clock margin past it
+		assert.strictEqual(recordedLogs(Table.auditStore).local[0], cutoff + 60_000);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['local']), cutoff + 60_000);
 	});
 
-	it('answers nothing once an idle log is written again', async () => {
-		const Table = freshTable();
-		await Table.put('before', { name: 'x' });
-		raiseAuditFloor(Table.auditStore, Date.now() + 60_000, true);
-		assert.notStrictEqual(getLogPurgeBound(Table.auditStore, scope('local')), undefined);
-		await Table.put('after', { name: 'x' });
-		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), undefined);
+	it('takes the native retention horizon once a log has not been quiet within that retention', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable(400 * DAY_MS);
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		record.logs.local = [1, Date.now() - 400 * DAY_MS];
+		record.observedAt = Date.now();
+		writeRecord(Table.auditStore, record);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= Date.now() - nativeRetention(Table.auditStore));
+	});
+
+	it('keeps the native horizon when a pass finds a log emptied after its quiet time aged out', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable(400 * DAY_MS);
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		// rocksdb-js may have purged writes made after that quiet pass when the log last opened
+		record.logs.local = [1, Date.now() - 400 * DAY_MS];
+		record.observedAt = Date.now();
+		writeRecord(Table.auditStore, record);
+		raiseAuditFloor(Table.auditStore, Date.now() + 1000, true);
+		const horizon = Date.now() - nativeRetention(Table.auditStore);
+		assert.ok(recordedLogs(Table.auditStore).local[0] >= horizon);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= horizon);
+	});
+
+	it('rewrites a quiet time older than half the native retention, keeping the bound', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		await Table.put('aging', { name: 'x' });
+		raiseAuditFloor(Table.auditStore, Date.now() + 1000, true);
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		const [bound] = record.logs.local;
+		const aging = Date.now() - nativeRetention(Table.auditStore) * 0.6;
+		record.logs.local = [bound, aging];
+		writeRecord(Table.auditStore, record);
+		raiseAuditFloor(Table.auditStore, Date.now() + 1000, true);
+		const [rewrittenBound, quietAt] = recordedLogs(Table.auditStore).local;
+		assert.strictEqual(rewrittenBound, bound);
+		assert.ok(quietAt > aging + 1000, 'the quiet time moved to this pass');
+	});
+
+	it('records each log through the boot purge', async function () {
+		if (isLMDB) return this.skip(); // LMDB has no log purge
+		const Table = backdatedTable();
+		for (let i = 0; i < 3; i++) await Table.put(`boot-${i}`, { name: 'x' });
+		const newest = Math.max(...localLogKeys(Table.auditStore));
+		const retention = auditRetention;
+		setAuditRetention(-60_000);
+		try {
+			purgeAgedLogs(Table.auditStore.rootStore);
+		} finally {
+			setAuditRetention(retention);
+		}
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['local']), newest);
 	});
 
 	it('records the cutoff of a prune that is not a retention pass, as delete_transaction_logs_before', async () => {
@@ -112,7 +212,7 @@ describe('per-log purge bounds', function () {
 		const newest = Math.max(...localLogKeys(Table.auditStore));
 		raiseAuditFloor(Table.auditStore, newest + 1);
 		// a transaction committing near the cutoff may not have been observable, so no log keeps a lower bound
-		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), newest + 1);
+		assert.ok(getLogPurgeBound(Table.auditStore, scope('local')) >= newest + 1);
 	});
 
 	it('finds the largest key of a log whose entries are not in key order, and ones above the clock', async function () {
@@ -120,8 +220,8 @@ describe('per-log purge bounds', function () {
 		const Table = freshTable();
 		const origin = getIdOfRemoteNode('bound-origin', Table.auditStore);
 		const base = Date.now() + 3_600_000;
-		// appended in this order: the larger key first, then smaller ones, all above the clock
-		for (const offset of [20, 10, 15])
+		// the largest key is appended between smaller ones, and all are above the clock
+		for (const offset of [10, 20, 15])
 			await applyAsOrigin(Table, `future-${offset}`, { nodeId: origin, logKey: base + offset });
 		raiseAuditFloor(Table.auditStore, base + 30, true);
 		assert.strictEqual(
@@ -139,22 +239,15 @@ describe('per-log purge bounds', function () {
 		const origin = getIdOfRemoteNode('burst-origin', Table.auditStore);
 		const base = Math.floor(Date.now() + 5_400_000);
 		for (let i = 0; i < 200; i++) await applyAsOrigin(Table, `burst-${i}`, { nodeId: origin, logKey: base + i / 1000 });
-		const rootStore = Table.auditStore.rootStore;
-		const useLog = rootStore.useLog;
 		let queries = 0;
-		rootStore.useLog = function (name) {
-			const log = useLog.call(this, name);
-			return {
-				query(options) {
-					if (name === 'burst-origin') queries++;
-					return log.query(options);
-				},
-			};
-		};
+		const restore = interceptQueries(Table.auditStore.rootStore, (name, log, options) => {
+			if (name === 'burst-origin') queries++;
+			return log.query(options);
+		});
 		try {
 			raiseAuditFloor(Table.auditStore, base + 10, true);
 		} finally {
-			rootStore.useLog = useLog;
+			restore();
 		}
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['burst-origin']), base + 199 / 1000);
 		assert.ok(queries < 80, `${queries} probes for one log`);
@@ -207,6 +300,10 @@ describe('per-log purge bounds', function () {
 
 	for (const [label, value] of [
 		['undecodable bytes', new Uint8Array([0xc1, 0xc1])],
+		[
+			'an entry of the wrong shape',
+			pack({ epoch: 1, cutoff: Date.now() * 2, observedAt: 1, logs: { 'local': [1, 2, 0], '': [1, 2, 0] } }),
+		],
 		['a negative bound', pack({ epoch: 1, cutoff: Date.now() * 2, logs: { 'local': -5, '': -5 } })],
 		['a non-finite epoch', pack({ epoch: Infinity, cutoff: Date.now() * 2, logs: {} })],
 		['a logs array', pack({ epoch: 1, cutoff: Date.now() * 2, logs: [1] })],
@@ -222,20 +319,16 @@ describe('per-log purge bounds', function () {
 		if (isLMDB) return this.skip();
 		const Table = freshTable();
 		await Table.put('unreadable', { name: 'x' });
-		const rootStore = Table.auditStore.rootStore;
-		const useLog = rootStore.useLog;
-		rootStore.useLog = (name) => ({
-			query() {
-				throw new Error(`cannot read ${name}`);
-			},
+		const restore = interceptQueries(Table.auditStore.rootStore, (name) => {
+			throw new Error(`cannot read ${name}`);
 		});
 		const cutoff = Date.now() + 5000;
 		try {
 			raiseAuditFloor(Table.auditStore, cutoff, true);
 		} finally {
-			rootStore.useLog = useLog;
+			restore();
 		}
-		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['local']), cutoff);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= cutoff);
 	});
 
 	it('probes each log at most twice and takes no write lock when nothing changed', async function () {
@@ -245,19 +338,13 @@ describe('per-log purge bounds', function () {
 		const cutoff = Date.now() + 60_000;
 		raiseAuditFloor(Table.auditStore, cutoff, true);
 		const rootStore = Table.auditStore.rootStore;
-		const useLog = rootStore.useLog;
 		const transactionSync = rootStore.transactionSync;
 		let queries = 0;
 		let transactions = 0;
-		rootStore.useLog = function (name) {
-			const log = useLog.call(this, name);
-			return {
-				query(options) {
-					queries++;
-					return log.query(options);
-				},
-			};
-		};
+		const restore = interceptQueries(rootStore, (name, log, options) => {
+			queries++;
+			return log.query(options);
+		});
 		rootStore.transactionSync = function (...args) {
 			transactions++;
 			return transactionSync.apply(this, args);
@@ -265,7 +352,7 @@ describe('per-log purge bounds', function () {
 		try {
 			raiseAuditFloor(Table.auditStore, cutoff, true);
 		} finally {
-			rootStore.useLog = useLog;
+			restore();
 			rootStore.transactionSync = transactionSync;
 		}
 		assert.ok(queries <= 2 * rootStore.listLogs().length, `${queries} probes for ${rootStore.listLogs().length} logs`);
