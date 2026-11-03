@@ -6,6 +6,8 @@ import { getThisNodeName } from '../server/nodeName.ts';
 import { pack, unpack } from 'msgpackr';
 import type { Database } from 'lmdb';
 import { server } from '../server/Server.ts';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { asBinary } from './asBinary.ts';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(auditStore) {
@@ -58,55 +60,87 @@ export function exportIdMapping(auditStore) {
 	return getIdMappingRecord(auditStore).remoteNameToId;
 }
 
+function nextNodeId(nameToId: Record<string, number>): number {
+	let lastId = 0;
+	for (const name in nameToId) {
+		const id = nameToId[name];
+		if (id > lastId) lastId = id;
+	}
+	return lastId + 1;
+}
+
+/**
+ * One read-modify-write of the mapping under a store transaction, so two workers minting at once cannot
+ * hand one id to two names or drop each other's additions. `mutate` gets the stored mapping and returns
+ * whether it changed it; the mapping as committed is returned.
+ */
+function updateIdMapping(auditStore: any, mutate: (nameToId: Record<string, number>) => boolean) {
+	const rootStore = auditStore.rootStore;
+	let record: any;
+	let changed = false;
+	const apply = (stored: any, write: (bytes: Buffer) => void) => {
+		record = stored ? unpack(stored) : null;
+		record ??= { remoteNameToId: {} };
+		record.nodeName = getThisNodeName();
+		changed = mutate(record.remoteNameToId);
+		if (changed) write(pack(record));
+		return true;
+	};
+	let committed: unknown = true;
+	if (rootStore instanceof RocksDatabase) {
+		committed = rootStore.transactionSync(
+			(txn: any) => apply(txn.getBinarySync(REMOTE_NODE_IDS), (bytes) => txn.putSync(REMOTE_NODE_IDS, asBinary(bytes))),
+			{ retryOnBusy: true }
+		);
+	} else if (rootStore?.transactionSync) {
+		committed = rootStore.transactionSync(() =>
+			apply(auditStore.getBinary(REMOTE_NODE_IDS), (bytes) =>
+				auditStore
+					.put(REMOTE_NODE_IDS, bytes)
+					?.catch?.((error) => logger.warn?.('Error writing the node id mapping', error))
+			)
+		);
+	} else {
+		apply(auditStore.getBinary(REMOTE_NODE_IDS), (bytes) => auditStore.putSync(REMOTE_NODE_IDS, bytes));
+	}
+	// RocksDB reports a swallowed abort as undefined rather than throwing
+	if (committed !== true) throw new Error('The node id mapping transaction did not commit');
+	if (changed) invalidateNodeNames(auditStore);
+	return record.remoteNameToId as Record<string, number>;
+}
+
 /**
  * Take the remote node's long id to short id mapping and create a map from the remote node's short id to the local node short id.
  */
 export function remoteToLocalNodeId(remoteMapping: any, auditStore: any) {
-	const idMappingRecord = getIdMappingRecord(auditStore);
-	const nameToId = idMappingRecord.remoteNameToId;
-	const remoteToLocalId = new Map();
-	let hasChanges = false;
-	for (const remoteNodeName in remoteMapping) {
-		const remoteId = remoteMapping[remoteNodeName];
-		let localId = nameToId[remoteNodeName];
-		if (localId == undefined) {
-			let lastId = 0;
-			for (const name in nameToId) {
-				const id = nameToId[name];
-				if (id > lastId) {
-					lastId = id;
-				}
+	let nameToId = getIdMappingRecord(auditStore).remoteNameToId;
+	if (Object.keys(remoteMapping).some((name) => nameToId[name] == undefined)) {
+		nameToId = updateIdMapping(auditStore, (stored) => {
+			let changed = false;
+			for (const remoteNodeName in remoteMapping) {
+				if (stored[remoteNodeName] != undefined) continue;
+				stored[remoteNodeName] = nextNodeId(stored);
+				changed = true;
 			}
-			localId = lastId + 1;
-			nameToId[remoteNodeName] = localId;
-			hasChanges = true;
-		}
-		remoteToLocalId.set(remoteId, localId);
+			return changed;
+		});
 	}
-	if (hasChanges) {
-		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames(auditStore);
-	}
+	const remoteToLocalId = new Map();
+	for (const remoteNodeName in remoteMapping)
+		remoteToLocalId.set(remoteMapping[remoteNodeName], nameToId[remoteNodeName]);
 	return remoteToLocalId;
 }
 
 export function getIdOfRemoteNode(remoteNodeName, auditStore) {
-	const idMappingRecord = getIdMappingRecord(auditStore);
-	const nameToId = idMappingRecord.remoteNameToId;
-	let id = nameToId[remoteNodeName];
-	if (id == undefined) {
-		let lastId = 0;
-		for (const name in nameToId) {
-			const id = nameToId[name];
-			if (id > lastId) {
-				lastId = id;
-			}
-		}
-		id = lastId + 1;
-		nameToId[remoteNodeName] = id;
-		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames(auditStore);
+	let nameToId = getIdMappingRecord(auditStore).remoteNameToId;
+	if (nameToId[remoteNodeName] == undefined) {
+		nameToId = updateIdMapping(auditStore, (stored) => {
+			if (stored[remoteNodeName] != undefined) return false;
+			stored[remoteNodeName] = nextNodeId(stored);
+			return true;
+		});
 	}
+	const id = nameToId[remoteNodeName];
 	logger.trace?.('The remote node name map', remoteNodeName, nameToId, id);
 	return id;
 }
