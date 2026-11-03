@@ -9,8 +9,7 @@ const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
 const OpenEnvironmentObject = require('#src/utility/lmdb/OpenEnvironmentObject').default;
 
 // Each engine opens its store directly, so one run covers all three save paths regardless of
-// HARPER_STORAGE_ENGINE. `saveStore` is the store whose transactionSync runs the structure save;
-// `saveDepth` is how deeply that call is nested in the write's own transactionSync calls.
+// HARPER_STORAGE_ENGINE. `saveDepth` counts the write's own transactionSync calls around the save's.
 function openRocks(dir, { randomAccessStructure = true } = {}) {
 	const db = PrimaryRocksDatabase.open(dir, {
 		...new OpenDBIObject(false, true),
@@ -42,13 +41,20 @@ const engines = [
 				name: '__dbis__',
 			});
 			rootDb.encoder.useVersions = false;
-			const db = PrimaryRocksDatabase.open(dir, {
-				...new OpenDBIObject(false, true),
-				randomAccessStructure: true,
-				disableWAL: false,
-				name: 'Shapes',
-			});
-			db.initStore(rootDb);
+			let db;
+			try {
+				db = PrimaryRocksDatabase.open(dir, {
+					...new OpenDBIObject(false, true),
+					randomAccessStructure: true,
+					disableWAL: false,
+					name: 'Shapes',
+				});
+				db.initStore(rootDb);
+			} catch (error) {
+				db?.close();
+				rootDb.close();
+				throw error;
+			}
 			return {
 				db,
 				saveStore: rootDb,
