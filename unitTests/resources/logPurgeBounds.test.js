@@ -541,6 +541,7 @@ describe('per-log purge bounds', function () {
 			restore();
 		}
 		assert.strictEqual(recordedLogs(Table.auditStore).local[0], bound);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, 'local'), bound);
 	});
 
 	it('bounds a log it cannot read by the cutoff', async function () {
