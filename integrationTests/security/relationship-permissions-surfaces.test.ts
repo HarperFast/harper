@@ -111,7 +111,6 @@ suite(
 				`${context}: expected 403, got ${response.status} ${JSON.stringify(response.body)}`
 			);
 			if (!denied) return;
-			// the operations API answers for what the role cannot describe as it does for a root reference
 			const [table, attribute] = denied.split('.');
 			deepStrictEqual(
 				response.body?.invalid_schema_items,
@@ -128,8 +127,6 @@ suite(
 			strictEqual(message, 'Unauthorized access to resource', `${context}: ${JSON.stringify(response.body)}`);
 			strictEqual(response.body?.data, undefined, `${context}: ${JSON.stringify(response.body)}`);
 		}
-		// a sub-selection naming an unreadable related attribute is narrowed to the readable ones; whether the
-		// granted primary key is returned alongside is not pinned here
 		function assertNarrowedToLabel(project: any, context: string) {
 			const text = JSON.stringify(project);
 			for (const secret of SECRETS) ok(!text.includes(secret), `${context}: ${text}`);
@@ -183,16 +180,25 @@ suite(
 			status: number;
 			events: number;
 			closed: boolean;
+			closedBy?: 'server' | 'test';
 			abort: () => void;
 		}
 		async function subscribe(as: Principal, path: string): Promise<Stream> {
 			const controller = new AbortController();
 			const stream: Stream = { status: 0, events: 0, closed: false, abort: () => controller.abort() };
 			streams.push(stream);
-			const response = await fetch(`${restURL}${path}`, {
-				headers: { ...headers[as], Accept: 'text/event-stream' },
-				signal: AbortSignal.any([controller.signal, AbortSignal.timeout(REQUEST_TIMEOUT)]),
-			});
+			// the deadline covers the handshake only: the signal stays attached to the body, so a timeout
+			// signal would end the stream from this side later and read as a close by the server
+			const handshake = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+			let response: Response;
+			try {
+				response = await fetch(`${restURL}${path}`, {
+					headers: { ...headers[as], Accept: 'text/event-stream' },
+					signal: controller.signal,
+				});
+			} finally {
+				clearTimeout(handshake);
+			}
 			stream.status = response.status;
 			if (response.status !== 200) {
 				stream.closed = true;
@@ -214,8 +220,9 @@ suite(
 						stream.events += frames.filter((frame) => /(^|\n)data:/.test(frame)).length;
 					}
 				} catch {
-					// aborted by the test, or closed by the server
+					// ended without a final chunk
 				}
+				stream.closedBy = controller.signal.aborted ? 'test' : 'server';
 				stream.closed = true;
 			})();
 			return stream;
@@ -468,6 +475,7 @@ suite(
 				});
 				strictEqual(altered.status, 200, JSON.stringify(altered.body));
 				await waitFor(() => related.closed, 'relationship-conditioned stream closed after alter_role');
+				strictEqual(related.closedBy, 'server');
 				assertRefused(await rest('revocable', '/Emp/?dept.budget=gt=0'), 'revocable fresh request');
 
 				const siblingEvents = sibling.events;
@@ -493,6 +501,7 @@ suite(
 				});
 				strictEqual(altered.status, 200, JSON.stringify(altered.body));
 				await waitFor(() => related.closed, 'attribute-conditioned stream closed after alter_role');
+				strictEqual(related.closedBy, 'server');
 				assertRefused(await rest('attrRevocable', '/Emp/?dept.label=Eng'), 'attrRevocable fresh request');
 
 				const siblingEvents = sibling.events;
