@@ -10,7 +10,10 @@ describe('full-text scoring contract', () => {
 		for (const boost of [0, 0.25, 1, 100, 100.000001, Number.MIN_VALUE])
 			validateFullTextScoringOptions({ boost }, 'any');
 		for (const boost of [-0, -1, -Number.MIN_VALUE, 100.01, NaN, Infinity, -Infinity, '2', null])
-			assert.throws(() => validateFullTextScoringOptions({ boost }, 'any'), /boost/);
+			assert.throws(
+				() => validateFullTextScoringOptions({ boost }, 'any'),
+				(error) => error.statusCode === 400 && /boost/.test(error.message)
+			);
 	});
 
 	it('rejects unsupported locations and malformed optional descriptors', () => {
@@ -22,7 +25,10 @@ describe('full-text scoring contract', () => {
 			{ boost: 1, negated: true },
 			{ boost: 1, conditions: [] },
 		])
-			assert.throws(() => validateFullTextScoringOptions(condition), /positive full-text/);
+			assert.throws(
+				() => validateFullTextScoringOptions(condition),
+				(error) => error.statusCode === 400 && /positive full-text/.test(error.message)
+			);
 		for (const should of [
 			[],
 			null,

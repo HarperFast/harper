@@ -109,17 +109,17 @@ export function validateFullTextFuzzyOptions(
 		throw new ClientError('fuzzyTranspositions must be a boolean', 400);
 }
 
-const FULL_TEXT_SCORING_PROPERTIES = new Set([
+const FULL_TEXT_SCORING_PROPERTIES: readonly string[] = [
 	'comparator',
 	'value',
 	'fields',
 	'boost',
 	'fuzzyDistance',
 	'fuzzyTranspositions',
-]);
+];
 
 function isUnsupportedScoringProperty(name: string): boolean {
-	return !FULL_TEXT_SCORING_PROPERTIES.has(name);
+	return !FULL_TEXT_SCORING_PROPERTIES.includes(name);
 }
 
 export function validateFullTextScoringOptions(condition: any, mode?: NativeFullTextSearchMode): void {
