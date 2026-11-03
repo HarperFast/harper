@@ -1,0 +1,292 @@
+---
+title: MCP Configuration
+---
+
+# MCP Configuration
+
+<VersionBadge version="v5.1.0" />
+
+All MCP configuration lives under the top-level `mcp:` block in `harper-config.yaml`. Each profile (`operations`, `application`) is enabled by the **presence** of its sub-block — there is no separate `enabled` flag. A minimal "turn it on" config is therefore just:
+
+```yaml
+mcp:
+  operations: {}
+  application: {}
+```
+
+That boots both profiles with default settings: the operations profile mounts at `/mcp` on the operations server, the application profile mounts at `/mcp` on the application HTTP server, and the default allow lists / rate limits apply.
+
+## `mcp.operations.*`
+
+Configures the operations-profile MCP endpoint that wraps Harper's operation catalog.
+
+### `mcp.operations.mountPath`
+
+Type: `string`
+
+Default: `/mcp`
+
+URL path the MCP endpoint mounts on. Change it if `/mcp` collides with another route in your application.
+
+### `mcp.operations.allow`
+
+Type: `array<string>` (glob patterns or literal operation names)
+
+Default: `['describe_*', 'list_*', 'search_*', 'get_job', 'get_status', 'get_analytics', 'get_metrics', 'system_information', 'read_log', 'read_audit_log']`
+
+Operations exposed as MCP tools. Glob `*` matches any sequence of characters; literal names match exactly. Setting `allow` **replaces** the default list; it does not merge. To add destructive or sensitive operations to the surface (e.g. `set_configuration`, `drop_table`), include them here explicitly.
+
+The default list intentionally avoids `get_*` as a glob because that pulls in `get_configuration` (which can return TLS / S3 / authentication secrets), `get_components` / `get_component_file` / `get_custom_function*` (which return component source that can embed secrets), `get_backup`, and `get_deployment*`. These are all gated by `verifyPerms` at dispatch, but defaulting to "expose them to an LLM if a super_user calls them" is the wrong default — opt them in deliberately.
+
+This setting is not MCP-only. With [`agent.enabled`](../configuration/options.md#agent) on, the built-in agent's operations tools are drawn from this same allow list, so anything you add here becomes a tool the agent can call on its own initiative — and `agent.allowDestructive` and `agent.autoApprove` only cover the operations on the [curated destructive set](./tool-metadata.md), which is not every damaging operation. Read [Agent operations](../operations-api/operations.md#agent) before widening this list on a node with the agent enabled.
+
+### `mcp.operations.deny`
+
+Type: `array<string>` (glob patterns or literal operation names)
+
+Default: `[]`
+
+Operations to filter out **after** the allow list has been applied. Useful for taking back a single operation that a broad allow glob would otherwise expose.
+
+### `mcp.operations.maxTools`
+
+Type: `integer` (minimum 1)
+
+Default: `200`
+
+Maximum number of tools returned in a single `tools/list` response page. The MCP cursor is used to page through any overflow.
+
+### `mcp.operations.rateLimit.*`
+
+See [`mcp.<profile>.rateLimit.*`](#mcpprofileratelimit) below — the schema is identical for both profiles.
+
+Default per-profile values for `operations`: `perToolPerSecond: 10`, `perToolBurst: 20`, `sessionConcurrency: 25`, `sessionPerSecond: 100`, `initializePerSecond: 10`, `initializeBurst: 50`.
+
+## `mcp.application.*`
+
+Configures the application-profile MCP endpoint that walks your exported `Resource` classes. All `mcp.operations.*` keys above also apply here; the additional knob is:
+
+### `mcp.application.searchMaxResults`
+
+Type: `integer` (minimum 1)
+
+Default: `1000`
+
+Hard cap on the number of records a generated `search_<resource>` tool can return per call. Clients still pass `limit`, but the server clamps to this ceiling regardless of what the client requests — bounded to keep a runaway agent from exhausting memory.
+
+Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`, `perToolBurst: 50`, `sessionConcurrency: 50`, `sessionPerSecond: 200`, `initializePerSecond: 10`, `initializeBurst: 50`.
+
+## `mcp.<profile>.rateLimit.*`
+
+Per-session, per-tool token-bucket rate limits. A bucket exists per `(session, tool)` pair plus one per-session bucket across all tools. When either bucket is exhausted, `tools/call` returns `result.isError = true` with `kind: "rate_limited"` — **not** a JSON-RPC error — so the LLM can read the message and back off without the transport tearing down. The one exception is the [`initialize` limit](#mcpprofileratelimitinitializepersecond), which rejects the request with HTTP `429`.
+
+Every numeric key accepts a quoted number in the config file (`"0.5"`) as well as a plain one.
+
+### `mcp.<profile>.rateLimit.perToolPerSecond`
+
+Type: `number` (minimum 0)
+
+Default: `10` (operations) / `25` (application)
+
+Sustained rate at which the per-tool token bucket refills. Set to `0` to disable per-tool throttling on this profile.
+
+### `mcp.<profile>.rateLimit.perToolBurst`
+
+Type: `number` (minimum 0)
+
+Default: `20` (operations) / `50` (application)
+
+Burst capacity of the per-tool token bucket — how many back-to-back calls a single tool can absorb before sustained-rate refill kicks in.
+
+### `mcp.<profile>.rateLimit.sessionConcurrency`
+
+Type: `integer` (minimum 0)
+
+Default: `25` (operations) / `50` (application)
+
+Maximum number of `tools/call` invocations a single session may have in flight at once. Subsequent attempts return `kind: "rate_limited"` with `scope: "concurrency"`.
+
+### `mcp.<profile>.rateLimit.sessionPerSecond`
+
+Type: `number` (minimum 0)
+
+Default: `100` (operations) / `200` (application)
+
+Sustained per-session rate across **all** tools combined. Protects a worker from a single session that spreads its calls across many distinct tools (and so would otherwise dodge `perTool*`).
+
+### `mcp.<profile>.rateLimit.perClientPerSecond`
+
+Type: `number` (minimum 0)
+
+Default: `0` (disabled)
+
+Sustained `tools/call` rate keyed on **client identity** rather than session (5.2.0+). Session-scoped buckets can be evaded by an anonymous client that cycles sessions (`initialize` → call → drop → repeat); the client bucket survives that loop. Identity is the client socket IP by default, or the value derived from [`identityHeader`](#mcpprofileratelimitidentityheader). Denials surface like other rate-limit hits: an `isError` tool result with `kind: 'rate_limited'`, `scope: 'per_client'`.
+
+Like the other buckets, state is in-memory per worker — it does not survive a restart and is not shared across workers. For durable quotas, see the [durable quota handler](#durable-quota-handler).
+
+### `mcp.<profile>.rateLimit.perClientBurst`
+
+Type: `number` (minimum 0)
+
+Default: the `perClientPerSecond` value, floored at `1`
+
+Burst capacity of the per-client bucket. Defaults to the sustained rate so enabling the limit is a one-key change — floored at 1 whole token: a fractional `perClientPerSecond` (e.g. `0.1` for "6 per minute") still yields `perClientBurst: 1` by default, since a bucket capped below one token could never admit a call.
+
+### `mcp.<profile>.rateLimit.initializePerSecond`
+
+Type: `number` (minimum 0)
+
+Default: `10`
+
+Sustained rate of session creation (`initialize`) per client identity (5.4.0+). Set to `0` to turn the limit off. Unlike `perClientPerSecond`, this limit is **on by default**: each session is a persisted row in `system.mcp_session`, kept for [`mcp.session.idleTimeoutSeconds`](#mcpsessionidletimeoutseconds), and the application profile accepts anonymous `initialize`. To keep each row small, `initialize` stores only the names of the client capabilities Harper checks before sending a server-to-client request (`sampling`, `elicitation`, `roots`), each as `{}`, not the capabilities object the client sent.
+
+Client identity is the socket IP, or the first value of [`identityHeader`](#mcpprofileratelimitidentityheader) when set — the same rules as `perClientPerSecond`. Harper canonicalizes it before counting:
+
+- An IPv4 address with a port, and an IPv4-mapped IPv6 address (`::ffff:192.0.2.1`), count as the plain IPv4 address.
+- Any other IPv6 address counts as its `/64`, the block a single client is typically assigned.
+- A request with no identity (for example, a Unix-socket ingress with no `identityHeader`) shares one bucket per profile instead of going unthrottled. Past 100,000 tracked identities per profile and worker, new identities also share that bucket.
+
+The bucket is in memory per thread, like the others: it is not shared across threads and does not survive a restart. On the application profile, a client that opens fresh connections spread over the HTTP worker threads can get the configured rate and burst once per worker ([`threads.count`](../configuration/options.md#threads) of them, or the main thread alone when it is `0`); a client that reuses one connection stays on one worker and gets the configured figure. The operations profile is served by the main thread only, so it admits the configured figure.
+
+A denied `initialize` gets HTTP `429` with a `Retry-After` header and a JSON-RPC error body, and no session is created:
+
+```json
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"error": { "code": -32600, "message": "MCP initialize rate limit reached; back off and try again" }
+}
+```
+
+`Retry-After` is in whole seconds, `ceil(1 / initializePerSecond)` — the time the bucket takes to refill one token. This is an HTTP-level error, not a tool result: there is no `kind: "rate_limited"` on an `initialize` denial.
+
+### `mcp.<profile>.rateLimit.initializeBurst`
+
+Type: `number` (minimum 1)
+
+Default: `50`
+
+Burst capacity of the per-client `initialize` bucket — how many sessions one client identity can open back to back on one thread before the `initializePerSecond` refill applies.
+
+### `mcp.<profile>.rateLimit.identityHeader`
+
+Type: `string`
+
+Default: unset (client identity = socket IP)
+
+Name of a trusted header whose first (client-most) value supplies client identity — for deployments behind a reverse proxy, where every socket IP is the proxy's. Typically `x-forwarded-for`.
+
+**Only set this when the fronting proxy strips or replaces the header on untrusted traffic.** A client-controlled identity header lets callers mint fresh identities per request and bypass per-client limits entirely; Harper logs a startup warning when this key is configured.
+
+## Durable quota handler
+
+An operator-pluggable **durable** quota policy for `tools/call` (5.2.0+). The in-memory buckets above bound instantaneous rates but reset on restart and are per-worker — insufficient as a cost control for a public, unauthenticated, cost-bearing tool (an LLM-backed `answer`, say). A component registers the policy as a **function** with `server.setMcpQuotaHandler`, so the policy is never itself an exposed Resource, and it can be backed by an internal table:
+
+```graphql
+# schema.graphql — an INTERNAL per-identity counter. No @export, so no client can read or reset it.
+type QuotaCounter @table {
+	id: ID @primaryKey
+	used: Int
+}
+```
+
+```javascript
+// resources.js
+const DAILY_LIMIT = 100;
+
+// The cost-bearing tool clients call (exported — this is the public surface).
+export class Answerer extends Resource {
+	static mcpTools = [{ name: 'answer', description: 'Answer a question', method: 'doAnswer' }];
+	async doAnswer(args) {
+		return { answered: args?.q ?? '' };
+	}
+}
+
+// Register the durable quota policy as a function, backed by the internal counter table.
+server.setMcpQuotaHandler(async ({ identity, tool, user, profile, sessionId }) => {
+	if (profile !== 'application') return true; // gate per profile in code
+	const id = identity ?? 'unknown';
+	const existing = await tables.QuotaCounter.get(id);
+	const used = (existing?.used ?? 0) + 1;
+	await tables.QuotaCounter.put({ id, used });
+	if (used > DAILY_LIMIT) {
+		return { allowed: false, message: 'daily quota reached', retryAfterSeconds: 3600 };
+	}
+	return true;
+});
+```
+
+### `server.setMcpQuotaHandler(handler)`
+
+Registers the durable quota policy (opt-in — no handler registered means calls are allowed). The handler is called before each admitted `tools/call` with `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available). Return `true` (or any truthy non-object) to allow, or `{ allowed: false, message?, retryAfterSeconds? }` to deny — denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`. Pass `undefined` to clear the handler.
+
+Because the policy is a plain function and not a Resource, it exposes no `update_/delete_` MCP tools or REST/etc. surface — unlike an exported class, whose inherited CRUD would let a permitted client reset its own counter. Keep any table the handler uses for storage unexported (no `@export`), as above, so it stays off every transport. The latest registration wins, so a reloaded component replaces the previous handler; the single handler receives `profile`, so gate the operations and application profiles in code.
+
+Semantics to know:
+
+- The handler runs **after** the in-memory buckets admit the call, so rate-limited clients cannot spam a table-backed handler.
+- **Fail-closed**: a handler that throws **denies** the call. Cost protection that silently disables itself on a bug is worse than a hard failure. The raw error is written to the server log only; the client sees a sanitized message.
+- Harper calls the handler once per attempted tool call; counting strategy (increment on check vs on success) is the handler's business.
+- **Race-safety is the handler's business too.** It can run concurrently for the same identity — within a worker (interleaving across `await` boundaries) and across workers. A naive read-then-write counter like the example above can undercount under concurrency and admit calls past the limit; make the read-modify-write atomic (a transaction that serializes conflicting writers, a compare-and-set retry loop, or a store with native atomic increments) for production use.
+
+## `mcp.session.*`
+
+Settings that apply to MCP session lifecycle on both profiles.
+
+### `mcp.session.idleTimeoutSeconds`
+
+Type: `integer` (minimum 1)
+
+Default: `1800` (30 minutes)
+
+Idle window after which a session record in `system.mcp_session` is TTL-evicted. The next request bearing the evicted session id receives HTTP 404 and the client is expected to re-`initialize`.
+
+### `mcp.session.allowClientDelete`
+
+Type: `boolean`
+
+Default: `false`
+
+When `true`, Harper accepts client-issued `DELETE /mcp` requests that explicitly terminate a session. When `false` (the default), `DELETE` returns 405 with an `Allow` header — sessions only end via idle eviction or explicit server-side cleanup.
+
+## Security: Origin validation
+
+The MCP endpoint validates the request `Origin` header to defend against DNS-rebinding attacks (a requirement of the MCP Streamable HTTP transport). Validation reuses each profile's existing CORS configuration rather than introducing a separate MCP setting:
+
+- When CORS is **disabled** — or enabled with a `*` (wildcard) allow-list — any `Origin` is accepted. This is appropriate for localhost-only or non-browser clients, where no DNS-rebinding vector exists.
+- When CORS is **enabled** with an explicit allow-list, a request whose `Origin` is not in the list is rejected with `403 Forbidden`.
+- A request with no `Origin` header at all (for example `curl` or server-to-server traffic) is always accepted — DNS rebinding only applies to browser-initiated requests.
+
+**Secure default:** any deployment that exposes the MCP endpoint to browsers beyond loopback should enable CORS with an explicit (non-`*`) allow-list — that is what activates Origin-based DNS-rebinding protection.
+
+The two profiles ship with **different CORS defaults**, but both accept any `Origin` out of the box:
+
+- Application profile (HTTP port): `http.cors` + `http.corsAccessList`. Default: CORS **disabled**, so any `Origin` is accepted.
+- Operations profile (operations port): `operationsApi.network.cors` + `operationsApi.network.corsAccessList`. Default: CORS **enabled with a `*` allow-list**, so any `Origin` is still accepted until you replace `*` with explicit origins.
+
+## Example
+
+A common deployment pattern that locks down the operations profile to a small explicit set, enables MCP DELETE for graceful client logout, raises per-tool throughput for the application profile, and lowers how fast one client can open application-profile sessions:
+
+```yaml
+mcp:
+  operations:
+    allow:
+      - describe_all
+      - describe_database
+      - system_information
+      - get_job
+    rateLimit:
+      perToolPerSecond: 5
+      perToolBurst: 10
+  application:
+    searchMaxResults: 500
+    rateLimit:
+      perToolPerSecond: 50
+      perToolBurst: 100
+      initializePerSecond: 2
+      initializeBurst: 20
+  session:
+    idleTimeoutSeconds: 3600
+    allowClientDelete: true
+```
