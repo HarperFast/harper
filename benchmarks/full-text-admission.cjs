@@ -6,9 +6,10 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setFullTextNativeBindingForTests, fullTextDerivedIndexReadiness } = require('#src/resources/derivedIndexes');
 const { FullTextNativeTestBinding } = require('../unitTests/resources/fullTextNativeTestBinding');
 const { waitFor } = require('../unitTests/waitFor');
+const rounds = 5;
 describe('full-text Table admission benchmark', function () {
 	this.timeout(120000);
-	it('measures fresh requests with restricted field permissions', async () => {
+	it('measures fresh requests with an explicit field permission allowlist', async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		const binding = new FullTextNativeTestBinding();
@@ -62,7 +63,7 @@ describe('full-text Table admission benchmark', function () {
 				};
 				const scenarios = [];
 				for (const count of [0, 1, 32, 127])
-					for (const explicit of [false, true]) {
+					for (const explicit of count === 0 ? [false] : [false, true]) {
 						const make = () => ({
 							conditions: [
 								{
@@ -91,7 +92,7 @@ describe('full-text Table admission benchmark', function () {
 						for (let i = 0; i < 1000; i++) run();
 						scenarios.push({ count, explicit, run, samples: [] });
 					}
-				for (let round = 0; round < 5; round++)
+				for (let round = 0; round < rounds; round++)
 					for (const x of round % 2 ? [...scenarios].reverse() : scenarios) {
 						global.gc?.();
 						const begin = performance.now();
@@ -110,8 +111,8 @@ describe('full-text Table admission benchmark', function () {
 								count: x.count,
 								explicit: x.explicit,
 								iterations: 5000,
-								rounds: 5,
-								medianUs: [...x.samples].sort((a, b) => a - b)[2],
+								rounds,
+								medianUs: [...x.samples].sort((a, b) => a - b)[Math.floor(x.samples.length / 2)],
 								samplesUs: x.samples,
 							})
 					);
