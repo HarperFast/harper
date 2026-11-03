@@ -1048,7 +1048,7 @@ function overflowedValue(stored: any, key: string, attributeName: string, filter
 
 const MAX_DATE_TIME = 8.64e15;
 function declaredTypeDecoder(attribute: any): ((key: any) => any) | undefined {
-	switch ((attribute?.elements ?? attribute)?.type) {
+	switch (attribute?.type) {
 		case 'Date':
 			return (key) => (Number.isInteger(key) && Math.abs(key) <= MAX_DATE_TIME ? new Date(key) : key);
 		case 'BigInt':

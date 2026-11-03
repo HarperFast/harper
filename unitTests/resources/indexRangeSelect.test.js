@@ -480,54 +480,104 @@ describe('Secondary-index range select', function () {
 			try {
 				await Loose.put(10n, { value: 1, label: 'bigint id' });
 				await Loose.put(2, { value: 1, label: 'number id' });
+				await Loose.put({ id: ['sku'], value: 1, label: 'array id' });
 				assert.deepStrictEqual(
 					await rows(Loose, { conditions: [{ attribute: 'value', value: 1 }], select: ['id', 'label'] }),
 					[
 						{ id: 2, label: 'number id' },
 						{ id: 10n, label: 'bigint id' },
+						{ id: ['sku'], label: 'array id' },
 					]
 				);
 				await assertCovered(Loose, { conditions: [{ attribute: 'value', value: 1 }], select: ['id'] }, [
 					{ id: 2 },
 					{ id: 10 },
+					{ id: 'sku' },
 				]);
 			} finally {
 				Loose.dropTable();
 			}
 		});
 
-		it('loads the record for an attribute whose declared type can hold an array', async function () {
+		it('loads the record for an attribute or primary key whose declared type can hold an array', async function () {
 			const Lists = table({
 				table: 'IndexRangeCoveredListTest',
 				database: 'test',
 				attributes: [
-					{ name: 'id', isPrimaryKey: true },
+					{ name: 'id', isPrimaryKey: true, type: 'ID' },
+					{ name: 'score', indexed: true, type: 'Int' },
 					{ name: 'tags', indexed: true, elements: { type: 'String' } },
 					{ name: 'anything', indexed: true, type: 'Any' },
 					{ name: 'untyped', indexed: true },
 					{ name: 'ref', indexed: true, type: 'ID' },
 				],
 			});
+			const Composite = table({
+				table: 'IndexRangeCoveredCompositeKeyTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true, type: 'array', elements: { type: 'String' } },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'label' },
+				],
+			});
+			const ArrayKey = table({
+				table: 'IndexRangeCoveredArrayKeyTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true, type: 'Array' },
+					{ name: 'score', indexed: true, type: 'Int' },
+				],
+			});
 			try {
 				const list = ['x', 'y'];
-				await Lists.put(1, { tags: list, anything: list, untyped: list, ref: list });
-				await Lists.put(2, { tags: ['y'], anything: 'y', untyped: 'y', ref: 'y' });
+				await Lists.put('row-1', { score: 7, tags: list, anything: list, untyped: list, ref: list });
+				await Lists.put('row-2', { score: 8, tags: ['y'], anything: 'y', untyped: 'y', ref: 'y' });
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 7 }], select: ['id'] }, [
+					{ id: 'row-1' },
+				]);
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 7 }], select: 'id' }, ['row-1']);
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 7 }], select: ['id', 'score'] }, [
+					{ id: 'row-1', score: 7 },
+				]);
 				for (const attribute of ['tags', 'anything', 'untyped', 'ref']) {
 					const condition = [{ attribute, value: 'x' }];
 					const { result, reads } = await withReads(Lists, () =>
 						rows(Lists, { conditions: condition, select: ['id', attribute] })
 					);
-					assert.deepStrictEqual(result, [{ id: 1, [attribute]: list }], attribute);
+					assert.deepStrictEqual(result, [{ id: 'row-1', [attribute]: list }], attribute);
 					assert.equal(reads, 1, attribute);
-					await assertCovered(Lists, { conditions: condition, select: ['id'] }, [{ id: 1 }]);
+					await assertCovered(Lists, { conditions: condition, select: ['id'] }, [{ id: 'row-1' }]);
 				}
 				await assertCovered(
 					Lists,
 					{ conditions: [{ attribute: 'tags', comparator: 'ge', value: 'x' }], select: ['id'] },
-					[{ id: 1 }, { id: 2 }]
+					[{ id: 'row-1' }, { id: 'row-2' }]
 				);
+
+				for (const Keyed of [Composite, ArrayKey]) {
+					await Keyed.put({ id: ['sku'], score: 7, label: 'single-element' });
+					await Keyed.put({ id: ['us', 'w1'], score: 7, label: 'composite' });
+					const conditions = [{ attribute: 'score', value: 7 }];
+					const full = await rows(Keyed, { conditions });
+					assert.deepStrictEqual(
+						full.map(({ id }) => id),
+						[['sku'], ['us', 'w1']]
+					);
+					for (const select of [['id'], 'id', ['id', 'score'], ['score']]) {
+						const { result, reads } = await withReads(Keyed, () => rows(Keyed, { conditions, select }));
+						assert.deepStrictEqual(
+							result,
+							full.map((record) => project(record, select)),
+							`${Keyed.tableName} ${JSON.stringify(select)}`
+						);
+						assert.equal(reads, 2, `${Keyed.tableName} ${JSON.stringify(select)}`);
+					}
+				}
 			} finally {
 				Lists.dropTable();
+				Composite.dropTable();
+				ArrayKey.dropTable();
 			}
 		});
 

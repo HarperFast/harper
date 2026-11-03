@@ -202,7 +202,7 @@ Eviction trails expiry. Until then search returns an expired record as stored; a
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not the caller's options (`uncachedRead` and cache-disabled reads forward it); add options there. A covered select (`coverIndexEntries`) reads no record (overflow and `-0` keys aside); it covers only attributes declared scalar (`SCALAR_TYPES`, schema trusted). Undeclared bigint ids read as numbers (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not the caller's options (`uncachedRead` and cache-disabled reads forward it); add options there. A covered select (`coverIndexEntries`) reads no record (overflow and `-0` keys aside); it covers only attributes declared scalar or untyped/ID PKs (`SCALAR_TYPES`); undeclared bigint/`[x]` ids lose type (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 

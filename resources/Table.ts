@@ -12563,8 +12563,8 @@ export function makeTable(options): TableResourceClass {
 	}
 	// resources/DESIGN.md, Per-row read work on RocksDB index scans
 	function coveredSelectAttribute(select: any): string | undefined {
-		if (primaryKey == null) return;
-		if (typeof select === 'string') return coverableAttribute(select) ? select : undefined;
+		if (primaryKey == null || !coverableAttribute(primaryKey)) return;
+		if (typeof select === 'string') return select === primaryKey || coverableAttribute(select) ? select : undefined;
 		if (!Array.isArray(select) || select.length === 0) return;
 		let attribute: string | undefined;
 		for (const name of select) {
@@ -12576,14 +12576,14 @@ export function makeTable(options): TableResourceClass {
 		return attribute ?? primaryKey;
 	}
 	function coverableAttribute(name: string): boolean {
-		if (name === primaryKey) return true;
-		const index = Object.hasOwn(indices, name) ? indices[name] : undefined;
 		const attribute = findAttribute(attributes, name);
+		const isPrimary = name === primaryKey;
+		const index = !isPrimary && Object.hasOwn(indices, name) ? indices[name] : undefined;
 		return (
-			index !== undefined &&
-			!index.customIndex &&
-			SCALAR_TYPES.has(attribute?.type) &&
-			!attribute.elements &&
+			(isPrimary
+				? attribute?.type === undefined || attribute.type === 'ID' || SCALAR_TYPES.has(attribute.type)
+				: index !== undefined && !index.customIndex && SCALAR_TYPES.has(attribute?.type)) &&
+			!attribute?.elements &&
 			!propertyResolvers?.[name] &&
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
