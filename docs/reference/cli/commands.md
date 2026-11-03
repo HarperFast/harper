@@ -27,6 +27,7 @@ When you run `harper`:
 
 - If Harper is not installed, it will guide you through the installation process
 - Once installed, it runs Harper in the foreground as a standard process, compatible with systemd, Docker, and other process management tools
+- On SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it gives requests in flight a few seconds to finish and closes components before exiting, within [`threads.shutdownTimeout`](../configuration/options.md#shutting-down-on-a-termination-signal) <VersionBadge type="changed" version="v5.4.0" />
 
 **First-Time Installation**:
 
@@ -329,7 +330,15 @@ Stop a running Harper instance.
 harper stop
 ```
 
-`harper stop` signals Harper and returns without waiting for it to exit. Harper removes [`hdb.pid`](./overview.md#process-id-file) from `<rootPath>` as it begins shutting down, so `harper status` can report `stopped` while it is still closing databases. Before touching database or backup files, capture the PID before stopping Harper and wait for the process itself to exit:
+<VersionBadge type="changed" version="v5.4.0" />
+
+`harper stop` sends Harper SIGTERM and waits for the process to exit. Harper [shuts down gracefully](../configuration/options.md#shutting-down-on-a-termination-signal) first, within `threads.shutdownTimeout`. Until the process exits, [`hdb.pid`](./overview.md#process-id-file) stays in `<rootPath>` and [`harper status`](#harper-status) reports Harper as running. When `harper stop` has signaled a running Harper and returns `0`, Harper has exited and closed its databases.
+
+`harper stop` also prints `Stopping Harper.` and returns `0` when it finds no running Harper to signal, for example when `ROOTPATH` names a different installation. Check that the process is gone before touching database files.
+
+If Harper is still running `threads.shutdownTimeout` + 60 seconds after the signal, `harper stop` prints an error naming the PID and exits with code `1`. It does not kill the process. Running `harper stop` again sends a second signal, which makes Harper exit at once. `harper stop` reads `threads.shutdownTimeout` from the configuration file and cannot see the 30-second default of a running `harper dev`, so for that server it gives up after 8 + 60 seconds unless the value is set.
+
+Before v5.4.0, `harper stop` signals Harper and returns without waiting for it to exit, and Harper removes `hdb.pid` as it begins shutting down, so `harper status` can report `stopped` while Harper is still closing databases. On those versions, capture the PID before stopping Harper and wait for the process itself to exit before touching database or backup files. This also works on v5.4.0 and later:
 
 ```bash
 # For rootPath ~/hdb
@@ -439,6 +448,8 @@ Shows:
 - Harper process status
 - Clustering network status
 - Replication statuses
+
+From v5.4.0, `harper status` reports Harper as running until the process exits, including while it [shuts down](../configuration/options.md#shutting-down-on-a-termination-signal) after `harper stop`. <VersionBadge type="changed" version="v5.4.0" />
 
 In Harper versions where NATS is supported, this command also shows the clustering hub and leaf processes too.
 

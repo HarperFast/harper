@@ -81,7 +81,7 @@ export function handleApplication(scope) {
 }
 ```
 
-See [Cleanup on Shutdown](./plugin-api.md#cleanup-on-shutdown) for the full shutdown sequence, including how async cleanup is awaited and the time limit it must finish within.
+See [Cleanup on Shutdown](./plugin-api.md#cleanup-on-shutdown) for the full shutdown sequence, including how async cleanup is awaited and the time limits it must finish within. Stopping Harper with SIGTERM, SIGINT or SIGQUIT, including `harper stop`, runs this cleanup from v5.4.0; earlier versions end the process without closing scopes. <VersionBadge type="changed" version="v5.4.0" />
 
 ## Writing Files in the Application Directory
 

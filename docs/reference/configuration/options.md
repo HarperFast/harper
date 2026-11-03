@@ -69,6 +69,7 @@ threads:
 - `preload` <VersionBadge version="v5.2.0" /> — Module, or list of modules, to load via Node's `--import` before any Harper or application module on each worker thread. Intended for instrumentation and APM agents. Worker threads only (not under Bun).
 - `preloadRequire` <VersionBadge version="v5.2.0" /> — The same, but via Node's `--require` (CommonJS). Worker threads only (not under Bun).
 - `v8Flags` <VersionBadge version="v5.4.0" /> — V8 flag, or list of V8 flags, applied to the whole Harper process before its first worker thread starts. Each entry must start with `--`. Takes effect on process start. Not applied under Bun. See [Applying V8 flags](#applying-v8-flags)
+- `shutdownTimeout` <VersionBadge version="v5.4.0" /> — Longest time (ms) Harper spends shutting down after SIGTERM, SIGINT or SIGQUIT before it exits anyway; _Default_: `8000` (`30000` under `harper dev`). `0` exits as soon as the signal arrives. Takes effect when Harper restarts. See [Shutting down on a termination signal](#shutting-down-on-a-termination-signal)
 
 ### Preloading an instrumentation agent
 
@@ -123,6 +124,36 @@ The value can also be set from the environment, for example `HARPER_SET_CONFIG='
 - **Implied flags are not applied.** On the command line, some flags turn on others; `--optimize-for-size` also caps the young-generation semi-space at 1 MB. Applied at runtime, a flag does not do that, so list the implied flags explicitly, as the example does with `--max-semi-space-size=1`.
 - **When it takes effect.** Flags are read once per process. A changed value takes effect when the whole process restarts: the [`restart`](../operations-api/operations.md#restart) operation, which restarts only the node that receives it, or a process or container restart. [`restart_service`](../operations-api/operations.md#restart_service) restarts only worker threads, which keep the process's flags, so it does not apply a change, even with `"replicated": true`. To roll back, remove the setting from `HARPER_SET_CONFIG` or `HARPER_CONFIG` if it came from there, and from `harper-config.yaml` (for example `set_configuration` with `"threads_v8Flags": null`), then restart the process. A `THREADS_V8FLAGS` environment variable is written into `harper-config.yaml` at every startup, so unset it as well; unsetting the variable alone leaves the flags in the file.
 - **Expert setting.** Flags change V8's behavior for the whole process and are not validated beyond the `--` prefix. A conflicting combination can stop the process at startup. Measure memory and throughput with your workload before relying on a flag in production.
+
+### Shutting down on a termination signal
+
+<VersionBadge version="v5.4.0" />
+
+When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts down in order instead of exiting at once. These are the signals [`harper stop`](../cli/commands.md#harper-stop), `docker stop`, Kubernetes and systemd send.
+
+1. Harper stops accepting new connections.
+2. Requests already in flight get a few seconds to finish (see the first note below).
+3. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
+4. The process exits with code `0`.
+
+`threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
+
+```yaml
+threads:
+  shutdownTimeout: 25000 # Kubernetes' default 30-second grace period, no preStop hook
+```
+
+The environment variable is `THREADS_SHUTDOWNTIMEOUT`. Like other settings, a changed value takes effect when Harper restarts; `harper stop` reads the configuration file, so its wait uses the new value right away. `0` restores the behavior from before v5.4.0: Harper exits when the signal arrives, without draining requests or closing scopes.
+
+- **Requests get a few seconds, not the whole timeout.** After it stops accepting connections, Harper waits a few seconds for requests in flight (about 2.5 seconds on Node.js, 5 on Bun), however high `threads.shutdownTimeout` is set. A request still running then may not finish: on Node.js its connection is closed, and its handler can still be running when `'close'` listeners start. The rest of the timeout is for component cleanup.
+- **Fit it inside your orchestrator's grace period.** A container platform or service manager sends SIGTERM, waits for its grace period, then kills the process. After the shutdown above, Harper closes its databases as the process exits, and `threads.shutdownTimeout` does not limit that step. Set `threads.shutdownTimeout` a few seconds below the grace period to leave time for it. The default of 8 seconds fits Docker's default. On Kubernetes, the grace period also covers a `preStop` hook, which runs before SIGTERM, so subtract its time too.
+
+| Platform               | Grace period setting            | Default    |
+| ---------------------- | ------------------------------- | ---------- |
+| Docker (`docker stop`) | `--timeout` (`-t`)              | 10 seconds |
+| Docker Compose         | `stop_grace_period`             | 10 seconds |
+| Kubernetes             | `terminationGracePeriodSeconds` | 30 seconds |
+| systemd                | `TimeoutStopSec`                | 90 seconds |
 
 ---
 
