@@ -1,8 +1,4 @@
-/**
- * Executes the request/response examples in the nested-relationship documentation companion:
- * https://github.com/HarperFast/documentation/pull/736.
- * The offline fixtures in that repo are checked against the published Markdown by docs CI.
- */
+// unitTests/docs/nestedRelationshipExamples.test.mjs holds the published Markdown equal to this fixture.
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';

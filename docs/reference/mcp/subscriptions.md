@@ -1,0 +1,155 @@
+---
+title: MCP Resource Subscriptions
+sidebar_position: 50
+sidebar_label: 'Resource Subscriptions'
+---
+
+# MCP Resource Subscriptions
+
+<VersionBadge version="v5.1.10" />
+
+Beyond the `notifications/*/list_changed` events that tell a client _what tools and resources exist_, Harper can push a notification whenever the _contents_ of a specific application resource change. A client subscribes to a resource URI with `resources/subscribe`; Harper watches that record (or table) through its audit-log change feed, or, for a [custom resource](./tools-and-resources.md#subscribing-to-custom-resources), the stream its `subscribe` method returns, and emits `notifications/resources/updated` on every change.
+
+This page covers `resources/subscribe` / `resources/unsubscribe`, the `notifications/resources/updated` push, which URIs are subscribable, and `Last-Event-ID` stream resumability. The `list_changed` events themselves are documented in [MCP Tools and Resources](./tools-and-resources.md#notificationslist_changed).
+
+Harper advertises the capability on `initialize`:
+
+```json
+{
+	"capabilities": {
+		"tools": { "listChanged": true },
+		"resources": { "listChanged": true, "subscribe": true },
+		"prompts": { "listChanged": true },
+		"completions": {},
+		"logging": {}
+	}
+}
+```
+
+## Prerequisites
+
+A subscription delivers its updates over the session's GET-SSE channel, so the client **must open `GET /mcp` before calling `resources/subscribe`**. Subscribing without a live stream returns `-32602`:
+
+```json
+{ "error": { "code": -32602, "message": "open the GET SSE stream before subscribing to resources" } }
+```
+
+The open stream is also the subscription's lifecycle boundary: when it closes (by any of the paths in [Unsubscribing](#unsubscribing)), the subscription's underlying change iterator is released. This is why Harper rejects a stream-less subscribe rather than letting the iterator leak with nowhere to deliver.
+
+## Subscribing
+
+Send `resources/subscribe` with the resource URI:
+
+```json
+{
+	"jsonrpc": "2.0",
+	"id": 7,
+	"method": "resources/subscribe",
+	"params": { "uri": "harper+rest://node.example.com:9926/Product/42" }
+}
+```
+
+A successful subscribe returns an empty result:
+
+```json
+{ "jsonrpc": "2.0", "id": 7, "result": {} }
+```
+
+- `params.uri` is required and must be a string — otherwise `-32602` (`resources/subscribe requires params.uri`).
+- Re-subscribing to the same URI is idempotent: the prior subscription is stopped and replaced.
+- The URI is persisted on the durable `mcp_session` record so it can be restored after an SSE reconnect (see [Resuming a dropped stream](#resuming-a-dropped-stream)).
+
+### Which URIs are subscribable
+
+Two kinds of URI can be subscribed to:
+
+- **Row-backed application resources** — the `harper+rest://` URIs that mirror an exported `Resource` (the same ones `resources/list` advertises on the application profile). The URI's path is matched against the `Resources` registry. A table exported with [`@export`](../database/schema.md#export) is subscribable with no code of yours, and so is a class that extends one, such as `export class Product extends tables.Product`: both use the table's `subscribe`, which watches the audit-log change feed. A `Resource` class that does not extend a table sends notifications only if it implements `subscribe`; the base class's default returns a stream that stays empty.
+- **Custom resources that declare `subscribe`** (Added in: v5.4.0) — URIs published through a static `mcpResources` entry. The URI is matched exactly as `resources/read` matches it, and the entry's `subscribe` method supplies the changes. See [Subscribing to custom resources](./tools-and-resources.md#subscribing-to-custom-resources).
+
+Anything else returns `-32602`:
+
+```json
+{ "error": { "code": -32602, "message": "resource is not subscribable: harper://schema/data/product" } }
+```
+
+Synthetic `harper://*` metadata URIs (`harper://about`, `harper://openapi`, `harper://schema/...`, `harper://operations`) have no change source and are **not** subscribable. They participate in `notifications/resources/list_changed` only.
+
+A refused subscribe, row-backed or custom, answers a JSON-RPC error rather than an HTTP 500 (Changed in: v5.4.0):
+
+| Answer                                                         | When                                                                                             |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `-32602 permission denied: <uri>`                              | The session user may not read the resource.                                                      |
+| `-32603 failed to subscribe: <uri>`                            | The subscribe failed for another reason; the raw error is in the server log.                     |
+| `-32602 resources/subscribe for <uri> was cancelled: <reason>` | The GET stream closed, or an unsubscribe or another subscribe for the URI arrived, during setup. |
+
+`resources/list` advertised these URIs under `http(s)://` before 5.1.18 <VersionBadge type="changed" version="v5.1.18" />. A legacy `http://` or `https://` URI is still accepted by `resources/subscribe` and `resources/unsubscribe`, so a client holding an older listing keeps working; new clients should use the `harper+rest://` form the current listing returns.
+
+### Record vs. collection URIs
+
+The granularity of a subscription is determined by the path:
+
+| URI form                             | Watches                                                      |
+| ------------------------------------ | ------------------------------------------------------------ |
+| `harper+rest://host:port/Product/42` | The single record with primary key `42`.                     |
+| `harper+rest://host:port/Product`    | The whole `Product` table (any record insert/update/delete). |
+
+A collection URI (no record key — the form `resources/list` advertises) subscribes to the entire table; a record URI narrows the watch to one primary key.
+
+Row-backed subscriptions use `omitCurrent` semantics: Harper does **not** replay the current value at subscribe time. You only receive notifications for changes that commit _after_ the subscription is established. A custom resource's stream decides this itself: every value it yields sends a notification, including one it yields at once. The notification carries no snapshot — re-read the resource (or call the corresponding `get_*` tool) to fetch the new state.
+
+## The `notifications/resources/updated` push
+
+On each committed change to a subscribed row-backed resource, and on each value a custom resource's stream yields, Harper pushes a notification onto the session's GET-SSE channel:
+
+```json
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/resources/updated",
+	"params": { "uri": "harper+rest://node.example.com:9926/Product/42" }
+}
+```
+
+There is no diff payload — `params.uri` is the only field. The client decides whether and how to re-read.
+
+## Unsubscribing
+
+Send `resources/unsubscribe` with the same URI:
+
+```json
+{
+	"jsonrpc": "2.0",
+	"id": 8,
+	"method": "resources/unsubscribe",
+	"params": { "uri": "harper+rest://node.example.com:9926/Product/42" }
+}
+```
+
+- `params.uri` is required and must be a string — otherwise `-32602` (`resources/unsubscribe requires params.uri`).
+- Unsubscribing a URI that was never subscribed is a no-op and still returns `{}`.
+
+Subscriptions are also torn down automatically when the session's GET-SSE stream closes — via explicit `DELETE /mcp`, idle-timeout eviction from `system.mcp_session`, a dropped TCP connection, or an idle-prune sweep.
+
+## Scope and durability
+
+Subscriptions are **per-worker**: a subscription is bound to the worker that holds the session's SSE stream, and the audit-log change feed delivers commits locally on that worker. A custom resource's stream also runs on that worker, and must itself deliver changes made on other workers, as Harper table subscriptions do. The live subscription objects can't be persisted, but the durable list of subscribed URIs lives on the `mcp_session` record, which is how they survive a reconnect.
+
+## Resuming a dropped stream
+
+Every frame Harper sends on the GET-SSE channel carries a monotonic SSE event id (the `id:` field). Harper keeps a bounded per-session **replay buffer** of the most recent 100 frames. When a dropped connection reconnects, the client sends the id of the last frame it saw in the standard `Last-Event-ID` header:
+
+```
+GET /mcp HTTP/1.1
+Mcp-Session-Id: 0c8f...
+Last-Event-ID: 137
+```
+
+Harper replays every buffered frame with a higher id (exclusive) before live frames resume, so a brief network blip doesn't drop `notifications/resources/updated` or `list_changed` events. On reconnect, Harper also restores the session's persisted subscriptions from the `mcp_session` record (best-effort — a URI that is no longer subscribable is dropped; one whose subscribe failed, or that nothing on this worker matches yet, stays on the record and is retried on the next reconnect). The GET response does not wait for the restore (Changed in: v5.4.0): subscriptions are restored after the stream opens, at most eight at a time, and their notifications follow on the stream.
+
+Caveats, all best-effort by design:
+
+- **Buffer bound.** Only the last 100 frames are retained; a client that was disconnected long enough to miss more than 100 frames will not get the older ones. A non-numeric `Last-Event-ID` replays the entire buffer.
+- **Per-worker.** The replay buffer and event-id sequence live on the worker that served the original stream. If the reconnecting `GET` lands on a different worker (one that never held the prior stream), its buffer is empty and there is nothing to replay. This is the same per-worker binding that scopes sessions and subscriptions.
+
+## Not yet supported
+
+See [the v1 out-of-scope list](./overview.md#out-of-scope-for-v1). Notably, cross-worker session sharing is deferred, so subscription delivery and `Last-Event-ID` replay are both best-effort across a reconnect that changes workers.

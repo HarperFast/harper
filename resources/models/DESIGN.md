@@ -1,6 +1,6 @@
 # resources/models/ — model facade, backends, decisions
 
-Notes on invariants the models layer relies on that the code cannot state itself. User-facing behavior is documented in HarperFast/documentation.
+Notes on invariants the models layer relies on that the code cannot state itself. User-facing behavior is documented in [docs/reference/models/](../../docs/reference/models/overview.md).
 
 ## Embedding prefixes belong to the serving entry
 
