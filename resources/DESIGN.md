@@ -4,7 +4,7 @@ Rules the `resources/` code cannot state, why each holds, and the symbol and tes
 
 ## Full-text declarations and reader snapshots
 
-Declarations are not stored attributes (`fullTextSchema.ts`); writes ignore reader readiness. One reader lease spans a search; hydration rechecks source versions (`fullTextQueryIndex.test.js`). Capture native budgets before workers start. Optional scoring preserves required matches; Table authorizes and expands optional fields before compilation (`nativeFullTextTableSearch.test.js`). ABI 14/query 8 enables scoring; legacy 13/7 permits only ordinary searches.
+Declarations are not stored attributes (`fullTextSchema.ts`); writes ignore reader readiness (`assertFullTextWrite`). One reader lease spans a search; only idle readers reload (`#acquireSearchReader`). Hydration rechecks source versions (`fullTextQueryIndex.test.js`). Capture native budgets before `startHTTPThreads()`; uncaptured workers fail. Optional scoring preserves required matches; Table authorizes and expands optional fields before compilation (`nativeFullTextTableSearch.test.js`).
 
 ## A bare nullish id is never a collection target for `get` or `delete`
 

@@ -153,6 +153,19 @@ describe('published native full-text Table.search integration', () => {
 			['b', 'a', 'c']
 		);
 		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		for (const [comparator, value] of [
+			['matches_prefix', 'trai'],
+			['matches_fuzzy_prefix', 'tral'],
+			['matches_fuzzy', 'trali'],
+		]) {
+			const results = await search({ should: [{ comparator, value, fields: ['details'], boost: 10 }] });
+			assert.deepStrictEqual(
+				results.map(({ id }) => id),
+				['b', 'a', 'c'],
+				comparator
+			);
+			assert(results[0].$score > baseline.find(({ id }) => id === 'b').$score, comparator);
+		}
 		const optionalClauses = [
 			{ comparator: 'matches', value: 'trail', fields: ['details'], boost: 2 },
 			{ comparator: 'matches', value: 'running', fields: ['details'], boost: 3.5 },
@@ -998,6 +1011,19 @@ describe('published native full-text Table.search integration', () => {
 			);
 			const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));
 			for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+				assert.deepStrictEqual(
+					(
+						await search(
+							'matches',
+							'widget',
+							{ limit: info.limits.maxAutocompleteResults + 25 },
+							{
+								should: [{ comparator, value: 'widg', boost: 2 }],
+							}
+						)
+					).map(({ id }) => id),
+					ordered.slice(0, info.limits.maxAutocompleteResults + 25)
+				);
 				assert.deepStrictEqual(
 					(await search(comparator, 'widg', { rowFilter: (record) => !first.has(record.id) })).map(({ id }) => id),
 					ordered.slice(info.limits.maxAutocompleteResults, info.limits.maxAutocompleteResults + 25)
