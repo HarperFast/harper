@@ -82,9 +82,13 @@ export interface Session {
 	 * `ifVersion` rechecks the latest committed local session before writing. Missing, deleted,
 	 * expired, changed, or version-reused sessions reject with `.code === 'VERSION_CONFLICT'`.
 	 * This is best effort, not compare-and-set: writes in flight at the check, later writes,
-	 * and remote writes not yet replicated can still race. The ordinary put uses last-write-wins,
-	 * including when the stored version is ahead of the local clock. Capture `version` before
+	 * and remote writes not yet replicated can still race. The ordinary put uses last-write-wins;
+	 * a future-dated row may keep its value even when the update resolves. Capture `version` before
 	 * awaiting external work; it describes the initially loaded session and is not refreshed.
+	 * `retryable: true` requires a fresh load, such as a later request, rather than retrying this
+	 * request's version. `false` means version equality cannot establish unchanged content.
+	 * An explicit options argument requires a finite numeric `ifVersion`; invalid options,
+	 * including an undefined version from a session missing at load, throw a 400 synchronously.
 	 */
 	update: (updatedSession: any, options?: { ifVersion: number }) => unknown;
 	delete: (id: any) => Promise<void>;
