@@ -228,6 +228,7 @@ export {
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
+	getTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
 	notifyJobCleanupComplete,
@@ -288,6 +289,9 @@ if (envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT)) setHeapSna
 let isMainWorker;
 function setTerminateTimeout(newTimeout?: any) {
 	threadTerminationTimeout = newTimeout;
+}
+function getTerminateTimeout(): number {
+	return threadTerminationTimeout;
 }
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;

@@ -12,6 +12,7 @@
  * with the worker — scopes are created once at load and closed once at shutdown, so nothing accumulates.
  */
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { settleBeforeDeadline } from '../utility/when.ts';
 
 const closing = new Set<Promise<unknown>>();
 
@@ -49,4 +50,21 @@ export function closeScopeOnShutdown(close: () => Promise<unknown>, deferUntilSe
 export function startDeferredScopeCloses(): void {
 	for (const close of deferredCloses) trackScopeClose(Promise.resolve().then(close));
 	deferredCloses.clear();
+}
+
+/**
+ * Close a scope once its `handleApplication` load has settled, so what the plugin registers during the load
+ * is closed too. A load still pending after `maxWaitMs` is abandoned — a hung plugin must not block shutdown —
+ * and anything it registers afterwards stays unclosed. The wait must keep the worker alive (a referenced timer):
+ * with no other live handle the worker would exit before the close runs.
+ */
+export async function closeScopeAfterLoad<T>(
+	load: PromiseLike<unknown>,
+	close: () => Promise<T>,
+	maxWaitMs: number
+): Promise<T> {
+	await settleBeforeDeadline([load], Date.now() + maxWaitMs, () => new Error('load still pending')).catch(() =>
+		harperLogger.warn?.(`Closing a component scope while its load is still pending after ${maxWaitMs}ms`)
+	);
+	return close();
 }
