@@ -52,8 +52,7 @@ function evictOldestPattern(): void {
 
 function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
 	const tokens: LikeToken[] = [];
-	// Once no closing `]` remains, every later `[` is a literal: searching again would make the scan quadratic.
-	let unclosed = false;
+	const ends = pattern.includes('[') ? classEnds(pattern, escape) : undefined;
 	let width = 0;
 	for (let i = 0; i < pattern.length; i++) {
 		const char = pattern[i];
@@ -68,10 +67,9 @@ function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
 				throw new ClientError(`LIKE pattern must not end with the escape character '${escape}'`);
 			}
 			tokens.push({ kind: 'literal', char: pattern[i] });
-		} else if (char === '[' && !unclosed) {
-			const close = findClassEnd(pattern, i + 1, escape);
+		} else if (char === '[') {
+			const close = ends![pattern[i + 1] === '^' ? i + 2 : i + 1];
 			if (close < 0) {
-				unclosed = true;
 				tokens.push({ kind: 'literal', char });
 				continue;
 			}
@@ -83,12 +81,15 @@ function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
 	return tokens;
 }
 
-function findClassEnd(pattern: string, from: number, escape: string): number {
-	for (let i = pattern[from] === '^' ? from + 1 : from; i < pattern.length; i++) {
-		if (pattern[i] === escape) i++;
-		else if (pattern[i] === ']') return i;
+// Index i holds the first `]` at or after i that no escape pairs, or -1. One pass, so a pattern of many `[`
+// that never close tokenizes in linear time.
+function classEnds(pattern: string, escape: string): Int32Array {
+	const ends = new Int32Array(pattern.length + 2).fill(-1);
+	for (let i = pattern.length - 1; i >= 0; i--) {
+		if (pattern[i] === escape) ends[i] = ends[i + 2];
+		else ends[i] = pattern[i] === ']' ? i : ends[i + 1];
 	}
-	return -1;
+	return ends;
 }
 
 function classSource(body: string, escape: string): string {

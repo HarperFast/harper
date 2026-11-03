@@ -149,7 +149,7 @@ const PARITY_VALUES = [
 ];
 
 describe('sqlEngine LIKE matcher (v2)', () => {
-	it('matches exactly what the previous regex matcher matched for ordinary patterns', () => {
+	it('matches exactly what the previous regex matcher matched for ordinary patterns, on values without line terminators', () => {
 		for (const pattern of PARITY_PATTERNS) {
 			for (const value of PARITY_VALUES) {
 				assert.strictEqual(v2Like(pattern, value), regexLike(pattern, value), `${value} LIKE ${pattern}`);
@@ -254,7 +254,6 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			assert.strictEqual(like('a_b', 'a\ud83d\ude00b'), false);
 			assert.strictEqual(like('a__b', 'a\ud83d\ude00b'), true);
 			assert.strictEqual(like('a_b', 'a\ud83db'), true);
-			// A segment of only `_` matches any units, but needs room for them.
 			assert.strictEqual(like('___', 'ab'), false);
 			assert.strictEqual(like('___', 'a\nb'), true);
 			assert.strictEqual(like('%__%__', 'abc'), false);
@@ -487,6 +486,11 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.utils.like('[^_]', '_', '^'), false);
 		assert.strictEqual(alasql.utils.like('[^^]]', 'a', '^'), true);
 		assert.strictEqual(alasql.utils.like('[^^]]', ']', '^'), false);
+		// An earlier `[` that never closes leaves a later class intact, whatever pairs the escape forms for it.
+		assert.strictEqual(alasql.utils.like('[a[^]', '[ax', '^'), true);
+		assert.strictEqual(alasql.utils.like('[a[^]', '[a[]', '^'), false);
+		assert.strictEqual(alasql.utils.like('[a![b]', '[', '!'), true);
+		assert.strictEqual(alasql.utils.like('[a![b]', '!', '!'), false);
 	});
 
 	it('folds case per code unit in every segment position', () => {
