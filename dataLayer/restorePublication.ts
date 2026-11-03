@@ -518,10 +518,18 @@ export function scanRestoreReceipts(roots: string[] = databaseRoots()): ScannedR
 }
 
 /** Whether a restore receipt that is not committed names this job: it, not the job row, decides the outcome. */
+/** The jobs that restores which have not finished still name; each such receipt settles its own job. */
+export function jobsNamedByUnfinishedRestores(): Set<string> {
+	const named = new Set<string>();
+	for (const { read } of scanRestoreReceipts()) {
+		if (read.kind === 'valid' && read.receipt.job_id && read.receipt.state !== 'committed')
+			named.add(read.receipt.job_id);
+	}
+	return named;
+}
+
 export function restoreReceiptOwnsJob(jobId: string): boolean {
-	return scanRestoreReceipts().some(
-		({ read }) => read.kind === 'valid' && read.receipt.job_id === jobId && read.receipt.state !== 'committed'
-	);
+	return jobsNamedByUnfinishedRestores().has(jobId);
 }
 
 /**

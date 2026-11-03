@@ -7,7 +7,7 @@
  * dataLayer/DESIGN.md.
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
@@ -18,7 +18,7 @@ import { DeferredJobCompletion } from '../server/jobs/deferredJobCompletion.ts';
 import { acquireMembershipFence, assertNoReplicationPeers } from '../server/replicationMembership.ts';
 import { pinBackup, readBackupPins, withBackupRepositoryLock } from './backupRepository.ts';
 import { readAllManifests, readBackupManifest } from './backupManifest.ts';
-import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
+import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed, nearestExistingAncestor } from './blobBackup.ts';
 import {
 	acquireRestoreLock,
 	databaseDropMarkerPresent,
@@ -84,10 +84,12 @@ function directorySize(path: string): number {
 	return total;
 }
 
+function existingSelfOrAncestor(path: string): string {
+	return existsSync(path) ? path : nearestExistingAncestor(path);
+}
+
 function deviceOf(path: string): number {
-	let existing = path;
-	while (!existsSync(existing)) existing = dirname(existing);
-	return statSync(existing).dev;
+	return statSync(existingSelfOrAncestor(path)).dev;
 }
 
 async function assertRoomForPreRestoreBackup(databaseName: string, databaseDir: string, backupDir: string) {
@@ -98,7 +100,7 @@ async function assertRoomForPreRestoreBackup(databaseName: string, databaseDir: 
 		.filter((root) => existsSync(root) && deviceOf(root) !== repositoryDevice)
 		.reduce((total, root) => total + directorySize(root), 0);
 	const needed = Math.ceil((directorySize(databaseDir) + copiedBlobs) * PRE_RESTORE_SPACE_MARGIN);
-	const { available } = await getStorageSpaceStats(existsSync(backupDir) ? backupDir : databaseDir);
+	const { available } = await getStorageSpaceStats(existingSelfOrAncestor(backupDir));
 	if (available < needed) {
 		throw new ClientError(
 			`Not enough space to keep a pre-restore backup of '${databaseName}' (${needed} bytes needed, ${available} available); free space or pass retain_previous=false`,

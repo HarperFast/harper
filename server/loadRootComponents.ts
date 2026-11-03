@@ -73,6 +73,11 @@ async function loadRootComponents(isWorkerThread: any = false) {
 			// what recovery left is unknown, so components stay off whatever it may have half-replaced
 			console.error(errorForLog(error));
 			if (!process.env.HARPER_SAFE_MODE) process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+			try {
+				restoreOwnedJobs = loadRuntimeModule('dataLayer/restorePublication').jobsNamedByUnfinishedRestores();
+			} catch (readError) {
+				console.error(errorForLog(readError));
+			}
 		}
 	}
 	try {

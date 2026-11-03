@@ -51,6 +51,7 @@ const {
 const restoreReceiptModule = require('#js/dataLayer/restoreReceipt');
 const { readRestoreReceipt, restoreReceiptPath, writeRestoreReceipt } = restoreReceiptModule;
 const {
+	jobsNamedByUnfinishedRestores,
 	recoverRestoresAtStartup,
 	resetStartupRecoveryForTesting,
 	unpublishedRestoreBlocksComponents,
@@ -625,9 +626,15 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			// the interrupted-job sweep that follows the hook leaves the job to its receipt
 			await reconcileInterruptedJobs(owned);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
+			// the set a boot falls back to when recovery throws names the same job
+			const named = jobsNamedByUnfinishedRestores();
+			assert.deepStrictEqual([...named], [jobId]);
+			await reconcileInterruptedJobs(named);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
 
 			repair();
 			assert.deepStrictEqual([...(await boot(fixture.name))], []);
+			assert.deepStrictEqual([...jobsNamedByUnfinishedRestores()], []);
 
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
