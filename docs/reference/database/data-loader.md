@@ -24,7 +24,7 @@ dataLoader:
 
 ## Data File Format
 
-Each data file loads records into a single table. The file specifies the target database, table, and an array of records.
+Each data file loads records into a single table. The file specifies the target database, table, and an array of records. `database` is optional; a file without it loads into the default `data` database.
 
 ### JSON Example
 
@@ -65,6 +65,12 @@ records:
 
 One table per file. To load data into multiple tables, create a separate file for each table.
 
+### Target Database
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+A file that names a database loads only into that database. If the table does not exist there, the Data Loader creates it there. Earlier versions, when the named database had no such table, loaded the file into a same-named table in the default `data` database if one existed.
+
 ## File Patterns
 
 The `files` option accepts a single path, a list of paths, or a glob pattern:
@@ -94,7 +100,7 @@ Because the Data Loader runs on every startup and deployment, change detection i
 
 1. All specified data files are read (JSON or YAML)
 2. Each file is validated to reference a single table
-3. Records are inserted or updated based on content hash comparison:
+3. Each record is matched to the stored record with the same primary key, and inserted or updated based on content hash comparison:
    - New records are inserted if they don't exist
    - Existing records are updated only if the data file content has changed
    - Records created outside the Data Loader (via Operations API, REST, etc.) are never overwritten
@@ -104,16 +110,36 @@ Because the Data Loader runs on every startup and deployment, change detection i
 
 ### Change Detection
 
+<VersionBadge type="changed" version="v5.4.0" />
+
+Records are matched and tracked by the table's primary key, whether that is `id` or a custom [`@primaryKey`](./schema.md#primarykey) field. Versions before v5.4.0 looked up and tracked records by their `id` field, so on a table with another primary key any record whose `id` field did not match its primary key was not found and was rewritten on each load, overwriting user edits.
+
 | Scenario                                           | Behavior                                         |
 | -------------------------------------------------- | ------------------------------------------------ |
 | New record                                         | Inserted; content hash stored                    |
 | Unchanged record                                   | Skipped (no writes)                              |
+| Same content with object keys in a different order | Skipped (no writes)                              |
 | Changed data file                                  | Updated via `patch`, preserving any extra fields |
 | Record created by user (not data loader)           | Never overwritten                                |
 | Record modified by user after load                 | Preserved, not overwritten                       |
 | Extra fields added by user to a data-loaded record | Preserved during updates                         |
 
+Key order in nested objects does not count as a content change, so reordering a nested object's keys in the data file does not update the record. Before v5.4.0, only the order of a record's top-level keys was ignored. Array element order still counts.
+
 This design makes data files safe to redeploy repeatedly — across deployments, node scaling, and system restarts — without losing manual modifications or causing unnecessary writes.
+
+:::note Upgrading from versions before 5.4.0
+
+Records loaded by an earlier version stay as they are, and most keep receiving data file updates. These stop receiving them:
+
+- **Tables with a custom primary key.** Earlier versions tracked these records by their `id` field. Records with a unique `id` value keep receiving updates. Records with no `id` field shared one tracking entry, as did records with the same `id` value; of each such group, only one record is still recognized as loaded from the data file.
+- **Files that name a database other than `data`, whose table name also exists in the default `data` database.** Records an earlier version loaded into the named database's table are no longer recognized. Records it loaded into the `data` table instead are no longer the file's target and are left there.
+- **Names that contain a colon.** Records an earlier version loaded are no longer recognized when the table's name or the data file's `database` contains `:`, or when the default `data` database has a table named after the file's database and table joined by `:` (such as `inventory:items` for a file that loads the `items` table of the `inventory` database).
+- **Primary keys that do not survive a JSON round trip.** Records with a non-finite numeric primary key (such as YAML `.inf` or `-.inf`, which JSON serializes as `null`) are no longer recognized because earlier content hashes did not distinguish them.
+
+To have the data file manage such a record again, delete it; the next load inserts it from the data file.
+
+:::
 
 ## Best Practices
 

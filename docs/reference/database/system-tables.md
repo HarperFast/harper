@@ -125,9 +125,11 @@ For a full reference of available metrics and their fields, see [Analytics](../a
 
 ### `hdb_dataloader_hash`
 
-<VersionBadge version="v4.6.0" />
+<VersionBadge version="v4.6.0" /> <VersionBadge type="changed" version="v5.4.0" />
 
-Used internally by the [Data Loader](./data-loader.md) to track which records have been loaded and detect changes. Stores SHA-256 content hashes of data file records so that unchanged records are not re-written on subsequent deployments.
+Used internally by the [Data Loader](./data-loader.md#change-detection) to track which records have been loaded and detect changes. Each entry stores a `hash` field with the SHA-256 content hash of a data file record so that unchanged records are not re-written on subsequent deployments.
+
+Starting in v5.4.0, each entry's `id` primary key is a SHA-256 hex digest of the target database name (defaulting to `data`), table name, and encoded primary key value. Versions before v5.4.0 formatted `id` as `table:recordId` (or `database:table:recordId` when the data file specified `database`), using the record's `id` field.
 
 This table is managed automatically by the Data Loader. No direct interaction is required.
 
