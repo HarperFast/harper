@@ -667,6 +667,32 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			await disablePreviews({ operation: 'disable_previews', app: 'opslost', hdb_user: SU });
 		});
 
+		it('stops when a node cannot read what it holds in the census after the drops', async () => {
+			await enablePreviews(enableRequest('opsunread'));
+			const { deployment_id } = await deploy('opsunread-pr-3', metadata('opsunread', 3));
+			const peer = withPeer([{ project: 'opsunread-pr-3', deployment_id }], () => {
+				// A peer's plain list_releases leaves out a component whose live release it cannot read.
+				server.replication.replicateOperation = async (request) => ({
+					replicated: [
+						request.operation === 'fence_preview_releases'
+							? { node: 'node-b', error: 'cannot read opsunread-pr-3' }
+							: { node: 'node-b', components: [] },
+					],
+				});
+				return { value: { componentRemoved: false } };
+			});
+			try {
+				await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsunread', hdb_user: SU }), {
+					statusCode: 500,
+					message: /revoked but not removed: node-b: cannot read opsunread-pr-3/,
+				});
+			} finally {
+				peer.restore();
+			}
+			assert.ok(await getRoleByName('opsunread-ci-preview'), 'the role is kept for the rerun');
+			await disablePreviews({ operation: 'disable_previews', app: 'opsunread', hdb_user: SU });
+		});
+
 		it('finishes when what a drop finds live in its place is not a preview', async () => {
 			const newer = { deployment_id: 'opsother-y', status: 'success', preview: null };
 			const response = await disableAgainstNewerRelease('opsother', newer);
