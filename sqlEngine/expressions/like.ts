@@ -68,6 +68,7 @@ const LINE_TERMINATOR = /[\n\r\u2028\u2029]/g;
 // A search retrying every start costs at most the width per start; up to this width that is cheaper than
 // stopping at each line terminator (~100 ns each on V8).
 const DIRECT_SEARCH_WIDTH = 64;
+const RELAXED_BUDGET = 8;
 // Noncharacters: no case mapping reaches them. `[^]` cannot stand for `_` here: under `i`, V8 compiles each
 // one about 100x slower than `.`.
 const PLACEHOLDERS = ['\uffff', '\ufffe'];
@@ -233,12 +234,17 @@ function findInWindow(segment: Segment, window: string): number {
 		? window.replaceAll(segment.placeholder, segment.substitute)
 		: window;
 	const previousTerminator = previousLineTerminators(window);
+	// Each relaxed match a `_` rejects can cost the width. Where those come densely, a `_` meets its line
+	// terminator early, which is where the direct search fails fast, so it takes over past this budget.
+	let wasted = 0;
 	let start = clearOfLineTerminators(ones, previousTerminator, 0, lastStart);
 	while (start <= lastStart) {
+		if (wasted > RELAXED_BUDGET * window.length) return search(segment.regExp!, width, window, start, window.length);
 		const found = search(segment.relaxed!, width, relaxedWindow, start, window.length);
 		if (found < 0) return -1;
 		start = clearOfLineTerminators(ones, previousTerminator, found, lastStart);
 		if (start === found) return found;
+		wasted += width;
 	}
 	return -1;
 }
