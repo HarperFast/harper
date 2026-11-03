@@ -466,6 +466,13 @@ describe('exchangeOidcToken', () => {
 			assert.strictEqual(result.username, 'ci-deploy');
 		});
 
+		it('takes the first by id when one names a permission group and the other the operations it stands for', async () => {
+			const { OPERATION_PERMISSION_GROUPS } = require('#src/utility/operationPermissions');
+			await addPolicy({ id: 'zulu', operations: ['read_only'] });
+			await addPolicy({ id: 'alpha', operations: [...OPERATION_PERMISSION_GROUPS.read_only] });
+			assert.strictEqual((await exchange()).policy, 'alpha');
+		});
+
 		it('finds a disagreement behind two that agree', async () => {
 			await addPolicy({ id: 'alpha' });
 			await addPolicy({ id: 'bravo' });

@@ -1,4 +1,6 @@
-// No imports: the CLI loads this too.
+// Only dependency-free modules: the CLI loads this too.
+import { expandOperationsPerms } from '../utility/operationPermissions.ts';
+import { GITHUB_ACTIONS_ISSUER } from '../utility/previewIdentity.ts';
 
 export interface DesiredRole {
 	role: string;
@@ -38,11 +40,14 @@ export interface IdentityPlan {
 export const sameSet = (left: unknown, right: string[]) =>
 	Array.isArray(left) && left.length === right.length && right.every((entry) => left.includes(entry));
 
-/** An absent scope is unscoped, which no array is, not even an empty one; arrays compare as sets. */
+/**
+ * An absent scope is unscoped, which no array is, not even an empty one. Arrays compare as the operations they allow,
+ * with permission groups expanded as authorization expands them, so `['read_only']` equals the list it stands for.
+ */
 function sameOperationScope(left: unknown, right: unknown): boolean {
 	if (!Array.isArray(left) || !Array.isArray(right)) return Array.isArray(left) === Array.isArray(right);
-	const leftOperations = new Set(left);
-	const rightOperations = new Set(right);
+	const leftOperations = expandOperationsPerms(left);
+	const rightOperations = expandOperationsPerms(right);
 	return leftOperations.size === rightOperations.size && [...leftOperations].every((op) => rightOperations.has(op));
 }
 
@@ -151,19 +156,29 @@ export function planIdentityReconcile(
 }
 
 /**
- * Whether one token could match both policies: same issuer and audience, and for every claim both constrain, a value
- * both accept. The exchange refuses a token two policies match with different users or operations, so such a pair
- * stops the runs it matches.
+ * Whether one token could match both policies: the same issuer, and for every claim both constrain, a value both
+ * accept. The exchange refuses a token two policies match with different users or operations, so such a pair stops the
+ * runs it matches. A token may name several audiences, and the exchange matches a policy for each, so audiences part
+ * two policies only for GitHub, whose tokens name one. GitHub also refuses a `pull_request_target` run to a policy that
+ * leaves `event_name` open (`vetoClaims`), so such a policy shares no token with one that accepts only those runs.
  */
 export function policiesOverlap(left: any, right: any): boolean {
-	if (left?.issuer !== right?.issuer || left?.audience !== right?.audience) return false;
+	if (left?.issuer !== right?.issuer) return false;
+	const github = left?.issuer === GITHUB_ACTIONS_ISSUER;
+	if (github && left?.audience !== right?.audience) return false;
 	const leftClaims = left?.claims ?? {};
 	const rightClaims = right?.claims ?? {};
+	const accepted = (value: unknown) => (Array.isArray(value) ? value : [value]).map(String);
 	for (const name of Object.keys(leftClaims)) {
 		if (!Object.hasOwn(rightClaims, name)) continue;
-		const accepted = (value: unknown) => (Array.isArray(value) ? value : [value]).map(String);
 		const rightValues = accepted(rightClaims[name]);
 		if (!accepted(leftClaims[name]).some((value) => rightValues.includes(value))) return false;
+	}
+	if (github) {
+		const onlyPullRequestTarget = (claims: any) =>
+			claims.event_name !== undefined && accepted(claims.event_name).every((event) => event === 'pull_request_target');
+		if (leftClaims.event_name === undefined && onlyPullRequestTarget(rightClaims)) return false;
+		if (rightClaims.event_name === undefined && onlyPullRequestTarget(leftClaims)) return false;
 	}
 	return true;
 }

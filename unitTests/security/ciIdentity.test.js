@@ -79,6 +79,16 @@ describe('ciIdentity', () => {
 			assert.ok(!sameAuthority({ user: 'a', operations: ['x'] }, { user: 'a', operations: ['x', 'y'] }));
 			assert.ok(!sameAuthority({ user: 'a', operations: ['x'] }, { user: 'b', operations: ['x'] }));
 		});
+		it('reads a permission group as the operations it stands for, as authorization does', () => {
+			const { OPERATION_PERMISSION_GROUPS } = require('#src/utility/operationPermissions');
+			const reads = [...OPERATION_PERMISSION_GROUPS.read_only];
+			assert.ok(sameAuthority({ user: 'a', operations: ['read_only'] }, { user: 'a', operations: reads }));
+			assert.ok(
+				sameAuthority({ user: 'a', operations: ['read_only', reads[0]] }, { user: 'a', operations: ['read_only'] })
+			);
+			assert.ok(!sameAuthority({ user: 'a', operations: ['read_only'] }, { user: 'a', operations: ['standard_user'] }));
+			assert.ok(!sameAuthority({ user: 'a', operations: ['read_only'] }, { user: 'a', operations: reads.slice(1) }));
+		});
 		it('lets policyDifferences read reordered or repeated operations as the same', () => {
 			const policy = { issuer: 'i', audience: 'a', user: 'u', claims: {}, operations: ['x', 'y'] };
 			assert.deepStrictEqual(policyDifferences({ ...policy, operations: ['y', 'x', 'x'] }, policy), []);
@@ -100,6 +110,23 @@ describe('ciIdentity', () => {
 				!policiesOverlap(policy('a', 'preview'), { ...policy('b', 'preview'), audience: 'https://other:9925/' })
 			);
 			assert.ok(!policiesOverlap(policy('a', 'preview'), { ...policy('b', 'preview'), issuer: 'https://other' }));
+		});
+
+		it('holds across audiences for an issuer whose token can name several', () => {
+			const generic = (id, audience) => ({ ...policy(id, 'preview'), issuer: 'https://issuer.example.com', audience });
+			assert.ok(policiesOverlap(generic('a', 'https://one.example.com'), generic('b', 'https://two.example.com')));
+		});
+
+		it('does not hold between a GitHub policy that leaves event_name open and one only for pull_request_target', () => {
+			const { environment: _environment, ...open } = policy('a', 'x').claims;
+			const withEvent = (id, event_name) => ({ ...policy(id, 'x'), claims: { ...open, event_name } });
+			const deploy = { ...policy('a', 'x'), claims: open };
+			assert.ok(!policiesOverlap(deploy, withEvent('b', 'pull_request_target')));
+			assert.ok(!policiesOverlap(withEvent('b', ['pull_request_target']), deploy));
+			assert.ok(policiesOverlap(deploy, withEvent('b', ['pull_request_target', 'push'])));
+			assert.ok(policiesOverlap(withEvent('a', 'pull_request_target'), withEvent('b', 'pull_request_target')));
+			const generic = (claims) => ({ ...policy('g', 'x'), issuer: 'https://issuer.example.com', claims });
+			assert.ok(policiesOverlap(generic(open), generic({ ...open, event_name: 'pull_request_target' })));
 		});
 	});
 
