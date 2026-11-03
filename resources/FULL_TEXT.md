@@ -92,7 +92,11 @@ Harper pins `@harperfast/fulltext` to **0.9.0**, embedding **Tantivy 0.27.0**, a
 
 ### Upgrading from fulltext 0.7.0 or 0.8.0
 
+<<<<<<< HEAD
 On nodes that already ran v5.4 prereleases with fulltext 0.7.0, existing indexes contain text fields only and remain reusable with 0.9.0. Compatible checkpoints from v5.4 prereleases with fulltext 0.8.0 are also reused without rebuilding; the regression advances them with 0.9.0 and reopens them with 0.8.0. This binary-level check is not a supported older-Harper operator downgrade procedure. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations omit `storage.fullText.query`; defaults apply automatically. An explicitly configured query block must be removed before returning to Harper 5.4.0-alpha.1 or alpha.2, whose validators reject it. Existing configuration is not rewritten. Returning to fulltext 0.7.0 after 0.8.0 has written to an index is not a qualified operator rollback procedure.
+=======
+Harper's existing indexes written by fulltext 0.7.0 or 0.8.0 contain text fields only and remain reusable with 0.9.0. This upgrade does not add native filter metadata or change their storage identity. Query limits, fuzzy controls, scoring and telemetry do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations omit `storage.fullText.query`; defaults apply automatically. An explicitly configured query block must be removed before returning to Harper 5.4.0-alpha.1 or alpha.2, whose validators reject it. Existing configuration is not rewritten. Returning to fulltext 0.7.0 after 0.9.0 has written to an index is not a qualified operator rollback procedure.
+>>>>>>> f557acc95 (Adopt published fulltext 0.9.0 scoring runtime)
 
 ### Upgrading an existing native index
 
@@ -102,7 +106,11 @@ Drain a node's full-text traffic and stop its old Harper processes before starti
 
 Prerelease installations using fulltext 0.6 also require a full rebuild.
 
+<<<<<<< HEAD
 **Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting the current identity, leaving full-text search unavailable. If a downgrade has already happened, keep search traffic drained and restore the 0.9.0-based Harper version. Harper does not yet provide a supported rollback procedure for full-text indexes; see [Implement full-text generation lifecycle, rebuild, eviction, backup, and status](https://github.com/HarperFast/harper/issues/2510). Do not edit, move or delete files in full-text index directories by hand.
+=======
+**Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting the current Tantivy 0.27 identity, leaving full-text search unavailable. If a downgrade has already happened, keep search traffic drained and restore the 0.9.0-based Harper version. Harper does not yet provide a supported rollback procedure for full-text indexes; see [Implement full-text generation lifecycle, rebuild, eviction, backup, and status](https://github.com/HarperFast/harper/issues/2510). Do not edit, move or delete files in full-text index directories by hand.
+>>>>>>> f557acc95 (Adopt published fulltext 0.9.0 scoring runtime)
 
 ### Upgrade and recovery checklist
 
@@ -173,7 +181,7 @@ These limits apply together. For example, two indexing threads and 64 MiB of wri
 
 Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails with `FullTextWorkerInitializationError` (500, non-retryable); recreate it after Harper initializes. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
 
-Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.8.0 defaults to 64 analyzed terms per text leaf, 256 compiled clauses per query and a maximum fuzzy distance of one. Configure `storage.fullText.query` only to override those defaults, separately from request work budgets. Omitted fields retain their defaults:
+Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.9.0 defaults to 64 analyzed terms per text leaf, 256 compiled clauses per query and a maximum fuzzy distance of one. Configure `storage.fullText.query` only to override those defaults, separately from request work budgets. Omitted fields retain their defaults:
 
 ```yaml
 storage:
@@ -183,11 +191,11 @@ storage:
       maxQueryClauses: 512
 ```
 
-The policy is captured for the whole process and inherited by HTTP and application workers. Restart the full Harper process to change it; restarting only workers does not change the captured values. It applies to readers, including reopened readers, and does not change writer limits or index identity. Requests cannot raise it. Terms must be 1–1,024 and clauses 1–4,096, also within the loaded native runtime's advertised ceilings; startup rejects an explicit policy exceeding those ceilings when the native package is available. If an explicit policy triggers loading an unavailable native binding, startup logs a warning and continues; activating a full-text index still fails. Clause cost includes Boolean structure, NOT and field expansion, so a query below its term limit can still fail its clause limit. Overflow rejects the query rather than executing a truncated one. Before a response starts, query-capacity validation failures return 400; an operations JSON stream that has already started instead aborts and may include an error diagnostic. Treat an incomplete response as failed and discard its rows. Other depth, byte, phrase/fuzzy construction, queue, response and deadline guards still apply. Deadlines are cooperative and do not guarantee interruption during every native construction step. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.8.0/docs/limits.md).
+The policy is captured for the whole process and inherited by HTTP and application workers. Restart the full Harper process to change it; restarting only workers does not change the captured values. It applies to readers, including reopened readers, and does not change writer limits or index identity. Requests cannot raise it. Terms must be 1–1,024 and clauses 1–4,096, also within the loaded native runtime's advertised ceilings; startup rejects an explicit policy exceeding those ceilings when the native package is available. If an explicit policy triggers loading an unavailable native binding, startup logs a warning and continues; activating a full-text index still fails. Clause cost includes Boolean structure, NOT and field expansion, so a query below its term limit can still fail its clause limit. Overflow rejects the query rather than executing a truncated one. Before a response starts, query-capacity validation failures return 400; an operations JSON stream that has already started instead aborts and may include an error diagnostic. Treat an incomplete response as failed and discard its rows. Other depth, byte, phrase/fuzzy construction, queue, response and deadline guards still apply. Deadlines are cooperative and do not guarantee interruption during every native construction step. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.9.0/docs/limits.md).
 
 ### Query relevance controls
 
-Query scoring requires a wrapper with native ABI 14 and query API 8. The currently pinned 0.8.0 release uses ABI 13/query API 7: existing searches remain supported, and scoring controls return 400.
+Query scoring requires a wrapper with native ABI 14 and query API 8. The pinned 0.9.0 release provides ABI 14/query API 8. A legacy ABI 13/query API 7 binding retains ordinary searches but rejects scoring controls with 400.
 
 Use `boost` to scale the required clause score, and `should` to add optional scoring clauses. Every result must still match the outer condition. An optional clause can improve a result's rank without adding or removing matches. Field-restricted optional clauses compose with configured index field weights, without rebuilding the index:
 

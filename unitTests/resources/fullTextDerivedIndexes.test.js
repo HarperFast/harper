@@ -310,6 +310,8 @@ describe('@fullText derived-index activation', () => {
 	});
 
 	rocksOnly('rejects scoring on query API 7 while ordinary Table searches remain available', async () => {
+		const runtime = await binding.runtimeInfo();
+		binding.runtimeInfo = async () => ({ ...runtime, nativeAbiVersion: 13, queryApiVersion: 7 });
 		Product = table({
 			database: `fulltext-legacy-scoring-${Date.now()}`,
 			table: 'Product',
