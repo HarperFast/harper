@@ -229,7 +229,7 @@ Two consequences that are easy to miss:
 
 ## Conditional session updates are a best-effort pre-write check (`auth.ts`)
 
-`updateSession` rechecks outside the request snapshot: RocksDB uses `COMMITTED_SESSION_READ`; LMDB must renew its shared reader. It rejects non-live, changed, `VERSION_REUSED` or engine-clock-ahead rows before the ordinary put. In-flight, later or unreplicated writes can still race (`sessionUpdateIfVersion.test.js`).
+`updateSession` reads outside the request snapshot: RocksDB uses `COMMITTED_SESSION_READ`; LMDB renews its shared reader. It rejects non-live, changed, `VERSION_REUSED`, payload `version`, or versions beyond the clock and issuance floor before the ordinary put. In-flight, later or unreplicated writes can still race (`sessionUpdateIfVersion.test.js`).
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
