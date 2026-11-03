@@ -589,7 +589,7 @@ describe('Querying through Resource API', () => {
 				{ ...id, attribute: ['relatedToMany', 'id'] },
 				{ ...name, attribute: ['relatedToMany', 'name'] },
 			]);
-			assert(results.length >= 5);
+			assert.equal(results.length, 5);
 			for (const result of results) {
 				related = await result.relatedToMany;
 				assert(related.length > 0);
@@ -684,7 +684,7 @@ describe('Querying through Resource API', () => {
 				{ ...name, attribute: ['manyToMany', 'name'] },
 				{ ...id, attribute: ['manyToMany', 'id'] },
 			]);
-			assert(results.length >= 14);
+			assert.equal(results.length, 14);
 			for (let result of results) {
 				const related = await result.manyToMany;
 				assert(related.every((record) => record.name > 'many-to-many entry 4' || record.id < 8));

@@ -8206,7 +8206,6 @@ export function makeTable(options): TableResourceClass {
 					const condition = conditions[index];
 					if (isRelationshipGroup(condition)) {
 						const prepared = prepareRelationshipGroup(condition);
-						// a to-one group became plain paths, which an AND takes as its own conditions
 						if (prepared.attribute === undefined && operator !== 'or' && prepared.operator !== 'or') {
 							conditions.splice(index, 1, ...prepared.conditions);
 							index += prepared.conditions.length - 1;
@@ -8357,13 +8356,11 @@ export function makeTable(options): TableResourceClass {
 					true
 				).conditions;
 				const operator = path.length > 1 ? undefined : group.operator;
-				// a to-one relationship has one related record, so its group is a plain group of paths through it
 				if (!relationship.elements)
 					return {
 						operator,
 						conditions: prepared.map((condition) => throughRelationship(condition, path[0], relatedTable.primaryKey)),
 					};
-				// one related record meets every condition of a nested AND, so it scans like its parent's
 				return {
 					attribute: [path[0]],
 					operator,
@@ -12629,7 +12626,7 @@ export function makeTable(options): TableResourceClass {
 					const idFilter = filters[i].idFilter;
 					if (idFilter && !idFilter(idOrEntry)) return SKIP; // didn't match filters
 				}
-				// a synchronous iteration cannot take the Promise an LMDB prefetch returns
+				// a synchronous iteration cannot take the Promise an async entry read can return
 				return loadLocalRecord(idOrEntry, context, loadOptions, Boolean(this?.isSync), process);
 			});
 			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);

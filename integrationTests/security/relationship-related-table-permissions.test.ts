@@ -533,17 +533,44 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		});
 
 		test('a same-record group through the relationship is authorized against the related table', async () => {
-			// a group below the top level reaches the operations API's executor unvalidated
-			const group = (conditions: any[]) => [{ operator: 'and', conditions: [{ attribute: 'dept', conditions }] }];
-			const byName = group([{ attribute: 'name', value: DEPT.name }]);
-			const byBudget = group([{ attribute: 'budget', value: DEPT.budget }]);
-			assertRefused(await byConditions('empOnly', byName), 'group on an unreadable table', 'Dept');
-			assertRefused(await byConditions('restricted', byBudget), 'group on an unreadable attribute', 'Dept.budget');
-			const allowed = await byConditions('restricted', byName);
-			strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
-			deepStrictEqual(allowed.body, [{ id: EMP.id }]);
+			for (const group of [
+				(conditions: any[]) => [{ attribute: 'dept', conditions }],
+				(conditions: any[]) => [{ operator: 'and', conditions: [{ attribute: 'dept', conditions }] }],
+			]) {
+				const byName = group([{ attribute: 'name', value: DEPT.name }]);
+				const byBudget = group([{ attribute: 'budget', value: DEPT.budget }]);
+				assertRefused(await byConditions('empOnly', byName), 'group on an unreadable table', 'Dept');
+				assertRefused(await byConditions('restricted', byBudget), 'group on an unreadable attribute', 'Dept.budget');
+				const allowed = await byConditions('restricted', byName);
+				strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+				deepStrictEqual(allowed.body, [{ id: EMP.id }]);
+			}
 			strictEqual((await rest('restricted', `/Emp/?dept[budget=${DEPT.budget}]&select(id)`)).status, 403);
 			strictEqual((await rest('empOnly', `/Emp/?dept[name=${DEPT.name}]&select(id)`)).status, 403);
+			// inside a root group, ResourceBridge rebuilds leaves from `attribute`, whereas a select-nested condition
+			// executes `condition[0] ?? condition.attribute` directly
+			assertRefused(
+				await byConditions('restricted', [
+					{ attribute: 'dept', conditions: [{ 0: 'name', attribute: 'budget', value: DEPT.budget }] },
+				]),
+				'numeric-keyed leaf inside a root group',
+				'Dept.budget'
+			);
+			const rootNumericAllowed = await byConditions('restricted', [
+				{ attribute: 'dept', conditions: [{ 0: 'budget', attribute: 'name', value: DEPT.name }] },
+			]);
+			strictEqual(rootNumericAllowed.status, 200, JSON.stringify(rootNumericAllowed.body));
+			deepStrictEqual(rootNumericAllowed.body, [{ id: EMP.id }]);
+			assertRefused(
+				await op('restricted', {
+					operation: 'search_by_conditions',
+					table: 'Emp',
+					conditions: [{ attribute: 'id', value: EMP.id }],
+					get_attributes: ['id', { name: 'dept', conditions: [{ 0: 'budget', attribute: 'name', value: DEPT.name }] }],
+				}),
+				'numeric-keyed leaf inside a select condition',
+				'Dept.budget'
+			);
 			// only `attribute` makes a group a same-record group, so another spelling stays on the root table
 			const spelled = await byConditions('empOnly', [
 				{ operator: 'and', conditions: [{ 0: 'dept', conditions: [{ attribute: 'name', value: DEPT.name }] }] },

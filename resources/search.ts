@@ -1007,7 +1007,7 @@ export function searchByIndex(
 			// search the related table
 			let results =
 				group && attribute_name.length === 1
-					? searchRelatedGroup(searchCondition, relatedTxn, reverse, relatedTable, joined, relatedOptions, context)
+					? searchRelatedGroup(searchCondition, relatedTxn, reverse, relatedTable, joined, relatedOptions)
 					: searchByIndex(
 							group
 								? ({ attribute: rest, conditions: group.conditions, operator: group.operator } as any)
@@ -1636,8 +1636,7 @@ export function restrictRelationship(filtered, name: string, restriction: Map<an
 }
 /**
  * A same-record relationship condition: `{ attribute: relationship, operator, conditions }`, whose conditions are
- * relative to the related table and are met by one related record. It is identified by `attribute` alone, which every
- * walker of conditions reads.
+ * relative to the related table and are met by one related record. It is identified by `attribute` alone.
  */
 export function isRelationshipGroup(condition): boolean {
 	return Boolean(condition?.conditions) && condition.attribute != null;
@@ -1658,7 +1657,7 @@ export function compileConditions(conditions: any[], operator: string, table, co
 			table,
 			context,
 			legScope,
-			(condition.attribute ?? condition[0]) === table.primaryKey
+			(condition[0] ?? condition.attribute) === table.primaryKey
 		);
 		if (!predicate) throw new ClientError('This predicate is not supported in a relationship condition', 400);
 		return predicate;
@@ -1982,7 +1981,6 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			const restriction = relationshipRestriction(filtered, firstAttributeName);
 			const join: any = restriction instanceof Map ? restriction : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
-			// the conditions of one scope on this relationship share the row's related entries
 			let lastLoad;
 			if (filtered && resolver) {
 				const loads = (filtered[LOADS] ??= new Map());
@@ -2031,8 +2029,6 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				} else subObject = record[firstAttributeName];
 				return { subObject, subEntry, subEntries };
 			};
-			// an AND scope selects the related records that a leading join on this relationship matched, or that
-			// meet any of its other conditions on it
 			const unionSelection = (join?: Map<any, any>) => {
 				const units = [];
 				const relatedKey = (entry) => entry.key ?? entry.value[relatedTable.primaryKey];
@@ -2083,7 +2079,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			};
 			let selection: RelationshipSelection;
 			// where this condition's deeper hops register their select() restrictions and share their loads; a to-one
-			// hop's restrictions are not read yet (harper#3762)
+			// hop's restrictions are not read yet (to-one->to-many select() restrictions, harper#3762)
 			let nestedScope = join;
 			if (filtered) {
 				const unions = (filtered[UNIONS] ??= new Map());
@@ -2499,7 +2495,8 @@ function usableIndex(table, attributeName): any {
  * The related records a leading same-record group matches: one inner condition drives the scan and the rest go on
  * the join's `filters`, which the join applies to each related record; an OR unions its branches' scans.
  */
-function searchRelatedGroup(group, transaction, reverse: boolean, table, joined, options, context) {
+function searchRelatedGroup(group, transaction, reverse: boolean, table, joined, options) {
+	const context = options.leaseContext ?? options.context;
 	const inner = group.conditions;
 	if (group.operator === 'or') {
 		if (inner.every((condition) => scansRelated(table, condition)))
@@ -2639,7 +2636,6 @@ function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): bo
 	return !!relatedTable && drivesRebuildingIndex(relatedTable, attributeName, relationshipOffset + 1);
 }
 
-// a same-record group is estimated as the join of its inner conditions, like an equality on a relationship path
 function estimateRelationshipGroup(table, group): number {
 	const path = Array.isArray(group.attribute) ? group.attribute : [group.attribute];
 	const attribute = findAttribute(table.attributes, path[0]);

@@ -29,7 +29,7 @@ const limitedUser = {
 
 describe('A relationship condition is existential; `relationship[conditions]` is met by one related record', function () {
 	this.timeout(60000);
-	let Brand, Product;
+	let Brand, Product, Employee;
 
 	before(async () => {
 		setupTestDBPath();
@@ -78,7 +78,7 @@ describe('A relationship condition is existential; `relationship[conditions]` is
 			database: 'same_record',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, employees],
 		});
-		const Employee = table({
+		Employee = table({
 			table: 'Employee',
 			database: 'same_record',
 			attributes: [
@@ -86,6 +86,7 @@ describe('A relationship condition is existential; `relationship[conditions]` is
 				{ name: 'departmentId', indexed: true },
 				{ name: 'tag', indexed: true },
 				{ name: 'level', type: 'Int', indexed: true },
+				{ name: 'role', type: 'String' },
 			],
 		});
 		products.elements.definition.tableClass = Product;
@@ -108,9 +109,9 @@ describe('A relationship condition is existential; `relationship[conditions]` is
 			await Product.put(product);
 		await Department.put({ id: 'd-split', name: 'Split' });
 		await Department.put({ id: 'd-whole', name: 'Whole' });
-		await Employee.put({ id: 'e1', departmentId: 'd-split', tag: 't', level: 1 });
-		await Employee.put({ id: 'e2', departmentId: 'd-split', tag: 'x', level: 5 });
-		await Employee.put({ id: 'e3', departmentId: 'd-whole', tag: 't', level: 4 });
+		await Employee.put({ id: 'e1', departmentId: 'd-split', tag: 't', level: 1, role: 'junior' });
+		await Employee.put({ id: 'e2', departmentId: 'd-split', tag: 'x', level: 5, role: 'lead' });
+		await Employee.put({ id: 'e3', departmentId: 'd-whole', tag: 't', level: 4, role: 'lead' });
 	});
 
 	const name = (value) => () => ({ attribute: ['products', 'name'], value });
@@ -276,6 +277,97 @@ describe('A relationship condition is existential; `relationship[conditions]` is
 			]),
 			[]
 		);
+		const contexts = [];
+		const readTxnForContext = Employee._readTxnForContext;
+		Employee._readTxnForContext = function (context) {
+			contexts.push(context);
+			return readTxnForContext.call(this, context);
+		};
+		try {
+			const unindexedRolePath = { attribute: ['employees', 'role'], value: 'lead' };
+			for (const [TableClass, conditions, expected] of [
+				[
+					Product,
+					[
+						{
+							attribute: ['brand', 'departments'],
+							conditions: [{ attribute: 'name', value: 'Split' }, unindexedRolePath],
+						},
+					],
+					['k1', 'm1'],
+				],
+				[
+					Product,
+					[
+						{
+							attribute: 'brand',
+							conditions: [departmentsGroup({ attribute: 'name', value: 'Split' }, unindexedRolePath)],
+						},
+					],
+					['k1', 'm1'],
+				],
+				[
+					Product,
+					[
+						{
+							attribute: ['brand', 'departments'],
+							conditions: [
+								{
+									operator: 'or',
+									conditions: [
+										{ attribute: 'name', value: 'Split' },
+										{ attribute: 'name', value: 'Whole' },
+									],
+								},
+								unindexedRolePath,
+							],
+						},
+					],
+					['k1', 'k2', 'm1'],
+				],
+				[
+					Product,
+					[
+						{
+							attribute: ['brand', 'departments'],
+							operator: 'or',
+							conditions: [{ attribute: 'name', value: 'Whole' }, unindexedRolePath],
+						},
+					],
+					['k1', 'k2', 'm1'],
+				],
+			]) {
+				contexts.length = 0;
+				const marker = Symbol('query-context');
+				const found = [];
+				for await (const row of TableClass.search({ conditions, select: ['id'] }, { marker })) found.push(row.id);
+				assert.deepStrictEqual(found.sort(), expected);
+				assert.ok(
+					contexts.length > 0 && contexts.every((context) => context?.marker === marker),
+					JSON.stringify(conditions)
+				);
+			}
+		} finally {
+			Employee._readTxnForContext = readTxnForContext;
+		}
+	});
+
+	it('deletes rows matching the same-record group vs separate existential conditions', async () => {
+		const keyboardBrands = [
+			{ id: 'both', group: 'g', departmentIds: ['d-split'] },
+			{ id: 'keyboard', group: 'g', departmentIds: ['d-whole'] },
+		];
+		const remainingKeyboards = async () =>
+			(await rows({ conditions: [name('Keyboard')()], select: ['id'] })).map(([id]) => id);
+		try {
+			await Brand.delete(new RequestTarget('?products[name=Keyboard&color=white]'));
+			assert.deepStrictEqual(await remainingKeyboards(), ['both']);
+			for (const brand of keyboardBrands) await Brand.put(brand);
+			await Brand.delete(new RequestTarget('?products.name=Keyboard&products.color=white'));
+			assert.deepStrictEqual(await remainingKeyboards(), []);
+		} finally {
+			for (const brand of keyboardBrands) await Brand.put(brand);
+		}
 	});
 
 	it('treats a group on a to-one relationship as conditions on its one related record', async () => {
