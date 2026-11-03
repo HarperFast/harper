@@ -225,6 +225,73 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		assert.notStrictEqual(await generationOf(), first);
 	});
 
+	it('says how to fence previews of a role enabled before generations, which a rerun keeps as it is', async () => {
+		await enablePreviews(enableRequest('opslegacy'));
+		const role = await getRoleByName('opslegacy-ci-preview');
+		const { generation: _generation, ...constraints } = role.permission.component_deploy.constraints;
+		await alterRole({
+			id: role.id,
+			role: role.role,
+			permission: { ...role.permission, component_deploy: { ...role.permission.component_deploy, constraints } },
+		});
+		const legacy =
+			/role "opslegacy-ci-preview" predates revocation generations, .* disable previews and enable them again/;
+		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opslegacy', hdb_user: SU });
+		assert.strictEqual(policy.enabled, false);
+		assert.match(policy.problems.join(), legacy);
+
+		const rerun = await enablePreviews(enableRequest('opslegacy'));
+		assert.match(rerun.message, /already enabled; nothing changed, but role "opslegacy-ci-preview" predates/);
+		assert.deepStrictEqual(rerun.created, []);
+		assert.match(rerun.problems.join(), legacy);
+		assert.strictEqual(
+			(await getRoleByName('opslegacy-ci-preview')).permission.component_deploy.constraints.generation,
+			undefined,
+			'the rerun wrote nothing'
+		);
+
+		await disablePreviews({ operation: 'disable_previews', app: 'opslegacy', hdb_user: SU });
+		const reenabled = await enablePreviews(enableRequest('opslegacy'));
+		assert.strictEqual(reenabled.enabled, true, JSON.stringify(reenabled.problems));
+		assert.match(reenabled.grant.constraints.generation, /^[\w-]{8,}$/);
+	});
+
+	it('takes the enablement lock from a worker of this process that died holding it', async () => {
+		const { getConfigPath } = require('#src/config/configUtils');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const {
+			COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+			componentPreparationLockPaths,
+		} = require('#src/components/componentPreparationLock');
+		const { lockRoot, lockName } = componentPreparationLockPaths(
+			path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), '.preview-enablement')
+		);
+		await fs.mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		const orphan = path.join(lockRoot, `${lockName}.ticket.1.crashed-worker.json`);
+		await fs.writeFile(
+			orphan,
+			JSON.stringify({
+				pid: process.pid,
+				threadId: 987654,
+				processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+				token: 'crashed-worker',
+				ticket: 1,
+			})
+		);
+		let timer;
+		try {
+			await Promise.race([
+				enablePreviews(enableRequest('opsorphan')),
+				new Promise((_, reject) => {
+					timer = setTimeout(() => reject(new Error("enable waited behind the dead worker's ticket")), 10_000);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
+		await assert.rejects(fs.stat(orphan), { code: 'ENOENT' });
+	});
+
 	it('lets only one of two applications enabled at once claim the same workflow runs', async () => {
 		const workflow = '.github/workflows/shared.yaml';
 		const outcomes = await Promise.allSettled([
@@ -361,18 +428,25 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			assert.strictEqual(getUserWithRole('opsshop-ci-preview'), undefined);
 		});
 
-		it('fences on a peer through the operation itself, and refuses anyone but a super user or a replication', async () => {
-			const { REPLICATED_FROM } = require('#src/utility/hdbTerms');
+		it("fences on a peer as harper-pro runs an authorized node's operation, and refuses anyone else not a super user", async () => {
+			const { operation } = require('#src/server/serverHelpers/serverUtilities');
 			const generation = 'opspeer-generation';
-			const request = { operation: 'fence_preview_releases', app: 'opspeer', generation };
+			const request = () => ({ operation: 'fence_preview_releases', app: 'opspeer', generation, replicated: false });
+			// What harper-pro's replication connection passes: the origin node's identity, with no role, and authorization
+			// checked only when the connection is not an authorized node's.
+			const originNode = { name: 'node-a', replicates: true };
+			await assert.rejects(
+				async () => operation(request(), { user: originNode }, true),
+				/This operation is not authorized/
+			);
 			await assert.rejects(
 				fencePreviewReleases({
-					...request,
+					...request(),
 					hdb_user: { username: 'ci', role: { permission: { super_user: false } } },
 				}),
 				{ statusCode: 403 }
 			);
-			const answer = await fencePreviewReleases({ ...request, replicated: false, [REPLICATED_FROM]: 'node-a' });
+			const answer = await operation(request(), { user: originNode }, false);
 			assert.strictEqual(answer.fenced, true);
 			await assert.rejects(deploy('opspeer-pr-1', { ...metadata('opspeer', 1), generation }), {
 				statusCode: 403,

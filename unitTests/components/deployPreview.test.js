@@ -268,6 +268,48 @@ describe('PR preview metadata (harper#3048)', () => {
 			await fenced('shop-pr-6', path.join(root, '.candidates', 'shop-pr-6'));
 		});
 
+		it('takes the lock from a worker of this process that died holding it, rather than waiting it out', async () => {
+			const {
+				COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+				componentPreparationLockPaths,
+			} = require('#src/components/componentPreparationLock');
+			const { lockRoot, lockName } = componentPreparationLockPaths(path.join(root, '.preview-admission-shop'));
+			await fs.mkdir(lockRoot, { recursive: true, mode: 0o700 });
+			const orphan = path.join(lockRoot, `${lockName}.ticket.1.crashed-worker.json`);
+			const plantOrphan = () =>
+				fs.writeFile(
+					orphan,
+					JSON.stringify({
+						pid: process.pid,
+						threadId: 987654,
+						processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+						token: 'crashed-worker',
+						ticket: 1,
+						purpose: 'preview admission for shop',
+					})
+				);
+			const promptly = async (work, what) => {
+				let timer;
+				try {
+					return await Promise.race([
+						work,
+						new Promise((_, reject) => {
+							timer = setTimeout(() => reject(new Error(`${what} waited behind the dead worker's ticket`)), 10_000);
+						}),
+					]);
+				} finally {
+					clearTimeout(timer);
+				}
+			};
+
+			await plantOrphan();
+			await promptly(fencePreviewGeneration('shop', 'g1', root), 'the fence');
+			await assert.rejects(fs.stat(orphan), { code: 'ENOENT' });
+			await plantOrphan();
+			await promptly(fenced('shop-pr-2', await candidate('shop-pr-2', 2, 'g2')), 'the activation');
+			await assert.rejects(fs.stat(orphan), { code: 'ENOENT' });
+		});
+
 		it('keeps every generation it was given, durably, and refuses an unreadable fence', async () => {
 			await fencePreviewGeneration('shop', 'g1', root);
 			await fencePreviewGeneration('shop', 'g2', root);

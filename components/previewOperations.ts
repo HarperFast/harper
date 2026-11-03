@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { databases } from '../resources/databases.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { CONFIG_PARAMS, OPERATIONS_ENUM, REPLICATED_FROM } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import { PROJECT_NAME_PATTERN } from '../utility/componentNames.ts';
@@ -46,6 +46,8 @@ import { deploymentRecord } from './deploymentOperations.ts';
 import { handleListReleases } from './releaseOperations.ts';
 import { REPLICATION_NOT_IMPLEMENTED, server } from '../server/Server.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
+import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const ENDED_DEPLOYMENT_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
@@ -88,6 +90,7 @@ function withPreviewEnablementLock<T>(app: string, run: () => Promise<T>): Promi
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT) as string;
 	return withComponentPreparationLock(join(componentsRoot, '.preview-enablement'), run, {
 		purpose: `enabling or disabling previews of ${app}`,
+		isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
 	});
 }
 
@@ -299,13 +302,15 @@ export async function enablePreviews(req: any) {
 		if (problems.length > 0) {
 			throw new ServerError(`Previews of ${req.app} did not verify: ${problems.join('; ')}.`);
 		}
+		const description = await describePreviewPolicy(req, names);
+		const message =
+			created.length > 0
+				? `Enabled previews of ${req.app}: created ${created.join(', ')}`
+				: `Previews of ${req.app} were already enabled; nothing changed`;
 		return {
-			message:
-				created.length > 0
-					? `Enabled previews of ${req.app}: created ${created.join(', ')}`
-					: `Previews of ${req.app} were already enabled; nothing changed`,
+			message: description.problems.length > 0 ? `${message}, but ${description.problems.join('; ')}` : message,
 			created,
-			...(await describePreviewPolicy(req, names)),
+			...description,
 		};
 	});
 }
@@ -328,6 +333,11 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		if (roleProblem) problems.push(roleProblem);
 		else if (grant.constraints?.isolated !== true || !grant.constraints?.hostSuffix) {
 			problems.push(`role "${names.role}" no longer requires isolated previews under a host suffix`);
+		} else if (grant.constraints.generation === undefined) {
+			problems.push(
+				`role "${names.role}" predates revocation generations, so disabling previews cannot fence a preview it ` +
+					'built that is still swapping in or reaching a peer: disable previews and enable them again'
+			);
 		}
 		const operations = role.permission?.operations;
 		if (
@@ -468,9 +478,11 @@ async function dropPreviewRelease({ node, project, deploymentId }: PreviewReleas
 /**
  * On this node and every peer, refuse from now on any preview of `app` built at `generation`, waiting for one swapping
  * now, then report what is live: `list_releases` with a fence each node acknowledges. Internal to `disable_previews`.
+ * A peer runs it as the origin node's identity, which is not a super user, under the authorization bypass harper-pro
+ * gives an authorized node's operations.
  */
 export async function fencePreviewReleases(req: any): Promise<any> {
-	if (req[REPLICATED_FROM] === undefined) requireSuperUser(req);
+	if (!isOperationAuthorizationBypassed()) requireSuperUser(req);
 	derivePreviewNames(req.app);
 	if (typeof req.generation !== 'string' || !PREVIEW_GENERATION_PATTERN.test(req.generation)) {
 		throw new ClientError(`'generation' must be the preview identity generation to revoke`);
