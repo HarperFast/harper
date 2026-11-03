@@ -86,7 +86,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## A relationship read is authorized against the related table
 
-Each relationship step needs `read` on the related table and attribute (`Table._readDenial`). **The search layer checks nothing**, so REST `allowRead` (`_authorizeRelatedSelection`), `verifyPerms` (after `normalizeSearchRequest`) and `ResourceBridge.getSelect` check the query that will run. A `*` select of `@enumerable` relationships is rewritten unless `_readableInFull`, whose answer lasts one admission and one permission source. Live subscriptions referencing a relationship skip the shared verdict (`_referencesRelationship`). SQL and subscription deliveries are not covered (harper#3509; `permissions.test.js`).
+`_readDenial` gates relationship steps/scalar properties. Search has no general read gate: REST `allowRead`, `verifyPerms`, `ResourceBridge.getSelect` admit; nested rechecks require `checkPermission`. Root ops use normalized `attribute`, nested `[0] ?? attribute`. Enumerable `*` rewrites unless `_readableInFull` (per admission/principal); relationship rechecks are unshared. Uncovered: subscription delivery, [SQL](https://github.com/HarperFast/harper/issues/3509), [root predicates](https://github.com/HarperFast/harper/issues/3903). Tests: `permissions.test.js`, `relationshipSelectionReadPermissions.test.js`.
 
 ## Typed, discoverable resources
 

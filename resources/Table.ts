@@ -2324,6 +2324,11 @@ export function makeTable(options): TableResourceClass {
 			// authority comes from the request being authorized, never from the selection itself
 			if (checkPermission) property.checkPermission = checkPermission;
 			else delete property.checkPermission;
+			if (
+				Array.isArray(property.conditions) &&
+				someConditionPath(property.conditions, property, user, true, relatedTable)
+			)
+				throw new AccessViolation(user);
 			for (let sort = typeof property.sort === 'object' && property.sort; sort; sort = sort.next) {
 				const path = Array.isArray(sort.attribute) ? sort.attribute : [sort.attribute];
 				if (relatedTable._readDenial(path, user, property)) return false;
@@ -11910,8 +11915,13 @@ export function makeTable(options): TableResourceClass {
 		if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
 		const attribute_permissions = tablePermission.attribute_permissions;
 		const property = target?.property;
+		if (
+			property !== undefined &&
+			attribute_permissions?.length > 0 &&
+			TableResource._readDenial([property], user, target)
+		)
+			return false;
 		if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
-			if (attribute_permissions?.length > 0 && TableResource._readDenial([property], user, target)) return false;
 			const selection = TableResource._authorizeRelatedSelection(
 				target.select == null ? property : { name: property, select: target.select },
 				user,
@@ -12032,13 +12042,23 @@ export function makeTable(options): TableResourceClass {
 		conditions: Iterable<any>,
 		target: RequestTarget,
 		user: User,
-		checkDenial: boolean
+		checkDenial: boolean,
+		relatedTable?: TableResourceClass
 	): boolean {
 		for (const condition of conditions) {
+			if (condition?.conditions) {
+				if (someConditionPath(condition.conditions, target, user, checkDenial, relatedTable)) return true;
+				continue;
+			}
+			const attribute = condition?.[0] ?? condition?.attribute;
 			if (
-				condition?.conditions
-					? someConditionPath(condition.conditions, target, user, checkDenial)
-					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, target, user, checkDenial)
+				relatedTable
+					? relatedTable._readDenial(
+							Array.isArray(attribute) ? attribute : [attribute ?? relatedTable.primaryKey],
+							user,
+							target
+						) !== undefined
+					: relationshipPathMatches(attribute, target, user, checkDenial)
 			)
 				return true;
 		}
