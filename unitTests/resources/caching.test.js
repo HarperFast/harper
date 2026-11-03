@@ -4,13 +4,16 @@ const { setTimeout: delay } = require('timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { VERSION_NOT_UNIQUE_FLAG } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED, entryMap } = require('#src/resources/RecordEncoder');
 const { INVALIDATED } = require('#src/resources/Table');
 const { exportIdMapping } = require('#src/resources/nodeIdMapping');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor.js');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
 
 describe('Caching', () => {
 	let CachingTable,
@@ -48,6 +51,7 @@ describe('Caching', () => {
 	let sourceExpiresAt;
 	let return_value = true;
 	let return_error;
+	let return_rejection = null; // when set, `{ value }` is rejected as-is
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
@@ -79,6 +83,10 @@ describe('Caching', () => {
 				sourceRequests++;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
+						if (return_rejection) {
+							reject(return_rejection.value);
+							return;
+						}
 						if (return_error) {
 							let error = new Error('test source error');
 							error.statusCode = return_error;
@@ -347,36 +355,37 @@ describe('Caching', () => {
 		CachingTable.setTTLExpiration(0.005);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		CachingTable.setTTLExpiration(50);
+		const eventTypes = () => events.map((event) => event.type);
+		// A default subscription drops an event whose version is superseded by the time its notify pass runs,
+		// so each step waits for its own event before the next write can supersede it.
+		const fillSettled = () => {
+			if (CachingTable.primaryStore.hasLock(23)) return false;
+			const version = CachingTable.primaryStore.getEntry(23)?.version;
+			return events.some((event) => event.type === 'put' && event.version === version);
+		};
+		events = [];
+		await CachingTable.invalidate(23);
 		let result = await CachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
-		sourceRequests = 0;
-		events = [];
-		CachingTable.invalidate(23);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		let target23 = new RequestTarget();
-		target23.id = 23;
-		result = await CachingTable.get(target23);
-		assert.equal(target23.loadedFromSource, true);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		if (events.length > 2) console.log(events);
-		assert(events.length <= 2);
+		await waitFor(fillSettled, { message: () => `the warm-up fill should commit and notify, saw ${eventTypes()}` });
 
-		sourceRequests = 0;
-		events = [];
-		CachingTable.invalidate(23); // show not load from cache
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.equal(sourceRequests, 0);
-		assert.equal(events.length, 1);
-
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		result = await CachingTable.get(23);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		assert(events.length <= 2);
+		for (let cycle = 0; cycle < 2; cycle++) {
+			sourceRequests = 0;
+			events = [];
+			await CachingTable.invalidate(23);
+			await waitFor(() => events.length >= 1, { message: 'the invalidate event should be delivered' });
+			assert.deepEqual(eventTypes(), ['invalidate']);
+			assert.equal(sourceRequests, 0);
+			const target23 = new RequestTarget();
+			target23.id = 23;
+			result = await CachingTable.get(target23);
+			assert.equal(target23.loadedFromSource, true);
+			assert.equal(result.id, 23);
+			assert.equal(sourceRequests, 1);
+			await waitFor(fillSettled, { message: () => `the refill should commit and notify, saw ${eventTypes()}` });
+			assert.deepEqual(eventTypes(), ['invalidate', 'put']);
+		}
 	});
 
 	it('Handles distinct eviction time', async function () {
@@ -384,8 +393,7 @@ describe('Caching', () => {
 			expiration: 0.005,
 			eviction: 0.01,
 		});
-		CachingTable.invalidate(23); // reset the entry
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await CachingTable.invalidate(23); // reset the entry
 		await CachingTable.get(23);
 		sourceRequests = 0;
 		events = [];
@@ -409,8 +417,7 @@ describe('Caching', () => {
 			expiration: 0.005,
 			eviction: 0.01,
 		});
-		CachingTable.invalidate(23); // reset the entry
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await CachingTable.invalidate(23); // reset the entry
 		await CachingTable.get(23);
 		sourceRequests = 0;
 		sourceResponses = 0;
@@ -528,8 +535,7 @@ describe('Caching', () => {
 			expiration: 0.005,
 			eviction: 0.01,
 		});
-		CachingTable.invalidate(23); // reset the entry
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await CachingTable.invalidate(23); // reset the entry
 		await CachingTable.get(23);
 		sourceRequests = 0;
 		sourceResponses = 0;
@@ -599,7 +605,47 @@ describe('Caching', () => {
 		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'refreshed');
 		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
 		assert.equal(refreshedEntry.version, invalidatedVersion);
-		assert(refreshedEntry.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
+		assert(refreshedEntry.metadataFlags & VERSION_REUSED);
+	});
+
+	it('keeps an invalidation that commits while a revalidation fill is in flight', async function () {
+		const id = 650;
+		await ConflictCachingTable.put(id, { id, name: 'seed' });
+		await ConflictCachingTable.invalidate(id);
+		conflictSourceRequest = null;
+		// every await below is bounded in-body: a mocha timeout would leave this body suspended, skipping the finally
+		const settles = (promise, what) =>
+			Promise.race([promise, delay(2000, undefined, { ref: false }).then(() => assert.fail(`${what} should settle`))]);
+		const fill = ConflictCachingTable.get(id);
+		fill.catch(() => {});
+		try {
+			await waitFor(() => conflictSourceRequest?.id === id);
+			await settles(ConflictCachingTable.invalidate(id), 'an invalidation during the fill');
+			const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+			conflictSourceRequest.respond({ id, name: 'pre-invalidation' });
+			assert.equal((await settles(fill, 'the fill')).name, 'pre-invalidation');
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			const entry = ConflictCachingTable.primaryStore.getEntry(id);
+			assert(entry.metadataFlags & INVALIDATED, 'the fill must not overwrite the later invalidation');
+			assert.equal(entry.version, invalidatedVersion);
+
+			conflictSourceRequest = null;
+			const target = new RequestTarget();
+			target.id = id;
+			const reload = ConflictCachingTable.get(target);
+			reload.catch(() => {});
+			await waitFor(() => conflictSourceRequest?.id === id);
+			conflictSourceRequest.respond({ id, name: 'post-invalidation' });
+			conflictSourceRequest = null;
+			assert.equal((await settles(reload, 'the reload')).name, 'post-invalidation');
+			assert.equal(target.loadedFromSource, true);
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			const refilled = ConflictCachingTable.primaryStore.getEntry(id);
+			assert.equal(refilled.value.name, 'post-invalidation');
+			assert(!(refilled.metadataFlags & INVALIDATED));
+		} finally {
+			if (conflictSourceRequest?.id === id) conflictSourceRequest.respond(null);
+		}
 	});
 
 	it('uses a source-reported version before the transaction timestamp', async function () {
@@ -668,7 +714,7 @@ describe('Caching', () => {
 		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
 		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
 		assert.equal(refreshedEntry.version, invalidatedVersion);
-		assert(refreshedEntry.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
+		assert(refreshedEntry.metadataFlags & VERSION_REUSED);
 	});
 
 	it('falls back from an invalid source-reported version', async function () {
@@ -763,6 +809,184 @@ describe('Caching', () => {
 			indexed.map((record) => record.id),
 			[id]
 		);
+	});
+
+	describe('source miss on an unaudited indexed table', function () {
+		// audit: false and a source without subscribe() (which would turn trackDeletes on), so a source miss
+		// takes the plain removal branch rather than updateRecord. Index entries are read raw: search() drops an
+		// index entry whose record is gone, so it cannot see a dangling one.
+		this.timeout(20000);
+		const FIRST_BLOB_ID = 710;
+		let UnauditedIndexedTable;
+		let sourceReportsMissing = false;
+		before(function () {
+			UnauditedIndexedTable = table({
+				table: 'UnauditedIndexedCachingTable',
+				database: 'test',
+				audit: false,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'payload' }],
+			});
+			UnauditedIndexedTable.sourcedFrom({
+				get(id) {
+					if (sourceReportsMissing) return undefined;
+					const record = { id, name: 'unaudited ' + id };
+					if (id >= FIRST_BLOB_ID) record.payload = createBlob(randomBytes(25000));
+					return record;
+				},
+			});
+			// expire almost immediately so the next get() revalidates, but never become evictable mid-test
+			UnauditedIndexedTable.setTTLExpiration({ expiration: 0.005, eviction: 3600 });
+		});
+		const indexEntries = (name) => UnauditedIndexedTable.indices.name.getValuesCount(name);
+
+		async function cacheThenExpire(id) {
+			await UnauditedIndexedTable.get(id);
+			await waitFor(
+				() =>
+					UnauditedIndexedTable.primaryStore.getSync(id) !== undefined &&
+					!UnauditedIndexedTable.primaryStore.hasLock(id)
+			);
+			assert.equal(indexEntries('unaudited ' + id), 1);
+			await delay(10);
+		}
+
+		// Runs onFillCommit(commit) in place of the native commit of the source-miss fill of `id`. The last
+		// transactional read of the record before that commit is the fill's own re-read, right before its commit
+		// callback runs, which identifies the fill's native transaction. Commits started before it are collected,
+		// so a removal that escaped the fill transaction can be awaited.
+		function interceptFillCommit(id, onFillCommit) {
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const originalCommit = Transaction.prototype.commit;
+			const { primaryStore } = UnauditedIndexedTable;
+			const originalGetEntry = primaryStore.getEntry;
+			const interception = { fired: false, otherCommits: [] };
+			let fillTransaction;
+			primaryStore.getEntry = function (key, options) {
+				if (!interception.fired && key === id && options?.transaction) fillTransaction = options.transaction;
+				return originalGetEntry.call(this, key, options);
+			};
+			Transaction.prototype.commit = function (...args) {
+				if (!interception.fired && this === fillTransaction) {
+					interception.fired = true;
+					return onFillCommit(() => originalCommit.apply(this, args));
+				}
+				const commit = originalCommit.apply(this, args);
+				if (!interception.fired) interception.otherCommits.push(commit);
+				return commit;
+			};
+			interception.restore = () => {
+				Transaction.prototype.commit = originalCommit;
+				primaryStore.getEntry = originalGetEntry;
+			};
+			return interception;
+		}
+		const failCommit = () => {
+			const error = new Error('injected source-miss commit failure');
+			error.code = 'ERR_INJECTED_COMMIT_FAILURE';
+			return Promise.reject(error);
+		};
+
+		async function missAndSettle(id, onFillCommit) {
+			const interception = onFillCommit && interceptFillCommit(id, onFillCommit);
+			try {
+				sourceReportsMissing = true;
+				assert.equal(await UnauditedIndexedTable.get(id), undefined);
+				await waitFor(() => (!interception || interception.fired) && !UnauditedIndexedTable.primaryStore.hasLock(id), {
+					message: 'the source-miss fill never committed',
+				});
+			} finally {
+				sourceReportsMissing = false;
+				interception?.restore();
+			}
+			if (interception) await Promise.allSettled(interception.otherCommits);
+		}
+
+		it('removes the record and its index entry when the source reports it missing', async function () {
+			const id = 701;
+			await cacheThenExpire(id);
+			await missAndSettle(id);
+			assert.equal(UnauditedIndexedTable.primaryStore.getSync(id), undefined);
+			assert.equal(indexEntries('unaudited ' + id), 0);
+		});
+
+		it('keeps the record and its index entry together when the source-miss commit fails', async function () {
+			const id = 702;
+			await cacheThenExpire(id);
+			await missAndSettle(id, failCommit);
+			assert.notEqual(UnauditedIndexedTable.primaryStore.getSync(id), undefined, 'record removed by a failed commit');
+			assert.equal(indexEntries('unaudited ' + id), 1);
+		});
+
+		it('does not remove a write that lands between staging the removal and committing it', async function () {
+			const id = 703;
+			await cacheThenExpire(id);
+			await missAndSettle(id, async (commit) => {
+				// its own transaction: this runs inside the fill's async context, which a bare put would join
+				const context = {};
+				await transaction(context, () => UnauditedIndexedTable.put(id, { id, name: 'replacement ' + id }, context));
+				return commit();
+			});
+			assert.equal(UnauditedIndexedTable.primaryStore.getSync(id)?.name, 'replacement ' + id);
+			assert.equal(indexEntries('replacement ' + id), 1);
+			assert.equal(indexEntries('unaudited ' + id), 0);
+		});
+
+		it('deletes the blob files of a removed record only once the removal commits', async function () {
+			const failedId = FIRST_BLOB_ID;
+			const removedId = FIRST_BLOB_ID + 1;
+			setDeletionDelay(0);
+			try {
+				await cacheThenExpire(failedId);
+				await cacheThenExpire(removedId);
+				const blobPath = (id) => getFilePathForBlob(UnauditedIndexedTable.primaryStore.getSync(id).payload);
+				const failedPath = blobPath(failedId);
+				const removedPath = blobPath(removedId);
+				assert(existsSync(failedPath) && existsSync(removedPath));
+				await missAndSettle(failedId, failCommit);
+				await missAndSettle(removedId);
+				// reclamation runs in queue order, so a deletion queued by the failed removal would have run by now
+				await waitFor(() => !existsSync(removedPath), {
+					timeout: 5000,
+					message: "the removed record's blob file was never deleted",
+				});
+				await delay(50);
+				assert.notEqual(UnauditedIndexedTable.primaryStore.getSync(failedId), undefined);
+				assert(existsSync(failedPath), 'a failed removal deleted the blob file of the record it left in place');
+			} finally {
+				setDeletionDelay(undefined);
+			}
+		});
+
+		it('keeps a blob file that a write committed after the removal references again', async function () {
+			const id = FIRST_BLOB_ID + 2;
+			const removedId = FIRST_BLOB_ID + 3;
+			setDeletionDelay(0);
+			try {
+				await cacheThenExpire(id);
+				await cacheThenExpire(removedId);
+				const { payload } = UnauditedIndexedTable.primaryStore.getSync(id);
+				const payloadPath = getFilePathForBlob(payload);
+				const removedPath = getFilePathForBlob(UnauditedIndexedTable.primaryStore.getSync(removedId).payload);
+				await missAndSettle(id, async (commit) => {
+					const committed = await commit();
+					const context = {};
+					await transaction(context, () =>
+						UnauditedIndexedTable.put(id, { id, name: 'replacement ' + id, payload }, context)
+					);
+					return committed;
+				});
+				await missAndSettle(removedId);
+				await waitFor(() => !existsSync(removedPath), {
+					timeout: 5000,
+					message: "the removed record's blob file was never deleted",
+				});
+				await delay(50);
+				assert.equal(UnauditedIndexedTable.primaryStore.getSync(id)?.name, 'replacement ' + id);
+				assert(existsSync(payloadPath), 'the removal deleted a blob file the replacement record references');
+			} finally {
+				setDeletionDelay(undefined);
+			}
+		});
 	});
 
 	it('caps a source-reported version ahead of local time so later local writes still land', async function () {
@@ -888,38 +1112,131 @@ describe('Caching', () => {
 
 	it('Source throw error', async function () {
 		try {
-			IndexedCachingTable.setTTLExpiration(0.005);
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			await IndexedCachingTable.invalidate(30);
 			sourceRequests = 0;
 			events = [];
 			return_error = 500;
 			let returned_error;
-			let result;
 			try {
-				result = await IndexedCachingTable.get(30);
+				await IndexedCachingTable.get(30);
 			} catch (error) {
 				returned_error = error;
 			}
 			assert.equal(returned_error?.message, 'test source error while resolving record 30 for IndexedCachingTable');
 			assert.equal(sourceRequests, 1);
 
-			IndexedCachingTable.setTTLExpiration({
-				expiration: 0.005,
-				eviction: 0.01,
-			});
 			return_error = false;
-			IndexedCachingTable.invalidate(23); // reset the entry
+			const expiredAt = (sourceExpiresAt = Date.now() - 1);
+			await IndexedCachingTable.invalidate(23);
 			await IndexedCachingTable.get(23);
+			await waitFor(
+				() =>
+					!IndexedCachingTable.primaryStore.hasLock(23) &&
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === expiredAt,
+				{ message: 'the expired source fill should be committed and remain resident' }
+			);
+			const staleEntry = IndexedCachingTable.primaryStore.getEntry(23);
+			assert(staleEntry);
+			assert(staleEntry.expiresAt < Date.now());
 			sourceRequests = 0;
 			sourceResponses = 0;
 			events = [];
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			// should be stale but not evicted
 			return_error = 504;
-			result = await IndexedCachingTable.get(23, { staleIfError: true });
-			assert(result); // should return stale value despite error
-			assert.equal(sourceRequests, 1); // the source request should be started
+			const result = await IndexedCachingTable.get(23, { staleIfError: true });
+			assert(result);
+			assert.equal(result.name, 'name 23');
+			assert.equal(sourceRequests, 1);
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23));
 		} finally {
+			return_error = false;
+			sourceExpiresAt = undefined;
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 0.01 });
+		}
+	});
+
+	it('Source throw error with a non-writable message', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration(0.005);
+			await delay(10);
+			sourceRequests = 0;
+			events = [];
+			// What `fetch` rejects with when an AbortSignal.timeout fires: DOMException carries
+			// `message` as a getter-only accessor, so annotating it throws under strict mode.
+			return_rejection = { value: new DOMException('test source error', 'TimeoutError') };
+			const HUNG = Symbol('hung');
+			// .mocharc.json sets `timeout: 0`, so an unsettled get() would stall the run rather
+			// than fail it.
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(131).then(
+					() => 'resolved',
+					(error) => error
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when the source rejects');
+			assert.notStrictEqual(outcome, 'resolved', 'get() must reject when the source rejects');
+			assert.equal(outcome.name, 'TimeoutError');
+			assert.equal(sourceRequests, 1);
+		} finally {
+			return_rejection = null;
+		}
+	});
+
+	// The settle decision reads `error.code`, so a nullish rejection reaching it with a
+	// record already cached used to throw before either resolve() or reject() ran.
+	it('Source rejects with no error while a record is cached', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			return_rejection = null;
+			return_error = false;
+			IndexedCachingTable.invalidate(132);
+			await IndexedCachingTable.get(132); // seed an existing record to revalidate against
+			await delay(10);
+			return_rejection = { value: undefined };
+			const HUNG = Symbol('hung');
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(132).then(
+					() => 'resolved',
+					(error) => ({ rejected: error })
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when the source rejects with no error');
+		} finally {
+			return_rejection = null;
+			return_error = false;
+		}
+	});
+
+	// Same guard, reached through a hostile accessor rather than a nullish value.
+	it('Source rejects with an error whose code getter throws', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			return_rejection = null;
+			return_error = false;
+			IndexedCachingTable.invalidate(133);
+			await IndexedCachingTable.get(133); // seed an existing record to revalidate against
+			await delay(10);
+			const hostile = new Error('hostile source error');
+			Object.defineProperty(hostile, 'code', {
+				get() {
+					throw new Error('code getter blew up');
+				},
+			});
+			return_rejection = { value: hostile };
+			const HUNG = Symbol('hung');
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(133).then(
+					() => 'resolved',
+					(error) => error
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when reading the error throws');
+			assert.strictEqual(outcome, hostile, 'the source error should reach the caller, not the accessor failure');
+		} finally {
+			return_rejection = null;
 			return_error = false;
 		}
 	});
@@ -1023,25 +1340,54 @@ describe('Caching', () => {
 
 	it('Bigger stampede is handled', async function () {
 		this.timeout(5000);
+		let interval;
 		try {
 			timer = 2;
 			CachingTable.setTTLExpiration(100); // don't evict during this test since it will clear the history
 			let i = 0;
 			sourceRequests = 0;
 			let results = [];
-			let interval = setInterval(async () => {
-				i++;
-				if (i % 16 == 1) CachingTable.invalidate(23);
-				else {
-					// clearing the cache kind of emulates what another thread would see
-					if (i % 4 == 0) CachingTable.primaryStore.cache.clear();
-					let raw_result = CachingTable.get(23);
-					let result = await raw_result;
-					results.push(result);
+			let cacheMisses = 0;
+			const failures = [];
+			const reads = [];
+			interval = setInterval(() => {
+				try {
+					i++;
+					if (i % 16 == 1)
+						reads.push(Promise.resolve(CachingTable.invalidate(23)).catch((error) => failures.push(error)));
+					else {
+						let evictedEntry;
+						if (i % 4 == 0) {
+							const store = CachingTable.primaryStore;
+							const cached = store.getEntry(23);
+							if (cached?.value && !store.hasLock(23)) {
+								// Without its memoized Entry, the private value cache cannot vouch for this record.
+								assert.equal(entryMap.delete(cached.value), true);
+								evictedEntry = cached;
+							}
+						}
+						let raw_result = CachingTable.get(23);
+						reads.push(
+							Promise.resolve(raw_result)
+								.then((result) => {
+									if (evictedEntry) {
+										assert.notStrictEqual(result, evictedEntry.value);
+										if (entryMap.get(result)?.version === evictedEntry.version) cacheMisses++;
+									}
+									results.push(result);
+								})
+								.catch((error) => failures.push(error))
+						);
+					}
+				} catch (error) {
+					failures.push(error);
 				}
 			}, 1);
 			await new Promise((resolve) => setTimeout(resolve, 3000));
 			clearInterval(interval);
+			await Promise.all(reads);
+			assert.deepEqual(failures, []);
+			assert(cacheMisses > 40, `Only ${cacheMisses} actual cache misses`);
 			for (let result of results) {
 				assert.equal(result.name, 'name 23');
 			}
@@ -1057,6 +1403,7 @@ describe('Caching', () => {
 				assert(entry.localTime > 1);
 			}
 		} finally {
+			clearInterval(interval);
 			timer = 0;
 		}
 	});

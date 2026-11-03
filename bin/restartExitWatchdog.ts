@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import hdbLogger from '../utility/logging/harper_logger.ts';
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
 
 // Every way the script below can give up is a silent `exit 0` — an unreadable procfs (a sandbox that
 // does not mount /proc) or a base image without `sleep`. Reporting the watchdog armed in exactly
@@ -31,7 +32,7 @@ export async function armRestartExitWatchdog(timeoutMs: number) {
 		return false;
 	}
 	if (process.pid <= 1) {
-		hdbLogger.warn('Restart exit watchdog requires Harper to run below a container init process');
+		hdbLogger.warn(`Restart exit watchdog requires ${PRODUCT_NAME} to run below a container init process`);
 		return false;
 	}
 	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {

@@ -5,6 +5,7 @@ const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const {
+	assertEngineOnlyRestoreAllowed,
 	blobSnapshotDir,
 	blobsReadmeContent,
 	copyBlobRootsByIndex,
@@ -370,6 +371,49 @@ describe('blobBackup', function () {
 
 		it('is a no-op when no blob snapshots exist', async function () {
 			await purgeBlobSnapshots(backupDir, new Set([1]));
+		});
+	});
+
+	describe('assertEngineOnlyRestoreAllowed', function () {
+		const engineOnly = { backupHasBlobs: false, allowEngineOnly: false };
+
+		it('refuses any blob-excluding backup without the opt-in, whatever the destination holds', function () {
+			// Decided from the manifest alone. Files present is the obvious hazard; empty roots are the
+			// non-obvious one, because getNextFileId re-seeds the per-database id counter by scanning the
+			// roots, so it hands out 1 again -- the id space the restored records already reference.
+			writeBlob(rootA, '001/002/003', 'alpha');
+			for (const database of ['somedb', 'somedb-copy']) {
+				assert.throws(
+					() => assertEngineOnlyRestoreAllowed(database, engineOnly),
+					(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+				);
+			}
+		});
+
+		it('explains both hazards, so a new target is not read as an escape', function () {
+			assert.throws(
+				() => assertEngineOnlyRestoreAllowed('somedb', engineOnly),
+				(error) =>
+					/no longer belongs to it/.test(error.message) &&
+					/blob ids restart at 1/.test(error.message) &&
+					/not an escape/.test(error.message)
+			);
+		});
+
+		it('does not touch the filesystem to reach its verdict', function () {
+			// It used to walk the roots to tailor the message, which turned a deterministic 400 into a
+			// traversal that can be slow or fail outright on an unreadable root.
+			assert.throws(() => assertEngineOnlyRestoreAllowed('somedb', engineOnly), /allow_engine_only/);
+		});
+
+		it('allows it once the operator opts in', function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			assertEngineOnlyRestoreAllowed('somedb', { ...engineOnly, allowEngineOnly: true });
+		});
+
+		it('never applies to a backup that captured blobs', function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			assertEngineOnlyRestoreAllowed('somedb', { ...engineOnly, backupHasBlobs: true });
 		});
 	});
 });

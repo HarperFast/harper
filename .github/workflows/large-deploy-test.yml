@@ -24,25 +24,25 @@ on:
 
 jobs:
   large-deploy-test:
-    name: Large streamed deploy (Node.js v24)
+    name: Large streamed deploy (Node.js v26)
     runs-on: [self-hosted, linux, harper-bench]
     timeout-minutes: 60
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
         run: npm install # plain install (builds native deps) — matches the other self-hosted jobs
 
       - name: Build
-        run: npm run build || true # repo currently has type errors; ignore per integration-tests.yml
+        run: npm run build
 
       - name: Verify build output
         run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
@@ -56,7 +56,7 @@ jobs:
 
       - name: Upload Harper server logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: harper-large-deploy-logs
           path: /tmp/harper-large-deploy-logs/

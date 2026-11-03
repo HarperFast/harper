@@ -34,7 +34,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-mention.yml@af81872e56dd63da1160adb5eae82d359a456dde # main 2026-09-01 (#94 freshness-gated admission; #91 job-level cancellation; #90 cost gates; #89 defaults; #88 lenses)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-mention.yml@1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47 # main 2026-10-01 (#93 calibration: week of 2026-08-24; #95 calibration: week of 2026-08-31; #98 ci: mint the ai-review-log token from the HarperFast AI App (retire the personal PAT); #99 ci: calibration-sweep reads ai-review-log via the HarperFast AI App to…; on af81872)
     with:
       # Same SHA as the `uses:` ref above. The reusable uses this to
       # check out HarperFast/ai-review-prompts (parse + auth scripts)
@@ -44,7 +44,7 @@ jobs:
       # introspect their own ref (`github.workflow_ref` resolves to
       # the CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
       # is parsed literally so we can't interpolate a variable.
-      ai-review-prompts-ref: af81872e56dd63da1160adb5eae82d359a456dde
+      ai-review-prompts-ref: 1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47
       repo-specific-conventions: |
         ## Harper core notes
 

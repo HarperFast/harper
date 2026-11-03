@@ -117,6 +117,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 		});
 
 		after(async () => {
+			console.log(`\n[QA-670 MATRIX ${engine}]\n${JSON.stringify(matrix, null, 2)}`);
 			await teardownHarper(ctx);
 		});
 
@@ -409,11 +410,6 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				0,
 				`no swept id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`
 			);
-		});
-
-		test('ZZ print matrix', { timeout: 5_000 }, async () => {
-			console.log(`\n[QA-670 MATRIX ${engine}]\n${JSON.stringify(matrix, null, 2)}`);
-			ok(true);
 		});
 	});
 }

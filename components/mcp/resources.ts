@@ -1,3 +1,8 @@
+import * as ResourcesRuntimeModule from '../../resources/Resources.ts';
+import * as openApiRuntimeModule from '../../resources/openApi.ts';
+import * as transactionRuntimeModule from '../../resources/transaction.ts';
+import * as RequestTargetRuntimeModule from '../../resources/RequestTarget.ts';
+import * as ServerRuntimeModule from '../../server/Server.ts';
 /**
  * MCP resources capability — implements `resources/list`, `resources/read`,
  * and `resources/templates/list` per MCP §server/resources (rev 2025-06-18).
@@ -45,11 +50,8 @@ import {
 	matchCustomResource,
 } from './customResourceRegistry.ts';
 import type { McpProfile } from './transport.ts';
+import { canRoleInvokeOperation } from './operationVisibility.ts';
 
-// Harper's resource graph (Resources, generateJsonApi, Server) initializes
-// eagerly when imported at module-load. Unit tests that don't boot Harper
-// would fail to load this module. Lazy-resolve via require() inside the
-// getters below; test seams below let unit tests bypass the real bindings.
 interface ParamRouteEntry {
 	pattern: string;
 	entry: { Resource?: unknown; path?: string; exportTypes?: unknown };
@@ -70,7 +72,7 @@ export interface AuthedUser {
 		role?: string;
 		permission?: {
 			super_user?: boolean;
-			structure_user?: boolean;
+			structure_user?: boolean | string[];
 			operations?: string[];
 			[database: string]:
 				| boolean
@@ -169,15 +171,14 @@ export function _setSubscribeImplForTest(
 
 function getResources(): ResourcesType {
 	if (_resourcesOverride) return _resourcesOverride;
-	// Lazy import — see file-top comment on Harper graph initialization.
-	const { resources } = require('../../resources/Resources');
-	return resources as ResourcesType;
+	const { resources } = ResourcesRuntimeModule;
+	return resources as unknown as ResourcesType;
 }
 
 function getOpenApiGenerator(): OpenApiGenerator {
 	if (_openApiOverride) return _openApiOverride;
-	const { generateJsonApi } = require('../../resources/openApi');
-	return generateJsonApi as OpenApiGenerator;
+	const { generateJsonApi } = openApiRuntimeModule;
+	return generateJsonApi as unknown as OpenApiGenerator;
 }
 
 // ─── Public entry points ────────────────────────────────────────────────
@@ -192,6 +193,11 @@ export interface ListResourcesArgs {
 	 */
 	offset?: number;
 	limit?: number;
+	/**
+	 * `protocol://host` the client reached the app on (from the request). Used as the
+	 * authority of `harper+rest://` URIs; falls back to a guess from server config.
+	 */
+	baseUrl?: string;
 }
 
 export interface ListResourcesResult {
@@ -200,7 +206,7 @@ export interface ListResourcesResult {
 }
 
 export function listResources(args: ListResourcesArgs): ListResourcesResult {
-	const all = enumerate(args.profile);
+	const all = enumerate(args.profile, args.baseUrl);
 	const offset = args.offset ?? 0;
 	const limit = args.limit && args.limit > 0 ? args.limit : DEFAULT_LIMIT;
 	const slice = all.slice(offset, offset + limit);
@@ -226,7 +232,8 @@ export interface ListResourceTemplatesResult {
 export function listResourceTemplates(
 	profile: McpProfile,
 	offset?: number,
-	limit?: number
+	limit?: number,
+	baseUrl?: string
 ): ListResourceTemplatesResult {
 	const all: ResourceTemplate[] = [];
 	if (profile === 'application') {
@@ -236,7 +243,7 @@ export function listResourceTemplates(
 			description: 'Attribute definitions for a Harper table, RBAC-filtered by attribute_permissions',
 			mimeType: 'application/json',
 		});
-		const appUriPrefix = appResourceUriPrefix();
+		const appUriPrefix = appResourceUriPrefix(baseUrl);
 		if (appUriPrefix) {
 			all.push({
 				uriTemplate: `${appUriPrefix}/{resourcePath}`,
@@ -280,6 +287,8 @@ export interface CompleteResourceArgs {
 	profile: McpProfile;
 	/** The `ref/resource` URI (template) being completed against, when the client sent one. */
 	refUri?: string;
+	/** Request `protocol://host`; gates `{resourcePath}` the same way templates/list does. */
+	baseUrl?: string;
 }
 
 /**
@@ -323,7 +332,7 @@ export function completeResourceArgument(args: CompleteResourceArgs): Completion
 	} else if (argument.name === 'resourcePath') {
 		// Only advertised when an app HTTP URL prefix exists (the `{resourcePath}`
 		// template). No prefix → no such template → no completions.
-		if (guessAppHttpUrlPrefix()) candidates = enumerateMcpResourcePaths();
+		if (guessAppHttpUrlPrefix(args.baseUrl)) candidates = enumerateMcpResourcePaths();
 	}
 	const filtered = candidates.filter((c) => c.toLowerCase().startsWith(partial)).sort();
 	return capCompletion(filtered);
@@ -405,9 +414,8 @@ export async function subscribeToResource(
 		// so we must override both cases (else a collection URI watches a phantom
 		// record named after the resource and receives nothing).
 		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
-		const { transaction } = require('../../resources/transaction');
-		const { RequestTarget } = require('../../resources/RequestTarget');
+		const { transaction } = transactionRuntimeModule;
+		const { RequestTarget } = RequestTargetRuntimeModule;
 		const request = new RequestTarget(path);
 		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
 		// the MCP notification just says "this resource changed; re-read it".
@@ -417,7 +425,7 @@ export async function subscribeToResource(
 			omitCurrent: true,
 			checkPermission: user?.role?.permission ?? {},
 		});
-		const context = { user, authorize: true, request };
+		const context = { user: user as any, authorize: true, request };
 		const result = await transaction(context, async () => ResourceClass.subscribe!(request, context));
 		stream =
 			result && typeof (result as ResourceChangeStream)[Symbol.asyncIterator] === 'function'
@@ -494,6 +502,11 @@ export interface ReadResourceArgs {
 	uri: string;
 	user: AuthedUser;
 	profile: McpProfile;
+	/**
+	 * `protocol://host` the client reached the app on (from the request). Used as the
+	 * OpenAPI server URL; falls back to a guess from server config.
+	 */
+	baseUrl?: string;
 }
 
 export interface ReadResourceOk {
@@ -507,7 +520,7 @@ export interface ReadResourceFail {
 }
 
 export async function readResource(args: ReadResourceArgs): Promise<ReadResourceOk | ReadResourceFail> {
-	const { uri, user, profile } = args;
+	const { uri, user, profile, baseUrl } = args;
 
 	// Author-registered custom resources match first — a registered URI (fixed or
 	// template) always wins over the discovered surface (#1609).
@@ -524,7 +537,7 @@ export async function readResource(args: ReadResourceArgs): Promise<ReadResource
 	}
 
 	if (parsed.protocol === HARPER_SCHEME) {
-		return readHarperUri(parsed, user, profile);
+		return readHarperUri(parsed, user, profile, baseUrl);
 	}
 	if (parsed.protocol === HARPER_REST_SCHEME || parsed.protocol === HTTPS_SCHEME || parsed.protocol === HTTP_SCHEME) {
 		if (profile !== 'application') {
@@ -561,9 +574,10 @@ async function readCustomResource(
 		// Merge onto any ambient store (usually none on the MCP HTTP path) so an
 		// inherited transaction/cache is preserved rather than clobbered; `user`
 		// binds last. Same idiom as processLocalTransaction's `{ ...currentStore, user }`.
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
-		const { transaction, contextStorage } = require('../../resources/transaction');
-		const result = await transaction({ ...contextStorage.getStore(), user }, () => def.read(params, { user, profile }));
+		const { transaction, contextStorage } = transactionRuntimeModule;
+		const result = await transaction({ ...contextStorage.getStore(), user: user as any }, () =>
+			def.read(params, { user, profile })
+		);
 		if (typeof result === 'string') {
 			return { ok: true, contents: [{ uri, mimeType: def.mimeType ?? 'text/plain', text: result }] };
 		}
@@ -617,7 +631,7 @@ async function readCustomResource(
 
 // ─── Enumeration ───────────────────────────────────────────────────────
 
-function enumerate(profile: McpProfile): ResourceDescriptor[] {
+function enumerate(profile: McpProfile, baseUrl?: string): ResourceDescriptor[] {
 	const out: ResourceDescriptor[] = [];
 
 	// `harper://about` is available on both profiles.
@@ -660,7 +674,7 @@ function enumerate(profile: McpProfile): ResourceDescriptor[] {
 		// harper+rest://... — one per exported Resource that has class-level REST methods.
 		// Per-record access is decided by each Resource's `allow{Read,...}` predicate
 		// at read time, so the list filter only checks method presence.
-		for (const entry of enumerateAppHttpResources()) out.push(entry);
+		for (const entry of enumerateAppHttpResources(baseUrl)) out.push(entry);
 
 		// Author-registered custom content resources (#1609) — fixed URIs only;
 		// templates are listed by `resources/templates/list`.
@@ -695,8 +709,8 @@ function enumerateTableBackedResources(): Array<{ db: string; table: string; des
 	return result;
 }
 
-function enumerateAppHttpResources(): ResourceDescriptor[] {
-	const prefix = appResourceUriPrefix();
+function enumerateAppHttpResources(baseUrl?: string): ResourceDescriptor[] {
+	const prefix = appResourceUriPrefix(baseUrl);
 	if (!prefix) return [];
 	const out: ResourceDescriptor[] = [];
 	for (const [path, entry] of getResources()) {
@@ -755,7 +769,8 @@ function hasRestVerbs(prototype: unknown): boolean {
 async function readHarperUri(
 	uri: URL,
 	user: AuthedUser,
-	profile: McpProfile
+	profile: McpProfile,
+	baseUrl?: string
 ): Promise<ReadResourceOk | ReadResourceFail> {
 	// `harper://about` parses with host='about' (URL treats it like a host).
 	// We use `host + pathname` to recover the full opaque path. Empty host
@@ -766,7 +781,7 @@ async function readHarperUri(
 		if (profile !== 'application') {
 			return { ok: false, reason: 'harper://openapi is only available on the application profile' };
 		}
-		return readOpenApi(uri.href);
+		return readOpenApi(uri.href, baseUrl);
 	}
 	if (opaque === 'operations') {
 		if (profile !== 'operations') {
@@ -793,10 +808,10 @@ function readAbout(profile: McpProfile, href: string): ReadResourceOk {
 	return jsonContent(href, body);
 }
 
-function readOpenApi(href: string): ReadResourceOk | ReadResourceFail {
+function readOpenApi(href: string, baseUrl?: string): ReadResourceOk | ReadResourceFail {
 	try {
 		const generator = getOpenApiGenerator();
-		const serverHttpURL = guessAppHttpUrlPrefix() ?? '';
+		const serverHttpURL = guessAppHttpUrlPrefix(baseUrl) ?? '';
 		const api = generator(getResources(), serverHttpURL);
 		return jsonContent(href, api);
 	} catch (err) {
@@ -900,26 +915,6 @@ function userTablePermissions(user: AuthedUser, db: string, table: string): Tabl
 	};
 }
 
-const SCHEMA_STRUCTURE_OPERATIONS = new Set([
-	'create_schema',
-	'create_database',
-	'drop_schema',
-	'drop_database',
-	'create_table',
-	'drop_table',
-	'create_attribute',
-	'drop_attribute',
-]);
-
-function canRoleInvokeOperation(user: AuthedUser, operation: string): boolean {
-	if (isSuperUser(user)) return true;
-	const perm = user?.role?.permission;
-	if (!perm) return false;
-	if (perm.structure_user && SCHEMA_STRUCTURE_OPERATIONS.has(operation)) return true;
-	if (Array.isArray(perm.operations) && perm.operations.includes(operation)) return true;
-	return false;
-}
-
 function filterAttributesByPermissions(attributes: any[], attributePermissions: unknown): any[] {
 	if (!attributePermissions || !Array.isArray(attributes)) return attributes;
 	// `attribute_permissions` is an array of `{ attribute_name, read, insert,
@@ -942,21 +937,24 @@ function filterAttributesByPermissions(attributes: any[], attributePermissions: 
  * authority still identifies the instance, but the scheme signals "resolve
  * via MCP, not the web" per spec guidance.
  */
-function appResourceUriPrefix(): string | undefined {
-	const httpPrefix = guessAppHttpUrlPrefix();
+function appResourceUriPrefix(baseUrl?: string): string | undefined {
+	const httpPrefix = guessAppHttpUrlPrefix(baseUrl);
 	if (!httpPrefix) return undefined;
 	return httpPrefix.replace(/^https?:/, HARPER_REST_SCHEME);
 }
 
-function guessAppHttpUrlPrefix(): string | undefined {
-	// Best-effort URL prefix construction. Hostname comes from the server
-	// module post-boot; the port comes from config. In tests where neither
-	// is available we return undefined and skip the https:// enumeration —
-	// callers handle the absence gracefully.
+function guessAppHttpUrlPrefix(baseUrl?: string): string | undefined {
 	if (_httpUrlPrefixOverride !== undefined) return _httpUrlPrefixOverride || undefined;
+	// The request's own protocol + Host is what the client actually reached, so it
+	// is right behind a load balancer (e.g. Fabric) where the server's hostname and
+	// port are internal.
+	if (baseUrl) return baseUrl;
+	// No request (list_changed snapshots, tests): best-effort guess. Hostname comes
+	// from the server module post-boot; the port comes from config. When neither is
+	// available we return undefined and callers skip the app URIs.
 	let hostname: string | undefined;
 	try {
-		const { server } = require('../../server/Server');
+		const { server } = ServerRuntimeModule;
 		hostname = (server as { hostname?: string })?.hostname;
 	} catch {
 		return undefined;

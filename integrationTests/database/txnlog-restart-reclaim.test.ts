@@ -22,9 +22,9 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'txnlog-restart-reclaim');
 const AUDIT_RETENTION_SECONDS = 2;
 const AUDIT_RETENTION_MS = AUDIT_RETENTION_SECONDS * 1000;
 const RETENTION_MARGIN_MS = 500;
-const MIN_RECLAIM_BYTES = 64 * 1024 * 1024;
+const MIN_RECLAIM_BYTES = 100_000_000;
 const MIN_RECLAIM_RATIO = 0.75;
-const VOLUME_RECORDS = 20_000;
+const VOLUME_RECORDS = 24_000;
 const CHURN_BATCH_RECORDS = 500;
 const PAYLOAD = 'p'.repeat(5000);
 const RECLAIM_FILESYSTEM_ROOT = '/dev/shm';
@@ -223,7 +223,8 @@ suite(
 
 			await startHarper(ctx, { config: CONFIG, env: ENV });
 			const restartState = await waitForReclaimState(ctx);
-			strictEqual(restartState.purgeRuns, 1, 'expected the restart purge to be the only cleanup pass');
+			// Native recovery and Harper startup can both purge; the filesystem oracle below guards reclamation.
+			ok(restartState.purgeRuns >= 1, 'expected a startup transaction-log purge');
 
 			const postBootLogs = transactionLogsUnder(ctx.harper.dataRootDir);
 			const postBootPaths = new Set(postBootLogs.map((file) => file.path));

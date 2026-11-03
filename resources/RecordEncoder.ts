@@ -8,6 +8,8 @@
 import { Encoder } from 'msgpackr';
 import { createStructon, SOURCE_SYMBOL } from 'structon';
 import {
+	HAS_CURRENT_RESIDENCY_SLOT,
+	HAS_PREVIOUS_RESIDENCY_SLOT,
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_EXPIRATION_EXTENDED_TYPE,
@@ -16,6 +18,7 @@ import {
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
 	LOCAL_ONLY,
+	COPIED_RECORD,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -30,12 +33,18 @@ import {
 } from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { asBinary } from './asBinary.ts';
+import { constants, RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import * as envMngr from '../utility/environment/environmentManager.js';
+import * as envMngr from '../utility/environment/environmentManager.ts';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+// Dedicated stateless msgpackr encoder for persisting the shared-structures dictionary itself.
+// Encoding via `this` inside `saveStructures` (when `targetStore === this.rocksStore`) would
+// re-enter the active `RecordEncoder.encode` mid-pack and mutate `lastNamedStructuresLength`
+// before `transactionSync` commits, masking CAS conflicts on retry.
+const structuresEncoder = new Encoder({ useRecords: false, copyBuffers: true });
 
 // Analytics counter incremented whenever a record cannot be decoded because its shared structure is
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
@@ -94,10 +103,14 @@ export type Entry = {
 	metadataFlags: number;
 	nodeId: number;
 	residencyId: number;
+	residencySlot?: number;
 	size: number;
 	deref?: () => any;
 	[METADATA]?: any;
+	/** Log keys: the record's audit head when its version is not its key, and out-of-order branch heads. */
 	additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
+	/** What a re-delivery of a write carries when that is not its log key; addresses no entry. */
+	receivedIdentityRefs?: Array<{ version: number; nodeId: number }>;
 };
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
@@ -120,11 +133,41 @@ export const TIMESTAMP_ASSIGN_PREVIOUS = 3;
 export const TIMESTAMP_RECORD_PREVIOUS = 4;
 export const HAS_EXPIRATION = 16;
 export const HAS_RESIDENCY_ID = 32;
+export const HAS_RESIDENCY_SLOT = 0x200;
 export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
-export const VERSION_NOT_UNIQUE_FLAG = 0x10000;
+// Marks a persisted ref as a received identity rather than a log key, in its node-id word. Node ids are
+// small mapping indexes (nodeIdMapping.ts), so the bit is never part of one. Released builds before it
+// wrote log keys only.
+export const RECEIVED_IDENTITY_REF = 0x80000000;
+// A resequenced write keeps the (newer) version it merged onto, so one version identifies two
+// different stored values and version equality proves nothing. The metadata word this is set in is
+// the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
+// byte its predicate requires — so the bit is what stops the native layer vouching for the version.
+export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
+// The bit is persisted in every resequenced record, so a rocksdb-js that moved it down onto one of
+// the flags above (or up into the tag byte) would silently change what records already on disk
+// mean: it must stay a single bit strictly between them.
+if (
+	typeof VERSION_REUSED !== 'number' ||
+	(VERSION_REUSED & (VERSION_REUSED - 1)) !== 0 ||
+	VERSION_REUSED < 0x10000 ||
+	VERSION_REUSED > 0x800000
+)
+	throw new Error(
+		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it — requires @harperfast/rocksdb-js >= 2.8.0`
+	);
+// The write at the row's version replaced the whole record (a put, or a delete's tombstone) and nothing has
+// changed the body since, so no older write can (set in Table.ts). RocksDB, audited tables; clear proves
+// nothing. Record-only: harper-pro's copy walk masks it from the audit flags it mirrors.
+export const FULL_WRITE_HEAD = 0x40000;
+if (VERSION_REUSED === FULL_WRITE_HEAD)
+	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
+function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
+	return existingEntry?.version != null && newVersion <= existingEntry.version;
+}
 
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
@@ -144,13 +187,19 @@ export class RecordObject {
 		return entryMap.get(this)?.expiresAt;
 	}
 }
+// msgpackr's RESERVE_START_SPACE option carries the reserved byte count in the LOW BYTE of the same
+// word as its flags (`encodeOptions & 0xff`, msgpackr `pack`), so the metadata prefix this encoder
+// reserves cannot exceed it.
+const MAX_RESERVED_START_SPACE = 255;
 export let lastValueEncoding: Buffer | undefined;
 let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0,
+	residencySlotAtNextEncoding: number | undefined,
 	nodeIdAtNextEncoding = -1,
-	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
+	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined,
+	receivedIdentityRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
 /**
@@ -224,6 +273,7 @@ export function assignStoredFields(target: any, source: any, encoder: any) {
 
 export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
+	rocksStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
@@ -334,8 +384,15 @@ export class RecordEncoder extends StructonEncoder {
 				let metadata = metadataInNextEncoding;
 				const expiresAt = expiresAtNextEncoding;
 				const residencyId = residencyIdAtNextEncoding;
+				const residencySlot = residencySlotAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
-				const additionalAuditRefs = additionalAuditRefsNextEncoding;
+				const logKeyRefs = additionalAuditRefsNextEncoding;
+				const identityRefs = receivedIdentityRefsNextEncoding;
+				const logKeyRefCount = logKeyRefs?.length ?? 0;
+				const identityRefCount = identityRefs?.length ?? 0;
+				let auditRefsToEncode = 0;
+				let logKeyRefsToDrop = 0;
+				let identityRefsToDrop = 0;
 				if (metadata >= 0) {
 					valueStart += 4; // make room for metadata bytes
 					metadataInNextEncoding = -1; // reset indicator to mean no metadata
@@ -353,6 +410,11 @@ export class RecordEncoder extends StructonEncoder {
 							throw new Error('Residency id included, but not in metadata flags');
 						}
 					}
+					if (residencySlot !== undefined) {
+						valueStart += 2;
+						residencySlotAtNextEncoding = undefined;
+						if (!(metadata & HAS_RESIDENCY_SLOT)) throw new Error('Residency slot missing its metadata flag');
+					}
 					if (nodeId >= 0) {
 						valueStart += 4; // make room for node id
 						nodeIdAtNextEncoding = -1; // reset indicator to mean no node id
@@ -360,9 +422,23 @@ export class RecordEncoder extends StructonEncoder {
 							throw new Error('Node id included, but not in metadata flags');
 						}
 					}
-					if (additionalAuditRefs && additionalAuditRefs.length > 0) {
-						valueStart += 1 + additionalAuditRefs.length * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
+					if (logKeyRefCount + identityRefCount > 0) {
+						// `valueStart` is OR'd into msgpackr's encode options below, where the reserved-space field
+						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
+						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
+						// count is one byte too. Refs are best-effort — a later in-order write drops them outright —
+						// so over budget the oldest are dropped, identities first (they only answer a re-delivery, a
+						// log key also leads the walk to a branch), and never the first log key (the addressable audit
+						// head when the record and log clocks diverge) nor the last of either kind (the newest receipt
+						// the re-delivery guard matches, whichever kind it is). (harper#2642)
+						const budget = Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12);
+						const excess = Math.max(0, logKeyRefCount + identityRefCount - budget);
+						identityRefsToDrop = Math.min(excess, Math.max(0, identityRefCount - 1));
+						logKeyRefsToDrop = excess - identityRefsToDrop;
+						auditRefsToEncode = logKeyRefCount + identityRefCount - excess;
+						valueStart += 1 + auditRefsToEncode * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
 						additionalAuditRefsNextEncoding = undefined;
+						receivedIdentityRefsNextEncoding = undefined;
 					}
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
@@ -383,7 +459,7 @@ export class RecordEncoder extends StructonEncoder {
 					position += 8;
 				}
 				if (blobsWereEncoded) metadata |= HAS_BLOBS;
-				if (additionalAuditRefs && additionalAuditRefs.length > 0) metadata |= HAS_ADDITIONAL_AUDIT_REFS;
+				if (auditRefsToEncode > 0) metadata |= HAS_ADDITIONAL_AUDIT_REFS;
 				if (metadata >= 0) {
 					dataView.setUint32(position, metadata | (ACTION_32_BIT << 24)); // use the extended action byte
 					position += 4;
@@ -395,16 +471,29 @@ export class RecordEncoder extends StructonEncoder {
 						dataView.setUint32(position, residencyId);
 						position += 4;
 					}
+					if (residencySlot !== undefined) {
+						dataView.setUint16(position, residencySlot);
+						position += 2;
+					}
 					if (nodeId >= 0) {
 						dataView.setUint32(position, nodeId);
 						position += 4;
 					}
-					if (additionalAuditRefs && additionalAuditRefs.length > 0) {
-						encoded[position++] = additionalAuditRefs.length;
-						for (const ref of additionalAuditRefs) {
+					if (auditRefsToEncode > 0) {
+						encoded[position++] = auditRefsToEncode;
+						for (let index = 0; index < logKeyRefCount; index++) {
+							if (index > 0 && index <= logKeyRefsToDrop) continue;
+							const ref = logKeyRefs[index];
 							dataView.setFloat64(position, ref.version);
 							position += 8;
 							dataView.setUint32(position, ref.nodeId);
+							position += 4;
+						}
+						for (let index = identityRefsToDrop; index < identityRefCount; index++) {
+							const ref = identityRefs[index];
+							dataView.setFloat64(position, ref.version);
+							position += 8;
+							dataView.setUint32(position, ((ref.nodeId ?? 0) | RECEIVED_IDENTITY_REF) >>> 0);
 							position += 4;
 						}
 					}
@@ -418,7 +507,8 @@ export class RecordEncoder extends StructonEncoder {
 		const superSaveStructures = this.saveStructures;
 		const superGetStructures = this.getStructures;
 		this.saveStructures = function (structures, isCompatible): boolean | undefined {
-			if (this.isRocksDB) {
+			const targetStore = this.isRocksDB ? this.rootStore : this.rocksStore;
+			if (targetStore) {
 				// transactionSync returns the callback's value on commit, but returns `undefined`
 				// when the txn was aborted (it swallows ERR_ALREADY_ABORTED). The success path here
 				// returns an explicit `true`; anything else means the shared structures were NOT
@@ -427,22 +517,27 @@ export class RecordEncoder extends StructonEncoder {
 				// We must report a non-commit as `false` (not the buggy `undefined`, which msgpackr
 				// reads as success and then writes a record referencing a structure that was never
 				// saved → later "Record id is not defined" on decode). Returning `false` makes msgpackr
-				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
-				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
-				// trie, re-mints, and re-saves — so the record always references a persisted structure.
-				const committed = this.rootStore.transactionSync(
+				// re-pack against the durable dictionary, so the record always references a persisted structure.
+				const sharedStructuresKey = this.isRocksDB
+					? [Symbol.for('structures'), this.name]
+					: targetStore.store.sharedStructuresKey;
+				const encodedStructures = asBinary(structuresEncoder.encode(structures));
+				const committed = targetStore.transactionSync(
 					(txn) => {
-						const sharedStructuresKey = [Symbol.for('structures'), this.name];
 						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
-						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
-						if (typeof isCompatible == 'function') {
-							if (!isCompatible(existingStructures)) {
-								return false;
+						let existingStructures: any;
+						if (existingStructuresBuffer?.length) {
+							existingStructures = this.decode(existingStructuresBuffer);
+							if (!existingStructures || typeof existingStructures !== 'object') {
+								throw new Error(`Failed to decode existing structures for ${this.name ?? 'unnamed store'}`);
 							}
+						}
+						if (typeof isCompatible == 'function') {
+							if (!isCompatible(existingStructures)) return false;
 						} else if (existingStructures && existingStructures.length !== isCompatible) {
 							return false;
 						}
-						txn.putSync(sharedStructuresKey, structures);
+						txn.putSync(sharedStructuresKey, encodedStructures);
 						return true;
 					},
 					{ retryOnBusy: true }
@@ -464,9 +559,12 @@ export class RecordEncoder extends StructonEncoder {
 			}
 		};
 		this.getStructures = function (): any {
-			if (this.isRocksDB) {
-				const sharedStructuresKey = [Symbol.for('structures'), this.name];
-				const buffer = this.rootStore.getBinarySync(sharedStructuresKey);
+			const targetStore = this.isRocksDB ? this.rootStore : this.rocksStore;
+			if (targetStore) {
+				const sharedStructuresKey = this.isRocksDB
+					? [Symbol.for('structures'), this.name]
+					: targetStore.store.sharedStructuresKey;
+				const buffer = targetStore.getBinarySync(sharedStructuresKey);
 				return buffer ? this.decode(buffer) : undefined;
 			} else {
 				// msgpackr only defines getStructures when the option was supplied; a store with no
@@ -550,7 +648,7 @@ export class RecordEncoder extends StructonEncoder {
 					localTime = getTimestamp();
 					nextByte = buffer[position];
 				}
-				let expiresAt, residencyId, nodeId, additionalAuditRefs;
+				let expiresAt, residencyId, residencySlot, nodeId, additionalAuditRefs, receivedIdentityRefs;
 				if (nextByte < 32) {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
@@ -574,6 +672,12 @@ export class RecordEncoder extends StructonEncoder {
 						residencyId = dataView.getUint32(position);
 						position += 4;
 					}
+					if (metadataFlags & HAS_RESIDENCY_SLOT) {
+						const dataView =
+							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+						residencySlot = dataView.getUint16(position);
+						position += 2;
+					}
 					if (metadataFlags & HAS_NODE_ID) {
 						// we need to read the node id
 						const dataView =
@@ -586,13 +690,14 @@ export class RecordEncoder extends StructonEncoder {
 						const dataView =
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 						const count = buffer[position++];
-						additionalAuditRefs = [];
 						for (let i = 0; i < count; i++) {
 							const version = dataView.getFloat64(position);
 							position += 8;
 							const refNodeId = dataView.getUint32(position);
 							position += 4;
-							additionalAuditRefs.push({ version, nodeId: refNodeId });
+							if (refNodeId >= RECEIVED_IDENTITY_REF)
+								(receivedIdentityRefs ??= []).push({ version, nodeId: refNodeId - RECEIVED_IDENTITY_REF });
+							else (additionalAuditRefs ??= []).push({ version, nodeId: refNodeId });
 						}
 					}
 				}
@@ -612,9 +717,11 @@ export class RecordEncoder extends StructonEncoder {
 					residencyId,
 					nodeId,
 					additionalAuditRefs,
+					receivedIdentityRefs,
 					size: end - start,
 					value,
 				} as any;
+				if (residencySlot !== undefined) lastMetadata.residencySlot = residencySlot;
 				if (this.isRocksDB) return lastMetadata;
 				return value;
 			} // else a normal entry
@@ -642,6 +749,7 @@ export class RecordEncoder extends StructonEncoder {
 				);
 				return null;
 			}
+			harperLogger.status({ problem: 'database.record-decode', expires: 120 });
 			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
@@ -662,6 +770,18 @@ export function handleLocalTimeForGets(store, rootStore) {
 	store.rootStore = rootStore;
 	store.encoder.rootStore = rootStore;
 	store.decoder = store.encoder;
+	// the store's prototype carries the computed-attribute getters
+	const asRecordObject = (value) =>
+		value?.constructor === Object
+			? assignStoredFields(new store.encoder.structPrototype.constructor(), value, store.encoder)
+			: value;
+	if (store.cache) {
+		// the WeakRef lmdb-js makes of this value cannot be retargeted, so it must be the promoted record
+		const cacheSetValue = store.cache.setValue;
+		store.cache.setValue = function (key, value, expirationPriority) {
+			return cacheSetValue.call(this, key, asRecordObject(value), expirationPriority);
+		};
+	}
 	const storeGetEntry = store.getEntry;
 
 	store.getEntry = function (id, options) {
@@ -672,8 +792,10 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.metadataFlags = lastMetadata[METADATA];
 			entry.localTime = lastMetadata.localTime;
 			entry.residencyId = lastMetadata.residencyId;
+			if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 			entry.nodeId = lastMetadata.nodeId;
 			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+			entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
 			entry.size = lastMetadata.size;
 			if (lastMetadata.expiresAt >= 0) {
 				entry.expiresAt = lastMetadata.expiresAt;
@@ -687,12 +809,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
 		function withEntry(entry) {
 			if (entry.value) {
-				if (entry.value.constructor === Object) {
-					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
-					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					assignStoredFields(entry.value, originalValue, store.encoder);
-				}
+				entry.value = asRecordObject(entry.value);
 				entryMap.set(entry.value, entry); // allow the record to access the entry
 			}
 			entry.key = id;
@@ -732,20 +849,15 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.metadataFlags = lastMetadata[METADATA];
 				entry.localTime = lastMetadata.localTime;
 				entry.residencyId = lastMetadata.residencyId;
+				if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+				entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
 				entry.size = lastMetadata.size;
 				if (lastMetadata.expiresAt >= 0) entry.expiresAt = lastMetadata.expiresAt;
 				lastMetadata = null;
 			}
-			if (entry.value) {
-				if (entry.value.constructor === Object) {
-					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
-					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					assignStoredFields(entry.value, originalValue, store.encoder);
-				}
-			}
+			if (entry.value) entry.value = asRecordObject(entry.value);
 			return entry;
 		});
 	};
@@ -794,10 +906,12 @@ export function checkReadTxnTimeouts() {
 			if (txn.openTimer) {
 				if (txn.openTimer > 3) {
 					if (txn.openTimer > READ_TXN_TIMEOUT_TICKS) {
-						harperLogger.error(
-							`Read transaction detected that has been open too long (over ${Math.round(READ_TXN_TIMEOUT_TICKS * 15)} seconds), ending transaction`,
-							txn
-						);
+						harperLogger
+							.status({ problem: 'database.read-txn-critical', expires: 120 })
+							.error(
+								`Read transaction detected that has been open too long (over ${Math.round(READ_TXN_TIMEOUT_TICKS * 15)} seconds), ending transaction`,
+								txn
+							);
 						trackedTxns.splice(i--, 1);
 						txn.timerTracked = false;
 						txn.openTimer = 0;
@@ -807,10 +921,12 @@ export function checkReadTxnTimeouts() {
 							harperLogger.warn('Unexpected error force-closing stale LMDB read transaction', error);
 						}
 					} else
-						harperLogger.error(
-							'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
-							txn
-						);
+						harperLogger
+							.status({ problem: 'database.read-txn-long', expires: 60 })
+							.error(
+								'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
+								txn
+							);
 				}
 				txn.openTimer++;
 			} else txn.openTimer = 1;
@@ -822,12 +938,20 @@ export function setReadTxnExpiration(ms: number) {
 	READ_TXN_TIMEOUT_TICKS = Math.round(ms / 15000);
 	return trackedTxns;
 }
-export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
+export function setNextEncoding(
+	timestamp: number,
+	metadata: number,
+	expiresAt = -1,
+	nodeId = -1,
+	residencyId = 0,
+	residencySlot?: number
+) {
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
 	expiresAtNextEncoding = expiresAt;
 	nodeIdAtNextEncoding = nodeId;
 	residencyIdAtNextEncoding = residencyId;
+	residencySlotAtNextEncoding = residencySlot;
 }
 /**
  * Reset the module-level "next encoding" metadata to its no-metadata defaults. These globals are
@@ -842,9 +966,16 @@ export function clearNextEncoding() {
 	expiresAtNextEncoding = -1;
 	nodeIdAtNextEncoding = -1;
 	residencyIdAtNextEncoding = 0;
+	residencySlotAtNextEncoding = undefined;
 	additionalAuditRefsNextEncoding = undefined;
+	receivedIdentityRefsNextEncoding = undefined;
 }
-export function recordUpdater(store, tableId, auditStore) {
+export function recordUpdater(
+	store,
+	tableId,
+	auditStore,
+	retainAuditBlobs?: (id: any, entry: any, retained?: Set<string>, transaction?: any) => Set<string> | undefined
+) {
 	return function (
 		id,
 		record,
@@ -865,6 +996,7 @@ export function recordUpdater(store, tableId, auditStore) {
 		// them all; nested values keep their own toJSON serialization.
 		record = storedFieldsOnly(store.encoder, record);
 		const isRocksDB = store instanceof RocksDatabase;
+		let replacingAuditEntry;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
 			// with rocksdb, we simplify to just storing the singular version/timestamp
@@ -872,11 +1004,14 @@ export function recordUpdater(store, tableId, auditStore) {
 		} else if (audit == null)
 			// if not auditing, there is no local timestamp to reference
 			timestampNextEncoding = NO_TIMESTAMP;
-		else if (resolveRecord)
-			// preserve existing timestamp, if possible
-			timestampNextEncoding = existingEntry?.localTime
-				? TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS
-				: NO_TIMESTAMP;
+		else if (
+			resolveRecord &&
+			existingEntry?.localTime &&
+			(replacingAuditEntry = auditStore.get(existingEntry.localTime, tableId, id, existingEntry.nodeId))
+		)
+			// keep the local time only while its audit entry is there to replace: an appended entry is keyed by the
+			// last assigned time, which is this write's own only when it assigns one
+			timestampNextEncoding = TIMESTAMP_RECORD_PREVIOUS | TIMESTAMP_ASSIGN_PREVIOUS;
 		else
 			timestampNextEncoding = audit // for audit, we need it
 				? existingEntry?.localTime // we already have a timestamp, we need to record the previous one in the audit log
@@ -885,60 +1020,72 @@ export function recordUpdater(store, tableId, auditStore) {
 				: NO_TIMESTAMP;
 		const expiresAt = options?.expiresAt;
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
-		if (isRocksDB && record !== undefined && existingEntry?.version != null && newVersion <= existingEntry.version) {
-			assignMetadata = Math.max(assignMetadata, 0) | VERSION_NOT_UNIQUE_FLAG;
-		}
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
+		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
+		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
+		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
+		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
+			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
-			ifVersion?: number;
 			transaction?: any;
 		} = {
 			version: newVersion,
 			instructedWrite: timestampNextEncoding > 0,
 			transaction: options?.transaction,
 		};
-		let ifVersion;
 		let extendedType = 0;
 		try {
 			let previousResidencyId = existingEntry?.residencyId;
+			const residencySlot = options?.residencySlot ?? existingEntry?.residencySlot;
+			const previousResidencySlot = existingEntry?.residencySlot;
+			if (residencySlot !== undefined) {
+				if (!Number.isInteger(residencySlot) || residencySlot < 0 || residencySlot > 65535)
+					throw new RangeError('Invalid sharding slot');
+				residencySlotAtNextEncoding = residencySlot;
+				metadataInNextEncoding |= HAS_RESIDENCY_SLOT;
+				extendedType |= HAS_CURRENT_RESIDENCY_SLOT;
+			} else residencySlotAtNextEncoding = undefined;
+			if (previousResidencySlot !== undefined && (previousResidencySlot !== residencySlot || type === 'delete'))
+				extendedType |= HAS_PREVIOUS_RESIDENCY_SLOT;
 			const residencyId = options?.residencyId; //getResidency(record, previousResidencyId);
-			if (residencyId) {
-				residencyIdAtNextEncoding = residencyId;
+			const recordResidencyId = options?.recordResidencyId !== undefined ? options.recordResidencyId : residencyId;
+			if (recordResidencyId) {
+				residencyIdAtNextEncoding = recordResidencyId;
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
-				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
+			if (residencyId) extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			const recordNodeId = options?.recordNodeId ?? options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
 			if (recordNodeId >= 0) {
 				nodeIdAtNextEncoding = recordNodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;
 			} else nodeIdAtNextEncoding = -1;
 			const additionalAuditRefs = options?.additionalAuditRefs;
-			if (additionalAuditRefs && additionalAuditRefs.length > 0) {
-				additionalAuditRefsNextEncoding = additionalAuditRefs;
+			const receivedIdentityRefs = options?.receivedIdentityRefs;
+			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
+			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
+			if (additionalAuditRefsNextEncoding || receivedIdentityRefsNextEncoding)
 				metadataInNextEncoding |= HAS_ADDITIONAL_AUDIT_REFS;
-			} else additionalAuditRefsNextEncoding = undefined;
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
 				extendedType |= HAS_ADDITIONAL_AUDIT_REFS_AUDIT;
 			}
 			if (options?.localOnly) {
-				// Mark this write as local-only: set the bit in BOTH the persisted record metadata
-				// (so the full-copy send loop, which reads entry.metadataFlags, skips it) AND the audit
-				// entry's extendedType (so the audit-forward send path skips it by bitmask without decode).
 				metadataInNextEncoding |= LOCAL_ONLY;
+			}
+			if (options?.localOnly || options?.auditLocalOnly) {
 				extendedType |= LOCAL_ONLY;
 			}
 			if (previousResidencyId !== residencyId) {
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;
 				if (!previousResidencyId) previousResidencyId = 0;
 			}
-			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
+			if (options?.auditExpiresAt === undefined ? assignMetadata & HAS_EXPIRATION : auditExpiresAt >= 0)
+				extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
-			// we use resolveRecord outside of transaction, so must explicitly make it conditional
-			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
+			if (options?.copyFrame) extendedType |= COPIED_RECORD;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
 				// Delete the prior row's blob files — except any the new record still references.
 				// Without the retention check, updating an unrelated attribute on a row that
@@ -952,6 +1099,8 @@ export function recordUpdater(store, tableId, auditStore) {
 						if (fileId) (retainedFileIds ??= new Set()).add(fileId);
 					});
 				}
+				const auditFiles = retainAuditBlobs?.(id, existingEntry, retainedFileIds, options?.transaction);
+				if (auditFiles) for (const fileId of auditFiles) (retainedFileIds ??= new Set()).add(fileId);
 				deleteBlobsInObject(existingEntry.value, retainedFileIds);
 			}
 			let result: Promise<void>;
@@ -989,7 +1138,7 @@ export function recordUpdater(store, tableId, auditStore) {
 					let replacingEntry;
 					if (isRocksDB && existingEntry.additionalAuditRefs) {
 						for (const ref of existingEntry.additionalAuditRefs) {
-							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
+							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId, true);
 							if (
 								candidate?.version === existingEntry.version &&
 								(candidate.nodeId ?? 0) === (existingEntry.nodeId ?? 0)
@@ -1000,7 +1149,9 @@ export function recordUpdater(store, tableId, auditStore) {
 							}
 						}
 					}
-					replacingEntry ??= auditStore.get(replacingId, tableId, id, existingEntry.nodeId);
+					replacingEntry ??= isRocksDB
+						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId, true)
+						: replacingAuditEntry;
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](
@@ -1017,12 +1168,15 @@ export function recordUpdater(store, tableId, auditStore) {
 								extendedType,
 								residencyId,
 								previousResidencyId,
-								expiresAt,
+								residencySlot,
+								previousResidencySlot,
+								expiresAt: auditExpiresAt,
 								structureVersion,
 								previousAdditionalAuditRefs,
 							},
-							{ ifVersion: ifVersion, transaction: options.transaction, nodeId, viaNodeId }
+							{ transaction: options.transaction, nodeId, viaNodeId }
 						);
+						noteStagedAudit(options, extendedType);
 						return result;
 					}
 				}
@@ -1040,7 +1194,9 @@ export function recordUpdater(store, tableId, auditStore) {
 						extendedType,
 						residencyId,
 						previousResidencyId,
-						expiresAt,
+						residencySlot,
+						previousResidencySlot,
+						expiresAt: auditExpiresAt,
 						structureVersion,
 						originatingOperation: options?.originatingOperation,
 						previousAdditionalAuditRefs,
@@ -1049,12 +1205,12 @@ export function recordUpdater(store, tableId, auditStore) {
 						// turn off append flag, as we are concerned this may be related to db corruption issues
 						// append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
 						instructedWrite: true,
-						ifVersion,
 						transaction: options.transaction,
 						nodeId,
 						viaNodeId,
 					}
 				);
+				noteStagedAudit(options, extendedType);
 			}
 			if (options?.tableToTrack && TRACKED_WRITE_TYPES.has(type)) {
 				recordAction(lastValueEncoding?.length ?? 1, 'db-write', options.tableToTrack, null);
@@ -1076,8 +1232,15 @@ export function recordUpdater(store, tableId, auditStore) {
 		}
 	};
 }
-export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: number }> | undefined) {
-	additionalAuditRefsNextEncoding = refs;
+// a coordinated retry's put appends nothing (unless the attempt it retries wrote no batch); its write keeps what that attempt appended
+function noteStagedAudit(options: any, extendedType: number) {
+	const write = options?.write;
+	if (
+		write &&
+		write.stagedAudit !== 'replicable' &&
+		(!options.transaction?.isRetry || options.transaction.relogOnRetry)
+	)
+		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 }
 export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;

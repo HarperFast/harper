@@ -115,6 +115,8 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 
 	test('both broken components are reported failed while the valid one is loaded', async () => {
 		const status = await sendOperation(ctx.harper, { operation: 'get_status' });
+		ok(!('components' in status));
+		ok(!('hierarchy' in status));
 		const byName = new Map<string, string>(
 			(status.componentStatus ?? []).map((entry: { name: string; status?: string }) => [entry.name, entry.status ?? ''])
 		);
@@ -122,6 +124,17 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 			strictEqual(byName.get(`${app}.graphqlSchema`), 'error', `expected '${app}' to report a failed schema component`);
 		}
 		strictEqual(byName.get('control.graphqlSchema'), 'healthy', 'the valid application must still load');
+
+		const withComponents = await sendOperation(ctx.harper, { operation: 'get_status', components: true });
+		ok(!('hierarchy' in withComponents));
+		for (const app of [...BROKEN_APPS, 'control']) {
+			const flat = withComponents.componentStatus.find(
+				(entry: { name: string }) => entry.name === `${app}.graphqlSchema`
+			);
+			ok(flat);
+			strictEqual(withComponents.components[app].children.graphqlSchema.status, flat.status);
+			strictEqual(withComponents.components[app].status, app === 'control' ? 'healthy' : 'error');
+		}
 	});
 
 	test('the broken components do not serialize behind each other', () => {

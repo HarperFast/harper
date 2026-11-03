@@ -1,9 +1,9 @@
 /**
  * Shared helpers for the SSE streaming regression suites in `integrationTests/server/`
- * (`sse-finite-generator.test.ts`, `sse-throw-midstream.test.ts`): a bounded SSE consumer, a
- * `/Probe/` reader for the lifecycle counters those fixtures keep, and an `hdb.log`
- * uncaughtException counter — the bugs these suites anchor surfaced as an uncaught throw inside
- * the worker rather than as a bad response.
+ * (`sse-finite-generator.test.ts`, `sse-throw-midstream.test.ts`, `qa702-sse-event-data.test.ts`):
+ * a bounded SSE consumer, an SSE block parser, a `/Probe/` reader for the lifecycle counters those
+ * fixtures keep, and an `hdb.log` uncaughtException counter — the bugs these suites anchor
+ * surfaced as an uncaught throw inside the worker rather than as a bad response.
  *
  * The raw-socket capture in `stream-error-contract.test.ts` is a deliberately different
  * technique (it inspects chunk framing and the exact close mechanism) and is not shared.
@@ -33,6 +33,30 @@ function parseEvents(raw: string): string[] {
 		.split('\n')
 		.filter((line) => line.startsWith('data: '))
 		.map((line) => line.slice('data: '.length));
+}
+
+/**
+ * Blank-line-delimited field maps, keeping the `event:` field `parseEvents` drops — the only thing
+ * separating an application data frame from a named control frame such as `harper-error`.
+ */
+export function parseSseBlocks(raw: string): Array<Record<string, string>> {
+	return raw
+		.split('\n\n')
+		.filter((block) => block.trim().length > 0)
+		.map((block) => {
+			const out: Record<string, string> = {};
+			for (const line of block.split('\n')) {
+				const colon = line.indexOf(':');
+				if (colon === -1) continue;
+				const field = line.slice(0, colon);
+				let value = line.slice(colon + 1);
+				if (value.startsWith(' ')) value = value.slice(1);
+				if (field === 'data' && field in out) out.data += '\n' + value;
+				else out[field] = value;
+			}
+			return out;
+		})
+		.filter((rec) => 'event' in rec || 'data' in rec || 'id' in rec || 'retry' in rec);
 }
 
 /**

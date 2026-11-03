@@ -1,0 +1,1066 @@
+require('../testUtils');
+const assert = require('node:assert');
+const { setupTestDBPath } = require('../testUtils');
+const { table } = require('#src/resources/databases');
+const { Resource } = require('#src/resources/Resource');
+const { transaction } = require('#src/resources/transaction');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const {
+	INVALIDATED,
+	REPLICA,
+	FULL_WRITE_HEAD,
+	DEFAULT_REPLICA_EXPIRATION_MS,
+	setMinReplicaScanIntervalForTesting,
+} = require('#src/resources/Table');
+const databases = require('#src/resources/databases');
+const { HAS_BLOBS } = require('#src/resources/auditStore');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { server } = require('#src/server/Server');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { setNextEncoding, HAS_RESIDENCY_ID } = require('#src/resources/RecordEncoder');
+
+const RESIDENCY_ID = 123;
+const OTHER_RESIDENCY_ID = 456;
+// a key per test: a renewal check stamped while a test's clock ran ahead would throttle the next test's
+let ID;
+let records = 0;
+const realDateNow = Date.now;
+let clockOffset = 0;
+// renewal and expiry decisions read Date.now; write versions come from the monotonic clock
+function advanceClock(ms) {
+	clockOffset += ms;
+	Date.now = () => realDateNow() + clockOffset;
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitFor(condition, description, timeoutMs = 5000) {
+	const deadline = performance.now() + timeoutMs;
+	for (;;) {
+		const result = await condition();
+		if (result) return result;
+		assert.ok(performance.now() < deadline, `timed out waiting for ${description}`);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+const describeReplicas = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
+describeReplicas('Local replicas of residency stubs', function () {
+	this.timeout(20_000);
+	let Records, response, calls, stored;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		setMinReplicaScanIntervalForTesting(20);
+		Records = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicas',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'name', type: 'String', indexed: true },
+				{ name: 'body', type: 'String' },
+				{ name: 'file', type: 'Any' },
+			],
+			audit: true,
+		});
+		Records.dbisDB.putSync([Symbol.for('residency_by_id'), RESIDENCY_ID], ['resident-a', 'resident-b']);
+		Records.dbisDB.putSync([Symbol.for('residency_by_id'), OTHER_RESIDENCY_ID], ['other-resident']);
+		Records.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					calls.push(entry.key);
+					const found = typeof response === 'function' ? await response() : response;
+					if (found) stored.push(await Records._storeReplica(entry, found));
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+	});
+
+	after(() => setMinReplicaScanIntervalForTesting(undefined));
+	afterEach(() => {
+		Date.now = realDateNow;
+		clockOffset = 0;
+	});
+
+	let stubVersion;
+	async function invalidate(partial, options = {}, newer = 0) {
+		const before = Records.primaryStore.getEntry(ID);
+		const version = (options.version ?? before?.version ?? Date.now()) + newer;
+		const context = before ? { sourceApply: true, timestamp: version } : {};
+		await transaction(context, async () => {
+			const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, partial, {
+				residencyId: RESIDENCY_ID,
+				...(before ? { version, nodeId: before.nodeId ?? 0 } : {}),
+				...options,
+			});
+		});
+		return Records.primaryStore.getEntry(ID);
+	}
+
+	// versioned past the row: a test may have written it ahead of the clock
+	async function remove(id) {
+		const prior = Records.primaryStore.getEntry(id);
+		if (!prior?.value) return;
+		const context = { sourceApply: true, timestamp: prior.version + 1 };
+		await transaction(context, async () => {
+			const resource = await Records.getResource(id, context, { ensureLoaded: false });
+			resource._writeDelete(id, { version: prior.version + 1, nodeId: prior.nodeId ?? 0 });
+		});
+		assert.equal(Records.primaryStore.getEntry(id)?.value, null);
+	}
+
+	beforeEach(async () => {
+		Records.setTTLExpiration({
+			replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000,
+			replicaRefreshFraction: 0.5,
+		});
+		calls = [];
+		stored = [];
+		if (ID) await remove(ID);
+		ID = `record-${++records}`;
+		const stub = await invalidate(Object.freeze({ name: 'indexed' }), {}, 1);
+		assert.ok(stub.metadataFlags & INVALIDATED);
+		stubVersion = stub.version;
+		response = {
+			key: ID,
+			value: { id: ID, name: 'indexed', body: 'complete' },
+			version: stubVersion,
+			originNode: server.hostname,
+			fullWriteHead: stubVersion,
+		};
+	});
+
+	async function query(select, conditions = []) {
+		const records = [];
+		for await (const record of Records.search({ conditions, select })) records.push(record);
+		return records;
+	}
+
+	function history() {
+		return Records.getHistoryOfRecord(ID).then((entries) => entries.map((entry) => entry.type));
+	}
+
+	// the per-table deadline store (`<table>/@replicas`): id → deadline in ms
+	function deadlines(Table = Records) {
+		return databases.openReplicaDeadlineStore(
+			Table.primaryStore.rootStore,
+			Table.tableName,
+			Table.dbisDB.getSync(Table.tableName + '/')?.generation
+		);
+	}
+	const deadlineOf = (id, Table = Records) => deadlines(Table).getSync(id);
+
+	async function replica() {
+		const record = await Records.get(ID);
+		assert.equal(record.body, 'complete');
+		assert.deepEqual(stored, [true]);
+		const entry = Records.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA, 'the fetched record must be flagged as a replica');
+		assert.ok(!(entry.metadataFlags & INVALIDATED));
+		return entry;
+	}
+
+	it('keeps a fetched record as a replica with the stub identity, residency and no audit entry', async () => {
+		const before = await history();
+		const entry = await replica();
+		assert.equal(entry.value.body, 'complete');
+		assert.equal(entry.residencyId, RESIDENCY_ID);
+		assert.equal(entry.version, stubVersion);
+		assert.equal(entry.expiresAt, undefined, 'the row carries no replica deadline');
+		const deadline = deadlineOf(ID);
+		assert.ok(deadline > Date.now() + DEFAULT_REPLICA_EXPIRATION_MS - 5000);
+		assert.ok(deadline <= Date.now() + DEFAULT_REPLICA_EXPIRATION_MS);
+		assert.deepEqual(await history(), before, 'a replica write leaves the audit history unchanged');
+		assert.equal(Records.dbisDB.getSync(`${Records.tableName}/@replicas`)?.auxiliary, '@replicas');
+		assert.deepEqual(calls, [ID]);
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(await query(['id', 'body'], [{ attribute: 'name', value: 'indexed' }]), [
+			{ id: ID, body: 'complete' },
+		]);
+		assert.deepEqual(calls, [ID], 'reads of a replica never contact a resident');
+	});
+
+	it('does not keep a response that is older than the stub, or one with no version', async () => {
+		for (const stale of [
+			{ ...response, version: stubVersion - 1 },
+			{ ...response, version: undefined },
+		]) {
+			response = stale;
+			calls = [];
+			stored = [];
+			assert.equal((await Records.get(ID)).body, 'complete', 'the caller still receives the fetched record');
+			assert.deepEqual(stored, [false]);
+			const entry = Records.primaryStore.getEntry(ID);
+			assert.ok(entry.metadataFlags & INVALIDATED);
+			assert.equal(entry.value.body, undefined);
+		}
+	});
+
+	it('serves a newer response without keeping it', async () => {
+		response = { ...response, version: stubVersion + 5 };
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(stored, [false]);
+		const entry = Records.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & INVALIDATED);
+		assert.equal(entry.version, stubVersion);
+	});
+
+	it('refuses a response once the stub was deleted', async () => {
+		response = () => {
+			const context = { sourceApply: true, timestamp: stubVersion + 1 };
+			return transaction(context, async () => {
+				const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+				resource._writeDelete(ID, { version: stubVersion + 1, nodeId: 0 });
+			}).then(() => ({
+				key: ID,
+				value: { id: ID, name: 'indexed', body: 'complete' },
+				version: stubVersion,
+				originNode: server.hostname,
+				fullWriteHead: stubVersion,
+			}));
+		};
+		await Records.get(ID);
+		assert.deepEqual(stored, [false]);
+		assert.equal(Records.primaryStore.getEntry(ID)?.value, null);
+	});
+
+	it('keeps a record carrying its own expiry, which then expires like any row', async () => {
+		const expiresAt = Date.now() + 500;
+		response = { ...response, expiresAt };
+		const entry = await replica();
+		assert.equal(entry.expiresAt, expiresAt, 'the record expiry is stored exactly as reported');
+		assert.equal(deadlineOf(ID), expiresAt, 'the replica deadline never passes the record expiry');
+		advanceClock(600);
+		calls = [];
+		assert.equal(await Records.get(ID), undefined, 'an expired record reads as a resident reads it: gone');
+		const demoted = await waitFor(() => {
+			const current = Records.primaryStore.getEntry(ID);
+			return current.metadataFlags & INVALIDATED ? current : undefined;
+		}, 'the expired replica to be demoted');
+		assert.equal(demoted.expiresAt, expiresAt, 'the stub keeps the record expiry');
+		assert.equal(deadlineOf(ID), undefined);
+		calls = [];
+		assert.equal(await Records.get(ID), undefined, 'an expired stub reads as absent');
+		assert.deepEqual(calls, [], 'an expired stub never fetches the expired record from a resident');
+	});
+
+	it('keeps an answer only from the stub writer', async () => {
+		const fromWriter = response;
+		for (const originNode of ['some-other-writer', undefined]) {
+			response = { ...fromWriter, originNode };
+			calls = [];
+			stored = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(stored, [false], `${originNode} at the stub version must not be kept under its writer`);
+			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+		}
+		stored = [];
+		response = fromWriter;
+		await replica();
+	});
+
+	it('serves but never keeps an answer without the resident’s full-write certificate', async () => {
+		const certified = response;
+		for (const fullWriteHead of [
+			undefined,
+			false,
+			true,
+			String(certified.fullWriteHead),
+			certified.fullWriteHead + 1,
+		]) {
+			response = { ...certified, fullWriteHead };
+			calls = [];
+			stored = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(stored, [false], `certificate ${JSON.stringify(fullWriteHead)} must not be kept`);
+			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+		}
+		stored = [];
+		response = certified;
+		await replica();
+	});
+
+	it('keeps only the write logged at the stub’s version, and no stub carrying an audit ref', async () => {
+		// the resident's head is another write its writer made at this version, under another log key
+		response = { ...response, fullWriteHead: stubVersion - 10 };
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(stored, [false]);
+		// a second write at the stub's version, under a later log key, leaves the stub a ref
+		const context = { sourceApply: true, timestamp: stubVersion + 10 };
+		await transaction(context, async () => {
+			const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, Object.freeze({ name: 'indexed' }), {
+				residencyId: RESIDENCY_ID,
+				version: stubVersion,
+				nodeId: Records.primaryStore.getEntry(ID).nodeId ?? 0,
+			});
+		});
+		const second = Records.primaryStore.getEntry(ID);
+		assert.equal(second.version, stubVersion);
+		assert.equal(second.additionalAuditRefs?.length, 1, 'premise: the stub carries a ref');
+		for (const fullWriteHead of [stubVersion, second.additionalAuditRefs[0].version]) {
+			response = { ...response, fullWriteHead };
+			stored = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(stored, [false], `certificate ${fullWriteHead}`);
+		}
+	});
+
+	it('keeps a body whose created time its stub lacks, as a live residency stub does', async () => {
+		const Created = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasCreated',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'body' },
+				{ name: 'created', assignCreatedTime: true },
+			],
+			audit: true,
+		});
+		const kept = [];
+		Created.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = {
+						key: ID,
+						value: { id: ID, name: 'indexed', body: 'complete', created: 1_000 },
+						version: entry.version,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					};
+					kept.push(await Created._storeReplica(entry, found));
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Created.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal(Created.primaryStore.getEntry(ID).value.created, undefined, 'premise: the stub has no created time');
+		assert.equal((await Created.get(ID)).body, 'complete');
+		assert.deepEqual(kept, [true]);
+	});
+
+	it('marks a replica with the certificate, keeps it through demotion, and admits the key again', async () => {
+		const kept = await replica();
+		assert.ok(kept.metadataFlags & FULL_WRITE_HEAD);
+		await Records.evict(ID, kept.value, kept.version);
+		const demoted = Records.primaryStore.getEntry(ID);
+		assert.ok(demoted.metadataFlags & INVALIDATED);
+		assert.ok(demoted.metadataFlags & FULL_WRITE_HEAD, 'the stub is still its head put’s projection');
+		stored = [];
+		await replica();
+	});
+
+	it('stops renewing a replica kept without the certificate, so the sweep demotes it', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 2 });
+		const kept = await replica();
+		const first = deadlineOf(ID);
+		// what an earlier build kept: the same row without the certificate bit
+		setNextEncoding(kept.version, REPLICA | HAS_RESIDENCY_ID, -1, -1, kept.residencyId);
+		Records.primaryStore.putSync(ID, kept.value, { version: kept.version });
+		const legacy = Records.primaryStore.getEntry(ID);
+		assert.ok(legacy.metadataFlags & REPLICA && !(legacy.metadataFlags & FULL_WRITE_HEAD), 'premise: a legacy replica');
+		advanceClock(1100); // past the renewal point of a 2 s lifetime
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await sleep(100);
+		assert.equal(deadlineOf(ID), first, 'a read hit does not renew it');
+		advanceClock(1000);
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the sweep to demote the legacy replica'
+		);
+	});
+
+	it('serves a replica past its deadline until the sweep demotes it; reads honor only the record expiry', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
+		await replica();
+		await Records.closeMaintenance();
+		try {
+			advanceClock(250);
+			const held = Records.primaryStore.getEntry(ID);
+			assert.ok(held.metadataFlags & REPLICA && deadlineOf(ID) < Date.now(), 'a replica past its deadline still held');
+			calls = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(await query(['id', 'body']), [{ id: ID, body: 'complete' }]);
+			assert.deepEqual(calls, [], 'a replica past its deadline is served, not reloaded');
+		} finally {
+			Records.resumeMaintenance();
+		}
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the sweep to demote the replica'
+		);
+		assert.equal(deadlineOf(ID), undefined, 'demotion takes the deadline entry with it');
+	});
+
+	it('slides on a table with its own record expiry, never past that expiry, which a demoted stub keeps', async () => {
+		const Expiring = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasExpiring',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+			audit: true,
+			expiration: 3600,
+			replicaExpiration: 2,
+		});
+		const loaded = [];
+		let residentExpiresAt = Date.now() + 3600_000;
+		const writer = 'residency-replicas-writer';
+		const writerId = getIdOfRemoteNode(writer, Expiring.auditStore);
+		Expiring.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					loaded.push(entry.key);
+					const found = {
+						key: ID,
+						value: { id: ID, name: 'indexed', body: 'complete' },
+						version: entry.version,
+						originNode: writer,
+						fullWriteHead: entry.version,
+						expiresAt: residentExpiresAt,
+					};
+					await Expiring._storeReplica(entry, found);
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const stub = async (newer) => {
+			const context = { sourceApply: true, timestamp: Date.now() + newer };
+			await transaction(context, async () => {
+				const resource = await Expiring.getResource(ID, context, { ensureLoaded: false });
+				resource._writeInvalidate(
+					ID,
+					{ name: 'indexed' },
+					{ residencyId: RESIDENCY_ID, version: context.timestamp, nodeId: writerId }
+				);
+			});
+		};
+		await stub(0);
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		let entry = Expiring.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA);
+		assert.equal(entry.expiresAt, residentExpiresAt, 'the row keeps the record expiry as reported');
+		const first = deadlineOf(ID, Expiring);
+		assert.ok(first <= Date.now() + 2000 && first > Date.now() + 1500);
+		advanceClock(1100);
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		await waitFor(() => (deadlineOf(ID, Expiring) > first ? true : undefined), 'a read hit to renew the deadline');
+		assert.equal(Expiring.primaryStore.getEntry(ID).expiresAt, residentExpiresAt, 'a renewal never touches the row');
+		assert.deepEqual(loaded, [ID]);
+
+		residentExpiresAt = Date.now() + 1500;
+		await stub(1000);
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		entry = Expiring.primaryStore.getEntry(ID);
+		assert.equal(entry.expiresAt, residentExpiresAt);
+		assert.equal(deadlineOf(ID, Expiring), residentExpiresAt, 'the record expiry caps the deadline');
+		advanceClock(1100);
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		await sleep(100);
+		assert.equal(deadlineOf(ID, Expiring), residentExpiresAt, 'a read hit never extends past the record expiry');
+		assert.deepEqual(loaded, [ID, ID]);
+
+		residentExpiresAt = Date.now() + 3600_000;
+		await stub(2000);
+		Expiring.setTTLExpiration({ expiration: 3600, replicaExpiration: 0.2 });
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		const demoted = await waitFor(() => {
+			const current = Expiring.primaryStore.getEntry(ID);
+			return current.metadataFlags & INVALIDATED ? current : undefined;
+		}, 'the sweep to demote the replica');
+		assert.equal(demoted.expiresAt, residentExpiresAt, 'a demoted stub keeps the record expiry');
+		assert.equal(deadlineOf(ID, Expiring), undefined);
+	});
+
+	it('keeps committed computed index entries when the fetched body replaces a stub', async () => {
+		const Computed = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasComputed',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'sku', indexed: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+			audit: true,
+		});
+		Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+		const results = [];
+		Computed.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = {
+						key: ID,
+						value: { id: ID, sku: 'A1', name: 'resident' },
+						version: entry.version,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					};
+					results.push(await Computed._storeReplica(entry, found));
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		await Computed.put(ID, { id: ID, sku: 'A1', name: 'original' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Computed.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { id: ID, sku: 'A1', upper: 'ORIGINAL' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Computed.get(ID)).name, 'resident');
+		assert.deepEqual(results, [true], 'a computed index must not stop the replica from being kept');
+		const entry = Computed.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA);
+		const found = [];
+		for await (const record of Computed.search({
+			conditions: [{ attribute: 'upper', value: 'ORIGINAL' }],
+			select: ['id'],
+		}))
+			found.push(record);
+		assert.deepEqual(found, [{ id: ID }]);
+		const patch = { sourceApply: true, timestamp: entry.version + 1 };
+		await transaction(patch, async () => {
+			const resource = await Computed.getResource(ID, patch, { ensureLoaded: false });
+			resource._writeUpdate(ID, { sku: 'A2' }, false, { version: entry.version + 1, nodeId: entry.nodeId ?? 0 });
+			resource.save();
+		});
+		const stub = Computed.primaryStore.getEntry(ID);
+		assert.ok(stub.metadataFlags & INVALIDATED);
+		assert.equal(stub.value.sku, 'A2');
+		assert.equal(stub.residencyId, RESIDENCY_ID);
+	});
+
+	it('demotes a replica on a computed-index table without running the resolver', async () => {
+		const Computed = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasComputedDemotion',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'sku', indexed: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+			audit: true,
+		});
+		// a resolver that needs a request (its context, another table) cannot run in a maintenance sweep
+		let sweeping = false;
+		Computed.setComputedAttribute('upper', (record) => {
+			if (sweeping) throw new Error('resolver inputs are unavailable in a sweep');
+			return record.name.toUpperCase();
+		});
+		Computed.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = {
+						key: ID,
+						value: { id: ID, sku: 'A1', name: 'resident' },
+						version: entry.version,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					};
+					await Computed._storeReplica(entry, found);
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		await Computed.put(ID, { id: ID, sku: 'A1', name: 'original' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Computed.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { id: ID, sku: 'A1' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Computed.get(ID)).name, 'resident');
+		const entry = Computed.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA, 'premise: a replica');
+		sweeping = true;
+		try {
+			await Computed.evict(ID, entry.value, entry.version);
+		} finally {
+			sweeping = false;
+		}
+		const stub = Computed.primaryStore.getEntry(ID);
+		assert.ok(stub.metadataFlags & INVALIDATED, 'the replica was not demoted');
+		assert.equal(stub.value.id, ID);
+		assert.equal(stub.value.sku, 'A1');
+		assert.equal(stub.value.name, undefined);
+	});
+
+	it('keeps the primary key when a patch turns a replica back into a stub, so an index-only select stays local', async () => {
+		const before = await replica();
+		const context = { sourceApply: true, timestamp: before.version + 1 };
+		await transaction(context, async () => {
+			const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+			resource._writeUpdate(ID, { name: 'patched' }, false, {
+				version: before.version + 1,
+				nodeId: before.nodeId ?? 0,
+			});
+			resource.save();
+		});
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED, 'premise: the patch stores a stub');
+		calls = [];
+		assert.deepEqual(await query(['id', 'name'], [{ attribute: 'name', value: 'patched' }]), [
+			{ id: ID, name: 'patched' },
+		]);
+		assert.deepEqual(calls, []);
+	});
+
+	for (const [label, apply, expectStub, expectBody, expectName = 'changed'] of [
+		[
+			'a newer invalidation',
+			(resource, options) => resource._writeInvalidate(ID, { id: ID, name: 'changed' }, options),
+			true,
+		],
+		[
+			'a relocation that excludes this node',
+			(resource, options) => resource._writeRelocate(ID, { ...options, residencyId: OTHER_RESIDENCY_ID }),
+			true,
+			undefined,
+			'indexed',
+		],
+		[
+			'a put without residency',
+			(resource, options) => {
+				resource._writeUpdate(ID, { id: ID, name: 'changed', body: 'replaced' }, true, options);
+				resource.save();
+			},
+			false,
+			'replaced',
+		],
+		[
+			'a patch, which keeps a non-resident a non-resident',
+			(resource, options) => {
+				resource._writeUpdate(ID, { name: 'changed' }, false, options);
+				resource.save();
+			},
+			true,
+		],
+		[
+			'a local patch with no residency of its own',
+			(resource, { version, nodeId }) => {
+				resource._writeUpdate(ID, { name: 'changed' }, false, { version, nodeId });
+				resource.save();
+			},
+			true,
+		],
+		['a delete', (resource, options) => resource._writeDelete(ID, options), null],
+	]) {
+		it(`is overwritten by ${label} like a stub`, async () => {
+			const before = await replica();
+			const context = { sourceApply: true, timestamp: before.version + 1 };
+			await transaction(context, async () => {
+				const resource = await Records.getResource(ID, context, { ensureLoaded: false });
+				apply(resource, { version: before.version + 1, nodeId: before.nodeId ?? 0, residencyId: RESIDENCY_ID });
+			});
+			const after = Records.primaryStore.getEntry(ID);
+			assert.equal(deadlineOf(ID), undefined, 'an overwrite takes the deadline entry with it');
+			if (expectStub === null) {
+				assert.equal(after?.value, null);
+				return;
+			}
+			assert.ok(!(after.metadataFlags & REPLICA), 'a newer write never leaves the replica flag behind');
+			assert.equal(Boolean(after.metadataFlags & INVALIDATED), expectStub);
+			if (expectStub) assert.equal(after.residencyId, label.includes('relocation') ? OTHER_RESIDENCY_ID : RESIDENCY_ID);
+			assert.equal(after.value.body, expectBody);
+			assert.equal(after.value.name, expectName);
+			for (const name of ['indexed', 'changed'])
+				assert.equal((await query(['name'], [{ attribute: 'name', value: name }])).length, name === expectName ? 1 : 0);
+		});
+	}
+
+	it('keeps the replica when an older invalidation arrives', async () => {
+		const before = await replica();
+		await invalidate({ id: ID, name: 'stale' }, {}, -1);
+		const after = Records.primaryStore.getEntry(ID);
+		assert.ok(after.metadataFlags & REPLICA);
+		assert.equal(after.value.body, 'complete');
+		assert.equal(after.version, before.version);
+	});
+
+	it('demotes a replica back to its stub on eviction, keeping indexes, residency and history', async () => {
+		const entry = await replica();
+		const before = await history();
+		await Records.evict(ID, entry.value, entry.version);
+		const stub = Records.primaryStore.getEntry(ID);
+		assert.ok(stub.metadataFlags & INVALIDATED);
+		assert.ok(!(stub.metadataFlags & REPLICA));
+		assert.equal(stub.value.body, undefined);
+		assert.equal(stub.value.name, 'indexed');
+		assert.equal(stub.residencyId, RESIDENCY_ID);
+		assert.equal(stub.version, entry.version);
+		assert.equal(stub.expiresAt, undefined);
+		assert.deepEqual(await history(), before);
+		assert.deepEqual(await query(['id'], [{ attribute: 'name', value: 'indexed' }]), [{ id: ID }]);
+		calls = [];
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(calls, [ID], 'a demoted replica is fetched again');
+	});
+
+	it('releases a replica body’s blobs only after its demotion commits', async () => {
+		const file = createBlob(randomBytes(25000)); // above the inline size, so the body owns a file
+		response = { ...response, value: { id: ID, name: 'indexed', body: 'complete', file } };
+		const entry = await replica();
+		assert.ok(entry.metadataFlags & HAS_BLOBS);
+		const filePath = getFilePathForBlob(entry.value.file);
+		assert.ok(existsSync(filePath));
+		setDeletionDelay(0);
+		try {
+			await Records.evict(ID, entry.value, entry.version);
+			const stub = Records.primaryStore.getEntry(ID);
+			assert.ok(stub.metadataFlags & INVALIDATED);
+			assert.ok(!(stub.metadataFlags & HAS_BLOBS));
+			await waitFor(() => (existsSync(filePath) ? undefined : true), 'the demoted body’s blob file to be released');
+		} finally {
+			setDeletionDelay(undefined);
+		}
+	});
+
+	it('is swept back to a stub once its lifetime passes, without an audit entry', async () => {
+		Records.setTTLExpiration({ expiration: 0, eviction: 0, replicaExpiration: 0.001 });
+		const before = await history();
+		await replica();
+		const stub = await waitFor(() => {
+			const entry = Records.primaryStore.getEntry(ID);
+			return entry.metadataFlags & INVALIDATED ? entry : undefined;
+		}, 'the expiration sweep to demote the replica');
+		assert.equal(stub.value.body, undefined);
+		assert.equal(stub.residencyId, RESIDENCY_ID);
+		assert.deepEqual(await history(), before);
+	});
+
+	it('renews the deadline on a read hit once half the lifetime has passed, not on every read', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 2 });
+		const entry = await replica();
+		const first = deadlineOf(ID);
+		advanceClock(100); // a renewal now would move the deadline
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await sleep(50);
+		assert.equal(deadlineOf(ID), first, 'a fresh replica is not renewed');
+		advanceClock(1050);
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'the read hit to renew the deadline');
+		const current = Records.primaryStore.getEntry(ID);
+		assert.ok(current.metadataFlags & REPLICA);
+		assert.equal(current.version, entry.version);
+		assert.equal(current.expiresAt, undefined, 'a renewal never touches the row');
+		assert.deepEqual(calls, [ID], 'a renewal is a local write');
+	});
+
+	it('renews after the configured fraction of the lifetime, and never when it is 1', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 2, replicaRefreshFraction: 0.25 });
+		await replica();
+		const first = deadlineOf(ID);
+		advanceClock(700);
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'a quarter of the lifetime to renew');
+
+		Records.setTTLExpiration({ replicaExpiration: 2, replicaRefreshFraction: 1 });
+		const kept = Records.primaryStore.getEntry(ID);
+		await Records.evict(ID, kept.value, kept.version);
+		stored = [];
+		await replica();
+		const fixed = deadlineOf(ID);
+		advanceClock(1100);
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await sleep(100);
+		assert.equal(deadlineOf(ID), fixed, 'a fraction of 1 is a fixed lifetime');
+	});
+
+	it('keeps the blob file of a replica whose deadline was renewed', async function () {
+		Records.setTTLExpiration({ replicaExpiration: 2 });
+		const file = createBlob(randomBytes(25000));
+		response = { ...response, value: { id: ID, name: 'indexed', body: 'complete', file } };
+		const entry = await replica();
+		const first = deadlineOf(ID);
+		const filePath = getFilePathForBlob(entry.value.file);
+		assert.ok(existsSync(filePath));
+		setDeletionDelay(0);
+		try {
+			advanceClock(1100);
+			assert.equal((await Records.get(ID)).body, 'complete');
+			await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'the read hit to renew the deadline');
+			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & HAS_BLOBS);
+			await sleep(100);
+			assert.ok(existsSync(filePath), 'the renewal released the body’s own blob file');
+			assert.equal((await (await Records.get(ID)).file.arrayBuffer()).byteLength, 25000);
+		} finally {
+			setDeletionDelay(undefined);
+		}
+	});
+
+	it('removes a deadline entry whose key no longer holds a replica', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
+		await deadlines().put('ghost', Date.now() - 1);
+		await replica();
+		await waitFor(() => (deadlineOf('ghost') === undefined ? true : undefined), 'the sweep to drop the orphan entry');
+	});
+
+	it('gives a replica row without a deadline entry a lifetime on the first sweep after load', async () => {
+		const Repaired = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasRepaired',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+			replicaExpiration: 2,
+		});
+		Repaired.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = { key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: entry.version };
+					await Repaired._storeReplica(entry, {
+						...found,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					});
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Repaired.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Repaired.get(ID)).body, 'complete');
+		assert.ok(deadlineOf(ID, Repaired) > Date.now());
+		await deadlines(Repaired).remove(ID); // a crash between column-family flushes, or a copy without this store
+		assert.equal(deadlineOf(ID, Repaired), undefined);
+		const restored = await waitFor(() => deadlineOf(ID, Repaired), 'the first sweep to restore the lifetime');
+		assert.ok(restored > Date.now() && restored <= Date.now() + 2000);
+	});
+
+	it('drops the deadline store with its table', async () => {
+		const Dropped = table({
+			database: 'residencyReplicas',
+			table: 'ResidencyReplicasDropped',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+		});
+		Dropped.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = { key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: entry.version };
+					await Dropped._storeReplica(entry, {
+						...found,
+						originNode: server.hostname,
+						fullWriteHead: entry.version,
+					});
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Dropped.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Dropped.get(ID)).body, 'complete');
+		const catalogKey = `${Dropped.tableName}/@replicas`;
+		assert.ok(Dropped.dbisDB.getSync(catalogKey));
+		const rootStore = Dropped.primaryStore.rootStore;
+		const storeName = databases.storeNameFor(catalogKey, Dropped.dbisDB.getSync(`${Dropped.tableName}/`)?.generation);
+		if (rootStore.columns) assert.ok(rootStore.columns.includes(storeName));
+		await Dropped.dropTable();
+		assert.equal(Dropped.dbisDB.getSync(catalogKey), undefined, 'the catalog row goes with the table');
+		if (rootStore.columns) assert.ok(!rootStore.columns.includes(storeName), 'the column family goes with the table');
+	});
+
+	it('re-arms the sweep after replicas are disabled and enabled again', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
+		await replica();
+		await Records.closeMaintenance();
+		Records.setTTLExpiration({ expiration: 0, eviction: 0, replicaExpiration: 0 });
+		Records.resumeMaintenance();
+		advanceClock(250); // past the replica's deadline
+		await sleep(250); // five of the 50ms sweep intervals a 0.2s lifetime used
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & REPLICA, 'no sweep runs while replicas are disabled');
+		Records.setTTLExpiration({ replicaExpiration: 0.001 });
+		await waitFor(() => {
+			const entry = Records.primaryStore.getEntry(ID);
+			return entry.metadataFlags & INVALIDATED ? entry : undefined;
+		}, 'the re-armed sweep to demote the replica');
+	});
+
+	it('stands down after a complete empty sweep and wakes on the next replica', async () => {
+		const sweepArmed = () =>
+			Atomics.load(
+				new Int32Array(
+					Records.primaryStore.getUserSharedBuffer(`replica-sweep:${Records.tableId}`, new ArrayBuffer(8))
+				),
+				1
+			);
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
+		await replica();
+		assert.equal(sweepArmed(), 1);
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the first demotion'
+		);
+		await waitFor(() => (sweepArmed() === 0 ? true : undefined), 'the empty sweep to stand down');
+		stored = [];
+		await replica();
+		await waitFor(() => (sweepArmed() === 1 ? true : undefined), 'the new replica to wake the sweep');
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the woken sweep to demote the new replica'
+		);
+	});
+
+	it('stores nothing when replicaExpiration is zero', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0 });
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(stored, [false]);
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+	});
+
+	describe('keeps only an answer that is the stub’s own state', () => {
+		const ORIGIN = 'residency-replicas-origin';
+		let Counters, origin, answer, kept;
+		before(() => {
+			Counters = table({
+				database: 'residencyReplicas',
+				table: 'ResidencyReplicasCounters',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'count', type: 'Int', indexed: true },
+					{ name: 'views', type: 'Int' },
+					{ name: 'body', type: 'String' },
+				],
+				audit: true,
+			});
+			Counters.dbisDB.putSync([Symbol.for('residency_by_id'), RESIDENCY_ID], ['resident-a', 'resident-b']);
+			origin = getIdOfRemoteNode(ORIGIN, Counters.auditStore);
+			Counters.sourcedFrom(
+				class extends Resource {
+					static async load(entry) {
+						if (answer) kept.push(await Counters._storeReplica(entry, answer));
+						return answer;
+					}
+				},
+				{ intermediateSource: true }
+			);
+		});
+		beforeEach(() => {
+			Counters.setTTLExpiration({ replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000 });
+			answer = undefined;
+			kept = [];
+		});
+
+		function fromOrigin(version, write) {
+			const context = { source: {}, sourceApply: true, timestamp: version };
+			return transaction(context, async () => write(await Counters.getResource(ID, context, { ensureLoaded: false })));
+		}
+		const stubAt = (version, projection) =>
+			fromOrigin(version, (resource) =>
+				resource._writeInvalidate(ID, { id: ID, ...projection }, { residencyId: RESIDENCY_ID, version, nodeId: origin })
+			);
+		const patchAt = (version, patch) =>
+			fromOrigin(version, (resource) => {
+				resource._writeUpdate(ID, patch, false, { isNotification: true, version, nodeId: origin });
+				resource.save();
+			});
+		const add = (value) => ({ __op__: 'add', value });
+		const resident = (version, value) => ({
+			key: ID,
+			value: { id: ID, ...value },
+			version,
+			originNode: ORIGIN,
+			fullWriteHead: version,
+		});
+		async function countedAs(count) {
+			const ids = [];
+			for await (const record of Counters.search({
+				conditions: [{ attribute: 'count', value: count }],
+				select: ['id'],
+			}))
+				if (record.id === ID) ids.push(record.id);
+			return ids;
+		}
+
+		it('serves a newer answer uncached, so its own in-order add(1) folds once (harper#3640)', async () => {
+			const T1 = Date.now() - 60_000;
+			await stubAt(T1, { count: 1 });
+			answer = resident(T1 + 10, { count: 2, body: 'complete' });
+			assert.equal((await Counters.get(ID)).count, 2, 'the caller receives the newer record');
+			await patchAt(T1 + 10, { count: add(1) });
+			const stub = Counters.primaryStore.getEntry(ID);
+			assert.ok(stub.metadataFlags & INVALIDATED);
+			assert.equal(stub.value.count, 2);
+			assert.deepEqual(await countedAs(2), [ID]);
+			assert.deepEqual(await countedAs(3), []);
+			assert.deepEqual(kept, [false]);
+		});
+
+		it('serves uncached an answer lacking an out-of-order write the stub folded, so a hot key converges (harper#3642)', async () => {
+			Counters.setTTLExpiration({ replicaExpiration: 2 });
+			const T = Date.now() - 60_000;
+			await stubAt(T, { count: 1 });
+			await patchAt(T - 5, { views: add(1) });
+			answer = resident(T, { count: 1, views: 0, body: 'without P' });
+			assert.equal((await Counters.get(ID)).body, 'without P');
+			await patchAt(T - 5, { views: add(1) });
+			answer = resident(T, { count: 1, views: 1, body: 'with P' });
+			for (let read = 0; read < 3; read++) {
+				advanceClock(1100);
+				assert.equal((await Counters.get(ID)).body, 'with P');
+				await sleep(20);
+			}
+			assert.ok(Counters.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+			assert.deepEqual(kept, [false, false, false, false]);
+		});
+
+		it('serves uncached an answer carrying an out-of-order write not yet received here, so that write folds once', async () => {
+			const T = Date.now() - 60_000;
+			await stubAt(T, { count: 1 });
+			answer = resident(T, { count: 2, body: 'with Q' });
+			assert.equal((await Counters.get(ID)).count, 2);
+			await patchAt(T - 5, { count: add(1) });
+			assert.equal(Counters.primaryStore.getEntry(ID).value.count, 2);
+			assert.deepEqual(await countedAs(2), [ID]);
+			assert.deepEqual(kept, [false]);
+		});
+
+		it('serves uncached an answer lacking an in-order write the stub received, so the index keeps it', async () => {
+			const T = Date.now() - 60_000;
+			await stubAt(T - 10, { count: 0 });
+			await patchAt(T - 5, { count: add(1) });
+			await stubAt(T, { count: 1 });
+			answer = resident(T, { count: 0, body: 'without the add' });
+			assert.equal((await Counters.get(ID)).count, 0);
+			assert.deepEqual(await countedAs(1), [ID]);
+			assert.deepEqual(await countedAs(0), []);
+			assert.deepEqual(kept, [false]);
+		});
+
+		it('serves uncached a stub carrying audit refs, which keep deduplicating its writes', async () => {
+			await stubAt(Date.now() - 60_000, { count: 1 });
+			const explicit = Date.now() + 60_000;
+			await Counters.patch(ID, { count: add(1) }, { timestamp: explicit });
+			const stub = Counters.primaryStore.getEntry(ID);
+			assert.ok(stub.metadataFlags & INVALIDATED);
+			assert.equal(stub.additionalAuditRefs?.length, 1, 'premise: a head ref');
+			assert.equal(stub.receivedIdentityRefs?.length, 1, 'premise: a received identity');
+			answer = { ...resident(stub.version, { count: 2, body: 'complete' }), originNode: server.hostname };
+			assert.equal((await Counters.get(ID)).body, 'complete');
+			assert.deepEqual(kept, [false]);
+			const after = Counters.primaryStore.getEntry(ID);
+			assert.ok(after.metadataFlags & INVALIDATED);
+			for (const refs of ['additionalAuditRefs', 'receivedIdentityRefs']) assert.deepEqual(after[refs], stub[refs]);
+			await Counters.patch(ID, { count: add(1) }, { timestamp: explicit });
+			assert.equal(Counters.primaryStore.getEntry(ID).value.count, 2, 'a re-delivery is not folded again');
+		});
+	});
+});

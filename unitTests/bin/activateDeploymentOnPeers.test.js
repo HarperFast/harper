@@ -1,0 +1,378 @@
+'use strict';
+
+const assert = require('node:assert');
+const { randomUUID } = require('node:crypto');
+const { activateDeploymentOnPeers } = require('#src/bin/restart');
+const { getThisNodeName } = require('#src/server/nodeName');
+const { server: coreServer } = require('#src/server/Server');
+
+const DEPLOYMENT = '11111111-1111-1111-1111-111111111111';
+const ROW = '22222222-2222-2222-2222-222222222222';
+
+describe('activating a staged release on each peer in turn', () => {
+	let previousServer;
+	let sent;
+	let answers;
+
+	beforeEach(() => {
+		previousServer = global.server;
+		sent = [];
+		answers = {};
+		global.server = {
+			nodes: [{ name: getThisNodeName() }, { name: 'peer-a' }, { name: 'peer-b' }, { name: 'peer-c' }],
+			replication: {
+				monitorNodeCAs() {},
+				async sendOperationToNode(node, operation, options) {
+					sent.push({ node: node.name, operation, options });
+					const answer = answers[node.name] ?? { message: `Successfully deployed: web`, certification: 'certified' };
+					if (answer instanceof Error) throw answer;
+					return answer;
+				},
+			},
+		};
+	});
+	afterEach(() => {
+		global.server = previousServer;
+	});
+
+	const activation = (overrides = {}) => ({
+		project: 'web',
+		deployment_id: DEPLOYMENT,
+		deployment_row: ROW,
+		...overrides,
+	});
+
+	it('refuses an activation it cannot read', async () => {
+		for (const bad of [
+			undefined,
+			activation({ project: 42 }),
+			activation({ deployment_id: '../etc' }),
+			activation({ deployment_row: undefined }),
+			activation({ nodes: 'peer-a' }),
+			activation({ nodes: [1] }),
+		]) {
+			await assert.rejects(activateDeploymentOnPeers(bad), { statusCode: 400 }, JSON.stringify(bad));
+		}
+		assert.deepStrictEqual(sent, []);
+	});
+
+	it('activates every other node, one at a time, and reports what each certified', async () => {
+		let inFlight = 0;
+		const send = global.server.replication.sendOperationToNode;
+		global.server.replication.sendOperationToNode = async (...args) => {
+			assert.equal(++inFlight, 1, 'one peer at a time');
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			try {
+				return await send(...args);
+			} finally {
+				inFlight--;
+			}
+		};
+		const { activated } = await activateDeploymentOnPeers(activation());
+		assert.deepStrictEqual(
+			sent.map(({ node }) => node),
+			['peer-a', 'peer-b', 'peer-c']
+		);
+		assert.deepStrictEqual(sent[0].operation, {
+			operation: 'deploy_component',
+			project: 'web',
+			deployment_id: DEPLOYMENT,
+			_deploymentId: ROW,
+			restart: true,
+			replicated: false,
+		});
+		assert.ok(sent[0].options.timeoutMs > 0);
+		assert.deepStrictEqual(
+			activated.map(({ node, certification }) => ({ node, certification })),
+			['peer-a', 'peer-b', 'peer-c'].map((node) => ({ node, certification: 'certified' }))
+		);
+	});
+
+	it('loads the node list itself, which a job thread starts without', async () => {
+		const nodes = global.server.nodes;
+		global.server.nodes = [];
+		global.server.replication.monitorNodeCAs = () => {
+			// Replication fills server.nodes from hdb_nodes when something first subscribes to node updates.
+			global.server.nodes = nodes;
+		};
+		await activateDeploymentOnPeers(activation({ nodes: ['peer-a', 'peer-b'] }));
+		assert.deepStrictEqual(
+			sent.map(({ node }) => node),
+			['peer-a', 'peer-b']
+		);
+	});
+
+	it('has nothing to do on a node without peers, which has no replication to ask', async () => {
+		global.server = { replication: coreServer.replication };
+		assert.deepStrictEqual(await activateDeploymentOnPeers(activation()), { activated: [] });
+	});
+
+	it('fails rather than take a node list it could not load for an empty one', async () => {
+		global.server.nodes = [];
+		global.server.replication.monitorNodeCAs = () => {
+			throw new Error('hdb_nodes could not be read');
+		};
+		await assert.rejects(activateDeploymentOnPeers(activation()), /hdb_nodes could not be read/);
+		assert.deepStrictEqual(sent, []);
+	});
+
+	it('activates only the nodes it was given', async () => {
+		await activateDeploymentOnPeers(activation({ nodes: ['peer-b'] }));
+		assert.deepStrictEqual(
+			sent.map(({ node }) => node),
+			['peer-b']
+		);
+	});
+
+	it('fails naming a peer that staged the release but left the cluster before its turn', async () => {
+		await assert.rejects(activateDeploymentOnPeers(activation({ nodes: ['peer-b', 'peer-gone'] })), (error) => {
+			assert.match(error.message, /was not activated on 1 of 2 peer node\(s\): peer-gone \(it is no longer one/);
+			assert.deepStrictEqual(
+				error.http_resp_msg.activated.map(({ node, error: failure }) => ({ node, failed: !!failure })),
+				[
+					{ node: 'peer-b', failed: false },
+					{ node: 'peer-gone', failed: true },
+				]
+			);
+			return true;
+		});
+		assert.deepStrictEqual(
+			sent.map(({ node }) => node),
+			['peer-b']
+		);
+	});
+
+	it('fails, rather than succeed with nothing, when none of the peers it was given remain', async () => {
+		await assert.rejects(activateDeploymentOnPeers(activation({ nodes: ['peer-gone'] })), /peer-gone/);
+		assert.deepStrictEqual(sent, []);
+	});
+
+	it('visits every peer when one refuses, and fails naming each that did not take it', async () => {
+		answers['peer-a'] = new Error('web was not deployed on this node: release failed to load in its canary worker');
+		answers['peer-b'] = { value: { message: 'Successfully deployed: web', certification: 'certified' } };
+		await assert.rejects(activateDeploymentOnPeers(activation()), (error) => {
+			assert.match(error.message, /was not activated on 1 of 3 peer node\(s\): peer-a \(web was not deployed/);
+			assert.equal(error.http_resp_msg.error, error.message);
+			assert.deepStrictEqual(
+				error.http_resp_msg.activated.map(({ node, certification, error: failure }) => ({
+					node,
+					certification,
+					failed: !!failure,
+				})),
+				[
+					{ node: 'peer-a', certification: undefined, failed: true },
+					{ node: 'peer-b', certification: 'certified', failed: false },
+					{ node: 'peer-c', certification: 'certified', failed: false },
+				]
+			);
+			return true;
+		});
+		assert.equal(sent.length, 3, 'a refusal on one peer does not stop the others');
+	});
+});
+
+describe("recording each peer's activation on the deployment's row (harper#3060)", () => {
+	const { databases } = require('#src/resources/databases');
+	const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
+	const DEPLOYMENT_TABLE = SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
+	const { rolloutTiming } = require('#src/components/deploymentRecorder');
+	const writeSpacingMs = rolloutTiming.writeSpacingMs;
+	const retryDelayMs = rolloutTiming.retryDelayMs;
+	let previousServer;
+	let previousTable;
+	let rows;
+	let puts;
+	let answers;
+	// A fresh row each test: the recorder remembers per row that it has seen the origin's write.
+	let ROW;
+	let activation;
+
+	beforeEach(() => {
+		// The spacing between the job's writes, shortened so these tests do not each wait it out.
+		rolloutTiming.writeSpacingMs = 50;
+		rolloutTiming.retryDelayMs = retryDelayMs;
+		ROW = randomUUID();
+		activation = { project: 'web', deployment_id: DEPLOYMENT, deployment_row: ROW };
+		previousServer = global.server;
+		answers = {};
+		global.server = {
+			nodes: [{ name: getThisNodeName() }, { name: 'peer-a' }, { name: 'peer-b' }, { name: 'peer-c' }],
+			replication: {
+				monitorNodeCAs() {},
+				async sendOperationToNode(node) {
+					const answer = answers[node.name] ?? { message: 'Successfully deployed: web', certification: 'certified' };
+					if (answer instanceof Error) throw answer;
+					return answer;
+				},
+			},
+		};
+		rows = new Map();
+		puts = [];
+		if (!databases.system) databases.system = {};
+		previousTable = databases.system[DEPLOYMENT_TABLE];
+		databases.system[DEPLOYMENT_TABLE] = {
+			async get(id) {
+				return rows.get(id);
+			},
+			async put(row) {
+				puts.push({ ...structuredClone(row), at: Date.now() });
+				rows.set(row.deployment_id, row);
+			},
+		};
+	});
+	afterEach(() => {
+		rolloutTiming.writeSpacingMs = writeSpacingMs;
+		rolloutTiming.retryDelayMs = retryDelayMs;
+		global.server = previousServer;
+		if (databases.system) databases.system[DEPLOYMENT_TABLE] = previousTable;
+	});
+
+	const stagedRow = (status = 'rolling_out') => ({
+		deployment_id: ROW,
+		project: 'web',
+		status,
+		event_log: [],
+		peer_results: ['peer-a', 'peer-b', 'peer-c'].map((node) => ({ node, status: 'success', error: null })),
+	});
+
+	it('ends the record partial when the job fails before it can visit the peers, so no follower waits it out', async () => {
+		rows.set(ROW, stagedRow());
+		global.server.replication.monitorNodeCAs = () => {
+			throw new Error('hdb_nodes could not be read');
+		};
+		await assert.rejects(activateDeploymentOnPeers(activation), /hdb_nodes could not be read/);
+
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'partial');
+		assert.deepStrictEqual(row.error.nodes, ['peer-a', 'peer-b', 'peer-c']);
+		assert.match(row.error.message, /The activation job failed: hdb_nodes could not be read; not confirmed on: peer-a/);
+	});
+
+	it('ends the record partial, naming the node whose canary rejected the release, and keeps each staging outcome', async () => {
+		rows.set(ROW, stagedRow());
+		answers['peer-b'] = new Error('web was not deployed on this node: release failed to load in its canary worker');
+		await assert.rejects(activateDeploymentOnPeers(activation), /peer-b/);
+
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'partial');
+		assert.deepStrictEqual(row.error.nodes, ['peer-b']);
+		assert.match(row.error.message, /peer-b \(web was not deployed on this node/);
+		assert.deepStrictEqual(
+			row.peer_results.map(({ node, status, activation }) => ({
+				node,
+				status,
+				activated: activation.activated,
+				certification: activation.certification,
+			})),
+			[
+				{ node: 'peer-a', status: 'success', activated: true, certification: 'certified' },
+				{ node: 'peer-b', status: 'success', activated: false, certification: null },
+				{ node: 'peer-c', status: 'success', activated: true, certification: 'certified' },
+			]
+		);
+		assert.match(row.peer_results[1].activation.error, /canary worker/);
+		assert.deepStrictEqual(
+			row.event_log.map(({ event, data }) => `${event}:${data.node}`),
+			['peer_activation:peer-a', 'peer_activation:peer-b', 'peer_activation:peer-c']
+		);
+		assert.deepStrictEqual(
+			puts.map(({ status }) => status),
+			['rolling_out', 'rolling_out', 'partial'],
+			"the last peer's outcome rides the final write rather than landing just before it"
+		);
+	});
+
+	it('spaces its writes to the row when the last peer fails at once', async () => {
+		rows.set(ROW, { ...stagedRow(), completed_at: Date.now() });
+		global.server.nodes = [{ name: getThisNodeName() }, { name: 'peer-a' }, { name: 'peer-b' }];
+		answers['peer-b'] = new Error('connect ECONNREFUSED');
+		rolloutTiming.writeSpacingMs = 400;
+		await assert.rejects(activateDeploymentOnPeers(activation), /peer-b/);
+		assert.strictEqual(puts.length, 2);
+		assert.ok(puts[1].at - puts[0].at >= 390, `writes ${puts[1].at - puts[0].at}ms apart`);
+		assert.strictEqual(rows.get(ROW).status, 'partial');
+	});
+
+	it("carries a peer's outcome whose own write failed into the final write", async () => {
+		rows.set(ROW, stagedRow());
+		const table = databases.system[DEPLOYMENT_TABLE];
+		const put = table.put;
+		let failed = false;
+		table.put = async (row) => {
+			if (!failed && row.peer_results?.some((peer) => peer.activation)) {
+				failed = true;
+				throw new Error('disk full');
+			}
+			return put(row);
+		};
+		await activateDeploymentOnPeers(activation);
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'success');
+		assert.ok(row.peer_results.every(({ activation }) => activation?.activated));
+	});
+
+	it('fails the job, keeping every outcome, when the final write cannot land', async () => {
+		rows.set(ROW, stagedRow());
+		rolloutTiming.retryDelayMs = 1;
+		const table = databases.system[DEPLOYMENT_TABLE];
+		const put = table.put;
+		table.put = async (row) => {
+			if (row.status !== 'rolling_out') throw new Error('disk full');
+			return put(row);
+		};
+		await assert.rejects(activateDeploymentOnPeers(activation), (error) => {
+			assert.match(error.message, /disk full/);
+			assert.deepStrictEqual(
+				error.http_resp_msg.activated.map(({ node, error: failure }) => ({ node, failed: !!failure })),
+				['peer-a', 'peer-b', 'peer-c'].map((node) => ({ node, failed: false }))
+			);
+			return true;
+		});
+		assert.strictEqual(rows.get(ROW).status, 'rolling_out', 'not ended partial for activations that all took');
+	});
+
+	it('ends the record success once every node took the release', async () => {
+		rows.set(ROW, stagedRow());
+		await activateDeploymentOnPeers(activation);
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'success');
+		assert.strictEqual(row.error, undefined);
+		assert.ok(row.peer_results.every(({ activation }) => activation.activated));
+		assert.ok(typeof row.completed_at === 'number');
+	});
+
+	it("waits for the origin's own write of rolling_out before writing over the row", async () => {
+		rows.set(ROW, stagedRow('restarting'));
+		setTimeout(() => rows.set(ROW, stagedRow()), 300);
+		await activateDeploymentOnPeers(activation);
+		assert.strictEqual(rows.get(ROW).status, 'success');
+		assert.ok(puts.every((put) => put.status !== 'restarting'));
+	});
+
+	it('records outcomes on a row the origin ended some other way, and leaves its status', async () => {
+		rows.set(ROW, stagedRow('failed'));
+		await activateDeploymentOnPeers(activation);
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'failed');
+		assert.strictEqual(row.peer_results.filter(({ activation }) => activation?.activated).length, 3);
+	});
+
+	it("ends a row the origin has not written yet, for the origin's late write to keep", async () => {
+		const { finishRollout } = require('#src/components/deploymentRecorder');
+		rows.set(ROW, stagedRow());
+		await activateDeploymentOnPeers(activation);
+		rows.set(ROW, { ...stagedRow('restarting'), peer_results: [] });
+		await finishRollout(ROW, [{ node: 'peer-a', error: 'rejected' }], [{ node: 'peer-a', error: 'rejected' }]);
+		assert.strictEqual(rows.get(ROW).status, 'partial');
+		assert.deepStrictEqual(rows.get(ROW).error.nodes, ['peer-a']);
+	});
+
+	it('names a node that left the cluster before its turn on the record too', async () => {
+		rows.set(ROW, stagedRow());
+		await assert.rejects(activateDeploymentOnPeers({ ...activation, nodes: ['peer-a', 'peer-gone'] }));
+		const row = rows.get(ROW);
+		assert.strictEqual(row.status, 'partial');
+		assert.deepStrictEqual(row.error.nodes, ['peer-gone']);
+		assert.strictEqual(row.peer_results.find(({ node }) => node === 'peer-gone').activation.activated, false);
+	});
+});

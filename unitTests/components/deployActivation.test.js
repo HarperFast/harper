@@ -3,15 +3,19 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { existsSync } = require('node:fs');
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const os = require('node:os');
 const { Readable } = require('node:stream');
+const { setTimeout: sleep } = require('node:timers/promises');
+const { waitFor } = require('../waitFor.js');
+const harperLogger = require('#js/utility/logging/harper_logger');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const {
 	activateCandidateApplication,
+	markCandidateComplete,
 	prepareApplication,
 	recoverInterruptedActivations,
 	recoverInterruptedComponentExtraction,
@@ -22,6 +26,8 @@ const {
 	Application,
 } = require('#src/components/Application');
 const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
+const { getConfigFilePath } = require('#src/config/configUtils');
+const { preserveRootConfig, rootConfigEntry, setRootConfigEntry } = require('../rootConfigFixture.js');
 
 const IN_PROGRESS = '.in-progress-';
 
@@ -33,6 +39,18 @@ async function writeTree(dirPath, marker) {
 	await fs.mkdir(dirPath, { recursive: true });
 	await fs.writeFile(path.join(dirPath, 'index.js'), marker);
 	return dirPath;
+}
+
+/**
+ * A candidate tree AND its certification — the state `activateCandidateApplication` is entered in.
+ * Certification belongs to the caller now that a staged build certifies once and is activated later, so a
+ * test that swaps an uncertified tree would exercise a sequence production never produces.
+ */
+async function writeCertifiedCandidate(liveDirPath, deploymentId, marker) {
+	const candidate = candidateApplicationPath(liveDirPath, deploymentId);
+	await writeTree(candidate, marker);
+	await markCandidateComplete(liveDirPath, deploymentId, path.basename(liveDirPath));
+	return candidate;
 }
 
 /** Build the on-disk state a crash at a given boundary would leave, without running a deploy. */
@@ -124,6 +142,63 @@ describe('interrupted activation recovery', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('returns a STAGED artifact to dormant instead of discarding it, in that same state', async () => {
+		// Same on-disk shape as the case below — live present, candidate present, no rollback record — but
+		// the deployment carries an artifact descriptor, so it is a build somebody staged deliberately and
+		// whose payload may already have been reclaimed. Deleting it would leave nothing to activate.
+		const root = await newRoot('preb1-staged');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: true,
+		});
+		await fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component: 'web', rootConfig: null, installationIsOpaque: false, isolated: false })
+		);
+
+		await recoverInterruptedActivations(root);
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n', 'the live tree is untouched');
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'the artifact survives');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir, '.activation.json')),
+			false,
+			'and is dormant again, so deployment_id can still activate it'
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('clears an earlier failed recovery verdict when it returns a staged artifact to dormant', async () => {
+		// Returning the artifact to dormant while a stale `.unsettled` survives returns it to a state nothing
+		// can use: every worker fails the component closed on the marker, an activation refuses the id, and
+		// the next retention pass deletes the build as a stale unsettled one.
+		const root = await newRoot('preb1-staged-unsettled');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: true,
+		});
+		await fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component: 'web', rootConfig: null, installationIsOpaque: false, isolated: false })
+		);
+		await fs.writeFile(path.join(deploymentDir, '.unsettled'), 'an earlier pass could not settle this');
+
+		await recoverInterruptedActivations(root);
+
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'the artifact survives');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir, '.unsettled')),
+			false,
+			'and carries no verdict that would have it refused and then pruned'
+		);
+		assert.strictEqual(existsSync(path.join(deploymentDir, '.activation.json')), false);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('discards a candidate that never activated, leaving the live tree', async () => {
 		const root = await newRoot('preb1');
 		await stageState(root, 'web', 'd1', { live: 'LIVE\n', candidate: 'CANDIDATE\n', complete: true, journal: true });
@@ -184,7 +259,7 @@ describe('interrupted activation recovery', () => {
 		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 1);
-		assert.match(failures.get('web').message, /version 99, expected 1/);
+		assert.match(failures.get('web').message, /version 99, expected 1 or 2/);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -268,6 +343,251 @@ describe('interrupted activation recovery', () => {
 
 		assert.deepStrictEqual([...failures.keys()], ['broken'], 'only the affected component is reported');
 		assert.strictEqual(await readLive(root, 'healthy'), 'CANDIDATE\n', 'the healthy sibling still settles');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+describe('the root-config effect of an interrupted activation', () => {
+	// Every roll forward applies the journal's effect: a crash past the first rename would otherwise bring the
+	// certified build up under the previous release's config, isolation included.
+	preserveRootConfig();
+
+	const journalV2 = (component, id, rootConfig) => JSON.stringify({ v: 2, component, candidateId: id, rootConfig });
+	const describeArtifact = (deploymentDir, component, rootConfig, isolated = false) =>
+		fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component, rootConfig, installationIsOpaque: false, isolated })
+		);
+
+	it('publishes the journaled entry when it rolls forward a crash between the two renames', async () => {
+		const root = await newRoot('effect-b1');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2', isolated: true } }),
+		});
+
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false, 'settled');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('publishes it when only the tail after the commit was lost', async () => {
+		const root = await newRoot('effect-tail');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		await stageState(root, 'web', 'd1', {
+			live: 'CANDIDATE\n',
+			aside: 'LIVE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2' } }),
+		});
+
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('removes the registry provenance a payload activation journaled, keeping the rest of the entry', async () => {
+		const root = await newRoot('effect-unset');
+		setRootConfigEntry('web', { package: 'npm:web@1', isolated: true });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'unset-package' }),
+		});
+
+		await recoverInterruptedActivations(root);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { isolated: true });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('publishes the routing a payload activation journaled (harper#3043)', async () => {
+		const root = await newRoot('effect-routing');
+		setRootConfigEntry('web', { package: 'npm:web@1', host: 'web.example.com' });
+		const routing = { host: 'pr-12.app.example.com', urlPath: null, isolated: true, branchedDatabases: ['data'] };
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'unset-package', routing }),
+		});
+
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), {
+			host: 'pr-12.app.example.com',
+			isolated: true,
+			branchedDatabases: ['data'],
+		});
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('refuses to roll forward a journal whose routing could not be published', async () => {
+		const root = await newRoot('effect-bad-routing');
+		setRootConfigEntry('web', { host: 'web.example.com' });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'unset-package', routing: { branchedDatabases: ['system'] } }),
+		});
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.match(failures.get('web')?.message ?? '', /cannot be published/);
+		assert.deepStrictEqual(rootConfigEntry('web'), { host: 'web.example.com' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('leaves config alone when it rolls back an activation that never committed', async () => {
+		const root = await newRoot('effect-rollback');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: false,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2' } }),
+		});
+
+		await recoverInterruptedActivations(root);
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('leaves config alone when it returns a staged artifact to dormant', async () => {
+		const root = await newRoot('effect-dormant');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2' } }),
+		});
+		await describeArtifact(deploymentDir, 'web', { package: 'npm:web@2' });
+
+		await recoverInterruptedActivations(root);
+
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'dormant again');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	describe('a journal written before the effect was journaled', () => {
+		// A version-1 activation of a STAGED artifact published its entry between the two renames, so a crash in
+		// that window is exactly the one whose entry its descriptor still records. Treating every version-1
+		// journal as owning nothing would carry the isolation loss this step closes across the upgrade.
+		it("replays a staged package artifact's recorded entry, isolation included", async () => {
+			const root = await newRoot('v1-staged-package');
+			setRootConfigEntry('web', { package: 'npm:web@1' });
+			const { deploymentDir } = await stageState(root, 'web', 'd1', {
+				aside: 'LIVE\n',
+				candidate: 'CANDIDATE\n',
+				complete: true,
+				journal: true,
+			});
+			await describeArtifact(deploymentDir, 'web', { package: 'npm:web@2', isolated: true }, true);
+
+			assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+			assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it("removes a staged payload artifact's stale registry provenance", async () => {
+			const root = await newRoot('v1-staged-payload');
+			setRootConfigEntry('web', { package: 'npm:web@1', isolated: true });
+			const { deploymentDir } = await stageState(root, 'web', 'd1', {
+				aside: 'LIVE\n',
+				candidate: 'CANDIDATE\n',
+				complete: true,
+				journal: true,
+			});
+			await describeArtifact(deploymentDir, 'web', null);
+
+			await recoverInterruptedActivations(root);
+
+			assert.deepStrictEqual(rootConfigEntry('web'), { isolated: true });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('publishes nothing for an immediate deploy, which published before it built', async () => {
+			const root = await newRoot('v1-immediate');
+			setRootConfigEntry('web', { package: 'npm:web@2' });
+			await stageState(root, 'web', 'd1', { aside: 'LIVE\n', candidate: 'CANDIDATE\n', complete: true, journal: true });
+
+			assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+			assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
+			assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2' });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+	});
+
+	for (const [title, rootConfig, signature] of [
+		['names no effect', undefined, /root-config effect/],
+		['names an effect nothing applies', { kind: 'bogus' }, /root-config effect/],
+		['would remove the whole entry', { kind: 'remove' }, /root-config effect/],
+		[
+			'records an entry that is not an application config',
+			{ kind: 'set', entry: { package: 42 } },
+			/cannot be published/,
+		],
+	]) {
+		it(`fails closed, touching nothing, on a journal that ${title}`, async () => {
+			const root = await newRoot('effect-malformed');
+			setRootConfigEntry('web', { package: 'npm:web@1' });
+			const { deploymentDir } = await stageState(root, 'web', 'd1', {
+				aside: 'LIVE\n',
+				candidate: 'CANDIDATE\n',
+				complete: true,
+				journal: journalV2('web', 'd1', rootConfig),
+			});
+
+			const failures = await recoverInterruptedActivations(root);
+
+			assert.match(failures.get('web')?.message ?? '', signature);
+			assert.ok(existsSync(path.join(deploymentDir, 'web')), 'the candidate was not moved');
+			assert.strictEqual(existsSync(path.join(root, 'web')), false, 'and nothing was made live');
+			assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+	}
+
+	it('keeps the journal and fails the component closed when the entry cannot be published, then settles once it can', async () => {
+		const root = await newRoot('effect-unpublishable');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2', isolated: true } }),
+		});
+		const intact = readFileSync(getConfigFilePath(), 'utf8');
+		writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.match(failures.get('web')?.message ?? '', /does not parse/);
+		assert.ok(existsSync(path.join(deploymentDir, '.activation.json')), 'the journal still owes the effect');
+		assert.ok(
+			existsSync(path.join(deploymentDir, '.unsettled')),
+			'and workers fail it closed rather than run it under the wrong isolation'
+		);
+
+		writeFileSync(getConfigFilePath(), intact);
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+		assert.strictEqual(existsSync(deploymentDir), false, 'settled, verdict and all');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });
@@ -450,7 +770,7 @@ describe('activation transaction', () => {
 	it('swaps the candidate in and clears its own records', async () => {
 		const root = await newRoot('happy');
 		await writeTree(path.join(root, 'web'), 'LIVE\n');
-		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(path.join(root, 'web'), 'd1', 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
@@ -476,6 +796,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		const vendored = path.join(candidate, 'vendor', 'probe');
 		await fs.mkdir(vendored, { recursive: true });
 		await fs.writeFile(path.join(vendored, 'index.js'), 'module.exports = 1;\n');
@@ -509,6 +830,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		// A real directory that merely SHARES a prefix with the candidate path.
 		const sibling = `${candidate}-shared`;
 		await fs.mkdir(sibling, { recursive: true });
@@ -542,9 +864,267 @@ describe('activation transaction', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('refuses, before it writes anything, a root-config effect recovery could not replay', async () => {
+		// The journal is written once and read by whichever settlement finds it, so an entry recovery would refuse
+		// to read must be refused here — or the component is failed closed on every start with no way to settle.
+		const root = await newRoot('unjournalable');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+
+		for (const [rootConfig, signature] of [
+			[{ kind: 'set', entry: { package: 42 } }, /package/],
+			[{ kind: 'remove' }, /never removes its root-config entry/],
+		]) {
+			await assert.rejects(() => activateCandidateApplication(app, 'd1', { rootConfig }), signature);
+		}
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
+		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.activation.json')), false);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	// A Windows sharing lock cannot be produced on POSIX, so these use the one portable way to make a
+	// rename fail and then stop failing: the write permission on its parent directory. Not as root, where
+	// permissions are not enforced.
+	const transientRenameTest = (title, body) =>
+		it(title, async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+			await body();
+		});
+
+	// The activation journal is the last thing written into the deployment directory before the renames
+	// start, and `writeControlFileDurably` removes its temp file right after. Both have to be done before
+	// that directory can be locked, or the lock blocks the journal write instead of the swap.
+	const journalSettled = (deploymentDir) => async () => {
+		const entries = await fs.readdir(deploymentDir).catch(() => []);
+		return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+	};
+
+	/**
+	 * Park the activation in the move-aside's retry (the components root is locked before it gets there),
+	 * then hand the swap a lock of its own and let the move-aside through. The hold covers the microseconds
+	 * between the journal landing and the first rename; the retry counts the callers assert are what turn a
+	 * miss into a failure rather than a silent pass.
+	 */
+	async function lockSwapWhileB1Retries(root, deploymentDir) {
+		await waitFor(journalSettled(deploymentDir), { timeout: 20000, interval: 5, message: 'no activation journal' });
+		await sleep(150);
+		await fs.chmod(deploymentDir, 0o500);
+		await fs.chmod(root, 0o700);
+	}
+
+	// A retry is only provable by the line the helper logs when one happened; an elapsed-time assertion is
+	// satisfied by a slow runner that never retried at all.
+	async function countingRetries(body) {
+		const retried = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => {
+			if (String(args[0]).includes('only on attempt')) retried.push(String(args[0]));
+		};
+		try {
+			return await body(retried);
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
+	}
+
+	transientRenameTest('retries a transient failure moving the live tree aside', async () => {
+		const root = await newRoot('b1-retry');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
+		// Pre-created, so a read-only root blocks B1's rename rather than the staging mkdir ahead of it.
+		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+
+		await fs.chmod(root, 0o500);
+		const retried = await countingRetries(async (retries) => {
+			const release = (async () => {
+				await waitFor(journalSettled(deployment), { timeout: 20000, interval: 5, message: 'no activation journal' });
+				await sleep(150);
+				await fs.chmod(root, 0o700);
+			})();
+			try {
+				await activateCandidateApplication(app, 'd1');
+			} finally {
+				await release.catch(() => {});
+				await fs.chmod(root, 0o700).catch(() => {});
+			}
+			return retries;
+		});
+
+		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the holder released and the deploy landed');
+		assert.strictEqual(retried.length, 1, `exactly the move-aside retried; saw ${JSON.stringify(retried)}`);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	transientRenameTest('retries a transient failure moving the candidate into place', async () => {
+		// A first-ever deploy, so B1 writes a record instead of renaming and the blocked rename is B2 —
+		// the one the Windows CI failure names.
+		const root = await newRoot('b2-retry');
+		const live = path.join(root, 'web');
+		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
+		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+
+		await fs.chmod(root, 0o500);
+		const retried = await countingRetries(async (retries) => {
+			const release = (async () => {
+				await waitFor(journalSettled(deployment), { timeout: 20000, interval: 5, message: 'no activation journal' });
+				await sleep(150);
+				await fs.chmod(root, 0o700);
+			})();
+			try {
+				await activateCandidateApplication(app, 'd1');
+			} finally {
+				await release.catch(() => {});
+				await fs.chmod(root, 0o700).catch(() => {});
+			}
+			return retries;
+		});
+
+		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
+		assert.strictEqual(app.isNewComponent, true);
+		assert.strictEqual(retried.length, 1, `exactly the swap retried; saw ${JSON.stringify(retried)}`);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	transientRenameTest(
+		'completes the swap after putting the previous version back and taking it away again',
+		async () => {
+			// A redeploy, so the swap's backoff runs the full put-back cycle rather than sleeping in place.
+			const root = await newRoot('b2-cycle');
+			const live = path.join(root, 'web');
+			await writeTree(live, 'LIVE\n');
+			const candidate = candidateApplicationPath(live, 'd1');
+			await writeTree(candidate, 'CANDIDATE\n');
+			await markCandidateComplete(live, 'd1', 'web');
+			const deployment = path.dirname(candidate);
+			await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
+			const app = new Application({ name: 'web' });
+			app.dirPath = live;
+
+			await fs.chmod(root, 0o500);
+			const retried = await countingRetries(async (retries) => {
+				const release = (async () => {
+					await lockSwapWhileB1Retries(root, deployment);
+					await sleep(400);
+					await fs.chmod(deployment, 0o700);
+				})();
+				try {
+					await activateCandidateApplication(app, 'd1');
+				} finally {
+					await release.catch(() => {});
+					await fs.chmod(deployment, 0o700).catch(() => {});
+					await fs.chmod(root, 0o700).catch(() => {});
+				}
+				return retries;
+			});
+
+			// Both stages retried: the move-aside against the locked root, then the swap against the locked
+			// deployment directory — the only path that runs the put-back cycle to a successful attempt.
+			assert.strictEqual(retried.length, 2, `move-aside and swap both retried; saw ${JSON.stringify(retried)}`);
+			assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the candidate is live');
+			assert.strictEqual(
+				existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
+				false,
+				'and the record the put-back cycle kept moving is still the one that gets retired and swept'
+			);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	);
+
+	transientRenameTest('keeps the previous version in place while it retries the swap', async () => {
+		const root = await newRoot('swap-availability');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		const candidate = candidateApplicationPath(live, 'd1');
+		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
+		const deployment = path.dirname(candidate);
+		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+
+		await fs.chmod(root, 0o500);
+		const samples = [];
+		let swapLocked = false;
+		let done = false;
+		const release = (async () => {
+			await lockSwapWhileB1Retries(root, deployment);
+			swapLocked = true;
+		})();
+		const sampler = (async () => {
+			while (!swapLocked && !done) await sleep(5);
+			while (!done) {
+				samples.push(await fs.readFile(path.join(live, 'index.js'), 'utf8').catch((error) => error.code));
+				await sleep(25);
+			}
+		})();
+
+		try {
+			await assert.rejects(() => activateCandidateApplication(app, 'd1'), { code: 'EACCES' });
+		} finally {
+			done = true;
+			await release.catch(() => {});
+			await sampler;
+			await fs.chmod(deployment, 0o700).catch(() => {});
+			await fs.chmod(root, 0o700).catch(() => {});
+		}
+
+		const readable = samples.filter((sample) => sample === 'LIVE\n');
+		assert.ok(samples.length > 20, `expected to sample the retry window, got ${samples.length} samples`);
+		assert.deepStrictEqual(
+			[...new Set(samples.filter((sample) => sample !== 'ENOENT'))],
+			['LIVE\n'],
+			'a readable live path during the retry is always the previous release, never a partial tree'
+		);
+		// Each attempt still moves the tree aside for the rename itself, and the directory fsyncs around it
+		// land inside that window, so misses scale with disk latency. The threshold only has to separate
+		// this from retrying in place, which reads zero.
+		assert.ok(
+			readable.length > samples.length * 0.5,
+			`the previous version should be in place for most of the retry window; ${readable.length}/${samples.length} reads found it`
+		);
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n', 'and it is what is live once the deploy gives up');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	// Opportunistic: it passes whether or not Windows refuses a rename with a handle open inside the tree
+	// being moved. What it establishes is that the activation completes either way.
+	it('activates with a file handle open inside the candidate', async function () {
+		if (process.platform !== 'win32') return this.skip();
+		const root = await newRoot('win-handle');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		const candidate = candidateApplicationPath(live, 'd1');
+		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+
+		const handle = await fs.open(path.join(candidate, 'index.js'), 'r');
+		const release = sleep(200).then(() => handle.close());
+		try {
+			await activateCandidateApplication(app, 'd1');
+		} finally {
+			await release.catch(() => handle.close().catch(() => {}));
+		}
+
+		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('activates a first-ever deploy, where there is no previous tree to move aside', async () => {
 		const root = await newRoot('firstever');
-		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(path.join(root, 'web'), 'd1', 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 

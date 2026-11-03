@@ -5,11 +5,12 @@
  * centralized management of component health status.
  */
 
-import { deployValidationStatusSink } from '../../server/serverHelpers/deployValidationState.ts';
 import { ComponentStatus } from './ComponentStatus.ts';
 import {
 	type ComponentStatusLevel,
+	type ComponentStatusSource,
 	COMPONENT_STATUS_LEVELS,
+	STATUS_PRIORITY,
 	type AggregatedComponentStatus,
 	type ComponentApplicationStatus,
 } from './types.ts';
@@ -25,37 +26,6 @@ export type ComponentStatusMap = Map<string, ComponentStatus>;
  * Component Status Registry Class
  * Provides a centralized registry for managing component health status
  */
-/**
- * A status copy handed to a validation must share nothing mutable with the live entry. `Error` is reachable
- * through the public `statusForComponent(...).get()` path, so candidate code could otherwise edit
- * `message`, `cause` or a custom field on the serving component's own error object. Own enumerable
- * properties are carried across; `cause` is flattened to a message, because an error graph of unknown depth
- * is not worth cloning to hand a throwaway load its own read.
- */
-function detachError(error: Error | string | undefined): Error | string | undefined {
-	if (!(error instanceof Error)) return error;
-	const detached = new Error(error.message);
-	detached.name = error.name;
-	detached.stack = error.stack;
-	for (const [key, value] of Object.entries(error)) {
-		if (key === 'cause') continue;
-		// Detached too where it can be: copying an object property by reference would leave the candidate a
-		// mutable handle into the live error after all. Anything unclonable (a function, a class instance) is
-		// replaced by its string form rather than shared.
-		let detachedValue: unknown;
-		try {
-			detachedValue = structuredClone(value);
-		} catch {
-			detachedValue = typeof value === 'object' && value !== null ? String(value) : value;
-		}
-		(detached as unknown as Record<string, unknown>)[key] = detachedValue;
-	}
-	if (error.cause !== undefined) {
-		detached.cause = error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : error.cause;
-	}
-	return detached;
-}
-
 export class ComponentStatusRegistry {
 	private statusMap: ComponentStatusMap = new Map();
 
@@ -75,7 +45,8 @@ export class ComponentStatusRegistry {
 		componentName: string,
 		status: ComponentStatusLevel,
 		message?: string,
-		error?: Error | string
+		error?: Error | string,
+		source?: ComponentStatusSource
 	): void {
 		if (!componentName || typeof componentName !== 'string') {
 			throw new ComponentStatusOperationError(
@@ -93,40 +64,30 @@ export class ComponentStatusRegistry {
 			);
 		}
 
-		// A deploy's pre-flight validation loads the CANDIDATE's code under the real component's name, so its
-		// writes would land on the live component. They go to the validation's own throwaway map instead —
-		// which is why this cannot simply be reverted afterwards: the live component keeps serving through
-		// that window, and `statusForComponent()` is a public API its own code may call at any time, so
-		// reverting would silently discard a genuine report from it.
-		const sink = deployValidationStatusSink();
-		if (sink) {
-			sink.set(componentName, new ComponentStatus(status, message, error));
-			return;
+		const sanitizedMessage = typeof message === 'string' ? redactUrlCredentials(message) : message;
+		const sanitizedError = typeof error === 'string' ? redactUrlCredentials(error) : error;
+		const existing = this.statusMap.get(componentName);
+		if (existing && existing.status === status) {
+			existing.lastChecked = new Date();
+			existing.message = sanitizedMessage;
+			existing.error = sanitizedError;
+			if (source !== undefined) existing.source = source;
+			existing.occurrenceCount++;
+		} else {
+			const next = new ComponentStatus(status, sanitizedMessage, sanitizedError, source);
+			if (existing?.loadedAt) next.loadedAt = existing.loadedAt;
+			this.statusMap.set(componentName, next);
 		}
-		this.statusMap.set(componentName, new ComponentStatus(status, message, error));
+	}
+
+	private markLoadEnded(componentName: string): void {
+		this.statusMap.get(componentName)!.loadedAt = new Date();
 	}
 
 	/**
 	 * Get the current status of a component
 	 */
 	public getStatus(componentName: string): ComponentStatus | undefined {
-		// Inside a validation the candidate reads its OWN writes, and never the live object: the returned
-		// `ComponentStatus` is mutable, so handing back the live one would let candidate code edit the
-		// serving component's status in place and bypass the diversion entirely. A component the candidate
-		// has not written yet is copied into the sink on first read for the same reason.
-		const sink = deployValidationStatusSink();
-		if (sink) {
-			const diverted = sink.get(componentName);
-			if (diverted) return diverted;
-			const live = this.statusMap.get(componentName);
-			if (!live) return undefined;
-			const copy = new ComponentStatus(live.status, live.message, detachError(live.error));
-			// A new Date, not the live one: `Date` is mutable, so sharing it would let candidate code reach
-			// back into the serving component's status through the copy.
-			copy.lastChecked = new Date(live.lastChecked);
-			sink.set(componentName, copy);
-			return copy;
-		}
 		return this.statusMap.get(componentName);
 	}
 
@@ -174,6 +135,7 @@ export class ComponentStatusRegistry {
 	 */
 	public markLoaded(componentName: string, message?: string): void {
 		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.HEALTHY, message || 'Component loaded successfully');
+		this.markLoadEnded(componentName);
 	}
 
 	/**
@@ -181,6 +143,7 @@ export class ComponentStatusRegistry {
 	 */
 	public markFailed(componentName: string, error: Error | string, message?: string): void {
 		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error);
+		this.markLoadEnded(componentName);
 	}
 
 	/**
@@ -229,7 +192,6 @@ export class ComponentStatusRegistry {
 	/**
 	 * Get aggregated status for a specific component and all its sub-components
 	 * This method handles both exact matches and sub-component aggregation
-	 *
 	 * @param componentName - The component name to look up (e.g., "application-template", "http")
 	 * @param consolidatedStatuses - Pre-fetched consolidated statuses from all threads (optional, will fetch if not provided)
 	 * @returns Aggregated status information for the component
@@ -269,35 +231,32 @@ export class ComponentStatusRegistry {
 			};
 		}
 
-		// Aggregate all statuses
-		const hasErrors = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.ERROR);
-		const hasLoading = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.LOADING);
-
-		const overallStatus = hasErrors
-			? COMPONENT_STATUS_LEVELS.ERROR
-			: hasLoading
-				? COMPONENT_STATUS_LEVELS.LOADING
-				: COMPONENT_STATUS_LEVELS.HEALTHY;
+		const overallStatus =
+			STATUS_PRIORITY.find((level) => allStatuses.some((s) => s.status === level)) ?? COMPONENT_STATUS_LEVELS.UNKNOWN;
 
 		// Show details if anything is not healthy
 		let overallMessage = 'All components loaded successfully';
-		const details: Record<string, { status: ComponentStatusLevel; message?: string }> = {};
+		const details: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }> = {};
 
-		if (hasErrors || hasLoading) {
-			const problemStatuses = allStatuses.filter(
-				(s) => s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
-			);
-			overallMessage = problemStatuses.map((s) => `${s.key}: ${s.latestMessage || s.status}`).join('; ');
-
-			// Include details for debugging
+		if (overallStatus !== COMPONENT_STATUS_LEVELS.HEALTHY) {
+			const messages: string[] = [];
 			for (const status of allStatuses) {
-				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
-					details[status.key] = {
-						status: status.status,
-						message: status.latestMessage,
-					};
-				}
+				if (status.status === COMPONENT_STATUS_LEVELS.HEALTHY) continue;
+				const errorMessage = serializeStatusError(status.error);
+				const message = formatProblemMessage(status.latestMessage, errorMessage) || status.status;
+				messages.push(`${status.key}: ${message}`);
+				details[status.key] = {
+					status: status.status,
+					message,
+					...(errorMessage !== undefined && { error: errorMessage }),
+				};
 			}
+			overallMessage = messages.join('; ');
+		}
+
+		let loadedAt: number | undefined;
+		for (const status of allStatuses) {
+			if (status.loadedAt !== undefined) loadedAt = Math.max(loadedAt ?? 0, status.loadedAt);
 		}
 
 		return {
@@ -305,6 +264,90 @@ export class ComponentStatusRegistry {
 			message: overallMessage,
 			...(Object.keys(details).length > 0 && { details }),
 			lastChecked: allStatuses[0]?.lastChecked || { workers: {} },
+			...(loadedAt !== undefined && { loadedAt }),
 		};
 	}
+}
+
+// A raw `/ ? #` in a password is indistinguishable from a path delimiter, so redact through the last `@` in the
+// token. The regex consumes the whole token and the replacer finds the `@`, keeping the scan linear.
+const CREDENTIAL_URL_TOKEN_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)\S+/gi;
+const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
+const LOADER_DIRECTORY_FAILURE_MESSAGE = /^Could not load \S+$/;
+
+export function redactUrlCredentials(text: string): string {
+	return text.replace(CREDENTIAL_URL_TOKEN_PATTERN, (token) => {
+		const at = token.lastIndexOf('@');
+		return at < 0 ? token : `[REDACTED]${token.slice(at)}`;
+	});
+}
+
+/**
+ * Format a component status error into a single wire-safe diagnostic string.
+ *
+ * Deliberate exposure decision: `get_status` and `get_components` are operator
+ * health/diagnostic operations (super_user by default, or explicitly granted via
+ * a role's `operations` allowlist) that intentionally surface component failure
+ * causes so operators can diagnose broken deployments without log access. Only
+ * the error class name and message are rendered (never stack traces or arbitrary
+ * enumerable properties), and embedded URL userinfo credentials (`scheme://user:pass@host`)
+ * are redacted in both status messages (`setStatus`) and serialized errors before
+ * text leaves the status registry. Redaction runs through the last `@` in the URL token, so an
+ * `@` later in a path or query also replaces the host.
+ */
+export function serializeStatusError(error: unknown): string | undefined {
+	if (error === undefined || error === null) return undefined;
+	if (typeof error === 'string') return redactUrlCredentials(error);
+	try {
+		if (typeof error === 'object') {
+			const message = (error as { message?: unknown }).message;
+			if (typeof message === 'string') {
+				const rawName = (error as { name?: unknown }).name;
+				const ctorName = (error as { constructor?: { name?: unknown } }).constructor?.name;
+				const errorName =
+					typeof rawName === 'string' && rawName.length > 0 && rawName !== 'Error'
+						? rawName
+						: typeof ctorName === 'string' && ctorName.length > 0 && ctorName !== 'Object'
+							? ctorName
+							: typeof rawName === 'string' && rawName.length > 0
+								? rawName
+								: undefined;
+				if (!message) {
+					return errorName || 'Error';
+				}
+				const rendered =
+					errorName && errorName !== 'Error' && !message.startsWith(`${errorName}:`)
+						? `${errorName}: ${message}`
+						: message;
+				return redactUrlCredentials(rendered);
+			}
+		}
+		return redactUrlCredentials(String(error));
+	} catch {
+		try {
+			return Object.prototype.toString.call(error);
+		} catch {
+			return '[Unrenderable Object]';
+		}
+	}
+}
+
+function formatProblemMessage(latestMessage: string | undefined, errorMessage: string | undefined): string | undefined {
+	const sanitizedLatest = latestMessage !== undefined ? redactUrlCredentials(latestMessage) : undefined;
+	if (sanitizedLatest && errorMessage) {
+		if (sanitizedLatest.includes(errorMessage)) {
+			return sanitizedLatest;
+		}
+		if (
+			errorMessage.includes(sanitizedLatest) ||
+			(LOADER_COMPONENT_FAILURE_MESSAGE.test(sanitizedLatest) &&
+				/^(?:[\w$]+:\s*)?Could not load component /.test(errorMessage)) ||
+			(LOADER_DIRECTORY_FAILURE_MESSAGE.test(sanitizedLatest) &&
+				/^(?:[\w$]+:\s*)?Could not load application due to /.test(errorMessage))
+		) {
+			return errorMessage;
+		}
+		return `${sanitizedLatest}: ${errorMessage}`;
+	}
+	return sanitizedLatest ?? errorMessage;
 }

@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const sinon = require('sinon');
-const system_information = require('#src/utility/environment/systemInformation');
+const system_information = require('#js/utility/environment/systemInformation');
 const env_mgr = require('#src/utility/environment/environmentManager');
 
 const { SystemInformationRequest } = system_information;

@@ -68,7 +68,11 @@ describe('mqtt.ts handleApplication raw-socket registration', () => {
 });
 
 describe('mqtt.ts WebSocket listener settles authentication before the session starts', () => {
-	const { credentialRejectionError, deferCredentialRejection } = require('#src/security/deferredAuthentication');
+	const {
+		credentialRejectionError,
+		deferCredentialRejection,
+		markAuthenticationRejectedInPlace,
+	} = require('#src/security/deferredAuthentication');
 	const { generate } = require('mqtt-packet');
 
 	function webSocketListener() {
@@ -120,6 +124,23 @@ describe('mqtt.ts WebSocket listener settles authentication before the session s
 		});
 
 		assert.deepStrictEqual(ws.closes, []);
+		await chainCompletion;
+		await settle();
+
+		assert.deepStrictEqual(ws.closes, [{ code: 3000, reason: 'Login failed' }]);
+	});
+
+	it('closes with the recorded message when authentication rejects in place', async () => {
+		const listener = webSocketListener();
+		const ws = fakeWebSocket();
+		const request = mqttUpgradeRequest();
+		const chainCompletion = (async () => {
+			await Promise.resolve();
+			markAuthenticationRejectedInPlace(request, 401, 'Login failed');
+			return { status: 401 };
+		})();
+
+		listener(ws, request, chainCompletion, () => {});
 		await chainCompletion;
 		await settle();
 

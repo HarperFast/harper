@@ -5,7 +5,7 @@ const sinon = require('sinon');
 const { promisify } = require('node:util');
 const sandbox = sinon.createSandbox();
 
-const sqlTranslator = require('#src/sqlTranslator/index');
+const sqlTranslator = require('#js/sqlTranslator/index');
 const opAuth = require('#src/utility/operation_authorization');
 const sqlEngineRouter = require('#src/sqlEngine/router');
 const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');

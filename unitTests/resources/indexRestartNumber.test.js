@@ -16,7 +16,7 @@
  */
 require('../testUtils');
 const assert = require('node:assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
 const { setMainIsWorker } = manageThreads;
@@ -81,15 +81,18 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			],
 		});
 		const tagIndex = Tbl.indices?.tag;
+		let restorePut = () => {};
 		if (tagIndex && typeof tagIndex.put === 'function') {
 			const origPut = tagIndex.put.bind(tagIndex);
 			let opCount = 0;
-			tagIndex.put = function (indexedValue, primaryKey, options) {
+			restorePut = stubMethod(tagIndex, 'put', function (indexedValue, primaryKey, options) {
 				if (++opCount % 7 === 0) return Promise.reject(new Error('simulated permanent index put failure'));
 				return origPut(indexedValue, primaryKey, options);
-			};
+			});
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
+		// a redeclare keeps this wrapper, so the simulated restart below must not inherit the failure
+		restorePut();
 
 		const parked = findDescriptor(Tbl, 'tag');
 		assert.ok(parked, 'tag descriptor should exist after a parked backfill');
@@ -211,7 +214,7 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 		assert.equal(total, N, 'all rows should be indexed after the restartNumber-triggered re-run');
 	});
 
-	it('treats a store closed by worker shutdown as a benign interruption (resolves, no indexingFailed)', async () => {
+	it('treats a store closed by worker shutdown as a benign interruption, and still marks the build (harper#2537)', async () => {
 		const TABLE = 'RN_ShutdownInterrupt';
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -272,17 +275,16 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			'a store closed by shutdown must be handled as a benign interruption, not a rejection'
 		);
 
-		// The early-return is a pure no-op on persisted state: it must NOT mark the index
-		// indexingFailed (the old path tried to persist that against the closed store, which
-		// both failed loudly and was unnecessary — recovery comes from the restartNumber/PID
-		// trigger, covered by the tests above). Recovery markers, if the trigger set them, are
-		// left untouched because the fix writes nothing.
+		// harper#1359 left this return writing nothing, because recovery came from the restartNumber/PID
+		// trigger; harper#2536 showed that trigger cannot fire after a process restart under PID 1, so
+		// declareTable's settle handler persists the marker instead. runIndexing still writes nothing here.
 		const desc = findDescriptor(Tbl, 'tag');
 		assert.ok(desc, 'tag descriptor should exist after a shutdown-interrupted backfill');
-		assert.notEqual(
+		assert.equal(
 			desc.value.indexingFailed,
 			true,
-			'a shutdown-interrupted backfill must NOT be marked indexingFailed'
+			'a backfill that returned without completing must be marked, or nothing re-triggers it under PID 1'
 		);
+		assert.ok(desc.value.indexingPID, 'the build must still read as incomplete so queries keep refusing');
 	});
 });

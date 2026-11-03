@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { composeConfigFromEnv } = require('#src/config/harperConfigEnvVars');
+const { composeConfigFromEnv, composeReassertedEnvConfig } = require('#src/config/harperConfigEnvVars');
 
 describe('composeConfigFromEnv', function () {
 	let originalDefault;
@@ -151,5 +151,41 @@ describe('composeConfigFromEnv base empty-object preservation (#1726 review)', f
 		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: {} });
 		const result = composeConfigFromEnv({});
 		assert.strictEqual(result.http.port, 1, 'env-layer `http: {}` must stay a no-op, not clobber the subtree');
+	});
+});
+
+describe('composeReassertedEnvConfig', function () {
+	const names = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'];
+	let saved;
+
+	beforeEach(function () {
+		saved = names.map((name) => [name, process.env[name]]);
+		for (const name of names) delete process.env[name];
+	});
+
+	afterEach(function () {
+		for (const [name, value] of saved) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	});
+
+	it('composes HARPER_CONFIG and HARPER_SET_CONFIG over the base, and leaves HARPER_DEFAULT_CONFIG out', function () {
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ web: { urlPath: '/default' } });
+		process.env.HARPER_CONFIG = JSON.stringify({ web: { isolated: true } });
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ web: { package: 'npm:web@1' } });
+
+		assert.deepStrictEqual(composeReassertedEnvConfig({ web: { package: 'npm:web@2' } }), {
+			web: { package: 'npm:web@1', isolated: true },
+		});
+	});
+
+	it('composes only the named variables when given some', function () {
+		process.env.HARPER_CONFIG = JSON.stringify({ web: { isolated: true } });
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ web: { package: 'npm:web@1' } });
+
+		assert.deepStrictEqual(composeReassertedEnvConfig({ web: { package: 'npm:web@2' } }, ['HARPER_CONFIG']), {
+			web: { package: 'npm:web@2', isolated: true },
+		});
 	});
 });

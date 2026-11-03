@@ -1,7 +1,7 @@
 import { setupTestDBPath, ensureSystemTables } from '../testUtils.js';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 import hdbTerms from '#src/utility/hdbTerms';
-import { join } from 'path';
+import { join } from 'node:path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
 import analytics from '#src/resources/analytics/write';
@@ -48,6 +48,12 @@ function makeString() {
 let createdRecords;
 let serverStarted;
 export async function setupTestApp() {
+	// Run production startup hooks before applying the API-test auth overrides.
+	if (typeof process !== 'undefined' && !serverStarted) {
+		const { runStartup } = await import('#src/utility/lifecycle');
+		await runStartup();
+	}
+
 	analytics.setAnalyticsEnabled(false);
 	bypassAuth();
 	bypassAuthMQTT();
@@ -128,6 +134,8 @@ export async function setupTestApp() {
 	} else {
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
+		const { whenComponentsLoaded } = await import('#src/server/threads/threadServer');
+		await whenComponentsLoaded;
 	}
 	try {
 		seed = 0; // reset the seed to make sure we are deterministic here

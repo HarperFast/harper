@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, tables } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
 const { open } = require('lmdb');
 const {
 	setAuditRetention,
@@ -9,16 +10,17 @@ const {
 	createAuditEntry,
 	transactionKeyEncoder,
 	removeAuditEntry,
+	getLastRemoved,
 	AUDIT_STORE_OPTIONS,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	removeStorageReclamation,
 	runReclamationHandlers,
 	setAvailableSpaceRatioGetter,
 } = require('#src/server/storageReclamation');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
@@ -26,7 +28,11 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const { transaction } = require('#src/resources/transaction');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
+const harperLogger = require('#js/utility/logging/harper_logger');
+const { logger } = require('#src/utility/logging/logger');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -620,7 +626,7 @@ describe('Audit log', () => {
 	});
 	it('RocksDB versioned removal preserves records recreated before or during removal', async function () {
 		if (!AuditedTable.primaryStore.isPrimaryRocksDatabase) return this.skip();
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const recordId = 'rocks-cleanup-race';
 		try {
 			await AuditedTable.put(recordId, { name: 'deleted' });
@@ -797,6 +803,58 @@ describe('Audit log', () => {
 			);
 		});
 	}
+	// A corrupt recordId decodes to undefined, and the lookup then throws: from lmdb-js getEntry(undefined),
+	// or — when the log sink throws — from the recordId getter's own decode warning. Either is the
+	// tombstone's failure, so it must not fail the audit entry's removal: the automatic cleanup pass ends
+	// at a failed removal, and an entry that fails every time would stop it for good.
+	for (const loggingThrows of [true, false]) {
+		it(`removeAuditEntry still removes a delete entry whose tombstone lookup throws (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async () => {
+			const directory = mkdtempSync(join(tmpdir(), 'harper-audit-corrupt-recordid-'));
+			const rootStore = open({ path: join(directory, 'primary.mdb') });
+			const originalWarn = harperLogger.warn;
+			try {
+				const buffer = Buffer.from(
+					createAuditEntry({ version: 100, tableId: 7, recordId: 'aaaaaaaaaa', nodeId: 0, type: 'delete' })
+				);
+				// recordId bytes that decode as a non-integer BigInt, so the getter reports the entry corrupt
+				Buffer.from('13195fb7a854cde125e9', 'hex').copy(buffer, buffer.indexOf('aaaaaaaaaa'));
+				const deleteAuditRecord = readAuditEntry(buffer);
+				assert.equal(deleteAuditRecord.type, 'delete', 'test setup: the header must still decode');
+				assert.equal(deleteAuditRecord.recordId, undefined, 'test setup: the recordId must decode as corrupt');
+				deleteAuditRecord.key = 'audit-key';
+				// installed after setup: the recordId getter logs its decode failure through the same sink
+				const warnings = [];
+				harperLogger.warn = (...args) => {
+					warnings.push(args);
+					if (loggingThrows) throw new Error('simulated logging failure');
+				};
+				const auditRemoveCalls = [];
+				let tombstoneRemovals = 0;
+				const auditStore = {
+					tableStores: { 7: rootStore.openDB('primary', {}) },
+					deleteCallbacks: { 7: () => tombstoneRemovals++ },
+					remove(key) {
+						auditRemoveCalls.push(key);
+						return Promise.resolve();
+					},
+				};
+
+				await removeAuditEntry(auditStore, deleteAuditRecord);
+				assert.deepEqual(auditRemoveCalls, ['audit-key']);
+				assert.equal(tombstoneRemovals, 0, 'no tombstone can match an undecodable recordId');
+				assert.ok(
+					warnings.some(([message]) => message === 'Error removing deleted record while removing its audit entry'),
+					'the failed tombstone lookup must be logged as a tombstone failure'
+				);
+			} finally {
+				harperLogger.warn = originalWarn;
+				await rootStore.close();
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
 	// harper#2412: a delete's audit entry authorizes removing the record's tombstone, so it has to name
 	// the very write that left it. The record version cannot: it is legitimately non-unique, and a
 	// version match on a different write would destroy live state.
@@ -922,6 +980,145 @@ describe('Audit log', () => {
 			'previousVersion must resolve back to the actual prior audit entry'
 		);
 	});
+	it('getHistoryOfRecord reconstructs a patch entry that a later put overwrote (harper#1413)', async () => {
+		const id = 'patch-under-later-put';
+		await AuditedTable.put(id, { name: 'v1' });
+		await AuditedTable.patch(id, { name: 'v2' });
+		await AuditedTable.put(id, { name: 'v3' });
+		await AuditedTable.patch(id, { name: 'v4' });
+		await AuditedTable.put(id, { name: 'v5' });
+		const history = await AuditedTable.getHistoryOfRecord(id);
+		assert.deepEqual(
+			history.map((entry) => [entry.type, entry.value?.name]),
+			[
+				['put', 'v1'],
+				['patch', 'v2'],
+				['put', 'v3'],
+				['patch', 'v4'],
+				['put', 'v5'],
+			]
+		);
+		const byHash = await new ResourceBridge().readAuditLog({
+			schema: AuditedTable.databaseName,
+			table: 'AuditedTable',
+			search_type: 'hash_value',
+			search_values: [id],
+		});
+		assert.deepEqual(
+			byHash[id].map((entry) => entry.records[0]?.name),
+			['v1', 'v2', 'v3', 'v4', 'v5']
+		);
+	});
+	describe('history before a patch that first wrote a field', () => {
+		const add = (value) => ({ __op__: 'add', value });
+		const fieldsAt = (value) => ({
+			name: value.name,
+			hasExtra: Object.hasOwn(value, 'extra'),
+			hasCount: Object.hasOwn(value, 'count'),
+			count: value.count,
+			total: value.total,
+		});
+
+		it('leaves out a later plain field and a later add-established counter', async () => {
+			const id = 'absent-before-later-patch';
+			await AuditedTable.put(id, { name: 'v1' });
+			await AuditedTable.patch(id, { name: 'v2' });
+			await AuditedTable.patch(id, { extra: 'later', count: add(5) });
+			const history = await AuditedTable.getHistoryOfRecord(id);
+			assert.deepStrictEqual(
+				history.map((entry) => entry.type),
+				['put', 'patch', 'patch']
+			);
+			assert.deepStrictEqual(fieldsAt(history[1].value), {
+				name: 'v2',
+				hasExtra: false,
+				hasCount: false,
+				count: undefined,
+				total: undefined,
+			});
+			assert.strictEqual(history[2].value.extra, 'later');
+			assert.strictEqual(history[2].value.count, 5);
+			const byHash = await new ResourceBridge().readAuditLog({
+				schema: AuditedTable.databaseName,
+				table: 'AuditedTable',
+				search_type: 'hash_value',
+				search_values: [id],
+			});
+			assert.strictEqual(fieldsAt(byHash[id][1].records[0]).hasExtra, false);
+			assert.strictEqual(fieldsAt(byHash[id][1].records[0]).hasCount, false);
+			const tableWide = [];
+			for await (const entry of AuditedTable.getHistory()) if (entry.id === id) tableWide.push(entry);
+			assert.deepStrictEqual(fieldsAt(tableWide[1].value), fieldsAt(history[1].value));
+			// a later put switches this time to the forward rebuild; the snapshot must not change with it
+			await AuditedTable.put(id, { name: 'v3' });
+			const afterPut = await AuditedTable.getHistoryOfRecord(id);
+			assert.deepStrictEqual(fieldsAt(afterPut[1].value), fieldsAt(history[1].value));
+			assert.strictEqual(afterPut[1].value.id, history[1].value.id);
+		});
+
+		it('keeps the fields a random-access struct record held then', async () => {
+			await loadGQLSchema(`type AuditedStructHistory @table(randomAccessFields: true, audit: true) {
+				id: ID @primaryKey
+				name: String
+				count: Int
+				extra: String
+			}`);
+			const StructTable = tables.AuditedStructHistory;
+			assert.strictEqual(StructTable.primaryStore.encoder.randomAccessStructure, true);
+			await StructTable.put('s', { name: 'v1', count: 1 });
+			await StructTable.patch('s', { name: 'v2' });
+			await StructTable.patch('s', { extra: 'later', count: 7 });
+			const history = await StructTable.getHistoryOfRecord('s');
+			assert.deepStrictEqual({ ...history[1].value }, { id: 's', name: 'v2', count: 1 });
+		});
+
+		it('restores the null a later add established its counter from', async () => {
+			const id = 'null-before-later-add';
+			await AuditedTable.put(id, { name: 'v1', count: null });
+			await AuditedTable.patch(id, { name: 'v2' });
+			await AuditedTable.patch(id, { count: add(5) });
+			const history = await AuditedTable.getHistoryOfRecord(id);
+			assert.strictEqual(history[1].value.name, 'v2');
+			assert.strictEqual(history[1].value.count, null);
+			assert.strictEqual(history[2].value.count, 5);
+		});
+
+		it('keeps the best-effort value of a field the history cannot settle once the base put is pruned', async () => {
+			const id = 'pruned-before-later-add';
+			await AuditedTable.put(id, { name: 'v1', total: 10, count: 3 });
+			await AuditedTable.patch(id, { name: 'v2', count: null });
+			await AuditedTable.patch(id, { total: add(2.5), count: add(4) });
+			const auditStore = AuditedTable.primaryStore.rootStore.auditStore;
+			let baseKey;
+			for (const entry of auditStore.getRange({ start: 1 })) {
+				if (entry.tableId === AuditedTable.tableId && entry.recordId === id && entry.type === 'put')
+					baseKey = entry.txnLogKey;
+			}
+			assert(baseKey, 'the base put is in the log');
+			// stand in for audit retention having removed the base put
+			const get = auditStore.get;
+			auditStore.get = function (key, tableId, recordId, nodeId) {
+				return key === baseKey ? undefined : get.call(this, key, tableId, recordId, nodeId);
+			};
+			let history;
+			try {
+				history = await AuditedTable.getHistoryOfRecord(id);
+			} finally {
+				auditStore.get = get;
+			}
+			assert.deepStrictEqual(
+				history.map((entry) => entry.type),
+				['put', 'patch', 'patch']
+			);
+			assert.deepStrictEqual(fieldsAt(history[1].value), {
+				name: 'v2',
+				hasExtra: false,
+				hasCount: true,
+				count: null,
+				total: 10,
+			});
+		});
+	});
 	// LMDB assigns each record's own localTime via lmdb-js's native monotonic clock, independent of
 	// the application-supplied `version` (e.g. a replicated/out-of-order write's origin timestamp,
 	// which can be backdated relative to this node's clock). previousVersion must point at the prior
@@ -934,8 +1131,16 @@ describe('Audit log', () => {
 		await AuditedTable.put(id, { name: 'first' }, { timestamp: originVersion });
 		await AuditedTable.put(id, { name: 'second' }, { timestamp: originVersion + 1 });
 		const secondEntry = AuditedTable.primaryStore.getEntry(id);
-		const secondAudit = AuditedTable.auditStore.get(secondEntry.localTime, AuditedTable.tableId, id);
-		const resolvedFirst = AuditedTable.auditStore.get(secondAudit.previousVersion, AuditedTable.tableId, id);
+		// A backdated local write keeps its version but, below the origin-closed floor, is appended under
+		// a fresh log key the record and the next entry point at (resources/originClosedFloor.ts); resolve
+		// both heads as a reader does, through those pointers.
+		const headKey =
+			secondEntry.additionalAuditRefs?.find((ref) => (ref.nodeId ?? 0) === 0)?.version ?? secondEntry.localTime;
+		const secondAudit = AuditedTable.auditStore.get(headKey, AuditedTable.tableId, id);
+		const previousKey =
+			secondAudit.previousAdditionalAuditRefs?.find((ref) => (ref.nodeId ?? 0) === 0)?.version ??
+			secondAudit.previousVersion;
+		const resolvedFirst = AuditedTable.auditStore.get(previousKey, AuditedTable.tableId, id);
 		assert(resolvedFirst, 'previousVersion must resolve to the actual first audit entry');
 		assert.equal(resolvedFirst.version, originVersion);
 	});
@@ -1122,6 +1327,175 @@ describe('Audit log', () => {
 		}
 
 		assert(true, 'Should complete successfully after adding and removing logs');
+	});
+	describe('re-admitting an excluded log with addLog (harper-pro#989)', () => {
+		// Writes the way the replication apply loop does, into `logName`'s own log under the given keys.
+		async function writeToLog(logName, records) {
+			const nodeId = AuditedTable.auditStore.ensureLogExists(logName);
+			for (const [id, time] of records) {
+				const context = { source: {}, sourceApply: true, timestamp: time };
+				await transaction(context, async () => {
+					const resource = await AuditedTable.getResource(id, context);
+					return resource._writeUpdate(id, { name: id }, true, { isNotification: true, nodeId, version: time });
+				});
+			}
+		}
+		// several records in one transaction: one log key, with endTxn only on the last entry
+		async function writeTransactionToLog(logName, ids, time) {
+			const nodeId = AuditedTable.auditStore.ensureLogExists(logName);
+			const context = { source: {}, sourceApply: true, timestamp: time };
+			await transaction(context, async () => {
+				for (const id of ids) {
+					const resource = await AuditedTable.getResource(id, context);
+					resource._writeUpdate(id, { name: id }, true, { isNotification: true, nodeId, version: time });
+				}
+			});
+		}
+		const idsWith = (prefix, entries) =>
+			entries.map((entry) => entry.recordId).filter((id) => String(id).startsWith(prefix));
+
+		it('starts it at its startByLog position, even when the caller already edited excludeLogs', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'addlog-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['addlog-old', base],
+				['addlog-new', base + 5000],
+			]);
+			const excludeLogs = [peerName];
+			const startByLog = new Map([['local', Date.now()]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: Date.now(),
+				excludeLogs,
+				startByLog,
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('addlog-', [...iterable]), []);
+			startByLog.set(peerName, base + 1);
+			excludeLogs.splice(0); // the replication caller removes the exclusion itself before addLog
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('addlog-', [...iterable]), ['addlog-new']);
+		});
+
+		it('admits it while another log still has unread entries', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const stamp = Date.now();
+			const peerName = 'admit-peer-' + stamp;
+			const busyName = 'admit-busy-' + stamp;
+			const base = stamp - 10000;
+			await writeToLog(peerName, [['admit-peer-row', base]]);
+			await writeToLog(busyName, [
+				['admit-busy-0', base + 1000],
+				['admit-busy-1', base + 2000],
+				['admit-busy-2', base + 3000],
+			]);
+			const startByLog = new Map([
+				['local', stamp],
+				[busyName, base],
+			]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: stamp,
+				excludeLogs: [peerName],
+				startByLog,
+				snapshot: false,
+			});
+			const iterator = iterable[Symbol.iterator]();
+			const read = [];
+			for (let result = iterator.next(); !result.done; result = iterator.next()) {
+				read.push(result.value);
+				if (result.value.recordId === 'admit-busy-0') {
+					startByLog.set(peerName, base - 1);
+					iterable.addLog(peerName);
+				}
+			}
+			assert.deepEqual(idsWith('admit-', read), ['admit-busy-0', 'admit-peer-row', 'admit-busy-1', 'admit-busy-2']);
+		});
+
+		it('admits it only once the transaction being read has ended', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const stamp = Date.now();
+			const peerName = 'boundary-peer-' + stamp;
+			const busyName = 'boundary-busy-' + stamp;
+			const base = stamp - 10000;
+			await writeToLog(peerName, [['boundary-peer-row', base]]);
+			await writeTransactionToLog(busyName, ['boundary-txn-a', 'boundary-txn-b'], base + 1000);
+			const startByLog = new Map([
+				['local', stamp],
+				[busyName, base],
+			]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: stamp,
+				excludeLogs: [peerName],
+				startByLog,
+				snapshot: false,
+			});
+			const iterator = iterable[Symbol.iterator]();
+			const read = [];
+			for (let result = iterator.next(); !result.done; result = iterator.next()) {
+				read.push(result.value);
+				if (result.value.recordId === 'boundary-txn-a') {
+					startByLog.set(peerName, base - 1);
+					iterable.addLog(peerName);
+				}
+			}
+			assert.deepEqual(idsWith('boundary-', read), ['boundary-txn-a', 'boundary-txn-b', 'boundary-peer-row']);
+		});
+
+		it('validates its exact start again after removeLog and addLog', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'readmit-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['readmit-10', base],
+				['readmit-20', base + 1000],
+				['readmit-30', base + 2000],
+			]);
+			const startByLog = new Map([[peerName, base]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: base,
+				exactStart: true,
+				exclusiveStart: true,
+				resumeAfterExactStart: true,
+				startByLog,
+				excludeLogs: [],
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('readmit-', [...iterable]), ['readmit-20', 'readmit-30']);
+			iterable.removeLog(peerName);
+			startByLog.set(peerName, base + 1000);
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('readmit-', [...iterable]), ['readmit-30']);
+		});
+
+		it('validates its exact start again after an excludeLogs change drops and re-adds it', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'resync-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['resync-10', base],
+				['resync-20', base + 1000],
+				['resync-30', base + 2000],
+			]);
+			const excludeLogs = [];
+			const startByLog = new Map([[peerName, base]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: base,
+				exactStart: true,
+				exclusiveStart: true,
+				resumeAfterExactStart: true,
+				startByLog,
+				excludeLogs,
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('resync-', [...iterable]), ['resync-20', 'resync-30']);
+			excludeLogs.push(peerName);
+			iterable.addLog('resync-unrelated'); // any membership refresh drops the excluded log
+			assert.deepEqual(idsWith('resync-', [...iterable]), []);
+			excludeLogs.splice(0);
+			startByLog.set(peerName, base + 1000);
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('resync-', [...iterable]), ['resync-30']);
+		});
 	});
 	// A corrupt audit entry must surface as a skip-eligible sentinel record rather than
 	// throwing through the for-of consumer — otherwise the throw escapes in an async context
@@ -1414,6 +1788,80 @@ describe('Audit log', () => {
 		assert.strictEqual(store.nodeLogs[0], fakeLog, 'nodeLogs[0] must be the local log');
 	});
 
+	it('a numeric log id with no log reads where put files it, without creating one', async function () {
+		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // numeric log ids are RocksDB-only
+		const auditStore = AuditedTable.auditStore;
+		const id = 'numeric-log-miss';
+		await AuditedTable.put(id, { name: 'numeric-log-miss' });
+		const { localTime } = AuditedTable.primaryStore.getEntry(id);
+		assert.equal(auditStore.get(localTime, AuditedTable.tableId, id, 0)?.recordId, id);
+
+		const peerId = 'numeric-log-peer';
+		const peerNodeId = auditStore.ensureLogExists('numeric-log-peer');
+		const peerTime = Date.now() - 1000;
+		const context = { source: {}, sourceApply: true, timestamp: peerTime };
+		await transaction(context, async () => {
+			const resource = await AuditedTable.getResource(peerId, context);
+			return resource._writeUpdate(peerId, { name: 'numeric-log-peer' }, true, {
+				isNotification: true,
+				nodeId: peerNodeId,
+				version: peerTime,
+			});
+		});
+		assert.equal(auditStore.get(peerTime, AuditedTable.tableId, peerId, peerNodeId)?.recordId, peerId);
+		assert.equal(
+			auditStore.get(peerTime, AuditedTable.tableId, peerId, undefined)?.recordId,
+			peerId,
+			'an absent node id must still search every log'
+		);
+
+		const unknownNodeId = auditStore.loadLogs().length + 1000;
+		assert.equal(
+			auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId),
+			undefined,
+			'another origin’s entry in `local` is not this id’s'
+		);
+		const range = auditStore.getRange({ start: 1, log: unknownNodeId });
+		assert.ok(
+			Array.from(range).some((entry) => entry.recordId === id),
+			'an unnamed id reads `local`'
+		);
+		assert.equal(range.failedLogs.size, 0);
+		assert.equal(range.exactStartFailures.size, 0);
+		const unnamedId = 'numeric-log-unnamed';
+		const unnamedContext = { source: {}, sourceApply: true, timestamp: peerTime };
+		await transaction(unnamedContext, async () => {
+			const resource = await AuditedTable.getResource(unnamedId, unnamedContext);
+			return resource._writeUpdate(unnamedId, { name: unnamedId }, true, {
+				isNotification: true,
+				nodeId: unknownNodeId,
+				version: peerTime,
+			});
+		});
+		const unnamedEntry = Array.from(auditStore.getRange({ start: 1, log: unknownNodeId })).find(
+			(entry) => entry.recordId === unnamedId
+		);
+		assert.equal(unnamedEntry?.nodeId, unknownNodeId);
+		assert.equal(
+			auditStore.get(unnamedEntry.txnLogKey, AuditedTable.tableId, unnamedId, unknownNodeId)?.recordId,
+			unnamedId,
+			'an unnamed id finds its own entry in `local`'
+		);
+		assert.equal(auditStore.get(unnamedEntry.txnLogKey, AuditedTable.tableId, unnamedId, unknownNodeId + 1), undefined);
+		const namedNodeId = getIdOfRemoteNode('numeric-log-named-without-log', auditStore);
+		assert.deepEqual(
+			Array.from(auditStore.getRange({ start: 1, log: namedNodeId })),
+			[],
+			'a named id reads only its own log'
+		);
+		assert.ok(
+			!auditStore.rootStore.listLogs().includes(String(unknownNodeId)),
+			`reading by node id ${unknownNodeId} must not create a transaction log named after it`
+		);
+		Array.from(auditStore.getRange({ start: 1, log: 'numeric-log-by-name' }));
+		assert.ok(auditStore.rootStore.listLogs().includes('numeric-log-by-name'), 'a log name keeps get-or-create');
+	});
+
 	it('local audited write stores nodeId 0 in the primary record', async function () {
 		const key = 9001;
 		await AuditedTable.put(key, { name: 'nodeId-test' });
@@ -1627,6 +2075,78 @@ describe('Audit cleanup retirement', () => {
 			}
 		});
 	}
+
+	// A pass that removed past a failed entry has no key to record: at or before the failure the marker
+	// understates what the pass removed, after it the marker claims an entry that is still there. So the
+	// pass ends at the failure, and the next one retries from there.
+	it('ends a pass at a failed removal and records neither the marker nor progress past it', async function () {
+		setAuditRetention(60_000, 10_000);
+		const rootStore = openScratchStore();
+		const originalWarn = harperLogger.warn;
+		const { auditStore, markerValues } = armGatedPass(rootStore);
+		try {
+			const remaining = [1001, 1002, 1003];
+			const failingKeys = new Set([1002]);
+			// a range over what is actually left, so a later pass meets the failed entry again
+			auditStore.getRange = () => {
+				const keys = remaining.slice();
+				let index = 0;
+				return {
+					[Symbol.iterator]: () => ({
+						next: () =>
+							index < keys.length
+								? { done: false, value: { key: keys[index++], type: 'put' } }
+								: { done: true, value: undefined },
+						return: () => ({ done: true, value: undefined }),
+					}),
+				};
+			};
+			auditStore.remove = (key) => {
+				if (failingKeys.has(key)) return Promise.reject(new Error('simulated audit entry removal failure'));
+				remaining.splice(remaining.indexOf(key), 1);
+				return Promise.resolve();
+			};
+			const warnings = [];
+			harperLogger.warn = (...args) => warnings.push(args);
+			// armed at 1ms, then given a baseline the pass's backoff visibly doubles or halves
+			const runPass = () => {
+				const pass = auditStore.scheduleAuditCleanup(1);
+				auditStore.auditCleanupDelay = 1000;
+				return pass;
+			};
+
+			await runPass();
+			assert.deepEqual(remaining, [1002, 1003], 'the pass must not remove past the failed entry');
+			assert.deepEqual(markerValues, [1001], 'the marker must stop at the last entry before the failed one');
+			assert.equal(getLastRemoved(auditStore), 1001);
+			assert.equal(warnings[0]?.[1]?.message, 'simulated audit entry removal failure');
+
+			await runPass();
+			assert.deepEqual(remaining, [1002, 1003], 'the retried entry still fails, so nothing after it moves');
+			assert.deepEqual(markerValues, [1001], 'a pass whose only removal failed removed nothing to record');
+			assert.equal(auditStore.auditCleanupDelay, 2000, 'a failed removal is not progress: the pass must back off');
+
+			failingKeys.clear();
+			await runPass();
+			assert.deepEqual(remaining, [], 'the next pass retries the failed entry and continues past it');
+			assert.deepEqual(markerValues, [1001, 1003]);
+
+			await auditStore.stopAuditCleanup();
+			await rootStore.close();
+			const reopened = open({ path: rootStore.path });
+			try {
+				const reopenedAuditStore = reopened.openDB(AUDIT_STORE_NAME, { ...AUDIT_STORE_OPTIONS, create: false });
+				assert.equal(getLastRemoved(reopenedAuditStore), 1003, 'the recorded marker must be the persisted one');
+			} finally {
+				await reopened.close();
+			}
+		} finally {
+			harperLogger.warn = originalWarn;
+			auditStore.stopAuditCleanup();
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
 
 	// The initializing marker write has no downstream owner: openAuditStore() is synchronous and returns
 	// the store, so a rejection here escapes unless it is contained at the call site — and the
@@ -2075,5 +2595,199 @@ describe('audit entry previousVersion presence', () => {
 			assert.throws(() => store.put(key, { ...BASE, previousVersion: 2 ** 49 }), /is not representable/);
 			assert.strictEqual(store.get(key), undefined, 'the rejected entry must not be persisted');
 		});
+	});
+});
+
+describe('history after record eviction (issue #3164)', () => {
+	let EvictedHistoryTable;
+	let tableName;
+	let tableIndex = 0;
+	const schema = 'evict_history_test_schema';
+
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	beforeEach(async function () {
+		tableName = `EvictedHistoryTable_${++tableIndex}`;
+		EvictedHistoryTable = table({
+			database: schema,
+			table: tableName,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
+		});
+	});
+
+	it('reconstructs full and patched history entries via getHistory and readAuditLog after eviction and after re-insert', async () => {
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'initial', count: 1 });
+		await EvictedHistoryTable.patch('rec-1', { name: 'patched' });
+
+		const entryBeforeEvict = await EvictedHistoryTable.primaryStore.getEntry('rec-1');
+		assert.ok(entryBeforeEvict, 'record should exist in primaryStore before eviction');
+
+		await EvictedHistoryTable.evict('rec-1', entryBeforeEvict.value, entryBeforeEvict.version);
+		assert.strictEqual(
+			await EvictedHistoryTable.primaryStore.getEntry('rec-1'),
+			undefined,
+			'evicted record should be absent from primaryStore'
+		);
+
+		await EvictedHistoryTable.put({ id: 'rec-2', name: 'after-evict', count: 10 });
+
+		const history = [];
+		for await (const entry of EvictedHistoryTable.getHistory()) {
+			history.push(entry);
+		}
+		assert.strictEqual(history.length, 3);
+		assert.deepStrictEqual(
+			history.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+			[
+				{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+				{ type: 'patch', id: 'rec-1', value: { id: 'rec-1', name: 'patched', count: 1 } },
+				{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after-evict', count: 10 } },
+			]
+		);
+
+		const bridge = new ResourceBridge();
+		const byTimestamp = await Array.fromAsync(
+			await bridge.readAuditLog({
+				schema,
+				table: tableName,
+				search_type: 'timestamp',
+				search_values: [0],
+			})
+		);
+		assert.strictEqual(byTimestamp.length, 3);
+		assert.deepStrictEqual(byTimestamp[0].records, [{ id: 'rec-1', name: 'initial', count: 1 }]);
+		assert.deepStrictEqual(byTimestamp[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
+		assert.deepStrictEqual(byTimestamp[2].records, [{ id: 'rec-2', name: 'after-evict', count: 10 }]);
+
+		// Re-inserting rec-1 after eviction writes a put with no previousVersion link; older patches
+		// must still reconstruct their pre-eviction image rather than returning the re-inserted value.
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'refetched', count: 7 });
+
+		const historyAfterReinsert = [];
+		for await (const entry of EvictedHistoryTable.getHistory()) {
+			historyAfterReinsert.push(entry);
+		}
+		assert.strictEqual(historyAfterReinsert.length, 4);
+		assert.deepStrictEqual(
+			historyAfterReinsert.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+			[
+				{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+				{ type: 'patch', id: 'rec-1', value: { id: 'rec-1', name: 'patched', count: 1 } },
+				{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after-evict', count: 10 } },
+				{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'refetched', count: 7 } },
+			]
+		);
+
+		const byTimestampAfterReinsert = await Array.fromAsync(
+			await bridge.readAuditLog({
+				schema,
+				table: tableName,
+				search_type: 'timestamp',
+				search_values: [0],
+			})
+		);
+		assert.strictEqual(byTimestampAfterReinsert.length, 4);
+		assert.deepStrictEqual(byTimestampAfterReinsert[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
+		assert.deepStrictEqual(byTimestampAfterReinsert[3].records, [{ id: 'rec-1', name: 'refetched', count: 7 }]);
+
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'rewritten', count: 8 });
+		const byTimestampAfterRewrite = await Array.fromAsync(
+			await bridge.readAuditLog({
+				schema,
+				table: tableName,
+				search_type: 'timestamp',
+				search_values: [0],
+			})
+		);
+		assert.strictEqual(byTimestampAfterRewrite.length, 5);
+		assert.deepStrictEqual(byTimestampAfterRewrite[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
+		assert.deepStrictEqual(byTimestampAfterRewrite[4].records, [{ id: 'rec-1', name: 'rewritten', count: 8 }]);
+	});
+
+	it('contains a per-entry reconstruction failure in getHistory, getHistoryOfRecord, and readAuditLog without dropping buffered or subsequent entries', async () => {
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'initial', count: 1 });
+		await EvictedHistoryTable.patch('rec-1', { name: 'patched' });
+		await EvictedHistoryTable.put({ id: 'rec-2', name: 'after', count: 10 });
+
+		const originalError = logger.error;
+		const loggedErrors = [];
+		logger.error = (...args) => {
+			loggedErrors.push(args);
+		};
+		const originalGetEntry = EvictedHistoryTable.primaryStore.getEntry;
+		EvictedHistoryTable.primaryStore.getEntry = function (id, options) {
+			if (id === 'rec-1') {
+				throw new Error('simulated getEntry failure for rec-1');
+			}
+			return originalGetEntry.call(this, id, options);
+		};
+		try {
+			const history = [];
+			for await (const entry of EvictedHistoryTable.getHistory()) {
+				history.push(entry);
+			}
+			// The patch entry for rec-1 fails getValue and is yielded with value: undefined,
+			// preserving its audit event metadata while both put entries succeed.
+			assert.strictEqual(history.length, 3);
+			assert.deepStrictEqual(
+				history.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+				[
+					{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+					{ type: 'patch', id: 'rec-1', value: undefined },
+					{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after', count: 10 } },
+				]
+			);
+
+			const bridge = new ResourceBridge();
+			const byTimestamp = await Array.fromAsync(
+				await bridge.readAuditLog({
+					schema,
+					table: tableName,
+					search_type: 'timestamp',
+					search_values: [0],
+				})
+			);
+			assert.strictEqual(byTimestamp.length, 3);
+			assert.deepStrictEqual(byTimestamp[0].records, [{ id: 'rec-1', name: 'initial', count: 1 }]);
+			assert.deepStrictEqual(byTimestamp[1].ids, ['rec-1']);
+			assert.deepStrictEqual(byTimestamp[1].records, [undefined]);
+			assert.deepStrictEqual(byTimestamp[2].records, [{ id: 'rec-2', name: 'after', count: 10 }]);
+
+			class SubTable extends EvictedHistoryTable {}
+			const subHistory = await Array.fromAsync(SubTable.getHistory());
+			assert.strictEqual(subHistory.length, 3);
+			assert.strictEqual(subHistory[1].value, undefined);
+
+			// Allow getHistoryOfRecord('rec-1')'s initial head lookup to succeed, then fail on the patch's getValue
+			let rec1Calls = 0;
+			EvictedHistoryTable.primaryStore.getEntry = function (id, options) {
+				if (id === 'rec-1' && ++rec1Calls > 1) {
+					throw new Error('simulated getEntry failure for rec-1');
+				}
+				return originalGetEntry.call(this, id, options);
+			};
+			const recordHistory = await SubTable.getHistoryOfRecord('rec-1');
+			assert.strictEqual(recordHistory.length, 2);
+			assert.deepStrictEqual(
+				recordHistory.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+				[
+					{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+					{ type: 'patch', id: 'rec-1', value: undefined },
+				]
+			);
+
+			assert.ok(
+				loggedErrors.some((args) =>
+					args.some((arg) => arg instanceof Error && arg.message === 'simulated getEntry failure for rec-1')
+				),
+				'expected history entry reconstruction error to be logged'
+			);
+		} finally {
+			EvictedHistoryTable.primaryStore.getEntry = originalGetEntry;
+			logger.error = originalError;
+		}
 	});
 });

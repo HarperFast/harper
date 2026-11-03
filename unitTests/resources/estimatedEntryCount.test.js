@@ -1,12 +1,12 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { estimateCondition, estimatedEntryCount, intersectionEstimate } = require('#src/resources/search');
 
 describe('estimatedEntryCount', () => {
 	const { setupTestDBPath } = require('../testUtils');
 	const { table } = require('#src/resources/databases');
-	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	const N = 2000;
 	let T;
 

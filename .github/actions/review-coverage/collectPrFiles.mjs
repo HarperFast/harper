@@ -29,6 +29,7 @@ export function normalizePrFiles(pages) {
 			if (!file || typeof file.filename !== 'string') throw new Error('PR-files entry has no filename');
 			return {
 				path: file.filename,
+				...(typeof file.previous_filename === 'string' ? { previousPath: file.previous_filename } : {}),
 				patchAvailable: typeof file.patch === 'string',
 				ranges: typeof file.patch === 'string' ? parseRanges(file.patch) : { L: [], R: [] },
 			};
@@ -43,6 +44,7 @@ export function validateNormalizedPrFiles(value) {
 	for (const file of value.files) {
 		if (
 			typeof file?.path !== 'string' ||
+			(file.previousPath !== undefined && typeof file.previousPath !== 'string') ||
 			typeof file.patchAvailable !== 'boolean' ||
 			!['L', 'R'].every(
 				(side) =>

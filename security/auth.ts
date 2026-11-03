@@ -1,72 +1,134 @@
-import { getSuperUser } from './user.ts';
-import { server } from '../server/Server.ts';
+import {
+	cloneUserView,
+	isCurrentUser,
+	isLocalPrincipal,
+	localPrincipal,
+	trackUserRecords,
+	userRecordVersions,
+} from './user.ts';
+import { server, getBearerValidators, type BearerValidatorEntry } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
+import {
+	validateOperationToken,
+	validateRefreshToken,
+	validateLoginToken,
+	warnDeferredTokenRejection,
+	decodeJWT,
+} from './tokenAuthentication.ts';
+import { runBearerValidators, principalFromClaim } from './bearerValidators.ts';
 import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent, AuthAuditLog, errorForLog } = harperLogger;
-import serverHandlers from '../server/itc/serverHandlers.js';
-const { user } = serverHandlers;
 import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../server/serverHelpers/Headers.ts';
+import { isLocalPeerAddress } from '../server/serverHelpers/peerAddress.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
+	authenticationChallenge,
 	credentialRejectionError,
+	credentialRejectionResponse,
 	deferCredentialRejection,
 	getDeferredCredentialRejection,
 	isCredentialRejection,
+	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
-import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
+import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-const authLogger = forComponent('authentication');
-const { debug } = authLogger;
-const authEventLog = authLogger.withTag('auth-event');
-env.initSync();
+import { onStartup } from '../utility/lifecycle.ts';
+let authLogger = forComponent('authentication');
+let { debug } = authLogger;
+let authEventLog = authLogger.withTag('auth-event');
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
+// Config-derived state is populated during startup, after the environment is
+// initialized and the module graph is fully linked. Reading config here at
+// module-load would either TDZ inside an ESM cycle or pick up stale defaults.
+let appsCorsAccesslist: any;
+let appsCors: any;
+let operationsCorsAccesslist: any;
+let operationsCors: any;
+let _sessionTable: Table | undefined;
+let ENABLE_SESSIONS: boolean = true;
+let AUTHORIZE_LOCAL: any = envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ?? envFlag(process.env.DEV_MODE);
+let LOG_AUTH_SUCCESSFUL: boolean = false;
+let LOG_AUTH_FAILED: boolean = false;
 
-const appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
-const appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
-const operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
-const operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
-
-const _sessionTable = table<Table>({
-	table: 'hdb_session',
-	database: 'system',
-	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
-});
 function getSessionTable() {
 	return _sessionTable;
 }
-const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
-// env-var strings need boolean parsing: a raw 'false'/'0' string is truthy, which would turn
-// AUTHENTICATION_AUTHORIZELOCAL=false into an *enabled* auth bypass
 function envFlag(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
 	const normalized = value.trim().toLowerCase();
 	return normalized !== 'false' && normalized !== '0' && normalized !== '';
 }
-// check the environment for a flag to bypass authentication (for testing) since it doesn't necessarily get set on child threads
-let AUTHORIZE_LOCAL =
-	envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
-	env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
-	envFlag(process.env.DEV_MODE);
-const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
-const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
 let authorizationCache = new Map();
-server.onInvalidatedUser(() => {
-	// TODO: Eventually we probably want to be able to invalidate individual users
-	authorizationCache = new Map();
+const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
+let invalidationGeneration = 0;
+
+onStartup(() => {
+	authLogger = forComponent('authentication');
+	({ debug } = authLogger);
+	authEventLog = authLogger.withTag('auth-event');
+	appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
+	appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
+	operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
+	operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+	ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
+	AUTHORIZE_LOCAL =
+		envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
+		env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
+		envFlag(process.env.DEV_MODE);
+	LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
+	LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
+	_sessionTable = table<Table>({
+		table: 'hdb_session',
+		database: 'system',
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
+	});
+	server.onInvalidatedUser(() => {
+		// TODO: Eventually we probably want to be able to invalidate individual users
+		invalidationGeneration++;
+		authorizationCache = new Map();
+	});
+	setInterval(() => {
+		authorizationCache = new Map();
+	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
-let bypassUser: any;
+let authorizeAllAsLocal = false;
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
-	bypassUser = { username: 'bypass', role: { role: 'super_user', permission: { super_user: true } } };
+	authorizeAllAsLocal = true;
+}
+
+/**
+ * Turns a failed principal resolution into a decision, so it never escapes the chain as a throw.
+ * Returns a response descriptor for the caller to pass through `applyResponseHeaders`, or
+ * `undefined` once the rejection has been deferred for the route owner to settle (#2703).
+ */
+function settleAuthFailure(request, error, strategy: string) {
+	const internalFault = !isCredentialRejection(error);
+	if (request.isOperationsServer || internalFault) {
+		if (internalFault) authLogger.error('Authentication failed internally', errorForLog(error));
+		const message = internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : error.message;
+		return rejectAuthenticationInPlace(request, message, strategy, !internalFault);
+	}
+	deferCredentialRejection(request, error, strategy);
+	return undefined;
+}
+
+function rejectAuthenticationInPlace(request, message: string, strategy: string, credentialRejected: boolean) {
+	markAuthenticationRejectedInPlace(request, 401, message);
+	return credentialRejectionResponse(request, 401, message, strategy, credentialRejected);
 }
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
@@ -75,10 +137,11 @@ export async function authentication(request, nextHandler) {
 	const authorization = headers.authorization;
 	const cookie = headers.cookie;
 	let origin = headers.origin;
-	let responseHeaders = [];
+	const responseHeaders = [];
 	// a 401 that gets rewritten to a login-redirect 302 below must still be treated as
 	// identity-dependent by applyResponseHeaders
 	let wasUnauthorized = false;
+	let sessionState: SessionState | undefined;
 	try {
 		if (origin) {
 			const accessList = request.isOperationsServer
@@ -88,7 +151,7 @@ export async function authentication(request, nextHandler) {
 				: appsCors
 					? appsCorsAccesslist
 					: [];
-			if (accessList.includes(origin) || accessList.includes('*')) {
+			if (corsAccessListAllows(accessList, origin)) {
 				if (request.method === 'OPTIONS') {
 					const accessControlAllowHeaders =
 						env.get(CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
@@ -117,36 +180,19 @@ export async function authentication(request, nextHandler) {
 			// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 			// host, to protect against CSRF
 			if (!origin) origin = headers.host;
-			const cookiePrefix = (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-			const cookies = cookie?.split(/;\s+/) || [];
-			for (const cookie of cookies) {
-				if (cookie.startsWith(cookiePrefix)) {
-					const end = cookie.indexOf(';');
-					sessionId = cookie.slice(cookiePrefix.length, end === -1 ? cookie.length : end);
-					session = await getSessionTable().get(sessionId);
-					break;
+			if (cookie) {
+				const cookiePrefix = sessionCookiePrefix(origin);
+				for (const entry of cookie.split(/;\s+/)) {
+					if (entry.startsWith(cookiePrefix)) {
+						const end = entry.indexOf(';');
+						sessionId = entry.slice(cookiePrefix.length, end === -1 ? entry.length : end);
+						session = await getSessionTable().get(sessionId);
+						break;
+					}
 				}
 			}
 			request.session = session ? { ...session } : (session = {});
 		}
-
-		const authAuditLog = (username, status, strategy) => {
-			const log = new AuthAuditLog(
-				username,
-				status,
-				AUTH_AUDIT_TYPES.AUTHENTICATION,
-				headers['x-forwarded-for'] ?? request.ip,
-				request.method,
-				request.pathname
-			);
-			(log as any).auth_strategy = strategy;
-			if (sessionId) (log as any).session_id = sessionId;
-			if (headers['referer']) (log as any).referer = headers['referer'];
-			if (headers['origin']) (log as any).origin = headers['origin'];
-
-			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
-			else authEventLog.error?.(log);
-		};
 
 		if (
 			!request.authorized &&
@@ -156,6 +202,7 @@ export async function authentication(request, nextHandler) {
 		)
 			authEventLog.error?.('Authorization error:', request._nodeRequest.socket.authorizationError);
 
+		let mtlsCredentialDeferred = false;
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
 			const verificationResult = await verifyCertificate(request.peerCertificate, request.mtlsConfig);
 			if (!verificationResult.valid) {
@@ -165,10 +212,12 @@ export async function authentication(request, nextHandler) {
 					'for',
 					request.peerCertificate.subject.CN
 				);
-				return applyResponseHeaders({
-					status: 401,
-					body: serializeMessage({ error: 'Certificate revoked or verification failed' }, request),
-				});
+				return applyResponseHeaders(
+					request,
+					rejectAuthenticationInPlace(request, 'Certificate revoked or verification failed', 'mTLS', true),
+					responseHeaders,
+					wasUnauthorized
+				);
 			}
 
 			// Alternative behavior: Instead of returning 401 above, we could just not set the user
@@ -183,8 +232,19 @@ export async function authentication(request, nextHandler) {
 				// null means no user is defined from certificate, need regular authentication as well
 				if (username === undefined || username === 'Common Name' || username === 'CN')
 					username = request.peerCertificate.subject.CN;
-				request.user = await server.getUser(username, null, request);
-				authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+				let mtlsUser;
+				try {
+					mtlsUser = await server.getUser(username, null, request);
+				} catch (error) {
+					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
+					const failureResponse = settleAuthFailure(request, error, 'mTLS');
+					if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
+					mtlsCredentialDeferred = true;
+				}
+				if (!mtlsCredentialDeferred) {
+					request.user = mtlsUser;
+					authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+				}
 			} else {
 				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
 			}
@@ -193,19 +253,30 @@ export async function authentication(request, nextHandler) {
 		let newUser;
 		if (request.user) {
 			// already authenticated
+		} else if (mtlsCredentialDeferred) {
+			// a principal resolved from another credential here would be contradicted by the deferred
+			// certificate rejection downstream, so the certificate's decision stands alone
 		} else if (authorization) {
 			let cachedUser = authorizationCache.get(authorization);
 			// A cached Bearer identity must not outlive its token: expiry is the only revocation
 			// mechanism for scoped tokens, so it has to be exact, not cache-TTL-fuzzy.
-			if (cachedUser?.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) {
+			if (
+				cachedUser &&
+				((cachedUser.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) ||
+					!isCurrentUser(cachedUser) ||
+					(cachedUser._bearerValidator && validatorClaims.get(cachedUser)?.active === false))
+			) {
 				authorizationCache.delete(authorization);
 				cachedUser = undefined;
 			}
+			if (request.isOperationsServer && (cachedUser as any)?._bearerValidator) {
+				cachedUser = undefined;
+			}
 			if (cachedUser?.role) {
-				// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
+				// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 				// doesn't mutate the cache entry (defense-in-depth; operations and other
 				// meta-permission fields are now preserved through translation in permissionsTranslator).
-				newUser = { ...cachedUser, role: { ...cachedUser.role, permission: { ...cachedUser.role.permission } } };
+				newUser = cloneUserView(cachedUser);
 			} else if (cachedUser) {
 				newUser = cachedUser;
 			}
@@ -214,7 +285,10 @@ export async function authentication(request, nextHandler) {
 				const strategy = authorization.slice(0, spaceIndex);
 				const credentials = authorization.slice(spaceIndex + 1);
 				let username, password;
-				let credentialRejection;
+				let credentialDeferred = false;
+				let skipAuthorizationCache = false;
+				let validatorEntry: BearerValidatorEntry | undefined;
+				const invalidationGen = invalidationGeneration;
 				try {
 					switch (strategy) {
 						case 'Basic':
@@ -223,37 +297,75 @@ export async function authentication(request, nextHandler) {
 							username = decoded.slice(0, colonIndex);
 							password = decoded.slice(colonIndex + 1);
 							// legacy support for passing in blank username and password to indicate no auth
-							newUser = username || password ? await server.getUser(username, password, request) : null;
+							if (username || password) {
+								// read first: a component's server.getUser principal carries no record versions itself
+								const versions = userRecordVersions(username);
+								newUser = await server.getUser(username, password, request);
+								// cache a copy of a component's user: a memoizing server.getUser hands it to later lookups, which re-track it
+								if (trackUserRecords(newUser, versions) && newUser.role) newUser = cloneUserView(newUser);
+							} else newUser = null;
 							break;
-						case 'Bearer':
+						case 'Bearer': {
+							const decoded = decodeJWT(credentials);
+							const hasActiveValidators = !request.isOperationsServer && getBearerValidators().length > 0;
 							try {
-								newUser = await validateOperationToken(credentials);
+								newUser = await validateOperationToken(credentials, hasActiveValidators);
 								// Capture the token's expiry so a live subscription opened with this bearer
 								// token can be revoked once it expires (#1414).
-								const decoded = decodeJWT(credentials);
 								if (newUser && decoded?.exp) newUser.authExpiresAt = decoded.exp;
 							} catch (error) {
 								if (error.message === 'invalid token') {
 									// see if they provided a refresh token; we can allow that and pass it on to operations API
-									try {
-										await validateRefreshToken(credentials);
-										return applyResponseHeaders({
-											// we explicitly declare we don't want to handle this because the operations
-											// API has its own logic for handling this
-											status: -1,
-										});
-									} catch (refreshError) {
-										// Preserve refresh-validation faults; only a tagged rejection permits falling
-										// back to the original operation-token rejection.
-										if (!isCredentialRejection(refreshError)) throw refreshError;
+									// (refresh tokens have `sub === 'refresh'`, so any other well-formed JWT skips the second verify)
+									let deferredRefreshError: any;
+									if (decoded === null || (decoded as any)?.sub === 'refresh') {
+										try {
+											await validateRefreshToken(credentials, hasActiveValidators);
+											return applyResponseHeaders(
+												request,
+												{
+													// we explicitly declare we don't want to handle this because the operations
+													// API has its own logic for handling this
+													status: -1,
+												},
+												responseHeaders,
+												wasUnauthorized
+											);
+										} catch (refreshError) {
+											deferredRefreshError = refreshError;
+											// Preserve refresh-validation faults; only a tagged rejection permits falling
+											// back to the original operation-token rejection.
+											if (!isCredentialRejection(refreshError)) {
+												warnDeferredTokenRejection(error);
+												throw refreshError;
+											}
+											if (refreshError.message !== 'invalid token') {
+												warnDeferredTokenRejection(error);
+												warnDeferredTokenRejection(refreshError);
+												throw error;
+											}
+										}
+									}
+
+									const claim = hasActiveValidators ? await runBearerValidators(credentials, request) : undefined;
+									if (claim) username = claim.result.username;
+									const principal = claim && (await principalFromClaim(claim, decoded, request));
+									if (!principal || !claim.entry.active) {
+										warnDeferredTokenRejection(error);
+										warnDeferredTokenRejection(deferredRefreshError);
 										throw error;
 									}
+									newUser = principal.user;
+									if (principal.cacheable) validatorEntry = claim.entry;
+									else skipAuthorizationCache = true;
+								} else {
+									// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
+									// through to caching an undefined user (which would read as anonymous).
+									throw error;
 								}
-								// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
-								// through to caching an undefined user (which would read as anonymous).
-								throw error;
 							}
 							break;
+						}
 						default:
 							throw credentialRejectionError(
 								AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
@@ -265,119 +377,55 @@ export async function authentication(request, nextHandler) {
 						const failedAttempt = authorizationCache.get(credentials);
 						if (!failedAttempt) {
 							authorizationCache.set(credentials, credentials);
-							authAuditLog(username, AUTH_AUDIT_STATUS.FAILURE, strategy);
+							authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
 						}
 					}
 
-					const internalFault = !isCredentialRejection(err);
-					if (request.isOperationsServer || internalFault) {
-						if (internalFault) authLogger.error('Authentication failed internally', errorForLog(err));
-						return applyResponseHeaders({
-							status: 401,
-							body: serializeMessage(
-								{ error: internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : err.message },
-								request
-							),
-						});
-					}
-					credentialRejection = err;
+					const failureResponse = settleAuthFailure(request, err, strategy);
+					if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
+					credentialDeferred = true;
 				}
 
-				if (credentialRejection) {
-					deferCredentialRejection(request, credentialRejection, strategy);
-				} else {
-					authorizationCache.set(authorization, newUser);
-					if (LOG_AUTH_SUCCESSFUL && newUser != null)
-						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
-					// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
-					// doesn't mutate the just-stored cache entry (defense-in-depth).
-					if (newUser?.role) {
-						newUser = { ...newUser, role: { ...newUser.role, permission: { ...newUser.role.permission } } };
+				if (!credentialDeferred) {
+					if (!skipAuthorizationCache && invalidationGen === invalidationGeneration) {
+						authorizationCache.set(authorization, newUser);
+						if (validatorEntry) validatorClaims.set(newUser, validatorEntry);
 					}
+					if (LOG_AUTH_SUCCESSFUL && newUser != null)
+						authAuditLog(request, sessionId, newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+					// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
+					// doesn't mutate the just-stored cache entry (defense-in-depth).
+					if (newUser?.role) newUser = cloneUserView(newUser);
 				}
 			}
 
 			request.user = newUser;
 		} else if (session?.user) {
-			// or should this be cached in the session?
-			request.user = await server.getUser(session.user, null, request);
+			try {
+				// or should this be cached in the session?
+				request.user = await server.getUser(session.user, null, request);
+			} catch (error) {
+				if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
+				const failureResponse = settleAuthFailure(request, error, 'Session');
+				if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
+			}
 		} else if (
-			(AUTHORIZE_LOCAL && bypassUser) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
-			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
+			(AUTHORIZE_LOCAL && authorizeAllAsLocal) || // explicit bypass (test mode)
+			(AUTHORIZE_LOCAL && isLocalPeerAddress(request.ip)) ||
 			(request?._nodeRequest?.socket?.server?._pipeName &&
 				request?._nodeRequest?.socket?.server?.bypassLocalAuth &&
 				request.ip === undefined) // allow operations API domain socket
 		) {
-			request.user = bypassUser ?? (await getSuperUser());
+			request.user = localPrincipal();
 		}
 		if (ENABLE_SESSIONS) {
-			request.session.update = function (updatedSession) {
-				const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
-				const useSecure =
-					request.protocol === 'https' ||
-					headers.host?.startsWith('localhost:') ||
-					headers.host?.startsWith('127.0.0.1:') ||
-					headers.host?.startsWith('::1');
-				if (!sessionId) {
-					sessionId = uuid();
-					const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
-					const expiresString = expires
-						? new Date(Date.now() + convertToMS(expires)).toUTCString()
-						: DEFAULT_COOKIE_EXPIRES;
-					const domain =
-						headers.host &&
-						domains?.find((domain) => {
-							// find a domain that matches the host header
-							// the configured cookie domain starts with a dot, that indicates a wildcard, so we need to remove it
-							if (domain.startsWith('.')) domain = domain.slice(1);
-							// host can have a port, so we need to remove it because we are comparing domain names
-							const portStart = headers.host.indexOf(':');
-							const host = portStart !== -1 ? headers.host.slice(0, portStart) : headers.host;
-							return host.endsWith(domain);
-						});
-					const cookiePrefix =
-						(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-					// "Secure" can work with localhost/127.0.0.1 in certain browsers.
-					// https://github.com/httpwg/http-extensions/issues/2605
-					let cookie = `${cookiePrefix}${sessionId}; Path=/; Expires=${expiresString}; HttpOnly`;
-					if (domain) {
-						cookie += `; Domain=${domain}`;
-					}
-
-					if (useSecure) {
-						cookie += `; SameSite=None; Secure`;
-					}
-					if (responseHeaders) {
-						responseHeaders.push('Set-Cookie', cookie);
-					} else if (response?.headers?.set) {
-						response.headers.set('Set-Cookie', cookie);
-					}
-				}
-				if (useSecure) {
-					// Indicate that we have successfully updated a session
-					// We make sure this is allowed by CORS so that a client can determine if it has
-					// a valid cookie-authenticated session (studio needs this)
-					if (responseHeaders) {
-						if (origin) responseHeaders.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
-						responseHeaders.push('X-Hdb-Session', 'Secure');
-					} else if (response?.headers?.set) {
-						if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
-						response.headers.set('X-Hdb-Session', 'Secure');
-					}
-				}
-				updatedSession.id = sessionId;
-				return getSessionTable().put(updatedSession, {
-					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
-				});
-			};
-			request.login = async function (username: string, password?: string, token?: string) {
-				const user: any = (request.user = token
-					? await validateLoginToken(token)
-					: await server.authenticateUser(username, password, request));
-				request.session.update({ user: user && (user.getId?.() ?? user.username) });
-			};
+			sessionState = { request, headers, sessionId, origin, responseHeaders, response: undefined };
+			// bound rather than closures assigned to a property: security/DESIGN.md
+			request.session.update = updateSession.bind(sessionState);
+			request.login = loginWithSession.bind(sessionState);
 		}
 		const response = await nextHandler(request);
+		if (sessionState) sessionState.response = response;
 		if (!response) return response;
 		if (response.status === 401) {
 			wasUnauthorized = true;
@@ -392,71 +440,172 @@ export async function authentication(request, nextHandler) {
 					response.status = 302;
 					response.headers.set('Location', resources.loginPath(request));
 				} // the HTTP specified way of indicating HTTP authentication methods supported:
-				else response.headers.set('WWW-Authenticate', 'Basic');
+				else response.headers.set('WWW-Authenticate', authenticationChallenge(authorization?.split(' ', 1)[0]));
 			}
 		}
-		return applyResponseHeaders(response);
+		return applyResponseHeaders(request, response, responseHeaders, wasUnauthorized);
 	} catch (error) {
-		throw applyResponseHeaders(error);
-	}
-	function applyResponseHeaders(response) {
-		const l = responseHeaders.length;
-		// a response is identity-dependent if a principal was resolved (Authorization/session/mTLS) or
-		// if we are rejecting the credentials (401, possibly rewritten to a login redirect); such a
-		// response must never be stored by a shared cache and served to a different principal (#1565)
-		const rejectedAuth = response?.status === 401 || wasUnauthorized;
-		// A downstream response produced under the untouched credential remains identity-dependent (#1565).
-		const identityDependent = !!request.user || rejectedAuth || !!getDeferredCredentialRejection(request);
-		// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
-		// its absence when no Origin was sent is origin-dependent too — so a shared cache must
-		// partition on Origin either way (#1518)
-		const corsEnabled = request.isOperationsServer ? operationsCors : appsCors;
-		if ((l > 0 || corsEnabled || identityDependent) && typeof response === 'object') {
-			let headers = response.headers;
-			// normalize plain-object headers so get/set below work uniformly
-			if (!headers || typeof headers.set !== 'function') response.headers = headers = new Headers(headers);
-			for (let i = 0; i < l;) {
-				const name = responseHeaders[i++];
-				headers.set(name, responseHeaders[i++]);
-			}
-			if (corsEnabled) addVaryHeader(headers, 'Origin');
-			// #1565: keep identity-dependent responses out of shared caches. An explicit
-			// `public`/`s-maxage` set by the app is RFC 9111's opt-in for shared-caching an
-			// authenticated response, so that is trusted as-is — but only for successfully
-			// authenticated responses; a credential rejection must never opt into shared caching.
-			// Otherwise partition on the credential headers and ensure a `private` scope
-			// (`private, no-cache` when none was set, so browsers still revalidate against the
-			// ETag/Last-Modified we emit).
-			if (identityDependent) {
-				const existingCacheControl = headers.get('Cache-Control');
-				const cacheControlString = existingCacheControl
-					? Array.isArray(existingCacheControl)
-						? existingCacheControl.join(', ')
-						: existingCacheControl
-					: '';
-				const optedIn = !rejectedAuth && SHARED_CACHE_OPTIN.test(cacheControlString);
-				if (!optedIn) {
-					addVaryHeader(headers, 'Authorization');
-					if (ENABLE_SESSIONS) addVaryHeader(headers, 'Cookie');
-					// a 401 never opts into shared caching: any non-private Cache-Control it carries is
-					// replaced outright (an existing private/no-store is already at least as strict)
-					if (!cacheControlString || (rejectedAuth && !PRIVATE_SCOPE.test(cacheControlString)))
-						headers.set('Cache-Control', 'private, no-cache');
-					else if (!PRIVATE_SCOPE.test(cacheControlString))
-						headers.set('Cache-Control', cacheControlString + ', private');
-				}
-			}
-		}
-		responseHeaders = null;
-		return response;
+		throw applyResponseHeaders(request, error, responseHeaders, wasUnauthorized);
+	} finally {
+		if (sessionState) sessionState.responseHeaders = null;
 	}
 }
-setInterval(() => {
-	authorizationCache = new Map();
-}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
-user.addListener(() => {
-	authorizationCache = new Map();
-});
+
+function applyResponseHeaders(request, response, responseHeaders: any[], wasUnauthorized: boolean) {
+	const l = responseHeaders.length;
+	// a response is identity-dependent if a principal was resolved (Authorization/session/mTLS) or
+	// if we are rejecting the credentials (401, possibly rewritten to a login redirect); such a
+	// response must never be stored by a shared cache and served to a different principal (#1565)
+	const rejectedAuth = response?.status === 401 || wasUnauthorized;
+	// A downstream response produced under the untouched credential remains identity-dependent (#1565).
+	const identityDependent = !!request.user || rejectedAuth || !!getDeferredCredentialRejection(request);
+	// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
+	// its absence when no Origin was sent is origin-dependent too — so a shared cache must
+	// partition on Origin either way (#1518)
+	const corsEnabled = request.isOperationsServer ? operationsCors : appsCors;
+	if ((l > 0 || corsEnabled || identityDependent) && typeof response === 'object') {
+		let headers = response.headers;
+		// normalize plain-object headers so get/set below work uniformly
+		if (!headers || typeof headers.set !== 'function') response.headers = headers = new Headers(headers);
+		for (let i = 0; i < l;) {
+			const name = responseHeaders[i++];
+			headers.set(name, responseHeaders[i++]);
+		}
+		if (corsEnabled) addVaryHeader(headers, 'Origin');
+		// #1565: keep identity-dependent responses out of shared caches. An explicit
+		// `public`/`s-maxage` set by the app is RFC 9111's opt-in for shared-caching an
+		// authenticated response, so that is trusted as-is — but only for successfully
+		// authenticated responses; a credential rejection must never opt into shared caching.
+		// Otherwise partition on the credential headers and ensure a `private` scope
+		// (`private, no-cache` when none was set, so browsers still revalidate against the
+		// ETag/Last-Modified we emit).
+		if (identityDependent) {
+			const existingCacheControl = headers.get('Cache-Control');
+			const cacheControlString = existingCacheControl
+				? Array.isArray(existingCacheControl)
+					? existingCacheControl.join(', ')
+					: existingCacheControl
+				: '';
+			const optedIn = !rejectedAuth && cacheControlString !== '' && SHARED_CACHE_OPTIN.test(cacheControlString);
+			if (!optedIn) {
+				addVaryHeader(headers, 'Authorization');
+				if (ENABLE_SESSIONS) addVaryHeader(headers, 'Cookie');
+				// a 401 never opts into shared caching: any non-private Cache-Control it carries is
+				// replaced outright (an existing private/no-store is already at least as strict)
+				if (!cacheControlString || (rejectedAuth && !PRIVATE_SCOPE.test(cacheControlString)))
+					headers.set('Cache-Control', 'private, no-cache');
+				else if (!PRIVATE_SCOPE.test(cacheControlString))
+					headers.set('Cache-Control', cacheControlString + ', private');
+			}
+		}
+	}
+	return response;
+}
+
+function sessionCookiePrefix(origin: string | undefined): string {
+	return (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
+}
+
+function authAuditLog(request, sessionId: string | undefined, username, status, strategy) {
+	const headers = request.headers.asObject;
+	const log = new AuthAuditLog(
+		username,
+		status,
+		AUTH_AUDIT_TYPES.AUTHENTICATION,
+		headers['x-forwarded-for'] ?? request.ip,
+		request.method,
+		request.pathname
+	);
+	(log as any).auth_strategy = strategy;
+	if (sessionId) (log as any).session_id = sessionId;
+	if (headers['referer']) (log as any).referer = headers['referer'];
+	if (headers['origin']) (log as any).origin = headers['origin'];
+
+	if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
+	else authEventLog.error?.(log);
+}
+
+interface SessionState {
+	request: any;
+	headers: any;
+	sessionId: string | undefined;
+	origin: string | undefined;
+	// the authentication middleware's pending response headers until it has applied them
+	responseHeaders: any[] | null;
+	response: any;
+}
+
+function updateSession(this: SessionState, updatedSession) {
+	const { request, headers, origin, responseHeaders, response } = this;
+	const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
+	const useSecure =
+		request.protocol === 'https' ||
+		headers.host?.startsWith('localhost:') ||
+		headers.host?.startsWith('127.0.0.1:') ||
+		headers.host?.startsWith('::1');
+	if (!this.sessionId) {
+		this.sessionId = uuid();
+		const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
+		const expiresString = expires ? new Date(Date.now() + convertToMS(expires)).toUTCString() : DEFAULT_COOKIE_EXPIRES;
+		const domain =
+			headers.host &&
+			domains?.find((domain) => {
+				// find a domain that matches the host header
+				// the configured cookie domain starts with a dot, that indicates a wildcard, so we need to remove it
+				if (domain.startsWith('.')) domain = domain.slice(1);
+				// host can have a port, so we need to remove it because we are comparing domain names
+				const portStart = headers.host.indexOf(':');
+				const host = portStart !== -1 ? headers.host.slice(0, portStart) : headers.host;
+				return host.endsWith(domain);
+			});
+		// "Secure" can work with localhost/127.0.0.1 in certain browsers.
+		// https://github.com/httpwg/http-extensions/issues/2605
+		let cookie = `${sessionCookiePrefix(origin)}${this.sessionId}; Path=/; Expires=${expiresString}; HttpOnly`;
+		if (domain) {
+			cookie += `; Domain=${domain}`;
+		}
+
+		if (useSecure) {
+			cookie += `; SameSite=None; Secure`;
+		}
+		if (responseHeaders) {
+			responseHeaders.push('Set-Cookie', cookie);
+		} else if (response?.headers?.set) {
+			response.headers.set('Set-Cookie', cookie);
+		}
+	}
+	if (useSecure) {
+		// Indicate that we have successfully updated a session
+		// We make sure this is allowed by CORS so that a client can determine if it has
+		// a valid cookie-authenticated session (studio needs this)
+		if (responseHeaders) {
+			if (origin) responseHeaders.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
+			responseHeaders.push('X-Hdb-Session', 'Secure');
+		} else if (response?.headers?.set) {
+			if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
+			response.headers.set('X-Hdb-Session', 'Secure');
+		}
+	}
+	updatedSession.id = this.sessionId;
+	// trust in the transport must not become a cookie that works from anywhere else
+	if (
+		isLocalPrincipal(updatedSession.user) ||
+		(isLocalPrincipal(request.user) && updatedSession.user === request.user.username)
+	)
+		delete updatedSession.user;
+	return getSessionTable().put(updatedSession, {
+		expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
+	});
+}
+
+async function loginWithSession(this: SessionState, username: string, password?: string, token?: string) {
+	const request = this.request;
+	const user: any = (request.user = token
+		? await validateLoginToken(token)
+		: await server.authenticateUser(username, password, request));
+	request.session.update({ user: user && (user.getId?.() ?? user.username) });
+}
+
 let started = false;
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	if (started) return;

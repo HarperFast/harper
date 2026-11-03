@@ -1,8 +1,8 @@
 require('../testUtils');
 const assert = require('assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const harperLogger = require('#src/utility/logging/harper_logger');
 
 const TEST_DB = 'test';
@@ -169,6 +169,88 @@ describe('dropTable ghost regression', () => {
 		assert.ok(!survived.dropping, 'the surviving row must be the fresh (non-tombstoned) create');
 	});
 
+	it('retires a stale class without removing a replacement discovered late in drop', async () => {
+		const tableName = 'GhostLateIdentityChange';
+		const Stale = defineTable(tableName);
+		await Stale.put({ id: 1, str: 'stale' });
+		const dbisDb = getDbisDb();
+		const primaryKey = `${tableName}/`;
+		const originalPrimary = { ...dbisDb.getSync(primaryKey) };
+		const replacement = { replacement: true };
+		const originalGetRange = Stale.primaryStore.getRange;
+		const originalCleanup = Stale.cleanup;
+		let cleaned = false;
+		Stale.cleanup = () => {
+			cleaned = true;
+			return originalCleanup.call(Stale);
+		};
+		Stale.primaryStore.getRange = function (...args) {
+			const replacementTableId =
+				typeof originalPrimary.tableId === 'bigint' ? originalPrimary.tableId + 1n : originalPrimary.tableId + 1;
+			const freshPrimary = { ...dbisDb.getSync(primaryKey), tableId: replacementTableId };
+			delete freshPrimary.dropping;
+			dbisDb.putSync(primaryKey, freshPrimary);
+			databases[TEST_DB][tableName] = replacement;
+			return originalGetRange.apply(this, args);
+		};
+		try {
+			await Stale.dropTable();
+		} finally {
+			Stale.primaryStore.getRange = originalGetRange;
+			Stale.cleanup = originalCleanup;
+		}
+		assert.equal(cleaned, true, 'the stale class must release its timers and reclamation registration');
+		assert.strictEqual(databases[TEST_DB][tableName], replacement, 'the replacement registry entry must survive');
+		assert.equal(dbisDb.getSync(primaryKey).dropping, undefined, 'the replacement catalog row must survive');
+
+		dbisDb.putSync(primaryKey, originalPrimary);
+		databases[TEST_DB][tableName] = Stale;
+		await Stale.dropTable();
+	});
+
+	it('retires an LMDB stale class when a replacement appears while its DBI drop is awaited', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
+		const tableName = 'GhostLmdbAwaitedDropReplacement';
+		const Stale = defineTable(tableName);
+		await Stale.put({ id: 1, str: 'stale' });
+		const dbisDb = getDbisDb();
+		const primaryKey = `${tableName}/`;
+		const originalDrop = Stale.primaryStore.drop;
+		const originalCleanup = Stale.cleanup;
+		const replacement = { replacement: true };
+		let cleaned = false;
+		Stale.cleanup = () => {
+			cleaned = true;
+			return originalCleanup.call(Stale);
+		};
+		Stale.primaryStore.drop = async function (...args) {
+			await originalDrop.apply(this, args);
+			const stalePrimary = dbisDb.getSync(primaryKey);
+			const replacementTableId =
+				typeof stalePrimary.tableId === 'bigint' ? stalePrimary.tableId + 1n : stalePrimary.tableId + 1;
+			const freshPrimary = { ...stalePrimary, tableId: replacementTableId };
+			delete freshPrimary.dropping;
+			dbisDb.putSync(primaryKey, freshPrimary);
+			databases[TEST_DB][tableName] = replacement;
+		};
+		try {
+			await assert.rejects(
+				() => Stale.dropTable(),
+				/a replacement table became current while the LMDB stores were being dropped/
+			);
+		} finally {
+			Stale.primaryStore.drop = originalDrop;
+			Stale.cleanup = originalCleanup;
+		}
+		assert.equal(cleaned, true, 'the stale LMDB class must release its process-local registrations');
+		assert.strictEqual(databases[TEST_DB][tableName], replacement, 'the replacement registry entry must survive');
+		assert.equal(dbisDb.getSync(primaryKey).dropping, undefined, 'the replacement catalog row must survive');
+
+		delete databases[TEST_DB][tableName];
+		for (const key of [...dbisDb.getKeys({ start: `${tableName}/`, end: `${tableName}0` })]) dbisDb.remove(key);
+		await dbisDb.committed;
+	});
+
 	it('bounds the retries of a drop that can never complete', async function () {
 		this.timeout(20000);
 		// The attempt budget is module-level and deliberately survives until the
@@ -189,13 +271,13 @@ describe('dropTable ghost regression', () => {
 		// forever.
 		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		const storageLogger = harperLogger.forComponent('storage');
 		const originalLogError = storageLogger.error;
 		const errorLogs = [];
@@ -215,7 +297,7 @@ describe('dropTable ghost regression', () => {
 			for (let i = 0; i < 5; i++) reload();
 		} finally {
 			storageLogger.error = originalLogError;
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		assert.ok(attemptsWhenExhausted > 0, 'the interrupted drop must be attempted at least once');
@@ -277,15 +359,13 @@ describe('dropTable ghost regression', () => {
 		};
 		const stubFailingRemove = (dbisDb, table) => {
 			const originalRemoveSync = dbisDb.removeSync;
-			dbisDb.removeSync = function (key, ...rest) {
+			const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 				if (typeof key === 'string' && key.startsWith(`${table}/`)) {
 					throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 				}
 				return originalRemoveSync.call(this, key, ...rest);
-			};
-			return () => {
-				dbisDb.removeSync = originalRemoveSync;
-			};
+			});
+			return restoreRemoveSync;
 		};
 		const storageLogger = harperLogger.forComponent('storage');
 		const originalLogError = storageLogger.error;
@@ -370,13 +450,13 @@ describe('dropTable ghost regression', () => {
 
 		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		const reload = () => {
 			resetDatabases();
 			getDatabases();
@@ -404,7 +484,7 @@ describe('dropTable ghost regression', () => {
 				`a later interrupted drop must be retried again, not skipped on the previous drop's spent budget (attempts stuck at ${attempts})`
 			);
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -439,13 +519,13 @@ describe('dropTable ghost regression', () => {
 
 		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		const reload = () => {
 			resetDatabases();
 			getDatabases();
@@ -469,7 +549,7 @@ describe('dropTable ghost regression', () => {
 				`generation B must get its own budget instead of inheriting A's spent count (attempts stuck at ${attempts})`
 			);
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -562,17 +642,17 @@ describe('dropTable ghost regression', () => {
 		delete databases[TEST_DB][TABLE];
 
 		const originalRemoveSync = dbisDb.removeSync;
-		dbisDb.removeSync = function (key, ...rest) {
+		const restoreRemoveSync = stubMethod(dbisDb, 'removeSync', function (key, ...rest) {
 			if (key === secondaryKey) {
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
 			return originalRemoveSync.call(this, key, ...rest);
-		};
+		});
 		try {
 			resetDatabases();
 			getDatabases();
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			restoreRemoveSync();
 		}
 
 		assert.ok(

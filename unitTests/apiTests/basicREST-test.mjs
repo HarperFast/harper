@@ -98,6 +98,17 @@ describe('test REST calls', () => {
 		response = await axios(`${baseUrl}/VariedProps/www-form-urlencoded-unique-id`);
 		assert.equal(response.data.name, 'www-form-urlencoded');
 	});
+	it('POST with x-www-form-urlencoded data keeps every value of a repeated field', async () => {
+		const headers = {
+			'content-type': 'application/x-www-form-urlencoded',
+		};
+		const body = 'id=www-form-urlencoded-repeated&name=repeated&tags=a&tags=b';
+		let response = await axios.post(`${baseUrl}/VariedProps/`, body, { headers });
+		assert.equal(response.status, 201);
+		response = await axios(`${baseUrl}/VariedProps/www-form-urlencoded-repeated`);
+		assert.deepEqual(response.data.tags, ['a', 'b']);
+		assert.equal(response.data.key, undefined);
+	});
 	it('POST a new record', async () => {
 		let response = await axios.post(`${baseUrl}/VariedProps/`, {
 			name: 'new record without an id',

@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { THREAD_TYPES } = require('#src/utility/hdbTerms');
-const { startWorker } = require('#js/server/threads/manageThreads');
+const { startWorker } = require('#src/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'portMetadata-fixture.cjs');
 

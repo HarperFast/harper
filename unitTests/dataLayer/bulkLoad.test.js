@@ -10,7 +10,7 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai').default;
 chai.use(sinon_chai);
 const rewire = require('rewire');
-let bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+let bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
 const hdb_terms = require('#src/utility/hdbTerms');
 const hdb_utils = require('#src/utility/common_utils');
@@ -227,7 +227,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		it('Test csvDataLoad with attr-level perms issues - returns errors', async function () {
 			PermissionResponseObject_rw.prototype.getPermsResponse = () => get_perms_resp_stub();
-			const getPermsError_rw = bulkLoad_rewire.__set__('PermissionResponseObject_js_1', {
+			const getPermsError_rw = bulkLoad_rewire.__set__('PermissionResponseObject_ts_1', {
 				default: PermissionResponseObject_rw,
 			});
 			let result;
@@ -582,7 +582,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		after(() => {
 			sandbox.restore();
-			bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+			bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 			global.hdb_schema = undefined;
 		});
 
@@ -677,7 +677,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		after(() => {
 			sandbox.restore();
-			bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+			bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 		});
 
 		it('Should call papaParse if file is CSV', async () => {
@@ -947,7 +947,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		after(() => {
 			sandbox.restore();
-			bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+			bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 		});
 
 		it('NOMINAL - Should call through and return results', async () => {

@@ -32,11 +32,11 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@af81872e56dd63da1160adb5eae82d359a456dde # main 2026-09-01 (#94 freshness-gated admission; #91 job-level cancellation; #90 cost gates; #89 defaults; #88 lenses)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47 # main 2026-10-01 (#93 calibration: week of 2026-08-24; #95 calibration: week of 2026-08-31; #98 ci: mint the ai-review-log token from the HarperFast AI App (retire the personal PAT); #99 ci: calibration-sweep reads ai-review-log via the HarperFast AI App to…; on af81872)
     with:
       # Same SHA as the `uses:` ref above. See the comment in
       # claude-mention.yml for why the duplication is unavoidable.
-      ai-review-prompts-ref: af81872e56dd63da1160adb5eae82d359a456dde
+      ai-review-prompts-ref: 1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47
       repo-specific-conventions: |
         ## Harper core notes
 

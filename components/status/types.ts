@@ -18,6 +18,17 @@ export const COMPONENT_STATUS_LEVELS = {
 
 export type ComponentStatusLevel = (typeof COMPONENT_STATUS_LEVELS)[keyof typeof COMPONENT_STATUS_LEVELS];
 
+export type ComponentStatusSource = 'log' | 'explicit' | 'health-check';
+
+/** Worst-first order; the first level present is the aggregate status. */
+export const STATUS_PRIORITY: readonly ComponentStatusLevel[] = [
+	COMPONENT_STATUS_LEVELS.ERROR,
+	COMPONENT_STATUS_LEVELS.WARNING,
+	COMPONENT_STATUS_LEVELS.LOADING,
+	COMPONENT_STATUS_LEVELS.UNKNOWN,
+	COMPONENT_STATUS_LEVELS.HEALTHY,
+];
+
 /**
  * Component status information as a plain object
  */
@@ -32,6 +43,12 @@ export interface ComponentStatusSummary {
 	error?: Error | string;
 	/** Worker index for cross-thread tracking */
 	workerIndex?: number;
+	/** When this thread last finished loading the component */
+	loadedAt?: Date;
+	/** How the status was set */
+	source?: ComponentStatusSource;
+	/** Reports at this thread's current level; resets to 1 when the level changes. */
+	occurrenceCount?: number;
 }
 
 /**
@@ -65,10 +82,16 @@ export interface AggregatedComponentStatus {
 	};
 	/** Map of thread-specific statuses if they differ (only populated when inconsistent) */
 	abnormalities?: Map<string, ComponentStatusAbnormality>;
-	/** Most recent message across all threads */
+	/** Status message from the highest-priority, most recent non-healthy thread */
 	latestMessage?: string;
-	/** Any error from any thread */
+	/** Error from the highest-priority, most recent non-healthy thread */
 	error?: Error | string;
+	/** The most recent time any thread finished loading the component (ms since epoch) */
+	loadedAt?: number;
+	/** Last known source in thread collection order, independent of the message/error owner. */
+	source?: ComponentStatusSource;
+	/** Sum of current per-thread counters at every level, including healthy; not a lifetime count. */
+	occurrenceCount?: number;
 }
 
 /**
@@ -86,12 +109,14 @@ export interface WorkerComponentStatuses {
  * Used for components that may have multiple sub-components (e.g., application-template.rest, application-template.static)
  */
 export interface ComponentApplicationStatus {
-	/** Overall aggregated status (error > loading > loaded > healthy) */
+	/** Overall aggregated status (error > warning > loading > unknown > healthy) */
 	status: ComponentStatusLevel;
 	/** Descriptive message with details when not healthy */
 	message: string;
 	/** Detailed breakdown when issues exist */
-	details?: Record<string, { status: ComponentStatusLevel; message?: string }>;
+	details?: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }>;
 	/** Last checked time information */
 	lastChecked: { workers: Record<number, number> };
+	/** The most recent time any thread finished loading the component or a sub-component (ms since epoch) */
+	loadedAt?: number;
 }
