@@ -48,6 +48,41 @@ Comma-separated values format, suitable for data export and spreadsheet import/e
 
 **When to use**: Ad-hoc data export, spreadsheet workflows, batch data processing. Not recommended for frequent or production API use.
 
+## When a Streamed Response Fails
+
+A collection query, or any resource that returns an iterable, is streamed: Harper sends the `200` status and headers, then writes records as it reads them. If reading fails after that, the status can no longer change, so JSON, NDJSON and Server-Sent Events report the failure in the body.
+
+### JSON
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+When a streamed JSON array fails partway through, Harper writes an `{"error": "<Name>: <message>"}` element, leaves out the closing `]`, and aborts the response. On HTTP/1.1 the connection closes without the final chunk; on HTTP/2 the stream is reset.
+
+```
+[{"id":1},{"id":2},{"error":"ReadSnapshotExpiredError: Read scan snapshot expired; ..."}
+```
+
+Treat a cut-off body as a failed read, even though the status was `200`. A network error while reading the body, or `response.json()` rejecting, means the result is incomplete. The `error` element is a best-effort diagnostic: if the client is not reading when the failure happens, it can be lost along with unread records. The abort always happens.
+
+Before v5.4.0, Harper closed the array after the `error` element and ended the response normally, so a partial result parsed as a complete array.
+
+A request that writes and then streams a result, such as a `POST` whose handler returns query results, has already committed its writes when the stream fails. Retrying it can apply them again. The `error` element includes `replicationUnconfirmed: true` when the writes committed locally but their replication was not confirmed, and `retryable: false` when the request should not be retried.
+
+On RocksDB, a long streamed read can fail this way when the client stops reading for longer than [`storage.maxTransactionOpenTime`](../database/storage-tuning.md#storagemaxtransactionopentime).
+
+### Other Formats
+
+NDJSON and Server-Sent Events end a failed stream with a terminal record, unchanged in v5.4.0:
+
+| Format                                                              | Terminal record                                          |
+| ------------------------------------------------------------------- | -------------------------------------------------------- |
+| NDJSON (`application/x-ndjson`, `application/ndjson`)               | A final line `{"$harperStreamError": { ... }}`           |
+| [Server-Sent Events](./server-sent-events.md) (`text/event-stream`) | An `event: harper-error` event whose `data` is `{ ... }` |
+
+The object has `error` (the error code or class name), `message`, and, when they apply, `status`, `replicationUnconfirmed: true`, and `retryable: false`.
+
+A MessagePack response writes no error record. Harper aborts it, and the body can end at a record boundary and look like a shorter, valid result, so treat a network error while reading as a failed read.
+
 ## Content Type via URL Extension
 
 As an alternative to the `Accept` header, responses can be requested in a specific format using file-style URL extensions:

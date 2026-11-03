@@ -71,6 +71,26 @@ storage:
   maxTransactionQueueTime: 30s
 ```
 
+### `storage.maxTransactionOpenTime`
+
+<EngineBadge engines="RocksDB" /> <VersionBadge version="v5.0.0" />
+
+Type: `number` (milliseconds)
+
+Default: `30000`
+
+The maximum time a transaction may stay open without activity. Give a number of milliseconds; unlike `maxTransactionQueueTime`, this option does not take a duration string such as `30s`. Available since v5.0.0; LMDB databases ignore it and use a fixed 30 seconds. Harper checks open transactions once per this interval, so a stalled transaction is closed between one and two intervals after its last qualifying activity:
+
+- A transaction with uncommitted writes from an application request must keep writing; reads alone do not renew its timeout. When it expires, the writes are aborted and the request fails with status `422`. Split long-running work into smaller transactions.
+- A read-only transaction is renewed by reads. When it expires, its read snapshot is released; on RocksDB, a read that continues afterwards fails with `ReadSnapshotExpiredError` (status `503`).
+
+A streamed response, such as a REST collection query, holds its read snapshot while the client reads. On RocksDB, if the client stops reading for longer than this limit, the read fails when the client resumes. <VersionBadge type="changed" version="v5.4.0" /> The `200` status is already sent by then, so a JSON response is cut off rather than returned as a `503`; see [When a Streamed Response Fails](../rest/content-types.md#when-a-streamed-response-fails). Clients that read large results slowly should read promptly, page with [`limit(start,end)`](../rest/querying.md#limitend-or-limitstartend), or raise this limit.
+
+```yaml
+storage:
+  maxTransactionOpenTime: 60000
+```
+
 ## Compression
 
 ### `storage.compression`

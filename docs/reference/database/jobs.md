@@ -12,8 +12,10 @@ Harper uses an asynchronous job system for long-running data operations. When a 
 
 Job status values:
 
+- `CREATED` — the job is queued and has not started
 - `IN_PROGRESS` — the job is currently running
 - `COMPLETE` — the job finished successfully
+- `ERROR` — the job failed; its `message` holds the error
 
 ## Bulk Operations
 
@@ -158,6 +160,8 @@ Exports table data to a local file in JSON or CSV format.
 <VersionBadge type="changed" version="v4.3.0" /> — `search_by_conditions` added as a supported search operation for exports
 
 - `filename` _(optional)_ — filename without extension; auto-generated from epoch timestamp if omitted
+
+<VersionBadge type="changed" version="v5.4.0" /> If the query fails partway through a `json` export, the job ends with status `ERROR` and the partial file is removed. Before v5.4.0, the job completed and the file could hold a complete-looking array ending in an `error` element.
 
 ```json
 {
