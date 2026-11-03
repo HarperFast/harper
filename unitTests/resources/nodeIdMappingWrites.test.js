@@ -23,7 +23,8 @@ function interleaveForeignMint(auditStore, name, id) {
 	const transactionSync = rootStore.transactionSync;
 	rootStore.transactionSync = function (...args) {
 		rootStore.transactionSync = transactionSync;
-		const record = unpack(auditStore.getBinary(REMOTE_NODE_IDS));
+		const stored = auditStore.getBinary(REMOTE_NODE_IDS);
+		const record = stored ? unpack(stored) : { remoteNameToId: {} };
 		record.remoteNameToId[name] = id;
 		if (auditStore.reusableIterable) rootStore.putSync(REMOTE_NODE_IDS, asBinary(pack(record)));
 		else auditStore.putSync(REMOTE_NODE_IDS, pack(record));
@@ -48,6 +49,16 @@ describe('node id mapping writes', function () {
 		assert.strictEqual(mapping['foreign-node'], before + 1, "the other worker's name survives");
 		assert.notStrictEqual(mine, before + 1);
 		assert.strictEqual(mapping['my-node'], mine);
+	});
+
+	it("keeps another worker's mint when this worker takes over the local id on a fresh mapping", () => {
+		const auditStore = freshStore();
+		interleaveForeignMint(auditStore, 'foreign-node', 1);
+		const mine = getIdOfRemoteNode('my-node', auditStore);
+		const mapping = exportIdMapping(auditStore);
+		assert.strictEqual(mapping['foreign-node'], 1);
+		assert.notStrictEqual(mine, 1);
+		assert.strictEqual(Object.values(mapping).filter((id) => id === 0).length, 1, 'one name holds the local id');
 	});
 
 	it('mints every missing name of a peer map in one transaction, keeping a concurrent addition', () => {

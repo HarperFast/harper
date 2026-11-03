@@ -11,48 +11,38 @@ import { asBinary } from './asBinary.ts';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(auditStore) {
-	const idMappingRecordBuffer = auditStore.getBinary(REMOTE_NODE_IDS);
-	let idMappingRecord = idMappingRecordBuffer ? unpack(idMappingRecordBuffer) : null;
-	if (!idMappingRecord) {
-		idMappingRecord = { remoteNameToId: {} };
-	}
+	const stored = auditStore.getBinary(REMOTE_NODE_IDS);
+	const idMappingRecord = (stored ? unpack(stored) : null) ?? { remoteNameToId: {} };
 	// this is the default mapping for the local node (id of 0 is used for local)
-	const node_name = getThisNodeName();
 	idMappingRecord.nodeName = getThisNodeName();
-	const nameToId = idMappingRecord.remoteNameToId;
-	if (nameToId[node_name] !== 0) {
-		// if we don't have the local node id, we want to assign it and take over that id, but if there was a previous host name
-		// there, we need to reassign it and update the record and we want to assign a starting sequence id for it
-		let lastId = 0;
-		let previousLocalHostName: string;
+	if (idMappingRecord.remoteNameToId[idMappingRecord.nodeName] === 0) return idMappingRecord;
+	// Take over the local id inside the mapping transaction: a plain write here would erase another worker's
+	// mint. A previous host name holding id 0 moves to a new id, whose sequence cursor starts from our last one.
+	let reassignedId: number | undefined;
+	idMappingRecord.remoteNameToId = updateIdMapping(auditStore, (nameToId) => {
+		const nodeName = getThisNodeName();
+		reassignedId = undefined;
+		if (nameToId[nodeName] === 0) return false;
 		for (const name in nameToId) {
-			const id = nameToId[name];
-			if (id === 0) {
-				previousLocalHostName = name;
-			} else if (id > lastId) {
-				lastId = id;
+			if (nameToId[name] === 0) {
+				reassignedId = nextNodeId(nameToId);
+				nameToId[name] = reassignedId;
 			}
 		}
-		if (previousLocalHostName) {
-			// we need to reassign the local node id to the previous host name
-			lastId++;
-			nameToId[previousLocalHostName] = lastId;
-			// we need to update the sequence id for the previous host name, and have it start from our last sequence id
-			const seqKey = [Symbol.for('seq'), lastId];
-			auditStore.rootStore.dbisDb.transactionSync(() => {
-				// getSync (not get): a get() Promise on a RocksDB cache miss is truthy, so `!...get(seqKey)`
-				// would be false and skip initializing the seq record for the reassigned node id.
-				if (!(auditStore.rootStore.dbisDb as any).getSync(seqKey))
-					auditStore.rootStore.dbisDb.putSync(seqKey, {
-						seqId: lastTimeInAuditStore(auditStore) ?? 1,
-						nodes: [],
-					});
-			});
-		}
-		// now we can take over the local node id
-		nameToId[node_name] = 0;
-		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames(auditStore);
+		nameToId[nodeName] = 0;
+		return true;
+	});
+	if (reassignedId !== undefined) {
+		const seqKey = [Symbol.for('seq'), reassignedId];
+		auditStore.rootStore.dbisDb.transactionSync(() => {
+			// getSync (not get): a get() Promise on a RocksDB cache miss is truthy, so `!...get(seqKey)`
+			// would be false and skip initializing the seq record for the reassigned node id.
+			if (!(auditStore.rootStore.dbisDb as any).getSync(seqKey))
+				auditStore.rootStore.dbisDb.putSync(seqKey, {
+					seqId: lastTimeInAuditStore(auditStore) ?? 1,
+					nodes: [],
+				});
+		});
 	}
 	return idMappingRecord;
 }
@@ -71,8 +61,7 @@ function nextNodeId(nameToId: Record<string, number>): number {
 
 /**
  * One read-modify-write of the mapping under a store transaction, so two workers minting at once cannot
- * hand one id to two names or drop each other's additions. `mutate` gets the stored mapping and returns
- * whether it changed it; the mapping as committed is returned.
+ * hand one id to two names or drop each other's additions. Returns the mapping as committed.
  */
 function updateIdMapping(auditStore: any, mutate: (nameToId: Record<string, number>) => boolean) {
 	const rootStore = auditStore.rootStore;
@@ -94,11 +83,14 @@ function updateIdMapping(auditStore: any, mutate: (nameToId: Record<string, numb
 		);
 	} else if (rootStore?.transactionSync) {
 		committed = rootStore.transactionSync(() =>
-			apply(auditStore.getBinary(REMOTE_NODE_IDS), (bytes) =>
+			apply(auditStore.getBinary(REMOTE_NODE_IDS), (bytes) => {
 				auditStore
 					.put(REMOTE_NODE_IDS, bytes)
-					?.catch?.((error) => logger.warn?.('Error writing the node id mapping', error))
-			)
+					?.catch?.((error) => logger.warn?.('Error writing the node id mapping', error));
+				// a write that did not land must abort rather than hand out an id nothing recorded
+				const landed = auditStore.getBinary(REMOTE_NODE_IDS);
+				if (!landed || Buffer.compare(landed, bytes) !== 0) throw new Error('The node id mapping write did not land');
+			})
 		);
 	} else {
 		apply(auditStore.getBinary(REMOTE_NODE_IDS), (bytes) => auditStore.putSync(REMOTE_NODE_IDS, bytes));
@@ -116,10 +108,11 @@ export function remoteToLocalNodeId(remoteMapping: any, auditStore: any) {
 	let nameToId = getIdMappingRecord(auditStore).remoteNameToId;
 	if (Object.keys(remoteMapping).some((name) => nameToId[name] == undefined)) {
 		nameToId = updateIdMapping(auditStore, (stored) => {
+			let nextId = nextNodeId(stored);
 			let changed = false;
 			for (const remoteNodeName in remoteMapping) {
 				if (stored[remoteNodeName] != undefined) continue;
-				stored[remoteNodeName] = nextNodeId(stored);
+				stored[remoteNodeName] = nextId++;
 				changed = true;
 			}
 			return changed;
