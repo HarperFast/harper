@@ -70,3 +70,11 @@ the key's first sample lacked, or that only some threads carry, is kept. That ho
 thread record carries nothing but measures and its `count`, which the thread count then replaces:
 the fold keeps `total`/`ratio` on non-thread actions only, so a `ratio` on a thread record is
 always a caller's measure.
+
+## Full-text collection follows actual handle ownership
+
+`fullTextTelemetry.ts` keeps private per-handle baselines and carries exact counters into a stable worker/index/role series. `nativeFullTextTelemetry.test.js` pins reader churn, wrap/precision, opt-in toggles and final close. The scheduler pauses before native close and observes final scalars only after settlement, so it never polls close in flight. Completed registrations release handle references; inactive groups remain only until their coalesced final row is drained. Pending export has a 128-row memory bound with explicit drop counts.
+
+`fullTextTelemetryRuntime.ts` joins removable internal consumer demand with live operator policy. Only operator demand enables persistent analytics. No demand means no telemetry timer; no cold handles are opened. Counters are decimal strings, rows are flat and `cumulative` makes the aggregation fold retain the newest sample, including availability/error fields, per worker. Existing request metrics retain their averaging semantics. `aggregationCycle.test.js` verifies exact counters above 2^53 survive storage and `get_analytics`.
+
+`watchFullTextTelemetryConfiguration` uses the shared root watcher, environment overlay and transactional `refreshConfigSubtree`; unrelated edits preserve sampling cadence, invalid edits preserve valid policy, and availability events pause/recover after file deletion. `fullTextTelemetryConfiguration.test.js` names the effective override and recovery controls. Native runtime/query policy remains frozen separately.

@@ -290,10 +290,10 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 ## @harperfast/fulltext (optional dependency)
 
 - Need for usage: Supplies the Tantivy-backed native index used by Harper full-text derived indexes. Harper remains the source of truth; each node builds and advances its local index from committed records through the shared derived-index runtime.
-- Size/memory cost: The root package is about 700 KB installed for 0.8.0, plus one platform-specific native package (about 7.0 MB on macOS arm64). Runtime memory and native index size depend on the indexed text, analyzer, and stored-field options.
+- Size/memory cost: The exact-pinned 0.9.0 root package includes JavaScript facades and types plus one platform-specific native package. Runtime memory and native index size depend on the indexed text, analyzer, and stored-field options.
 - Security: First-party Apache-2.0 Harper package wrapping Tantivy. It runs native code in-process, so Harper exact-pins the root package and the package exact-pins every platform prebuild to the same version.
 - Environment interaction: Lazily loaded only when a full-text index is activated. It creates Tantivy index files in Harper's derived-index directory; those files are disposable local state and are rebuilt or replayed from Harper records after loss or incompatibility. Upgrading the 0.5.0 engine shipped in Harper 5.3.4 requires a full local rebuild on every node; see the [deployment and recovery guidance](resources/FULL_TEXT.md#upgrading-an-existing-native-index).
-- Overlap: None. Harper owns schema, transactions, replication, source-record reads, and derived-index coordination; the package owns native indexing, persistence, and search execution.
+- Overlap: None. Harper owns schema, transactions, replication, source-record reads, derived-index coordination and opt-in analytics scheduling/export; the package owns native indexing, persistence, search execution and native/facade telemetry accounting. Harper requires native ABI 14, query API 8 and telemetry API 1.
 - Transitive dependencies: Only exact-version, platform-specific optional prebuild packages; no JavaScript runtime dependency tree.
 - Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Because the root package is optional, Harper still installs if a native package is unavailable, but a declared full-text index cannot activate until the module is installed.
 - Can be deferred: Yes. The module is not loaded for tables without full-text indexes.
@@ -311,3 +311,9 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Need for usage: Exact npm alias for fulltext 0.7.0, used by the existing isolated upgrade fixture to write a real text-only checkpoint and verify 0.8 reuse and subsequent 0.7 reopen. The separate 0.5.0 alias retains coverage of the earlier incompatible engine.
 - Updates and removal: Renovate leaves this historical alias fixed. Remove it and its exclusion only when the 0.7 migration fixture is retired.
 - Cost and boundary: One additional root package and supported platform prebuild in development/CI only. No production runtime import; the previous-engine child exits before the current engine opens its files.
+
+## @harperfast/fulltext-v08 (dev dependency)
+
+- Need for usage: Exact npm alias for fulltext 0.8.0. The isolated migration fixture writes a genuine prior-release checkpoint, verifies current reuse without rebuilding, advances it and checks the prior release can reopen it.
+- Cost and boundary: One additional root package and supported platform prebuild in development/CI only; never imported by production code.
+- Updates and removal: Keep the historical alias exact-pinned and excluded from Renovate updates. Remove it with its fixture when migration from 0.8 is no longer supported.

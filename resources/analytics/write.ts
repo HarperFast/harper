@@ -15,6 +15,7 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
+import { acceptsFullTextTelemetryRow, setFullTextAnalyticsEnabled } from './fullTextTelemetryRuntime.ts';
 import {
 	readEventLoopDelay,
 	resetEventLoopDelay,
@@ -52,6 +53,7 @@ let analyticsGeneration = 0;
 onStartup(() => {
 	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 	analyticsReadOnlyChecked = false;
+	setFullTextAnalyticsEnabled(checkAnalyticsEnabled());
 });
 
 // Check read-only mode lazily to avoid circular dependency at module load time. The event loop
@@ -68,6 +70,7 @@ export function checkAnalyticsEnabled(): boolean {
 /** Resets this thread's analytics window; other threads keep their own. */
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
+	setFullTextAnalyticsEnabled(enabled);
 	if (enabled) startEventLoopDelayMonitor();
 	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
@@ -181,6 +184,14 @@ const analyticsAggregateListeners = [];
 
 export function addAnalyticsListener(callback) {
 	analyticsListeners.push(callback);
+	return () => {
+		const index = analyticsListeners.indexOf(callback);
+		if (index >= 0) analyticsListeners.splice(index, 1);
+	};
+}
+
+export function requestAnalyticsFlush(): void {
+	if (checkAnalyticsEnabled() && !sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
 
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
@@ -305,7 +316,7 @@ async function flushAnalytics() {
 		depth: queueDepths.readDepth,
 		maxDepth: queueDepths.readMaxDepth,
 	});
-	for (const listener of analyticsListeners) {
+	for (const listener of [...analyticsListeners]) {
 		if (generation !== analyticsGeneration) return;
 		listener(metrics);
 	}
@@ -1070,6 +1081,15 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			// key, whose action name a request body chooses, always ends in `-operation`.
 			if (perThread) key += '\0' + threadId;
 			let action = aggregateActions.get(key);
+			if (entry.cumulative) {
+				if (!action || entry.sampledAt >= action.sampledAt) {
+					const latest = { ...entry, period: toPeriod, thread: threadId };
+					delete latest.perThread;
+					delete latest.threadId;
+					aggregateActions.set(key, latest);
+				}
+				return;
+			}
 			if (action) {
 				const byThread = Boolean(action.byThread);
 				if (byThread) {
@@ -1363,6 +1383,9 @@ function recordAnalytics(message, worker?) {
 	// Skip writes in read-only mode
 	if (isReadOnlyMode()) return;
 	const report = message.report;
+	report.metrics = report.metrics.filter(
+		(metric) => metric.metric !== METRIC.FULL_TEXT || acceptsFullTextTelemetryRow(metric)
+	);
 	report.threadId = worker?.threadId || threadId;
 	// Add system information stats as well
 	for (const metric of report.metrics) {

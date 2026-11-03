@@ -64,6 +64,7 @@ export class RootConfigWatcher extends EventEmitter {
 	// opens it without claiming the watch is armed, so the arming re-read still runs afterwards.
 	#barrierOpen: boolean = false;
 	#configLoaded: boolean = false;
+	#unavailable: boolean = false;
 	#readyStaged: boolean = false;
 	#readyEmitted: boolean = false;
 	ready: Promise<any[]>;
@@ -88,6 +89,15 @@ export class RootConfigWatcher extends EventEmitter {
 		})
 			.on('add', this.handleChange.bind(this))
 			.on('change', this.handleChange.bind(this))
+			.on('unlink', () => {
+				if (this.#closed) return;
+				try {
+					this.#unavailable = true;
+					this.emit('unavailable');
+				} catch (error) {
+					logger().warn('A Harper configuration availability listener failed', errorForLog(error));
+				}
+			})
 			.on('error', this.handleError.bind(this))
 			// Generation-bound: `#armGate.reset()` runs before the failed watcher is closed, so a
 			// `ready` still queued on it would arm the gate on the replacement's behalf and the
@@ -219,7 +229,20 @@ export class RootConfigWatcher extends EventEmitter {
 	}
 
 	handleChange() {
-		if (this.#read(true)) this.#scheduleTrailingRead();
+		if (this.#read(true)) {
+			this.#scheduleTrailingRead();
+			this.#markAvailable();
+		}
+	}
+
+	#markAvailable() {
+		if (!this.#unavailable || this.#closed) return;
+		this.#unavailable = false;
+		try {
+			this.emit('available');
+		} catch (error) {
+			logger().warn('A Harper configuration availability listener failed', errorForLog(error));
+		}
 	}
 
 	#scheduleTrailingRead() {
@@ -245,7 +268,10 @@ export class RootConfigWatcher extends EventEmitter {
 	#schedule(): boolean {
 		this.#clearTrailingRead();
 		return this.#readRetry.schedule(() => {
-			if (this.#read(false)) this.#scheduleTrailingRead();
+			if (this.#read(false)) {
+				this.#scheduleTrailingRead();
+				this.#markAvailable();
+			}
 		}, !this.#readyEmitted);
 	}
 

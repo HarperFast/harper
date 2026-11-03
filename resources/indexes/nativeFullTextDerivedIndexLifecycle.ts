@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
+import { registerNativeFullTextTelemetry } from '../analytics/fullTextTelemetryRuntime.ts';
 import {
 	FullTextDerivedIndexBackend,
 	HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
@@ -24,6 +25,7 @@ export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConf
 	storeName: string;
 	indexId: string;
 	sourceGeneration: string;
+	telemetryLabel?: string;
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
 	beforeReset?: (ownerEpoch: bigint) => Promise<void>;
 	afterReset?: (ownerEpoch: bigint) => void | Promise<void>;
@@ -91,10 +93,12 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	async open(): Promise<FullTextDerivedIndexEngine> {
-		return this.#requireBinding().openNativeFullTextIndex({
+		const engine = await this.#requireBinding().openNativeFullTextIndex({
 			...this.#nativeOptions(),
 			limits: this.#options.limits,
 		});
+		registerNativeFullTextTelemetry(engine, this.#options.telemetryLabel ?? this.#options.indexId, 'writer');
+		return engine;
 	}
 
 	async reset(ownerEpoch: bigint): Promise<void> {
