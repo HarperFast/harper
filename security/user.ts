@@ -1,5 +1,7 @@
 'use strict';
 
+import { withoutSystemGrants } from './systemRolePermissions.ts';
+
 const USERNAME_REQUIRED = 'username is required';
 const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
 const EMPTY_PASSWORD = 'password cannot be an empty string';
@@ -282,7 +284,7 @@ async function userInfo(body): Promise<string | User> {
 			get_attributes: ['*'],
 		}));
 
-	user.role = roleData?.[0];
+	user.role = withoutSystemGrants(roleData?.[0]);
 	delete user.password;
 	delete user.refresh_token;
 	delete user.hash;
@@ -322,7 +324,7 @@ async function listUsers(): Promise<Map<string, User>> {
 
 	const roleMapObj = {};
 	for (let role of roles) {
-		roleMapObj[role.id] = _.cloneDeep(role);
+		roleMapObj[role.id] = _.cloneDeep(withoutSystemGrants(role));
 	}
 	if (Object.keys(roleMapObj).length === 0) return null;
 
@@ -429,26 +431,10 @@ databaseEventsEmitter.on('dropTable', (_tableName, databaseName) => {
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthorization.
  * @param userRole - Role of the user found during auth.
  */
-function appendSystemTablesToRole(userRole: UserRole) {
+export function appendSystemTablesToRole(userRole: UserRole) {
 	if (!userRole) {
 		logger.error(`invalid user role found.`);
 		return;
-	}
-	// A role may declare its own `system` block, and before harper#2120 any entry outside
-	// systemSchema.json survived — which let a role grant itself reads and writes on tables like
-	// hdb_session. Those are dropped now, so name them: an operator whose grant stops working
-	// otherwise sees only a 403 with nothing pointing at the cause.
-	//
-	// Identity check, not emptiness: several users share one role object, so by the second user the
-	// map we installed is already there and would otherwise be reported as the operator's own.
-	const existing = userRole.permission.system?.tables;
-	const alreadyManaged = !!existing && [...systemTablesByReadPerm.values()].some((managed) => managed === existing);
-	const declared = alreadyManaged ? [] : Object.keys(existing ?? {});
-	if (declared.length > 0) {
-		harperLogger.warn(
-			`Ignoring role-declared permissions on system tables for role '${userRole.id}': ${declared.join(', ')}. ` +
-				`System table permissions are managed by Harper and cannot be granted through a role.`
-		);
 	}
 	userRole.permission.system = {
 		...userRole.permission.system,

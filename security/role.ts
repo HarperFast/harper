@@ -17,6 +17,7 @@ import SearchByHashObject from '../dataLayer/SearchByHashObject.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { assertActiveSuperUserRemains } from './user.ts';
+import { withoutSystemGrants } from './systemRolePermissions.ts';
 
 import { UserEventMsg } from '../server/threads/itc.js';
 
@@ -204,7 +205,7 @@ export async function dropRole(role: any) {
 
 export async function getRoleByName(roleName: string) {
 	for await (const role of databases.system.hdb_role.search([{ attribute: 'role', value: roleName } as any])) {
-		return role;
+		return withoutSystemGrants(role);
 	}
 	return null;
 }
@@ -219,5 +220,5 @@ export async function listRoles() {
 		get_attributes: ['*'],
 	};
 
-	return pSearchSearchByValue(searchObj);
+	return Array.from((await pSearchSearchByValue(searchObj)) ?? [], withoutSystemGrants);
 }

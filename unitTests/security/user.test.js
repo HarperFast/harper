@@ -6,6 +6,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 require('../testUtils.js');
+const assert = require('node:assert');
 const chai = require('chai');
 const chaiAsPromised = require('chai-as-promised').default;
 chai.use(chaiAsPromised);
@@ -244,7 +245,7 @@ describe('user.ts Unit Tests', () => {
 				password: TEST_PASSWORD,
 				active: true,
 			});
-			expect(Object.keys(require('../../json/systemSchema.json'))).to.not.include(COMPONENT_TABLE);
+			assert.ok(!Object.keys(require('../../json/systemSchema.json')).includes(COMPONENT_TABLE));
 			// Build the cache BEFORE the table exists — a component creating a system table at
 			// runtime is exactly the case the old snapshot could not see (harper#2120).
 			await user.setUsersWithRolesCache();
@@ -270,7 +271,7 @@ describe('user.ts Unit Tests', () => {
 
 		it('should grant a super_user read on a system table created after the cache was built', async () => {
 			const permission = await cachedRolePermissions(SUPER_USER);
-			expect(permission.system.tables[COMPONENT_TABLE]).to.deep.equal({
+			assert.deepStrictEqual(permission.system.tables[COMPONENT_TABLE], {
 				read: true,
 				insert: false,
 				update: false,
@@ -281,27 +282,27 @@ describe('user.ts Unit Tests', () => {
 
 		it('should not grant a non-super_user read on a component-created system table', async () => {
 			const permission = await cachedRolePermissions(READ_ONLY_USER);
-			expect(permission.system.tables[COMPONENT_TABLE].read).to.be.false;
+			assert.strictEqual(permission.system.tables[COMPONENT_TABLE].read, false);
 		});
 
 		it('should keep writes denied on a component-created system table for a super_user', async () => {
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const tablePermissions = permission.system.tables[COMPONENT_TABLE];
-			expect(tablePermissions.insert).to.be.false;
-			expect(tablePermissions.update).to.be.false;
-			expect(tablePermissions.delete).to.be.false;
+			assert.strictEqual(tablePermissions.insert, false);
+			assert.strictEqual(tablePermissions.update, false);
+			assert.strictEqual(tablePermissions.delete, false);
 		});
 
 		it('should still resolve install-time system tables', async () => {
 			const permission = await cachedRolePermissions(SUPER_USER);
-			expect(permission.system.tables.hdb_user.read).to.be.true;
-			expect(permission.system.tables.hdb_role.read).to.be.true;
+			assert.strictEqual(permission.system.tables.hdb_user.read, true);
+			assert.strictEqual(permission.system.tables.hdb_role.read, true);
 		});
 
 		it('should return undefined for a table that is not in the system database', async () => {
 			const permission = await cachedRolePermissions(SUPER_USER);
-			expect(permission.system.tables.hdb_not_a_real_table).to.be.undefined;
-			expect('hdb_not_a_real_table' in permission.system.tables).to.be.false;
+			assert.strictEqual(permission.system.tables.hdb_not_a_real_table, undefined);
+			assert.strictEqual('hdb_not_a_real_table' in permission.system.tables, false);
 		});
 
 		it('should be a plain cloneable object, since operations are forwarded to worker threads', async () => {
@@ -309,9 +310,9 @@ describe('user.ts Unit Tests', () => {
 			// the request, permissions included (server/operations forwarding, harper#2120 CI).
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const { tables } = permission.system;
-			expect(() => structuredClone(tables)).to.not.throw();
-			expect(structuredClone(tables)[COMPONENT_TABLE].read).to.be.true;
-			expect(() => `${tables}`).to.not.throw();
+			assert.doesNotThrow(() => structuredClone(tables));
+			assert.strictEqual(structuredClone(tables)[COMPONENT_TABLE].read, true);
+			assert.doesNotThrow(() => `${tables}`);
 		});
 
 		it('should reach identities holding an earlier reference to the map', async () => {
@@ -327,8 +328,8 @@ describe('user.ts Unit Tests', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }],
 			});
 			try {
-				expect(held[LATE_TABLE]).to.not.be.undefined;
-				expect(held[LATE_TABLE].read).to.be.true;
+				assert.notStrictEqual(held[LATE_TABLE], undefined);
+				assert.strictEqual(held[LATE_TABLE].read, true);
 			} finally {
 				await late?.dropTable().catch(() => {});
 				delete databases.system[LATE_TABLE];
@@ -341,26 +342,23 @@ describe('user.ts Unit Tests', () => {
 			// only safe while the entries cannot be written through.
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const entry = permission.system.tables[COMPONENT_TABLE];
-			expect(Object.isFrozen(entry)).to.be.true;
-			expect(() => {
+			assert.strictEqual(Object.isFrozen(entry), true);
+			assert.throws(() => {
 				'use strict';
 				entry.insert = true;
-			}).to.throw();
+			}, TypeError);
 			const other = await cachedRolePermissions(READ_ONLY_USER);
-			expect(other.system.tables[COMPONENT_TABLE].insert).to.be.false;
-			expect(permission.system.tables[COMPONENT_TABLE].insert).to.be.false;
+			assert.strictEqual(other.system.tables[COMPONENT_TABLE].insert, false);
+			assert.strictEqual(permission.system.tables[COMPONENT_TABLE].insert, false);
 		});
 
-		// Documents the sharing design; it does NOT cover the discarded-grant warning, which has no
-		// automated coverage — `__importStar` snapshots the logger's exports when user.ts loads, so
-		// the call cannot be stubbed without re-requiring the module under test.
 		it('should reuse one map per read permission and not share across them', async () => {
 			const cache = await user.getUsersWithRolesCache();
 			const first = cache.get(SUPER_USER).role.permission.system.tables;
 			const second = cache.get(READ_ONLY_USER).role.permission.system.tables;
-			expect(first).to.not.equal(second, 'different read permissions must not share a map');
+			assert.notStrictEqual(first, second, 'different read permissions must not share a map');
 			const suAgain = (await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD)).role.permission.system.tables;
-			expect(suAgain).to.equal(first, 'the same read permission must reuse one map instance');
+			assert.strictEqual(suAgain, first, 'the same read permission must reuse one map instance');
 		});
 
 		it('should hold a table named __proto__ as an own property', async () => {
@@ -371,10 +369,10 @@ describe('user.ts Unit Tests', () => {
 			databaseEventsEmitter.emit('updateTable', { databaseName: 'system' });
 			try {
 				const { tables } = (await cachedRolePermissions(SUPER_USER)).system;
-				expect(Object.hasOwn(tables, '__proto__')).to.be.true;
-				expect(Object.keys(tables)).to.include('__proto__');
-				expect(tables['__proto__'].read).to.be.true;
-				expect(structuredClone(tables)['__proto__'].read).to.be.true;
+				assert.strictEqual(Object.hasOwn(tables, '__proto__'), true);
+				assert.ok(Object.keys(tables).includes('__proto__'));
+				assert.strictEqual(tables['__proto__'].read, true);
+				assert.strictEqual(structuredClone(tables)['__proto__'].read, true);
 			} finally {
 				delete databases.system['__proto__'];
 				databaseEventsEmitter.emit('dropTable', '__proto__', 'system');
@@ -388,7 +386,7 @@ describe('user.ts Unit Tests', () => {
 			databaseEventsEmitter.emit('dropTable', COMPONENT_TABLE, 'system');
 			try {
 				const permission = await cachedRolePermissions(SUPER_USER);
-				expect(permission.system.tables[COMPONENT_TABLE]).to.be.undefined;
+				assert.strictEqual(permission.system.tables[COMPONENT_TABLE], undefined);
 			} finally {
 				databases.system[COMPONENT_TABLE] = registered;
 				databaseEventsEmitter.emit('updateTable', registered);
@@ -400,44 +398,46 @@ describe('user.ts Unit Tests', () => {
 			const systemSchema = require('../../json/systemSchema.json');
 			const enumerated = Object.keys(permission.system.tables);
 			for (const installTable of Object.keys(systemSchema)) {
-				expect(enumerated).to.include(installTable);
+				assert.ok(enumerated.includes(installTable));
 			}
-			expect(enumerated).to.include(COMPONENT_TABLE);
+			assert.ok(enumerated.includes(COMPONENT_TABLE));
 		});
 
 		it('should carry the component-created table through a JSON round trip', async () => {
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const roundTripped = JSON.parse(JSON.stringify(permission.system.tables));
-			expect(roundTripped[COMPONENT_TABLE].read).to.be.true;
+			assert.strictEqual(roundTripped[COMPONENT_TABLE].read, true);
 		});
 
 		it('should not honor a system-table grant the role declared for itself', async () => {
-			// add_role accepts a `system` block, and the old merge-in-place loop only overwrote the
-			// systemSchema names — so a non-super_user role could declare read on a component-created
-			// system table (hdb_session, say) and keep it. Wholesale replacement closes that.
-			const { addRole } = require('#src/security/role');
+			const { insert } = require('#src/dataLayer/insert');
 			const SELF_GRANT_ROLE = 'test_self_granted_system_role';
 			const SELF_GRANT_USER = 'test_self_granted_system_user';
-			try {
-				await addRole({
-					role: SELF_GRANT_ROLE,
-					id: SELF_GRANT_ROLE,
-					permission: {
-						super_user: false,
-						system: {
-							tables: {
-								[COMPONENT_TABLE]: {
-									read: true,
-									insert: false,
-									update: false,
-									delete: false,
-									attribute_permissions: [],
+			await insert({
+				operation: 'insert',
+				schema: 'system',
+				table: 'hdb_role',
+				records: [
+					{
+						role: SELF_GRANT_ROLE,
+						id: SELF_GRANT_ROLE,
+						permission: {
+							super_user: false,
+							system: {
+								tables: {
+									[COMPONENT_TABLE]: {
+										read: true,
+										insert: false,
+										update: false,
+										delete: false,
+										attribute_permissions: [],
+									},
 								},
 							},
 						},
 					},
-				});
-			} catch {}
+				],
+			});
 			await user.addUser({
 				operation: 'add_user',
 				role: SELF_GRANT_ROLE,
@@ -448,7 +448,7 @@ describe('user.ts Unit Tests', () => {
 			await user.setUsersWithRolesCache();
 			try {
 				const permission = await cachedRolePermissions(SELF_GRANT_USER);
-				expect(permission.system.tables[COMPONENT_TABLE].read).to.be.false;
+				assert.strictEqual(permission.system.tables[COMPONENT_TABLE].read, false);
 			} finally {
 				await user.dropUser({ username: SELF_GRANT_USER }).catch(() => {});
 			}
@@ -460,8 +460,8 @@ describe('user.ts Unit Tests', () => {
 			// lives in integrationTests/security/system-table-authz.test.ts.
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const { tables } = permission.system;
-			expect(tables[COMPONENT_TABLE]).to.have.property('read', true);
-			expect(tables[COMPONENT_TABLE]).to.have.property('attribute_permissions').that.is.an('array');
+			assert.strictEqual(tables[COMPONENT_TABLE].read, true);
+			assert.ok(Array.isArray(tables[COMPONENT_TABLE].attribute_permissions));
 		});
 	});
 });

@@ -168,6 +168,7 @@ const ROLE_PERMS_ERROR_MSGS = {
 		`Your role does not have permission to view database metadata for '${schema_name}'`,
 	SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) =>
 		`Your role does not have permission to view database.table metadata for '${schema_name}.${table_name}'`,
+	SYSTEM_ROLE_PERMISSIONS_MANAGED: 'Permissions for system are managed by Harper and cannot be declared in a role',
 	PERMISSION_NOT_OBJECT: "Value for 'permission' must be an object of role and database permissions",
 	SU_ROLE_MISSING_ERROR: "Missing 'super_user' key/value in permission set",
 	SU_CU_ROLE_BOOLEAN_ERROR: (role) => `Value for '${role}' permission must be a boolean`,

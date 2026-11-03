@@ -68,6 +68,37 @@ suite(
 			await teardownHarper(ctx);
 		});
 
+		for (const operation of ['add_role', 'alter_role']) {
+			test(`${operation} rejects system-table declarations before storing them`, async () => {
+				const response = await client.req().send({
+					operation,
+					role: operation === 'add_role' ? ROLE + '_invalid' : ROLE,
+					id: operation === 'add_role' ? ROLE + '_invalid' : ROLE,
+					permission: {
+						super_user: false,
+						system: {
+							tables: {
+								[COMPONENT_TABLE]: {
+									read: true,
+									insert: false,
+									update: false,
+									delete: false,
+									attribute_permissions: [],
+								},
+							},
+						},
+					},
+				});
+				strictEqual(response.status, 400);
+				ok(JSON.stringify(response.body).includes('managed by Harper'));
+				const listed = await client.req().send({ operation: 'list_roles' }).expect(200);
+				ok(!listed.body.some((role: { role: string }) => role.role === ROLE + '_invalid'));
+				const readerRole = listed.body.find((role: { role: string }) => role.role === ROLE);
+				strictEqual(readerRole.permission.super_user, false);
+				strictEqual(readerRole.permission.system, undefined);
+			});
+		}
+
 		test('describe_database lists the component-created table', async () => {
 			const response = await client.req().send({ operation: 'describe_database', database: 'system' }).expect(200);
 			ok(response.body[COMPONENT_TABLE], `${COMPONENT_TABLE} should be enumerated by describe_database`);

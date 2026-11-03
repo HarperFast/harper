@@ -28,6 +28,22 @@ function testScope(warnings = [], errors = []) {
 }
 
 describe('roles entry events', () => {
+	it('rejects a file containing system grants before applying any role', async () => {
+		const harness = testScope();
+		const applied = [];
+		handleApplication(harness.scope, async (role) => applied.push(role.role));
+		await assert.rejects(
+			harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from('first:\n  super_user: false\nlegacy:\n  system:\n    hdb_user:\n      read: true\n'),
+			}),
+			(error) => error.statusCode === 400 && /managed by Harper/.test(error.message)
+		);
+		assert.deepStrictEqual(applied, []);
+	});
+
 	it('ignores directory and unlink events without reading file contents', async () => {
 		const harness = testScope();
 		handleApplication(harness.scope, async () => {});

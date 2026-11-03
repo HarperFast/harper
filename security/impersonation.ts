@@ -1,6 +1,6 @@
 import type { User } from './user.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
-import { getUsersWithRolesCache } from './user.ts';
+import { getUsersWithRolesCache, appendSystemTablesToRole } from './user.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -37,6 +37,7 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 
 	// Enforce downgrade: never allow escalation
 	enforceDowngrade(impersonatedUser);
+	if (impersonatedUser.role?.permission) appendSystemTablesToRole(impersonatedUser.role);
 
 	// Tag for audit trail
 	impersonatedUser._impersonated = true;

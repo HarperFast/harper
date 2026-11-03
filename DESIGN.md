@@ -741,3 +741,7 @@ not restart a fully observed runtime, but a changed or missing imported helper, 
 input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
+
+## System permissions on roles
+
+`permission.system` is derived from `super_user` and the live system-table registry. Role API validation and roles-file preflight reject declarations under that key. `withoutSystemGrants` normalizes legacy role response copies for role lookup, listing and user info; cache assembly derives the managed map separately. Reads never write cleanup to storage: worker cache reloads must not overwrite a concurrent role alteration. The next successful alteration replaces the stored permission object. Legacy warnings occur once per role revision per process. Impersonation reinstalls the managed map after downgrading role flags, including for cached superusers.
