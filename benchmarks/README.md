@@ -433,3 +433,50 @@ Other tests were active during that run; the last case ranged from 168–573 µs
 Treat these as observations, not performance thresholds. Compare revisions using the same
 benchmark, runtime and machine under similar load, retaining all samples. Older revisions
 without optional scoring cannot provide an equivalent baseline for those cases.
+
+### Predicate-local lookup reuse comparison
+
+On 2026-11-03, three fresh-process runs per revision compared `3d1fcc45b` with
+the predicate-local lookup reuse change. Node 24.16.0, macOS ARM64; the committed
+benchmark and sample counts above were unchanged. Values are medians of the three
+process medians; brackets span process medians, not individual request latencies.
+
+| Fields | Optional clauses | Mode     | Before µs [range]       | After µs [range]       |
+| ------ | ---------------- | -------- | ----------------------- | ---------------------- |
+| 2      | 0                | default  | 0.308 [0.300–0.309]     | 0.321 [0.319–0.331]    |
+| 2      | 1                | default  | 0.617 [0.555–0.659]     | 0.624 [0.610–0.644]    |
+| 2      | 1                | explicit | 0.671 [0.669–0.800]     | 0.750 [0.748–0.806]    |
+| 2      | 32               | default  | 4.534 [4.163–4.575]     | 4.128 [4.034–4.272]    |
+| 2      | 32               | explicit | 7.107 [6.646–7.120]     | 5.484 [5.336–5.500]    |
+| 2      | 127              | default  | 14.038 [14.029–14.225]  | 13.034 [12.579–13.558] |
+| 2      | 127              | explicit | 23.398 [23.179–24.630]  | 19.270 [19.175–20.052] |
+| 16     | 0                | default  | 0.427 [0.386–0.435]     | 0.366 [0.351–0.371]    |
+| 16     | 1                | default  | 0.922 [0.914–0.994]     | 0.883 [0.860–0.908]    |
+| 16     | 1                | explicit | 1.650 [1.585–1.678]     | 1.620 [1.580–1.640]    |
+| 16     | 32               | default  | 8.856 [8.374–9.370]     | 6.197 [6.062–6.313]    |
+| 16     | 32               | explicit | 25.441 [22.854–27.745]  | 17.021 [16.875–17.382] |
+| 16     | 127              | default  | 31.564 [29.443–33.220]  | 21.422 [20.920–22.034] |
+| 16     | 127              | explicit | 96.189 [86.629–103.473] | 63.421 [62.932–64.816] |
+
+The 16-field/127-clause cases improved 32% (default) and 34% (explicit). The
+2-field/1-explicit-clause case increased 0.079 µs with overlapping process ranges;
+this does not establish a universal improvement or regression. All six runs passed.
+
+Separate Node inspector CPU/allocation sampling covered 364,000 requests per
+revision, including warmup and setup/teardown. Sampling included collected objects
+and estimated 29% less cumulative allocation; these are statistical estimates, not
+retained heap sizes. Observed minor GC fell from 517 events/84 ms to 360/50 ms.
+Major GC totals include 70 forced benchmark collections and are not production GC
+costs. Instrumented timings are excluded from the table above.
+
+A separate deployed smoke comparison used two documents, four indexed fields,
+HTTP QUERY and operations, concurrency 1/4, and 1/32/127 optional clauses. Each
+revision returned valid rankings for 4,608 measured requests plus 1,152 warmups.
+The test raised query limits to 1,024 terms/4,096 clauses so these expanded queries
+were admissible; it used admin credentials and does not measure restricted-user
+authorization overhead. At concurrency 4 with 127 clauses, HTTP medians moved
+2.816→2.720 ms (default fields) and 2.831→2.692 ms (explicit); operations medians
+moved 2.861→2.676 ms and 2.813→2.677 ms. One small operations case rose
+0.522→0.622 ms while p95 stayed near 1.91 ms. Separate localhost runs and ambient
+load limit causal attribution; these are bounded smoke observations, not
+catalog-scale throughput or production latency guarantees.

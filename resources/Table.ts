@@ -8954,19 +8954,23 @@ export function makeTable(options): TableResourceClass {
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
 					if (fullTextDefinition) {
-						validateFullTextLeaf(condition, fullTextMode, context, target, fullTextDefinition);
+						let sourceNames = validateFullTextLeaf(condition, fullTextMode, context, target, fullTextDefinition);
+						let defaultFields: string[] | undefined;
 						if (condition.should)
 							condition.should = condition.should.map((clause) => {
-								validateFullTextLeaf(
+								sourceNames = validateFullTextLeaf(
 									clause,
 									fullTextComparatorMode(clause.comparator),
 									context,
 									target,
-									fullTextDefinition
+									fullTextDefinition,
+									sourceNames
 								);
 								return {
 									...clause,
-									fields: clause.fields ? [...clause.fields] : fullTextDefinition.fields.map(({ name }) => name),
+									fields: clause.fields
+										? [...clause.fields]
+										: (defaultFields ??= fullTextDefinition.fields.map(({ name }) => name)).slice(),
 								};
 							});
 						condition.includeHighlights =
@@ -13127,8 +13131,9 @@ export function makeTable(options): TableResourceClass {
 		mode: string,
 		context: Context | undefined,
 		target: RequestTarget,
-		definition: FullTextDefinition
-	): void {
+		definition: FullTextDefinition,
+		sourceNames?: ReadonlySet<string>
+	): ReadonlySet<string> | undefined {
 		const fields = leaf.fields;
 		if (fields !== undefined) {
 			if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
@@ -13146,10 +13151,11 @@ export function makeTable(options): TableResourceClass {
 		if ((mode === 'prefix' || mode === 'fuzzy-prefix') && !definition.surfaceTerms)
 			throw new ClientError(`Full-text index '${definition.name}' does not store surface terms`, 400);
 		if (fields !== undefined) {
-			const sourceNames = new Set(definition.fields.map(({ name }) => name));
+			sourceNames ??= new Set(definition.fields.map(({ name }) => name));
 			if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
 				throw new ClientError(`Full-text index '${definition.name}' contains an unknown or duplicate field`, 400);
 		}
+		return sourceNames;
 	}
 
 	function assertFullTextReadAccess(
@@ -13164,8 +13170,12 @@ export function makeTable(options): TableResourceClass {
 		if (!permission && !user) return;
 		if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
 		const readable = attributesAsObject(permission.attribute_permissions, 'read');
-		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
-		if (searched.some((name) => !readable[name])) throw new AccessViolation(user);
+		if (
+			requestedFields
+				? requestedFields.some((name) => !readable[name])
+				: definition.fields.some(({ name }) => !readable[name])
+		)
+			throw new AccessViolation(user);
 	}
 	function throwUnknownFullTextIndex(
 		context: Context | undefined,

@@ -63,6 +63,77 @@ describe('published native full-text Table.search integration', () => {
 		setFullTextNativeBindingForTests(undefined);
 	});
 
+	it('isolates admitted optional fields across clauses, requests and index definitions', async () => {
+		const catalog = definition('catalogSearch', [{ name: 'title' }, { name: 'details' }]);
+		const titleOnly = definition('titleSearch', [{ name: 'title' }]);
+		Product = table({
+			database: `fulltext-admission-isolation-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'details', type: 'String' },
+			],
+			fullTextIndexes: [catalog, titleOnly],
+		});
+		await Product.put({ id: 'one', title: 'widget', details: 'trail' });
+		await waitFor(
+			() =>
+				['catalogSearch', 'titleSearch'].every(
+					(name) => fullTextDerivedIndexReadiness(Product, name).state === 'ready'
+				),
+			30000
+		);
+		const explicit = ['title'];
+		const make = (attribute) => ({
+			conditions: [
+				{
+					attribute,
+					comparator: 'matches',
+					value: 'widget',
+					should: [
+						{ comparator: 'matches', value: 'trail' },
+						{ comparator: 'matches', value: 'trail' },
+						{ comparator: 'matches', value: 'widget', fields: explicit },
+					],
+				},
+			],
+			select: ['id'],
+		});
+		const prepare = (target) => Product._prepareQueryConditions(target.conditions, 'and', target, {});
+		const combined = make('catalogSearch');
+		combined.conditions.push(...make('titleSearch').conditions);
+		const grouped = prepare(combined).conditions;
+		assert.deepStrictEqual(grouped[0].should[0].fields, ['title', 'details']);
+		assert.deepStrictEqual(grouped[1].should[0].fields, ['title']);
+		const invalidGroup = make('titleSearch');
+		invalidGroup.conditions[0].should[0].fields = ['details'];
+		const invalidCombined = make('catalogSearch');
+		invalidCombined.conditions.push(...invalidGroup.conditions);
+		assert.throws(
+			() => prepare(invalidCombined),
+			(error) => error.statusCode === 400
+		);
+		const target = make('catalogSearch');
+		const admitted = prepare(target).conditions[0].should;
+		assert.deepStrictEqual(
+			admitted.map((clause) => clause.fields),
+			[['title', 'details'], ['title', 'details'], ['title']]
+		);
+		assert.notStrictEqual(admitted[0].fields, admitted[1].fields);
+		assert.notStrictEqual(admitted[2].fields, explicit);
+		assert.notStrictEqual(admitted[0].fields, catalog.fields);
+		admitted[0].fields.push('not-a-schema-field');
+		admitted[2].fields.push('details');
+		assert.deepStrictEqual(admitted[1].fields, ['title', 'details']);
+		assert.deepStrictEqual(explicit, ['title']);
+		assert.deepStrictEqual(catalog.fields, [{ name: 'title' }, { name: 'details' }]);
+		assert.deepStrictEqual(prepare(make('catalogSearch')).conditions[0].should[0].fields, ['title', 'details']);
+		assert.deepStrictEqual(prepare(make('titleSearch')).conditions[0].should[0].fields, ['title']);
+		assert.deepStrictEqual(prepare(make('catalogSearch')).conditions[0].should[0].fields, ['title', 'details']);
+	});
+
 	it('boosts required matches and adds optional scores without changing eligibility', async () => {
 		const searchDefinition = definition('catalogSearch', [
 			{ name: 'title', weight: 1, highlight: true },
@@ -286,6 +357,40 @@ describe('published native full-text Table.search integration', () => {
 			select: ['title', '$score'],
 		};
 		assert.strictEqual((await collect(Product.search(allowedTarget, { user }))).length, 3);
+		const permission = user.role.permission[database].tables.Product;
+		const originalPermissions = permission.attribute_permissions;
+		const permissionTarget = {
+			...allowedTarget,
+			conditions: [{ ...condition, should: [{ comparator: 'matches', value: 'trail', fields: ['details'] }] }],
+		};
+		permission.attribute_permissions = originalPermissions.map((entry) => ({ ...entry, read: true }));
+		assert.strictEqual((await collect(Product.search(permissionTarget, { user }))).length, 3);
+		permission.attribute_permissions = originalPermissions.map((entry) => ({ ...entry }));
+		await assert.rejects(
+			async () => collect(Product.search(permissionTarget, { user })),
+			(error) => error.name === 'AccessViolation'
+		);
+		permission.attribute_permissions = originalPermissions.map((entry) => ({ ...entry, read: true }));
+		assert.strictEqual((await collect(Product.search(permissionTarget, { user }))).length, 3);
+		permission.attribute_permissions = originalPermissions;
+		for (const fields of [
+			['missing', 'details'],
+			['details', 'details'],
+		])
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search(
+							{
+								...allowedTarget,
+								conditions: [{ ...condition, should: [{ comparator: 'matches', value: 'trail', fields }] }],
+							},
+							{ user }
+						)
+					),
+				(error) => error.name === 'AccessViolation'
+			);
+
 		for (const should of [
 			[{ comparator: 'matches', value: 'trail', fields: ['details'] }],
 			[{ comparator: 'matches', value: 'trail' }],
