@@ -428,27 +428,36 @@ describe('Secondary-index range select', function () {
 				for (const Table of [Expiring, Cached]) {
 					await Table.put({ id: 1, score: 5, label: 'kept' });
 					await Table.put({ id: 2, score: 5, label: 'expired' }, { expiresAt: Date.now() - 1000 });
-					await assertCovered(Table, { conditions: condition, select: ['id', 'score'] }, [
-						{ id: 1, score: 5 },
-						{ id: 2, score: 5 },
-					]);
 					assert.deepStrictEqual(
 						await rows(Table, { conditions: condition, select: ['id', 'label'] }, { onlyIfCached: true }),
 						stored
 					);
 				}
-				assert.equal(sourceGets, 0);
+				await assertCovered(Expiring, { conditions: condition, select: ['id', 'score'] }, [
+					{ id: 1, score: 5 },
+					{ id: 2, score: 5 },
+				]);
 				assert.deepStrictEqual(await rows(Expiring, { conditions: condition, select: ['id', 'label'] }), stored);
 				assert.deepStrictEqual(
 					rowsSync(Expiring, { conditions: [{ attribute: 'label', value: 'expired' }], select: ['id', 'label'] }),
 					[{ id: 2, label: 'expired' }]
 				);
 				assert.equal(await Expiring.get(2), undefined);
+				assert.equal(sourceGets, 0);
+				// a caching table refreshes the expired row, so it is never covered
+				const { result, reads } = await withReads(Cached, () =>
+					rows(Cached, { conditions: condition, select: ['id', 'score'] })
+				);
+				assert.deepStrictEqual(result, [
+					{ id: 1, score: 5 },
+					{ id: 2, score: 5 },
+				]);
+				assert.ok(reads > 0);
+				assert.equal(sourceGets, 1);
 				assert.deepStrictEqual(await rows(Cached, { conditions: condition, select: ['id', 'label'] }), [
 					{ id: 1, label: 'kept' },
 					{ id: 2, label: 'refreshed' },
 				]);
-				assert.equal(sourceGets, 1);
 			} finally {
 				Expiring.dropTable();
 				Cached.dropTable();
@@ -777,7 +786,6 @@ describe('Secondary-index range select', function () {
 					[{ id: 1 }, { id: 3 }, { id: 2 }, { id: 3 }]
 				);
 				assert.ok(result.some(({ id }) => Array.isArray(id) && id[0] === null && id[1] === 7));
-				// the two -0-shaped entries, which take the record path
 				assert.equal(reads, 2);
 				assert.deepStrictEqual(
 					await rows(Reopened, { conditions: open, select: ['id', 'value'] }),

@@ -7905,6 +7905,8 @@ export function makeTable(options): TableResourceClass {
 					!postOrdering &&
 					!recordAccess &&
 					!residencyPolicy &&
+					// an expired cached row is refreshed from the source, which only a record load does
+					!hasSourceGet &&
 					(context as any)?.replicateFrom !== false
 						? coveredSelectAttribute(select)
 						: undefined;
@@ -8962,7 +8964,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						// a query never hides an expired record; a caching table refreshes it (resources/DESIGN.md)
+						// resources/DESIGN.md, A past-expiry record stays queryable until eviction
 						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
 						if (context.onlyIfCached) {

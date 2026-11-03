@@ -194,7 +194,7 @@ A read-only process stages no writes: every producer passes `DatabaseTransaction
 
 ## A past-expiry record stays queryable until eviction
 
-Eviction trails expiry. Until then search returns an expired record as stored, so covered and loaded selects agree; a caching table refreshes it unless only-if-cached or `includeExpired` (SQL writes). With no source get, get, only-if-cached get (504), subscribe and `withLocalEntry` (no `ETag`) treat it as absent (`isHiddenExpiry`). Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
+Eviction trails expiry. Until then search returns an expired record as stored; a caching table, never covered, refreshes it unless only-if-cached or `includeExpired` (SQL writes). With no source get, get, only-if-cached get (504), subscribe and `withLocalEntry` (no `ETag`) treat it as absent (`isHiddenExpiry`). Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
 
 ## RocksDB range activity and snapshot expiration
 
