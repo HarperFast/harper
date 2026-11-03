@@ -97,7 +97,6 @@ describe('REST condition value conversion', () => {
 			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [condition] })), [2, 3]);
 			assert.strictEqual(condition.value, '25');
 			assert.strictEqual(chained.value, '30');
-			// the same child reused against a String attribute keeps comparing strings
 			const onString = { attribute: 'code', comparator: 'ge', value: '25', chainedConditions: [chained] };
 			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [onString] })), [2, 3]);
 		});
