@@ -267,6 +267,14 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		const straddling = 'a'.repeat(211) + '\n' + 'b'.repeat(69) + 'c'.repeat(500);
 		assert.strictEqual(v2Like('%\n' + run.slice(1) + '%', straddling), true);
 		assert.strictEqual(alasql.utils.like('%\n' + run.slice(1) + '%', straddling), true);
+		// Line breaks fit at 0 and at 35, which overlap; only the second also fits the literals.
+		const twoLines = '%\n' + '_'.repeat(33) + 'x\n' + '_'.repeat(34) + '%';
+		const lines = (x) => '\n' + 'a'.repeat(33) + 'y\n' + 'a'.repeat(33) + x + '\n' + 'a'.repeat(34);
+		assert.strictEqual(v2Like(twoLines, lines('x')), true);
+		assert.strictEqual(v2Like(twoLines, lines('z')), false);
+		// The literals fit at 35, but a line break falls under its last run of _.
+		assert.strictEqual(v2Like(twoLines, lines('x').slice(0, 81) + '\n' + 'a'.repeat(23)), false);
+		assert.strictEqual(alasql.utils.like(twoLines, lines('X')), true);
 		const lineFree = 'a'.repeat(211) + 'b' + 'c'.repeat(69) + 'd'.repeat(500);
 		assert.strictEqual(v2Like('%b' + run.slice(1) + '%', lineFree), true);
 		assert.strictEqual(alasql.utils.like('%b' + run.slice(1) + '%', lineFree), true);
@@ -526,6 +534,9 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		['%' + '_'.repeat(5_000) + '[^a]' + '_'.repeat(4_999) + '%', 'a'.repeat(4_998) + '\n', 1_000_000, '', 'legacy'],
 		['%[^\n]' + '_'.repeat(9_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', 'legacy'],
 		['%[b\n-]' + '_'.repeat(9_999) + '%', 'c', 1_000_000, '', 'legacy'],
+		// A line feed under `_` one character in, or at the very end, at nearly every start.
+		['%' + '_\na'.repeat(3_333) + '%', '\n\na', 1_000_000],
+		['%' + 'b\n'.repeat(4_999) + 'b_%', 'b\n', 1_000_000],
 		// Every segment fits where it starts: finding where the line ends must not cost the value each time.
 		[('%' + '_'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
 	];

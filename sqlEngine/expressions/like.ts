@@ -60,6 +60,11 @@ interface Segment {
 	relaxed: RegExp | undefined;
 	placeholder: string;
 	substitute: string;
+	// Set when only literals match line terminators: then every match window holds line terminators exactly
+	// where the segment has them, so the value's line-terminator kinds (`lineTerminatorKind`) must spell
+	// `lineKinds` there. `lineKindsFailure` is its KMP failure table.
+	lineKinds: Uint8Array | undefined;
+	lineKindsFailure: Int32Array | undefined;
 }
 
 const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
@@ -84,6 +89,8 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	let ones: Segment['ones'] = [];
 	let literals = new Set<string>();
 	let classes: RegExp[] = [];
+	let kinds: number[] = [];
+	let classMatchesLineTerminator = false;
 	const endSegment = () => {
 		const literal = text !== undefined && (!flags || units.length === 0);
 		const segment: Segment = {
@@ -96,6 +103,8 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 			relaxed: undefined,
 			placeholder: '',
 			substitute: '',
+			lineKinds: undefined,
+			lineKindsFailure: undefined,
 		};
 		if (!literal && !lineFree && ones.length > 0 && units.length > DIRECT_SEARCH_WIDTH) {
 			const pair = placeholderPair(literals, classes);
@@ -106,6 +115,10 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 				const relaxedUnits = units.slice();
 				for (const run of ones) relaxedUnits.fill(one, run.start, run.end);
 				segment.relaxed = new RegExp(relaxedUnits.join(''), flags + 'g');
+				if (!classMatchesLineTerminator) {
+					segment.lineKinds = Uint8Array.from(kinds);
+					segment.lineKindsFailure = kmpFailure(segment.lineKinds);
+				}
 			}
 		}
 		segments.push(segment);
@@ -115,6 +128,8 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 		ones = [];
 		literals = new Set();
 		classes = [];
+		kinds = [];
+		classMatchesLineTerminator = false;
 	};
 	for (const token of tokens) {
 		if (token.kind === 'any') {
@@ -125,18 +140,23 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 			if (text !== undefined) text += token.char;
 			if (LINE_TERMINATORS.includes(token.char)) lineFree = false;
 			literals.add(token.char);
+			kinds.push(lineTerminatorKind(token.char.charCodeAt(0)));
 			units.push(token.char.replace(REGEXP_SYNTAX, '\\$&'));
 		} else {
 			text = undefined;
 			if (token.kind === 'class') {
 				const unit = new RegExp(token.source, flags);
-				if (LINE_TERMINATORS.some((terminator) => unit.test(terminator))) lineFree = false;
+				if (LINE_TERMINATORS.some((terminator) => unit.test(terminator))) {
+					lineFree = false;
+					classMatchesLineTerminator = true;
+				}
 				classes.push(unit);
 			} else {
 				const run = ones.at(-1);
 				if (run?.end === units.length) run.end++;
 				else ones.push({ start: units.length, end: units.length + 1 });
 			}
+			kinds.push(0);
 			units.push(token.kind === 'one' ? '.' : token.source);
 		}
 	}
@@ -196,6 +216,7 @@ function findSegment(segment: Segment, value: string, from: number, lastStart: n
 		regExp.lastIndex = from;
 		found = regExp.test(value) ? regExp.lastIndex - width : -1;
 	} else if (segment.lineFree) return findBetweenLineTerminators(segment, value, from, lastStart);
+	else if (segment.lineKinds) return findByLineKinds(segment, value, from, lastStart);
 	else return findAcrossLineTerminators(segment, value, from, lastStart);
 	return found <= lastStart ? found : -1;
 }
@@ -217,6 +238,35 @@ function findBetweenLineTerminators(segment: Segment, value: string, from: numbe
 			start = scanEnd - width + 1;
 			size *= 2;
 		}
+	}
+	return -1;
+}
+
+// Candidates from a KMP search of the line-terminator kinds, which is linear in the value, and from the
+// relaxed RegExp alternate until they agree; a start both accept is a match.
+function findByLineKinds(segment: Segment, value: string, from: number, lastStart: number): number {
+	const { width } = segment;
+	const lineKinds = segment.lineKinds!;
+	const failure = segment.lineKindsFailure!;
+	const relaxedValue = value.includes(segment.placeholder)
+		? value.replaceAll(segment.placeholder, segment.substitute)
+		: value;
+	const end = lastStart + width;
+	let matched = 0;
+	let position = from;
+	let atLeast = from;
+	while (position < end) {
+		const kind = lineTerminatorKind(value.charCodeAt(position++));
+		while (matched > 0 && lineKinds[matched] !== kind) matched = failure[matched - 1];
+		if (lineKinds[matched] === kind) matched++;
+		if (matched < width) continue;
+		matched = failure[width - 1];
+		const candidate = position - width;
+		if (candidate < atLeast) continue;
+		const found = search(segment.relaxed!, width, relaxedValue, candidate, end);
+		if (found < 0) return -1;
+		if (found === candidate) return found;
+		atLeast = found;
 	}
 	return -1;
 }
@@ -283,6 +333,20 @@ function clearOfLineTerminators(
 		}
 	}
 	return start;
+}
+
+function lineTerminatorKind(code: number): number {
+	return code === 10 ? 1 : code === 13 ? 2 : code === 0x2028 ? 3 : code === 0x2029 ? 4 : 0;
+}
+
+function kmpFailure(pattern: Uint8Array): Int32Array {
+	const failure = new Int32Array(pattern.length);
+	for (let i = 1, matched = 0; i < pattern.length; i++) {
+		while (matched > 0 && pattern[i] !== pattern[matched]) matched = failure[matched - 1];
+		if (pattern[i] === pattern[matched]) matched++;
+		failure[i] = matched;
+	}
+	return failure;
 }
 
 // Index p holds the position of the last line terminator before p, or -1.
