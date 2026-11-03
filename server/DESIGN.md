@@ -93,10 +93,10 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.                                                                                                                                                                                              |
 
 Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.ts`.
-Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
-calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN makes that worker terminal. HTTP startup checks the flag after startup/component awaits and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, registered drains, scope disposal and branch-database closure before exit; the existing termination backstops still bound cleanup. Main startup and rolling reloads also check resumed awaits before starting replacements.
-`shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
-and it force-terminates the remaining worker set rather than waiting for application drain hooks.
+Once set, it blocks every worker replacement path and makes new `startWorker()`
+calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN is terminal. HTTP startup checks the flag after each await and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, drains, scope disposal and branch-database closure. Main startup and rolling reloads recheck it before starting replacements.
+A signal runs `shutdownProcess()`: SHUTDOWN with `exitDeadline` reaches every live worker (`wasShutdown` precedes a restart's SHUTDOWN). Scopes close after servers drain, main disposes after workers exit, and `process.exit` runs once; the storage close stays unbounded (rocksdb-js#1001).
+`shutdownWorkersNow()` stays immediate: best-effort SHUTDOWN, then force-termination.
 
 A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
 `SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a
@@ -105,7 +105,7 @@ component deploy is not live pool-wide until `restartWorkers()` resolves. For th
 started after their predecessor releases its exclusive ports (Windows/macOS/Bun) — and reports how
 many workers it left on the old code because a replacement never came up, versus how many
 replacements never started after their predecessor was already gone. Other thread types start their
-replacement without being awaited. Each wait is bounded by a per-worker startup backstop, so
+replacement without being awaited. A per-worker startup backstop bounds each wait, so
 resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
 "the component is live" must await it (see `deployComponent` in `components/operations.ts`).
 
@@ -115,7 +115,7 @@ nothing until main posts `CHILD_ADMITTED` (`threadServer.startServers`, `threads
 as an ordinary `SHUTDOWN`. Since it binds nothing, it boots beside its predecessor even where the two cannot share
 a port, and the predecessor is retired at admission. Restarts that start replacements are serialized on main
 (`replacementRestarts`), none starts one while a release is armed (`untilNoCertificationArmed`), and the worker
-that asked for a certifying restart is replaced last.
+asking for a certifying restart is replaced last.
 
 Every HTTP worker's load report also lists the applications its loader placed on it (`applicationsPlacedOnThisThread`),
 which main keeps as what that worker may hold until it exits, since nothing unloads an application; one that has not

@@ -533,8 +533,8 @@ interface ExitStatus {
 	signalCode: NodeJS.Signals | null;
 }
 
-// Harper's SIGTERM/SIGINT/SIGQUIT handler (bin/run.ts addExitListeners) calls process.exit(0)
-// after beginProcessShutdown(), so a graceful shutdown reads exitCode:0, signalCode:null — not
+// Harper's SIGTERM/SIGINT/SIGQUIT handler (bin/run.ts addExitListeners) ends its graceful shutdown with
+// process.exit(0), so a graceful shutdown reads exitCode:0, signalCode:null — not
 // merely "didn't get SIGKILLed". A process that was killed BY an uncaught signal instead reads
 // exitCode:null, signalCode:'SIGTERM', and never ran that clean-shutdown path.
 function assertGracefulExit(status: ExitStatus, label: string): void {
