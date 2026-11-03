@@ -413,8 +413,9 @@ jobs:
 				'      - run: git fetch origin "a\\";b" "$SHA"\n',
 				'      - run: git fetch origin a\\;b "$SHA"\n',
 				'      - run: git fetch <&- origin "$SHA"\n',
-				'      - run: |\n          REF=${{ github.event.pull_request.head.sha }}\n          git checkout "$REF"\n',
 				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ env.SHA }}\n',
+				'      - run: |\n          SHA=main\n          git checkout ${{ env.SHA }}\n',
+				'      - run: git checkout ${{ env.SHA }}\n      - run: echo "SHA=main" >> "$GITHUB_ENV"\n',
 			]) {
 				assert.match(problemsOf(withDeployStep(step)), /checks out the pull request's head/, step);
 			}
@@ -490,6 +491,40 @@ jobs:
 			]);
 		});
 
+		it("leaves a variable a script assigns unverified, whatever step or order assigns the pull request's head", () => {
+			const head = '${{ github.event.pull_request.head.sha }}';
+			const unverified = (command) => [
+				`that \`${command}\` in job "deploy" does not check out the pull request's head`,
+			];
+			for (const [steps, command] of [
+				[
+					`      - run: git checkout "$REF"\n        env:\n          REF: main\n      - run: REF=${head}; echo "$REF"\n`,
+					'git checkout "$REF"',
+				],
+				[
+					`      - run: |\n          REF=${head}\n          REF=main\n          git checkout "$REF"\n`,
+					'git checkout "$REF"',
+				],
+				[
+					`      - run: REF=${head}; REF=main; git checkout "$REF"\n`,
+					'REF=' + head + '; REF=main; git checkout "$REF"',
+				],
+				[`      - run: |\n          REF=${head}\n          git checkout "$REF"\n`, 'git checkout "$REF"'],
+				[
+					`      - run: |\n          REF=main\n          git checkout "$REF"\n        env:\n          REF: ${head}\n`,
+					'git checkout "$REF"',
+				],
+				[`      - run: |\n          read -r SHA < .base-sha\n          git checkout "$SHA"\n`, 'git checkout "$SHA"'],
+				[`      - run: echo "SHA=main" >> "$GITHUB_ENV"\n      - run: git checkout "$SHA"\n`, 'git checkout "$SHA"'],
+			]) {
+				assert.deepStrictEqual(
+					check(withDeployStep(steps)),
+					{ problems: [], unverified: [], unsafe: unverified(command) },
+					steps
+				);
+			}
+		});
+
 		it("notes a workflow that leaves a closed pull request's preview until it expires", () => {
 			const noCleanup = starter.slice(0, starter.indexOf('  cleanup:\n'));
 			assert.deepStrictEqual(check(noCleanup), {
@@ -506,6 +541,35 @@ jobs:
 			assert.deepStrictEqual(check(notOnClose).unverified, [
 				"that a closed pull request's preview is dropped before it expires, since its pull_request_target types leave out closed",
 			]);
+		});
+
+		it('notes a cleanup job that cannot run when a pull request closes, or whose condition it cannot read', () => {
+			const cleanupIf =
+				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n";
+			const excluded = starter.replace(cleanupIf, deployIf);
+			assert.deepStrictEqual(check(excluded), {
+				problems: [],
+				unverified: [
+					`that a closed pull request's preview is dropped before it expires, since job "cleanup" does not run when a pull request closes`,
+				],
+				unsafe: [],
+			});
+			const afterDeploy = starter.replace(cleanupIf, `${cleanupIf}    needs: [deploy]\n`);
+			assert.deepStrictEqual(check(afterDeploy).unverified, check(excluded).unverified);
+			const unknown = `that job "cleanup" runs when a pull request closes, which is what drops its preview before it expires`;
+			for (const condition of [
+				"github.event.action == 'closed' && github.event.pull_request.merged",
+				"always() && github.event.action == 'closed'",
+				"github.event.action == 'closed' || github.event.action == 'labeled'",
+			]) {
+				const unread = starter.replace(cleanupIf, `    if: ${condition}${sameRepository}\n`);
+				assert.deepStrictEqual(check(unread).unverified, [unknown], condition);
+			}
+			const gate = `  gate:\n${cleanupIf}    runs-on: ubuntu-latest\n`;
+			const gated = starter.replace(cleanupIf, '    needs: [gate]\n').replace('jobs:\n', `jobs:\n${gate}`);
+			assert.deepStrictEqual(check(gated), { problems: [], unverified: [], unsafe: [] });
+			const looped = gated.replace(`  gate:\n${cleanupIf}`, `  gate:\n${cleanupIf}    needs: [cleanup]\n`);
+			assert.deepStrictEqual(check(looped).unverified, [unknown]);
 		});
 
 		it("accepts a checkout of the workflow's own branch, and cannot read a ref given as an expression", () => {
