@@ -115,9 +115,10 @@ describe('per-log purge bounds', function () {
 		if (isLMDB) return this.skip(); // no native purge
 		const Table = backdatedTable(400 * DAY_MS);
 		await Table.put('unseen', { name: 'x' });
+		const horizon = Date.now() - nativeRetention(Table.auditStore);
 		const bound = getLogPurgeBound(Table.auditStore, ['local']);
 		assert.ok(bound >= getAuditFloor(Table.auditStore));
-		assert.ok(bound >= Date.now() - nativeRetention(Table.auditStore));
+		assert.ok(bound >= horizon);
 	});
 
 	it('keeps an idle log at its exact newest key, not at the cutoff', async () => {
@@ -140,7 +141,7 @@ describe('per-log purge bounds', function () {
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), newest);
 	});
 
-	it('takes the cutoff and more for a log written through a whole retention window', async function () {
+	it('takes the cutoff for a log written through a whole retention window', async function () {
 		if (isLMDB) return this.skip(); // one key-ordered store, removed by key
 		const Table = freshTable();
 		await Table.put('older', { name: 'x' });
@@ -148,9 +149,22 @@ describe('per-log purge bounds', function () {
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		await Table.put('newer', { name: 'x' });
 		raiseAuditFloor(Table.auditStore, cutoff, true);
-		// a segment last written before the cutoff can hold keys up to the clock margin past it
-		assert.strictEqual(recordedLogs(Table.auditStore).local[0], cutoff + 60_000);
-		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['local']), cutoff + 60_000);
+		assert.strictEqual(recordedLogs(Table.auditStore).local[0], cutoff);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['local']), cutoff);
+	});
+
+	it('stays at or below a caught-up follower while a log written just before it goes idle', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		const quietPass = Date.now();
+		raiseAuditFloor(Table.auditStore, quietPass - 1000, true);
+		await Table.put('last', { name: 'x' });
+		const followerAt = Math.max(...localLogKeys(Table.auditStore));
+		// passes while the write is inside the window, then once it has aged out
+		raiseAuditFloor(Table.auditStore, quietPass + 1, true);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) <= followerAt);
+		raiseAuditFloor(Table.auditStore, followerAt + 1000, true);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['local']), followerAt);
 	});
 
 	it('takes the native retention horizon once a log has not been quiet within that retention', async function () {
@@ -160,7 +174,8 @@ describe('per-log purge bounds', function () {
 		record.logs.local = [1, Date.now() - 400 * DAY_MS];
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
-		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= Date.now() - nativeRetention(Table.auditStore));
+		const horizon = Date.now() - nativeRetention(Table.auditStore);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= horizon);
 	});
 
 	it('keeps the native horizon when a pass finds a log emptied after its quiet time aged out', async function () {
@@ -171,8 +186,8 @@ describe('per-log purge bounds', function () {
 		record.logs.local = [1, Date.now() - 400 * DAY_MS];
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
-		raiseAuditFloor(Table.auditStore, Date.now() + 1000, true);
 		const horizon = Date.now() - nativeRetention(Table.auditStore);
+		raiseAuditFloor(Table.auditStore, Date.now() + 1000, true);
 		assert.ok(recordedLogs(Table.auditStore).local[0] >= horizon);
 		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= horizon);
 	});

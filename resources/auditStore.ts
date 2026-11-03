@@ -815,7 +815,6 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 	const now = Date.now();
 	let observedBounds: Map<string, LogPurgeEntry> | undefined;
 	let nativeHorizon: number | undefined;
-	const segmentMargin = resumeTracked ? CLOCK_AHEAD_MARGIN_MS : 0;
 	if (auditStore?.getBinary) {
 		const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
 		const floor = decodeAuditFloor(stored);
@@ -823,7 +822,7 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 		nativeHorizon = nativePurgeHorizon(auditStore, now);
 		// an unreadable native retention leaves the prune unobserved: the cutoff then bounds every log
 		if (observeLogs && nativeHorizon !== undefined && Number.isFinite(cutoff) && Number.isFinite(floor)) {
-			const base = recorded ?? freshLogPurgeBounds(floor, segmentMargin);
+			const base = recorded ?? freshLogPurgeBounds(floor);
 			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now);
 		}
 		const resume = resumeTracked ? auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY) : undefined;
@@ -831,8 +830,7 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 			stored !== undefined &&
 			!(cutoff > floor) &&
 			(!resumeTracked || (resume !== undefined && !(cutoff > decodeAuditFloor(resume)))) &&
-			(!Number.isFinite(floor) ||
-				logPurgeBoundsCover(recorded, cutoff, observedBounds, segmentMargin, nativeHorizon ?? 0, now))
+			(!Number.isFinite(floor) || logPurgeBoundsCover(recorded, cutoff, observedBounds, nativeHorizon ?? 0, now))
 		)
 			return;
 	}
@@ -859,7 +857,6 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 				floorBefore,
 				cutoff,
 				observedBounds,
-				segmentMargin,
 				now
 			);
 			if (bounds) writes.push([LOG_PURGE_BOUNDS_KEY, bounds]);
@@ -881,12 +878,13 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
  * rocksdb-js deletes whole segments by file mtime, for `purgeLogs` and on its own (`transactionLogRetention`)
  * when a log opens, closes or rotates, outside `raiseAuditFloor`. A segment last written before `quietAt` held
  * only keys up to `bound`, so no native purge reaches past `bound` while `quietAt` is within the native
- * retention; once it is not, the native horizon bounds the log too.
+ * retention; once it is not, the native horizon bounds the log too. A log written past the cutoff is bounded
+ * by the cutoff, which misses a key minted ahead of this node's clock (a peer's skew) in a segment last
+ * written before it, as the time-based rule did; any margin above the cutoff would sit above the position of
+ * a follower that is caught up with a log that just went idle.
  */
 const LOG_PURGE_BOUNDS_KEY = Symbol.for('log-purge-bounds');
 const LMDB_PURGE_LOG = '';
-// a segment can hold keys a little ahead of its mtime: minted ahead of the clock, or on a peer's clock
-const CLOCK_AHEAD_MARGIN_MS = 60_000;
 type LogPurgeEntry = [bound: number, quietAt: number];
 type LogPurgeBounds = { epoch: number; cutoff: number; observedAt: number; logs: Record<string, LogPurgeEntry> };
 
@@ -919,9 +917,8 @@ function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
 	return { epoch: value.epoch, cutoff: value.cutoff, observedAt: value.observedAt, logs };
 }
 
-// `segmentMargin`: CLOCK_AHEAD_MARGIN_MS on RocksDB, whose prunes remove whole segments by mtime; 0 on LMDB
-function freshLogPurgeBounds(floor: number, segmentMargin: number): LogPurgeBounds {
-	return { epoch: floor + segmentMargin, cutoff: floor, observedAt: 0, logs: {} };
+function freshLogPurgeBounds(floor: number): LogPurgeBounds {
+	return { epoch: floor, cutoff: floor, observedAt: 0, logs: {} };
 }
 
 /**
@@ -942,8 +939,7 @@ function recordedEntry(recorded: LogPurgeBounds, name: string): LogPurgeEntry {
 /** A log's bound as recorded, raised to the native purge horizon once the log has not been quiet within it. */
 function exposedBound(recorded: LogPurgeBounds, name: string, nativeHorizon: number): number {
 	const [bound, quietAt] = recordedEntry(recorded, name);
-	const native = quietAt < nativeHorizon ? nativeHorizon + CLOCK_AHEAD_MARGIN_MS : 0;
-	return Math.max(recorded.epoch, bound, native);
+	return Math.max(recorded.epoch, bound, quietAt < nativeHorizon ? nativeHorizon : 0);
 }
 
 // Uncommitted entries too: a batch already written can commit and become purgeable before the prune runs.
@@ -1014,7 +1010,6 @@ function observeLogPurgeBounds(
 		warnContained('Error listing transaction logs to bound a prune', error);
 		return undefined;
 	}
-	const busyBound = cutoff + CLOCK_AHEAD_MARGIN_MS;
 	for (const name of names) {
 		const known = exposedBound(recorded, name, nativeHorizon);
 		const [, quietAt] = recordedEntry(recorded, name);
@@ -1023,12 +1018,12 @@ function observeLogPurgeBounds(
 			quietMaximum = quietLogMaximum(rootStore.useLog(name), cutoff, known);
 		} catch (error) {
 			warnContained(`Error reading transaction log ${name} to bound a prune`, error);
-			observed.set(name, [Math.max(known, busyBound), quietAt]);
+			observed.set(name, [Math.max(known, cutoff), quietAt]);
 			continue;
 		}
 		if (quietMaximum !== undefined) observed.set(name, [quietMaximum, now]);
 		else if (quietAt >= cutoff) observed.set(name, [known, quietAt]);
-		else observed.set(name, [Math.max(known, busyBound), quietAt]);
+		else observed.set(name, [Math.max(known, cutoff), quietAt]);
 	}
 	return observed;
 }
@@ -1042,12 +1037,11 @@ function logPurgeBoundsCover(
 	recorded: LogPurgeBounds | undefined,
 	cutoff: number,
 	observed: Map<string, LogPurgeEntry> | undefined,
-	segmentMargin: number,
 	nativeHorizon: number,
 	now: number
 ): boolean {
 	if (!recorded || cutoff > recorded.cutoff) return false;
-	if (!observed) return recorded.epoch >= cutoff + segmentMargin;
+	if (!observed) return recorded.epoch >= cutoff;
 	const refreshBefore = nativeHorizon > 0 ? (now + nativeHorizon) / 2 : 0;
 	if (recorded.observedAt < refreshBefore) return false;
 	for (const [name, [bound, quietAt]] of observed) {
@@ -1068,12 +1062,11 @@ function raisedLogPurgeBounds(
 	floor: number,
 	cutoff: number,
 	observed: Map<string, LogPurgeEntry> | undefined,
-	segmentMargin: number,
 	now: number
 ): Uint8Array | undefined {
 	if (!Number.isFinite(floor)) return undefined;
-	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(floor, segmentMargin);
-	const epoch = observed ? base.epoch : Math.max(base.epoch, cutoff + segmentMargin);
+	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(floor);
+	const epoch = observed ? base.epoch : Math.max(base.epoch, cutoff);
 	const logs = { ...base.logs };
 	for (const [name, [bound, quietAt]] of observed ?? []) {
 		const [baseBound, baseQuietAt] = logs[name] ?? [0, 0];
@@ -1115,8 +1108,7 @@ function establishLogPurgeBounds(auditStore: any): void {
 			(read) => {
 				const recordedFloor = decodeAuditFloor(read(AUDIT_FLOOR_KEY));
 				if (read(LOG_PURGE_BOUNDS_KEY) !== undefined || !Number.isFinite(recordedFloor)) return undefined;
-				const segmentMargin = isRocksStore(auditStore) ? CLOCK_AHEAD_MARGIN_MS : 0;
-				return [[LOG_PURGE_BOUNDS_KEY, pack(freshLogPurgeBounds(recordedFloor, segmentMargin))]];
+				return [[LOG_PURGE_BOUNDS_KEY, pack(freshLogPurgeBounds(recordedFloor))]];
 			},
 			'transaction-log purge bounds'
 		);
