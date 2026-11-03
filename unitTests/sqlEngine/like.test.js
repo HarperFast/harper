@@ -185,6 +185,60 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		}
 	});
 
+	it('agrees with the reference when runs of _ meet line terminators the pattern also matches', () => {
+		// [pattern text, legacy only, accepts]
+		const PIECES = [
+			['%', false, null],
+			['_', false, (c) => !LINE_TERMINATOR.test(c)],
+			['a', false, (c) => c === 'a'],
+			['\n', false, (c) => c === '\n'],
+			['\r', false, (c) => c === '\r'],
+			['[^a]', true, (c) => c !== 'a'],
+			['[a\n]', true, (c) => c === 'a' || c === '\n'],
+			['[^\uffff]', true, (c) => c !== '\uffff'],
+			['\uffff', false, (c) => c === '\uffff'],
+		];
+		const reference = (pieces, value) => {
+			let row = [true, ...Array(value.length).fill(false)];
+			for (const [, , accepts] of pieces) {
+				const next = [!accepts && row[0]];
+				for (let j = 1; j <= value.length; j++) {
+					next.push(accepts ? row[j - 1] && accepts(value[j - 1]) : next[j - 1] || row[j]);
+				}
+				row = next;
+			}
+			return row[value.length];
+		};
+		const next = seededRandom(2028);
+		for (let i = 0; i < 6000; i++) {
+			const legacy = i % 2 === 1;
+			const pieces = [PIECES[0]];
+			for (let n = 1 + (next() % 6); n > 0; n--) {
+				const piece = PIECES[1 + (next() % (PIECES.length - 1))];
+				if (piece[1] && !legacy) continue;
+				for (let k = piece[0] === '_' ? next() % 8 : 1; k > 0; k--) pieces.push(piece);
+			}
+			pieces.push(PIECES[0]);
+			if (next() % 3 === 0) pieces.splice(1 + (next() % (pieces.length - 2)), 0, PIECES[0]);
+			const pattern = pieces.map(([text]) => text).join('');
+			const value = randomString(next, 'aaab\n\n\r\uffff', 40);
+			const label = `${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`;
+			const actual = legacy ? alasql.utils.like(pattern, value) : v2Like(pattern, value);
+			assert.strictEqual(actual, reference(pieces, value), (legacy ? 'legacy ' : 'v2 ') + label);
+		}
+	});
+
+	it('moves a run of _ only just past the line terminator it covers', () => {
+		// The only match starts right after the terminator the first candidate puts inside the run.
+		assert.strictEqual(v2Like('%\n__%', '\n\nab'), true);
+		assert.strictEqual(v2Like('%\n__%', '\n\na\n'), false);
+		assert.strictEqual(v2Like('%_\n__%', 'a\n\nx\nbc'), true);
+		assert.strictEqual(alasql.utils.like('%[^a]__%', '\n\nbc'), true);
+		assert.strictEqual(alasql.utils.like('%[^a]__%', '\n\nb\n'), false);
+		assert.strictEqual(v2Like('%___%', 'ab\ncde'), true);
+		assert.strictEqual(v2Like('%___%', 'ab\ncd\ne'), false);
+	});
+
 	it('honors ESCAPE for %, _, the escape itself, and an ordinary character', () => {
 		assert.strictEqual(v2Like('t0!%', 't0%', '!'), true);
 		assert.strictEqual(v2Like('t0!%', 't0!z', '!'), false);
@@ -412,10 +466,14 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		['%' + '_'.repeat(5_000) + '!_' + '_'.repeat(4_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '!'],
 		['%a%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\n', 1_000_000],
 		['%_%', '\n', 1_000_000],
+		// Units that accept a line terminator: the search must still move each run of _ past one.
+		['%' + '\n'.repeat(5_000) + '_'.repeat(5_000) + '%', '\n', 300_000],
+		['%' + '_'.repeat(5_000) + '[^a]' + '_'.repeat(4_999) + '%', 'a'.repeat(4_998) + '\n', 1_000_000, '', 'legacy'],
 	];
 
 	for (const engine of ['v2', 'legacy']) {
-		for (const [pattern, valueUnit, valueLength, escape] of CASES) {
+		for (const [pattern, valueUnit, valueLength, escape, only] of CASES) {
+			if (only && only !== engine) continue;
 			const shown = JSON.stringify(pattern.length > 40 ? pattern.slice(0, 40) + '…' : pattern);
 			const unitShown = JSON.stringify(valueUnit.length > 2 ? '…' + valueUnit.slice(-2) : valueUnit).replace(
 				'\u2028',
