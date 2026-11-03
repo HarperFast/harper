@@ -20,26 +20,26 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 - `tokenExchange.ts` — policy selection, replay, minting, audit. Verification is memoized per audience, so N policies sharing one cost one signature check.
 - `providers/` — `assertPolicyIsSpecific` / `assertAudienceIsSpecific` / `normalizeClaims` / `describePrincipal` / optional `vetoClaims`, resolved by normalized issuer.
 
-**An unregistered issuer gets `providers/generic.ts`, which is strict rather than permissive:** the policy must pin `sub`. That is what makes Kubernetes service accounts, GCP service accounts, and SPIFFE SVIDs work with zero provider code — each has a stable canonical subject. GitHub needs its own profile precisely because its `sub` is the one claim you should _not_ pin: it varies by trigger, and its format changed for repositories created after 2026-07-15.
+**An unregistered issuer gets `providers/generic.ts`, which is strict rather than permissive:** the policy must pin `sub`. That makes Kubernetes and GCP service accounts and SPIFFE SVIDs work with zero provider code, since each has a stable canonical subject. GitHub needs its own profile because its `sub` varies by trigger and changed format for repositories created after 2026-07-15.
 
 Five constraints that look like choices but are not:
 
-1. **Every rejection returns the same message.** The endpoint is unauthenticated; a caller told which check failed can enumerate a policy one claim at a time. Reasons go to the `oidc-trust` logger.
-2. **A GitHub policy must gate the ref.** `githubActionsProfile.assertPolicyIsSpecific` rejects a policy pinning only repository + workflow, because anyone who can push a branch could then add that workflow to it and mint a token. Stricter than npm's trusted-publishing model, which mitigates the same hole with environment protection instead — and profile-scoped, so it never constrains another issuer.
-3. **`createOperationToken`, not `createTokens`.** `createTokens` overwrites `hdb_user.refresh_token` as a side effect, so minting for CI would silently revoke whatever credential that user already held (#2018) — the exact problem this feature removes.
-4. **The role is the boundary; the per-policy `operations` allowlist only narrows it.** Least privilege is primarily the role of the user the policy names. A policy may _optionally_ carry an `operations` scope, which can only subtract from that role — never add to it. It is deliberately not merged into `permission.operations`: gate 2 in `operation_authorization.ts` treats an explicit listing of an SU-only operation as a deliberate grant, so reusing that field would _widen_ where this must only narrow. The scope is carried as a separate `tokenOperations` claim and intersected ahead of every early return, including the super_user bypass.
+1. **Every rejection returns the same message.** The endpoint is unauthenticated; specific errors let a caller enumerate a policy one claim at a time. Reasons go to the `oidc-trust` logger.
+2. **A GitHub policy must gate the ref.** `githubActionsProfile.assertPolicyIsSpecific` rejects pinning only repository + workflow, since any branch pusher could add that workflow and mint a token. Profile-scoped, so it never constrains other issuers.
+3. **`createOperationToken`, not `createTokens`.** `createTokens` overwrites `hdb_user.refresh_token`, which would silently revoke the user's existing credential (#2018).
+4. **The role is the boundary; per-policy `operations` only narrows it.** A policy's optional `operations` scope only subtracts from the named user's role. It is not merged into `permission.operations` (gate 2 in `operation_authorization.ts` treats an explicit SU-only operation listing as a grant, which would widen), but carried as `tokenOperations` and intersected ahead of every early return, including super_user.
 
-   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is tracked in #2201. Whether to keep a second authorization mechanism beside roles at all, one more place for the two to disagree, was left open in #2173.
+   It enforces on the operations API and SQL (`verifyPerms` / `verifyPermsAST`), **not** application REST/GraphQL (`checkPermission` ignores the scope; #2201), so the role itself must be least-privilege (#2173).
 
-   Naming `sql` in a scope grants the SQL interface, not unrestricted DML through it: a write statement additionally requires its matching data operation (`insert`/`update`/`delete`) in scope. That is what keeps `read_only` — which expands to include `sql` — from admitting a DELETE, given that `verifyPermsAST` returns early for a super_user before any table check runs.
+   Naming `sql` in a scope still requires `insert`/`update`/`delete` for DML writes, keeping `read_only` (which includes `sql`) from admitting a DELETE when `verifyPermsAST` returns early for a super_user.
 
 5. **Policy ids never choose authority.** The exchange refuses, unspent, a token two enabled policies give different users or operations, since no write can exclude such a pair across nodes; agreeing policies answer with the first by id.
 
-`hdb_oidc_token_use` (declared on every node at every start by `tokenUseTable.ts`, so a node that never exchanges still removes the rows replicated to it — see dataLayer/DESIGN.md, "System table bootstrap") records spent tokens keyed on a SHA-256 of the token itself, each expiring (record metadata, replicated with the row) past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
+`hdb_oidc_token_use` (declared on every node at start by `tokenUseTable.ts` so non-exchanging nodes still expire replicated rows — see dataLayer/DESIGN.md, "System table bootstrap") records spent tokens keyed by SHA-256 of the **signed input** (`header.payload`), expiring past the token's expiry. Hashing avoids storing credentials; keying on `header.payload` works without `jti` (Azure uses `uti`) and avoids signature-segment malleability (base64url trailing-bit variants in RS256 or ES\* `s → n−s` would hash differently while verifying identically). Concurrent replay of the non-atomic get-then-put is not an escalation, since the token holder can already mint one operation token.
 
 **The minted token carries where the run came from.** Beside `workload_identity`, the exchange signs a `deploy_source` claim: `{ via: 'oidc', policy, … }` with the run's verified `repository`, `sha`, `ref`, `workflow_ref`, `run_id`, `run_attempt`, `actor` and `environment`, whichever the identity token holds (`attestedSource`, `components/deploymentSource.ts`). `validateToken` lifts it onto the principal as `deploySource` and impersonation carries it, like the provenance marker, and `deploy_component` records it on the deployment row as attested, where it wins over anything the request declares (#3061). Signed, so a caller cannot edit it; claims, not the token, so the record holds no credential.
 
-`harper deploy setup=true provider=github-actions` (`bin/deploySetupGithubActions.ts`) is the client-side composition of these operations for one repository's workflow: role and user `<component>-ci-deploy` (`deploy_component`, `get_deployment`, `get_job`, `registration_info`) and policy `github-actions-<component>`, names Studio's setup must match. It only creates: a record that already matches is left alone, and one that differs or was deactivated stops it before it writes, so it does not repurpose a role or undo a revocation. `add_oidc_trust` replaces, so setup lists the policy again just before writing it; a policy another super user creates (enabled or not) in that last round trip would still be overwritten. A server-side create-only write would narrow that further but not close it, since `hdb_oidc_trust` replicates and the check would be per node. It reads the policy back and compares it claim for claim, because a mismatch otherwise surfaces only as the exchange's opaque 401.
+`harper deploy setup=true provider=github-actions` (`bin/deploySetupGithubActions.ts`) composes these operations for one repository workflow: role/user `<component>-ci-deploy` (`deploy_component`, `get_deployment`, `get_job`, `registration_info`) and policy `github-actions-<component>` (matching Studio). It is create-only: matching records are kept, while differing or deactivated records abort before writing so revocations are not undone. Because `add_oidc_trust` replaces, setup re-lists the policy right before writing and verifies the written policy claim-for-claim to avoid surfacing mismatches only as opaque 401s.
 
 ## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
 
@@ -199,30 +199,26 @@ Not covered: compartment mode's `importHook`, and what natively loaded packages 
 Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoader.test.js` and
 `integrationTests/components/cjs-require-loader.test.ts`.
 
-## The compartment `importHook` checks `allowedPath` before any branch loads a module (`security/jsLoader.ts`)
+## The compartment `importHook` checks `allowedPath` once (`security/jsLoader.ts`)
 
 `checkAllowedModulePath` runs once at the top of the compartment `importHook`, after the synthetic `harper`
-return and ahead of branch selection, so the `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
-branches cannot load a module it has not approved, and a branch added later inherits it (#3485). Each branch
-used to make its own call and the plain-file branch made none, so compartment mode loaded any file a relative,
-absolute or symlinked specifier reached while VM mode's ESM loader (`createModule`) refused it. This applies
-the existing prefix test only; it is not a containment boundary (#1929 and #2970 track that test's prefix and
-realpath gaps), and files a natively loaded dependency loads itself are outside it. Enforced by the
-`compartment importHook` block in `unitTests/security/jsLoader/jsLoader.test.js` and
+return and ahead of branch selection, so `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
+branches cannot load an unapproved path, and future branches inherit the check (#3485). Previously only the
+`.node` and native-import branches called it, so compartment mode loaded out-of-tree plain files that VM mode
+(`createModule`) refused. This applies the existing prefix test only, not a containment boundary (#1929,
+#2970), and does not cover files loaded by native dependencies themselves. Enforced by `compartment importHook`
+in `unitTests/security/jsLoader/jsLoader.test.js` and
 `integrationTests/components/compartment-allowed-directory.test.ts`.
 
-## The compartment adds a CommonJS dependency's dynamic names to its native namespace (`security/jsLoader.ts`)
+## Compartment dynamic CommonJS names (`security/jsLoader.ts`)
 
-A bare or `node_modules` import in the compartment `importHook` is a native `import()`. For a CommonJS
-module, `dynamicCjsExports` copies the enumerable `module.exports` data properties the namespace lacks
-(leaving accessors uninvoked, skipping any Proxy trap that throws, and skipping a callable `then`, which
-would make a re-exporting namespace thenable) while every namespace key and the native
-`default` stay as they were (#3485). The module is found through its `require.cache` entry because Node 22
-gives a CommonJS namespace no `'module.exports'` key. `normalizeImportedModule` is not used here: it is a
-no-op on Node 22, and where the key exists it rebuilds the exports from enumerable properties, dropping names
-such as `Object.defineProperty(exports, ...)` and replacing a transpiled module's `default`. The VM loaders
-still use it. Enforced by the `CommonJS dependencies imported natively` block in
-`unitTests/security/jsLoader/jsLoader.test.js`.
+For a bare or `node_modules` native `import()` in the compartment `importHook`, `dynamicCjsExports` copies
+enumerable `module.exports` data properties the namespace lacks (skipping accessors, throwing Proxy traps, and
+any callable `then` that would make a re-exporting namespace thenable) while keeping all namespace keys and
+`default` intact (#3485). It reads `require.cache` because Node 22 omits `'module.exports'` from the
+namespace; `normalizeImportedModule` (still used by the VM loaders) is a Node 22 no-op and elsewhere rebuilds
+exports from enumerable properties, dropping non-enumerable exports and replacing a transpiled `default`.
+Enforced by `CommonJS dependencies imported natively` in `unitTests/security/jsLoader/jsLoader.test.js`.
 
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
