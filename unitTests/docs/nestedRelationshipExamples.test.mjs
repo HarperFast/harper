@@ -1,4 +1,4 @@
-// integrationTests/resources/nested-relationship-docs.test.ts executes these documented examples.
+// Must equal the fixture integrationTests/resources/nested-relationship-docs.test.ts executes; change both together.
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
