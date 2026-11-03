@@ -1219,11 +1219,23 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(singleTrailingComma.status, 200);
 			assert.strictEqual(singleTrailingComma.text, '"id"\n"z-1"\n"z-2"\n"z-3"\n');
 
+			const singleColNulls = await restGet('/Plain/?name=starts_with=Z&sort(id)&select(note,)', {
+				accept: 'text/csv',
+			});
+			assert.strictEqual(singleColNulls.status, 200);
+			assert.strictEqual(singleColNulls.text, '"note"\n"n1"\n""\n""\n"n4"\n"n5"\n');
+
 			const multiProp = await restGet('/Plain/?name=starts_with=Z&sort(id)&select(id,note)&limit(3)', {
 				accept: 'text/csv',
 			});
 			assert.strictEqual(multiProp.status, 200);
 			assert.strictEqual(multiProp.text, '"id","note"\n"z-1","n1"\n"z-2",\n"z-3",\n');
+
+			const nestedKeyedRel = await restGet('/Plain/?id=z-1&select(child{id,label})', {
+				accept: 'text/csv',
+			});
+			assert.strictEqual(nestedKeyedRel.status, 200);
+			assert.strictEqual(nestedKeyedRel.text, '"child"\n"{""id"":""c1"",""label"":""child-label-v1""}"\n');
 		});
 
 		it('handles null, missing, 0, and false scalar cells in CSV without truncating the stream', async function () {
@@ -1231,7 +1243,7 @@ describe('REST and operations API select projection fixes', function () {
 				accept: 'text/csv',
 			});
 			assert.strictEqual(nullableRes.status, 200);
-			assert.strictEqual(nullableRes.text, '"note"\n"n1"\n\n\n"n4"\n"n5"\n');
+			assert.strictEqual(nullableRes.text, '"note"\n"n1"\n""\n""\n"n4"\n"n5"\n');
 
 			const zeroRes = await restGet('/Plain/?name=starts_with=Z&sort(id)&select(count)&limit(3)', {
 				accept: 'text/csv',
@@ -1253,11 +1265,14 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(tagsRes.status, 200);
 			assert.strictEqual(tagsRes.text, '"tags"\n"[""t1"",""t2""]"\n');
 
-			const relScalarRes = await restGet('/Plain/?id=z-1&select(child{id,label})', {
+			const relScalarRes = await restGet('/Plain/?id=z-1&select(child)', {
 				accept: 'text/csv',
 			});
 			assert.strictEqual(relScalarRes.status, 200);
-			assert.strictEqual(relScalarRes.text, '"child"\n"{""id"":""c1"",""label"":""child-label-v1""}"\n');
+			assert.strictEqual(
+				relScalarRes.text,
+				'"child"\n"{""id"":""c1"",""parentId"":""p1"",""label"":""child-label-v1"",""grandchildId"":""g1""}"\n'
+			);
 
 			const { toCsvStream } = require('#src/server/serverHelpers/contentTypes');
 			const objSelectTarget = new RequestTarget('?id=z-1');
@@ -1334,6 +1349,37 @@ describe('REST and operations API select projection fixes', function () {
 			});
 			assert.strictEqual(csvRes.status, 200);
 			assert.strictEqual(csvRes.text, '"id"\n"z-1"\n');
+
+			const origPrepare = Plain._prepareQueryConditions;
+			Plain._prepareQueryConditions = function (conditions, operator, target, context) {
+				const prepared = origPrepare.call(this, conditions, operator, target, context);
+				return { ...prepared, includeFullTextHighlights: true };
+			};
+			try {
+				const widenedRes = await restGet('/PlainAsyncMapped/?id=z-1&select(id)', {
+					accept: 'text/csv',
+				});
+				assert.strictEqual(widenedRes.status, 200);
+				assert.strictEqual(widenedRes.text, '"id","$highlights"\n"z-1",\n');
+			} finally {
+				Plain._prepareQueryConditions = origPrepare;
+			}
+
+			const { toCsvStream } = require('#src/server/serverHelpers/contentTypes');
+			class PlainAsyncRewriting extends Plain {
+				static loadAsInstance = false;
+				async allowRead(_user, target) {
+					await new Promise((resolve) => setImmediate(resolve));
+					target.select = ['id', 'note'];
+					return true;
+				}
+			}
+			const directTarget = new RequestTarget('?id=z-1&select(id)');
+			directTarget.checkPermission = true;
+			const unawaitedGated = new PlainAsyncRewriting(undefined, {}).search(directTarget);
+			let directCsv = '';
+			for await (const chunk of toCsvStream(unawaitedGated)) directCsv += chunk;
+			assert.strictEqual(directCsv, '"id","note"\n"z-1","n1"\n');
 		});
 
 		it('uses post-highlight keyed shape when full-text highlights widen a scalar select(id)', async function () {

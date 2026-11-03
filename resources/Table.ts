@@ -8660,6 +8660,7 @@ export function makeTable(options): TableResourceClass {
 			const selectsPrototype =
 				select === '__proto__' ||
 				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
+			const scalarSelect = isScalarSelect(select);
 			let relationshipSelections;
 			for (const attribute of Array.isArray(select) ? select : select?.name !== undefined ? [select] : []) {
 				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
@@ -8885,7 +8886,7 @@ export function makeTable(options): TableResourceClass {
 					};
 					let selected: any;
 					try {
-						if (isScalarSelect(select)) {
+						if (scalarSelect) {
 							selectAttribute(select, (value) => {
 								selected = value;
 							});

@@ -110,12 +110,13 @@ mediaTypes.set('application/x-msgpack', {
 mediaTypes.set('text/csv', {
 	serializeStream(data: any, response: Response) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		return toCsvStream(data, data?.getColumns?.());
+		return toCsvStream(data);
 	},
 	serialize(data: any, response: Response) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
+		const columns = data?.getColumns?.();
 		if (data && !data[Symbol.iterator]) data = [data.toJSON ? data.toJSON() : data];
-		return toCsvStream(data, data?.getColumns?.());
+		return toCsvStream(data, columns);
 	},
 	q: 0.1,
 });
@@ -856,7 +857,7 @@ function openOnFirstStep(
 			if (closed) return { value: undefined, done: true };
 			if (step.done) return step;
 			const { value } = step;
-			if (!async && typeof value?.then === 'function') {
+			if (typeof value?.then === 'function') {
 				return {
 					value: value.then((settled) => (closed ? settled : mapValue(settled))),
 					done: false,
@@ -1087,41 +1088,46 @@ function formatCsvCell(value: any) {
  * @param data
  * @returns stream
  */
-export function toCsvStream(data, columns = data?.getColumns?.()) {
-	const scalar = Boolean(columns?.scalar);
-	const asArray = Boolean(columns?.asArray);
+export function toCsvStream(data, columns?) {
 	const source = data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data];
 	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
 	const readStream = Readable.from(
-		openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator]), scalar ? (value) => value ?? '' : undefined)
+		openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator]), (value) => value ?? '')
 	);
 
 	let headerWritten = false;
 	let fields = columns || null;
-	const rowToValues = scalar
-		? (chunk) => [formatCsvCell(chunk)]
-		: asArray
-			? (chunk) => fields.map((_, index) => formatCsvCell(chunk?.[index]))
-			: (chunk) => fields.map((field) => formatCsvCell(chunk[field]));
+	let rowToValues: ((chunk: any) => any[]) | undefined;
 
 	// Create a transform stream to convert objects to CSV
 	const csvTransform = new Transform({
 		objectMode: true,
 		transform(chunk, encoding, callback) {
 			try {
-				// Extract fields from first object if not provided
-				if (!fields && typeof chunk === 'object' && chunk !== null) {
-					fields = Object.keys(chunk);
+				if (!headerWritten) {
+					if (!fields) {
+						fields =
+							data?.getColumns?.() ||
+							(typeof chunk === 'object' && chunk !== null ? Object.keys(chunk) : null);
+					}
+					if (fields) {
+						const scalar = Boolean(fields.scalar);
+						const asArray = Boolean(fields.asArray);
+						rowToValues = scalar
+							? (row) => [formatCsvCell(row)]
+							: asArray
+								? (row) =>
+										Array.isArray(row)
+											? fields.map((_, index) => formatCsvCell(row[index]))
+											: [formatCsvCell(row)]
+								: (row) => fields.map((field) => formatCsvCell(row[field]));
+						this.push(escapeCsvRow(fields, true) + '\n');
+						headerWritten = true;
+					}
 				}
 
-				// Write header row on first chunk
-				if (!headerWritten && fields) {
-					this.push(escapeCsvRow(fields, true) + '\n');
-					headerWritten = true;
-				}
-
-				// Convert object to CSV row
-				if (fields) {
+				// Convert row to CSV row
+				if (rowToValues) {
 					this.push(escapeCsvRow(rowToValues(chunk), false) + '\n');
 				}
 
@@ -1141,6 +1147,9 @@ export function toCsvStream(data, columns = data?.getColumns?.()) {
  * @param quoteAll - If true, quote all values. If false, only quote strings (not numbers)
  */
 function escapeCsvRow(values: any[], quoteAll: boolean = false): string {
+	if (values.length === 1 && (values[0] === '' || values[0] === null || values[0] === undefined)) {
+		return '""';
+	}
 	return values
 		.map((value) => {
 			// Handle empty/null values

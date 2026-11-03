@@ -1063,7 +1063,7 @@ describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', 
 	it('formats scalar columns including null, undefined, 0, false, and arrays without stream truncation', async function () {
 		const columns = Object.assign(['id'], { scalar: true });
 		const syncOut = await streamToString(toCsvStream(['z-1', null, undefined, 0, false, ['a', 'b'], 'z-2'], columns));
-		assert.strictEqual(syncOut, '"id"\n"z-1"\n\n\n0\n"false"\n"[""a"",""b""]"\n"z-2"\n');
+		assert.strictEqual(syncOut, '"id"\n"z-1"\n""\n""\n0\n"false"\n"[""a"",""b""]"\n"z-2"\n');
 
 		async function* asyncSource() {
 			yield 'z-1';
@@ -1072,7 +1072,7 @@ describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', 
 			yield 'z-2';
 		}
 		const asyncOut = await streamToString(toCsvStream(asyncSource(), columns));
-		assert.strictEqual(asyncOut, '"id"\n"z-1"\n\n\n"z-2"\n');
+		assert.strictEqual(asyncOut, '"id"\n"z-1"\n""\n""\n"z-2"\n');
 	});
 
 	it('formats positional tuple (asArray) columns and preserves recovered row errors', async function () {
@@ -1111,6 +1111,9 @@ describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', 
 		const tupleErrOut = await streamToString(
 			serialize(tupleFailing, { headers: { accept: 'text/csv' } }, { headers: { set() {} } })
 		);
-		assert.strictEqual(tupleErrOut, '"id","note"\n"z-1","n1"\n,\n"z-3","n3"\n');
+		assert.strictEqual(
+			tupleErrOut,
+			'"id","note"\n"z-1","n1"\n"{""error"":""Error"",""message"":""row 2 failed"",""id"":""z-2""}"\n"z-3","n3"\n'
+		);
 	});
 });
