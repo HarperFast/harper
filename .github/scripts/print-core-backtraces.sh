@@ -20,6 +20,10 @@ if ! command -v gdb >/dev/null; then
 fi
 
 for core in "${cores[@]}"; do
+	if [ "$SECONDS" -ge 300 ]; then
+		echo "::warning::collector time budget spent; not analyzed: $core"
+		continue
+	fi
 	exe=$(file -L -b "$core" | sed -n "s/.*execfn: '\([^']*\)'.*/\1/p")
 	[ -x "$exe" ] || exe=$(command -v node)
 	echo "::group::Native backtrace of $(basename "$core") ($exe, $(du -hL "$core" | cut -f1))"
