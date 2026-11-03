@@ -1,0 +1,7 @@
+type Doc @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	meta: Any
+	tags: [String]
+	hits: Int
+}

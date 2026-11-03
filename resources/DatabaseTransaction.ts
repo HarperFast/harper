@@ -763,6 +763,12 @@ export type TransactionWrite = {
 	appendedAuditEntry?: boolean;
 	// sticky: such a staging ran with abort markers off, so an aborted attempt can leave its entry readable
 	appendedUnmarkedAuditEntry?: boolean;
+	// what the key held when this handle's retained log batch was staged: a retry appends none and restages from it
+	loggedBase?: {
+		version?: number;
+		nodeId?: number;
+		additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
+	} | null;
 	// the audit entry recordUpdater appended for this write in its current staging (handlers pass the
 	// write as its `write` option): 'none' until it appends, 'local' for a LOCAL_ONLY entry, which the
 	// sender never replicates. Reset per fresh staging so an earlier staging's append does not carry onto
@@ -1630,17 +1636,36 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	private noteRetryBoundary(transaction: RocksTransaction, error?: { hasLog?: boolean }): number {
 		const txnWithRetry = transaction as RocksTransactionWithRetry;
-		if (!abortMarkersEnabled()) return txnWithRetry.retries ?? 0;
+		const markersEnabled = abortMarkersEnabled();
+		const logWritten = error?.hasLog === true || transaction.logWritten();
+		if (txnWithRetry.hasStagedLog && (logWritten || !markersEnabled)) {
+			for (const write of this.writes)
+				if (write?.appendedTo === transaction && write.loggedBase === undefined) {
+					const entry = write.entry;
+					write.loggedBase = entry
+						? {
+								version: entry.version,
+								nodeId: entry.nodeId,
+								additionalAuditRefs: entry.additionalAuditRefs?.slice(),
+							}
+						: null;
+				}
+		}
+		if (!markersEnabled) return txnWithRetry.retries ?? 0;
 		if (transaction.lastConflictKind() === ConflictKind.atCommit)
 			txnWithRetry.commitConflicts = (txnWithRetry.commitConflicts ?? 0) + 1;
 		if (txnWithRetry.hasStagedLog) {
-			const relog = error?.hasLog !== true && !transaction.logWritten();
+			const relog = !logWritten;
 			txnWithRetry.relogOnRetry = relog;
 			if (relog) {
 				(transaction as any).logEntries = undefined;
 				(transaction as any).pendingStructureWatermarks = undefined;
 				// the batch was discarded; a re-staged entry claims the write again in save()
-				for (const write of this.writes) if (write?.appendedTo === transaction) write.appendedTo = undefined;
+				for (const write of this.writes)
+					if (write?.appendedTo === transaction) {
+						write.appendedTo = undefined;
+						write.loggedBase = undefined;
+					}
 				this.rekeyRefusedRetry(transaction);
 			}
 		}
@@ -2684,7 +2709,10 @@ export class DatabaseTransaction implements Transaction {
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-			if (stagesLog(transaction)) operation.stagedAudit = 'none';
+			if (stagesLog(transaction)) {
+				operation.stagedAudit = 'none';
+				if (wasSaved && operation.loggedBase !== undefined) operation.loggedBase = undefined;
+			}
 			try {
 				completion = operation.commit(
 					writeVersion,

@@ -300,6 +300,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				const options = {
 					context,
 					isReplay: true,
+					auditEntry: auditRecord,
 					residencyId,
 					residencySlot,
 					nodeId,
