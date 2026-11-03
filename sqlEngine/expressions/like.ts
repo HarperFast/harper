@@ -47,7 +47,6 @@ export function compileLike(pattern: string, escape?: string): LikeMatcher {
 
 interface Segment {
 	width: number;
-	// Every unit is `_`, so any `width` units match.
 	wildcard: boolean;
 	text: string | undefined;
 	regExp: RegExp | undefined;
@@ -132,14 +131,19 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	const last = segments[segments.length - 1];
 	const middle = segments.slice(1, -1).filter((segment) => segment.width > 0);
 	if (segments.length === 1) {
-		return (value) =>
-			value.length === first.width && segmentMatchesAt(first, substitutePlaceholder(value, placeholder, substitute), 0);
+		return (value) => value.length === first.width && segmentMatchesAt(first, value, 0, placeholder, substitute);
 	}
 	return (value) => {
 		const end = value.length - last.width;
-		if (end < first.width) return false;
+		if (
+			end < first.width ||
+			!segmentMatchesAt(first, value, 0, placeholder, substitute) ||
+			!segmentMatchesAt(last, value, end, placeholder, substitute)
+		) {
+			return false;
+		}
+		if (middle.length === 0) return true;
 		const subject = substitutePlaceholder(value, placeholder, substitute);
-		if (!segmentMatchesAt(first, subject, 0) || !segmentMatchesAt(last, subject, end)) return false;
 		let position = first.width;
 		for (const segment of middle) {
 			const found = findSegment(segment, subject, position, end - segment.width);
@@ -164,10 +168,21 @@ function placeholderPair(literals: Set<string>, classes: RegExp[]): [string, str
 	return undefined;
 }
 
-function segmentMatchesAt(segment: Segment, value: string, start: number): boolean {
+// Substitutes only the units the segment covers, so a row the anchors reject costs no pass over the value.
+function segmentMatchesAt(
+	segment: Segment,
+	value: string,
+	start: number,
+	placeholder: string,
+	substitute: string
+): boolean {
 	if (segment.wildcard) return true;
 	if (segment.text !== undefined) return value.startsWith(segment.text, start);
 	const sticky = segment.regExp!;
+	if (placeholder) {
+		value = substitutePlaceholder(value.slice(start, start + segment.width), placeholder, substitute);
+		start = 0;
+	}
 	sticky.lastIndex = start;
 	return sticky.test(value);
 }

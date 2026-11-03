@@ -283,6 +283,13 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		// Past 64 `_`, legacy matches `_` against a placeholder noncharacter, which the value may hold.
 		for (const like of [v2Like, (pattern, value) => alasql.utils.like(pattern, value)]) {
 			assert.strictEqual(like('%a' + run + '%', 'a' + '\uffff'.repeat(70)), true);
+			for (const ones of [64, 65]) {
+				const value = 'a' + '\uffff'.repeat(ones) + 'b';
+				assert.strictEqual(like('a' + '_'.repeat(ones) + 'b', value), true);
+				assert.strictEqual(like('a' + '_'.repeat(ones) + 'b%', value), true);
+				assert.strictEqual(like('%a' + '_'.repeat(ones) + 'b', value), true);
+				assert.strictEqual(like('%a' + '_'.repeat(ones) + 'c', value), false);
+			}
 			assert.strictEqual(like('%a' + run + '\uffff%', 'a' + '\ufffe'.repeat(71)), false);
 			assert.strictEqual(like('%a' + run + '\uffff%', 'a' + '\ufffe'.repeat(70) + '\uffff'), true);
 			// A literal in another segment rules a placeholder out as well.
@@ -570,15 +577,31 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		// Every segment fits where it starts, in a value holding the placeholder.
 		[('%\n' + '_'.repeat(65)).repeat(1_000) + '%', '\n' + 'a'.repeat(64) + '\uffff', 1_000_000, '', '', true],
 		[('%a' + '_'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
+		// A row the anchors reject, or accept from a short prefix, costs no pass over a value full of placeholders.
+		['a' + '_'.repeat(65) + 'b%', '\uffff', 10_000_000, '', 'legacy'],
+		['%a' + '_'.repeat(65) + 'b', '\uffff', 10_000_000, '', 'legacy'],
+		['_'.repeat(65) + 'a%', '\uffff'.repeat(65) + 'a', 10_000_000, '', '', true],
 		// Finding where the line ends must not cost the value for each segment.
 		[('%' + 'a'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
 	];
 
-	it('matches a 10,000-wide middle segment over 20 values of 100,000 characters with line feeds, under 2 s', () => {
-		const values = Array.from({ length: 20 }, (_, i) => {
-			const unit = 'a'.repeat([4_999, 9_998, 9_999, 3_332][i % 4]) + '\n';
-			return unit.repeat(Math.ceil(100_000 / unit.length)).slice(0, 100_000);
+	const time = (engine, pattern, valueUnit, valueLength, escape) => {
+		const child = spawnSync(process.execPath, [...process.execArgv, fixture], {
+			input: JSON.stringify([engine, pattern, valueUnit, valueLength, escape || null]),
+			encoding: 'utf8',
+			timeout: 20_000,
 		});
+		assert.strictEqual(child.signal, null, `matcher did not finish within 20 s (${engine})`);
+		assert.strictEqual(child.status, 0, child.stderr);
+		return JSON.parse(child.stdout);
+	};
+
+	it('matches a 10,000-wide middle segment over 20 values of 100,000 characters with line feeds, under 2 s', () => {
+		const units = Array.from({ length: 20 }, (_, i) => [
+			'a'.repeat([4_999, 9_998, 9_999, 3_332][i % 4]) + '\n',
+			100_000,
+		]);
+		const values = units.map(([unit, length]) => unit.repeat(Math.ceil(length / unit.length)).slice(0, length));
 		// [pattern, [offset, character] pairs the rest of the segment leaves to `_`]
 		const CASES = [
 			['%' + '_'.repeat(10_000) + '%', []],
@@ -595,22 +618,15 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 			for (let start = 0; start + 10_000 <= value.length; start++) if (matchesAt(value, start, literals)) return true;
 			return false;
 		};
-		const expected = CASES.map(([, literals]) => values.map((value) => reference(value, literals)));
-		assert.deepStrictEqual(new Set(expected[1]), new Set([true, false]));
-		const start = performance.now();
-		for (const [i, [pattern]] of CASES.entries()) {
-			const v2 = compileExpr(likeExpr(pattern));
-			assert.deepStrictEqual(
-				values.map((v) => v2.eval({ v })),
-				expected[i]
-			);
-			assert.deepStrictEqual(
-				values.map((value) => alasql.utils.like(pattern, value)),
-				expected[i]
-			);
+		for (const [i, [pattern, literals]] of CASES.entries()) {
+			const expected = values.map((value) => reference(value, literals));
+			if (i === 1) assert.deepStrictEqual(new Set(expected), new Set([true, false]));
+			for (const engine of ['v2', 'legacy']) {
+				const { result, ms } = time(engine, pattern, units);
+				assert.deepStrictEqual(result, expected, engine);
+				assert.ok(ms < 2_000, `${engine} took ${ms.toFixed(0)} ms`);
+			}
 		}
-		const ms = performance.now() - start;
-		assert.ok(ms < 2_000, `took ${ms.toFixed(0)} ms`);
 	});
 
 	for (const engine of ['v2', 'legacy']) {
@@ -622,14 +638,7 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 				'\\u2028'
 			);
 			it(`${engine}: ${shown} against ${valueLength.toLocaleString('en-US')} characters of ${unitShown}`, () => {
-				const child = spawnSync(process.execPath, [...process.execArgv, fixture], {
-					input: JSON.stringify([engine, pattern, valueUnit, valueLength, escape || null]),
-					encoding: 'utf8',
-					timeout: 20_000,
-				});
-				assert.strictEqual(child.signal, null, `matcher did not finish within 20 s (${engine})`);
-				assert.strictEqual(child.status, 0, child.stderr);
-				const { result, ms } = JSON.parse(child.stdout);
+				const { result, ms } = time(engine, pattern, valueUnit, valueLength, escape);
 				assert.strictEqual(result, expected);
 				assert.ok(ms < 200, `${engine} took ${ms.toFixed(1)} ms`);
 			});
