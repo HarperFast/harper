@@ -343,8 +343,9 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay and 
 
 ## Chained query conditions scope one array element; FIQL tokens always advance
 
-- **What do chained conditions mean over array values?** `a=ge=X&=le=Y` matches within one array element: `prepareConditions` collapses it to one range comparator so indexed and unindexed paths agree; separate conditions may match different elements, as on a to-many relationship; other chains are 400. Multi-value ranges dedupe records before paging (`distinctRecords`; `query-array-scoping.test.js`).
-- In `parseBlock`, a pending condition makes the next token a value, and only the group terminator picks the tokenizer. **Every token must advance**: a zero-length match is an error, or the global regexes rematch forever (`query-parse.test.js`).
+- **What do chained conditions mean over array values?** `a=ge=X&=le=Y` is one-element scoped: `prepareConditions` collapses it to one range, so both scan paths agree; separate conditions may match different elements; other chains are 400. Multi-value ranges dedupe pre-paging (`distinctRecords`; `query-array-scoping.test.js`).
+- **Values convert to the compared leaf's type**, chained legs too (`coerceConditionValue`; `restConditionCoercion.test.js`).
+- In `parseBlock`, a pending condition makes the next token a value; only the group terminator picks the tokenizer. **Every token must advance**: a zero-length match errors, or the global regexes loop (`query-parse.test.js`).
 
 ## A table declaration lands where the application's `databases` binding points
 
