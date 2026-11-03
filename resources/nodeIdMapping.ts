@@ -64,19 +64,18 @@ function nextNodeId(nameToId: Record<string, number>): number {
  */
 function updateIdMapping(auditStore: any, mutate: (nameToId: Record<string, number>) => boolean) {
 	let record: any;
-	let changed = false;
 	commitAuditMetadata(
 		auditStore,
 		(read) => {
 			const stored = read(REMOTE_NODE_IDS);
 			record = (stored ? unpack(stored) : null) ?? { remoteNameToId: {} };
 			record.nodeName = getThisNodeName();
-			changed = mutate(record.remoteNameToId);
-			return changed ? [[REMOTE_NODE_IDS, pack(record)]] : undefined;
+			return mutate(record.remoteNameToId) ? [[REMOTE_NODE_IDS, pack(record)]] : undefined;
 		},
 		'node id mapping'
 	);
-	if (changed) invalidateNodeNames(auditStore);
+	// another worker may have made this change first, leaving this thread's cached names stale either way
+	invalidateNodeNames(auditStore);
 	return record.remoteNameToId as Record<string, number>;
 }
 

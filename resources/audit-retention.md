@@ -110,7 +110,7 @@ upper bound on every key any prune removed from the named logs.
   outlives the purge of its file until garbage collection, so probing logs the boot purge is about to remove
   would keep their disk space allocated (`txnlog-restart-reclaim`). It applies the rule below from the
   record alone, keeping `observedAt`, so each `maxKey` still describes the last pass that read the logs.
-  Every pass writes a later `quietAt` (`logPurgeBoundsCover`), so an idle log's quiet time trails shutdown
+  Every pass that observes writes a later `quietAt` (`logPurgeBoundsCover`), so an idle log's quiet time trails shutdown
   by at most one pass interval, and a restart shorter than the retention window less that interval keeps
   its exact bound; after a longer one, a log not seen quiet within the reach takes the reach.
 - **RocksDB removes whole segments by mtime**, so a log written past the reach since its last quiet pass
@@ -124,8 +124,9 @@ upper bound on every key any prune removed from the named logs.
   `bound` while `quietAt` is within the native retention; once it is not, `exposedBound` adds the native
   horizon, or the log's largest key at the last pass if lower (every segment last written before that
   pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
-  that retention and each pass writes a later `quietAt`, so an idle log on a running node never reaches the
-  horizon. A node down longer than the native retention resyncs once.
+  that retention and each pass that observes writes a later `quietAt`, so an idle log on a running node never
+  reaches the horizon. Passes skip observing while neither purge reaches past the epoch; a boot just after such a
+  window ends can take the reach for an idle log, which errs toward a copy. A node down longer than the native retention resyncs once.
 - **`epoch` bounds what tracking never saw**: the floor, or the native horizon if later, when the
   record was created, and the native horizon again when a pass follows a gap longer than the native
   retention (a log created and emptied in that gap is neither recorded nor necessarily listed). A log emptied before that reads as purged through it, which forces one conservative resync.

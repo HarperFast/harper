@@ -615,23 +615,28 @@ describe('per-log purge bounds', function () {
 		for (let i = 0; i < 3; i++) await Table.put(`steady-${i}`, { name: 'x' });
 		await tick();
 		const cutoff = Date.now();
-		raiseAuditFloor(Table.auditStore, cutoff, true);
+		// one clock reading for both passes: a later quiet time is a change, and is written
+		const now = Date.now;
+		Date.now = () => cutoff;
 		const rootStore = Table.auditStore.rootStore;
 		const transactionSync = rootStore.transactionSync;
 		let queries = 0;
 		let transactions = 0;
-		const restore = interceptQueries(rootStore, (name, log, options) => {
-			queries++;
-			return log.query(options);
-		});
-		rootStore.transactionSync = function (...args) {
-			transactions++;
-			return transactionSync.apply(this, args);
-		};
+		let restore;
 		try {
 			raiseAuditFloor(Table.auditStore, cutoff, true);
+			restore = interceptQueries(rootStore, (name, log, options) => {
+				queries++;
+				return log.query(options);
+			});
+			rootStore.transactionSync = function (...args) {
+				transactions++;
+				return transactionSync.apply(this, args);
+			};
+			raiseAuditFloor(Table.auditStore, cutoff, true);
 		} finally {
-			restore();
+			Date.now = now;
+			restore?.();
 			rootStore.transactionSync = transactionSync;
 		}
 		assert.ok(queries <= 2 * rootStore.listLogs().length, `${queries} probes for ${rootStore.listLogs().length} logs`);

@@ -1139,8 +1139,10 @@ function raisedLogPurgeBounds(
 			continue;
 		}
 		const [baseBound, baseQuietAt, baseMaxKey] = logs[name] ?? [0, 0, 0];
-		// a concurrent pass may have seen a larger key; a real read replaces an unknown one
-		const merged = baseMaxKey === UNKNOWN_MAXIMUM ? maxKey : Math.max(baseMaxKey, maxKey);
+		// a concurrent pass may have seen a larger key; a real read replaces an unknown one, and a pass that read
+		// nothing keeps whatever the record holds now
+		const merged =
+			!logsRead && logs[name] ? baseMaxKey : baseMaxKey === UNKNOWN_MAXIMUM ? maxKey : Math.max(baseMaxKey, maxKey);
 		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt), merged];
 	}
 	// each maxKey is a log's largest key at observedAt, which only a pass that read the logs advances
