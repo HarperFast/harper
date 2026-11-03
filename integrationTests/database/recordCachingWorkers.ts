@@ -16,6 +16,20 @@ const parsedWorkerCount = Number(process.env.HARPER_WORKER_COUNT);
 export const WORKER_COUNT = Number.isInteger(parsedWorkerCount) && parsedWorkerCount > 0 ? parsedWorkerCount : 4;
 
 /**
+ * Harper disables reusePort off Linux (`server/http.ts`), so one worker owns the HTTP port there and
+ * no client can reach the others — a cross-worker suite must skip rather than pass single-worker.
+ */
+export const NO_MULTI_WORKER_HTTP = process.platform === 'win32' || process.platform === 'darwin';
+
+/**
+ * Bun does not spread connections over its HTTP workers the way the Node path does: measured on CI,
+ * 128 fresh connections all landed on one thread while `system_information` reported four. So a
+ * suite that must reach EVERY worker cannot run there, though suites that only tolerate a partial
+ * pool still exercise the cache paths under Bun.
+ */
+export const NO_FULL_WORKER_COVERAGE = NO_MULTI_WORKER_HTTP || process.env.HARPER_RUNTIME === 'bun';
+
+/**
  * Run `fn` over `items` with at most `limit` in flight at once. These suites issue fresh-
  * connection requests (no keep-alive) to spray across the worker pool; firing hundreds at
  * once via an unbounded Promise.all risks ephemeral-port/socket exhaustion on constrained CI
@@ -57,4 +71,17 @@ export async function observedWorkerCount(ctx: ContextWithHarper): Promise<numbe
 export async function assertMultiWorker(ctx: ContextWithHarper): Promise<void> {
 	const count = await observedWorkerCount(ctx);
 	ok(count >= 2, `expected >= 2 HTTP workers for cross-worker coverage, observed ${count} — suite would be vacuous`);
+}
+
+/**
+ * For suites whose assertions must reach EVERY worker: a partial pool would otherwise surface as
+ * `observeEveryWorker` burning its whole budget and reporting the workers it missed, rather than
+ * the actual cause.
+ */
+export async function assertEveryWorkerStarted(ctx: ContextWithHarper): Promise<void> {
+	const count = await observedWorkerCount(ctx);
+	ok(
+		count >= WORKER_COUNT,
+		`expected ${WORKER_COUNT} HTTP workers, observed ${count} — a worker never started, so full-worker coverage is unreachable`
+	);
 }

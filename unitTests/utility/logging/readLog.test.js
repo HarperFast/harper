@@ -1,6 +1,6 @@
 'use strict';
 
-const env_mangr = require('#src/utility/environment/environmentManager');
+const env_mangr = require('#js/utility/environment/environmentManager');
 env_mangr.initTestEnvironment();
 const sinon = require('sinon');
 const chai = require('chai');
@@ -9,7 +9,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const testUtils = require('../../testUtils.js');
-const read_log = rewire('#src/utility/logging/readLog');
+const read_log = rewire('#js/utility/logging/readLog');
 const readLogFunction = read_log.default || read_log;
 const hdb_terms = require('#src/utility/hdbTerms');
 

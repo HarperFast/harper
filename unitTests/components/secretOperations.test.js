@@ -558,6 +558,27 @@ describe('secretOperations', () => {
 			);
 		});
 
+		it('resolves a secret granted to a component-name pattern that covers the deploying component (harper#3090)', async () => {
+			installCustody();
+			const name = 'deploy.my-app-pr-_.git.github.com';
+			await secretOps.setSecret({ ...su('set_secret'), name, value: 'ghp_preview', grants: ['my-app-pr-*'] });
+			const out = await secretOps.resolveCredentials([{ host: 'github.com', secret: name }], 'my-app-pr-42');
+			assert.equal(out[0].token, 'ghp_preview');
+			// An exact grant to a name outside the project grammar, which a configured package can carry, still resolves.
+			await secretOps.setSecret({ ...su('set_secret'), name: 'DOTTED', value: 'ghp_dotted', grants: ['my.app'] });
+			assert.equal(
+				(await secretOps.resolveCredentials([{ host: 'github.com', secret: 'DOTTED' }], 'my.app'))[0].token,
+				'ghp_dotted'
+			);
+			for (const component of ['my-app', 'my-app-pr-']) {
+				await assert.rejects(
+					secretOps.resolveCredentials([{ host: 'github.com', secret: name }], component),
+					(err) => err.statusCode === 403 && /not granted to component/.test(err.message),
+					component
+				);
+			}
+		});
+
 		it('rejects a scoped secret not granted to the deploying component with 403', async () => {
 			installCustody();
 			await secretOps.setSecret({ ...su('set_secret'), name: 'OTHER', value: 'x', grants: ['different-app'] });

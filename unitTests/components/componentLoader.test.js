@@ -21,7 +21,7 @@ describe('ComponentLoader Status Integration', function () {
 		tempDir = mkdtempSync(path.join(tmpdir(), 'harper-test-components-'));
 
 		// Mock environment to use our temp directory
-		const env = require('#src/utility/environment/environmentManager');
+		const env = require('#js/utility/environment/environmentManager');
 		sandbox.stub(env, 'get').callsFake((key) => {
 			if (key === 'componentsRoot') {
 				return tempDir;
@@ -211,6 +211,74 @@ describe('ComponentLoader Status Integration', function () {
 			assert.equal(assignedOrigin, origin, 'scope.ensureTable should preserve the component origin');
 		});
 
+		describe('status reported by a plugin while it loads', function () {
+			const { statusForComponent } = require('#src/components/status/index');
+
+			async function loadPlugin(name, plugin) {
+				const componentDir = path.join(tempDir, name);
+				mkdirSync(componentDir);
+				writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${name}Plugin: {}`);
+				componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`] = plugin;
+				try {
+					await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
+				} finally {
+					delete componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`];
+				}
+				return statusForComponent(`${name}.${name}Plugin`).get();
+			}
+
+			for (const level of ['warning', 'unknown', 'error']) {
+				it(`keeps a ${level} set in handleApplication`, async function () {
+					const name = `reports-${level}`;
+					const status = await loadPlugin(name, {
+						handleApplication() {
+							statusForComponent(`${name}.${name}Plugin`)[level]('plugin says so');
+						},
+					});
+					assert.equal(status.status, level);
+					assert.match(status.message, /plugin says so/);
+				});
+			}
+
+			it('surfaces a plugin warning through get_components aggregation', async function () {
+				const name = 'reports-warning-aggregated';
+				await loadPlugin(name, {
+					handleApplication() {
+						statusForComponent(`${name}.${name}Plugin`).warning('plugin says so');
+					},
+				});
+
+				const result = await componentStatusRegistry.getAggregatedStatusFor(name);
+
+				assert.equal(result.status, 'warning');
+				assert.match(result.message, /plugin says so/);
+				assert.equal(result.details[`${name}.${name}Plugin`].status, 'warning');
+			});
+
+			it('keeps a warning set in the legacy start hook', async function () {
+				const name = 'reports-warning-legacy';
+				const status = await loadPlugin(name, {
+					start() {
+						statusForComponent(`${name}.${name}Plugin`).warning('legacy says so');
+					},
+				});
+				assert.equal(status.status, 'warning');
+			});
+
+			it('marks a plugin that reports nothing healthy', async function () {
+				const status = await loadPlugin('reports-nothing', { handleApplication() {} });
+				assert.equal(status.status, 'healthy');
+				assert.match(status.message, /loaded successfully/);
+			});
+
+			it('lets a retry replace an earlier failure', async function () {
+				const name = 'retried';
+				componentStatusRegistry.markFailed(`${name}.${name}Plugin`, new Error('earlier'));
+				const status = await loadPlugin(name, { handleApplication() {} });
+				assert.equal(status.status, 'healthy');
+			});
+		});
+
 		// TODO: Does the plugin API have an equivalent mechanism?
 		it.skip('should mark component as failed when it loads no functionality', async function () {
 			// Create a component directory without config
@@ -355,87 +423,73 @@ describe('ComponentLoader Status Integration', function () {
 		}
 	});
 
-	describe('deploy lifecycle listener lifecycle (#1462)', function () {
-		const { deployLifecycle } = require('#src/components/deployLifecycle');
+	describe('isolated applications (harper#642 tier 2)', function () {
+		const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
+		let mainWasWorker;
+		beforeEach(() => (mainWasWorker = getWorkerIndex() === 0));
+		const configUtils = require('#src/config/configUtils');
+		const isoName = 'isolated-probe';
+		const sharedName = 'shared-probe';
+		let isoStarts = 0;
+		let sharedStarts = 0;
 
-		// Each Scope created for a handleApplication component registers a deploy:start /
-		// deploy:end listener on the shared deployLifecycle emitter and only removes them in
-		// close(). The deploy operation's pre-flight validation load (operations.js) creates
-		// such Scopes purely to surface load errors; if they are never closed, their listeners
-		// accumulate across deploys and eventually trip MaxListenersExceededWarning.
-		function makeProbeComponent(pluginName, onScope) {
-			const componentDir = path.join(tempDir, `leak-probe-${pluginName}`);
-			if (!existsSync(componentDir)) mkdirSync(componentDir);
-			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${pluginName}: {}`);
-			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
-				handleApplication(scope) {
-					onScope?.(scope);
-				},
-			};
-			return componentDir;
-		}
-
-		it('leaks a deploy:start listener per load when validation scopes are never closed', async function () {
-			const pluginName = 'leakProbeUnclosed';
-			const createdScopes = [];
-			const componentDir = makeProbeComponent(pluginName, (scope) => createdScopes.push(scope));
-
-			const baseline = deployLifecycle.listenerCount('deploy:start');
-			const loads = 5;
-			try {
-				for (let i = 0; i < loads; i++) {
-					componentLoader.loadedPaths.clear(); // a fresh deploy re-validates past the path-load guard
-					await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
-				}
-
-				assert.equal(
-					deployLifecycle.listenerCount('deploy:start') - baseline,
-					loads,
-					'each unclosed validation load leaks one deploy:start listener'
-				);
-			} finally {
-				// Remove the leaked listeners so the shared emitter does not affect other tests.
-				await Promise.allSettled(createdScopes.map((scope) => scope.close()));
-				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
-				componentLoader.loadedPaths.clear();
+		beforeEach(async () => {
+			isoStarts = sharedStarts = 0;
+			for (const [name, plugin] of [
+				[isoName, 'isolatedProbePlugin'],
+				[sharedName, 'sharedProbePlugin'],
+			]) {
+				await fs.mkdir(path.join(tempDir, name), { recursive: true });
+				await fs.writeFile(path.join(tempDir, name, 'config.yaml'), `${plugin}: {}\n`);
 			}
-
-			assert.equal(
-				deployLifecycle.listenerCount('deploy:start'),
-				baseline,
-				'closing the scopes removes their deploy:start listeners'
-			);
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.isolatedProbePlugin = { start: () => isoStarts++ };
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.sharedProbePlugin = { start: () => sharedStarts++ };
+			configUtils.getConfigObj.returns({ [isoName]: { isolated: true } });
+		});
+		afterEach(async () => {
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS.isolatedProbePlugin;
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS.sharedProbePlugin;
+			componentLoader.loadedPaths.clear();
+			for (const name of [isoName, sharedName]) await fs.rm(path.join(tempDir, name), { recursive: true, force: true });
 		});
 
-		it('stays bounded across repeated loads when collectScopes is closed after each load', async function () {
-			const pluginName = 'leakProbeCollected';
-			const componentDir = makeProbeComponent(pluginName);
-
-			const baseline = deployLifecycle.listenerCount('deploy:start');
-			const loads = 12; // exceed the default maxListeners (10) to mirror the reported warning
+		it('a thread that is not the dedicated worker never imports an isolated application', async function () {
+			setMainIsWorker(false); // the main thread of a multi-worker instance
 			try {
-				for (let i = 0; i < loads; i++) {
-					componentLoader.loadedPaths.clear();
-					const collectScopes = new Set();
-					await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin', {
-						collectScopes,
-					});
-
-					assert.ok(collectScopes.size >= 1, 'collectScopes should capture the validation scope(s)');
-
-					// The deploy operation closes these throwaway scopes once validation completes.
-					await Promise.allSettled([...collectScopes].map((scope) => scope.close()));
-				}
-
-				assert.equal(
-					deployLifecycle.listenerCount('deploy:start'),
-					baseline,
-					'deploy:start listeners return to baseline after each validation load is closed'
-				);
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
 			} finally {
-				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
-				componentLoader.loadedPaths.clear();
+				setMainIsWorker(mainWasWorker); // other suites in this process rely on the previous mode
 			}
+			assert.strictEqual(sharedStarts, 1, 'the shared application loads here');
+			assert.strictEqual(isoStarts, 0, 'the isolated one is left to its own thread');
+			assert.ok(!lifecycle.failed.getCalls().some((call) => call.args[0] === isoName), 'and is not a failure');
+		});
+
+		it('fails an isolated application closed when the main thread is the only worker', async function () {
+			setMainIsWorker(true); // threads.count: 0
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker); // other suites in this process rely on the previous mode
+			}
+			assert.strictEqual(isoStarts, 0, 'never downgraded onto the shared thread');
+			const failure = lifecycle.failed.getCalls().find((call) => call.args[0] === isoName);
+			assert.ok(failure, 'reported as a failed load');
+			assert.match(failure.args[1].message, /threads\.count is 0/);
+		});
+
+		it('fails a malformed isolation setting closed instead of loading it in the pool', async function () {
+			configUtils.getConfigObj.returns({ [isoName]: { isolated: 'true' } });
+			setMainIsWorker(false);
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker);
+			}
+			assert.strictEqual(isoStarts, 0);
+			const failure = lifecycle.failed.getCalls().find((call) => call.args[0] === isoName);
+			assert.ok(failure, 'reported as a failed load');
+			assert.match(failure.args[1].message, /expected a boolean/);
 		});
 	});
 
@@ -684,7 +738,7 @@ describe('ComponentLoader Status Integration', function () {
 				},
 			});
 
-			await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+			await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
 
 			assert.equal(started, true, 'the deprecated start hook should have run');
 		});

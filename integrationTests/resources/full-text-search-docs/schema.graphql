@@ -1,0 +1,61 @@
+type Product @table(database: "catalog", audit: true) @export {
+	id: ID @primaryKey
+	name: String
+	description: String
+	tags: [String]
+	category: String @indexed
+	price: Float @indexed
+	catalogSearch: FullText
+		@fullText(
+			fields: [
+				{ name: "name", weight: 3, highlight: true }
+				{ name: "description", weight: 1, highlight: true }
+				{ name: "tags" }
+			]
+			highlighting: { maxFragments: 2, fragmentLength: 120 }
+		)
+}
+
+type Article @table(audit: true) {
+	id: ID @primaryKey
+	body: String
+	bodySearch: FullText @fullText(fields: [{ name: "body" }], positions: false, surfaceTerms: false)
+}
+
+type HighlightArticle @table(audit: true) {
+	id: ID @primaryKey
+	title: String
+	body: String
+	articleSearch: FullText
+		@fullText(
+			fields: [{ name: "title", highlight: true }, { name: "body", highlight: true }]
+			highlighting: { maxFragments: 3, fragmentLength: 160 }
+		)
+}
+
+type SynonymProduct @table(audit: true) {
+	id: ID @primaryKey
+	description: String
+	catalogSearch: FullText
+		@fullText(
+			fields: [{ name: "description" }]
+			synonyms: [
+				{ source: "sneaker", replacements: ["shoe", "trainer"] }
+				{ source: "tv", replacements: ["television"] }
+			]
+		)
+}
+
+type MultipleIndexProduct @table(database: "catalog", audit: true) {
+	id: ID @primaryKey
+	name: String
+	tags: [String]
+	titleSearch: FullText @fullText(fields: [{ name: "name", weight: 2 }])
+	tagSearch: FullText @fullText(fields: [{ name: "tags" }])
+}
+
+type Document @table(audit: true) {
+	id: ID @primaryKey
+	content: Blob
+	contentSearch: FullText @fullText(fields: [{ name: "content", mediaType: "text/plain" }])
+}

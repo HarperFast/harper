@@ -2,9 +2,9 @@
 
 import Joi from 'joi';
 const { string, number } = Joi.types();
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import * as path from 'path';
+import * as path from 'node:path';
 import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import * as validator from './validationWrapper.ts';
 

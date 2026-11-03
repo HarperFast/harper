@@ -1,7 +1,8 @@
 import busboy from 'busboy';
-import type { FastifyRequest } from 'fastify';
-import type { Readable } from 'node:stream';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { Readable, Writable } from 'node:stream';
 import { ClientError } from '../../utility/errors/hdbError.ts';
+import { PROTOTYPE_POLLUTING_NAMES } from '../../utility/hdbTerms.ts';
 import { logger } from '../../utility/logging/logger.ts';
 
 interface MultipartBody {
@@ -11,10 +12,27 @@ interface MultipartBody {
 
 const FIELD_SIZE_LIMIT = 1024 * 1024; // 1 MB per non-file field — generous for JSON params
 const MAX_FIELDS = 64;
-const UNSAFE_FIELD_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const UNSAFE_FIELD_NAMES: ReadonlySet<string> = new Set(PROTOTYPE_POLLUTING_NAMES);
 // Operation handlers stream the file part directly into extraction (gunzip + tar-fs),
 // so there is no separate filesize cap to enforce here. Backpressure flows through busboy
 // → the file Readable → the consumer, bounded by disk space rather than memory.
+// Long enough for the client to read its response before a still-arriving discarded upload is cut off
+// (closing at once risks a reset that loses it, RFC 9112 §9.6), short enough to bound the discard.
+export const UNREAD_UPLOAD_GRACE_MS = 1_000;
+
+interface Upload {
+	// The parser's input can be a `preParsing` transform of this.
+	httpRequest: Readable & { complete?: boolean };
+	input: Readable;
+	parser: Writable;
+	file?: Readable;
+	handedOut: boolean;
+	responded: boolean;
+	discarding: boolean;
+	grace?: ReturnType<typeof setTimeout>;
+}
+
+const uploads = new WeakMap<FastifyRequest, Upload>();
 
 /**
  * Parse a multipart/form-data request body for the operations API.
@@ -58,6 +76,15 @@ export function parseMultipartRequest(
 	const body: MultipartBody = {};
 	let fileSeen = false;
 	let doneCalled = false;
+	const upload: Upload = {
+		httpRequest: (request.raw as Readable | undefined) ?? rawStream,
+		input: rawStream,
+		parser: bb,
+		handedOut: false,
+		responded: false,
+		discarding: false,
+	};
+	uploads.set(request, upload);
 
 	const callDone = (err: Error | null, value?: MultipartBody) => {
 		if (doneCalled) return;
@@ -87,6 +114,7 @@ export function parseMultipartRequest(
 
 	bb.on('file', (name, fileStream) => {
 		fileSeen = true;
+		fileStream.on('error', logPartError);
 		if (name !== 'payload') {
 			// We only consume a single field named `payload`. Other file fields are an error
 			// rather than silently consumed — the CLI never sends them and accepting them
@@ -95,6 +123,11 @@ export function parseMultipartRequest(
 			callDone(new ClientError(`Unexpected file field "${name}"; expected "payload"`, 400));
 			return;
 		}
+		upload.file = fileStream;
+		upload.handedOut = true;
+		fileStream.once('close', () => {
+			if (upload.responded && !fileStream.readableEnded) discardUnreadUpload(upload);
+		});
 		body.payload = fileStream;
 		// Hand control to the route handler immediately — the file stream is now wired
 		// into body.payload and will be drained by extraction. busboy keeps pumping data
@@ -103,6 +136,8 @@ export function parseMultipartRequest(
 	});
 
 	bb.on('error', (err) => {
+		// Node unpipes an errored destination, which would leave the rest of the request unread
+		discardUnreadUpload(upload);
 		callDone(toClientError(err, 'Malformed multipart body'));
 	});
 
@@ -128,6 +163,99 @@ export function parseMultipartRequest(
 	});
 
 	rawStream.pipe(bb);
+}
+
+/**
+ * Node discards a body nothing read once its response finishes, but busboy reading the request counts
+ * as consuming it, so the rest of an upload the route did not read is discarded here instead. A route
+ * keeps the part by reading it before its response finishes: piping it, iterating it, or listening for
+ * `data` or `readable`. A part it took but had not started reading is discarded, and so is one it
+ * destroys before its end, or stops reading, whenever that happens.
+ */
+export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyReply, done: () => void): void {
+	const upload = uploads.get(request);
+	if (upload) {
+		uploads.delete(request);
+		upload.responded = true;
+		if (upload.discarding || isAbandoned(upload)) discardUnreadUpload(upload);
+		else watchForAbandonment(upload);
+	}
+	done();
+}
+
+/**
+ * A pipe that loses its destination after the response, by `unpipe()` or a destination error, leaves the part
+ * paused but not destroyed, so its `close` never comes. Every lost pipe ends in the part's own `unpipe()`, the
+ * route's or the pipe cleanup's, and a consumer that drops its `data` listener removes one; either is when to look
+ * again. `pause` is no signal, since a part already paused by backpressure emits none, and Node 24.0 and 22.18
+ * remove a pipe's `data` listener without emitting `removeListener`.
+ */
+function watchForAbandonment(upload: Upload): void {
+	const { file } = upload;
+	if (!file || file.readableEnded || file.destroyed) return;
+	// The cleanup removes several listeners and settles `readableFlowing` as it goes; look once it is done.
+	const look = () =>
+		setImmediate(() => {
+			if (upload.discarding || !isAbandoned(upload)) return;
+			stop();
+			discardUnreadUpload(upload);
+		});
+	const onRemoved = (event: string | symbol) => {
+		// Only `data`: a consumer reading with `once(part, 'readable')` holds no listener between reads.
+		if (event === 'data') look();
+	};
+	const unpipe = file.unpipe;
+	file.unpipe = function (this: Readable, destination?: NodeJS.WritableStream) {
+		const result = unpipe.call(this, destination);
+		look();
+		return result;
+	};
+	const stop = () => {
+		file.unpipe = unpipe;
+		file.off('removeListener', onRemoved);
+		file.off('end', stop);
+		file.off('close', stop);
+	};
+	file.on('removeListener', onRemoved);
+	file.once('end', stop);
+	file.once('close', stop);
+}
+
+function isAbandoned({ httpRequest, file, handedOut }: Upload): boolean {
+	if (httpRequest.readableEnded) return false;
+	// The parser's own drain of a refused part is no reason to keep parsing the rest
+	if (!handedOut) return true;
+	if (!file || file.readableEnded) return false;
+	if (file.destroyed) return true;
+	return file.readableFlowing !== true && file.listenerCount('data') === 0 && file.listenerCount('readable') === 0;
+}
+
+function discardUnreadUpload(upload: Upload): void {
+	const { httpRequest, input, parser } = upload;
+	if (!upload.discarding) {
+		upload.discarding = true;
+		input.unpipe(parser);
+		parser.destroy();
+		input.resume();
+	}
+	if (upload.responded && !upload.grace && !fullyReceived(httpRequest) && !httpRequest.destroyed) {
+		const grace = setTimeout(() => {
+			if (!fullyReceived(httpRequest) && !httpRequest.destroyed) httpRequest.destroy();
+		}, UNREAD_UPLOAD_GRACE_MS);
+		grace.unref();
+		upload.grace = grace;
+		const endGrace = () => clearTimeout(grace);
+		httpRequest.once('end', endGrace);
+		httpRequest.once('close', endGrace);
+	}
+}
+
+function fullyReceived(stream: Readable & { complete?: boolean }): boolean {
+	return stream.readableEnded || stream.complete === true;
+}
+
+function logPartError(error: Error): void {
+	logger.debug?.('Multipart file part failed: ' + error.message);
 }
 
 function decodeFieldValue(raw: string): unknown {

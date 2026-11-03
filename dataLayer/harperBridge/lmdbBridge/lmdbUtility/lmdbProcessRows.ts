@@ -1,0 +1,97 @@
+// eslint-disable-next-line no-unused-vars
+import InsertObject from '../../../InsertObject.ts';
+import * as hdbTerms from '../../../../utility/hdbTerms.ts';
+import * as hdbUtils from '../../../../utility/common_utils.ts';
+import log from '../../../../utility/logging/harper_logger.ts';
+import { v4 as uuidv4 } from 'uuid';
+import { handleHDBError, hdbErrors } from '../../../../utility/errors/hdbError.ts';
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+export default processRows;
+
+/**
+ * parses the records and validates the hash value for each row as well as adding updated/created time stamps
+ * @param {InsertObject} insertObj
+ * @param {Array.<String>} attributes
+ * @param {String} hash_attribute
+ */
+function processRows(insertObj, attributes, hash_attribute) {
+	for (let x = 0; x < attributes.length; x++) {
+		validateAttribute(attributes[x]);
+	}
+
+	let { records } = insertObj;
+
+	// Iterates through array of record objects and validates their hash
+	for (let x = 0; x < records.length; x++) {
+		let record = records[x];
+		validateHash(record, hash_attribute, insertObj.operation);
+	}
+}
+processRows.validateAttribute = validateAttribute;
+
+/**
+ * Validates that attribute is under max size and is not null, undefined or empty.
+ * @param attribute
+ */
+function validateAttribute(attribute) {
+	if (Buffer.byteLength(String(attribute)) > hdbTerms.INSERT_MAX_CHARACTER_SIZE) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(attribute),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+
+	if (hdbUtils.isEmptyOrZeroLength(attribute) || hdbUtils.isEmpty(attribute.trim())) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.ATTR_NAME_NULLISH_ERR,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+}
+
+/**
+ * Validates hash value exists and under max char size. If the operation is 'insert' and the hash doesn't exist it
+ * will create one.
+ * @param record
+ * @param hash_attribute
+ * @param operation
+ */
+function validateHash(record, hash_attribute, operation) {
+	if (!record.hasOwnProperty(hash_attribute) || hdbUtils.isEmptyOrZeroLength(record[hash_attribute])) {
+		if (operation === hdbTerms.OPERATIONS_ENUM.INSERT || operation === hdbTerms.OPERATIONS_ENUM.UPSERT) {
+			record[hash_attribute] = uuidv4();
+			//return here since the rest of the validations do not apply
+			return;
+		}
+
+		log.error('Update transaction aborted due to record with no hash value:', record);
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.RECORD_MISSING_HASH_ERR,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+
+	if (Buffer.byteLength(String(record[hash_attribute])) > hdbTerms.INSERT_MAX_CHARACTER_SIZE) {
+		log.error(record);
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.HASH_VAL_LENGTH_ERR,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+}

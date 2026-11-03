@@ -1,15 +1,14 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'node:events';
-import { databaseEventsEmitter, table } from '../resources/databases.ts';
-import { assertTableTargetNotBranched } from '../resources/branchGuard.ts';
+import { databaseEventsEmitter, scopedTableFactory } from '../resources/databases.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
-import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
+import { OptionsWatcher, type OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { resources, type Resources } from '../resources/Resources.ts';
 import { Models, models as modelsSingleton } from '../resources/models/Models.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
-import { FilesOption } from './deriveGlobOptions.ts';
+import { type FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { composeMountedUrlPath, type ScopeMount } from './scopeMount.ts';
@@ -21,6 +20,7 @@ import {
 } from './componentSecrets.ts';
 import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
+import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -38,7 +38,9 @@ export type ScopeEventsMap = {
 	// (extract + npm install). Plugins observing these can pause their own
 	// file-driven work to avoid acting on intermediate states.
 	'deploy:start': [componentName: string];
-	// Fired after deploy I/O completes (success or failure). The scope's
+	// Fired after deploy I/O completes (success or failure), or, for a deploy
+	// a canary certifies, once its rollout ends, so a worker the rollout
+	// replaces may never see it. The scope's
 	// EntryHandlers have been resumed by this point; their replacement watcher
 	// generation compares the post-deploy scan with the retained pre-deploy
 	// snapshot, so subsequent events are the logical differences of that tree,
@@ -69,6 +71,11 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#deployEndHandler: (name: string) => void;
 	#deployInFlight: boolean = false;
 	#restartRequestedDuringDeploy: boolean = false;
+	#optionsReady: boolean = false;
+	#closed: boolean = false;
+	#closing: Promise<this> | undefined;
+	#bearerValidatorsDisposed: boolean = false;
+	#bearerValidatorDisposers: Array<() => void> = [];
 	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
@@ -77,11 +84,6 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	ready: Promise<any[]>;
 	databaseEvents: typeof databaseEventsEmitter;
 	models: Models;
-	// Set by the loader on deploy pre-flight validation loads (collectScopes):
-	// the scope exists to validate a component, not to run it. Plugins with
-	// process-global side effects should validate fully but skip activation.
-	isTransientValidation?: boolean;
-
 	/**
 	 * Routing the operator declared for this application in the root config. Applied automatically
 	 * to handlers registered through `scope.server`, so plugins normally don't touch it — the
@@ -113,12 +115,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
-		this.#deployInFlight = deployLifecycle.isDeployInFlight(this.#appName);
+		this.#deployInFlight = deployLifecycle.loadsAwaitDeploy(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
-		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so a
-		// throwaway deploy-validation Scope closing can't tear down a sibling/running Scope's streams.
+		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so one
+		// Scope of the identity closing can't tear down the streams of another that is still running.
 		retainComponentSubscriptions(applicationScope?.name ?? appName);
 		this.resources = applicationScope?.resources ?? resources;
 		this.models = modelsSingleton;
@@ -138,6 +140,19 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 								...options,
 								...scopeRef.routeFor(options),
 							});
+						};
+					}
+				}
+				if (prop === 'registerBearerValidator') {
+					const method = Reflect.get(target, prop, receiver);
+					if (typeof method === 'function') {
+						return (validator: any, options?: any) => {
+							if (scopeRef.#closed || scopeRef.#bearerValidatorsDisposed) {
+								throw new Error(`Cannot register a Bearer validator on closed scope ${pluginName}`);
+							}
+							const dispose = method.call(target, validator, options);
+							if (typeof dispose === 'function') scopeRef.#bearerValidatorDisposers.push(dispose);
+							return dispose;
 						};
 					}
 				}
@@ -241,9 +256,11 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	ensureTable<TableResourceType = unknown>(options: any): TableResourceType {
-		assertTableTargetNotBranched(this.applicationScope?.branches, options.database, options.table, 'ensureTable');
 		options.origin = this.#origin;
-		return table<TableResourceType>(options);
+		return scopedTableFactory(
+			this.applicationScope?.branches,
+			thisThreadOwnsApplication(this.applicationScope?.name)
+		)<TableResourceType>(options);
 	}
 
 	#handleOptionsWatcherReady(): void {
@@ -253,7 +270,21 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// We could make the user call `await scope.ready()` in their `handleApplication` function, but that could lead to the same issue and it'd
 		// be harder for the user to understand why.
 
+		// A second `ready` means the scope had no config of its own and now does — a config file
+		// that was unreadable when this worker booted, or one recreated after deletion. Re-emitting
+		// reaches nobody: componentLoader is long past its `await scope.ready`, so the component is
+		// running on the defaults until something restarts it. Same recovery as the `remove`
+		// listener, and the same convention — a plugin with its own `ready` handler owns it.
+		const started = this.#optionsReady;
+		this.#optionsReady = true;
+		const restartNeeded = started && this.listenerCount('ready') === 0;
+
 		this.emit('ready');
+
+		if (restartNeeded) {
+			this.#logger.debug?.('Options arrived after the scope started, requesting restart');
+			this.requestRestart();
+		}
 	}
 
 	#handleError(error: unknown): void {
@@ -261,7 +292,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		else this.#logger.error?.('Error in component scope:', error);
 	}
 
-	async close(): Promise<this> {
+	close(): Promise<this> {
+		return (this.#closing ??= this.#close());
+	}
+
+	async #close(): Promise<this> {
+		this.#closed = true;
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
 
@@ -463,33 +499,55 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			targetEntryHandler: EntryHandler,
 			entryEventHandler: onEntryEventHandler
 		): onEntryEventHandler => {
-			const pendingOperations = new Set<Promise<void>>();
+			// Retained until the drain below reports them: an operation dropped as it settles is invisible
+			// to that drain, so a handler rejecting before `ready` would report nothing at all.
+			let initialOperations: Promise<void>[] | null = [];
 
 			const wrapped: onEntryEventHandler = (entry) => {
-				const result = entryEventHandler(entry);
+				let result;
+				try {
+					result = entryEventHandler(entry);
+				} catch (error) {
+					// A synchronous throw is the same failure as a rejection. Left to propagate, EntryHandler
+					// catches it for its own reporting and the initial load completes as if nothing failed.
+					result = Promise.reject(error);
+				}
 				if (result instanceof Promise) {
-					const tracked = result
-						.catch((error) => {
-							this.#logger.error?.('Error in async entry handler:', error);
+					const tracked = result.catch((error) => {
+						this.#logger.error?.('Error in async entry handler:', error);
+						try {
 							this.#handleError(error);
-							throw error;
-						})
-						.finally(() => pendingOperations.delete(tracked));
-					pendingOperations.add(tracked);
+						} catch (reportingError) {
+							// Reporting must not replace the failure it is reporting.
+							this.#logger.error?.('Error reporting an entry handler failure:', reportingError);
+						}
+						throw error;
+					});
+					// Nothing awaits `tracked` until the drain, which leaves an early rejection unhandled.
+					tracked.catch(() => {});
+					initialOperations?.push(tracked);
 				}
 			};
 
-			// When the entry handler's initial scan completes, wait for all pending async operations
+			// When the entry handler's initial scan completes, wait for all of its async operations
 			const initialLoadPromise = once(targetEntryHandler, 'ready').then(async () => {
-				if (pendingOperations.size > 0) {
-					await Promise.all(pendingOperations);
+				const operations = initialOperations ?? [];
+				initialOperations = null;
+				// Drained, not fail-fast: the loader holds the plugin-wide load lock until this settles, so a
+				// first failure reported while a sibling still runs would let the next application in.
+				for (const result of await Promise.allSettled(operations)) {
+					if (result.status === 'rejected') throw result.reason;
 				}
 				targetEntryHandler.emit('initialLoadComplete');
 			});
 
 			// Track this promise so the component loader can await it
 			this.#pendingInitialLoads.add(initialLoadPromise);
-			initialLoadPromise.finally(() => this.#pendingInitialLoads.delete(initialLoadPromise));
+			// Two-branch cleanup, not `.finally`: its derivative would reject with nobody left to handle it.
+			const forgetInitialLoad = () => {
+				this.#pendingInitialLoads.delete(initialLoadPromise);
+			};
+			initialLoadPromise.then(forgetInitialLoad, forgetInitialLoad);
 
 			return wrapped;
 		};
@@ -585,6 +643,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				resolve();
 			}
 		});
+	}
+
+	disposeBearerValidators(): void {
+		this.#bearerValidatorsDisposed = true;
+		while (this.#bearerValidatorDisposers.length > 0) {
+			this.#bearerValidatorDisposers.pop()!();
+		}
 	}
 
 	/**

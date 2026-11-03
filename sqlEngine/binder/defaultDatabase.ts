@@ -1,3 +1,4 @@
+import * as databasesRuntimeModule from '../../resources/databases.ts';
 /**
  * Default-database resolution for schema-unqualified SQL table references.
  *
@@ -25,7 +26,7 @@ export function _setDatabasesLoader(loader: (() => DatabaseRegistry) | null): vo
 
 export function loadDatabases(): DatabaseRegistry {
 	if (_databasesLoader) return _databasesLoader();
-	const mod = require('../../resources/databases.js');
+	const mod = databasesRuntimeModule;
 	return mod.getDatabases();
 }
 

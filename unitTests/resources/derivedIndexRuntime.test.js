@@ -1,0 +1,1196 @@
+const assert = require('node:assert');
+const { EventEmitter } = require('node:events');
+const { waitFor } = require('../waitFor');
+const {
+	DERIVED_INDEX_ACCEPTED,
+	DERIVED_INDEX_DEFERRED,
+	READINESS_BYTES,
+	DerivedIndexRuntime,
+	derivedIndexTime,
+	publishDerivedIndexReadiness,
+	publishDerivedIndexUnavailableIfUnknown,
+	readDerivedIndexPublicationRevision,
+	readDerivedIndexReadiness,
+	retryDerivedIndexUnavailable,
+	subscribeDerivedIndexPublications,
+} = require('#src/resources/derivedIndexRuntime');
+const {
+	FullTextDerivedIndexBackend,
+	decodeFullTextCursorPayload,
+	encodeFullTextCursorPayload,
+} = require('#src/resources/indexes/fullTextDerivedIndex');
+
+class FakeLogStore {
+	constructor(entriesByCursor, logNames = ['local']) {
+		this.entriesByCursor = entriesByCursor;
+		this.locks = new Set();
+		this.waiters = new Map();
+		this.sharedBuffers = new Map();
+		this.rangeCalls = [];
+		this.rootStore = new EventEmitter();
+		this.rootStore.listLogs = () => logNames.slice();
+		this.rootStore.useLog = (name) => ({
+			name,
+			getStats: () => ({
+				oldestSequenceNumber: 1,
+				lastCommittedPosition: this.committedPosition,
+				nextLogPosition: this.committedPosition ?? { sequence: 0, offset: 0 },
+			}),
+		});
+		this.rootStore.getMonotonicTimestamp = () => performance.now();
+	}
+
+	getRange(options) {
+		this.rangeCalls.push(options);
+		const start = options.startByLog.get('local');
+		const iterable = (this.entriesByCursor.get(start) ?? []).map((entry) => ({ ...entry }));
+		iterable.corruptFrameStop = { breaks: 0, truncatedVersions: new Set(), midLogBreak: false };
+		iterable.failedLogs = new Set();
+		iterable.exactStartFailures = new Map();
+		return iterable;
+	}
+
+	ensureLogExists() {}
+
+	tryLock(key, onUnlocked) {
+		if (!this.locks.has(key)) {
+			this.locks.add(key);
+			return true;
+		}
+		if (onUnlocked) {
+			let waiters = this.waiters.get(key);
+			if (!waiters) this.waiters.set(key, (waiters = []));
+			waiters.push(onUnlocked);
+		}
+		return false;
+	}
+
+	unlock(key) {
+		this.locks.delete(key);
+		for (const waiter of this.waiters.get(key) ?? []) setImmediate(waiter);
+		this.waiters.delete(key);
+	}
+
+	getUserSharedBuffer(key, defaultBuffer, options) {
+		let memory = this.sharedBuffers.get(key);
+		if (!memory) {
+			memory = { buffer: new SharedArrayBuffer(defaultBuffer.byteLength), callbacks: new Set() };
+			this.sharedBuffers.set(key, memory);
+		}
+		// Like the native binding: every lookup gets its own wrapper over one allocation, and notify()
+		// reaches every registered callback, including those of other runtimes sharing this store.
+		const wrapper = structuredClone(memory.buffer);
+		const { callback } = options ?? {};
+		if (callback) memory.callbacks.add(callback);
+		wrapper.notify = () => {
+			if (this.throwPublicationNotify && String(key).endsWith(':publication')) throw new Error('notify failed');
+			for (const listener of memory.callbacks) setImmediate(listener);
+		};
+		wrapper.cancel = () => {
+			if (callback) memory.callbacks.delete(callback);
+		};
+		return wrapper;
+	}
+}
+
+class FakeBackend {
+	constructor(id, cursor, deliver) {
+		this.id = id;
+		this.cursor = cursor;
+		this.deliveries = [];
+		this.deliverImpl = deliver;
+	}
+
+	attach(host) {
+		this.host = host;
+	}
+
+	flush() {}
+
+	shutdown() {}
+
+	getDurableCursor() {
+		return this.cursor;
+	}
+
+	deliver(batch) {
+		this.deliveries.push(batch);
+		if (this.deliverImpl) return this.deliverImpl(batch, this);
+		this.cursor = batch.through;
+		return DERIVED_INDEX_ACCEPTED;
+	}
+
+	onStateChange(wake) {
+		this.stateChange = wake;
+		return () => {
+			if (this.stateChange === wake) this.stateChange = undefined;
+		};
+	}
+}
+
+const cursor = (timestamp) => ({ format: 1, logs: { local: timestamp } });
+const audit = ({ timestamp, recordId, tableId = 1, version = timestamp, type = 'put', endTxn = true }) => ({
+	logName: 'local',
+	txnLogKey: timestamp,
+	version,
+	recordId,
+	tableId,
+	type,
+	endTxn,
+	size: 32,
+});
+
+function runtimeFor(store, records, options) {
+	let reads = 0;
+	const runtime = new DerivedIndexRuntime(
+		store,
+		(tableId, recordId) => {
+			reads++;
+			return records.get(`${tableId}:${recordId}`);
+		},
+		{ idleGraceMilliseconds: 5, ...options }
+	);
+	return { runtime, getReads: () => reads };
+}
+
+const registration = (backend) => ({
+	backend,
+	projections: new Map([[1, (record) => ({ title: record.title })]]),
+});
+
+describe('DerivedIndexRuntime', () => {
+	it('publishes rebuilding readiness before invoking a destructive backend reset', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('reset-readiness', undefined);
+		let readinessDuringReset;
+		backend.reset = async () => {
+			readinessDuringReset = readDerivedIndexReadiness(store, backend.id);
+		};
+		const runtime = runtimeFor(store, new Map(), { scanRecords: () => [] }).runtime;
+		runtime.register(registration(backend));
+		await waitFor(() => runtime.requestRebuild(backend.id));
+
+		await waitFor(() => readinessDuringReset !== undefined);
+		assert.strictEqual(readinessDuringReset.state, 'rebuilding');
+		assert(readinessDuringReset.ownerEpoch > 0n);
+		await runtime.stop();
+	});
+
+	it('publishes backend-only revisions for peer refresh', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const backend = new FakeBackend('backend-publication', cursor(10));
+		backend.publishesQueryRevisions = true;
+		runtime.register(registration(backend));
+		let notifications = 0;
+		const subscription = subscribeDerivedIndexPublications(store, backend.id, () => notifications++);
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 0n);
+		backend.host.publicationChanged();
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 1n);
+		await waitFor(() => notifications === 1);
+		subscription.close();
+		backend.host.publicationChanged();
+		await new Promise(setImmediate);
+		assert.strictEqual(notifications, 1);
+		store.throwPublicationNotify = true;
+		assert.doesNotThrow(() => backend.host.publicationChanged());
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 3n);
+		await runtime.stop();
+	});
+
+	it('does not allocate publication state for backends without external readers', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const backend = new FakeBackend('backend-without-readers', cursor(10));
+		runtime.register(registration(backend));
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready');
+		assert.strictEqual(store.sharedBuffers.has(`derived-index:${backend.id}:publication`), false);
+		backend.host.publicationChanged();
+		assert.strictEqual(store.sharedBuffers.has(`derived-index:${backend.id}:publication`), false);
+		await runtime.stop();
+	});
+
+	it('does not certify coverage across a mutation awaiting its durable barrier', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		store.committedPosition = { sequence: 1, offset: 64 };
+		const backend = new FakeBackend('coverage-after-data', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		backend.publishesQueryRevisions = true;
+		const readinessId = 'coverage-after-data:generation';
+		const publications = [];
+		backend.publishCoverage = (positions) =>
+			publications.push({ positions, revision: readDerivedIndexPublicationRevision(store, readinessId).revision });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			flushAfterMutations: 1,
+			idleGraceMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 1,
+		});
+		runtime.register({ ...registration(backend), readinessId });
+
+		await waitFor(() => backend.deliveries.length === 1 && runtime.getMetrics(backend.id)?.acceptedMutations === 1);
+		const publicationsBeforeBarrier = publications.length;
+		const since = derivedIndexTime(store.rootStore);
+		let resolved = false;
+		const waiting = runtime.waitForCoverage(backend.id, since, 1000).then(() => (resolved = true));
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.strictEqual(resolved, false);
+		assert.strictEqual(publications.length, publicationsBeforeBarrier);
+
+		backend.cursor = cursor(20);
+		backend.stateChange();
+		await waiting;
+		assert(publications.length > publicationsBeforeBarrier);
+		assert.strictEqual(publications.at(-1).revision, 1n);
+		await runtime.stop();
+	});
+
+	it('persists only coverage captured on an idle pass', async () => {
+		// The turn that reads 20 captured the tail before 20 was appended; persisting that position with the
+		// vector anchoring 20 would let a resume skip past an entry the position never covered.
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const before = { sequence: 1, offset: 32 };
+		const after = { sequence: 1, offset: 64 };
+		let captures = 0;
+		store.rootStore.useLog = (name) => ({
+			name,
+			getStats: () => {
+				const position = ++captures === 1 ? before : after;
+				return { oldestSequenceNumber: 1, lastCommittedPosition: position, nextLogPosition: position };
+			},
+		});
+		const backend = new FakeBackend('idle-coverage', cursor(10));
+		const persisted = [];
+		backend.publishCoverage = (positions) => persisted.push({ positions, cursor: backend.cursor });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 1,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => persisted.length > 0);
+		assert.deepStrictEqual(
+			persisted.map(({ positions, cursor }) => [positions.local, cursor.logs.local]),
+			persisted.map(() => [after, 20])
+		);
+		await runtime.stop();
+	});
+
+	it('persists the idle capture on the pass that sees its vector become durable', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		store.committedPosition = { sequence: 1, offset: 64 };
+		// A wall-clock time, so a cadence reset to zero clears the throttle as it does in production.
+		store.rootStore.getMonotonicTimestamp = () => Date.now();
+		const backend = new FakeBackend('idle-durable-coverage', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const persisted = [];
+		backend.publishCoverage = (positions) => persisted.push({ positions, cursor: backend.cursor });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 60_000,
+			maxFlushAgeMilliseconds: 60_000,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getMetrics(backend.id)?.acceptedMutations === 1);
+		backend.cursor = backend.deliveries[0].through;
+		backend.stateChange();
+		await waitFor(() => persisted.some(({ cursor }) => cursor.logs.local === 20), { timeout: 5000 });
+		await runtime.stop();
+	});
+
+	describe('coverage demand', () => {
+		// A 60 s flush age keeps the owner's periodic coverage refresh out of every wait below.
+		const options = { idleGraceMilliseconds: 60_000, maxFlushAgeMilliseconds: 60_000, lockRetryMilliseconds: 60_000 };
+		const coverageBackend = (id, deliver) => {
+			const backend = new FakeBackend(id, cursor(10), deliver);
+			backend.publishCoverage = () => {};
+			return backend;
+		};
+		const countCoverageNotifies = (store) => {
+			const counts = { notifies: 0, lockAttempts: 0 };
+			const { getUserSharedBuffer, tryLock } = store;
+			store.getUserSharedBuffer = function (key, ...rest) {
+				const buffer = getUserSharedBuffer.call(this, key, ...rest);
+				if (String(key).endsWith(':coverage')) {
+					const { notify } = buffer;
+					buffer.notify = () => {
+						counts.notifies++;
+						notify();
+					};
+				}
+				return buffer;
+			};
+			store.tryLock = function (...args) {
+				counts.lockAttempts++;
+				return tryLock.apply(this, args);
+			};
+			return counts;
+		};
+		const coverageTime = (store, id) =>
+			Atomics.load(
+				new BigInt64Array(
+					store.getUserSharedBuffer(`derived-index:${id}:readiness`, new ArrayBuffer(READINESS_BYTES)),
+					READINESS_BYTES - 8,
+					1
+				),
+				0
+			);
+
+		it("answers a non-owner's wait from the owning runtime", async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const counts = countCoverageNotifies(store);
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-demand')));
+			await waitFor(() => coverageTime(store, 'coverage-demand') > 0n);
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-demand')));
+			await waitFor(() => counts.lockAttempts === 2);
+
+			const started = performance.now();
+			await peer.waitForCoverage('coverage-demand', derivedIndexTime(store.rootStore), 1000);
+			assert(performance.now() - started < 500);
+			assert.strictEqual(counts.notifies, 1);
+			assert.strictEqual(counts.lockAttempts, 2, 'a parked peer must not re-probe the runner lock on demand');
+			await peer.stop();
+			await owner.stop();
+		});
+
+		it('requests again for a waiter that joins after the first request was answered', async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			let clock = 1000;
+			store.rootStore.getMonotonicTimestamp = () => clock;
+			const counts = countCoverageNotifies(store);
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-joiner')));
+			await waitFor(() => coverageTime(store, 'coverage-joiner') > 0n);
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-joiner')));
+
+			const controller = new AbortController();
+			clock++;
+			const held = peer.waitForCoverage(
+				'coverage-joiner',
+				derivedIndexTime(store.rootStore) + 60_000_000_000n,
+				1000,
+				controller.signal
+			);
+			const cancelled = assert.rejects(held, { message: 'held waiter complete' });
+			try {
+				assert.strictEqual(counts.notifies, 1);
+				clock++;
+				const answered = derivedIndexTime(store.rootStore);
+				await waitFor(() => coverageTime(store, 'coverage-joiner') >= answered);
+				clock++;
+				const before = counts.notifies;
+				const joined = peer.waitForCoverage(
+					'coverage-joiner',
+					derivedIndexTime(store.rootStore),
+					1000,
+					controller.signal
+				);
+				let joinedFinished = false;
+				const markJoinedFinished = () => {
+					joinedFinished = true;
+				};
+				joined.then(markJoinedFinished, markJoinedFinished);
+				assert.strictEqual(counts.notifies, before + 1, 'admission must request coverage before the next poll');
+				await waitFor(() => joinedFinished, { timeout: 1000, message: 'the joining waiter did not finish' });
+				await joined;
+			} finally {
+				controller.abort(new Error('held waiter complete'));
+				await cancelled;
+				await peer.stop();
+				await owner.stop();
+			}
+		});
+
+		it('times a wait out as lagging when the coverage request cannot be sent', async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(coverageBackend('coverage-unsent')));
+			await waitFor(() => coverageTime(store, 'coverage-unsent') > 0n);
+			const { getUserSharedBuffer } = store;
+			store.getUserSharedBuffer = function (key, ...rest) {
+				const buffer = getUserSharedBuffer.call(this, key, ...rest);
+				if (String(key).endsWith(':coverage'))
+					buffer.notify = () => {
+						throw new Error('notify failed');
+					};
+				return buffer;
+			};
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-unsent')));
+
+			await assert.rejects(peer.waitForCoverage('coverage-unsent', derivedIndexTime(store.rootStore), 100), {
+				code: 'DERIVED_INDEX_LAGGING',
+			});
+			await peer.stop();
+			await owner.stop();
+		});
+
+		it('does not retry a deferred batch or repeat an unanswered request', async () => {
+			const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+			store.committedPosition = { sequence: 1, offset: 64 };
+			const counts = countCoverageNotifies(store);
+			const backend = coverageBackend('coverage-deferred', () => DERIVED_INDEX_DEFERRED);
+			const owner = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), options).runtime;
+			owner.register(registration(backend));
+			await waitFor(() => owner.getStatus('coverage-deferred').state === 'deferred');
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			peer.register(registration(coverageBackend('coverage-deferred')));
+
+			await assert.rejects(peer.waitForCoverage('coverage-deferred', derivedIndexTime(store.rootStore), 200), {
+				code: 'DERIVED_INDEX_LAGGING',
+			});
+			assert.strictEqual(backend.deliveries.length, 1);
+			assert.strictEqual(counts.notifies, 1);
+			await peer.stop();
+			await owner.stop();
+		});
+	});
+
+	it('does not let a local setup failure replace peer-owned readiness', () => {
+		const store = new FakeLogStore(new Map());
+		publishDerivedIndexReadiness(store, 'peer-owned', 'ready');
+
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'peer-owned'), false);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'peer-owned'), {
+			state: 'ready',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+		publishDerivedIndexReadiness(store, 'failed-peer', 'unavailable', 'runner-failed');
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'failed-peer'), false);
+		assert.strictEqual(readDerivedIndexReadiness(store, 'failed-peer').reason, 'runner-failed');
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'missing-owner'), true);
+		assert.strictEqual(readDerivedIndexReadiness(store, 'missing-owner').state, 'unavailable');
+		assert.strictEqual(readDerivedIndexReadiness(store, 'missing-owner').reason, 'backend-failed');
+	});
+
+	it('retries unavailable readiness only while that state is still current', () => {
+		const store = new FakeLogStore(new Map());
+		assert.strictEqual(typeof retryDerivedIndexUnavailable, 'function');
+
+		publishDerivedIndexReadiness(store, 'retry-runner', 'unavailable', 'runner-failed');
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'retry-runner'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-runner'), {
+			state: 'unknown',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'retry-setup'), true);
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'retry-setup'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-setup'), {
+			state: 'unknown',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'retry-setup'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-setup'), {
+			state: 'unavailable',
+			reason: 'backend-failed',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+
+		publishDerivedIndexReadiness(store, 'peer-ready', 'ready');
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'peer-ready'), false);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'peer-ready'), {
+			state: 'ready',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+	});
+
+	it('publishes a failed setup retry after a prior runner owned the readiness id', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		runtime.register({
+			...registration(new FakeBackend('retry-after-owner', cursor(10))),
+			readinessId: 'retry-after-owner',
+		});
+		await waitFor(() => readDerivedIndexReadiness(store, 'retry-after-owner').state === 'ready');
+		await runtime.stop();
+
+		publishDerivedIndexReadiness(store, 'retry-after-owner', 'unavailable', 'runner-failed');
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'retry-after-owner'), true);
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'retry-after-owner'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-after-owner'), {
+			state: 'unavailable',
+			reason: 'backend-failed',
+			ownerEpoch: 1n,
+			rebuildAttempts: 0,
+		});
+	});
+
+	it('keeps runner ownership stable while isolating readiness by generation', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const firstBackend = new FakeBackend('catalog-search', cursor(10));
+		const first = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		first.register({ ...registration(firstBackend), readinessId: 'catalog-search:generation-1' });
+
+		await waitFor(() => first.getReadiness('catalog-search').state === 'ready');
+		assert.strictEqual(readDerivedIndexReadiness(store, 'catalog-search:generation-1').state, 'ready');
+		await first.stop();
+
+		const secondBackend = new FakeBackend('catalog-search', cursor(10));
+		const second = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		second.register({
+			...registration(secondBackend),
+			readinessId: 'catalog-search:generation-2',
+			isCurrent: () => false,
+		});
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+
+		assert.strictEqual(second.getReadiness('catalog-search').state, 'unknown');
+		assert.strictEqual(readDerivedIndexReadiness(store, 'catalog-search:generation-2').state, 'unknown');
+		assert.deepStrictEqual([...store.locks], []);
+		await second.stop();
+	});
+
+	it('releases the stable runner lock when its table generation becomes stale', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new FakeBackend('generation-fence', cursor(10), () => DERIVED_INDEX_DEFERRED);
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 1000,
+		});
+		let current = true;
+		runtime.register({ ...registration(backend), readinessId: 'generation-fence:one', isCurrent: () => current });
+
+		await waitFor(() => backend.deliveries.length === 1 && store.locks.has('derived-index:generation-fence:runner'));
+		current = false;
+		backend.stateChange();
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(backend.deliveries.length, 1);
+		await runtime.stop();
+	});
+
+	it('wakes a successor generation as soon as the stable runner lock is released', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const first = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 1000,
+			lockRetryMilliseconds: 5000,
+		}).runtime;
+		first.register({
+			...registration(new FakeBackend('generation-handoff', cursor(10))),
+			readinessId: 'generation-handoff:one',
+		});
+		await waitFor(() => readDerivedIndexReadiness(store, 'generation-handoff:one').state === 'ready');
+
+		const second = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 1000,
+			lockRetryMilliseconds: 5000,
+		}).runtime;
+		second.register({
+			...registration(new FakeBackend('generation-handoff', cursor(10))),
+			readinessId: 'generation-handoff:two',
+		});
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+		assert.strictEqual(readDerivedIndexReadiness(store, 'generation-handoff:two').state, 'unknown');
+
+		await first.stop();
+		await waitFor(() => readDerivedIndexReadiness(store, 'generation-handoff:two').state === 'ready', 500);
+		await second.stop();
+	});
+
+	it('retries a registration release after backend shutdown fails', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new FakeBackend('release-retry', cursor(10));
+		let failShutdown = true;
+		let shutdowns = 0;
+		backend.shutdown = async () => {
+			shutdowns++;
+			if (failShutdown) throw new Error('writer still active');
+		};
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const release = runtime.register(registration(backend));
+		await waitFor(() => runtime.getReadiness('release-retry').state === 'ready');
+
+		await assert.rejects(release(), /writer still active/);
+		failShutdown = false;
+		await release();
+
+		assert.strictEqual(shutdowns, 2);
+		assert.deepStrictEqual([...store.locks], []);
+		await runtime.stop();
+	});
+
+	it('lets a successor full-text backend acquire from the checkpoint published by the prior owner', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const shared = { payload: encodeFullTextCursorPayload(cursor(10)) };
+		const lifecycle = () => ({
+			inspectCalls: 0,
+			resetCalls: 0,
+			inspect() {
+				this.inspectCalls++;
+				return { state: 'checkpointed', committedPayload: shared.payload };
+			},
+			async open() {
+				return {
+					committedPayload: shared.payload,
+					async applyMutationBatch(batch) {
+						return {
+							processed: batch.upserts.length + batch.deletes.length,
+							rejected: [],
+							encodedBytes: 1,
+							frames: 1,
+						};
+					},
+					async publish(payload) {
+						shared.payload = payload;
+						this.committedPayload = payload;
+						return 1n;
+					},
+					async close() {
+						return {};
+					},
+				};
+			},
+			async reset() {
+				this.resetCalls++;
+			},
+		});
+		const firstLifecycle = lifecycle();
+		const secondLifecycle = lifecycle();
+		const firstBackend = new FullTextDerivedIndexBackend({ id: 'owner-rotation', lifecycle: firstLifecycle });
+		const secondBackend = new FullTextDerivedIndexBackend({ id: 'owner-rotation', lifecycle: secondLifecycle });
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const first = runtimeFor(store, records, { flushAfterMutations: 1, idleGraceMilliseconds: 25 }).runtime;
+		const second = runtimeFor(store, records, { flushAfterMutations: 1, idleGraceMilliseconds: 25 }).runtime;
+		first.register(registration(firstBackend));
+		second.register(registration(secondBackend));
+
+		await waitFor(() => secondLifecycle.inspectCalls === 1, {
+			message: 'the waiting backend must inspect after the first owner publishes and releases',
+		});
+		assert.deepStrictEqual(
+			{ ...decodeFullTextCursorPayload(shared.payload).logs },
+			cursor(20).logs,
+			'the first owner must publish before the successor acquires'
+		);
+		assert.strictEqual(secondLifecycle.resetCalls, 0);
+		await Promise.all([first.stop(), second.stop()]);
+	});
+
+	it('settles runtime stop when a full-text native open does not settle', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let finishOpen;
+		let openCalls = 0;
+		const engine = {
+			committedPayload: encodeFullTextCursorPayload(cursor(10)),
+			closeCalls: 0,
+			async applyMutationBatch(batch) {
+				return {
+					processed: batch.upserts.length + batch.deletes.length,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
+			},
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			},
+			async close() {
+				this.closeCalls++;
+				return {};
+			},
+		};
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'bounded-stop',
+			lifecycle: {
+				inspect: () => ({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) }),
+				open: () => {
+					openCalls++;
+					return new Promise((resolve) => (finishOpen = () => resolve(engine)));
+				},
+				reset: async () => {},
+			},
+			openAttempts: 1,
+			closeTimeoutMilliseconds: 10,
+			shutdownTimeoutMilliseconds: 250,
+		});
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => openCalls === 1);
+		await assert.rejects(runtime.stop(), /shutdown failed.*did not prove quiescence/);
+		assert.strictEqual(store.locks.size, 1, 'the failed handoff must retain the runner lock');
+		assert.strictEqual(runtime.requestRebuild('bounded-stop'), true);
+		finishOpen();
+		await waitFor(() => engine.closeCalls === 1 && store.locks.size === 0);
+	});
+
+	it('delivers authoritative projected state once per record and advances through unrelated transactions', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[
+					10,
+					[
+						audit({ timestamp: 20, recordId: 'a', version: 100 }),
+						audit({ timestamp: 30, recordId: 'a', version: 200 }),
+						audit({ timestamp: 40, recordId: 'ignored', tableId: 2 }),
+					],
+				],
+			])
+		);
+		const backend = new FakeBackend('search', cursor(10));
+		const { runtime, getReads } = runtimeFor(store, new Map([['1:a', { version: 300, value: { title: 'current' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 1);
+		const [batch] = backend.deliveries;
+		assert.deepStrictEqual(batch.through, cursor(40));
+		assert.strictEqual(batch.transactions.length, 2);
+		assert.deepStrictEqual(
+			batch.transactions.map(({ timestamp, mutations }) => [timestamp, mutations[0].logVersion, mutations[0].state]),
+			[
+				[20, 100, { kind: 'record', version: 300, projection: { title: 'current' } }],
+				[30, 200, { kind: 'record', version: 300, projection: { title: 'current' } }],
+			]
+		);
+		assert.strictEqual(getReads(), 1);
+		assert.strictEqual(store.rootStore.listenerCount('committed'), 1);
+		assert.strictEqual(store.rangeCalls[0].readUncommitted, undefined);
+		runtime.stop();
+		assert.strictEqual(store.rootStore.listenerCount('committed'), 0);
+	});
+
+	it('retains a deferred batch and retries it only after the backend wakes', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let accept = false;
+		const backend = new FakeBackend('deferred', cursor(10), (batch, target) => {
+			if (!accept) return DERIVED_INDEX_DEFERRED;
+			target.cursor = batch.through;
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 1);
+		assert.strictEqual(runtime.getStatus('deferred').state, 'deferred');
+		assert.deepStrictEqual(backend.cursor, cursor(10));
+		store.rootStore.emit('committed');
+		store.rootStore.emit('committed');
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.strictEqual(backend.deliveries.length, 1, 'commits must not retry backend-deferred work');
+		accept = true;
+		backend.stateChange();
+		await waitFor(() => backend.deliveries.length === 2);
+		assert.strictEqual(backend.deliveries[1], backend.deliveries[0]);
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		runtime.stop();
+	});
+
+	it('does not resume after a synchronous permanent-failure callback from deliver', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new FakeBackend('synchronous-failure', cursor(10), (_batch, target) => {
+			target.stateChange('failed');
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getStatus('synchronous-failure')?.state === 'needs-rebuild');
+		assert.strictEqual(backend.deliveries.length, 1);
+		store.rootStore.emit('committed');
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.strictEqual(backend.deliveries.length, 1);
+		runtime.stop();
+	});
+
+	it('reconstructs before handling a result returned after synchronous accepted-work loss', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let first = true;
+		const backend = new FakeBackend('synchronous-loss', cursor(10), (batch, target) => {
+			if (first) {
+				first = false;
+				target.stateChange('accepted-work-lost');
+				return DERIVED_INDEX_ACCEPTED;
+			}
+			target.cursor = batch.through;
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 2 && backend.cursor.logs.local === 20);
+		assert(store.rangeCalls.length >= 2);
+		assert.deepStrictEqual(backend.deliveries[1].transactions, backend.deliveries[0].transactions);
+		runtime.stop();
+	});
+
+	it('replays from the durable cursor when a backend reports lost accepted work', async () => {
+		const entries = new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]);
+		const store = new FakeLogStore(entries);
+		let persist = false;
+		const backend = new FakeBackend('loss', cursor(10), (batch, target) => {
+			if (persist) target.cursor = batch.through;
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 1);
+		persist = true;
+		backend.stateChange('accepted-work-lost');
+		await waitFor(() => backend.deliveries.length === 2);
+		assert.deepStrictEqual(backend.deliveries[1], backend.deliveries[0]);
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		assert(store.rangeCalls.length >= 2, 'lost work must reconstruct the exact-resume iterator');
+		runtime.stop();
+	});
+
+	it('fails closed when the exact durable cursor boundary is unavailable', async () => {
+		const store = new FakeLogStore(new Map());
+		store.getRange = function (options) {
+			const iterable = FakeLogStore.prototype.getRange.call(this, options);
+			iterable.exactStartFailures.set('local', 'missing');
+			return iterable;
+		};
+		const backend = new FakeBackend('broken', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getStatus('broken')?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus('broken').reason, /missing durable cursor boundary/);
+		assert.strictEqual(backend.deliveries.length, 0);
+		assert.strictEqual(store.locks.size, 0);
+		runtime.stop();
+	});
+
+	for (const [name, mutateRange, reason] of [
+		[
+			'a corrupt transaction-log frame',
+			(iterable) => {
+				iterable.corruptFrameStop.breaks = 1;
+			},
+			/corrupt frame/,
+		],
+		['an unexpected transaction-log failure', (iterable) => iterable.failedLogs.add('local'), /iterator failed/],
+	]) {
+		it(`fails closed on ${name}`, async () => {
+			const store = new FakeLogStore(new Map([[10, []]]));
+			store.getRange = function (options) {
+				const iterable = FakeLogStore.prototype.getRange.call(this, options);
+				mutateRange(iterable);
+				return iterable;
+			};
+			const backend = new FakeBackend(`range-failure-${reason}`, cursor(10));
+			const { runtime } = runtimeFor(store, new Map());
+			runtime.register(registration(backend));
+
+			await waitFor(() => runtime.getStatus(backend.id)?.state === 'needs-rebuild');
+			assert.match(runtime.getStatus(backend.id).reason, reason);
+			assert.strictEqual(backend.deliveries.length, 0);
+			runtime.stop();
+		});
+	}
+
+	it('delivers a cursor-only batch for unrelated committed work', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'ignored', tableId: 2 })]]]));
+		const backend = new FakeBackend('cursor-only', cursor(10));
+		const { runtime, getReads } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 1);
+		assert.deepStrictEqual(backend.deliveries[0], { ownerEpoch: 1n, transactions: [], through: cursor(20) });
+		assert.strictEqual(getReads(), 0);
+		runtime.stop();
+	});
+
+	it('bounds accepted work while the backend durability barrier lags', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[
+					10,
+					[
+						audit({ timestamp: 20, recordId: 'a' }),
+						audit({ timestamp: 30, recordId: 'b' }),
+						audit({ timestamp: 40, recordId: 'c' }),
+					],
+				],
+			])
+		);
+		const backend = new FakeBackend('durability-cap', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const records = new Map(['a', 'b', 'c'].map((id) => [`1:${id}`, { version: 40, value: { title: id } }]));
+		const { runtime } = runtimeFor(store, records, {
+			maxTransactionsPerTurn: 1,
+			maxAcceptedBatchesAhead: 2,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getStatus('durability-cap')?.state === 'waiting-durable');
+		assert.strictEqual(backend.deliveries.length, 2);
+		store.rootStore.emit('committed');
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.strictEqual(backend.deliveries.length, 2, 'commits must not bypass the durability cap');
+
+		backend.cursor = backend.deliveries[0].through;
+		backend.stateChange();
+		await waitFor(() => backend.deliveries.length === 3);
+		assert.strictEqual(backend.deliveries[2].through.logs.local, 40);
+		runtime.stop();
+	});
+
+	it('applies drain budgets only between complete transactions', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[
+					10,
+					[
+						{ ...audit({ timestamp: 20, recordId: 'a' }), endTxn: false },
+						audit({ timestamp: 20, recordId: 'b' }),
+						audit({ timestamp: 30, recordId: 'c' }),
+					],
+				],
+			])
+		);
+		const records = new Map(['a', 'b', 'c'].map((id) => [`1:${id}`, { version: 30, value: { title: id } }]));
+		const backend = new FakeBackend('bounded', cursor(10));
+		const { runtime } = runtimeFor(store, records, { maxTransactionsPerTurn: 1, maxBytesPerTurn: 1 });
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 2);
+		assert.strictEqual(backend.deliveries[0].transactions.length, 1);
+		assert.strictEqual(backend.deliveries[0].transactions[0].mutations.length, 2);
+		assert.strictEqual(backend.deliveries[0].through.logs.local, 20);
+		assert.strictEqual(backend.deliveries[1].through.logs.local, 30);
+		runtime.stop();
+	});
+
+	it('isolates one backend failure from another backend runner', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const failed = new FakeBackend('failed', cursor(10), () => {
+			throw new Error('backend failure');
+		});
+		const healthy = new FakeBackend('healthy', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(failed));
+		runtime.register(registration(healthy));
+
+		await waitFor(() => runtime.getStatus('failed')?.state === 'needs-rebuild' && healthy.deliveries.length === 1);
+		assert.match(runtime.getStatus('failed').reason, /backend delivery threw/);
+		assert.deepStrictEqual(healthy.cursor, cursor(20));
+		runtime.stop();
+	});
+
+	it('requires a fresh lock acquisition after another worker releases ownership', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[10, [audit({ timestamp: 20, recordId: 'a' })]],
+				[20, []],
+			])
+		);
+		const backend = new FakeBackend('shared', cursor(10));
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const first = runtimeFor(store, records).runtime;
+		const second = runtimeFor(store, records).runtime;
+		first.register(registration(backend));
+		second.register(registration(backend));
+
+		// An owner epoch on the second runtime means it actually took the lock, and waitFor's 2 s budget
+		// is well inside the 5 s default retry cadence, so the handoff came from the release
+		// notification rather than the timer.
+		await waitFor(() => second.getStatus('shared')?.ownerEpoch !== undefined && store.rangeCalls.length >= 2, {
+			message: 'the waiting runner must acquire on the release notification, not the retry timer',
+		});
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		assert.strictEqual(backend.deliveries.length, 1, 'the waiting runner must exact-resume after acquiring the lock');
+		first.stop();
+		second.stop();
+	});
+
+	it('stops rotating ownership once every runner is idle', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
+		const backend = new FakeBackend('idle-rotation', cursor(10));
+		const records = new Map();
+		const first = runtimeFor(store, records).runtime;
+		const second = runtimeFor(store, records).runtime;
+		first.register(registration(backend));
+		second.register(registration(backend));
+
+		await waitFor(() => second.getStatus('idle-rotation')?.ownerEpoch !== undefined, {
+			message: 'the waiting runner must take the lock when the owner idles out',
+		});
+		const settled = attempts;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(attempts, settled, 'an idle release must not wake a dormant ex-owner back into acquiring');
+		first.stop();
+		second.stop();
+	});
+
+	it('retries the lock on its own cadence when the owner died without notifying', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
+		// An owner on another worker holds the lock; it will die without releasing, so nothing notifies
+		// and no commit lands — the retry timer is the only wake left.
+		store.locks.add('derived-index:dead-owner:runner');
+		const backend = new FakeBackend('dead-owner', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			lockRetryMilliseconds: 100,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => attempts === 1, { message: 'the runner must attempt the contended lock once' });
+		// Commit wakes reach a waiting non-owner every turn; they must not each become a native tryLock.
+		for (let i = 0; i < 3; i++) {
+			store.rootStore.emit('committed');
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		assert.strictEqual(attempts, 1, 'commit wakes must not re-probe the lock while the retry timer is armed');
+
+		store.locks.delete('derived-index:dead-owner:runner');
+		await waitFor(() => backend.deliveries.length === 1, { message: 'the retry timer must resume the index' });
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		runtime.stop();
+	});
+
+	it('backs off by the configured delay when a lock attempt throws while waiting', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			if (attempts === 2) throw new Error('lock unavailable');
+			return tryLock(key, onUnlocked);
+		};
+		store.locks.add('derived-index:throwing-lock:runner');
+		const backend = new FakeBackend('throwing-lock', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			lockRetryMilliseconds: 5000,
+			rebuildBackoffMilliseconds: 20,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => attempts === 1, { message: 'the runner must attempt the contended lock once' });
+		store.locks.delete('derived-index:throwing-lock:runner');
+		// A notification wakes the waiting runner and that attempt throws: the configured backoff has to
+		// replace the armed contention retry, or recovery waits out the whole 5 s cadence instead.
+		store.getUserSharedBuffer('derived-index:throwing-lock:readiness', new ArrayBuffer(1)).notify();
+
+		await waitFor(() => backend.deliveries.length === 1, { message: 'the backoff retry must resume the index' });
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		runtime.stop();
+	});
+
+	it('rejects a durable cursor assembled from different offered batch boundaries', async () => {
+		const initial = { format: 1, logs: { local: 10, remote: 11 } };
+		const store = new FakeLogStore(
+			new Map([
+				[
+					10,
+					[audit({ timestamp: 20, recordId: 'a' }), { ...audit({ timestamp: 21, recordId: 'b' }), logName: 'remote' }],
+				],
+			]),
+			['local', 'remote']
+		);
+		const backend = new FakeBackend('mixed-cursor', initial, () => DERIVED_INDEX_ACCEPTED);
+		const records = new Map(['a', 'b'].map((id) => [`1:${id}`, { version: 21, value: { title: id } }]));
+		const { runtime } = runtimeFor(store, records, { maxTransactionsPerTurn: 1 });
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 2);
+		assert.deepStrictEqual(
+			backend.deliveries.map((batch) => batch.through),
+			[
+				{ format: 1, logs: { local: 20, remote: 11 } },
+				{ format: 1, logs: { local: 20, remote: 21 } },
+			]
+		);
+		backend.cursor = { format: 1, logs: { local: 10, remote: 21 } };
+		backend.stateChange();
+
+		await waitFor(() => runtime.getStatus('mixed-cursor')?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus('mixed-cursor').reason, /unoffered cursor vector/);
+		runtime.stop();
+	});
+
+	it('fails closed when one physical log repeats a completed timestamp', async () => {
+		const store = new FakeLogStore(
+			new Map([[10, [audit({ timestamp: 20, recordId: 'a' }), audit({ timestamp: 20, recordId: 'b' })]]])
+		);
+		const backend = new FakeBackend('duplicate', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getStatus('duplicate')?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus('duplicate').reason, /repeated completed timestamp/);
+		assert.strictEqual(backend.deliveries.length, 0);
+		runtime.stop();
+	});
+
+	it('reacquires after the idle grace period when a later commit wakes it', async () => {
+		const entries = new Map([[10, []]]);
+		const store = new FakeLogStore(entries);
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
+		const backend = new FakeBackend('idle-wake', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		// One acquisition, then the idle release. That release notifies, and the notification reaches
+		// this runner's own callback too: it must be ignored, or an idle release re-acquires
+		// immediately and never leaves the lock for a peer.
+		await waitFor(() => attempts === 1 && store.locks.size === 0, {
+			message: 'the runner must take the lock and release it after the idle grace period',
+		});
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+		assert.strictEqual(attempts, 1, 'the releasing runner must ignore the notification it caused');
+
+		entries.set(10, [audit({ timestamp: 20, recordId: 'a' })]);
+		store.rootStore.emit('committed');
+
+		await waitFor(() => backend.deliveries.length === 1);
+		assert.strictEqual(attempts, 2, 'the commit must drive a fresh acquisition');
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		runtime.stop();
+	});
+
+	it('unregisters the backend wake and root commit listeners', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new FakeBackend('unregister', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		const unregister = runtime.register(registration(backend));
+
+		await waitFor(() => backend.stateChange !== undefined);
+		unregister();
+		assert.strictEqual(backend.stateChange, undefined);
+		assert.strictEqual(store.rootStore.listenerCount('committed'), 0);
+		assert.strictEqual(runtime.getStatus('unregister'), undefined);
+		runtime.stop();
+	});
+
+	it('fails closed if a saved physical log disappears', async () => {
+		const logNames = ['local'];
+		const store = new FakeLogStore(new Map([[10, []]]), logNames);
+		const backend = new FakeBackend('removed-log', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => store.locks.size === 0);
+		logNames.length = 0;
+		store.rootStore.emit('committed');
+
+		await waitFor(() => runtime.getStatus('removed-log')?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus('removed-log').reason, /saved transaction log 'local' is missing/);
+		runtime.stop();
+	});
+});

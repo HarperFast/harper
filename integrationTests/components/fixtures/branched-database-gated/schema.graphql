@@ -1,3 +1,0 @@
-type GatedByBranch @table(database: "data") @export {
-	id: ID @primaryKey
-}

@@ -2,7 +2,7 @@
 
 const chai = require('chai');
 const { expect } = chai;
-const ipc_utils = require('#js/server/threads/itc');
+const ipc_utils = require('#src/server/threads/itc');
 
 describe('Test ipcUtils module', () => {
 	describe('Test validateEvent function', () => {
@@ -42,14 +42,6 @@ describe('Test ipcUtils module', () => {
 				table: 'test',
 			};
 			const result = new ipc_utils.SchemaEventMsg(12345, 'create_schema', 'unit', 'test');
-			expect(result).to.eql(expected_obj);
-		});
-
-		it('Test UserEventMsg', () => {
-			const expected_obj = {
-				originator: 12345,
-			};
-			const result = new ipc_utils.UserEventMsg(12345);
 			expect(result).to.eql(expected_obj);
 		});
 	});

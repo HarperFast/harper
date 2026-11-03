@@ -42,6 +42,12 @@ function estimate(table, condition) {
 }
 
 describe('estimateCondition range estimates', () => {
+	it('uses an index estimate for a single-element attribute path', () => {
+		const table = makeTable();
+		table.indices.attr.getValuesCount = () => 3;
+		assert.strictEqual(estimate(table, { attribute: ['attr'], comparator: 'equals', value: 'rare' }), 3);
+	});
+
 	it('uses the statistical estimate outright at confidence 1', () => {
 		const table = makeTable({ indexEstimate: { count: 120, confidence: 1 } });
 		const estimated = estimate(table, { attribute: 'attr', comparator: 'between', value: [5, 10] });
@@ -87,14 +93,19 @@ describe('estimateCondition range estimates', () => {
 		assert.strictEqual(estimate(table, { attribute: 'attr', comparator: 'gt', value: 5 }), 40);
 		assert.deepStrictEqual(table.indices.attr.calls[0], { start: 5, exclusiveStart: true });
 
-		// searchByIndex bounds lt/le at `start: true` to skip an indexNulls index's [null, id] entries
+		// searchByIndex bounds lt/le above `null` to skip an indexNulls index's [null, id] entries without skipping `false`
 		const table2 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
 		assert.strictEqual(estimate(table2, { attribute: 'attr', comparator: 'lt', value: 5 }), 40);
-		assert.deepStrictEqual(table2.indices.attr.calls[0], { start: true, end: 5 });
+		assert.deepStrictEqual(table2.indices.attr.calls[0], { start: null, exclusiveStart: true, end: 5 });
 
 		const table3 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
 		assert.strictEqual(estimate(table3, { attribute: 'attr', comparator: 'le', value: 5 }), 40);
-		assert.deepStrictEqual(table3.indices.attr.calls[0], { start: true, end: 5, inclusiveEnd: true });
+		assert.deepStrictEqual(table3.indices.attr.calls[0], {
+			start: null,
+			exclusiveStart: true,
+			end: 5,
+			inclusiveEnd: true,
+		});
 	});
 
 	it('estimates primary-key ranges against the primary store', () => {
@@ -102,6 +113,14 @@ describe('estimateCondition range estimates', () => {
 		const estimated = estimate(table, { attribute: 'id', comparator: 'ge', value: 100 });
 		assert.strictEqual(estimated, 33);
 		assert.deepStrictEqual(table.primaryStore.calls[0], { start: 100 });
+	});
+
+	it('estimates an empty primary-key prefix over every key, as it executes', () => {
+		for (const value of [[], [null]]) {
+			const table = makeTable({ primaryEstimate: { count: 900, confidence: 1 } });
+			assert.strictEqual(estimate(table, { attribute: 'id', comparator: 'prefix', value }), 900);
+			assert.deepStrictEqual(table.primaryStore.calls[0], { start: true });
+		}
 	});
 
 	it('keeps the fraction heuristics when the store cannot estimate', () => {
@@ -187,7 +206,7 @@ describe('estimateCondition range estimates', () => {
 
 describe('RocksIndexStore.estimateCount composite bound translation', () => {
 	const { RocksIndexStore } = require('#src/resources/RocksIndexStore');
-	const { RocksDatabase } = require('@harperfast/rocksdb-js');
+	const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 	// Both methods must translate bounds identically or the planner estimates a range execution
 	// never iterates.
@@ -240,7 +259,7 @@ describe('RocksIndexStore.estimateCount composite bound translation', () => {
 describe('estimateCondition range estimates (real stores)', () => {
 	const { setupTestDBPath } = require('../testUtils');
 	const { table } = require('#src/resources/databases');
-	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 	const N = 20000;
 	const SPARSE_COUNT = 200;
 	let T;
@@ -325,7 +344,7 @@ describe('estimateCondition range estimates (real stores)', () => {
 
 	it('excludes null index entries from lt/le, as execution does', () => {
 		// `sparse` is set on 200 of 20000 rows, so the index holds 19800 [null, id] entries that
-		// searchByIndex's `start: true` skips. An unbounded lower bound counts them all and makes
+		// searchByIndex's open lower bound skips. An unbounded lower bound counts them all and makes
 		// a 200-row condition look like a 20000-row one — worse than the heuristic it replaces.
 		const est = estimateCondition(T);
 		const belowAll = est({ attribute: 'sparse', comparator: 'lt', value: SPARSE_COUNT });

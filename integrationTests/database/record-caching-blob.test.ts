@@ -31,7 +31,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-import { WORKER_COUNT, assertMultiWorker, mapBounded } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, mapBounded, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-blob');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -140,7 +140,7 @@ async function diskFiles(dir: string): Promise<{ files: number; bytes: number }>
 
 suite(
 	'record-caching Blob-attribute correctness [rocksdb] multi-worker',
-	{ skip: SKIP || process.platform === 'win32' },
+	{ skip: SKIP || NO_MULTI_WORKER_HTTP },
 	(ctx: ContextWithHarper) => {
 		let client: Client;
 		let httpURL: string;

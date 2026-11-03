@@ -4,23 +4,45 @@
  * initialize database connections (like security/auth.ts) don't fail
  * during module loading.
  *
- * IMPORTANT: This pre-seeds DATABASES to an empty per-PID test directory,
- * which is appropriate for unit tests that mock out the DB layer. The
- * apiTests suite (`test:unit:apitests`) instead boots a real Harper server
- * and relies on the actual installed system database (with hdb_role,
- * hdb_user, etc.) being discoverable by `getDatabases()` in
- * `apiTests/setupTestApp.mjs` before its own `setupTestDBPath()` runs. If
- * we override DATABASES here, that preservation step has nothing to
- * preserve and `setUsersWithRolesCache()` fails with "Table hdb_role not
- * found". So skip the override when mocha was invoked against apiTests.
+ * Every database — including `system` — resolves inside the per-PID test
+ * directory, so a unit run never opens an installed Harper root (whose
+ * RocksDB LOCK is exclusive: borrowing it makes unit runs fail whenever a
+ * running Harper or a leaked test process holds it). Suites that need the
+ * system tables to exist seed them into the per-PID directory via
+ * ensureSystemTables() in testUtils.js.
+ *
+ * The per-PID config file plus the ROOTPATH environment variable must be in
+ * place BEFORE any Harper module loads: config resolution
+ * (configUtils.getConfigFilePath) and the logger's file stream bind to
+ * ROOTPATH at first initialization, so setting it late leaves the run
+ * reading the installed root's config and appending to its hdb.log.
+ * ROOTPATH stays exported for the whole run — worker threads a test spawns
+ * and mid-run config/logger re-initializations must resolve the per-PID
+ * root too. The few test files that specifically exercise boot-props-based
+ * resolution (which a ROOTPATH env var shadows) clear it for their own scope
+ * with bootPropsFixture.js's clearRootPath(), which also hides the boot
+ * properties of any Harper installed on the machine. A test that clears or
+ * replaces ROOTPATH any other way must put it back.
+ *
+ * The config-overlay env vars (HARPER_DEFAULT_CONFIG, HARPER_CONFIG, HARPER_SET_CONFIG) are
+ * removed before the first config read for the same reason as ROOTPATH: initSync() would merge a
+ * shell's overlay into the per-PID config.
+ *
+ * storage.path is pinned to <pid dir>/database (the same layout the config
+ * template yields, asserted absolutely so an inherited config can never
+ * point the database scan anywhere else). `system` — and any ad-hoc
+ * database a test creates — resolves under it, exactly like production.
+ * Keep it distinct from the per-PID directory itself: the databases-config
+ * scan in getDatabases() loads every RocksDB directory under a configured
+ * path as that database, so databases placed next to data/dev/test/test2's
+ * configured path would be aliased into them on any resetDatabases().
  */
 
 const path = require('path');
 const fs = require('fs-extra');
-const env = require('#src/utility/environment/environmentManager');
-const terms = require('#src/utility/hdbTerms');
-
-const isApiTestRun = process.argv.some((arg) => typeof arg === 'string' && arg.includes('apiTests'));
+const { isMainThread } = require('worker_threads');
+const { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
+const { installPerFileDatabaseTeardown, assertNativeCoreTree } = require('./perFileDatabaseTeardown.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -31,20 +53,72 @@ const isApiTestRun = process.argv.some((arg) => typeof arg === 'string' && arg.i
  * and the process exits 0 having printed no epilogue and no failure. Every runner reads that as
  * success. harper_logger.test.js did exactly this to any `dot`/`tap` run before it was fixed.
  *
- * Root hooks bracket the run, so "started but never finished" is the signal. Report it on fd 2
- * with writeSync, since an unwritable stdout is one of the ways to get here.
+ * Plugin loading and Mocha's final callback bracket the run. Report "started but never finished"
+ * on fd 2 with writeSync, since an unwritable stdout is one of the ways to get here.
  */
 let runStarted = false;
 let runFinished = false;
 
-module.exports.mochaHooks = {
-	beforeAll() {
-		runStarted = true;
-	},
-	afterAll() {
-		runFinished = true;
-	},
+let observedTotal = 0;
+const resultsPath = process.env.HARPER_UNIT_RESULTS;
+let pendingResults;
+let activeRuns = 0;
+let resultFiles;
+delete process.env.HARPER_UNIT_RESULTS;
+
+function registerRootRemoval() {
+	if (isMainThread) {
+		process.off('exit', removePerPidRoot);
+		process.on('exit', removePerPidRoot);
+	}
+}
+
+module.exports.mochaHooks = () => {
+	runStarted = true;
+	runFinished = false;
+	return {
+		beforeAll() {
+			const root = this.test.parent;
+			observedTotal = root.total();
+			installPerFileDatabaseTeardown(root);
+		},
+	};
 };
+
+module.exports.mochaGlobalTeardown = function () {
+	// Register after storage shutdown listeners, including for runs with no matching tests.
+	registerRootRemoval();
+	if (resultsPath) {
+		pendingResults = { total: this.stats?.tests ?? observedTotal };
+	}
+};
+
+{
+	const mocha = require('node:module').createRequire(__filename)('mocha');
+	const Mocha = mocha.default ?? mocha;
+	const run = Mocha.prototype.run;
+	Mocha.prototype.run = function (callback) {
+		activeRuns++;
+		runFinished = false;
+		if (resultsPath && !resultFiles) resultFiles = [...this.files];
+		return run.call(this, (failures) => {
+			runFinished = --activeRuns === 0;
+			if (runFinished) {
+				registerRootRemoval();
+				try {
+					assertNativeCoreTree();
+				} catch (error) {
+					fs.writeSync(2, `${error.stack ?? error}\n`);
+					if (failures && typeof failures === 'object') failures.failureCount++;
+					else failures = (failures || 0) + 1;
+				}
+			}
+			if (runFinished && pendingResults)
+				fs.writeFileSync(resultsPath, JSON.stringify({ ...pendingResults, files: resultFiles }));
+			callback?.(failures);
+		});
+	};
+}
 
 process.on('exit', (code) => {
 	if (!runStarted || runFinished || code !== 0) return;
@@ -56,27 +130,75 @@ process.on('exit', (code) => {
 	process.exitCode = 1;
 });
 
-if (!isApiTestRun) {
-	const UNIT_TEST_DIR = __dirname;
-	const ENV_DIR_NAME = 'envDir';
-	const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
-	const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
-
-	// Initialize environment manager
-	env.initSync();
-
-	// Set up the base test database path
-	if (!fs.existsSync(PID_DIR_PATH)) {
-		fs.mkdirSync(PID_DIR_PATH, { recursive: true });
+if (isMainThread) {
+	// A stale dir from a recycled PID (a prior run killed before its exit hook) carries a
+	// config, keys, and a seeded system database this run must not inherit; also reclaim
+	// roots whose owning run is gone, since the exit hook never fires on SIGKILL/OOM.
+	// Worker threads re-run this preload under the same PID, so only the main thread wipes.
+	try {
+		fs.removeSync(PID_DIR_PATH);
+	} catch (error) {
+		// Swallowing this would let the run continue into the very state and config we must
+		// not inherit — surface a clear cause instead of the opaque crash a bare removeSync
+		// throw produces (e.g. a held file handle on Windows).
+		throw new Error(`mocha.init.js: could not clear stale per-PID root ${PID_DIR_PATH}`, { cause: error });
 	}
-	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, PID_DIR_PATH);
-
-	// Set up database paths
-	const databasePaths = {
-		data: { path: PID_DIR_PATH },
-		dev: { path: PID_DIR_PATH },
-		test: { path: PID_DIR_PATH },
-		test2: { path: PID_DIR_PATH },
-	};
-	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
+	let envDirEntries = [];
+	try {
+		envDirEntries = fs.readdirSync(ENV_DIR_PATH);
+	} catch {}
+	const staleThreshold = Date.now() - 60 * 60 * 1000;
+	for (const name of envDirEntries) {
+		const pid = Number(name);
+		if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+		const dirPath = path.join(ENV_DIR_PATH, name);
+		// only reclaim roots that are BOTH old and unowned: kill(pid, 0) alone is not a
+		// liveness signal across PID namespaces (a bind-mounted checkout probed from a
+		// container reads every host run as gone), and the age floor also closes the
+		// check-to-remove window against PID reuse
+		try {
+			if (fs.statSync(dirPath).mtimeMs > staleThreshold) continue;
+			process.kill(pid, 0);
+		} catch (error) {
+			if (error.code === 'ESRCH') {
+				try {
+					fs.removeSync(dirPath);
+				} catch {}
+			}
+		}
+	}
 }
+materializePerPidRoot();
+process.env.ROOTPATH = PID_DIR_PATH;
+// raw env vars outrank every configured path in getDatabases()/resolveDatabaseStorageRoot,
+// so an ambient STORAGE_PATH or SCHEMAS_DATA_PATH from the shell would reopen the
+// installed root despite everything above
+delete process.env.STORAGE_PATH;
+delete process.env.SCHEMAS_DATA_PATH;
+// a literal: importing config/componentEnvPrepass.ts's CONFIG_SHAPING_ENV_VARS would load Harper
+// modules before the scrub; isolation.test.js checks the two lists agree
+const scrubbedConfigEnvVars = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'].filter(
+	(name) => name in process.env
+);
+for (const name of scrubbedConfigEnvVars) delete process.env[name];
+if (isMainThread && scrubbedConfigEnvVars.length) {
+	process.stderr.write(
+		`mocha.init.js: ignoring ${scrubbedConfigEnvVars.join(', ')} from the environment; unit runs use the per-PID config\n`
+	);
+}
+
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
+
+env.initSync();
+
+env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, PID_DIR_PATH);
+env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(PID_DIR_PATH, 'database'));
+
+const databasePaths = {
+	data: { path: PID_DIR_PATH },
+	dev: { path: PID_DIR_PATH },
+	test: { path: PID_DIR_PATH },
+	test2: { path: PID_DIR_PATH },
+};
+env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);

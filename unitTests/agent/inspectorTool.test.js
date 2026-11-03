@@ -103,7 +103,14 @@ describe('agent/inspectorTool — summarizeProfile', () => {
 
 describe('agent/inspectorTool — live CDP round-trip', () => {
 	let port;
+	let savedStackTraceLimit;
 	before(() => {
+		// mocha sets `Error.stackTraceLimit = Infinity`; on node 26.9.0 (26.8.1 and earlier are
+		// fine) evaluating a throwing expression over the inspector under that limit aborts the
+		// process — `Check failed: new_capacity > 0.` — instead of returning exceptionDetails,
+		// which takes the whole `test:unit:main` step down with it. Any finite value avoids it.
+		savedStackTraceLimit = Error.stackTraceLimit;
+		Error.stackTraceLimit = 50;
 		// node:inspector is a single process-wide agent — at most one active session per thread. In a
 		// unit-test run that boots real Harper modules (e.g. anything pulling in
 		// server/threads/threadServer.js, whose top-level bootstrap opens the main-thread inspector
@@ -115,6 +122,9 @@ describe('agent/inspectorTool — live CDP round-trip', () => {
 		port = Number(new URL(inspector.url()).port);
 	});
 	after(async () => {
+		// First, so no later teardown failure can strand the pinned limit on the suites that
+		// share this mocha process.
+		Error.stackTraceLimit = savedStackTraceLimit;
 		// Close our CDP client. Note: we deliberately do NOT call inspector.close() here — it blocks
 		// until all inspector connections drop, which deadlocks against our own still-closing client
 		// (and, if we merely reused a pre-existing session above, closing it isn't ours to do anyway).

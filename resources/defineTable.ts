@@ -27,6 +27,8 @@
 
 import { table, type Table } from './databases.ts';
 import { attributeToFragment } from './jsonSchemaTypes.ts';
+import type { RecordLockOptions } from './recordLock.ts';
+import type { WritableRecord } from './ResourceInterface.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Field model — phantom-typed Field. Flags are set via GETTER PROPERTIES (no call):
@@ -58,8 +60,11 @@ export interface Field<TS, F extends Flags = {}> {
 
 /** Date additionally carries the server-managed timestamp flags. */
 export interface DateField<F extends Flags = {}> extends Field<Date, F> {
-	readonly createdTime: Field<Date, F & { serverManaged: true }>;
-	readonly updatedTime: Field<Date, F & { serverManaged: true }>;
+	readonly nullable: DateField<F & { nullable: true }>;
+	readonly indexed: DateField<F & { indexed: true }>;
+	readonly primaryKey: DateField<F & { primaryKey: true }>;
+	readonly createdTime: DateField<F & { serverManaged: true }>;
+	readonly updatedTime: DateField<F & { serverManaged: true }>;
 }
 
 /** The read-record type of a related table handle. */
@@ -73,7 +78,7 @@ export type RelationField<Target, Card extends 'one' | 'many'> = Field<
 
 // Runtime builders — getters return FRESH fields (immutable chaining; no shared-state bug).
 function makeField(kind: string, meta: Record<string, unknown> = {}): any {
-	return {
+	const field = {
 		kind,
 		meta,
 		get nullable() {
@@ -86,20 +91,21 @@ function makeField(kind: string, meta: Record<string, unknown> = {}): any {
 			return makeField(kind, { ...meta, primaryKey: true });
 		},
 	};
-}
-function makeDateField(meta: Record<string, unknown> = {}): any {
-	return Object.defineProperties(makeField('Date', meta), {
-		createdTime: {
-			get: () => makeField('Date', { ...meta, assignCreatedTime: true }),
-			enumerable: true,
-			configurable: true,
-		},
-		updatedTime: {
-			get: () => makeField('Date', { ...meta, assignUpdatedTime: true }),
-			enumerable: true,
-			configurable: true,
-		},
-	});
+	if (kind === 'Date') {
+		Object.defineProperties(field, {
+			createdTime: {
+				get: () => makeField(kind, { ...meta, assignCreatedTime: true }),
+				enumerable: true,
+				configurable: true,
+			},
+			updatedTime: {
+				get: () => makeField(kind, { ...meta, assignUpdatedTime: true }),
+				enumerable: true,
+				configurable: true,
+			},
+		});
+	}
+	return field;
 }
 
 /**
@@ -114,7 +120,7 @@ export const types = {
 	float: makeField('Float') as Field<number>,
 	long: makeField('Long') as Field<number>,
 	boolean: makeField('Boolean') as Field<boolean>,
-	date: makeDateField() as DateField,
+	date: makeField('Date') as DateField,
 	bytes: makeField('Bytes') as Field<Uint8Array>,
 	any: makeField('Any') as Field<unknown>,
 	// Narrows the TS type to the literal union; stored as a String column. The narrowing is
@@ -235,6 +241,7 @@ interface TypedVerbs<S extends Shape> {
 	post(record: InsertOf<S>, context?: any): MaybePromise<unknown>;
 	patch(id: IdOf<S>, changes: PatchOf<S>, context?: any): MaybePromise<unknown>;
 	update(id: IdOf<S>, updates?: PatchOf<S>, context?: any): MaybePromise<InstanceOf<S>>;
+	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<WritableRecord<InstanceOf<S>>>;
 	delete(id: IdOf<S>, context?: any): MaybePromise<unknown>;
 	search(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
 	query(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
@@ -248,7 +255,7 @@ interface TypedVerbs<S extends Shape> {
  */
 export type TableHandle<S extends Shape = Shape> = Omit<
 	Table,
-	'get' | 'put' | 'post' | 'patch' | 'update' | 'delete' | 'search' | 'query'
+	'get' | 'put' | 'post' | 'patch' | 'update' | 'lock' | 'delete' | 'search' | 'query'
 > &
 	TypedVerbs<S> & {
 		// phantom projection carriers — discovery surface, zero runtime cost
@@ -273,6 +280,10 @@ export interface DefineTableOptions {
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
+	/** RocksDB-only replica lifetime in seconds; 0 disables admission. LMDB always proxies. */
+	replicaExpiration?: number;
+	/** RocksDB-only renewal fraction in (0, 1]; 1 never renews. */
+	replicaRefreshFraction?: number;
 	splitSegments?: boolean;
 	trackDeletes?: boolean;
 	randomAccessFields?: boolean;
@@ -400,8 +411,21 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
  * index changes) through the same evolution path GraphQL reloads take.
  */
 export function defineTable<S extends Shape>(name: string, shape: S, options: DefineTableOptions = {}): TableHandle<S> {
+	return defineTableUsing(table, name, shape, options);
+}
+
+/**
+ * `defineTable` through a specific table factory: the one a branched application's scope hands out
+ * (`scopedTableFactory`), so the table lands in its branch. Internal -- the public entry is `defineTable`.
+ */
+export function defineTableUsing<S extends Shape>(
+	tableFactory: typeof table,
+	name: string,
+	shape: S,
+	options: DefineTableOptions = {}
+): TableHandle<S> {
 	const typeDef = compileTypeDef(name, shape, options);
-	const tableClass = table(typeDef);
+	const tableClass = tableFactory(typeDef);
 	typeDef.tableClass = tableClass;
 	return tableClass as TableHandle<S>;
 }

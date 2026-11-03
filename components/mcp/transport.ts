@@ -16,6 +16,7 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import {
 	ERROR_CODES,
 	buildError,
@@ -30,7 +31,7 @@ import { emitAuditEntry } from './audit.ts';
 import { emitMcpLogToSession, isValidMcpLogLevel, setSessionLogLevel } from './logging.ts';
 import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
-import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
+import { tryAdmit, tryAdmitInitialize, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
 import {
 	deleteSession,
@@ -65,6 +66,7 @@ import {
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
+import { corsAccessListAllows } from '../../utility/corsAccessList.ts';
 
 export type McpProfile = 'operations' | 'application';
 
@@ -98,6 +100,11 @@ export interface NormRequest {
 	 * (socket vs trusted header) happens in `resolveClientIdentity`.
 	 */
 	clientIp?: string;
+	/**
+	 * `protocol://host` the client used (application adapter only). Resource URIs
+	 * and the OpenAPI server URL are built from it.
+	 */
+	baseUrl?: string;
 }
 
 export interface NormResponse {
@@ -184,7 +191,7 @@ function isOriginAllowed(request: NormRequest): boolean {
 			? env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST)
 			: env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
 	if (!Array.isArray(list) || list.length === 0) return true;
-	return list.includes(origin) || list.includes('*');
+	return corsAccessListAllows(list, origin);
 }
 
 /**
@@ -324,6 +331,18 @@ async function dispatchInitialize(
 	message: JsonRpcMessage,
 	messageId: JsonRpcId
 ): Promise<NormResponse> {
+	const clientIdentity = resolveClientIdentity(request.headers, request.clientIp, request.profile);
+	const admission = tryAdmitInitialize(request.profile, clientIdentity);
+	if (admission.allowed === false) {
+		const limited = jsonRpcErrorResponse(
+			429,
+			messageId,
+			ERROR_CODES.INVALID_REQUEST,
+			'MCP initialize rate limit reached; back off and try again'
+		);
+		limited.headers['Retry-After'] = String(admission.retryAfterSeconds);
+		return limited;
+	}
 	const params = 'params' in message ? (message.params as { protocolVersion?: unknown } | undefined) : undefined;
 	const outcome = await handleInitialize(params, request.user);
 	if (outcome.ok !== true) {
@@ -802,6 +821,7 @@ function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, me
 		profile: request.profile,
 		offset,
 		limit: DEFAULT_RESOURCE_PAGE_LIMIT,
+		baseUrl: request.baseUrl,
 	});
 	const body: { resources: unknown[]; nextCursor?: string } = { resources: result.resources };
 	if (result.nextCursor) body.nextCursor = result.nextCursor;
@@ -818,7 +838,7 @@ function dispatchResourceTemplatesList(
 	if (offset === INVALID_CURSOR) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
 	}
-	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset);
+	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset, undefined, request.baseUrl);
 	const result: { resourceTemplates: unknown[]; nextCursor?: string } = { resourceTemplates };
 	if (nextCursor) result.nextCursor = nextCursor;
 	return jsonResponse(200, buildSuccess(messageId, result));
@@ -876,11 +896,18 @@ async function dispatchPromptsGet(
 			profile: request.profile,
 			sessionId: session.id,
 		});
+		if (!Array.isArray(rendered?.messages)) {
+			harperLogger.warn(`MCP prompts/get ${name}: render must return { messages: [...] }, got ${typeName(rendered)}`);
+			return jsonResponse(
+				200,
+				buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'prompt render failed: expected { messages: [...] }')
+			);
+		}
 		return jsonResponse(
 			200,
 			buildSuccess(messageId, {
 				...(rendered.description ? { description: rendered.description } : {}),
-				messages: rendered.messages ?? [],
+				messages: rendered.messages,
 			})
 		);
 	} catch (err) {
@@ -888,6 +915,12 @@ async function dispatchPromptsGet(
 		harperLogger.warn(`MCP prompts/get ${name} threw: ${(err as Error).stack ?? errMsg}`);
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `prompt render failed: ${errMsg}`));
 	}
+}
+
+function typeName(value: unknown): string {
+	if (Array.isArray(value)) return 'an array';
+	if (value === null) return 'null';
+	return typeof value === 'object' ? `an object without a messages array` : typeof value;
 }
 
 function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
@@ -920,6 +953,7 @@ function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messa
 			// custom mcpResources templates complete from author-declared values,
 			// selected by the template the client is completing against (#1609)
 			refUri: typeof params?.ref?.uri === 'string' ? params.ref.uri : undefined,
+			baseUrl: request.baseUrl,
 		});
 	} else if (refType === 'ref/prompt') {
 		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;
@@ -1043,7 +1077,12 @@ async function dispatchResourcesRead(
 	if (!uri) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/read requires params.uri'));
 	}
-	const outcome = await readResource({ uri, user: effectiveUser(request), profile: request.profile });
+	const outcome = await readResource({
+		uri,
+		user: effectiveUser(request),
+		profile: request.profile,
+		baseUrl: request.baseUrl,
+	});
 	if (outcome.ok !== true) {
 		const fail = outcome as { ok: false; reason: string };
 		// Per MCP §server/resources, "resource not found" and access-control

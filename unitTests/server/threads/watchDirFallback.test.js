@@ -3,14 +3,14 @@
 const assert = require('node:assert');
 const chokidar = require('chokidar');
 
-const { watchDir } = require('#src/server/threads/manageThreads');
+const { watchDir } = require('#js/server/threads/manageThreads');
 const { _resetForTests: resetWatcherFallbackWarning } = require('#src/utility/watcherFallback');
 
 describe('watchDir watcher fallback', () => {
-	const realWatch = chokidar.watch;
+	const realWatch = chokidar.default.watch;
 
 	afterEach(() => {
-		chokidar.watch = realWatch;
+		chokidar.default.watch = realWatch;
 		// warnWatcherFallback's first-fallback gate is process-global; leaving it set would make a
 		// later suite's warning assertion silently observe nothing.
 		resetWatcherFallbackWarning();
@@ -23,7 +23,7 @@ describe('watchDir watcher fallback', () => {
 	const stubChokidar = (close) => {
 		const openedOptions = [];
 		const errorHandlers = [];
-		chokidar.watch = (_watchedPath, options) => {
+		chokidar.default.watch = (_watchedPath, options) => {
 			openedOptions.push(options);
 			const watcher = {
 				on: (event, handler) => {

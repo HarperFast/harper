@@ -1,15 +1,18 @@
 // Workload drivers for delete-index-atomicity-rocksdb.test.ts. The oracle lives outside this
-// process — the test opens the raw RocksDB directory with its own read-only handles — so these
-// routes only drive the workload and expose the flush the oracle needs.
+// process — the test opens raw read-only handles of its own — so these routes only drive the
+// workload and publish the checkpoint the oracle reads.
 //
-// A RocksDB readOnly:true open is a point-in-time snapshot of the SSTs as of that open, not a
-// live view like LMDB's shared mmap, and Harper opens table/index column families with
-// disableWAL defaulting true (resources/databases.ts openRocksDatabase), so a committed write
-// can still sit only in the writer's memtable. Without an explicit flush an external reader
-// reports a clean run from flush timing rather than from real consistency. `flushDatabases()` is
-// not reachable from component code (security/jsLoader.ts exposes a curated allowlist), so
-// /Flush/ calls `.flush()` on a table's primaryStore instead; RocksDB's flush is atomic across
-// every column family sharing the directory, so one call covers both tables and all indices.
+// A readOnly:true open of the live directory races the compactions this process is running: it
+// replays the MANIFEST into a file list and then opens those files holding no reference on any of
+// them (HarperFast/rocksdb-js#812). /Snapshot/ hands the oracle a checkpoint instead, which nothing
+// writes to. Its memtable flush is what makes the copy trustworthy: Harper opens table/index column
+// families with disableWAL defaulting true (resources/databases.ts openRocksDatabase), so a
+// committed write can otherwise sit only in this process's memtable and an external reader would
+// report a clean run from flush timing rather than from real consistency.
+
+import { resolve } from 'node:path';
+
+const SNAPSHOT_DIR = 'oracle-snapshots';
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
@@ -38,6 +41,12 @@ export class TableInfo extends Resource {
 	}
 }
 
+// Moves the live database forward without touching the held checkpoint, so the test can prove that
+// the next refresh replaces it with one containing the new write. The handle-path assertion proves
+// that the oracle reads the checkpoint rather than the live directory.
+// `flushDatabases()` is not reachable from component code (security/jsLoader.ts exposes a curated
+// allowlist), so this calls `.flush()` on a table's primaryStore; RocksDB's flush is atomic across
+// every column family sharing the directory, so one call covers both tables and all indices.
 export class Flush extends Resource {
 	static loadAsInstance = false;
 	async post() {
@@ -46,6 +55,29 @@ export class Flush extends Resource {
 			throw new Error('Flush control invalid: primaryStore.flush() not available (not RocksDB?)');
 		await t.primaryStore.flush();
 		return { ok: true };
+	}
+}
+
+// The oracle's read target: a hardlinked, point-in-time copy of every column family, flushed as
+// part of being taken (resources/branchDatabase.ts materializes application branches the same way).
+// The target is derived here from the store's own path rather than taken from the request, so no
+// caller can aim a native filesystem operation somewhere the test does not own or clean up. It sits
+// beside `database/` rather than inside it, which is the only directory scanned for databases
+// (resources/databases.ts), so a snapshot can never be loaded as one.
+export class Snapshot extends Resource {
+	static loadAsInstance = false;
+	async post(query, body) {
+		const b = body || query || {};
+		const seq = b.seq;
+		// Not Number(b.seq): that coerces true, null and [] to a valid-looking 1 or 0.
+		if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0)
+			throw new Error(`Snapshot control invalid: seq must be a non-negative integer, got ${JSON.stringify(b.seq)}`);
+		const rootStore = getTable('ItemF').primaryStore.rootStore;
+		if (typeof rootStore?.createCheckpoint !== 'function')
+			throw new Error('Snapshot control invalid: rootStore.createCheckpoint() not available (not RocksDB?)');
+		const path = resolve(rootStore.path, '..', '..', SNAPSHOT_DIR, String(seq));
+		await rootStore.createCheckpoint(path);
+		return { ok: true, path };
 	}
 }
 

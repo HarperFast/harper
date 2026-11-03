@@ -1,20 +1,19 @@
 'use strict';
 
 import Joi from 'joi';
-import * as path from 'path';
+import * as path from 'node:path';
 
 import { handleHDBError, hdbErrors } from './errors/hdbError.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 import * as validator from '../validation/validationWrapper.ts';
 import harperLogger from './logging/harper_logger.ts';
 
 import { CONFIG_PARAMS } from './hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { nonInteractiveSpawn } from '../components/Application.ts';
+import { nonInteractiveSpawn, packageManagerInstallArguments } from '../components/Application.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
-import { isThreadRunning } from '../server/threads/manageThreads.js';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
 
 /**
  * Executes npm install against specified custom function projects
@@ -31,13 +30,13 @@ export async function installModules(req: any) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const { projects, dry_run: dryRun } = validatedRequest;
+	const { projects, dry_run: dryRun, allowInstallScripts } = validatedRequest;
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 	const responseObject: any = {};
 
-	const args = ['install', '--force', '--omit=dev', '--json'];
+	const args = [...packageManagerInstallArguments('npm', allowInstallScripts, true), '--json'];
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {
@@ -49,14 +48,8 @@ export async function installModules(req: any) {
 				() => nonInteractiveSpawn(project, 'npm', args, projectPath),
 				{ isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId) }
 			);
-			stdout = stdout ? stdout.replace('\n', '') : null;
+			responseObject[project].npm_output = stdout ? parseNpmReport(stdout) : null;
 			stderr = stderr ? stderr.replace('\n', '') : null;
-
-			try {
-				responseObject[project].npm_output = JSON.parse(stdout);
-			} catch {
-				responseObject[project].npm_output = stdout;
-			}
 
 			try {
 				responseObject[project].npm_error = JSON.parse(stderr);
@@ -76,6 +69,22 @@ export async function installModules(req: any) {
 	harperLogger.info(`finished installModules with response ${responseObject}`);
 	responseObject.warning = deprecationWarning;
 	return responseObject;
+}
+
+// npm before 11.20 prints its human-readable dry-run diff ("add <name> <version>") ahead of the --json
+// report; the report is the last document that starts a line with '{'
+function parseNpmReport(stdout: string) {
+	try {
+		return JSON.parse(stdout);
+	} catch {
+		const reportStart = stdout.lastIndexOf('\n{') + 1;
+		if (reportStart > 0) {
+			try {
+				return JSON.parse(stdout.slice(reportStart));
+			} catch {}
+		}
+		return stdout.replace('\n', '');
+	}
 }
 
 function parseNPMStdErr(stderr: string) {
@@ -100,7 +109,10 @@ function modulesValidator(req: any) {
 	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
-	}).rename('dryRun', 'dry_run', { ignoreUndefined: true });
+		allowInstallScripts: Joi.boolean().default(true),
+	})
+		.rename('dryRun', 'dry_run', { ignoreUndefined: true })
+		.rename('install_allow_scripts', 'allowInstallScripts', { ignoreUndefined: true });
 
 	return validator.validateAndConvertBySchema(req, funcSchema);
 }

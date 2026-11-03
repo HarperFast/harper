@@ -58,6 +58,10 @@ const LEG_FAMILY = new Map([
 	['gemini', 'google'],
 	['cursor-grok', 'xai'],
 	['cursor-composer', 'cursor'],
+	['cursor-kimi', 'kimi'],
+	// One Meta model behind two CLIs: one pair of eyes.
+	['cursor-muse', 'meta'],
+	['muse', 'meta'],
 	['claude', 'anthropic'],
 	['claude(fallback)', 'anthropic'],
 	['domain', 'anthropic'],

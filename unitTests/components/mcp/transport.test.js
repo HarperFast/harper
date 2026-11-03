@@ -1,7 +1,8 @@
 const assert = require('node:assert');
 const { threadId } = require('node:worker_threads');
 const rewire = require('rewire');
-const transport_mod = rewire('#src/components/mcp/transport');
+const { AccessViolation } = require('#src/utility/errors/hdbError');
+const transport_mod = rewire('#js/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const sessionModule = require('#src/components/mcp/session');
 const { _setSessionTableForTest, createSession, loadSession, patchSession } = sessionModule;
@@ -84,6 +85,11 @@ function makeFakeTable() {
 	};
 }
 
+const {
+	_resetForTest: _resetRateLimitForTest,
+	_setClockForTest: _setRateLimitClockForTest,
+} = require('#src/components/mcp/rateLimit');
+
 function makeReq(overrides = {}) {
 	return {
 		method: 'POST',
@@ -112,6 +118,7 @@ describe('mcp/transport', () => {
 
 	beforeEach(() => {
 		envOverrides = {};
+		_resetRateLimitForTest();
 		transport_mod.__set__('env', envStub);
 		_setSessionTableForTest(makeFakeTable());
 		_resetRegistryForTest();
@@ -162,6 +169,28 @@ describe('mcp/transport', () => {
 		it('rejects missing protocolVersion with 400', async () => {
 			const res = await handleMcpRequest(makeReq({ body: jsonRpc(1, 'initialize') }));
 			assert.equal(res.status, 400);
+		});
+
+		it('throttles session creation per client identity with 429, creating no session, until the bucket refills', async () => {
+			let clock = 1_000_000;
+			_setRateLimitClockForTest(() => clock);
+			try {
+				const init = () =>
+					handleMcpRequest(
+						makeReq({ clientIp: '10.9.9.9', body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }) })
+					);
+				for (let i = 0; i < 50; i++) assert.equal((await init()).status, 200, `initialize ${i} within the burst`);
+				const limited = await init();
+				assert.equal(limited.status, 429);
+				assert.equal(limited.headers['Retry-After'], '1');
+				assert.equal(limited.headers['Mcp-Session-Id'], undefined);
+				assert.equal(limited.jsonBody.id, 1);
+				clock += 100; // default 10/s: one token per 100 ms
+				assert.equal((await init()).status, 200, 'admitted again after refill');
+			} finally {
+				_setRateLimitClockForTest(undefined);
+				_resetRateLimitForTest();
+			}
 		});
 	});
 
@@ -1032,6 +1061,25 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.result.messages[0].content.text, 'Hello, Ada!');
 			});
 
+			it('prompts/get errors (instead of an empty prompt) when render returns the wrong shape', async () => {
+				const shapes = {
+					bare_array: () => [{ role: 'user', content: { type: 'text', text: 'x' } }],
+					no_result: () => {},
+				};
+				for (const [name, render] of Object.entries(shapes)) addPrompt({ name, profile: 'application', render });
+				for (const name of Object.keys(shapes)) {
+					const res = await handleMcpRequest(
+						makeReq({
+							body: jsonRpc(56, 'prompts/get', { name }),
+							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						})
+					);
+					assert.equal(res.jsonBody.result, undefined, name);
+					assert.equal(res.jsonBody.error.code, -32603, name);
+					assert.match(res.jsonBody.error.message, /expected \{ messages/, name);
+				}
+			});
+
 			it('prompts/get returns -32602 for an unknown prompt', async () => {
 				const res = await handleMcpRequest(
 					makeReq({
@@ -1145,6 +1193,20 @@ describe('mcp/transport', () => {
 				const sid = initRes.headers['Mcp-Session-Id'];
 				const saved = await loadSession(sid);
 				assert.deepEqual(saved.clientCapabilities, { elicitation: {} }, 'capabilities persisted');
+				const padded = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(2, 'initialize', {
+							protocolVersion: '2025-06-18',
+							capabilities: {
+								sampling: { pad: 'x'.repeat(10_000) },
+								roots: { listChanged: true },
+								pad: 'y'.repeat(10_000),
+							},
+						}),
+					})
+				);
+				const paddedSaved = await loadSession(padded.headers['Mcp-Session-Id']);
+				assert.deepEqual(paddedSaved.clientCapabilities, { sampling: {}, roots: {} }, 'only gated capabilities kept');
 
 				addTool({
 					name: 'asker',
@@ -1311,6 +1373,22 @@ describe('mcp/transport', () => {
 					})
 				);
 				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('returns -32602 permission denied with the request id when the subscribe is denied', async () => {
+				_setSubscribeImplForTest(async () => {
+					throw new AccessViolation({ username: 'alice' });
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(76, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.id, 76);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.match(res.jsonBody.error.message, /^permission denied: /);
 			});
 
 			it('returns -32602 when params.uri is missing', async () => {
@@ -1621,6 +1699,37 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.error.code, -32602);
 			});
 		});
+
+		it('passes the request baseUrl to resources/list and harper://openapi', async () => {
+			class Orders {
+				get() {}
+			}
+			_setResourcesForTest(makeFakeResources([['Orders', Orders]]));
+			_setHttpUrlPrefixForTest(undefined);
+			const superUser = { username: 'alice', role: { permission: { super_user: true } } };
+			const baseUrl = 'https://public.example.com';
+			const call = (id, method, params) =>
+				handleMcpRequest(
+					makeReq({
+						body: jsonRpc(id, method, params),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						userObject: superUser,
+						baseUrl,
+					})
+				);
+
+			const list = await call(70, 'resources/list');
+			assert.ok(list.jsonBody.result.resources.some((r) => r.uri === 'harper+rest://public.example.com/Orders'));
+
+			let serverUrl;
+			_setOpenApiGeneratorForTest((_resources, url) => ((serverUrl = url), { openapi: '3.0.3' }));
+			try {
+				await call(72, 'resources/read', { uri: 'harper://openapi' });
+			} finally {
+				_setOpenApiGeneratorForTest(undefined);
+			}
+			assert.equal(serverUrl, baseUrl);
+		});
 	});
 
 	describe('GET /mcp', () => {
@@ -1780,6 +1889,17 @@ describe('mcp/transport', () => {
 				})
 			);
 			assert.equal(res.status, 200);
+		});
+
+		it('honors a single-label wildcard origin in the allow-list (harper#3050)', async () => {
+			envOverrides.http_cors = true;
+			envOverrides.http_corsAccessList = ['https://*.app.example.com'];
+			const request = (origin) =>
+				handleMcpRequest(
+					makeReq({ body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }), headers: { origin } })
+				);
+			assert.equal((await request('https://pr-12.app.example.com')).status, 200);
+			assert.equal((await request('https://a.pr-12.app.example.com')).status, 403);
 		});
 
 		it('honors the "*" wildcard in the allow-list', async () => {

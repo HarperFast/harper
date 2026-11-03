@@ -3,14 +3,14 @@
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const config_utils = require('#src/config/configUtils');
+const config_utils = require('#js/config/configUtils');
 const common_utils = require('#src/utility/common_utils');
 const rewire = require('rewire');
 const fs = require('fs');
 const os = require('node:os');
 const path = require('node:path');
 const hdbTerms = require('#src/utility/hdbTerms');
-const env_rw = rewire('#src/utility/environment/environmentManager');
+const env_rw = rewire('#js/utility/environment/environmentManager');
 const log = require('#src/utility/logging/harper_logger');
 const { Worker } = require('node:worker_threads');
 
@@ -223,6 +223,25 @@ describe('Test environmentManager module', () => {
 			expect(env_rw.getConfigOverrides()).to.eql({ foo: 'second' });
 		});
 
+		it('setProperty(key, undefined) records no override and clears any prior override for key', () => {
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			env_rw.setProperty('storage_engine', undefined);
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+			expect(update_config_object.calledWith('storage_engine', undefined)).to.be.true;
+
+			env_rw.setProperty('storage_engine', 'lmdb');
+			expect(env_rw.getConfigOverrides()).to.eql({ storage_engine: 'lmdb' });
+
+			env_rw.setProperty('storage_engine', undefined);
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+
+			env_rw.setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9925);
+			expect(env_rw.getConfigOverrides()).to.eql({ operationsApi_network_port: 9925 });
+			env_rw.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined);
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+			expect(update_config_object.calledWith(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined)).to.be.true;
+		});
+
 		it('collapses two different legacy aliases for the same canonical param onto one Map entry', () => {
 			// SERVER_PORT_KEY ('SERVER_PORT') and OPERATIONSAPI_NETWORK_PORT both canonicalize to
 			// 'operationsApi_network_port' (CONFIG_PARAM_MAP). Without canonical keying these would
@@ -371,7 +390,7 @@ describe('Test environmentManager module', () => {
 			fs.mkdirSync(path.join(fixtureRoot, 'log'), { recursive: true });
 			// rewire gives configUtils its own module state, so writing this config file doesn't
 			// repoint the live config the rest of the suite runs against.
-			rewire('#src/config/configUtils').createConfigFile(
+			rewire('#js/config/configUtils').createConfigFile(
 				{
 					ROOTPATH: fixtureRoot,
 					OPERATIONSAPI_NETWORK_PORT: FIXTURE_PORT,

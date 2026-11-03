@@ -1,0 +1,5 @@
+# Trivial table, only so the readiness poll has a real REST route to hit.
+type Beacon @table(audit: false) @export {
+	id: ID @primaryKey
+	value: Int
+}

@@ -8,7 +8,7 @@
  *
  * Two phases, because a branch is a checkpoint: the base must already hold the schema when the
  * branch is taken. The first start creates `Branched` in the base (the application's own
- * `@table` still registers there — scoping that is #2264) and seeds it; the restart is the one
+ * `@table` would land in its branch, harper#2264) and seeds it; the restart is the one
  * that branches a base with data in it.
  *
  * Reproduction:

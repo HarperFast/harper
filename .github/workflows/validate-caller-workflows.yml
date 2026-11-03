@@ -27,9 +27,11 @@ on:
 
 jobs:
   validate:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@be549ad08aa6d34b909ea8b542a7ffebdaae1e81 # main 2026-08-25 (#90 cost gates: draft skip, mechanical-diff skip, effort-by-size, debounce; #89 defaults; #88 lenses)
+    permissions:
+      contents: read
+    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47 # main 2026-10-01 (#93 calibration: week of 2026-08-24; #95 calibration: week of 2026-08-31; #98 ci: mint the ai-review-log token from the HarperFast AI App (retire the personal PAT); #99 ci: calibration-sweep reads ai-review-log via the HarperFast AI App to…; on af81872)
     with:
       # Same SHA as the `uses:` ref above — the reusable uses this
       # to check out the validator script at the matching version.
       # Same SHA-twice pattern as the other caller workflows.
-      ai-review-prompts-ref: be549ad08aa6d34b909ea8b542a7ffebdaae1e81
+      ai-review-prompts-ref: 1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47

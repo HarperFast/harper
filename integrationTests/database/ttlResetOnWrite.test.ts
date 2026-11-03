@@ -31,7 +31,8 @@
  * NO-RESET no matter how the check windows are computed. node:http isn't subject to that stall.
  * Root cause: nodejs/undici#5600 (unref'd idle-socket-validation setImmediate stalls fetch() on an
  * otherwise-idle event loop), bundled into Node via undici 8.9.0 (used by 26.5.1); fixed upstream by
- * nodejs/undici#5609 but not yet in a released undici/Node build as of this writing.
+ * nodejs/undici#5609, bundled into Node from 26.8.0. node:http stays because the engine range
+ * still admits 26.5.1-26.7.x.
  *
  * The reset/gone checks additionally classify an unmeasurable window as INCONCLUSIVE (see
  * PresenceResult/AbsenceResult below) so a transport hiccup is never reported as a TTL
@@ -39,6 +40,11 @@
  * an INCONCLUSIVE window still fails its assertion (resetObserved/goneObserved isn't `true`) — it
  * just fails with an accurate "couldn't measure" message instead of a false RESET/NO-RESET or
  * F-002 verdict. Only the race probe (surface 6) has a bucket that absorbs INCONCLUSIVE outright.
+ *
+ * An attempt is also INCONCLUSIVE when the update's ACK did not land before the seed's earliest
+ * possible expiry. Past that instant the surface is no longer being measured against a live
+ * record: a SQL UPDATE matches nothing and reads as NO-RESET, while a REST PUT recreates the
+ * record and reads as a RESET.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
@@ -393,6 +399,7 @@ suite(
 
 			try {
 				// t=0: seed
+				const seedSentAt = Date.now();
 				const seedStatus = await restPut(id, { tag: 'seed', n: 0 });
 				const seedAt = Date.now();
 				if (seedStatus === 'error') {
@@ -424,6 +431,14 @@ suite(
 					updateStatus === 200 || updateStatus === 204,
 					`[${label}] update returned ${updateStatus} (expected 200/204)`
 				);
+				// The server applied the seed no earlier than seedSentAt and the update no later than
+				// its ACK, so this is the tight bound proving the update landed on a live record —
+				// the only condition under which this attempt measures the surface at all.
+				if (updateAt >= seedSentAt + TTL_MS) {
+					inconclusive = true;
+					result.finding = `INCONCLUSIVE — update ACKed ${updateAt - seedSentAt}ms after the seed was sent, at or past its earliest expiry (${TTL_MS}ms); the record may already have been gone`;
+					return { result, inconclusive };
+				}
 
 				// Wait until the ORIGINAL expiry has passed, then poll for presence up until just
 				// before the reset-expiry would fire (see pollForPresent/RESET_POLL_INTERVAL_MS).

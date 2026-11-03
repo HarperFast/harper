@@ -1,0 +1,13 @@
+type PublicNote @table(database: "data", audit: true) @export {
+	id: ID @primaryKey
+	title: String @indexed
+	notes: String @indexed
+	tag: String
+	titleSearch: FullText @fullText(fields: [{ name: "title" }])
+}
+
+type SecretVault @table(database: "data", audit: true) @export {
+	id: ID @primaryKey
+	secret: String @indexed
+	notes: String @indexed
+}

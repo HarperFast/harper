@@ -19,6 +19,25 @@ import * as path from 'node:path';
 export const PROJECT_NAME_PATTERN = /^[a-zA-Z0-9-_]+$/;
 
 /**
+ * A component-name pattern, as a role's component grant and a deploy credential's grant name one: a project name, or a
+ * non-empty prefix of one followed by a single `*`, which matches one or more further project-name characters.
+ * `shop-pr-*` covers `shop-pr-12`, and neither `shop` nor `shop-pr-`.
+ */
+const COMPONENT_NAME_PATTERN_GRAMMAR = /^[a-zA-Z0-9-_]+\*?$/;
+
+export function isComponentNamePattern(value: unknown): value is string {
+	return typeof value === 'string' && COMPONENT_NAME_PATTERN_GRAMMAR.test(value);
+}
+
+/** Whether `pattern` covers the component `name`; a value that is not a pattern covers nothing. */
+export function componentNameMatches(pattern: unknown, name: string): boolean {
+	if (!isComponentNamePattern(pattern) || !PROJECT_NAME_PATTERN.test(name)) return false;
+	if (!pattern.endsWith('*')) return pattern === name;
+	const prefix = pattern.slice(0, -1);
+	return name.length > prefix.length && name.startsWith(prefix);
+}
+
+/**
  * A credential entry's `host`: a bare host, optionally with a port — `github.com`,
  * `git.example.com:8443`. `normalizeGitHost` reduces most inputs to this form; anything still
  * outside it (an embedded space, a second `@`) is rejected rather than guessed at.
@@ -36,13 +55,19 @@ export function normalizeGitHost(host: string): string {
 		.toLowerCase();
 }
 
+const SCOPE_PREFIX = /^@[^/]+\//;
+const ARCHIVE_EXTENSION = /\.(?:tgz|tar\.gz|tar)$/i;
+
 /**
  * The canonical form of an explicitly named project: `@scope/app` and `app.tgz` both deploy as
  * `app`. Every project-scoped operation reduces its `project` this way, so the CLI has to resolve the
  * same name the server will when it grants a credential to one.
+ *
+ * Only a scope prefix and an archive extension are removed. Anything else stays, so `shop.pr-12`
+ * fails the project grammar instead of deploying over `shop`.
  */
 export function canonicalProjectName(project: string): string {
-	return path.parse(project).name;
+	return project.replace(SCOPE_PREFIX, '').replace(ARCHIVE_EXTENSION, '');
 }
 
 /** The project name a deploy derives from its `package` spec when no `project` was given. */
@@ -104,4 +129,16 @@ export function deriveGitSecretName(component: string, host: string): string {
 	const hostKey = normalizeGitHost(host).replace(/[^\w.-]+/g, '_');
 	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
 	return `deploy.${componentKey}.git.${hostKey}`;
+}
+
+/**
+ * The root config namespace holds core settings sections and application entries side by side, so
+ * an application deployed under one of these names overwrites the section and fails the next boot's
+ * config validation. Only `sql` is listed: it is the one section whose schema is closed to unknown
+ * keys, so it is the one a stray application entry breaks.
+ */
+export const RESERVED_COMPONENT_NAMES = new Set(['sql']);
+
+export function isReservedComponentName(project: string): boolean {
+	return typeof project === 'string' && RESERVED_COMPONENT_NAMES.has(project);
 }

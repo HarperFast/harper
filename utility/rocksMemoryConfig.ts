@@ -11,15 +11,20 @@ export interface RocksMemoryConfigInput {
 	configuredWriteBufferManagerSize: unknown;
 	configuredCostToCache: unknown;
 	configuredAllowStall: unknown;
+	configuredFlushPolicy: unknown;
 	// min(process.constrainedMemory() ?? Infinity, totalmem()) — the cgroup-aware memory base.
 	availableMemory: number;
 }
+
+const FLUSH_POLICIES = ['oldest', 'largest', 'largestAcrossDBs'] as const;
+type WriteBufferManagerFlushPolicy = (typeof FLUSH_POLICIES)[number];
 
 export interface RocksMemoryConfig {
 	blockCacheSize: number;
 	writeBufferManagerSize?: number;
 	writeBufferManagerCostToCache?: boolean;
 	writeBufferManagerAllowStall?: boolean;
+	writeBufferManagerFlushPolicy?: WriteBufferManagerFlushPolicy;
 }
 
 export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMemoryConfig {
@@ -28,6 +33,7 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 		configuredWriteBufferManagerSize,
 		configuredCostToCache,
 		configuredAllowStall,
+		configuredFlushPolicy,
 		availableMemory,
 	} = input;
 	// Block cache: an explicit positive number wins, otherwise 25% of available memory. Floored
@@ -43,13 +49,26 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 		typeof configuredWriteBufferManagerSize === 'number' ? configuredWriteBufferManagerSize : blockCacheSize / 3
 	);
 	const config: RocksMemoryConfig = { blockCacheSize };
-	// costToCache and allowStall only matter when the WBM is enabled. allowStall defaults to true
-	// so the buffer applies write backpressure rather than letting memtables grow unbounded, which
-	// also keeps bulk ingest from outrunning the memtable flush/conflict-check window.
+	// costToCache and allowStall only matter when the WBM is enabled. allowStall defaults to false
+	// so the budget is a soft cap: a stalling manager parks every writer in the process inside
+	// DBImpl::WriteBufferManagerStallWrites(), and once the budget is held across enough column
+	// families nothing triggers the flush that would release them, so the only exit is a restart
+	// (#2490). The cost is memory — a non-stalling manager keeps each family's derived
+	// conflict-check history as a floor RocksDB never trims below, until HarperFast/rocksdb-js#821.
 	if (writeBufferManagerSize > 0) {
 		config.writeBufferManagerSize = writeBufferManagerSize;
 		config.writeBufferManagerCostToCache = typeof configuredCostToCache === 'boolean' ? configuredCostToCache : true;
-		config.writeBufferManagerAllowStall = typeof configuredAllowStall === 'boolean' ? configuredAllowStall : true;
+		config.writeBufferManagerAllowStall = typeof configuredAllowStall === 'boolean' ? configuredAllowStall : false;
+		if ((FLUSH_POLICIES as readonly unknown[]).includes(configuredFlushPolicy)) {
+			config.writeBufferManagerFlushPolicy = configuredFlushPolicy as WriteBufferManagerFlushPolicy;
+		}
 	}
 	return config;
+}
+
+// The native layer throws on anything but a non-negative safe integer, and 0 means automatic.
+export function resolveRocksArenaBlockSize(configuredArenaBlockSize: unknown): number | undefined {
+	return Number.isSafeInteger(configuredArenaBlockSize) && (configuredArenaBlockSize as number) > 0
+		? (configuredArenaBlockSize as number)
+		: undefined;
 }

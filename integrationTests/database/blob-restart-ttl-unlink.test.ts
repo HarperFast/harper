@@ -423,6 +423,23 @@ suite(
 				const deadline = Date.now() + SWEEP_WAIT_BUDGET_MS;
 				const trajectory: string[] = [];
 
+				// DANGLING/MIRROR-FAILURE signature: record still resident (rawPresent) but its blob
+				// body can no longer be read. Checked on every poll tick, keyed by id.
+				const danglingRefs = new Map<string, any>();
+				let normalRaw: any[] = [];
+				let alreadyRaw: any[] = [];
+
+				// LMDB has no snapshot-timestamp mechanism (resources/blob.ts snapshotStillSees), so a
+				// `raw` read's only margin against an in-flight eviction is the reclamation delay; a
+				// fresh re-read rules out a stale one-off observation.
+				async function confirmDangling(candidates: any[]) {
+					for (const body of candidates) {
+						if (body.rawPresent !== true || !body.readError) continue;
+						const recheck = await op({ action: 'raw', id: body.id }).expect(200);
+						if (recheck.body.rawPresent === true && recheck.body.readError) danglingRefs.set(body.id, recheck.body);
+					}
+				}
+
 				while (Date.now() < deadline) {
 					const d = await diskFiles(blobRootDir);
 					trajectory.push(`${d.files}f`);
@@ -439,33 +456,22 @@ suite(
 						`MIRROR-FAILURE (Q3): update-target became dangling/absent mid-sweep: ${JSON.stringify(updateCheck.body)}`
 					);
 
-					// Ground-truth sample (bypassing the lazy filter) on one representative id per
-					// group, so the trajectory shows exactly when the RECORD (not just the API view)
-					// actually gets evicted.
-					const normal0 = await op({ action: 'raw', id: 'normal-0' }).expect(200);
-					const already0 = await op({ action: 'raw', id: 'already-0' }).expect(200);
-					trajectory.push(
-						`[normal-0 rawPresent=${normal0.body.rawPresent} already-0 rawPresent=${already0.body.rawPresent}]`
+					normalRaw = await Promise.all(
+						Array.from({ length: NORMAL_COUNT }, (_, i) => op({ action: 'raw', id: `normal-${i}` }).expect(200))
 					);
+					alreadyRaw = await Promise.all(
+						Array.from({ length: ALREADY_COUNT }, (_, i) => op({ action: 'raw', id: `already-${i}` }).expect(200))
+					);
+					trajectory.push(
+						`[normal rawPresent=${normalRaw.map((r) => r.body.rawPresent).join(',')} already rawPresent=${alreadyRaw.map((r) => r.body.rawPresent).join(',')}]`
+					);
+					await confirmDangling([...normalRaw, ...alreadyRaw].map((r) => r.body));
 
-					// The sample clearing is only a cue to check for full convergence, not proof of it:
-					// the sweep evicts each id via an unawaited fire-and-forget commit (Table.ts
-					// runRecordExpirationEviction), so sibling ids from the same sweep batch can still be
-					// mid-flight the instant normal-0/already-0 resolve. Confirm ALL normal-N/already-N
-					// before breaking, otherwise keep polling — a straggler gets caught on this or a later
-					// pass instead of being judged from a partially-settled snapshot.
-					if (normal0.body.rawPresent === false && already0.body.rawPresent === false) {
-						const allNormal = await Promise.all(
-							Array.from({ length: NORMAL_COUNT }, (_, i) => op({ action: 'raw', id: `normal-${i}` }).expect(200))
-						);
-						const allAlready = await Promise.all(
-							Array.from({ length: ALREADY_COUNT }, (_, i) => op({ action: 'raw', id: `already-${i}` }).expect(200))
-						);
-						if (
-							allNormal.every((r) => r.body.rawPresent === false) &&
-							allAlready.every((r) => r.body.rawPresent === false)
-						)
-							break;
+					if (
+						normalRaw.every((r) => r.body.rawPresent === false) &&
+						alreadyRaw.every((r) => r.body.rawPresent === false)
+					) {
+						break;
 					}
 					await sleep(SWEEP_POLL_INTERVAL_MS);
 				}
@@ -476,21 +482,16 @@ suite(
 				const anomalies = await checkAnomalyLog();
 
 				// ── DECISIVE ground-truth check for ALL normal-N and already-N ids ──
-				const normalRaw = await Promise.all(
+				normalRaw = await Promise.all(
 					Array.from({ length: NORMAL_COUNT }, (_, i) => op({ action: 'raw', id: `normal-${i}` }).expect(200))
 				);
-				const alreadyRaw = await Promise.all(
+				alreadyRaw = await Promise.all(
 					Array.from({ length: ALREADY_COUNT }, (_, i) => op({ action: 'raw', id: `already-${i}` }).expect(200))
 				);
+				await confirmDangling([...normalRaw, ...alreadyRaw].map((r) => r.body));
 
 				const normalStillResident = normalRaw.filter((r) => r.body.rawPresent === true);
 				const alreadyStillResident = alreadyRaw.filter((r) => r.body.rawPresent === true);
-				// DANGLING/MIRROR-FAILURE signature: record still resident (rawPresent) but its blob
-				// body can no longer be read (readError, e.g. ENOENT) — the exact "later read 500s/
-				// ENOENTs" shape the scenario warns about.
-				const danglingRefs = [...normalRaw, ...alreadyRaw].filter(
-					(r) => r.body.rawPresent === true && r.body.readError
-				);
 
 				findings.push(
 					`Q2 normal-N ground truth: ${NORMAL_COUNT - normalStillResident.length}/${NORMAL_COUNT} evicted, ${normalStillResident.length} still resident`
@@ -498,7 +499,7 @@ suite(
 				findings.push(
 					`Q4 already-N ground truth: ${ALREADY_COUNT - alreadyStillResident.length}/${ALREADY_COUNT} evicted, ${alreadyStillResident.length} still resident`
 				);
-				findings.push(`Q3 dangling-ref (rawPresent + unreadable body) count: ${danglingRefs.length}`);
+				findings.push(`Q3 dangling-ref (rawPresent + unreadable body) count: ${danglingRefs.size}`);
 
 				if (normalStillResident.length === 0) {
 					findings.push(
@@ -519,12 +520,12 @@ suite(
 					);
 				}
 				findings.push(
-					`Q3 VERDICT: ${danglingRefs.length === 0 ? 'no mirror-failure observed (CLEAN)' : 'MIRROR-FAILURE DEFECT observed'}`
+					`Q3 VERDICT: ${danglingRefs.size === 0 ? 'no mirror-failure observed (CLEAN)' : 'MIRROR-FAILURE DEFECT observed'}`
 				);
 
 				ok(
-					danglingRefs.length === 0,
-					`Q3 DEFECT (mirror-failure): ${danglingRefs.length} record(s) resident-but-unreadable: ${JSON.stringify(danglingRefs.map((r) => r.body))}`
+					danglingRefs.size === 0,
+					`Q3 DEFECT (mirror-failure): ${danglingRefs.size} record(s) resident-but-unreadable: ${JSON.stringify([...danglingRefs.values()])}`
 				);
 				ok(
 					normalStillResident.length === 0,

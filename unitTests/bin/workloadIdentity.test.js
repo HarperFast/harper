@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } = require('#src/bin/workloadIdentity');
-const commonUtilsModule = require('#src/utility/common_utils');
+const commonUtilsModule = require('#js/utility/common_utils');
 
 const REQUEST_URL = 'https://pipelines.actions.githubusercontent.com/abc/idtoken?api-version=2.0';
 const REQUEST_TOKEN = 'runner-request-token';

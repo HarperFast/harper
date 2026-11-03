@@ -2,8 +2,11 @@ const assert = require('node:assert');
 const { Readable } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { createHarperHttpHandler } = require('#src/components/mcp/adapters/harperHttp');
+const { credentialRejectionError, deferCredentialRejection } = require('#src/security/deferredAuthentication');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
 const { Headers } = require('#src/server/serverHelpers/Headers');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 function makeFakeTable() {
 	const store = new Map();
@@ -101,6 +104,72 @@ describe('mcp/adapters/harperHttp', () => {
 		assert.equal(parsed.result.protocolVersion, '2025-06-18');
 	});
 
+	describe('deferred credential rejection (#2418)', () => {
+		function deferredRequest(overrides = {}) {
+			const request = {
+				method: 'POST',
+				headers: makeHeaders({ 'content-type': 'application/json' }),
+				body: bodyStream(
+					JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+				),
+				...overrides,
+			};
+			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+			return request;
+		}
+
+		it('answers 401 instead of creating an anonymous session', async () => {
+			const handler = createHarperHttpHandler('application');
+
+			const result = await handler(deferredRequest(), next);
+
+			assert.equal(result.status, 401);
+			assert.deepEqual(JSON.parse(result.body.toString()), { error: 'Login failed' });
+			assert.equal(result.headers['Mcp-Session-Id'], undefined);
+		});
+
+		it('does not read the request body before rejecting', async () => {
+			const handler = createHarperHttpHandler('application');
+			let bodyRead = false;
+			const body = {
+				on(event, listener) {
+					if (event === 'data') bodyRead = true;
+					if (event === 'end') queueMicrotask(listener);
+					return body;
+				},
+			};
+
+			await handler(deferredRequest({ body }), next);
+
+			assert.equal(bodyRead, false, 'the body must not be consumed once the credential is rejected');
+		});
+
+		it('still serves a request with no deferred rejection', async () => {
+			const handler = createHarperHttpHandler('application');
+			const request = {
+				method: 'POST',
+				headers: makeHeaders({ 'content-type': 'application/json' }),
+				body: bodyStream(
+					JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+				),
+				user: { username: 'alice' },
+			};
+
+			const result = await handler(request, next);
+
+			assert.equal(result.status, 200);
+			assert.match(result.headers['Mcp-Session-Id'], /^[0-9a-f-]{36}$/);
+		});
+
+		it('still lets a WebSocket upgrade through to the next handler', async () => {
+			const handler = createHarperHttpHandler('application');
+
+			const out = await handler(deferredRequest({ method: 'GET', isWebSocket: true }), () => 'next-handler-result');
+
+			assert.equal(out, 'next-handler-result');
+		});
+	});
+
 	it('hands off WebSocket-upgrade requests to the next handler', async () => {
 		const handler = createHarperHttpHandler('application');
 		const out = await handler(
@@ -191,6 +260,74 @@ describe('mcp/adapters/harperHttp', () => {
 		assert.equal(session.initialized, true);
 	});
 
+	it('builds resource URIs from the request protocol + host, not the server hostname', async () => {
+		const { _setResourcesForTest } = require('#src/components/mcp/resources');
+		_setResourcesForTest(new Map());
+		try {
+			const handler = createHarperHttpHandler('application');
+			const reqBase = { user: { username: 'alice' }, protocol: 'https', host: 'public.example.com' };
+			const initResult = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders(),
+					body: bodyStream(
+						JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+					),
+				},
+				next
+			);
+			const sessionId = initResult.headers['Mcp-Session-Id'];
+			const res = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders({ 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' }),
+					body: bodyStream(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'resources/templates/list' })),
+				},
+				next
+			);
+			const templates = JSON.parse(res.body).result.resourceTemplates.map((t) => t.uriTemplate);
+			assert.ok(templates.includes('harper+rest://public.example.com/{resourcePath}'), templates.join(', '));
+		} finally {
+			_setResourcesForTest(undefined);
+		}
+	});
+
+	it('ignores a non-http(s) request protocol (uWS X-Forwarded-Proto: ws)', async () => {
+		const { _setResourcesForTest } = require('#src/components/mcp/resources');
+		_setResourcesForTest(new Map());
+		try {
+			const handler = createHarperHttpHandler('application');
+			const reqBase = { user: { username: 'alice' }, protocol: 'ws', host: 'public.example.com' };
+			const initResult = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders(),
+					body: bodyStream(
+						JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+					),
+				},
+				next
+			);
+			const sessionId = initResult.headers['Mcp-Session-Id'];
+			const res = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders({ 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' }),
+					body: bodyStream(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'resources/templates/list' })),
+				},
+				next
+			);
+			const templates = JSON.parse(res.body).result.resourceTemplates.map((t) => t.uriTemplate);
+			assert.ok(!templates.some((t) => t.startsWith('ws://')), templates.join(', '));
+		} finally {
+			_setResourcesForTest(undefined);
+		}
+	});
+
 	it('returns 400 on GET without an Mcp-Session-Id (SSE channel landed in #619)', async () => {
 		const handler = createHarperHttpHandler('application');
 		const result = await handler({ method: 'GET', headers: makeHeaders(), user: { username: 'alice' } }, next);
@@ -222,5 +359,114 @@ describe('mcp/adapters/harperHttp', () => {
 		);
 		assert.equal(notif.status, 202);
 		assert.equal(notif.body, undefined);
+	});
+
+	describe('request body size limit', () => {
+		const initializeBody = JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18' },
+		});
+		afterEach(() => env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, undefined));
+
+		function endlessBody(chunkSize) {
+			const emitter = new EventEmitter();
+			const wrapper = {
+				emitted: 0,
+				on(event, listener) {
+					emitter.on(event, listener);
+					return wrapper;
+				},
+			};
+			const timer = setInterval(() => {
+				if (wrapper.emitted >= 100) {
+					clearInterval(timer);
+					return emitter.emit('end');
+				}
+				wrapper.emitted++;
+				emitter.emit('data', Buffer.alloc(chunkSize, 0x61));
+			}, 1);
+			wrapper.stop = () => clearInterval(timer);
+			return wrapper;
+		}
+
+		it('answers 413 once the streamed body exceeds http.maxRequestBodySize, without waiting for the end', async () => {
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, 1000);
+			const handler = createHarperHttpHandler('application');
+			const body = endlessBody(400);
+
+			const result = await handler({ method: 'POST', headers: makeHeaders(), body, user: { username: 'alice' } }, next);
+
+			assert.equal(result.status, 413);
+			body.stop();
+			assert.equal(JSON.parse(result.body).error, 'payload_too_large');
+			assert.match(JSON.parse(result.body).message, /Request body too large, maximum size is 1000 bytes/);
+			assert.equal(result.headers['Mcp-Session-Id'], undefined);
+			assert.ok(body.emitted <= 4, `reading continued past the limit (${body.emitted} chunks)`);
+		});
+
+		it('answers 413 from a declared Content-Length and keeps draining the body without buffering it', async () => {
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, 1000);
+			const handler = createHarperHttpHandler('application');
+			const body = new EventEmitter();
+
+			const result = await handler(
+				{ method: 'POST', headers: makeHeaders({ 'content-length': '1001' }), body, user: { username: 'alice' } },
+				next
+			);
+
+			assert.equal(result.status, 413);
+			assert.equal(body.listenerCount('data'), 1, 'a data listener must flow the stream so it is discarded');
+			assert.equal(body.listenerCount('error'), 1);
+			body.emit('data', Buffer.alloc(2000));
+			body.emit('error', new Error('socket reset after the early response'));
+			body.emit('end');
+		});
+
+		it('still serves a body under the limit', async () => {
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, initializeBody.length);
+			const handler = createHarperHttpHandler('application');
+
+			const result = await handler(
+				{
+					method: 'POST',
+					headers: makeHeaders({ 'content-length': String(initializeBody.length) }),
+					body: bodyStream(initializeBody),
+					user: { username: 'alice' },
+				},
+				next
+			);
+
+			assert.equal(result.status, 200);
+		});
+
+		it('rejects a body one byte over an overridden limit and honours a raised one', async () => {
+			const handler = createHarperHttpHandler('application');
+			const request = () => ({
+				method: 'POST',
+				headers: makeHeaders(),
+				body: bodyStream(initializeBody),
+				user: { username: 'alice' },
+			});
+
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, initializeBody.length - 1);
+			assert.equal((await handler(request(), next)).status, 413);
+
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, initializeBody.length);
+			assert.equal((await handler(request(), next)).status, 200);
+		});
+
+		it('applies the default 10 MB limit when the setting is unset', async () => {
+			const handler = createHarperHttpHandler('application');
+			const body = endlessBody(1_000_000);
+
+			const result = await handler({ method: 'POST', headers: makeHeaders(), body, user: { username: 'alice' } }, next);
+
+			assert.equal(result.status, 413);
+			assert.match(JSON.parse(result.body).message, /maximum size is 10000000 bytes/);
+			body.stop();
+			assert.ok(body.emitted <= 11, `reading continued past the limit (${body.emitted} chunks)`);
+		});
 	});
 });
