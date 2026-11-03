@@ -1162,7 +1162,7 @@ export function recordUpdater(
 					let replacingEntry;
 					if (isRocksDB && existingEntry.additionalAuditRefs) {
 						for (const ref of existingEntry.additionalAuditRefs) {
-							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
+							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId, true);
 							if (
 								candidate?.version === existingEntry.version &&
 								(candidate.nodeId ?? 0) === (existingEntry.nodeId ?? 0)
@@ -1174,7 +1174,7 @@ export function recordUpdater(
 						}
 					}
 					replacingEntry ??= isRocksDB
-						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId)
+						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId, true)
 						: replacingAuditEntry;
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
@@ -1256,10 +1256,14 @@ export function recordUpdater(
 		}
 	};
 }
-// a coordinated retry's put appends nothing; its write keeps what the attempt it retries appended
+// a coordinated retry's put appends nothing (unless the attempt it retries wrote no batch); its write keeps what that attempt appended
 function noteStagedAudit(options: any, extendedType: number) {
 	const write = options?.write;
-	if (write && write.stagedAudit !== 'replicable' && !options.transaction?.isRetry)
+	if (
+		write &&
+		write.stagedAudit !== 'replicable' &&
+		(!options.transaction?.isRetry || options.transaction.relogOnRetry)
+	)
 		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 }
 export function removeEntry(store: any, entry: any, options?: any) {

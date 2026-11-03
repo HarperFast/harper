@@ -4932,6 +4932,130 @@ describe('record locks across a node restart (harper#3768, #2582, #3268)', () =>
 			assert.strictEqual(alpha.stats.delegations, 0);
 		});
 
+		it('a duplicate that arrives after a contender recalled the grant its first copy minted gets that token, and the requester hands it back', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha').coordinator;
+			const beta = cluster.node('beta').coordinator;
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const admitted = new Set();
+			const lock = (name, coordinator, waitMs) => {
+				const round = coordinator.acquire(key, LEASE, waitMs).then((granted) => {
+					assert.strictEqual(admitted.size, 0, `${name} was admitted while ${[...admitted]} held the key`);
+					admitted.add(name);
+					return { coordinator, granted, name };
+				});
+				round.catch(() => {});
+				return round;
+			};
+			const realRecall = gamma.transport.recallDelegation;
+			let recalled;
+			gamma.transport.recallDelegation = (...args) => {
+				gamma.transport.recallDelegation = realRecall;
+				return (recalled = realRecall(...args));
+			};
+			const realRequest = alpha.transport.requestDelegation;
+			let copy;
+			let contender;
+			alpha.transport.requestDelegation = async (target, database, table, request) => {
+				alpha.transport.requestDelegation = realRequest;
+				copy = await gamma.onDelegationRequest({ ...request });
+				contender = lock('beta', beta, 3_000);
+				await waitFor(() => recalled !== undefined, 2_000);
+				await recalled;
+				// A macrotask turn, so the home has latched the confirmation before the awaited delivery.
+				await new Promise((resolve) => setImmediate(resolve));
+				cluster.node('gamma').mono += 1_000;
+				return realRequest(target, database, table, request);
+			};
+			const requester = lock('alpha', alpha, 3_000);
+			await waitFor(() => contender !== undefined, 2_000);
+			const winner = await Promise.race([contender, requester]);
+			assert.strictEqual(copy.granted, true);
+			const duplicate = cluster.replies.find((reply) => reply.requestId === copy.requestId);
+			assert.deepStrictEqual(duplicate?.token, copy.token, 'the duplicate was refused instead of answered');
+			assert.ok(duplicate.leaseMs < copy.leaseMs, 'the duplicate renewed the recalled grant');
+			assert.ok(
+				cluster.node('alpha').written.some((entry) => compareTokens(entry.token, copy.token) === 0),
+				'alpha never released the grant it was given'
+			);
+			admitted.delete(winner.name);
+			winner.coordinator.release(key, winner.granted.admissionId);
+			const loser = await (winner.name === 'alpha' ? contender : requester);
+			assert.ok(loser.granted.tsR > winner.granted.tsR);
+			loser.coordinator.release(key, loser.granted.admissionId);
+		});
+
+		it('a duplicate that arrives while the recall of the grant its first copy minted is in flight gets that token, and the recall drains it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha').coordinator;
+			const beta = cluster.node('beta').coordinator;
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const realRecall = gamma.transport.recallDelegation;
+			let deliverRecall;
+			gamma.transport.recallDelegation = (...args) => {
+				gamma.transport.recallDelegation = realRecall;
+				return new Promise((resolve) => (deliverRecall = resolve)).then(() => realRecall(...args));
+			};
+			const realRequest = alpha.transport.requestDelegation;
+			let copy;
+			let contender;
+			let contenderAdmitted = false;
+			alpha.transport.requestDelegation = async (target, database, table, request) => {
+				alpha.transport.requestDelegation = realRequest;
+				copy = await gamma.onDelegationRequest({ ...request });
+				contender = beta.acquire(key, LEASE, 5_000).then((round) => {
+					contenderAdmitted = true;
+					return round;
+				});
+				contender.catch(() => {});
+				await waitFor(() => deliverRecall !== undefined, 2_000);
+				cluster.node('gamma').mono += 1_000;
+				return realRequest(target, database, table, request);
+			};
+			const held = await alpha.acquire(key, LEASE, 5_000);
+			const duplicate = cluster.replies.find((reply) => reply.requestId === copy.requestId);
+			assert.deepStrictEqual(duplicate.token, copy.token);
+			assert.ok(duplicate.leaseMs < copy.leaseMs, 'the duplicate renewed the grant being recalled');
+			deliverRecall();
+			await delayMs(50);
+			assert.strictEqual(contenderAdmitted, false, 'the contender was admitted while alpha held the key');
+			alpha.release(key, held.admissionId);
+			const round = await contender;
+			assert.ok(round.tsR > held.tsR);
+			assert.strictEqual(alpha.stats.delegations, 0);
+		});
+
+		it('a late duplicate during a recall gets the same token without renewing it, and a release naming that token cannot clear the successor’s grant', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha').coordinator;
+			const beta = cluster.node('beta').coordinator;
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const held = await alpha.acquire(key, LEASE, WAIT);
+			const minting = cluster.requests.find((entry) => entry.from === 'alpha').request;
+			const first = cluster.replies.find((reply) => reply.requestId === minting.requestId);
+			const contender = beta.acquire(key, LEASE, 5_000);
+			contender.catch(() => {});
+			await waitFor(() => cluster.recalls.length > 0, 2_000);
+			cluster.node('gamma').mono += 1_000;
+			const late = await gamma.onDelegationRequest({ ...minting });
+			assert.strictEqual(late.granted, true, JSON.stringify(late));
+			assert.deepStrictEqual(late.token, first.token, 'the late duplicate renewed the recalled grant');
+			assert.ok(late.leaseMs < first.leaseMs);
+			alpha.release(key, held.admissionId);
+			const round = await contender;
+			assert.ok(round.tsR > held.tsR);
+			gamma.applyEntry(
+				{ type: 'lockRelease', key, requester: 'alpha', token: late.token, dependencies: [] },
+				'alpha',
+				++cluster.tsCounter
+			);
+			assert.strictEqual(gamma.stats.granted, 1, 'a release naming the recalled token cleared the successor’s grant');
+			beta.release(key, round.admissionId);
+		});
+
 		it('a replay of a request the home already answered cannot mint a grant nobody holds', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const gamma = cluster.node('gamma').coordinator;

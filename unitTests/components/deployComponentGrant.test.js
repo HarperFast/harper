@@ -246,6 +246,65 @@ describe('deploy_component under a component grant (harper#3046)', function () {
 			);
 		});
 
+		it("stamps the grant's identity generation on the preview it deploys, whatever the request says", async () => {
+			const grant = previewGrant('ph', { generation: 'ph-gen-1' });
+			const response = await deployPreview('ph', 1, grant, {
+				preview: { ...metadata('ph', 1), generation: 'forged-generation' },
+			});
+			assert.strictEqual(
+				(await handleGetDeployment({ deployment_id: response.deployment_id })).preview.generation,
+				'ph-gen-1'
+			);
+			const live = (await listLocalPreviews()).find((entry) => entry.component === 'ph-pr-1');
+			assert.strictEqual(live.preview.generation, 'ph-gen-1', 'the release carries it to every node');
+		});
+
+		it('refuses, on a peer, to apply a preview whose identity generation was revoked on that peer', async () => {
+			const { REPLICATED_FROM } = require('#src/utility/hdbTerms');
+			const { fencePreviewGeneration } = require('#src/components/previews');
+			await fencePreviewGeneration('pi', 'pi-gen-1');
+			const replicated = (pr, generation) => {
+				const request = {
+					operation: 'deploy_component',
+					payload,
+					restart: false,
+					project: `pi-pr-${pr}`,
+					preview: { ...metadata('pi', pr), generation },
+					_deploymentId: randomUUID(),
+					hdb_user: superUser,
+				};
+				request[REPLICATED_FROM] = 'node-a';
+				return deployComponent(request);
+			};
+			await assert.rejects(replicated(1, 'pi-gen-1'), { statusCode: 403, message: /previews of pi .* were disabled/ });
+			assert.ok(!(await listLocalPreviews()).some((entry) => entry.component === 'pi-pr-1'));
+			await replicated(2, 'pi-gen-2');
+		});
+
+		it("refuses a super user's activation of a staged build whose identity generation was revoked", async () => {
+			const { fencePreviewGeneration } = require('#src/components/previews');
+			const staged = await deploy(
+				{
+					project: 'pj-pr-1',
+					host: 'pj-1.app.example.com',
+					activate: false,
+					restart: undefined,
+					preview: { ...metadata('pj', 1), generation: 'pj-gen-1' },
+				},
+				superUser
+			);
+			await fencePreviewGeneration('pj', 'pj-gen-1');
+			await assert.rejects(
+				deployComponent({
+					operation: 'deploy_component',
+					project: 'pj-pr-1',
+					deployment_id: staged.deployment_id,
+					hdb_user: superUser,
+				}),
+				{ statusCode: 403, message: /previews of pj .* were disabled/ }
+			);
+		});
+
 		it('refuses to make a preview live once its deployer was revoked during the deploy', async () => {
 			const { getUserWithRole } = require('#src/security/user');
 			const permission = { super_user: false, component_deploy: previewGrant('pg') };

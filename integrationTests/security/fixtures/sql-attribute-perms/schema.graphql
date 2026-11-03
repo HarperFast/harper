@@ -1,0 +1,14 @@
+# The test role reads both tables but is denied `ssn` on ColPermLeft and the primary key and
+# `code` on ColPermRight.
+type ColPermLeft @table @export {
+	id: ID @primaryKey
+	label: String @indexed
+	ssn: String @indexed
+}
+
+type ColPermRight @table @export {
+	id: ID @primaryKey
+	label: String @indexed
+	ssn: String @indexed
+	code: String @indexed
+}

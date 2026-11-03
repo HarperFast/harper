@@ -325,6 +325,130 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		});
 	});
 
+	suite('nested selection condition admission', () => {
+		test('operations checks the executed attribute when numeric metadata is present', async () => {
+			for (const key of ['attribute', 'search_attribute']) {
+				for (const grouped of [false, true]) {
+					const leaf = { 0: 'id', [key]: ['dept', 'budget'], search_type: 'equals', search_value: DEPT.budget };
+					const conditions = grouped
+						? [{ operator: 'and', conditions: [{ attribute: 'id', value: EMP.id }, leaf] }]
+						: [leaf];
+					assertRefused(await byConditions('empOnly', conditions), `numeric decoy ${key} ${grouped}`, 'Dept');
+					assertRefused(await byConditions('restricted', conditions), `numeric decoy ${key} ${grouped}`, 'Dept.budget');
+				}
+			}
+			const allowed = await byConditions('empOnly', [{ 0: ['dept', 'budget'], attribute: 'id', value: EMP.id }]);
+			strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+			deepStrictEqual(allowed.body, [{ id: EMP.id }]);
+		});
+
+		for (const operation of ['search_by_conditions', 'search_by_hash', 'search_by_value']) {
+			test(`${operation} checks nested read and describe permissions before validation`, async () => {
+				for (const attributeKey of ['attribute', 'search_attribute']) {
+					const body = {
+						operation,
+						table: 'Emp',
+						hash_values: [EMP.id],
+						search_attribute: 'id',
+						search_value: EMP.id,
+						conditions: [{ attribute: 'id', value: EMP.id }],
+						get_attributes: [
+							'id',
+							{
+								name: 'dept',
+								select: ['name'],
+								checkPermission: { super_user: true },
+								conditions: [
+									{
+										operator: 'or',
+										conditions: [
+											{ [attributeKey]: 'name', value: DEPT.name },
+											{ operator: 'and', conditions: [{ [attributeKey]: 'budget', value: DEPT.budget }] },
+										],
+									},
+								],
+							},
+						],
+					};
+					for (const as of ['full', 'super'] as const) {
+						const unchanged = await op(as, body);
+						strictEqual(unchanged.status, 400, `${as}: ${JSON.stringify(unchanged.body)}`);
+						ok(unchanged.body.error.includes('conditions are not allowed in get_attributes'));
+					}
+					assertRefused(await op('restricted', body), `${operation} ${attributeKey}`, 'Dept.budget');
+					const denied = await op('budgetWriter', body);
+					assertRefused(denied, `${operation} visible budget`);
+					deepStrictEqual(denied.body.invalid_schema_items, []);
+					deepStrictEqual(denied.body.unauthorized_access, [
+						{
+							schema: 'data',
+							table: 'Dept',
+							required_table_permissions: [],
+							required_attribute_permissions: [{ attribute_name: 'budget', required_permissions: ['read'] }],
+						},
+					]);
+				}
+			});
+		}
+
+		test('REST checks nested predicates on collections, records and QUERY bodies', async () => {
+			assertRefused(
+				await rest('empOnly', '/Emp/?select(id,dept[name=Eng&select(name,)])'),
+				'nested predicate without related-table read'
+			);
+			for (const id of ['', EMP.id, 'missing']) {
+				assertRefused(
+					await rest('restricted', `/Emp/${id}?select(id,dept[budget=number:100&select(name,)])`),
+					`nested GET ${id}`
+				);
+				if (id === 'missing') continue;
+				const allowed = await rest('restricted', `/Emp/${id}?select(id,dept[name=Eng&select(name,)])`);
+				strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+				const expected = { id: EMP.id, dept: { name: DEPT.name } };
+				deepStrictEqual(allowed.body, id ? expected : [expected]);
+			}
+			const response = await fetch(`${restURL}/Emp/`, {
+				method: 'QUERY',
+				headers: { ...headers.restricted, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({
+					select: [
+						'id',
+						{
+							name: 'dept',
+							select: ['name'],
+							conditions: [
+								{
+									operator: 'or',
+									conditions: [
+										{ attribute: 'name', value: DEPT.name },
+										{ attribute: 'budget', value: DEPT.budget },
+									],
+								},
+							],
+						},
+					],
+				}),
+			});
+			strictEqual(response.status, 403, await response.text());
+			const allowed = await fetch(`${restURL}/Emp/`, {
+				method: 'QUERY',
+				headers: { ...headers.restricted, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({
+					select: ['id', { name: 'dept', select: ['name'], conditions: [{ attribute: 'name', value: DEPT.name }] }],
+				}),
+			});
+			strictEqual(allowed.status, 200, await allowed.clone().text());
+			deepStrictEqual(await allowed.json(), [{ id: EMP.id, dept: { name: DEPT.name } }]);
+		});
+
+		test('REST property reads require permission on the returned scalar', async () => {
+			assertRefused(await rest('restricted', `/Dept/${DEPT.id}.budget`), 'denied scalar');
+			deepStrictEqual(await rest('restricted', `/Dept/${DEPT.id}.name`), { status: 200, body: DEPT.name });
+			deepStrictEqual(await rest('full', `/Dept/${DEPT.id}.budget`), { status: 200, body: DEPT.budget });
+			deepStrictEqual(await rest('super', `/Dept/${DEPT.id}.budget`), { status: 200, body: DEPT.budget });
+		});
+	});
+
 	suite('conditions through the relationship', () => {
 		const idCondition = [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }];
 		function assertGraphQLRefused(response: { status: number; body: any }) {

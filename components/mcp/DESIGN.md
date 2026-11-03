@@ -44,6 +44,24 @@ A handful of design points are non-obvious and easy to break:
   (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
   (timeout + high-water-mark) so a non-responding client can't leak promises.
 
+- **Session creation is bounded per client, not by what the client sends.** The application profile accepts
+  anonymous `initialize`, and each session is a `system.mcp_session` row kept for the idle timeout. So
+  `initialize` persists only the capability names `METHOD_CAPABILITY` gates on (as `{}`), never the client's
+  object, and `tryAdmitInitialize` throttles creation per client identity — on by default, unlike the
+  `tools/call` per-client bucket, because creation is what writes to disk. This bounds sessions created and
+  then abandoned; a client that keeps N sessions alive pays a request per session per idle window, like any
+  request flood. A fixed lifetime for anonymous sessions would bound that too, at the cost of breaking every
+  long-lived anonymous client.
+
+  The bucket is **per worker thread**, like every MCP rate limit (in-memory, not shared across workers):
+  `initializePerSecond` and `initializeBurst` bound one worker. A client opening fresh connections that the OS
+  spreads over the application profile's `threads.count` workers gets up to that many times the configured
+  figure (5 per worker × 4 workers = 20 admitted at `initializeBurst: 5`); one reused connection stays on one
+  worker and gets the configured figure. Dividing the config by `threads.count` was rejected: it assumes an
+  even spread, which the exclusive operations-API listener and macOS binds (`noReusePort`, `server/http.ts`)
+  do not give, and it turns `initializeBurst: 50` into one token per worker at 32 threads, so a client reusing
+  one connection would get a 429 on its second session.
+
 - **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
   application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change
   ITC events — both of which fire while the `@table` classes register, **before** the `jsResource` plugin

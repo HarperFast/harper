@@ -4,6 +4,7 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
+const { AccessViolation } = require('#src/utility/errors/hdbError');
 const { EventEmitter } = require('node:events');
 
 // The module reads its interval once at import and the first register() starts a real timer; a
@@ -120,6 +121,36 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 					`the aggregate must carry the count and reasons, got: ${warnMessages[0]}`
 				);
 				assert.strictEqual(_liveSubscriptionCount(), 0);
+			} finally {
+				hdbLogger.info = originalInfo;
+				hdbLogger.warn = originalWarn;
+			}
+		});
+
+		it('logs a permission denial as an expected subscription revocation', async () => {
+			const username = 'expected-nested-permission-denial';
+			const originalInfo = hdbLogger.info;
+			const originalWarn = hdbLogger.warn;
+			const infoMessages = [];
+			const warnMessages = [];
+			hdbLogger.info = (message) => infoMessages.push(String(message));
+			hdbLogger.warn = (message) => warnMessages.push(String(message));
+			try {
+				register({
+					subscription: fakeSubscription(),
+					username,
+					recheck: async () => {
+						throw new AccessViolation({ username });
+					},
+				});
+				await _sweepNow();
+				assert.ok(
+					infoMessages.some((message) => message.includes(username) && message.includes('no longer authorized'))
+				);
+				assert.strictEqual(
+					warnMessages.find((message) => message.includes(username)),
+					undefined
+				);
 			} finally {
 				hdbLogger.info = originalInfo;
 				hdbLogger.warn = originalWarn;

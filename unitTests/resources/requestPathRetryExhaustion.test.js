@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setMaxRetryDelayMs } = require('#src/resources/DatabaseTransaction');
+const { setAbortMarkersForTests } = require('#src/resources/transactionLogAbortMarkers');
 const { setTimeout: delay } = require('node:timers/promises');
 const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 
@@ -15,15 +16,17 @@ const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().cons
 // was written to a dead connection. These tests pin that the exhaustion error (a) rejects the
 // awaited transaction() promise on both native conflict-signaling paths (ERR_BUSY/ERR_TRY_AGAIN
 // rejection, and the coordinatedRetry RETRY_NOW sentinel), (b) does so after exactly
-// MAX_RETRIES + 1 attempts, and (c) never leaks an unhandled rejection.
+// MAX_RETRIES + 1 attempts, and (c) never leaks an unhandled rejection. The forced conflicts never reach
+// RocksDB, so they run with abort markers off, where every retry counts.
 describe('request-path commit retry exhaustion rejects the awaited chain', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const MAX_RETRIES = 40; // mirrors resources/DatabaseTransaction.ts
-	let ExhaustTable, LoggedExhaustTable, previousMaxRetryDelay;
+	let ExhaustTable, LoggedExhaustTable, previousMaxRetryDelay, priorAbortMarkers;
 	const unhandled = [];
 	const onUnhandled = (error) => unhandled.push(error);
 
 	before(async function () {
+		priorAbortMarkers = setAbortMarkersForTests(false);
 		setupTestDBPath();
 		setMainIsWorker(true);
 		ExhaustTable = table({
@@ -51,6 +54,7 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	after(() => {
 		if (previousMaxRetryDelay !== undefined) setMaxRetryDelayMs(previousMaxRetryDelay);
 		process.removeListener('unhandledRejection', onUnhandled);
+		setAbortMarkersForTests(priorAbortMarkers ?? true);
 	});
 
 	afterEach(() => {

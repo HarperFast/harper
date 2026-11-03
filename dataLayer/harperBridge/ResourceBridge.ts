@@ -525,6 +525,7 @@ export class ResourceBridge extends BridgeMethods {
 				select: getSelect(searchObject, table),
 			} as any,
 			{
+				user: searchObject.hdb_user,
 				onlyIfCached: (searchObject as any).onlyIfCached,
 				noCacheStore: (searchObject as any).noCacheStore,
 				noCache: (searchObject as any).noCache,

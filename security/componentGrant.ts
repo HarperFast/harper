@@ -18,7 +18,7 @@
  * Where each part is enforced, and why: security/DESIGN.md.
  */
 import { componentNameMatches, isComponentNamePattern } from '../utility/componentNames.ts';
-import { isPreviewProjectOf } from '../utility/previewIdentity.ts';
+import { PREVIEW_GENERATION_PATTERN, isPreviewProjectOf } from '../utility/previewIdentity.ts';
 import { OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 
 export const COMPONENT_GRANT_KEY = 'component_deploy';
@@ -41,6 +41,8 @@ export interface ComponentGrantConstraints {
 	maxPreviews?: number;
 	/** A preview's `expiresAt` is clamped to this many days after its deploy. */
 	maxTtlDays?: number;
+	/** Stamped on each preview deployed under the grant, so disabling previews can refuse exactly those. */
+	generation?: string;
 }
 
 export interface ComponentGrant {
@@ -63,6 +65,7 @@ const CONSTRAINT_KEYS = new Set([
 	'preview',
 	'maxPreviews',
 	'maxTtlDays',
+	'generation',
 ]);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -126,10 +129,18 @@ export function componentGrantError(value: unknown): string | null {
 		return `'${COMPONENT_GRANT_KEY}.constraints.maxTtlDays' must be a positive number of days`;
 	}
 	if (
-		(constraints.maxPreviews !== undefined || constraints.maxTtlDays !== undefined) &&
+		constraints.generation !== undefined &&
+		!(typeof constraints.generation === 'string' && PREVIEW_GENERATION_PATTERN.test(constraints.generation))
+	) {
+		return `'${COMPONENT_GRANT_KEY}.constraints.generation' must be 8 to 64 letters, digits, '_' or '-'`;
+	}
+	if (
+		(constraints.maxPreviews !== undefined ||
+			constraints.maxTtlDays !== undefined ||
+			constraints.generation !== undefined) &&
 		constraints.preview !== 'required'
 	) {
-		return `'${COMPONENT_GRANT_KEY}.constraints.maxPreviews' and 'maxTtlDays' bound previews, so they need 'preview: required'`;
+		return `'${COMPONENT_GRANT_KEY}.constraints.maxPreviews', 'maxTtlDays' and 'generation' bound previews, so they need 'preview: required'`;
 	}
 	return null;
 }

@@ -21,6 +21,7 @@ import type { ExprNode, JoinNode, ProjectionNode, SelectNode, SortNode, Statemen
 import type { BoundSelect, BoundTable } from '../binder/bind.ts';
 import { normalizePredicate } from '../optimizer/rules/predicateNormalize.ts';
 import { EngineUnsupportedError } from '../errors.ts';
+import { usingLeftOwner } from '../binder/columnScope.ts';
 
 export function buildLogicalPlan(stmt: StatementNode): LogicalPlan {
 	if (stmt.kind !== 'select') {
@@ -231,18 +232,10 @@ function usingToOn(join: JoinNode, scope: BoundTable[], rightIdx: number): ExprN
 	if (!join.using || join.using.length === 0) return undefined;
 	const rightAlias = scope[rightIdx].effectiveAlias;
 	const eqs: ExprNode[] = join.using.map((col) => {
-		// Left owner: nearest preceding table that declares the column.
-		let leftAlias = scope[0].effectiveAlias;
-		for (let i = rightIdx - 1; i >= 0; i--) {
-			if (scope[i].attributes.some((a) => a.name === col)) {
-				leftAlias = scope[i].effectiveAlias;
-				break;
-			}
-		}
 		return {
 			kind: 'binop',
 			op: '=',
-			left: { kind: 'column', table: leftAlias, name: col },
+			left: { kind: 'column', table: usingLeftOwner(col, scope, rightIdx).effectiveAlias, name: col },
 			right: { kind: 'column', table: rightAlias, name: col },
 		};
 	});

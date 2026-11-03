@@ -634,6 +634,11 @@ async function deployComponent(req?: any) {
 			req.preview = { ...req.preview, expiresAt: new Date(bound).toISOString() };
 			previewExpiryClamped = req.preview.expiresAt;
 		}
+		const { generation } = componentGrant.constraints ?? {};
+		if (req.preview) {
+			const { generation: _claimed, ...preview } = req.preview;
+			req.preview = generation === undefined ? preview : { ...preview, generation };
+		}
 	}
 	// An activation names a build the grant may never have admitted, live here or dormant on a peer, so its recorded
 	// preview is checked first, ahead of the return for a release that is already live.
@@ -895,19 +900,21 @@ async function deployComponent(req?: any) {
 				routing: declaredRouting,
 				isolated: Boolean(nowIsolated),
 			}),
-			// The cap is the origin's: a peer makes live what the origin admitted.
+			// The cap is the origin's: a peer makes live what the origin admitted. A revoked identity's preview is refused
+			// on every node, a peer included, since only that node's fence orders its swap against disabling.
 			aroundActivation:
-				isReplicatedExecution && !componentGrant
+				isReplicatedExecution && !componentGrant && !req.preview && !isActivation
 					? undefined
 					: (candidateDirPath, activate) =>
 							admitPreviewActivation(
 								req.project,
 								candidateDirPath,
 								activate,
-								previewCap,
+								isReplicatedExecution && !componentGrant ? null : previewCap,
 								undefined,
 								componentGrant?.constraints?.preview === 'required' ? admitGrantPreview : undefined,
-								previewCapName
+								previewCapName,
+								Boolean(req.preview) || isActivation
 							),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
@@ -1909,8 +1916,10 @@ async function dropComponent(req?: any) {
  * dropped by doing nothing, and nothing restarts. An isolated application's dedicated worker is stopped whatever
  * `restart` says, a leftover one included, and the shared workers restart only when asked and only when they may hold
  * it. Its branched databases go last, once nothing holds them, and are recorded as owed before anything is removed, so
- * `retryPendingBranchRemovals` finishes a removal this drop could not. `answerEarly` answers a worker that asked for
- * this before a step that stops it; `null` in an answer means not known yet.
+ * `retryPendingBranchRemovals` finishes a removal this drop could not. One that declares them, or that a thread may
+ * hold, is recorded with none on disk too, since a load still running there can create the first after this drop looked.
+ * `answerEarly` answers a worker that asked for this before a step that stops it; `null` in an answer means not known
+ * yet.
  */
 async function dropApplication(request, requester?: any, answerEarly?: any) {
 	// the asker's own deadline, on its own clock: never sent to a peer
@@ -1957,7 +1966,15 @@ async function dropApplication(request, requester?: any, answerEarly?: any) {
 				const keep = req.keepBranches === true;
 				let branched = applicationHasBranchStorage(project);
 				if (keep) await clearPendingBranchRemoval(project);
-				else if (branched) recordPendingBranchRemoval(project);
+				else if (branched || declaresBranches(project)) recordPendingBranchRemoval(project);
+				else if (poolMayHold || hadWorker || mainServes) {
+					try {
+						recordPendingBranchRemoval(project);
+					} catch (error) {
+						// speculative, so a full disk does not stop the drop of an application that declares no branches
+						log.warn(`Could not record a removal in case a load of ${project} still creates a fork`, error);
+					}
+				}
 				if (present) await removeApplication(project, componentPath);
 				// a worker still loading it can have created one since
 				if (!branched && applicationHasBranchStorage(project)) {
@@ -2124,7 +2141,7 @@ async function retryBranchRemoval(project: string): Promise<boolean> {
 					return false;
 				}
 				await removeBranchesForApplication(project);
-				log.info(`Removed the branched database storage a drop of ${project} left in place`);
+				log.info(`Finished the branched database removal a drop of ${project} left owed`);
 				return true;
 			},
 			{
@@ -2154,6 +2171,16 @@ function setBranchRemovalRetryDelayForTests(firstMs: number = BRANCH_REMOVAL_RET
 	branchRemovalRetryFirstMs = branchRemovalRetryDelayMs = firstMs;
 	clearTimeout(branchRemovalRetryTimer);
 	branchRemovalRetryTimer = undefined;
+}
+
+/** Whether the root config file gives `project` branched databases, or cannot be read, as `hasRootConfigEntry`. */
+function declaresBranches(project: string): boolean {
+	try {
+		const { branchedDatabases } = (readRootConfigEntry(project) ?? {}) as { branchedDatabases?: true | string[] };
+		return branchedDatabases === true || branchedDatabases?.length > 0;
+	} catch {
+		return true;
+	}
 }
 
 /**

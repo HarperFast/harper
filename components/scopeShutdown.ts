@@ -33,3 +33,20 @@ export function trackScopeClose(closePromise: Promise<unknown>): void {
 export function whenScopesClosed(): Promise<unknown> {
 	return Promise.all([...closing]);
 }
+
+const deferredCloses = new Set<() => Promise<unknown>>();
+
+/**
+ * Close a scope for a SHUTDOWN. A restart closes it at once, as it always has. A process exit defers the
+ * close to {@link startDeferredScopeCloses}, which the shutdown sequence runs once connections have
+ * drained, so a request still in flight keeps the resources its scope owns.
+ */
+export function closeScopeOnShutdown(close: () => Promise<unknown>, deferUntilServersClose: boolean): void {
+	if (deferUntilServersClose) deferredCloses.add(close);
+	else trackScopeClose(Promise.resolve().then(close));
+}
+
+export function startDeferredScopeCloses(): void {
+	for (const close of deferredCloses) trackScopeClose(Promise.resolve().then(close));
+	deferredCloses.clear();
+}
