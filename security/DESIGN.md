@@ -199,15 +199,15 @@ Not covered: compartment mode's `importHook`, and what natively loaded packages 
 Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoader.test.js` and
 `integrationTests/components/cjs-require-loader.test.ts`.
 
-## The compartment `importHook` checks `allowedPath` once (`security/jsLoader.ts`)
+## Compartment `importHook` checks `allowedPath` once (`security/jsLoader.ts`)
 
 `checkAllowedModulePath` runs once at the top of the compartment `importHook`, after the synthetic `harper`
 return and ahead of branch selection, so `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
 branches cannot load an unapproved path, and future branches inherit the check (#3485). Previously only the
 `.node` and native-import branches called it, so compartment mode loaded out-of-tree plain files that VM mode
 (`createModule`) refused. This applies the existing prefix test only, not a containment boundary (#1929,
-#2970), and does not cover files loaded by native dependencies themselves. Enforced by `compartment importHook`
-in `unitTests/security/jsLoader/jsLoader.test.js` and
+#2970), and does not cover files loaded by native dependencies themselves. Plain-file refusal is enforced by
+`compartment importHook` in `unitTests/security/jsLoader/jsLoader.test.js` and
 `integrationTests/components/compartment-allowed-directory.test.ts`.
 
 ## Compartment dynamic CommonJS names (`security/jsLoader.ts`)
