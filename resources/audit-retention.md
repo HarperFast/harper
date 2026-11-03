@@ -105,9 +105,9 @@ upper bound on every key any prune removed from the named logs.
   observed while neither the cutoff nor the native horizon reaches past the epoch. Any other prune
   (`deleteHistory`, `delete_transaction_logs_before`, a cutoff ahead of the clock) raises `epoch` to
   its cutoff.
-- **RocksDB removes whole segments by mtime**, so a log written past the cutoff since its last quiet pass
-  is bounded by the cutoff. One written since a quiet pass at or past the cutoff keeps its bound: every
-  segment the prune can remove was last written before that pass. A key minted ahead of this node's
+- **RocksDB removes whole segments by mtime**, so a log written past the reach since its last quiet pass
+  is bounded by the reach. One written since a quiet pass at or past the reach keeps its bound: every
+  segment either purge can remove was last written before that pass. A key minted ahead of this node's
   clock (a peer's skew) in a segment last written before the cutoff escapes the cutoff, as it escaped
   the time-based rule; a margin above the cutoff would instead sit above a caught-up follower's
   position whenever a log has just gone idle, re-forcing the copy this record exists to avoid.
