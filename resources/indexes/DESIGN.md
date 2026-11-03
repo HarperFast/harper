@@ -556,7 +556,7 @@ Each page yields after at most 256 estimated source and companion-index point re
 
 Harper does not configure native `filterFields` or send native `filter` or `candidateIds` payloads. Candidate planning, companion-index probes and the authoritative record predicate remain Harper-owned; the wrapper's candidate limits do not cap those mechanisms.
 
-Start with `reader.search` to preserve ordinary-search admission. Fulltext 0.9.0 classifies traversal and exact-total queries as expensive, sharing process permits and per-index queues with deep/fuzzy work. Its [classifier](https://github.com/HarperFast/fulltext/blob/v0.9.0/src/protocol.rs#L650) uses the handle's query policy.
+Start with `reader.search` to preserve ordinary-search admission. Fulltext 0.9.0 classifies traversal and exact-total queries as expensive, sharing process permits and per-index queues with deep/fuzzy work. Its [classifier](https://github.com/HarperFast/fulltext/blob/v0.9.0/src/protocol.rs#L650) uses handle policy; boost inherits child cost, and optional retains required anchoring while merging bonus cost. Scoring alone does not select expensive admission.
 
 When more hits are needed, switch to `searchPage` on the same reader. Ordinary search supplies no continuation, so validate and skip its bounded prefix before processing new hits. Native order is descending score then ascending native document-ID UTF-8 bytes; disagreement, repeated boundaries or empty pages claiming continuations fail closed. The real-addon regression verifies the collectors agree across modes and page sizes.
 
