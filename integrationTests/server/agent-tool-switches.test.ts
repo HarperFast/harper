@@ -27,7 +27,6 @@ const OPERATOR_TOOL_NAMES = [
 	'harper_best_practice',
 ];
 
-/** One call per disabled group, then the answer. */
 const TOOL_CALLS = [
 	{ name: 'read_file', arguments: { root: 'config' } },
 	{ name: 'schedule_followup', arguments: { delayMs: 1000, prompt: 'again' } },
@@ -42,7 +41,6 @@ interface FakeModel {
 	close: () => Promise<void>;
 }
 
-/** An OpenAI-compatible model that makes the tool calls above in order, one per turn, then answers. */
 async function startFakeModel(): Promise<FakeModel> {
 	const requests: string[] = [];
 	const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -110,7 +108,6 @@ suite('agent operator tool groups off at boot (harper#3993)', (ctx: any) => {
 		}
 	}
 
-	/** Every call ran nothing: each tool response is the loop's unknown-tool answer, and the model was sent no such tool. */
 	function assertGroupsAbsent(session: any, requests: string[]) {
 		strictEqual(session.status, 'completed', session.lastError);
 		const results = session.messages.filter((message: any) => message.role === 'tool').map((m: any) => m.content);

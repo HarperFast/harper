@@ -31,7 +31,6 @@ export const ALL_TOOL_SWITCHES_ON: Readonly<AgentToolSwitches> = Object.freeze({
 	bestPractices: true,
 });
 
-/** Every operator-only tool name. Reserved whether or not its group is composed. */
 export const OPERATOR_TOOL_NAMES: ReadonlySet<string> = new Set([
 	...fsTools.map((tool) => tool.def.name),
 	HTTP_FETCH_TOOL_NAME,

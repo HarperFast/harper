@@ -23,9 +23,15 @@ const DELEGATE = { username: 'agent-runner', role: { permission: { operations: [
 
 function fakeOps() {
 	const make = (name) => ({ name, execute: async () => ({ ok: true, op: name }) });
-	return ['agent_prompt', 'get_agent_session', 'list_agent_sessions', 'approve_agent_action', 'cancel_agent_run'].map(
-		make
-	);
+	return [
+		'agent_prompt',
+		'get_agent_session',
+		'list_agent_sessions',
+		'approve_agent_action',
+		'cancel_agent_run',
+		'set_agent_config',
+		'get_agent_config',
+	].map(make);
 }
 
 // Wire the dispatch seams so handlers run the enforced path without booting Harper's

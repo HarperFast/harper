@@ -286,7 +286,6 @@ export function summarizeProfile(profile: any, topN: number): object {
 	return { totalMs: +totalMs.toFixed(1), sampleCount: samples.length, topFunctions };
 }
 
-/** Every inspector tool name; `composeToolset` reserves these whether or not the group is composed. */
 export const INSPECTOR_TOOL_NAMES = {
 	attach: 'inspector_attach',
 	evaluate: 'inspector_evaluate',

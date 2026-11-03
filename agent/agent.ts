@@ -142,7 +142,6 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	);
 
 	function compose(): ReturnType<typeof composeToolset> {
-		// `tools` comes from the boot config, like `httpFetchTool`: a recompose never widens the operator set.
 		return composeToolset({
 			allowDestructive: liveConfig.allowDestructive,
 			tools: config.tools,

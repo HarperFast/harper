@@ -76,7 +76,6 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 	];
 }
 
-/** The effective configuration: the boot-time keys as resolved, and the runtime-tunable keys as last set. */
 function getAgentConfig(deps: OperationDeps): AgentConfig {
 	return structuredClone(deps.getConfig());
 }
