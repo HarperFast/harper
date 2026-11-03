@@ -1822,7 +1822,7 @@ POST; requires `super_user`. Takes `database`, `table` and a proposed key-derive
 
 ### `cluster_status`
 
-Returns connection state for all cluster nodes, including per-database socket status and replication timing statistics (`lastCommitConfirmed`, `lastReceivedRemoteTime`, `lastReceivedLocalTime`). Its top-level `sharding` object reports per-database map identity and placement blockers; see [Sharding Status](../replication/clustering.md#sharding-status).
+Returns connection state for all cluster nodes, including per-database socket status and replication timing statistics (`lastCommitConfirmed`, `lastReceivedRemoteTime`, `lastReceivedLocalTime`). A socket whose base copy is not finishing also carries `stuckCopy`; see [Stuck Copies](../replication/clustering.md#stuck-copies). Its top-level `sharding` object reports per-database map identity and placement blockers; see [Sharding Status](../replication/clustering.md#sharding-status).
 
 ```json
 { "operation": "cluster_status" }
