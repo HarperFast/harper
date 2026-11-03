@@ -84,7 +84,6 @@ class FakeNativeModule {
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 8,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
@@ -557,7 +556,6 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 8,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
