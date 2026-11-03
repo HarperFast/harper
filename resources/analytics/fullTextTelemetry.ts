@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { ConfigureTelemetryOptions, FullTextTelemetry } from '@harperfast/fulltext/native';
 import { METRIC } from './metadata.ts';
+import type { NativeFullTextTelemetryHandle } from '../indexes/fullTextNativeBinding.ts';
 
 export type FullTextTelemetryPolicy = Required<ConfigureTelemetryOptions> & {
 	enabled: boolean;
 	intervalMilliseconds: number;
 };
 
-export const DEFAULT_FULL_TEXT_TELEMETRY_POLICY: Readonly<FullTextTelemetryPolicy> = Object.freeze({
+const DEFAULT_FULL_TEXT_TELEMETRY_POLICY: Readonly<FullTextTelemetryPolicy> = Object.freeze({
 	enabled: false,
 	intervalMilliseconds: 60_000,
 	histograms: false,
@@ -34,10 +35,7 @@ export function resolveFullTextTelemetryPolicy(value: unknown): FullTextTelemetr
 	return result;
 }
 
-export interface FullTextTelemetryHandle {
-	telemetry(): FullTextTelemetry;
-	configureTelemetry(options: ConfigureTelemetryOptions): void;
-}
+export type FullTextTelemetryHandle = NativeFullTextTelemetryHandle;
 
 export type FullTextTelemetrySample = {
 	index: string;
@@ -50,7 +48,7 @@ export type FullTextTelemetrySample = {
 };
 
 type Scalar = string | number | boolean | null;
-export type FullTextTelemetryRow = Record<string, Scalar>;
+type FullTextTelemetryRow = Record<string, Scalar>;
 type FlatSnapshot = { counters: Map<string, bigint>; gauges: FullTextTelemetryRow };
 type Group = {
 	index: string;
@@ -267,6 +265,10 @@ export class FullTextTelemetryCollector {
 		}
 	}
 
+	get hasPendingRows(): boolean {
+		return this.#pending.size !== 0;
+	}
+
 	takeRows(): FullTextTelemetryRow[] {
 		const rows = [...this.#pending.values()];
 		this.#pending.clear();
@@ -381,9 +383,14 @@ export class FullTextTelemetryCollector {
 		const revision = this.#revision;
 		if (this.#operator.enabled && stage !== 'closing') {
 			let newest = entry;
-			for (const candidate of entry.group.entries)
+			let activeHandles = 0;
+			let closingHandles = 0;
+			for (const candidate of entry.group.entries) {
+				if (candidate.closing) closingHandles++;
+				else activeHandles++;
 				if (!candidate.closing && candidate.flat && (newest.closing || candidate.observedAt > newest.observedAt))
 					newest = candidate;
+			}
 			const row: FullTextTelemetryRow = {
 				...newest.flat?.gauges,
 				metric: METRIC.FULL_TEXT,
@@ -397,8 +404,8 @@ export class FullTextTelemetryCollector {
 				collectionError: error ?? null,
 				droppedRows: this.#droppedRows.toString(),
 				observationAgeMilliseconds: newest.observedAt ? performance.now() - newest.observedAt : null,
-				activeHandles: [...entry.group.entries].filter((candidate) => !candidate.closing).length,
-				closingHandles: [...entry.group.entries].filter((candidate) => candidate.closing).length,
+				activeHandles,
+				closingHandles,
 				available: !error && snapshot?.available === true,
 			};
 			for (const [name, value] of entry.group.totals) row[name] = value.toString();

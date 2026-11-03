@@ -53,7 +53,7 @@ export function acceptsFullTextTelemetryRow(row: Record<string, unknown>): boole
 export function initializeFullTextTelemetry(): void {
 	if (started) return;
 	const listener = addAnalyticsListener((metrics) => {
-		if (!persistenceActive || !checkAnalyticsEnabled(false)) return;
+		if (!persistenceActive || !checkAnalyticsEnabled(false) || !fullTextTelemetryCollector.hasPendingRows) return;
 		const rows = fullTextTelemetryCollector.takeRows();
 		metrics.push(...rows);
 	});
