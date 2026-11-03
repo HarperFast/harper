@@ -158,6 +158,27 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 		});
 	});
 
+	it('rejects a matching future-dated version before reporting an update', async function () {
+		const cookie = await establishSession();
+		const id = cookie.slice(cookie.indexOf('=') + 1);
+		const future = Date.now() + 60000;
+		await Sessions.put({ id, greeting: 'future' }, { timestamp: future });
+		const response = newResponse();
+		await authentication(newRequest(cookie), async (request) => {
+			assert.ok(request.session.version >= future);
+			await assert.rejects(
+				request.session.update({ greeting: 'dropped' }, { ifVersion: request.session.version }),
+				(error) => {
+					assert.strictEqual(error.retryable, true);
+					return conflict(error);
+				}
+			);
+			return response;
+		});
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined);
+		assert.strictEqual((await Sessions.get(id)).greeting, 'future');
+	});
+
 	it('rejects a genuinely reused version even when its number matches', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		const cookie = await establishSession();
