@@ -150,7 +150,8 @@ suite('Operations allowlist in UDS mirror metadata (#3358)', { skip: skipSuite }
 
 		const stored = await sendOperation(ctx.harper, { operation: 'get_network_access', scope: 'operations' });
 		deepStrictEqual(stored.allow, ['10.0.0.0/8', '2001:db8::/32', '192.0.2.7/32']);
-		strictEqual(stored.updatedBy, ctx.harper.admin.username);
+		// authorizeLocal admits this loopback request as the local principal, not the credentialed user.
+		strictEqual(stored.updatedBy, 'local');
 	});
 
 	test('a restarted node publishes the persisted list', async () => {
