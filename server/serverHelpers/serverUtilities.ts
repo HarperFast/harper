@@ -819,6 +819,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.ENABLE_PREVIEWS, new OperationFunctionObject(previewOperations.enablePreviews));
 	opFuncMap.set(terms.OPERATIONS_ENUM.DISABLE_PREVIEWS, new OperationFunctionObject(previewOperations.disablePreviews));
 	opFuncMap.set(
+		terms.OPERATIONS_ENUM.FENCE_PREVIEW_RELEASES,
+		new OperationFunctionObject(previewOperations.fencePreviewReleases)
+	);
+	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY,
 		new OperationFunctionObject(previewOperations.getPreviewPolicy)
 	);

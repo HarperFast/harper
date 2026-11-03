@@ -413,7 +413,9 @@ test('a footer that names no authoring family cannot be counted', () => {
 
 const PIN = HEAD.slice(0, 12);
 // Each shape formatReviewCoverage in skills-internal prepush-policy.mjs emits.
+const CURRENT_HELPER_FOOTER = `<sub>Review-Coverage: authored=codex; ran=cursor-composer,claude,cursor-grok; late=cursor-grok:adjudicated; adjudicated=domain,domain(claude); blocked=gemini(auth); declined=muse; rounds=10; full=5 @ ${PIN}</sub>`;
 const HELPER_FOOTERS = [
+	CURRENT_HELPER_FOOTER,
 	`<sub>Review-Coverage: authored=claude; ran=none; rounds=1 @ ${PIN}</sub>`,
 	`Review-Coverage: authored=unknown; ran=none; rounds=1 @ ${PIN}`,
 	`<sub>Review-Coverage: authored=claude; ran=codex,gemini; declined=cursor-grok,cursor-composer,domain; rounds=2 @ ${PIN}</sub>`,
@@ -435,6 +437,80 @@ test('every helper-shaped Review-Coverage footer is enforceable', () => {
 		const r = evaluateCiCoverage(pr({ body: `Summary\r\n\r\n${footer}\r\n` }), { mode: 'enforce' });
 		assert.strictEqual(r.pass, true, footer);
 		assert.doesNotMatch(r.detail, /counts 0 toward enforcement/, footer);
+	}
+});
+
+const QUALIFIED_ADJUDICATORS = ['domain(claude)', 'domain(codex)', 'domain,domain(claude),domain(codex)'];
+const adjudicatedFooter = (adjudicated, ran = 'claude,gemini', extra = '') =>
+	`<sub>Review-Coverage: authored=codex; ran=${ran}; adjudicated=${adjudicated}; ${extra}rounds=3; full=1 @ ${PIN}</sub>`;
+
+test('qualified helper adjudicators preserve outside-family enforcement without adding coverage', () => {
+	for (const adjudicated of QUALIFIED_ADJUDICATORS) {
+		const footer = adjudicatedFooter(adjudicated);
+		assert.strictEqual(coverageFooterProblem(footer), '', footer);
+		const result = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+		assert.strictEqual(result.pass, true, footer);
+		assert.strictEqual(result.count, 2, footer);
+		assert.deepStrictEqual(result.families, ['anthropic', 'google'], footer);
+
+		const short = evaluateCiCoverage(pr({ body: adjudicatedFooter(adjudicated, 'claude,codex') }), {
+			mode: 'enforce',
+		});
+		assert.strictEqual(short.pass, false, 'adjudication and the author family cannot satisfy the floor');
+		assert.strictEqual(short.count, 1);
+		assert.deepStrictEqual(short.families, ['anthropic']);
+	}
+});
+
+test('current helper history is enforceable through evaluation and the CLI', () => {
+	assert.strictEqual(coverageFooterProblem(CURRENT_HELPER_FOOTER), '');
+	const result = evaluateCiCoverage(pr({ body: CURRENT_HELPER_FOOTER }), { mode: 'enforce' });
+	assert.strictEqual(result.pass, true);
+	assert.strictEqual(result.count, 3);
+	assert.deepStrictEqual(result.families, ['anthropic', 'cursor', 'xai']);
+	const cli = runResult({ pull_request: pr({ body: CURRENT_HELPER_FOOTER }) }, '--mode', 'enforce');
+	assert.strictEqual(cli.status, 0, cli.stderr);
+	assert.doesNotMatch(cli.stderr, /::error::/);
+});
+
+test('an opposite-family adjudicator does not supplement a single outside review', () => {
+	const footer = `<sub>Review-Coverage: authored=claude; ran=gemini; adjudicated=domain(codex); rounds=1 @ ${PIN}</sub>`;
+	assert.strictEqual(coverageFooterProblem(footer), '');
+	const result = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+	assert.strictEqual(result.pass, false);
+	assert.strictEqual(result.count, 1);
+	assert.deepStrictEqual(result.families, ['google']);
+});
+
+test('qualified adjudication rejects unknown providers, repeated labels and execution as an outside leg', () => {
+	for (const adjudicated of [
+		'domain(gemini)',
+		'domain(unknown)',
+		'domain(claude),domain(claude)',
+		'domain(Claude)',
+		'domain()',
+		'domain(claude)(x)',
+		'domain (claude)',
+		'codex',
+	]) {
+		const footer = adjudicatedFooter(adjudicated);
+		assert.notStrictEqual(coverageFooterProblem(footer), '', footer);
+		assert.strictEqual(evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' }).pass, false, footer);
+	}
+	for (const domain of ['domain', 'domain(claude)', 'domain(codex)']) {
+		const footer = adjudicatedFooter('domain(claude)', `claude,gemini,${domain}`);
+		assert.notStrictEqual(coverageFooterProblem(footer), '', footer);
+		assert.strictEqual(evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' }).pass, false, footer);
+	}
+});
+
+test('a completed qualified adjudicator clears historical blocked domain evidence', () => {
+	for (const adjudicated of QUALIFIED_ADJUDICATORS) {
+		const footer = adjudicatedFooter(adjudicated, 'claude,gemini', 'blocked=domain(timeout); ');
+		const result = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+		assert.strictEqual(result.pass, true, footer);
+		assert.strictEqual(result.adjudicatorBlocked, '', footer);
+		assert.strictEqual(result.count, 2);
 	}
 });
 
@@ -1226,4 +1302,294 @@ test('an exempt PR with a pending late leg passes without the fold advice', () =
 	assert.strictEqual(r.pass, true);
 	assert.match(r.exempt, /trivial change/);
 	assert.doesNotMatch(r.detail, /still pending/);
+});
+
+// The helper's own output (skills-internal#391 `formatReviewCoverage`) for a round left with Grok pending.
+const urgencyFooter = (urgency, ran = 'codex,gemini') =>
+	`<sub>Review-Coverage: authored=claude; ran=${ran}; pending=cursor-grok; late=cursor-grok:pending; adjudicated=domain; ${urgency ? `urgency=${urgency}; ` : ''}rounds=1 @ ${PIN}</sub>`;
+
+test('a ready PR at fast or urgent urgency passes with its late leg pending, with a notice naming the leg', () => {
+	for (const urgency of ['fast', 'urgent']) {
+		for (const footer of [
+			urgencyFooter(urgency),
+			lateFooter(`late=cursor-grok:pending; adjudicated=domain; urgency=${urgency}; `),
+			lateFooter(`pending=cursor-grok; urgency=${urgency}; `),
+		]) {
+			assert.strictEqual(coverageFooterProblem(footer), '', footer);
+			const r = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+			assert.strictEqual(r.pass, true, footer);
+			assert.strictEqual(r.compliant, true, footer);
+			assert.strictEqual(r.exempt, '', footer);
+			assert.strictEqual(r.urgency, urgency);
+			assert.strictEqual(r.pendingHeld, false);
+			assert.deepStrictEqual(r.pendingLegs, ['cursor-grok'], footer);
+			assert.match(
+				r.lateNotice,
+				new RegExp(`late review leg \`cursor-grok\` is still pending.*\`urgency=${urgency}\``)
+			);
+			assert.match(r.detail, /late review leg `cursor-grok` is still pending/);
+			assert.doesNotMatch(r.detail, /--fold-late/);
+			assert.doesNotMatch(r.summary, /late review leg pending/);
+		}
+	}
+	const two = evaluateCiCoverage(
+		pr({ body: lateFooter('late=cursor-grok:pending,cursor-composer:pending; urgency=fast; ') }),
+		{ mode: 'enforce' }
+	);
+	assert.strictEqual(two.pass, true);
+	assert.match(two.lateNotice, /late review leg `cursor-grok`, `cursor-composer` is still pending/);
+});
+
+test('without a fast or urgent segment a pending late leg still fails a ready PR', () => {
+	const r = evaluateCiCoverage(pr({ body: urgencyFooter('') }), { mode: 'enforce' });
+	assert.strictEqual(r.urgency, 'normal');
+	assert.strictEqual(r.pendingHeld, true);
+	assert.strictEqual(r.pass, false);
+	assert.strictEqual(r.lateNotice, '');
+	assert.match(
+		r.detail,
+		/late review leg `cursor-grok` is still pending in the `Review-Coverage:` footer.*--fold-late/
+	);
+});
+
+test('urgency releases only the pending hold: short coverage, a blocked adjudicator and a higher floor still fail', () => {
+	for (const urgency of ['fast', 'urgent']) {
+		for (const ran of ['gemini', 'none']) {
+			const r = evaluateCiCoverage(pr({ body: urgencyFooter(urgency, ran) }), { mode: 'enforce' });
+			assert.strictEqual(r.pass, false, `${urgency} ${ran}`);
+			assert.strictEqual(r.lateNotice, '', `${urgency} ${ran}`);
+			assert.doesNotMatch(r.detail, /still pending/, `${urgency} ${ran}`);
+		}
+		const blocked = evaluateCiCoverage(
+			pr({
+				body: lateFooter(`late=cursor-grok:pending; blocked=domain(exit--1); urgency=${urgency}; `),
+			}),
+			{ mode: 'enforce' }
+		);
+		assert.strictEqual(blocked.pass, false, urgency);
+		assert.strictEqual(blocked.lateNotice, '');
+		assert.match(blocked.summary, /adjudication blocked/);
+		const higherFloor = evaluateCiCoverage(pr({ body: urgencyFooter(urgency) }), { mode: 'enforce', required: 3 });
+		assert.strictEqual(higherFloor.pass, false, urgency);
+		assert.strictEqual(higherFloor.lateNotice, '');
+		const met = evaluateCiCoverage(pr({ body: urgencyFooter(urgency, 'codex,gemini,cursor-composer') }), {
+			mode: 'enforce',
+			required: 3,
+		});
+		assert.strictEqual(met.pass, true, urgency);
+		assert.match(met.lateNotice, /cursor-grok/);
+	}
+});
+
+const easyBody = (footer) => pr({ body: `Complexity: easy\n\n${footer}`, additions: 10, deletions: 2 });
+const easyPr = (ran, urgency) => easyBody(urgencyFooter(urgency, ran));
+
+test('the easy-diff waiver does not cover a pending late leg at fast or urgent urgency either', () => {
+	for (const urgency of ['fast', 'urgent']) {
+		const r = evaluateCiCoverage(easyPr('gemini', urgency), { mode: 'enforce' });
+		assert.strictEqual(r.pass, false, urgency);
+		assert.strictEqual(r.exempt, '');
+		assert.strictEqual(r.pendingHeld, true, 'the pending leg is what fails it');
+		assert.strictEqual(r.lateNotice, '');
+		assert.match(r.summary, /late review leg pending/);
+		assert.match(
+			r.detail,
+			/`Complexity: easy` does not waive while a late review leg is pending, at any urgency; late review leg `cursor-grok` is still pending.*--fold-late/
+		);
+		const full = evaluateCiCoverage(easyPr('codex,gemini', urgency), { mode: 'enforce' });
+		assert.strictEqual(full.pass, true, urgency);
+		assert.strictEqual(full.exempt, '', 'passes on full coverage, not on the waiver');
+		assert.match(full.lateNotice, /cursor-grok/);
+	}
+	const folded = evaluateCiCoverage(
+		pr({
+			body: `Complexity: easy\n\n<sub>Review-Coverage: authored=claude; ran=gemini; late=cursor-grok:adjudicated; urgency=fast; rounds=1 @ ${PIN}</sub>`,
+			additions: 10,
+			deletions: 2,
+		}),
+		{ mode: 'enforce' }
+	);
+	assert.strictEqual(folded.pass, true);
+	assert.match(folded.exempt, /^Complexity: easy/);
+});
+
+test('an easy PR at fast urgency that a fold would not rescue is not told to fold', () => {
+	for (const [label, footerPr] of [
+		['no outside review', easyPr('none', 'fast')],
+		[
+			'blocked adjudicator',
+			easyBody(
+				`<sub>Review-Coverage: authored=claude; ran=gemini; late=cursor-grok:pending; blocked=domain(exit--1); urgency=fast; rounds=1 @ ${PIN}</sub>`
+			),
+		],
+	]) {
+		const r = evaluateCiCoverage(footerPr, { mode: 'enforce' });
+		assert.strictEqual(r.pass, false, label);
+		assert.strictEqual(r.pendingHeld, false, label);
+		assert.doesNotMatch(r.detail, /--fold-late|does not waive while/, label);
+	}
+});
+
+test('a draft with a pending late leg still passes; its note says whether the leg holds it at ready-for-review', () => {
+	const released = (urgency) =>
+		`draft — checked again at ready-for-review; late review leg \`cursor-grok\` is still pending; \`urgency=${urgency}\` does not hold ready-for-review on it`;
+	for (const urgency of ['fast', 'urgent']) {
+		for (const ran of ['codex,gemini', 'gemini']) {
+			const r = evaluateCiCoverage(pr({ body: urgencyFooter(urgency, ran), draft: true }), { mode: 'enforce' });
+			assert.strictEqual(r.pass, true, `${urgency} ${ran}`);
+			assert.strictEqual(r.lateNotice, '');
+			assert.strictEqual(r.exempt, released(urgency), `${urgency} ${ran}`);
+		}
+		const easy = evaluateCiCoverage({ ...easyPr('gemini', urgency), draft: true }, { mode: 'enforce' });
+		assert.strictEqual(easy.pass, true);
+		assert.match(
+			easy.exempt,
+			/late review leg `cursor-grok` must be adjudicated first$/,
+			'the easy waiver needs the fold'
+		);
+	}
+	const normal = evaluateCiCoverage(pr({ body: urgencyFooter(''), draft: true }), { mode: 'enforce' });
+	assert.match(normal.exempt, /late review leg `cursor-grok` must be adjudicated first$/);
+});
+
+test('bot, external and trivial PRs stay exempt at fast urgency, without a notice', () => {
+	for (const over of [
+		{ user: { login: 'renovate[bot]', type: 'Bot' } },
+		{ author_association: 'CONTRIBUTOR' },
+		{ additions: 1, deletions: 1 },
+	]) {
+		const r = evaluateCiCoverage(pr({ body: urgencyFooter('fast'), ...over }), { mode: 'enforce' });
+		assert.strictEqual(r.pass, true, JSON.stringify(over));
+		assert.notStrictEqual(r.exempt, '');
+		assert.strictEqual(r.lateNotice, '');
+	}
+});
+
+test('a footer with no pending leg reads its urgency without a notice', () => {
+	const r = evaluateCiCoverage(pr({ body: lateFooter('late=cursor-grok:adjudicated; urgency=urgent; ') }), {
+		mode: 'enforce',
+	});
+	assert.strictEqual(r.pass, true);
+	assert.strictEqual(r.urgency, 'urgent');
+	assert.strictEqual(r.lateNotice, '');
+	assert.doesNotMatch(r.detail, /pending/);
+});
+
+test('a malformed urgency segment is a strict-format failure that cannot release the hold', () => {
+	for (const [extra, problem] of [
+		['urgency=normal; ', /has `urgency=normal`, not fast or urgent \(the helper omits the segment at normal urgency\)/],
+		['urgency=asap; ', /has `urgency=asap`, not fast or urgent/],
+		['urgency=FAST; ', /has `urgency=FAST`, not fast or urgent/],
+		['urgency=; ', /has `urgency=`, not fast or urgent/],
+		['urgency; ', /segment `urgency` the helper does not write/],
+		['urgency=fast; urgency=fast; ', /repeats `urgency=`/],
+		['urgency=fast; declined=muse; ', /has `declined=` after `urgency=`/],
+	]) {
+		const footer = lateFooter(`late=cursor-grok:pending; ${extra}`);
+		assert.match(coverageFooterProblem(footer), problem, extra);
+		const r = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+		assert.strictEqual(r.pass, false, extra);
+		assert.strictEqual(r.compliant, false, extra);
+		assert.strictEqual(r.count, 2, 'still reported');
+		assert.match(r.detail, /counts 0 toward enforcement/, extra);
+		assert.strictEqual(r.lateNotice, '', extra);
+	}
+	assert.match(
+		coverageFooterProblem(
+			`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=2; urgency=fast @ ${PIN}</sub>`
+		),
+		/has `urgency=` after `rounds=`/
+	);
+});
+
+test('only the latest footer decides the urgency', () => {
+	const later = (footer) => `${urgencyFooter('fast')}\n\nA later round:\n\n${footer}`;
+	const normal = evaluateCiCoverage(pr({ body: later(urgencyFooter('')) }), { mode: 'enforce' });
+	assert.strictEqual(normal.pass, false, 'a later normal round restores the hold');
+	assert.strictEqual(normal.pendingHeld, true);
+	const broken = evaluateCiCoverage(pr({ body: later(urgencyFooter('soon')) }), { mode: 'enforce' });
+	assert.strictEqual(broken.pass, false, 'a malformed latest footer cannot inherit the earlier urgency');
+	assert.strictEqual(broken.urgency, 'normal');
+	const fast = evaluateCiCoverage(pr({ body: `${urgencyFooter('')}\n\n${urgencyFooter('fast')}` }), {
+		mode: 'enforce',
+	});
+	assert.strictEqual(fast.pass, true);
+});
+
+test('the CLI passes a fast-urgency PR with a pending leg and annotates it with a notice', () => {
+	const result = runResult({ pull_request: pr({ body: urgencyFooter('fast') }) }, '--mode', 'enforce');
+	assert.strictEqual(result.status, 0, result.stderr);
+	const notice = result.stdout.split('\n').find((line) => line.startsWith('::notice::'));
+	assert.match(notice, /^::notice::late review leg `cursor-grok` is still pending.*`urgency=fast`/);
+	assert.doesNotMatch(result.stderr, /::(?:error|warning)::/);
+
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-urgency-'));
+	const event = path.join(dir, 'event.json');
+	const summary = path.join(dir, 'summary.md');
+	writeFileSync(event, JSON.stringify({ pull_request: pr({ body: urgencyFooter('urgent') }) }));
+	try {
+		const withSummary = spawnSync(process.execPath, [SCRIPT, '--event', event, '--mode', 'enforce'], {
+			encoding: 'utf8',
+			env: { ...CLEAN_ENV, GITHUB_STEP_SUMMARY: summary },
+		});
+		assert.strictEqual(withSummary.status, 0, withSummary.stderr);
+		const text = readFileSync(summary, 'utf8');
+		assert.match(text, /^### Cross-model review coverage — ✅$/m);
+		assert.match(text, /late review leg `cursor-grok` is still pending.*`urgency=urgent`/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('the CLI fails a fast-urgency PR that is short on coverage with the coverage remedy, not the fold remedy', () => {
+	const result = runResult({ pull_request: pr({ body: urgencyFooter('fast', 'gemini') }) }, '--mode', 'enforce');
+	assert.strictEqual(result.status, 1);
+	const error = result.stderr.split('\n').find((line) => line.startsWith('::error::'));
+	assert.match(error, /report the reviews in the PR description to pass/);
+	assert.doesNotMatch(result.stdout, /::notice::/);
+
+	const normal = runResult({ pull_request: pr({ body: urgencyFooter('') }) }, '--mode', 'enforce');
+	assert.strictEqual(normal.status, 1);
+	assert.match(normal.stderr, /`cursor-grok` is still pending.*--fold-late/);
+	assert.doesNotMatch(normal.stdout, /::notice::/);
+});
+
+test('the CLI gives an easy fast-urgency PR held by its pending leg the fold remedy', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-easy-urgency-'));
+	const event = path.join(dir, 'event.json');
+	const summary = path.join(dir, 'summary.md');
+	writeFileSync(event, JSON.stringify({ pull_request: easyPr('gemini', 'fast') }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT, '--event', event, '--mode', 'enforce'], {
+			encoding: 'utf8',
+			env: { ...CLEAN_ENV, GITHUB_STEP_SUMMARY: summary },
+		});
+		assert.strictEqual(result.status, 1);
+		const error = result.stderr.split('\n').find((line) => line.startsWith('::error::'));
+		assert.match(error, /does not waive while a late review leg is pending.*--fold-late/);
+		assert.doesNotMatch(error, /report the reviews in the PR description/);
+		assert.match(readFileSync(summary, 'utf8'), /A late review leg \(`cursor-grok`\) is still pending/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('qualified adjudication preserves urgency policy without supplying outside coverage', () => {
+	const footer = (urgency, ran = 'claude,gemini', extra = '') =>
+		`<sub>Review-Coverage: authored=codex; ran=${ran}; late=cursor-grok:pending; adjudicated=domain(claude); ${extra}${urgency ? `urgency=${urgency}; ` : ''}rounds=2 @ ${PIN}</sub>`;
+	for (const urgency of ['', 'fast', 'urgent']) {
+		const result = evaluateCiCoverage(pr({ body: footer(urgency) }), { mode: 'enforce' });
+		assert.strictEqual(result.pass, Boolean(urgency), urgency || 'normal');
+		assert.strictEqual(result.count, 2);
+		assert.strictEqual(result.pendingHeld, !urgency);
+		assert.strictEqual(result.adjudicatorBlocked, '');
+		const short = evaluateCiCoverage(pr({ body: footer(urgency, 'claude') }), { mode: 'enforce' });
+		assert.strictEqual(short.pass, false, 'urgency and adjudication cannot supply a missing reviewer');
+		assert.strictEqual(short.count, 1);
+		const historical = evaluateCiCoverage(pr({ body: footer(urgency, 'claude,gemini', 'blocked=domain(timeout); ') }), {
+			mode: 'enforce',
+		});
+		assert.strictEqual(historical.pass, Boolean(urgency));
+		assert.strictEqual(historical.adjudicatorBlocked, '');
+	}
 });

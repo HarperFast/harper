@@ -27,6 +27,7 @@ const PermissionTableResponseObject = require('#src/security/data_objects/Permis
 const PermissionAttributeResponseObject =
 	require('#src/security/data_objects/PermissionAttributeResponseObject').default;
 const { TEST_SCHEMA_OP_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
+const { HDB_ERROR_MSGS } = require('#src/utility/errors/commonErrors');
 
 // rewire() bypasses the require cache and re-executes serverUtilities' module body in an isolated
 // instance so we can reach its private initializeOperationFunctionMap(). But that module body also
@@ -607,6 +608,54 @@ describe('Test operation_authorization', function () {
 			assert.equal(result, null);
 		});
 
+		it('refuses a non-super whole-row accessor or unresolved column qualifier, but not a super user', function () {
+			for (const sql of [
+				'SELECT VALUE FROM dev.dog',
+				'SELECT ``1`` AS one FROM dev.dog',
+				'SELECT bogus.name FROM dev.dog',
+			]) {
+				const req_json = getRequestJson(TEST_JSON);
+				req_json.hdb_user.role.permission.dev.tables.dog.read = true;
+				const result = op_auth_rewire.verifyPermsAST(
+					alasql.parse(sql).statements[0],
+					req_json.hdb_user,
+					search.search.name
+				);
+				assert.equal(result instanceof PermissionResponseObject, true, sql);
+				assert.equal(result.unauthorized_access.length, 1, sql);
+
+				const super_json = getRequestJson(TEST_JSON);
+				super_json.hdb_user.role.permission.super_user = true;
+				assert.equal(
+					op_auth_rewire.verifyPermsAST(alasql.parse(sql).statements[0], super_json.hdb_user, search.search.name),
+					null,
+					sql
+				);
+			}
+		});
+
+		it('refuses a wildcard that expands into an attribute named `_`', function () {
+			const req_json = getRequestJson(TEST_JSON);
+			req_json.hdb_user.role.permission.dev.tables.dog.read = true;
+			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = ATTRIBUTE_PERMISSION_BASE(
+				['_'],
+				crud_keys.READ,
+				true
+			);
+			const attributes = global.hdb_schema.dev.dog.attributes;
+			attributes.push({ attribute: '_' });
+			try {
+				const result = op_auth_rewire.verifyPermsAST(
+					alasql.parse('SELECT * FROM dev.dog').statements[0],
+					req_json.hdb_user,
+					search.search.name
+				);
+				assert.deepEqual(result?.unauthorized_access, [HDB_ERROR_MSGS.SQL_ROW_ACCESSOR]);
+			} finally {
+				attributes.pop();
+			}
+		});
+
 		it('Test cannot delete from system table error returned', () => {
 			let ast_test = {
 				table: {
@@ -699,6 +748,50 @@ describe('Test operation_authorization', function () {
 			assert.equal(result instanceof PermissionResponseObject, true);
 			assert.equal(result.invalid_schema_items.length, 1);
 			assert.equal(result.unauthorized_access.length, 0);
+		});
+
+		it('checks a path or sub-selection by its root attribute', function () {
+			const verifyRoot = (breedReadable) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, {
+					operation: 'search_by_conditions',
+					get_attributes: ['name', { name: 'breed', select: ['name'] }],
+					conditions: [{ search_attribute: ['breed', 'name'], search_type: 'equals', search_value: 'x' }],
+				});
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: breedReadable, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			};
+			assert.equal(verifyRoot(true), null);
+			assert.deepStrictEqual(verifyRoot(false).invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+		});
+
+		it('checks the select alias the search handlers read in place of get_attributes', function () {
+			const verifySelect = (select) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, { operation: 'search_by_hash', hash_values: [1], get_attributes: ['name'], select });
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: false, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return { req_json, result: op_auth.verifyPerms(req_json, search.searchByHash.name) };
+			};
+			const { req_json, result } = verifySelect(['name', 'breed']);
+			assert.equal(result instanceof PermissionResponseObject, true);
+			assert.deepStrictEqual(result.invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+			assert.deepStrictEqual(req_json.get_attributes, ['name', 'breed']);
+			assert.equal('select' in req_json, false);
+			assert.equal(verifySelect(['name']).result, null);
 		});
 
 		it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {

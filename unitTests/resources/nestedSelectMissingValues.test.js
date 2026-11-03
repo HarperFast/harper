@@ -382,4 +382,14 @@ describe('nested select over missing relationship values', function () {
 		target.select = ['virtual', { name: 'metadata', select: ['city'] }];
 		assert.deepStrictEqual(await GetterJson.get(target), { virtual: 'computed', metadata: { city: 'Denver' } });
 	});
+	it('projects a single selection object like a single property name', function () {
+		assert.deepStrictEqual(transformForSelect({ name: 'city', select: ['zip'] })({ city: { zip: '80202', x: 1 } }), {
+			zip: '80202',
+		});
+		assert.strictEqual(transformForSelect({ name: 'city' })({ city: 'Denver' }), 'Denver');
+		assert.deepStrictEqual(transformForSelect({ name: 'city' })({ city: { zip: '80202' } }), { zip: '80202' });
+		assert.deepStrictEqual(transformForSelect([{ name: 'city' }])({ city: { zip: '80202' } }), {
+			city: { zip: '80202' },
+		});
+	});
 });

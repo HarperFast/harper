@@ -17,7 +17,13 @@ import { previousFullTextProcess } from '../../unitTests/resources/fixtures/full
 const { runtimeInfo } = native;
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'full-text-search');
-const OPTIONS = { config: { threads: { count: 2 } }, env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' } };
+const OPTIONS = {
+	config: {
+		threads: { count: 2 },
+		storage: { fullText: { query: { maxQueryTerms: 128, maxQueryClauses: 512, maxFuzzyDistance: 2 } } },
+	},
+	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
+};
 const READER = { username: 'fulltext_reader', password: 'Fulltext-reader-2855!' };
 const READER_AUTH = `Basic ${Buffer.from(`${READER.username}:${READER.password}`).toString('base64')}`;
 const PAGE_IDS = Array.from({ length: 300 }, (_, index) => `page-${String(index).padStart(3, '0')}`);
@@ -40,6 +46,30 @@ function query(value: string, condition: Record<string, unknown> = {}, options: 
 		],
 		...options,
 	};
+}
+
+async function assertOperationsQueryRejection(
+	operationsAPIURL: string,
+	authorization: string,
+	target: ReturnType<typeof query>,
+	message: string
+) {
+	const response = await fetch(operationsAPIURL, {
+		method: 'POST',
+		headers: {
+			'Authorization': authorization,
+			'Content-Type': 'application/json',
+			'Accept': 'application/x-ndjson',
+		},
+		body: JSON.stringify({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target }),
+		signal: AbortSignal.timeout(45_000),
+	});
+	const body = await response.text();
+	assert.strictEqual(response.status, 200, body);
+	assert.match(response.headers.get('content-type'), /^application\/x-ndjson(?:;|$)/);
+	assert.deepStrictEqual(body.trim().split('\n').map(JSON.parse), [
+		{ $harperStreamError: { error: 'ClientError', message, status: 400 } },
+	]);
 }
 
 suite('deployed full-text fields and native search', (ctx: ContextWithHarper) => {
@@ -147,12 +177,137 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await teardownHarper(ctx);
 	});
 
+	test('adopts host query capacity and fuzzy controls through two-worker HTTP and operations search', async () => {
+		const fixtureIds = [
+			'capacity-late',
+			...Array.from({ length: 135 }, (_, i) => `fuzzy-control-${String(i).padStart(3, '0')}`),
+		];
+		try {
+			await operation({
+				operation: 'insert',
+				schema: 'data',
+				table: 'Product',
+				records: [
+					{ id: 'capacity-late', title: 'qword064' },
+					...Array.from({ length: 135 }, (_, i) => ({
+						id: `fuzzy-control-${String(i).padStart(3, '0')}`,
+						title: 'catalog',
+					})),
+				],
+			});
+			const late = await request('/SearchProduct/', {
+				method: 'POST',
+				body: JSON.stringify(
+					query(Array.from({ length: 65 }, (_, i) => `qword${String(i).padStart(3, '0')}`).join(' '), {
+						fields: ['title'],
+					})
+				),
+			});
+			assert.deepStrictEqual(ids(late), ['capacity-late']);
+			const result = await operation({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] }, { limit: 140 }),
+			});
+			assert.strictEqual(result.length, 135);
+			const misses = await operation({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('catxxog', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
+			});
+			assert.deepStrictEqual(misses, []);
+			const traversed = await request('/SearchProduct/', {
+				method: 'POST',
+				body: JSON.stringify(
+					query(
+						'catxxog',
+						{ comparator: 'matches_fuzzy_prefix', fuzzyDistance: 2, fields: ['title'], includeHighlights: true },
+						{ limit: 130, offset: 2 }
+					)
+				),
+			});
+			assert.strictEqual(traversed.length, 130);
+			assert(
+				traversed.every((record) => record.id.startsWith('fuzzy-control-') && record.$highlights?.title?.length > 0)
+			);
+			for (const controls of [{ fuzzyDistance: '2' }, { fuzzyTranspositions: 'false' }]) {
+				const response = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						operation: 'search_by_conditions',
+						schema: 'data',
+						table: 'Product',
+						...query('catalog', { comparator: 'matches_fuzzy', ...controls }),
+					}),
+					signal: AbortSignal.timeout(45000),
+				});
+				assert.strictEqual(response.status, 400, await response.text());
+			}
+		} finally {
+			await operation({
+				operation: 'delete',
+				schema: 'data',
+				table: 'Product',
+				ids: fixtureIds,
+			});
+		}
+	});
+
+	test('enforces compiled clause capacity independently of per-leaf analyzed terms through both public paths', async () => {
+		const target = (count: number) => ({
+			operator: 'or',
+			conditions: Array.from({ length: count }, () => query('waterproof', { fields: ['title'] }).conditions[0]),
+		});
+		// Native accounting charges each OR child plus its single-field term: 256 * 2 = 512.
+		for (const count of [129, 256, 257]) {
+			const clauses = count * 2;
+			const expectedStatus = clauses <= 512 ? 200 : 400;
+			const targetQuery = target(count);
+			await assert.doesNotReject(async () => {
+				const records = await search(targetQuery, authorization, expectedStatus);
+				if (expectedStatus === 200) assert.deepStrictEqual(ids(records), ['one', 'two']);
+			}, `HTTP compiled-clause boundary: ${clauses} clauses, expected ${expectedStatus}`);
+			await assert.doesNotReject(
+				async () => {
+					if (expectedStatus === 400)
+						await assertOperationsQueryRejection(
+							ctx.harper.operationsAPIURL,
+							authorization,
+							targetQuery,
+							"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
+						);
+					else {
+						const records = await operation({
+							operation: 'search_by_conditions',
+							schema: 'data',
+							table: 'Product',
+							...targetQuery,
+						});
+						assert.deepStrictEqual(ids(records), ['one', 'two']);
+					}
+				},
+				`Operations compiled-clause boundary: ${clauses} clauses, expected rejection: ${expectedStatus === 400}`
+			);
+		}
+		assert.deepStrictEqual(ids(await search(query('waterproof'))), ['one', 'two']);
+		assert.deepStrictEqual(
+			ids(
+				await operation({ operation: 'search_by_conditions', schema: 'data', table: 'Product', ...query('waterproof') })
+			),
+			['one', 'two']
+		);
+	});
+
 	test('loads the pinned native package and exposes a ready index without a stored virtual attribute', async () => {
 		const info = await runtimeInfo();
 		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
 		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
 		assert.strictEqual(info.mutationBatchApiVersion, 5);
-		assert.strictEqual(info.queryApiVersion, 4);
+		assert.strictEqual(info.nativeAbiVersion, 13);
+		assert.strictEqual(info.queryApiVersion, 7);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');
@@ -849,4 +1004,96 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			}
 		}
 	);
+});
+
+suite('deployed full-text default query policy', (ctx: ContextWithHarper) => {
+	let authorization: string;
+
+	async function search(target: ReturnType<typeof query>, operations: boolean, expectedStatus = 200) {
+		const response = await fetch(operations ? ctx.harper.operationsAPIURL : `${ctx.harper.httpURL}/SearchProduct/`, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify(
+				operations ? { operation: 'search_by_conditions', schema: 'data', table: 'Product', ...target } : target
+			),
+			signal: AbortSignal.timeout(45_000),
+		});
+		const text = await response.text();
+		assert.strictEqual(response.status, expectedStatus, text);
+		return JSON.parse(text);
+	}
+
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { threads: { count: 2 } }, env: OPTIONS.env });
+		authorization = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
+		const response = await fetch(`${ctx.harper.httpURL}/Product/default-policy`, {
+			method: 'PUT',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: 'Waterproof shoes' }),
+			signal: AbortSignal.timeout(45_000),
+		});
+		assert.strictEqual(response.status, 204, await response.text());
+		const deadline = Date.now() + 30_000;
+		let state: string;
+		do {
+			const description = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ operation: 'describe_table', schema: 'data', table: 'Product' }),
+				signal: AbortSignal.timeout(45_000),
+			});
+			const body = await description.text();
+			assert.strictEqual(description.status, 200, body);
+			state = JSON.parse(body).full_text_indexes[0].readiness.state;
+			if (state === 'ready') return;
+			assert.notStrictEqual(state, 'unavailable', 'Product full-text index is unavailable');
+			await delay(50);
+		} while (Date.now() < deadline);
+		assert.strictEqual(state, 'ready', 'Product full-text index did not become ready');
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('rejects distance two by default and recovers with valid fuzzy and ordinary searches', async () => {
+		for (const operations of [false, true]) {
+			const rejected = query('waterprof', { comparator: 'matches_fuzzy', fuzzyDistance: 2, fields: ['title'] });
+			if (operations)
+				await assertOperationsQueryRejection(
+					ctx.harper.operationsAPIURL,
+					authorization,
+					rejected,
+					'Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance'
+				);
+			else await search(rejected, false, 400);
+			assert.deepStrictEqual(
+				ids(
+					await search(
+						query('waterprof', { comparator: 'matches_fuzzy', fuzzyDistance: 1, fields: ['title'] }),
+						operations
+					)
+				),
+				['default-policy']
+			);
+			assert.deepStrictEqual(ids(await search(query('waterproof'), operations)), ['default-policy']);
+		}
+	});
+
+	test('accepts 64 analyzed terms and rejects 65 with implied query defaults', async () => {
+		const accepted = query([...Array.from({ length: 63 }, (_, index) => `term${index}`), 'waterproof'].join(' '), {
+			fields: ['title'],
+		});
+		for (const operations of [false, true])
+			assert.deepStrictEqual(ids(await search(accepted, operations)), ['default-policy']);
+		const target = query(Array.from({ length: 65 }, (_, index) => `term${index}`).join(' '), { fields: ['title'] });
+		await search(target, false, 400);
+		await assertOperationsQueryRejection(
+			ctx.harper.operationsAPIURL,
+			authorization,
+			target,
+			"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
+		);
+		assert.deepStrictEqual(ids(await search(query('waterproof'), true)), ['default-policy']);
+	});
 });

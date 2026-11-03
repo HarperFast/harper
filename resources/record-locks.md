@@ -1032,13 +1032,15 @@ of scope here.
 
 - `DelegationRequest.requestId` is monotonic per requesting thread and echoed on the reply. The home
   answers the request that minted its current grant, delivered again, with the _same_ token and the
-  remaining lease, so the delegate's token and the home's never diverge. A request that no longer
+  remaining lease, so the delegate's token and the home's never diverge — also while a contender's
+  recall of that grant is in flight or confirmed: a delegate whose first delivery's reply went nowhere
+  learns the token only from this answer, and hands it back. A request that no longer
   matches a grant is checked against a 1024-id sliding window per `(database, requester, delegate
 epoch)`: an id already seen, or older than the window, is `stale` — never a fresh grant nobody is
   waiting for. The window admits an older unseen id, since ids are per thread and requests for
   different keys reorder freely, but not one older than the newest it admitted for the _same_ key:
-  the requester waits only on its latest request for a key, so that one is `stale` whether the grant
-  it produced is still held, recalled to a contender, or released (harper#3788). `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
+  the requester waits only on its latest request for a key, so an older one is `stale` whether the
+  grant it produced is still held, recalled to a contender, or released (harper#3788). `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
   epoch's replay never retries) and ends 503. The requester discards a reply whose echo is not its
   outstanding request, handing back anything it granted. The window lives on the owner thread like the
   grants it protects; a replayed id from a _live_ epoch across a home's handoff is bounded by the
@@ -1511,7 +1513,7 @@ feature that has not yet been measured.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
 > is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is super-user only — `server/REST.ts`
-> answers 403 to anyone else ([replication directives](DESIGN.md#x-replicate-to-and-the-replicatetoreplicatedconfirmation-operation-fields-are-super-user-only-gated-where-they-enter-serverrestts-verifyperms)). And where it is
+> answers 403 to anyone else ([replication directives](DESIGN.md#replication-directives-are-super-user-only-gated-where-they-enter)). And where it is
 > legitimately available it is a **residency** directive before it is a
 > confirmation knob: absent a `getResidencyById` function, which short-circuits ahead of it
 > (`getResidency` in `resources/Table.ts`), a numeric value sets residency to `[self, ...N nodes]` and truncates

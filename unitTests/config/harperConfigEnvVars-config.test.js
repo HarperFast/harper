@@ -156,6 +156,37 @@ describe('HARPER_CONFIG', function () {
 			applyRuntimeEnvConfig(fileConfig, testRoot);
 			assert.strictEqual(fileConfig.http.port, 9925, 'original restored after both vars gone');
 		});
+
+		it('wins over install userPaths during install and runtime boots while userPaths beats HARPER_DEFAULT_CONFIG', function () {
+			const prepareRuntimeEnvConfig = harperConfigEnvVars.__get__('prepareRuntimeEnvConfig');
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' }, http: { port: 7777 } });
+			process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+
+			const fileConfig = { storage: { engine: 'rocksdb' }, http: { port: 8080 } };
+			const { commitState } = prepareRuntimeEnvConfig(fileConfig, testRoot, {
+				isInstall: true,
+				userPaths: ['storage.engine', 'http.port'],
+			});
+			commitState();
+
+			assert.strictEqual(fileConfig.storage.engine, 'lmdb', 'HARPER_CONFIG wins over userPaths during install');
+			assert.strictEqual(fileConfig.http.port, 8080, 'userPaths wins over HARPER_DEFAULT_CONFIG during install');
+			assert.strictEqual(readState().sources['storage.engine'], 'HARPER_CONFIG');
+			assert.strictEqual(readState().originalValues['storage.engine'], 'rocksdb');
+			assert.strictEqual(readState().sources['http.port'], 'user');
+
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.storage.engine, 'lmdb', 'HARPER_CONFIG stays lmdb on runtime boot');
+			assert.strictEqual(fileConfig.http.port, 8080, 'HARPER_DEFAULT_CONFIG still yields to user');
+
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(
+				fileConfig.storage.engine,
+				'rocksdb',
+				'user-authored original restored when HARPER_CONFIG removed'
+			);
+		});
 	});
 
 	describe('deletion / cleanup', function () {
@@ -320,13 +351,13 @@ describe('HARPER_CONFIG', function () {
 	});
 
 	describe('individual env var interaction', function () {
-		it('does NOT filter individual args against HARPER_CONFIG (SET-only filtering)', function () {
+		it('filters individual args against HARPER_CONFIG (reasserting config layer)', function () {
 			process.env.HARPER_CONFIG = JSON.stringify({ operationsApi: { network: { port: 9925 } } });
 
 			const args = { operationsapi_network_port: '9930', rootpath: '/y' };
 			const filtered = filterArgsAgainstRuntimeConfig(args);
 
-			assert.deepStrictEqual(filtered, args, 'individual env vars win over HARPER_CONFIG');
+			assert.deepStrictEqual(filtered, { rootpath: '/y' }, 'HARPER_CONFIG wins over individual env vars');
 		});
 	});
 

@@ -170,13 +170,7 @@ describe.skip('Test installer module', () => {
 	});
 
 	it('Test createConfigFile assigns all the args and calls createConfig then init', async () => {
-		const expected_args = {
-			node_name: 'dog1',
-			clustering: 'true',
-			ROOTPATH: 'user/unit/test',
-			OPERATIONSAPI_NETWORK_PORT: '8888',
-		};
-		const create_config_file_stub = sandbox.stub(config_utils, 'createConfigFile');
+		const write_staged_config_stub = sandbox.stub(config_utils, 'writeStagedInstallConfig');
 		// not reliably reset
 		//const env_mng_init_stub = sandbox.stub(env_manager, 'initSync');
 		process.env.CLUSTERING = 'true';
@@ -185,28 +179,32 @@ describe.skip('Test installer module', () => {
 			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
+		const stageInstallConfig = installer.__get__('stageInstallConfig');
 		const createConfigFile = installer.__get__('createConfigFile');
-		await createConfigFile(fake_install_params);
+		const staged = stageInstallConfig(fake_install_params);
+		await createConfigFile(staged);
 
-		expect(create_config_file_stub.args[0][0]).to.eql(expected_args);
+		expect(write_staged_config_stub.args[0][0]).to.equal(staged);
+		expect(write_staged_config_stub.args[0][1]).to.be.undefined;
 		//expect(env_mng_init_stub.called).to.be.true;
 
 		delete process.env.CLUSTERING;
 		delete process.env.NODE_NAME;
-		create_config_file_stub.restore();
+		write_staged_config_stub.restore();
 	});
 
 	// this test does reliably wrap stubs
 	it.skip('Test createConfigFile calls rollback if create config throws error', async () => {
 		const rollback_stub = sandbox.stub();
 		const rollback_rw = installer.__set__('rollbackInstall', rollback_stub);
-		sandbox.stub(config_utils, 'createConfigFile').throws('Error creating config file');
+		sandbox.stub(config_utils, 'writeStagedInstallConfig').throws('Error creating config file');
 		const fake_install_params = {
 			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
+		const stageInstallConfig = installer.__get__('stageInstallConfig');
 		const createConfigFile = installer.__get__('createConfigFile');
-		await createConfigFile(fake_install_params);
+		await createConfigFile(stageInstallConfig(fake_install_params));
 		expect(rollback_stub.args[0][0].name).equal('Error creating config file');
 		rollback_rw();
 	});
@@ -585,4 +583,708 @@ describe('resolveInstallDestination', () => {
 		const defaultRoot = path.join(os.homedir(), 'hdb');
 		assert.equal(resolveInstallDestination(defaultRoot), defaultRoot);
 	});
+});
+
+describe('install storage.engine resolution', () => {
+	const realInstaller = require('#js/utility/install/installer');
+	const run_rw = rewire('#js/bin/run');
+	const initialize = run_rw.__get__('initialize');
+	const PROCESS_EVENTS = ['unhandledRejection', 'exit', 'SIGINT', 'SIGQUIT', 'SIGTERM'];
+	const {
+		closeDatabase,
+		databases,
+		getDatabases,
+		getRocksCompression,
+		resetDatabases,
+		resetRocksCompression,
+	} = require('#js/resources/databases');
+	const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
+	const initPaths = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
+	const env_manager = require('#js/utility/environment/environmentManager');
+	const hdbTerms = require('#js/utility/hdbTerms');
+	const hdb_utils = require('#js/utility/common_utils');
+	const keys = require('#js/security/keys');
+	const testUtils = require('../testUtils');
+	const sinon = require('sinon');
+	const crypto = require('node:crypto');
+	const ENV_KEYS = [
+		'HARPER_SET_CONFIG',
+		'HARPER_CONFIG',
+		'HARPER_DEFAULT_CONFIG',
+		'HDB_CONFIG',
+		'STORAGE_ENGINE',
+		'HARPER_STORAGE_ENGINE',
+		'STORAGE_COMPRESSION',
+		'STORAGE_ROCKS_COMPRESSION',
+		'DEFAULTS_MODE',
+		'THREADS_COUNT',
+		'HDB_ROOT',
+		'ROOTPATH',
+		'HDB_ADMIN_USERNAME',
+		'HDB_ADMIN_PASSWORD',
+	];
+
+	let sandbox;
+	let tempBaseDir;
+	let savedEnv;
+	let savedArgv;
+	let savedSystemDb;
+	let savedRocksCompression;
+
+	async function runBootInitialize() {
+		const beforeListeners = new Map(PROCESS_EVENTS.map((ev) => [ev, new Set(process.listeners(ev))]));
+		try {
+			await initialize();
+		} finally {
+			for (const [ev, existing] of beforeListeners) {
+				for (const listener of process.listeners(ev)) {
+					if (!existing.has(listener)) {
+						process.removeListener(ev, listener);
+					}
+				}
+			}
+		}
+	}
+
+	async function closeSystemDatabase() {
+		const systemTables = getDatabases().system;
+		if (systemTables && systemTables !== savedSystemDb) {
+			for (const table of Object.values(systemTables)) {
+				if (table?.dbisDB && table.dbisDB.status !== 'closed') {
+					await table.dbisDB.close?.();
+				}
+			}
+			await closeDatabase('system');
+		}
+	}
+
+	before(() => {
+		setAnalyticsEnabled(false);
+		savedSystemDb = databases.system;
+		if (savedSystemDb) {
+			delete databases.system;
+		}
+	});
+
+	after(() => {
+		if (savedSystemDb) {
+			Object.defineProperty(databases, 'system', {
+				value: savedSystemDb,
+				configurable: true,
+			});
+			resetDatabases();
+		}
+		setAnalyticsEnabled(env_manager.get(hdbTerms.CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1);
+	});
+
+	function assertInstalledSystemEngine(rootPath, expectedEngine, expectedOptions = {}) {
+		const { compression = 'kLZ4Compression', storageDir = path.join(rootPath, 'database') } = expectedOptions;
+		const lmdbFile = path.join(storageDir, 'system.mdb');
+		const rocksSystemDir = path.join(storageDir, 'system');
+		const rocksCurrent = path.join(rocksSystemDir, 'CURRENT');
+		if (expectedEngine === 'lmdb') {
+			assert.strictEqual(fs.existsSync(lmdbFile), true, `Expected ${lmdbFile} to exist for lmdb install`);
+			assert.strictEqual(fs.existsSync(rocksCurrent), false, `Expected ${rocksCurrent} not to exist for lmdb install`);
+			assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'lmdb');
+		} else if (expectedEngine === 'rocksdb') {
+			assert.strictEqual(fs.existsSync(rocksCurrent), true, `Expected ${rocksCurrent} to exist for rocksdb install`);
+			assert.strictEqual(fs.existsSync(lmdbFile), false, `Expected ${lmdbFile} not to exist for rocksdb install`);
+			assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE) ?? 'rocksdb', 'rocksdb');
+			const optionsFiles = fs
+				.readdirSync(rocksSystemDir)
+				.filter((name) => name.startsWith('OPTIONS-'))
+				.sort();
+			assert.ok(optionsFiles.length > 0, `Expected OPTIONS-* file in ${rocksSystemDir}`);
+			const latestOptions = fs.readFileSync(path.join(rocksSystemDir, optionsFiles[optionsFiles.length - 1]), 'utf8');
+			const compressionLines = latestOptions
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.filter((line) => line.startsWith('compression='));
+			assert.ok(
+				compressionLines.length > 0 && compressionLines.every((line) => line === `compression=${compression}`),
+				`Expected all compression= lines in ${rocksSystemDir}/${optionsFiles[optionsFiles.length - 1]} to equal compression=${compression}, got: ${compressionLines.join(', ')}`
+			);
+		} else {
+			throw new Error(`Unexpected engine: ${expectedEngine}`);
+		}
+		config_utils.initConfig(true);
+		assert.strictEqual(
+			env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE) ?? 'rocksdb',
+			expectedEngine,
+			'Subsequent initConfig(true) must resolve the same storage.engine as first-boot database creation'
+		);
+	}
+
+	beforeEach(async () => {
+		savedRocksCompression = getRocksCompression();
+		sandbox = sinon.createSandbox();
+		tempBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-engine-'));
+		const fakeHome = path.join(tempBaseDir, 'home');
+		fs.mkdirSync(fakeHome, { recursive: true });
+		sandbox.stub(os, 'homedir').returns(fakeHome);
+		sandbox.stub(hdb_utils, 'getHomeDir').returns(fakeHome);
+		sandbox.stub(keys, 'generateCertsKeys').resolves();
+		sandbox.stub(keys, 'reviewSelfSignedCert').resolves();
+		sandbox.stub(crypto, 'generateKeyPairSync').returns({
+			privateKey: 'test-private-key',
+			publicKey: 'test-public-key',
+		});
+
+		savedEnv = {};
+		for (const k of ENV_KEYS) {
+			savedEnv[k] = process.env[k];
+			delete process.env[k];
+		}
+		savedArgv = process.argv.slice();
+		process.argv = process.argv.slice(0, 2);
+		hdb_utils.resetNoBootFileCache();
+
+		await closeSystemDatabase();
+		env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
+		env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, tempBaseDir);
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+		resetDatabases();
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
+		resetRocksCompression();
+		initPaths.resetPaths();
+	});
+
+	afterEach(async () => {
+		try {
+			await closeSystemDatabase();
+		} finally {
+			if (savedEnv) {
+				for (const k of ENV_KEYS) {
+					if (savedEnv[k] === undefined) {
+						delete process.env[k];
+					} else {
+						process.env[k] = savedEnv[k];
+					}
+				}
+			}
+			if (savedArgv) {
+				process.argv = savedArgv;
+			}
+			hdb_utils.resetNoBootFileCache();
+			if (sandbox) {
+				sandbox.restore();
+			}
+			realInstaller.setIgnoreExisting(false);
+			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, undefined);
+			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
+			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
+			initPaths.resetPaths();
+			// Earlier files in this process leave the test system database open under their codec, and
+			// RocksDB rejects a reopen under a different one.
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, savedRocksCompression);
+			resetRocksCompression();
+			testUtils.setupTestDBPath();
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
+			resetRocksCompression();
+			env_manager.initSync(true);
+			hdb_logger.initLogSettings(true);
+			if (tempBaseDir) {
+				fs.rmSync(tempBaseDir, { recursive: true, force: true });
+			}
+		}
+	});
+
+	async function runInstall() {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		process.env.ROOTPATH = rootPath;
+		process.env.HDB_ADMIN_USERNAME = 'HDB_ADMIN';
+		process.env.HDB_ADMIN_PASSWORD = 'password1234';
+		await realInstaller.install();
+		return rootPath;
+	}
+
+	it('defaults to rocksdb when no storage engine is configured', async () => {
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'rocksdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HARPER_SET_CONFIG={"storage":{"engine":"lmdb"}} during install', async () => {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HARPER_CONFIG={"storage":{"engine":"lmdb"}} during install', async () => {
+		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HARPER_DEFAULT_CONFIG={"storage":{"engine":"lmdb"}} during install', async () => {
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HDB_CONFIG pointing at a YAML file with storage.engine: lmdb during install', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+		assert.strictEqual(
+			fs.existsSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE)),
+			true,
+			'Should materialize harper-config.yaml at settings_path when HDB_CONFIG points outside rootPath'
+		);
+	});
+
+	it('preserves unmapped component blocks in HDB_CONFIG during install', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		fs.mkdirSync(rootPath, { recursive: true });
+		const rootConfigPath = path.join(rootPath, hdbTerms.HDB_CONFIG_FILE);
+		fs.writeFileSync(
+			rootConfigPath,
+			'storage:\n  engine: lmdb\nrest: true\nmyCustomComponent:\n  package: "@harperdb/custom"\n',
+			'utf8'
+		);
+		process.env.HDB_CONFIG = rootConfigPath;
+		await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const finalYaml = fs.readFileSync(rootConfigPath, 'utf8');
+		assert.ok(finalYaml.includes('myCustomComponent:'), 'Expected unmapped component block to be preserved');
+		assert.ok(finalYaml.includes('@harperdb/custom'), 'Expected custom component package to be preserved');
+		assert.strictEqual(
+			fs.existsSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE)),
+			false,
+			'Should not create an unused harper-config.yaml when HDB_CONFIG points at harperdb-config.yaml inside rootPath'
+		);
+	});
+
+	it('honours CLI/prompt STORAGE_ENGINE=lmdb during install', async () => {
+		process.env.STORAGE_ENGINE = 'lmdb';
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_SET_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb', async () => {
+		process.env.STORAGE_ENGINE = 'rocksdb';
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb across install and subsequent boots', async () => {
+		process.env.STORAGE_ENGINE = 'rocksdb';
+		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const updateSpy = sandbox.spy(config_utils, 'updateConfigValue');
+		await runBootInitialize();
+		for (const call of updateSpy.getCalls()) {
+			assert.strictEqual(call.args[2]?.storage_engine, undefined, 'HARPER_CONFIG should filter STORAGE_ENGINE on run');
+		}
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('auto-installs via bin/run.ts initialize() when not installed and skips redundant updateConfigValue via installedDuringInit', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		process.env.ROOTPATH = rootPath;
+		process.env.HDB_ADMIN_USERNAME = 'HDB_ADMIN';
+		process.env.HDB_ADMIN_PASSWORD = 'password1234';
+		process.env.STORAGE_ENGINE = 'lmdb';
+		const updateSpy = sandbox.spy(config_utils, 'updateConfigValue');
+		await runBootInitialize();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const cliEnvUpdateCalls = updateSpy.getCalls().filter((call) => call.args[3] === true);
+		assert.strictEqual(
+			cliEnvUpdateCalls.length,
+			0,
+			'installedDuringInit should prevent redundant parsedArgs updateConfigValue after auto-install'
+		);
+	});
+
+	it('resolves CLI STORAGE_ENGINE=lmdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"rocksdb"}} consistently to lmdb', async () => {
+		process.env.STORAGE_ENGINE = 'lmdb';
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves HDB_CONFIG storage.engine=lmdb + HARPER_SET_CONFIG={"storage":{"engine":"rocksdb"}} consistently to rocksdb', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'rocksdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves HDB_CONFIG storage.engine=lmdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"rocksdb"}} consistently to lmdb', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('preserves HDB_CONFIG operationsApi.network, node.hostname, and comments without flattenConfig corruption', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(
+			externalConfigPath,
+			[
+				'# Custom HTTP settings',
+				'http:',
+				'  port: 8080',
+				'  securePort: null',
+				'operationsApi:',
+				'  network:',
+				'    # Keep ops API on TLS 9925 only',
+				'    securePort: 9925',
+				'node:',
+				'  hostname: custom-node',
+				'storage:',
+				'  engine: lmdb',
+				'',
+			].join('\n'),
+			'utf8'
+		);
+		process.env.HDB_CONFIG = externalConfigPath;
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const writtenPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
+		const writtenRaw = fs.readFileSync(writtenPath, 'utf8');
+		const writtenParsed = YAML.parse(writtenRaw);
+		assert.strictEqual(writtenParsed.http.port, 8080);
+		assert.strictEqual(writtenParsed.http.securePort, null);
+		assert.strictEqual(writtenParsed.operationsApi.network.port, null);
+		assert.strictEqual(writtenParsed.operationsApi.network.securePort, 9925);
+		assert.strictEqual(writtenParsed.node.hostname, 'custom-node');
+		assert.ok(writtenRaw.includes('# Custom HTTP settings'), 'Expected HTTP comment to be preserved');
+		assert.ok(writtenRaw.includes('# Keep ops API on TLS 9925 only'), 'Expected ops API comment to be preserved');
+	});
+
+	it('honours HARPER_SET_CONFIG={"storage":{"rocks":{"compression":"zstd"}}} on a RocksDB install and persists it', async () => {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { rocks: { compression: 'zstd' } } });
+		const rootPath = await runInstall();
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION), 'zstd');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_rocks_compression, undefined);
+		assertInstalledSystemEngine(rootPath, 'rocksdb', { compression: 'kZSTD' });
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION), 'zstd');
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(writtenParsed.storage.rocks.compression, 'zstd');
+	});
+
+	it('coerces CLI/env STORAGE_COMPRESSION=false to boolean false when staging before mountHdb and persists boolean false', async () => {
+		process.env.STORAGE_COMPRESSION = 'false';
+		const rootPath = await runInstall();
+
+		assert.strictEqual(
+			env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION),
+			false,
+			'Active config STORAGE_COMPRESSION must be coerced to boolean false, not raw string "false"'
+		);
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_compression, undefined);
+		assertInstalledSystemEngine(rootPath, 'rocksdb', { compression: 'kNoCompression' });
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(writtenParsed.storage.compression, false);
+		config_utils.initConfig(true);
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION), false);
+	});
+
+	it('creates system database at custom storage.path from HARPER_SET_CONFIG and persists storage.path', async () => {
+		const customStorageDir = path.join(tempBaseDir, 'custom-storage');
+		fs.mkdirSync(customStorageDir, { recursive: true });
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { path: customStorageDir } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'rocksdb', { storageDir: customStorageDir });
+		assert.strictEqual(
+			fs.existsSync(path.join(rootPath, 'database', 'system', 'CURRENT')),
+			false,
+			'Default <rootPath>/database/system should not be created when custom storage.path is configured'
+		);
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(writtenParsed.storage.path, customStorageDir);
+	});
+
+	it('rejects a nonexistent storage.path before mountHdb creates tables or directories there', async () => {
+		const missingStorageDir = path.join(tempBaseDir, 'nonexistent-storage-dir');
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { path: missingStorageDir } });
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		assert.strictEqual(
+			fs.existsSync(missingStorageDir),
+			false,
+			'Nonexistent storage.path must not be created by mountHdb/openRocksDatabase before validation rejects it'
+		);
+		assert.strictEqual(
+			fs.existsSync(path.join(tempBaseDir, 'hdb')),
+			false,
+			'Expected install rootPath to be removed during rollback'
+		);
+	});
+
+	it('allows HARPER_DEFAULT_CONFIG to override un-authored dev mode defaults while yielding to explicit CLI/env args', async () => {
+		process.env.DEFAULTS_MODE = 'dev';
+		process.env.THREADS_COUNT = '2';
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+			threads: { count: 4 },
+			logging: { level: 'debug' },
+			storage: { engine: 'lmdb' },
+		});
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(
+			writtenParsed.logging.level,
+			'debug',
+			'HARPER_DEFAULT_CONFIG should override un-authored DEV_MODE_CONFIG logging.level default ("info")'
+		);
+		assert.strictEqual(
+			writtenParsed.threads.count,
+			2,
+			'Explicit CLI/env THREADS_COUNT=2 should still take precedence over HARPER_DEFAULT_CONFIG threads.count=4'
+		);
+		assert.strictEqual(
+			writtenParsed.localStudio.enabled,
+			true,
+			'Un-overridden DEV_MODE_CONFIG defaults should still be preserved'
+		);
+	});
+
+	it('keeps applications omitted for a dev mode install from an HDB_CONFIG template without it', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		process.env.DEFAULTS_MODE = 'dev';
+		const rootPath = await runInstall();
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(Object.hasOwn(writtenParsed, 'applications'), false);
+		assert.strictEqual(writtenParsed.localStudio.enabled, true);
+	});
+
+	it('restores a pre-seeded HDB_CONFIG and preserves pre-existing files inside rootPath on rollback via backup rename or writeFileSync fallback', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		const preExistingComponentFile = path.join(rootPath, 'components', 'my-app', 'index.js');
+		fs.mkdirSync(path.dirname(preExistingComponentFile), { recursive: true });
+		fs.writeFileSync(preExistingComponentFile, 'export default {};\n', 'utf8');
+		const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
+		const originalContent = 'storage:\n  engine: lmdb\n# pre-seeded root config\n';
+		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
+		process.env.HDB_CONFIG = rootConfigPath;
+
+		const origCopyFileSync = fs.copyFileSync;
+		sandbox.stub(fs, 'copyFileSync').callsFake((src, dest, ...rest) => {
+			if (String(dest).includes('.install-backup-')) {
+				throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+			}
+			return origCopyFileSync.call(fs, src, dest, ...rest);
+		});
+		sandbox.stub(config_utils, 'writeStagedInstallConfig').callsFake(() => {
+			fs.writeFileSync(rootConfigPath, 'corrupted: true\n', 'utf8');
+			throw new Error('simulated writeStagedInstallConfig failure');
+		});
+		const enospcErr = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+		sandbox.stub(config_utils, 'atomicWriteFile').throws(enospcErr);
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		assert.strictEqual(fs.existsSync(rootConfigPath), true, 'Expected pre-seeded root HDB_CONFIG to be preserved');
+		assert.strictEqual(
+			fs.readFileSync(rootConfigPath, 'utf8'),
+			originalContent,
+			'Expected pre-seeded root HDB_CONFIG content to be restored via writeFileSync fallback'
+		);
+		assert.strictEqual(
+			fs.readFileSync(preExistingComponentFile, 'utf8'),
+			'export default {};\n',
+			'Expected pre-existing operator component file inside rootPath to survive rollback'
+		);
+		assert.deepStrictEqual(
+			fs.readdirSync(rootPath).sort(),
+			['components', hdbTerms.HARPER_CONFIG_FILE].sort(),
+			'Expected only pre-existing entries and restored root config file to remain in rootPath after rollback'
+		);
+	});
+
+	it('preserves pre-existing operator files inside rootPath on rollback even when HDB_CONFIG points outside rootPath', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		const preExistingComponentFile = path.join(rootPath, 'components', 'my-app', 'index.js');
+		fs.mkdirSync(path.dirname(preExistingComponentFile), { recursive: true });
+		fs.writeFileSync(preExistingComponentFile, 'export default {};\n', 'utf8');
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+
+		sandbox
+			.stub(config_utils, 'writeStagedInstallConfig')
+			.throws(new Error('simulated writeStagedInstallConfig failure'));
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		assert.strictEqual(
+			fs.readFileSync(preExistingComponentFile, 'utf8'),
+			'export default {};\n',
+			'Expected pre-existing operator component file inside rootPath to survive rollback'
+		);
+		assert.deepStrictEqual(
+			fs.readdirSync(rootPath),
+			['components'],
+			'Expected install-created directories (database, keys, log, backup) to be removed while preserving pre-existing entries'
+		);
+	});
+
+	it('retains the .install-backup file in rootPath on rollback when rename and in-memory restore writes all fail', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		fs.mkdirSync(rootPath, { recursive: true });
+		const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
+		const originalContent = 'storage:\n  engine: lmdb\n# pre-seeded root config\n';
+		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
+		process.env.HDB_CONFIG = rootConfigPath;
+
+		sandbox.stub(config_utils, 'writeStagedInstallConfig').callsFake(() => {
+			fs.writeFileSync(rootConfigPath, 'corrupted: true\n', 'utf8');
+			throw new Error('simulated writeStagedInstallConfig failure');
+		});
+		const origRenameSync = fs.renameSync;
+		sandbox.stub(fs, 'renameSync').callsFake((src, dest) => {
+			if (String(src).includes('.install-backup-')) {
+				throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+			}
+			return origRenameSync.call(fs, src, dest);
+		});
+		const enospcErr = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+		sandbox.stub(config_utils, 'atomicWriteFile').throws(enospcErr);
+		const origWriteFileSync = fs.writeFileSync;
+		sandbox.stub(fs, 'writeFileSync').callsFake((file, data, ...rest) => {
+			if (file === rootConfigPath && data === originalContent) {
+				throw enospcErr;
+			}
+			return origWriteFileSync.call(fs, file, data, ...rest);
+		});
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		const remainingFiles = fs.readdirSync(rootPath);
+		const backupFile = remainingFiles.find((f) => f.includes('.install-backup-'));
+		assert.ok(backupFile, 'Expected .install-backup file to be retained when all restore attempts fail');
+		assert.strictEqual(
+			fs.readFileSync(path.join(rootPath, backupFile), 'utf8'),
+			originalContent,
+			'Expected retained .install-backup file to contain intact original HDB_CONFIG content'
+		);
+	});
+
+	it('preserves an existing ~/.harperdb boot properties directory on rollback when shouldWriteBootProps is false', async () => {
+		const existingRoot = path.join(tempBaseDir, 'existing-install');
+		fs.mkdirSync(existingRoot, { recursive: true });
+		const existingConfigPath = path.join(existingRoot, hdbTerms.HARPER_CONFIG_FILE);
+		fs.writeFileSync(existingConfigPath, 'storage:\n  engine: rocksdb\n', 'utf8');
+
+		const homeHdbDir = path.join(tempBaseDir, 'home', hdbTerms.HDB_HOME_DIR_NAME);
+		const homeKeysDir = path.join(homeHdbDir, 'keys');
+		fs.mkdirSync(homeKeysDir, { recursive: true });
+		const existingKeyPath = path.join(homeKeysDir, 'existing.pem');
+		fs.writeFileSync(existingKeyPath, 'existing-key', 'utf8');
+		const propsFilePath = path.join(homeHdbDir, hdbTerms.BOOT_PROPS_FILE_NAME);
+		const propsContent = `install_user=admin\nsettings_path=${existingConfigPath}\n`;
+		fs.writeFileSync(propsFilePath, propsContent, 'utf8');
+
+		realInstaller.setIgnoreExisting(true);
+		process.env.STORAGE_ENGINE = 'lmdb';
+		sandbox
+			.stub(config_utils, 'writeStagedInstallConfig')
+			.throws(new Error('simulated writeStagedInstallConfig failure'));
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		assert.strictEqual(
+			fs.existsSync(propsFilePath),
+			true,
+			'Expected pre-existing ~/.harperdb/hdb_boot_properties.file to be preserved on rollback'
+		);
+		assert.strictEqual(fs.readFileSync(propsFilePath, 'utf8'), propsContent);
+		assert.strictEqual(
+			fs.existsSync(existingKeyPath),
+			true,
+			'Expected pre-existing ~/.harperdb/keys to be preserved on rollback'
+		);
+	});
+
+	for (const engine of ['rocksdb', 'lmdb']) {
+		it(`removes install-created ${engine} system DB inside a pre-existing empty database directory on rollback so retry with root-named HDB_CONFIG succeeds`, async () => {
+			const rootPath = path.join(tempBaseDir, 'hdb');
+			const preExistingDatabaseDir = path.join(rootPath, 'database');
+			fs.mkdirSync(preExistingDatabaseDir, { recursive: true });
+			const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
+			const originalContent = `storage:\n  engine: ${engine}\n`;
+			fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
+			process.env.HDB_CONFIG = rootConfigPath;
+
+			const writeConfigStub = sandbox
+				.stub(config_utils, 'writeStagedInstallConfig')
+				.throws(new Error('simulated writeStagedInstallConfig failure'));
+			const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+				throw new Error(`process.exit(${code})`);
+			});
+
+			await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+			assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+			assert.strictEqual(
+				fs.existsSync(preExistingDatabaseDir),
+				true,
+				'Expected pre-existing empty database directory mount to be preserved'
+			);
+			assert.deepStrictEqual(
+				fs.readdirSync(preExistingDatabaseDir),
+				[],
+				`Expected install-created ${engine} system DB inside pre-existing database directory to be removed on rollback`
+			);
+
+			await closeSystemDatabase();
+			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
+			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, tempBaseDir);
+			resetDatabases();
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
+			hdb_utils.resetNoBootFileCache();
+			writeConfigStub.restore();
+			exitStub.restore();
+			await runInstall();
+			assertInstalledSystemEngine(rootPath, engine);
+		});
+	}
 });

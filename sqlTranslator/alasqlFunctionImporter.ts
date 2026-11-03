@@ -7,9 +7,12 @@
 import * as alasqlExtension from '../utility/functions/sql/alaSQLExtension.ts';
 import dateFunctions from '../utility/functions/date/dateFunctions.js';
 import * as geo from '../utility/functions/geo.ts';
+import { installLegacySqlText } from './legacySqlText.ts';
 
 //import the custom function, need to define an upper and lower case version of the function so it is parsed properly in alasql
 export default function (alasql: any) {
+	installLegacySqlText();
+
 	/*
     AGGREGATE FUNCTIONS
      */

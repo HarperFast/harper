@@ -1,0 +1,4 @@
+type LimitDoc @table @export {
+	id: ID @primaryKey
+	body: String
+}

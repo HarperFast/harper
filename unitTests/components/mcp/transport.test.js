@@ -58,6 +58,11 @@ function makeFakeTable() {
 	};
 }
 
+const {
+	_resetForTest: _resetRateLimitForTest,
+	_setClockForTest: _setRateLimitClockForTest,
+} = require('#src/components/mcp/rateLimit');
+
 function makeReq(overrides = {}) {
 	return {
 		method: 'POST',
@@ -86,6 +91,7 @@ describe('mcp/transport', () => {
 
 	beforeEach(() => {
 		envOverrides = {};
+		_resetRateLimitForTest();
 		transport_mod.__set__('env', envStub);
 		_setSessionTableForTest(makeFakeTable());
 		_resetRegistryForTest();
@@ -133,6 +139,28 @@ describe('mcp/transport', () => {
 		it('rejects missing protocolVersion with 400', async () => {
 			const res = await handleMcpRequest(makeReq({ body: jsonRpc(1, 'initialize') }));
 			assert.equal(res.status, 400);
+		});
+
+		it('throttles session creation per client identity with 429, creating no session, until the bucket refills', async () => {
+			let clock = 1_000_000;
+			_setRateLimitClockForTest(() => clock);
+			try {
+				const init = () =>
+					handleMcpRequest(
+						makeReq({ clientIp: '10.9.9.9', body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }) })
+					);
+				for (let i = 0; i < 50; i++) assert.equal((await init()).status, 200, `initialize ${i} within the burst`);
+				const limited = await init();
+				assert.equal(limited.status, 429);
+				assert.equal(limited.headers['Retry-After'], '1');
+				assert.equal(limited.headers['Mcp-Session-Id'], undefined);
+				assert.equal(limited.jsonBody.id, 1);
+				clock += 100; // default 10/s: one token per 100 ms
+				assert.equal((await init()).status, 200, 'admitted again after refill');
+			} finally {
+				_setRateLimitClockForTest(undefined);
+				_resetRateLimitForTest();
+			}
 		});
 	});
 
@@ -1025,6 +1053,20 @@ describe('mcp/transport', () => {
 				const sid = initRes.headers['Mcp-Session-Id'];
 				const saved = await loadSession(sid);
 				assert.deepEqual(saved.clientCapabilities, { elicitation: {} }, 'capabilities persisted');
+				const padded = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(2, 'initialize', {
+							protocolVersion: '2025-06-18',
+							capabilities: {
+								sampling: { pad: 'x'.repeat(10_000) },
+								roots: { listChanged: true },
+								pad: 'y'.repeat(10_000),
+							},
+						}),
+					})
+				);
+				const paddedSaved = await loadSession(padded.headers['Mcp-Session-Id']);
+				assert.deepEqual(paddedSaved.clientCapabilities, { sampling: {}, roots: {} }, 'only gated capabilities kept');
 
 				addTool({
 					name: 'asker',

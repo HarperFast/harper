@@ -1727,13 +1727,18 @@ export async function keptReleasesOf(componentsRootDirPath: string, componentNam
 }
 
 /** Every component with a live tree or a deployment directory on this node, so a stage nobody activated counts. */
-export async function componentsWithReleases(componentsRootDirPath: string): Promise<string[]> {
+export async function componentsWithReleases(componentsRootDirPath: string, strict = false): Promise<string[]> {
+	const entriesOf = (path: string) =>
+		readdir(path, { withFileTypes: true }).catch((error) => {
+			if (strict && error?.code !== 'ENOENT') throw error;
+			return [];
+		});
 	const names = new Set<string>();
-	for (const entry of await readdir(componentsRootDirPath, { withFileTypes: true }).catch(() => [])) {
+	for (const entry of await entriesOf(componentsRootDirPath)) {
 		if ((entry.isDirectory() || entry.isSymbolicLink()) && isJoinableComponentName(entry.name)) names.add(entry.name);
 	}
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
-	for (const entry of await readdir(stagingRoot, { withFileTypes: true }).catch(() => [])) {
+	for (const entry of await entriesOf(stagingRoot)) {
 		if (!isDeploymentDirectoryEntry(entry)) continue;
 		const owner = await candidateComponentName(join(stagingRoot, entry.name)).catch(() => undefined);
 		if (isJoinableComponentName(owner)) names.add(owner);

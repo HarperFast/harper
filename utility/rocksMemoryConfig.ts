@@ -11,15 +11,20 @@ export interface RocksMemoryConfigInput {
 	configuredWriteBufferManagerSize: unknown;
 	configuredCostToCache: unknown;
 	configuredAllowStall: unknown;
+	configuredFlushPolicy: unknown;
 	// min(process.constrainedMemory() ?? Infinity, totalmem()) — the cgroup-aware memory base.
 	availableMemory: number;
 }
+
+const FLUSH_POLICIES = ['oldest', 'largest', 'largestAcrossDBs'] as const;
+type WriteBufferManagerFlushPolicy = (typeof FLUSH_POLICIES)[number];
 
 export interface RocksMemoryConfig {
 	blockCacheSize: number;
 	writeBufferManagerSize?: number;
 	writeBufferManagerCostToCache?: boolean;
 	writeBufferManagerAllowStall?: boolean;
+	writeBufferManagerFlushPolicy?: WriteBufferManagerFlushPolicy;
 }
 
 export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMemoryConfig {
@@ -28,6 +33,7 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 		configuredWriteBufferManagerSize,
 		configuredCostToCache,
 		configuredAllowStall,
+		configuredFlushPolicy,
 		availableMemory,
 	} = input;
 	// Block cache: an explicit positive number wins, otherwise 25% of available memory. Floored
@@ -53,6 +59,16 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 		config.writeBufferManagerSize = writeBufferManagerSize;
 		config.writeBufferManagerCostToCache = typeof configuredCostToCache === 'boolean' ? configuredCostToCache : true;
 		config.writeBufferManagerAllowStall = typeof configuredAllowStall === 'boolean' ? configuredAllowStall : false;
+		if ((FLUSH_POLICIES as readonly unknown[]).includes(configuredFlushPolicy)) {
+			config.writeBufferManagerFlushPolicy = configuredFlushPolicy as WriteBufferManagerFlushPolicy;
+		}
 	}
 	return config;
+}
+
+// The native layer throws on anything but a non-negative safe integer, and 0 means automatic.
+export function resolveRocksArenaBlockSize(configuredArenaBlockSize: unknown): number | undefined {
+	return Number.isSafeInteger(configuredArenaBlockSize) && (configuredArenaBlockSize as number) > 0
+		? (configuredArenaBlockSize as number)
+		: undefined;
 }
