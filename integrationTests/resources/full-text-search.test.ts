@@ -1,5 +1,6 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
+import { Agent, fetch as fetchWithAgent } from 'undici';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -367,23 +368,35 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				{ start: 11, end: 24 },
 			]
 		);
-		const rest = await request('/Product/', { method: 'QUERY', body: JSON.stringify(target) });
-		assert.deepStrictEqual(rest, ranked);
-		const certified = await fetch(`${ctx.harper.httpURL}/Product/`, {
-			method: 'QUERY',
-			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				...target,
-				conditions: target.conditions.map((condition) => ({
-					...condition,
-					waitForIndexMilliseconds: 0,
-					maxIndexLagMilliseconds: 5000,
-				})),
-			}),
-		});
-		assert.strictEqual(certified.status, 200, await certified.clone().text());
-		assert.match(certified.headers.get('harper-index-coverage'), /^(current|bounded); lag=.*; tolerance=5000$/);
-		assert.deepStrictEqual(await certified.json(), ranked);
+		const dispatcher = new Agent({ connections: 1, pipelining: 1 });
+		try {
+			const rest = await fetchWithAgent(`${ctx.harper.httpURL}/Product/`, {
+				dispatcher,
+				method: 'QUERY',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify(target),
+			});
+			assert.strictEqual(rest.status, 200, await rest.clone().text());
+			assert.deepStrictEqual(await rest.json(), ranked);
+			const certified = await fetchWithAgent(`${ctx.harper.httpURL}/Product/`, {
+				dispatcher,
+				method: 'QUERY',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					...target,
+					conditions: target.conditions.map((condition) => ({
+						...condition,
+						waitForIndexMilliseconds: 0,
+						maxIndexLagMilliseconds: 5000,
+					})),
+				}),
+			});
+			assert.strictEqual(certified.status, 200, await certified.clone().text());
+			assert.match(certified.headers.get('harper-index-coverage'), /^(current|bounded); lag=.*; tolerance=5000$/);
+			assert.deepStrictEqual(await certified.json(), ranked);
+		} finally {
+			await dispatcher.close();
+		}
 
 		const operations = await operation({
 			operation: 'search_by_conditions',
