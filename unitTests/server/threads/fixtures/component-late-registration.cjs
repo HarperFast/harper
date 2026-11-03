@@ -10,8 +10,16 @@ exports.handleApplication = async (scope) => {
 		};
 		parentPort.on('message', release);
 	});
-	scope.on('close', () => {
-		parentPort.postMessage({ type: 'component-disposed' });
-	});
+	// unref'd, like a native runtime's disposal: only the shutdown's own keep-alive holds the worker open for it
+	scope.on(
+		'close',
+		() =>
+			new Promise((resolve) => {
+				setTimeout(() => {
+					parentPort.postMessage({ type: 'component-disposed' });
+					resolve();
+				}, 100).unref();
+			})
+	);
 	parentPort.postMessage({ type: 'component-loaded' });
 };
