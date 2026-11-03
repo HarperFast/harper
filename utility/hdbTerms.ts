@@ -577,6 +577,7 @@ export const CONFIG_PARAMS = {
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
 	THREADS_PRELOAD: 'threads_preload',
 	THREADS_PRELOADREQUIRE: 'threads_preloadRequire',
+	THREADS_SHUTDOWNTIMEOUT: 'threads_shutdownTimeout',
 	THREADS_V8FLAGS: 'threads_v8Flags',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
