@@ -268,8 +268,9 @@ suite(
 			const after = await get('/conditional-session', undefined, { Cookie: cookie });
 			equal(after.status, 200);
 			equal(after.body.user, null);
-			const protectedResponse = await get(PROTECTED_ROUTE, undefined, { Cookie: cookie });
-			equal(protectedResponse.status, 401, protectedResponse.text);
+			const identity = await get(APP_ROUTE, undefined, { Cookie: cookie });
+			equal(identity.status, 200, identity.text);
+			ok(identity.body.harperUser !== username, 'the logged-out cookie no longer resolves the stored user');
 		});
 
 		test('a rejected cookie session reaches an application-owned route instead of a raw error page', async () => {
