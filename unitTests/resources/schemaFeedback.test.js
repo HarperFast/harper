@@ -94,6 +94,20 @@ describe('PR 1921 schema feedback regressions', () => {
 		}
 	});
 
+	it('accepts JSON objects authored in an application VM realm', () => {
+		const value = require('node:vm').runInNewContext('({ b: [true, null], a: 1 })');
+		const [attribute] = resolveAttributes({
+			properties: { value: { enum: [value], const: { a: 1, b: [true, null] } } },
+		});
+		assert.deepEqual(attribute.enum, [{ a: 1, b: [true, null] }]);
+	});
+
+	it('rejects sparse required lists and type arrays as malformed metadata', () => {
+		assert.throws(() => resolveAttributes({ properties: {}, required: Array(1) }), /array of strings/);
+		assert.throws(() => resolveAttributes({ properties: { value: { required: Array(1) } } }), /array of strings/);
+		assert.throws(() => resolveAttributes({ properties: { value: { type: Array(1) } } }), /only strings/);
+	});
+
 	it('uses the non-enumerable target coordinates produced by the GraphQL parser', async () => {
 		await require('#src/resources/graphql').loadGQLSchema(`
 			type FeedbackAuthor @table {

@@ -170,11 +170,8 @@ export function jsonValueKey(value: unknown, ancestors = new WeakSet<object>(), 
 	if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
 	if (typeof value !== 'object' || value === null) throw new TypeError('Schema value must be JSON-serializable');
 	if (ancestors.has(value)) throw new TypeError('Schema JSON value contains a cycle');
-	if (
-		!Array.isArray(value) &&
-		Object.getPrototypeOf(value) !== Object.prototype &&
-		Object.getPrototypeOf(value) !== null
-	) {
+	const prototype = Object.getPrototypeOf(value);
+	if (!Array.isArray(value) && prototype !== null && Object.getPrototypeOf(prototype) !== null) {
 		throw new TypeError('Schema value must be JSON-serializable using plain objects');
 	}
 	ancestors.add(value);
@@ -212,7 +209,7 @@ function fragmentToAttribute(
 	const attr: AttributeLike = { name };
 	try {
 		if (Array.isArray(fragment.type)) {
-			if (!fragment.type.every((type) => typeof type === 'string')) {
+			if (!Array.from(fragment.type).every((type) => typeof type === 'string')) {
 				throw new TypeError(`Schema property "${name}.type" must contain only strings`);
 			}
 			attr.types = [...fragment.type];
@@ -224,7 +221,10 @@ function fragmentToAttribute(
 			attr.type = fragment.type;
 		}
 		if (fragment.required !== undefined) {
-			if (!Array.isArray(fragment.required) || !fragment.required.every((item) => typeof item === 'string')) {
+			if (
+				!Array.isArray(fragment.required) ||
+				!Array.from(fragment.required).every((item) => typeof item === 'string')
+			) {
 				throw new TypeError(`Schema property "${name}.required" must be an array of strings`);
 			}
 			if (new Set(fragment.required).size !== fragment.required.length) {
@@ -346,7 +346,7 @@ export function filterAttributeTree(
 
 function validateTopLevelRequired(required: readonly string[] | undefined): readonly string[] {
 	if (required === undefined) return [];
-	if (!Array.isArray(required) || !required.every((name) => typeof name === 'string')) {
+	if (!Array.isArray(required) || !Array.from(required).every((name) => typeof name === 'string')) {
 		throw new TypeError('Resource required must be an array of strings');
 	}
 	if (new Set(required).size !== required.length) throw new TypeError('Resource required must contain unique names');
