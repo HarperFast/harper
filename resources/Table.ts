@@ -303,7 +303,13 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction.ts';
-import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
+import {
+	contentTypes,
+	isScalarSelect,
+	isTupleSelect,
+	buildSelectColumns,
+	type ColumnsList,
+} from '../server/serverHelpers/contentTypes.ts';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
 import {
 	persistedFullTextIndexNames,
@@ -7501,22 +7507,8 @@ export function makeTable(options): TableResourceClass {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
-			const getColumns = () => {
-				const select = target.select;
-				if (select) {
-					const columns = [];
-					for (const column of select) {
-						if (column === '*') {
-							for (const attribute of attributes)
-								if (!(select[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
-						} else columns.push((column as any).name || column);
-					}
-					return columns;
-				}
-				return attributes
-					.filter((attribute) => !attribute.computed && !attribute.relationship)
-					.map((attribute) => attribute.name);
-			};
+			let effectiveSelect: any;
+			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
@@ -7529,6 +7521,9 @@ export function makeTable(options): TableResourceClass {
 				if (allowed != null && typeof (allowed as any).then === 'function') {
 					const self = this;
 					const gatedResults: any = new ExtendedIterable();
+					let resolvedResults: any;
+					let earlyColumns: ColumnsList | undefined;
+					gatedResults.pendingAuth = true;
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
 							if (!resolved) return { allowed: false };
@@ -7536,7 +7531,17 @@ export function makeTable(options): TableResourceClass {
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
-								return { allowed: true, results: await self.search(target), gate: gatedResults };
+								resolvedResults = await self.search(target);
+								delete gatedResults.pendingAuth;
+								if (earlyColumns) {
+									const resolvedColumns = resolvedResults?.getColumns ? resolvedResults.getColumns() : getColumns();
+									earlyColumns.splice(0, earlyColumns.length, ...resolvedColumns);
+									if (resolvedColumns.scalar) earlyColumns.scalar = true;
+									else delete earlyColumns.scalar;
+									if (resolvedColumns.asArray) earlyColumns.asArray = true;
+									else delete earlyColumns.asArray;
+								}
+								return { allowed: true, results: resolvedResults, gate: gatedResults };
 							} catch (error) {
 								return { allowed: true, error };
 							}
@@ -7544,7 +7549,8 @@ export function makeTable(options): TableResourceClass {
 						() => ({ allowed: false })
 					);
 					gatedResults.selectApplied = true;
-					gatedResults.getColumns = getColumns;
+					gatedResults.getColumns = () =>
+						resolvedResults?.getColumns ? resolvedResults.getColumns() : (earlyColumns ??= getColumns());
 					gatedResults.iterate = (options: any = {}) => {
 						const asynchronous = options === true || options?.async;
 						const iterationOptions = options === true ? { async: true } : { ...options, async: true };
@@ -7769,13 +7775,13 @@ export function makeTable(options): TableResourceClass {
 					postOrdering = sort;
 				}
 			}
-			const select = includeFullTextHighlights
+			const select = (effectiveSelect = includeFullTextHighlights
 				? target.select === undefined
 					? ['*', '$highlights']
 					: selectRequestsProperty(target.select, '$highlights')
 						? target.select
 						: appendSelectProperty(target.select, '$highlights')
-				: target.select;
+				: target.select);
 			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
 			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
 			// injected full-scan condition). Used to pick the count-estimate source below.
@@ -8768,6 +8774,8 @@ export function makeTable(options): TableResourceClass {
 			const selectsPrototype =
 				select === '__proto__' ||
 				(Array.isArray(select) && select.some((attribute) => (attribute?.name ?? attribute) === '__proto__'));
+			const scalarSelect = isScalarSelect(select);
+			const tupleSelect = isTupleSelect(select);
 			let relationshipSelections;
 			for (const attribute of Array.isArray(select) ? select : select?.name !== undefined ? [select] : []) {
 				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
@@ -8993,41 +9001,39 @@ export function makeTable(options): TableResourceClass {
 					};
 					let selected: any;
 					try {
-						if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined)) {
+						if (scalarSelect) {
 							selectAttribute(select, (value) => {
 								selected = value;
 							});
+						} else if (tupleSelect) {
+							selected = [];
+							select.forEach((attribute, index) => {
+								if (attribute === '*') selected[index] = record;
+								else selectAttribute(attribute, (value) => (selected[index] = value));
+							});
 						} else if (Array.isArray(select)) {
-							if ((select as any).asArray) {
-								selected = [];
-								select.forEach((attribute, index) => {
-									if (attribute === '*') selected[index] = record;
-									else selectAttribute(attribute, (value) => (selected[index] = value));
-								});
-							} else {
-								selected = {};
-								if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
-								const forceNulls = (select as any).forceNulls;
-								for (const attribute of select) {
-									if (attribute === '*') {
-										if (select[RELATIONSHIPS_LISTED]) TableResource._copyUnlistedAttributes(record, selected);
-										else
-											for (const key in record) {
-												const value = record[key];
-												if (typeof value === 'function') continue;
-												if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
-												else selected[key] = value;
-											}
-									} else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
-										let value = record[attribute];
-										if (typeof value === 'function') value = undefined;
-										selected[attribute] = value === undefined && forceNulls ? null : value;
-									} else
-										selectAttribute(attribute, (value, attribute_name) => {
-											if (value === undefined && forceNulls) value = null;
-											selected[attribute_name] = value;
-										});
-								}
+							selected = {};
+							if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
+							const forceNulls = (select as any).forceNulls;
+							for (const attribute of select) {
+								if (attribute === '*') {
+									if (select[RELATIONSHIPS_LISTED]) TableResource._copyUnlistedAttributes(record, selected);
+									else
+										for (const key in record) {
+											const value = record[key];
+											if (typeof value === 'function') continue;
+											if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
+											else selected[key] = value;
+										}
+								} else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
+									let value = record[attribute];
+									if (typeof value === 'function') value = undefined;
+									selected[attribute] = value === undefined && forceNulls ? null : value;
+								} else
+									selectAttribute(attribute, (value, attribute_name) => {
+										if (value === undefined && forceNulls) value = null;
+										selected[attribute_name] = value;
+									});
 							}
 						} else throw new ClientError('Invalid select' + select);
 					} catch (error) {
