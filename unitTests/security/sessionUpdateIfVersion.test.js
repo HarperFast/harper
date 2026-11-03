@@ -1,47 +1,21 @@
 const assert = require('node:assert');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-
 const testUtils = require('../testUtils.js');
-const { setupTestDBPath } = testUtils;
+const { databases } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
+const { authentication } = require('#src/security/auth');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { waitFor } = require('../waitFor.js');
+
 testUtils.preTestPrep();
 
-// HarperFast/harper#2983: `request.session.update(data, { ifVersion })` guards a session write on
-// the version read alongside `request.session.version` — exercised here through two real passes
-// of `authentication()` sharing one session cookie, the same path HarperFast/oauth#212's
-// maintenance writes use (read, await, write back).
 describe('session.update ifVersion (HarperFast/harper#2983)', function () {
-	let authModule;
-	let restoreSerializeMessage;
+	let Sessions;
 
-	before(function () {
-		setupTestDBPath();
-		const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-		setMainIsWorker(true);
-
-		// The real config mechanism (env.setProperty), not a stub on env.get keyed by a hand-typed
-		// string: CONFIG_PARAMS gives the canonical key auth.ts actually reads
-		// (authentication_enableSessions, underscore — a dot-separated key silently misses and falls
-		// through to the default). Harmless either way here (the default is already `true`), but
-		// matching the real key is what makes this setup meaningful rather than coincidental.
-		const env = require('#src/utility/environment/environmentManager');
-		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-		env.setProperty(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS, true);
-		env.setProperty(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, false);
-
-		// AGENTS.md: no new sinon/rewire — plain reassignment, restored in after(). No config-system
-		// equivalent exists for stubbing a serializer function.
-		const contentTypes = require('#src/server/serverHelpers/contentTypes');
-		const originalSerializeMessage = contentTypes.serializeMessage;
-		restoreSerializeMessage = () => {
-			contentTypes.serializeMessage = originalSerializeMessage;
-		};
-		contentTypes.serializeMessage = (message) => message;
-
-		authModule = require('#src/security/auth');
-	});
-
-	after(function () {
-		restoreSerializeMessage?.();
+	before(async function () {
+		testUtils.setupTestDBPath();
+		await testUtils.ensureSystemTables();
+		Sessions = databases.system.hdb_session;
 	});
 
 	function newRequest(cookie) {
@@ -49,7 +23,7 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 			headers: { asObject: { authorization: null, cookie, origin: null, host: 'localhost' } },
 			method: 'GET',
 			pathname: '/test',
-			ip: '192.168.1.100', // eslint-disable-line sonarjs/no-hardcoded-ip
+			ip: '192.0.2.1',
 			isOperationsServer: false,
 			mtlsConfig: null,
 			authorized: false,
@@ -59,163 +33,155 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 	}
 
 	function newResponse() {
-		return { status: 200, headers: new Headers(), body: {} };
+		return { status: 200, headers: new Headers(), body: '{}' };
 	}
 
-	// auth.ts prefixes the cookie name with the (CSRF-partitioning) origin, falling back to
-	// `headers.host` ('localhost' here) when no Origin header is sent — so the real cookie name is
-	// `localhost-hdb-session`, not the bare `hdb-session` the session id lives under. Returning the
-	// whole `name=value` pair (rather than reconstructing it) keeps this test from re-encoding that
-	// assumption a second time.
-	function extractSessionCookie(response) {
-		const setCookie = response.headers.get('Set-Cookie');
-		const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-		const found = cookies.find((c) => c?.includes('hdb-session='));
-		assert.ok(found, 'expected a Set-Cookie header establishing a session');
-		return found.split(';')[0];
-	}
-
-	async function establishSession(greeting) {
+	async function establishSession(greeting = 'hello') {
 		const response = newResponse();
-		await authModule.authentication(newRequest(null), async (request) => {
+		await authentication(newRequest(null), async (request) => {
 			await request.session.update({ greeting });
 			return response;
 		});
-		return extractSessionCookie(response);
+		const setCookie = response.headers.get('Set-Cookie');
+		assert.ok(setCookie, 'expected a session cookie');
+		return setCookie.split(';')[0];
 	}
 
-	it('establishes a session and exposes its version on a later read', async function () {
-		const cookie = await establishSession('hello');
+	const conflict = (error) => {
+		assert.strictEqual(error.code, 'VERSION_CONFLICT');
+		assert.strictEqual(error.statusCode, 409);
+		return true;
+	};
 
-		let observedSession;
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			observedSession = request.session;
+	it('exposes the initially loaded version without persisting it in session data', async function () {
+		const cookie = await establishSession();
+		await authentication(newRequest(cookie), async (request) => {
+			assert.strictEqual(typeof request.session.version, 'number');
+			assert.ok(!('version' in { ...request.session }));
+			const version = request.session.version;
+			await request.session.update({ greeting: 'updated' }, { ifVersion: version });
+			assert.strictEqual(request.session.version, version, 'the getter describes the initial load');
 			return newResponse();
 		});
-		assert.strictEqual(observedSession.greeting, 'hello');
-		assert.strictEqual(typeof observedSession.version, 'number');
-		// Non-enumerable: must not leak into a plain enumeration/spread of the session's stored fields
-		// (an app's own same-named field, or a later full-object persist, must not pick it up).
-		assert.ok(!Object.keys(observedSession).includes('version'), 'version is not enumerable');
-		assert.ok(!('version' in { ...observedSession }), 'version does not survive a spread');
-	});
-
-	it('writes a conditional update that matches the version just read', async function () {
-		const cookie = await establishSession('hello');
-
-		let heldVersion;
-		const response = newResponse();
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			heldVersion = request.session.version;
-			await request.session.update({ greeting: 'updated' }, { ifVersion: heldVersion });
-			return response;
-		});
-		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
-
-		await authModule.authentication(newRequest(cookie), async (request) => {
+		await authentication(newRequest(cookie), async (request) => {
 			assert.strictEqual(request.session.greeting, 'updated');
-			assert.notStrictEqual(request.session.version, heldVersion, 'version advanced');
 			return newResponse();
 		});
 	});
 
-	it('rejects a conditional update whose version a concurrent write already moved past, writing nothing', async function () {
-		const cookie = await establishSession('hello');
-
-		let heldVersion;
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			heldVersion = request.session.version;
-			return newResponse();
+	for (const change of ['update', 'logout', 'delete', 'remove']) {
+		it(`rejects a refresh after a concurrent ${change}, bypassing the retained snapshot`, async function () {
+			const cookie = await establishSession();
+			const response = newResponse();
+			await transaction({}, async () => {
+				await authentication(newRequest(cookie), async (request) => {
+					const { id, version } = request.session;
+					assert.strictEqual((await Sessions.get(id)).greeting, 'hello');
+					if (change === 'delete') await Sessions.delete(id, {});
+					else if (change === 'remove') await Sessions.primaryStore.remove(id);
+					else
+						await authentication(newRequest(cookie), async (otherRequest) => {
+							await otherRequest.session.update(change === 'logout' ? { user: null } : { greeting: 'winner' });
+							return newResponse();
+						});
+					assert.strictEqual((await Sessions.get(id)).greeting, 'hello', 'the request snapshot is still old');
+					const attempted = { greeting: 'stale refresh' };
+					await assert.rejects(request.session.update(attempted, { ifVersion: version }), (error) => {
+						assert.ok(!error.message.includes(id), 'the error must not expose the bearer cookie');
+						assert.strictEqual(error.retryable, true);
+						return conflict(error);
+					});
+					assert.deepStrictEqual(attempted, { greeting: 'stale refresh' }, 'rejection does not mutate input');
+					return response;
+				});
+			});
+			assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined);
+			await authentication(newRequest(cookie), async (request) => {
+				assert.strictEqual(request.session.greeting, change === 'update' ? 'winner' : undefined);
+				if (change === 'logout') assert.strictEqual(request.session.user, null);
+				return newResponse();
+			});
 		});
-		// A concurrent write lands between the read above and the conditional write below.
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			await request.session.update({ greeting: 'concurrent winner' });
-			return newResponse();
-		});
+	}
 
-		let rejection;
-		const response = newResponse();
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			try {
-				await request.session.update({ greeting: 'stale loser' }, { ifVersion: heldVersion });
-			} catch (error) {
-				rejection = error;
-			}
-			return response;
-		});
-		assert.ok(rejection, 'the conditional write was rejected');
-		assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined, 'no success header for a rejected write');
-		assert.strictEqual(rejection.code, 'VERSION_CONFLICT');
-		assert.strictEqual(rejection.statusCode, 409);
-		assert.strictEqual(rejection.retryable, true, 'an ordinary mismatch is retryable with a fresh read');
-
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			assert.strictEqual(request.session.greeting, 'concurrent winner', 'the rejected write left no trace');
+	it('rejects an expired session without extending its lifetime', async function () {
+		const cookie = await establishSession();
+		const id = cookie.slice(cookie.indexOf('=') + 1);
+		const expiresAt = Date.now() + 1000;
+		await Sessions.put({ id, greeting: 'expiring' }, { expiresAt });
+		await authentication(newRequest(cookie), async (request) => {
+			const version = request.session.version;
+			await waitFor(() => Date.now() > expiresAt, 3000);
+			await assert.rejects(request.session.update({ greeting: 'revived' }, { ifVersion: version }), conflict);
+			assert.strictEqual(Sessions.primaryStore.getEntry(id)?.expiresAt, expiresAt);
 			return newResponse();
 		});
 	});
 
-	it('sets the success header on the response when a conditional write lands after the middleware returned', async function () {
-		const cookie = await establishSession('hello');
+	it('rejects a genuinely reused version even when its number matches', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const cookie = await establishSession();
+		const id = cookie.slice(cookie.indexOf('=') + 1);
+		const now = Date.now();
+		await Sessions.patch(id, { greeting: 'newer' }, { timestamp: now + 100 });
+		await Sessions.patch(id, { another: true }, { timestamp: now + 50 });
+		assert.ok(Sessions.primaryStore.getEntry(id).metadataFlags & VERSION_REUSED);
+		await authentication(newRequest(cookie), async (request) => {
+			await assert.rejects(
+				request.session.update({ greeting: 'lost' }, { ifVersion: request.session.version }),
+				(error) => {
+					assert.strictEqual(error.retryable, false);
+					return conflict(error);
+				}
+			);
+			return newResponse();
+		});
+	});
 
-		let pendingUpdate;
+	it('rejects a cookie-less conditional update without minting a cookie', async function () {
 		const response = newResponse();
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			pendingUpdate = request.session.update({ greeting: 'late' }, { ifVersion: request.session.version });
+		await authentication(newRequest(null), async (request) => {
+			await assert.rejects(request.session.update({ greeting: 'x' }, { ifVersion: 1 }), conflict);
 			return response;
 		});
-		await pendingUpdate;
+		assert.strictEqual(response.headers.get('Set-Cookie'), undefined);
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined);
+	});
+
+	it('rejects unusable explicit conditions without falling back to an unconditional update', async function () {
+		const cookie = await establishSession();
+		await authentication(newRequest(cookie), async (request) => {
+			for (const options of [
+				null,
+				{},
+				1,
+				{ ifVersion: undefined },
+				{ ifVersion: null },
+				{ ifVersion: NaN },
+				{ ifVersion: Infinity },
+			])
+				assert.throws(() => request.session.update({ greeting: 'invalid' }, options), { statusCode: 400 });
+			return newResponse();
+		});
+	});
+
+	it('keeps updates without options unconditional and sends the success header', async function () {
+		const cookie = await establishSession();
+		const response = newResponse();
+		await authentication(newRequest(cookie), async (request) => {
+			await request.session.update({ greeting: 'unconditional' });
+			return response;
+		});
 		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
 	});
 
-	it('rejects a conditional update without a session cookie, minting no cookie', async function () {
-		let rejection;
+	it('sets the success header for an awaited conditional update', async function () {
+		const cookie = await establishSession();
 		const response = newResponse();
-		await authModule.authentication(newRequest(null), async (request) => {
-			try {
-				await request.session.update({ greeting: 'no session' }, { ifVersion: 1 });
-			} catch (error) {
-				rejection = error;
-			}
+		await authentication(newRequest(cookie), async (request) => {
+			await request.session.update({ greeting: 'conditional' }, { ifVersion: request.session.version });
 			return response;
 		});
-		assert.strictEqual(rejection?.code, 'VERSION_CONFLICT');
-		assert.strictEqual(response.headers.get('Set-Cookie'), undefined);
-	});
-
-	it('rejects an ambiguous ifVersion (present but not a finite number) rather than writing unconditionally', async function () {
-		const cookie = await establishSession('hello');
-
-		let threw = false;
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			try {
-				// `request.session.version` undefined (e.g. a since-deleted session) must not fall back
-				// to an unconditional write.
-				await request.session.update({ greeting: 'should not land' }, { ifVersion: undefined });
-			} catch {
-				threw = true;
-			}
-			return newResponse();
-		});
-		assert.ok(threw, 'an explicit but unusable ifVersion must throw rather than go unconditional');
-
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			assert.strictEqual(request.session.greeting, 'hello', 'the rejected call wrote nothing');
-			return newResponse();
-		});
-	});
-
-	it('omitting the second argument stays unconditional, unchanged from before this feature', async function () {
-		const cookie = await establishSession('hello');
-
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			await request.session.update({ greeting: 'overwritten unconditionally' });
-			return newResponse();
-		});
-
-		await authModule.authentication(newRequest(cookie), async (request) => {
-			assert.strictEqual(request.session.greeting, 'overwritten unconditionally');
-			return newResponse();
-		});
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
 	});
 });

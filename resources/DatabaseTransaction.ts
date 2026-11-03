@@ -896,7 +896,7 @@ type RocksTransactionWithRetry = RocksTransaction & {
 };
 
 // Crash-recovery replay sets `isRetry` before `save()`, so `hasStagedLog` is never set there.
-export function hasDurableLog(transaction: RocksTransaction | null | undefined, error?: { hasLog?: boolean }): boolean {
+function hasDurableLog(transaction: RocksTransaction | null | undefined, error?: { hasLog?: boolean }): boolean {
 	const txn = transaction as RocksTransactionWithRetry | null | undefined;
 	return error?.hasLog === true || Boolean(txn?.isRetry && txn?.hasStagedLog);
 }

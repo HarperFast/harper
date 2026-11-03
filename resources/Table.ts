@@ -86,7 +86,6 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 	confirmingOwnerNames,
-	hasDurableLog,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -141,8 +140,6 @@ import {
 	ValidationError,
 	UpdateAttributesLockTimeoutError,
 	LockUnavailableError,
-	VersionConflictError,
-	IF_VERSION,
 	appendErrorContext,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
@@ -5656,22 +5653,6 @@ export function makeTable(options): TableResourceClass {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
-			// Read once: only `request.session.update(data, { ifVersion })` sets this today, via
-			// `security/auth.ts` setting the module-private `IF_VERSION` symbol (see its definition
-			// in `hdbError.ts`) rather than a public string key — a plain `{ ifVersion }` object
-			// passed to `Table.put()` does not reach this at all. See the `write.commit` guard below
-			// for how it stays free when unset. Checked and rejected here, not left to reach the
-			// guard below as-is: `null` would pass `(existingEntry?.version ?? null) !== ifVersion`
-			// for a row that doesn't exist yet and create it — silently dropping the caller's
-			// condition rather than honoring or refusing it. `Number.isFinite`, not just
-			// `typeof === 'number'`: `NaN`/`Infinity` are typeof 'number' but would never equal a
-			// real stored version, turning every attempt into an always-fail 409 instead of a clear
-			// rejection of the bad input.
-			const rawIfVersion = (context as any)?.[IF_VERSION];
-			if (rawIfVersion !== undefined && !Number.isFinite(rawIfVersion)) {
-				throw new ClientError(`${tableName} ifVersion must be a finite number or undefined`, 400);
-			}
-			const ifVersion: number | undefined = rawIfVersion;
 			const condition = conditionForWrite(context, id);
 			if (awaitsConditionLock(condition)) {
 				// Installed before lock(), whose re-entrant reload runs synchronously. Every deferral reacts to the
@@ -7144,80 +7125,6 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 			};
-			// Wrapping `write.commit` after the object literal (instead of hoisting its body out into
-			// a named function) keeps the literal's `commit:` property untouched when this branch is
-			// not taken — an ordinary write keeps the exact same function reference, on any retry.
-			if (ifVersion !== undefined) {
-				const plainCommit = write.commit;
-				const guardedCommit = (
-					txnTime: number,
-					existingEntry: Entry,
-					retry: boolean,
-					nativeTxn: any,
-					committedBy?: DatabaseTransaction
-				) => {
-					// Every rejection below is a returned `Promise.reject`, never a `throw` (a throw here
-					// can surface as a synchronous exception instead of a rejection, depending on how much
-					// of the chain above resolves synchronously) — the same mechanism `stageCompletion`
-					// already relies on for an asynchronous commit failure.
-					//
-					// `existingEntry` is only as fresh as the retry loop that re-reads it on every attempt
-					// — true on both engines for a normal snapshot, but a snapshot-free scope (post
-					// mid-scope-commit rotation) or an explicitly disabled-snapshot read only narrows the
-					// read-to-put window rather than closing it. `transaction` is the outer
-					// DatabaseTransaction (`txnForContext(context)`); `nativeTxn` is the per-attempt native
-					// handle.
-					//
-					// Once this write's log entry is durable (a native conflict retry), it must commit:
-					// aborting it orphans an entry that replay and replication still apply (harper#3236).
-					// Last-write-wins then orders it against the write it conflicted with.
-					if (hasDurableLog(nativeTxn)) return plainCommit(txnTime, existingEntry, retry, nativeTxn, committedBy);
-					if ((nativeTxn as any)?.snapshotDisabled || (transaction as any).snapshotFree) {
-						return Promise.reject(
-							new VersionConflictError(tableName, ifVersion, existingEntry?.version, false, 'snapshot-free transaction')
-						);
-					}
-					// A resequenced RocksDB write can keep its predecessor's version while changing the
-					// record (VERSION_REUSED) — version equality then proves nothing about content.
-					if ((existingEntry?.metadataFlags ?? 0) & VERSION_REUSED) {
-						return Promise.reject(
-							new VersionConflictError(
-								tableName,
-								ifVersion,
-								existingEntry.version,
-								false,
-								'version reused by a resequenced write'
-							)
-						);
-					}
-					if ((existingEntry?.version ?? null) !== ifVersion) {
-						return Promise.reject(new VersionConflictError(tableName, ifVersion, existingEntry?.version, true));
-					}
-					// The version matches, but this write's own txnTime must still be strictly newer than
-					// it: at or below, `plainCommit` takes the out-of-order path, merges onto whatever is
-					// newer, and keeps that value — reporting success without the caller's write ever
-					// landing. Not retryable with the same `ifVersion`: a clock-skewed origin can hold the
-					// existing version in the future indefinitely (no logical-clock bump here), so a fresh
-					// read of the same row returns the same block. Deliberately simpler than the general
-					// resequencing order (`precedesExistingVersion`'s cross-node timestamp-tie break): a
-					// conditional write has no use for "the other node wins the tie", only for "strictly
-					// after what I conditioned on".
-					if (txnTime <= ifVersion) {
-						return Promise.reject(
-							new VersionConflictError(
-								tableName,
-								ifVersion,
-								existingEntry?.version,
-								false,
-								'existing version is not strictly behind this write'
-							)
-						);
-					}
-					return plainCommit(txnTime, existingEntry, retry, nativeTxn, committedBy);
-				};
-				// a local first: V8 pretenures a function literal assigned to a property (security/DESIGN.md)
-				write.commit = guardedCommit;
-			}
 			this.#bindWriteLock(write, id, transaction);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the

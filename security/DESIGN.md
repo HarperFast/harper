@@ -249,9 +249,11 @@ born in old space and keeps its young function context, and everything that cont
 its headers, the response), alive across every scavenge until the next major GC. The same holds for any per-request
 or per-write path: assign a function literal to a local first, or bind a module function. The helpers' behavior is covered by `unitTests/security/authSessions.test.js`.
 
-## `session.update(data, { ifVersion })` is a compare-and-set on this node only (`security/auth.ts`, `resources/Table.ts`, harper#2983)
+## Conditional session updates are a best-effort pre-write check (`auth.ts`)
 
-`hdb_session` replicates, so `ifVersion` sees only writes applied here: a logout committed on another node and not yet replicated is invisible, and last-write-wins lets a refresh committed after it revert the logout on every node. A component needing more defends across nodes itself (HarperFast/oauth#212). The guard wraps `write.commit` in `_writeUpdate`, keyed on an `IF_VERSION` symbol only `auth.ts` sets, and fails closed (not retryable) on a snapshot-free transaction, `VERSION_REUSED`, or a version not behind `txnTime`. Once its log entry is durable it never rejects (harper#3236): last-write-wins orders it against the write it conflicted with. Never stage it beside another write: LMDB commits the sibling, and RocksDB leaked a snapshot (harper#2991). Enforced by `sessionUpdateIfVersion.test.js` and `tableIfVersion.test.js`.
+`updateSession` reads outside the request snapshot (`COMMITTED_SESSION_READ`), renewing LMDB's shared reader first. Missing, deleted, expired or changed rows reject before staging a write; `VERSION_REUSED` rejects because equality no longer identifies content. A rejection exposes no cookie id and sends no success header (`sessionUpdateIfVersion.test.js`).
+
+The check is not CAS: writes already in flight, writes after the check, and unreplicated remote writes can still race. The ordinary put retains last-write-wins, including for future-dated rows; it has no commit-time session guard. `session.version` describes the initial load, not a fresh read.
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 

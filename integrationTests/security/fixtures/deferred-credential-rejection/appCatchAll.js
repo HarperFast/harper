@@ -36,6 +36,25 @@ export function handleApplication(scope) {
 				await request.session.update({ user });
 				return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user }) };
 			}
+			if (request.pathname === '/conditional-session') {
+				const query = new URL(request.url, 'http://localhost').searchParams;
+				if (query.has('ifVersion')) {
+					try {
+						await request.session.update({ user: query.get('user') }, { ifVersion: Number(query.get('ifVersion')) });
+					} catch (error) {
+						return {
+							status: error.statusCode,
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify({ code: error.code }),
+						};
+					}
+				}
+				return {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ version: request.session.version, user: request.session.user }),
+				};
+			}
 			// throws from middleware, so the error reaches the terminal HTTP handler rather than
 			// REST's resource-error mapping
 			if (request.pathname === '/throw-from-middleware') {
