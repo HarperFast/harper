@@ -92,11 +92,7 @@ Harper pins `@harperfast/fulltext` to **0.9.0**, embedding **Tantivy 0.27.0**, a
 
 ### Upgrading from fulltext 0.7.0 or 0.8.0
 
-<<<<<<< HEAD
-On nodes that already ran v5.4 prereleases with fulltext 0.7.0, existing indexes contain text fields only and remain reusable with 0.9.0. Compatible checkpoints from v5.4 prereleases with fulltext 0.8.0 are also reused without rebuilding; the regression advances them with 0.9.0 and reopens them with 0.8.0. This binary-level check is not a supported older-Harper operator downgrade procedure. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations omit `storage.fullText.query`; defaults apply automatically. An explicitly configured query block must be removed before returning to Harper 5.4.0-alpha.1 or alpha.2, whose validators reject it. Existing configuration is not rewritten. Returning to fulltext 0.7.0 after 0.8.0 has written to an index is not a qualified operator rollback procedure.
-=======
-Harper's existing indexes written by fulltext 0.7.0 or 0.8.0 contain text fields only and remain reusable with 0.9.0. This upgrade does not add native filter metadata or change their storage identity. Query limits, fuzzy controls, scoring and telemetry do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations omit `storage.fullText.query`; defaults apply automatically. An explicitly configured query block must be removed before returning to Harper 5.4.0-alpha.1 or alpha.2, whose validators reject it. Existing configuration is not rewritten. Returning to fulltext 0.7.0 after 0.9.0 has written to an index is not a qualified operator rollback procedure.
->>>>>>> f557acc95 (Adopt published fulltext 0.9.0 scoring runtime)
+Harper's existing indexes written by fulltext 0.7.0 or 0.8.0 contain text fields only and remain reusable with 0.9.0. This upgrade does not add native filter metadata or change their storage identity. Query limits, fuzzy controls and scoring do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations omit `storage.fullText.query`; defaults apply automatically. An explicitly configured query block must be removed before returning to Harper 5.4.0-alpha.1 or alpha.2, whose validators reject it. Existing configuration is not rewritten. Returning to fulltext 0.7.0 or 0.8.0 after 0.9.0 has written to an index is not a qualified operator rollback procedure.
 
 ### Upgrading an existing native index
 
@@ -106,11 +102,7 @@ Drain a node's full-text traffic and stop its old Harper processes before starti
 
 Prerelease installations using fulltext 0.6 also require a full rebuild.
 
-<<<<<<< HEAD
-**Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting the current identity, leaving full-text search unavailable. If a downgrade has already happened, keep search traffic drained and restore the 0.9.0-based Harper version. Harper does not yet provide a supported rollback procedure for full-text indexes; see [Implement full-text generation lifecycle, rebuild, eviction, backup, and status](https://github.com/HarperFast/harper/issues/2510). Do not edit, move or delete files in full-text index directories by hand.
-=======
 **Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting the current Tantivy 0.27 identity, leaving full-text search unavailable. If a downgrade has already happened, keep search traffic drained and restore the 0.9.0-based Harper version. Harper does not yet provide a supported rollback procedure for full-text indexes; see [Implement full-text generation lifecycle, rebuild, eviction, backup, and status](https://github.com/HarperFast/harper/issues/2510). Do not edit, move or delete files in full-text index directories by hand.
->>>>>>> f557acc95 (Adopt published fulltext 0.9.0 scoring runtime)
 
 ### Upgrade and recovery checklist
 

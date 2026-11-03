@@ -850,6 +850,13 @@ describe('published native full-text Table.search integration', () => {
 			reader = await binding.openNativeFullTextReader(options);
 			for (const query of [
 				{ text: 'widget catalog', mode: 'any' },
+				{ operator: 'boost', boost: 0.5, clause: { text: 'widget catalog' } },
+				{ operator: 'boost', boost: 0, clause: { text: 'widget' } },
+				{
+					operator: 'optional',
+					required: { operator: 'boost', boost: 0.5, clause: { text: 'widget' } },
+					optional: [{ operator: 'boost', boost: 4, clause: { text: 'catalog' } }, { text: 'widget widget' }],
+				},
 				{ text: 'widg', mode: 'prefix' },
 				{ text: 'widg', mode: 'fuzzy-prefix' },
 				{ operator: 'and', clauses: [{ text: 'widget' }, { operator: 'not', clause: { text: 'absent' } }] },
@@ -860,6 +867,7 @@ describe('published native full-text Table.search integration', () => {
 					exactTotal: true,
 				});
 				assert.strictEqual(ordinary.totalRelation, 'exact');
+				assert.deepStrictEqual((await reader.search({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
 				assert.deepStrictEqual((await reader.searchPage({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
 				for (const limit of [17, 73, 113, 257]) {
 					const page = await reader.searchPage({ query, limit });
@@ -926,7 +934,7 @@ describe('published native full-text Table.search integration', () => {
 					Buffer.from(toBufferKey(b).toString('base64url'))
 				)
 			);
-		const search = (comparator, value, options = {}) =>
+		const search = (comparator, value, options = {}, scoring = {}) =>
 			collect(
 				Product.search({
 					conditions: [
@@ -936,6 +944,7 @@ describe('published native full-text Table.search integration', () => {
 							value,
 							maxIndexLagMilliseconds: 0,
 							waitForIndexMilliseconds: 30_000,
+							...scoring,
 						},
 					],
 					limit: 25,
@@ -971,6 +980,20 @@ describe('published native full-text Table.search integration', () => {
 			);
 			assert.deepStrictEqual(
 				(await search('matches', 'widget catalog', { offset: info.limits.maxSearchWindow })).map(({ id }) => id),
+				ordered.slice(info.limits.maxSearchWindow)
+			);
+			assert.deepStrictEqual(
+				(
+					await search(
+						'matches',
+						'widget catalog',
+						{ rowFilter: (record) => tail.has(record.id) },
+						{
+							boost: 0.5,
+							should: [{ comparator: 'matches', value: 'catalog', boost: 4 }],
+						}
+					)
+				).map(({ id }) => id),
 				ordered.slice(info.limits.maxSearchWindow)
 			);
 			const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));
