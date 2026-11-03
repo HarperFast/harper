@@ -104,6 +104,46 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 		});
 	}
 
+	it('renews the LMDB reader after a worker commits without yielding the calling thread', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') this.skip();
+		const { Worker } = require('node:worker_threads');
+		const cookie = await establishSession();
+		const id = cookie.slice(cookie.indexOf('=') + 1);
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const worker = new Worker(require.resolve('./fixtures/sessionDeleteWorker.ts'), {
+			workerData: {
+				path: Sessions.primaryStore.path,
+				name: Sessions.primaryStore.name,
+				id,
+				gate: gate.buffer,
+				noServerStart: true,
+			},
+			execArgv: [],
+		});
+		let workerError;
+		worker.on('error', (error) => {
+			workerError = error;
+		});
+		try {
+			await waitFor(() => {
+				if (workerError) throw workerError;
+				return Atomics.load(gate, 0) === 1;
+			}, 10000);
+			await authentication(newRequest(cookie), async (request) => {
+				const version = request.session.version;
+				assert.strictEqual(Sessions.primaryStore.getEntry(id).version, version);
+				Atomics.store(gate, 0, 2);
+				Atomics.notify(gate, 0);
+				assert.notStrictEqual(Atomics.wait(gate, 0, 2, 10000), 'timed-out', 'the worker committed');
+				assert.strictEqual(Atomics.load(gate, 0), 3);
+				await assert.rejects(request.session.update({ greeting: 'revived' }, { ifVersion: version }), conflict);
+				return newResponse();
+			});
+		} finally {
+			await worker.terminate();
+		}
+	});
+
 	it('rejects an expired session without extending its lifetime', async function () {
 		const cookie = await establishSession();
 		const id = cookie.slice(cookie.indexOf('=') + 1);
