@@ -19,6 +19,7 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { asBinary } from './asBinary.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { endSubscriptionsFromEarlierHandles } from './transactionBroadcast.ts';
+import { abortMarkersEnabled } from './transactionLogAbortMarkers.ts';
 import {
 	ORIGIN_FLOOR_TICK_MS,
 	certifyOriginFloor,
@@ -197,6 +198,7 @@ const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
  * so a restart before the clock passes them cannot issue them again. RocksDB only.
  */
 const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
+const ABORT_MARKED_RECHECK_MS = 60_000;
 // Amortize durability barriers across keys; restart seeds above this whole reserve.
 const ISSUANCE_CEILING_HEADROOM_MS = 1000;
 
@@ -243,6 +245,7 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
+	establishAbortMarkedHistory(auditStore);
 	if (isRocksStore(auditStore)) {
 		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
 		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
@@ -1148,6 +1151,61 @@ export function establishDatabaseGeneration(auditStore: any): void {
 	} catch (error) {
 		warnContained('Error establishing the database generation', error);
 	}
+}
+
+function isEmptyLog(log: any): boolean {
+	for (const _entry of log.query({ start: 0, readUncommitted: true })) return false;
+	return true;
+}
+
+/**
+ * Record at open, per transaction log, the file this process started writing in. Every batch in a later
+ * file was written with abort markers on, so a committed reader returns it only if it committed; an
+ * earlier file can hold an orphan of a logged attempt aborted with markers off, by this build or any other.
+ * Nothing is persisted: a record could not tell whether an older build wrote the log since.
+ */
+export function establishAbortMarkedHistory(auditStore: any): void {
+	auditStore.abortMarkedHistory = undefined;
+	if (!isRocksStore(auditStore) || !abortMarkersEnabled()) return;
+	try {
+		const rootStore = auditStore.rootStore;
+		const baseline = new Map<string, number>();
+		for (const name of rootStore.listLogs()) {
+			const log = rootStore.useLog(name);
+			if (!isEmptyLog(log)) baseline.set(name, log.getStats().currentSequenceNumber);
+		}
+		auditStore.abortMarkedHistory = { baseline, recheckAt: new Map<string, number>() };
+	} catch (error) {
+		warnContained('Error recording which transaction-log files predate abort markers', error);
+	}
+}
+
+/**
+ * Whether every batch a committed reader can return from the log holding `nodeId`'s entries was written
+ * with abort markers on: the files that predate this process have been purged. Rechecked at most once a
+ * minute per log until it holds.
+ */
+export function auditHistoryAbortMarked(auditStore: any, nodeId: number | undefined): boolean {
+	const history = auditStore?.abortMarkedHistory;
+	if (!history) return false;
+	const name: string = ((nodeId && auditStore.logById(nodeId)) || auditStore.log).name;
+	const sequence = history.baseline.get(name);
+	if (sequence === undefined) return true;
+	const now = performance.now();
+	if (now < (history.recheckAt.get(name) ?? -Infinity)) return false;
+	history.recheckAt.set(name, now + ABORT_MARKED_RECHECK_MS);
+	try {
+		const rootStore = auditStore.rootStore;
+		if (rootStore.listLogs().includes(name)) {
+			const stats = rootStore.useLog(name).getStats();
+			if (stats.fileCount > 0 && stats.oldestSequenceNumber <= sequence) return false;
+		}
+	} catch (error) {
+		warnContained('Error checking which transaction-log files predate abort markers', error);
+		return false;
+	}
+	history.baseline.delete(name);
+	return true;
 }
 
 /**
