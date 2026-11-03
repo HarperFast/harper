@@ -5242,7 +5242,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
 				attributeDescriptor.nullable !== attribute.nullable ||
-				attributeDescriptor.version !== attribute.version ||
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||

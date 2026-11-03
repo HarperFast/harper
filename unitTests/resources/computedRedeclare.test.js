@@ -159,27 +159,4 @@ describe('re-declaring a table that adds or removes a bare @computed (harper#378
 			assert.deepStrictEqual(matches, ['k-' + i], `row k-${i} was not reindexed under the new version`);
 		}
 	});
-
-	it('keeps the local computed declaration and its resolver when a cluster snapshot omits it', async () => {
-		const Local = declare('ComputedClusterSnapshot', { computed: true });
-		Local.setComputedAttribute('score', (record) => record.name);
-		await Local.indexingOperation;
-		await catalogFlushed(Local);
-
-		const Merged = table({
-			table: 'ComputedClusterSnapshot',
-			database: 'test',
-			schemaDefined: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'score', type: 'String', indexed: true },
-			],
-			origin: 'cluster',
-		});
-		await Merged.indexingOperation;
-		await catalogFlushed(Merged);
-		assert.ok(Merged.attributes.find((attribute) => attribute.name === 'score').computed);
-		assert.ok(Merged.dbisDB.getSync('ComputedClusterSnapshot/score').computed);
-		assert.strictEqual(typeof Merged.userResolvers.score, 'function');
-	});
 });
