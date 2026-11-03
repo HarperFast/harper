@@ -331,20 +331,73 @@ storage:
 
 ### `storage.rocks.writeBufferManagerAllowStall`
 
-<VersionBadge version="v5.1.0" />
+<VersionBadge version="v5.1.0" /> <VersionBadge type="changed" version="v5.3.0" />
 
 Type: `boolean`
 
-Default: `true`
+Default: `false` (`true` in v5.2.8 and earlier)
 
 Controls behavior when memtable memory reaches `writeBufferManagerSize`:
 
 - `false` (soft cap) — Memtables may briefly exceed the limit. RocksDB compensates by flushing more aggressively. Writes proceed without latency spikes; total memory may temporarily overshoot during bursts.
 - `true` (hard cap) — Writes are stalled until flushes free up memory. Total memtable memory is strictly bounded; write latency can spike during bursts.
 
-The default (`true`) strictly bounds total memtable memory, applying write backpressure rather than letting memtables overshoot — which also keeps bulk ingest from outrunning the memtable flush/conflict-check window. Set to `false` for a soft cap when write-latency smoothness matters more than a strict memory bound and brief overshoot during bursts is acceptable.
+The default (`false`) is a soft cap because a stalling manager pauses every writer in the process. When the budget is held across enough column families, nothing triggers the flush that would release the writers, and only a restart recovers. The cost of the soft cap is memory: total memtable memory can overshoot the budget during bursts. Set to `true` for a strict memory bound when write backpressure is acceptable. With stalls allowed, the default [flush policy](#storagerockswritebuffermanagerflushpolicy) is `largestAcrossDBs` (as of v5.4.0), which flushes memory held by idle databases instead of waiting on it.
 
-This option is the only `WriteBufferManager` setting that can be changed at runtime — `costToCache` is fixed at first creation.
+`allowStall` and `writeBufferManagerFlushPolicy` are re-applied to the running manager when they change, so restarting the worker threads (`restart_service`) is enough to change them. `costToCache` is fixed when the manager is first created.
+
+### `storage.rocks.writeBufferManagerFlushPolicy`
+
+<VersionBadge version="v5.4.0" />
+
+Type: `string` (`oldest`, `largest`, or `largestAcrossDBs`)
+
+Default: `largestAcrossDBs` when `writeBufferManagerAllowStall` is `true`, otherwise `oldest`
+
+Selects which memtable is flushed when memtable memory is over `writeBufferManagerSize`:
+
+- `oldest` — Flush the oldest memtable of the database being written.
+- `largest` — Currently behaves like `oldest`, because Harper's databases use atomic flush.
+- `largestAcrossDBs` — A background thread flushes whichever database holds the most memtable memory, even if it is not being written.
+
+While no policy is set, the default follows `writeBufferManagerAllowStall`, including later changes to it. With stalls allowed, `oldest` can stall writes forever: the writer waits for memory that is held by idle databases, and `oldest` only flushes the database being written.
+
+```yaml
+storage:
+  rocks:
+    writeBufferManagerAllowStall: true
+    writeBufferManagerFlushPolicy: largestAcrossDBs
+```
+
+Has no effect when `storage.rocks.writeBufferManagerSize` is `0`. A changed value applies when the worker threads restart (`restart_service`). Once set, though, a policy stays in effect until Harper fully restarts (the `restart` operation): removing it from the configuration and restarting only the worker threads does not restore the default. An invalid value is ignored, the same as removing the key: the default applies if no policy was set earlier in the process, otherwise the earlier policy stays.
+
+### `storage.rocks.arenaBlockSize`
+
+<VersionBadge version="v5.4.0" />
+
+Type: `number` (bytes)
+
+Default: automatic — `writeBufferManagerSize / 2048`, at least 64 KiB and at most 1 MiB
+
+The size of the blocks each RocksDB column family's memtable allocates memory from. Every column family that has been written holds at least one block, and that block is charged to the `writeBufferManagerSize` budget even while the table is idle. With many tables, large blocks can use up a small budget and cause constant small flushes.
+
+The automatic size scales with the budget:
+
+| `writeBufferManagerSize` | Arena block size |
+| ------------------------ | ---------------- |
+| 64 MiB                   | 64 KiB           |
+| 1 GiB                    | 512 KiB          |
+| 2 GiB or more            | 1 MiB            |
+
+The automatic size is also capped at one eighth of the memtable size. Without a write buffer manager (`writeBufferManagerSize: 0`), RocksDB's own default of 1 MiB applies. Set to `0`, or leave unset, for the automatic size.
+
+```yaml
+storage:
+  rocks:
+    arenaBlockSize: 131072 # 128 KiB
+```
+
+The size is read when a database is opened, so a full [`restart`](../operations-api/operations.md#restart) is what reliably applies a change. Invalid values (non-integers, negatives, strings) are ignored and the default is used.
 
 ## RocksDB Transaction Log
 
