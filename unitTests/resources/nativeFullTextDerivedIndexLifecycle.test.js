@@ -79,11 +79,12 @@ class FakeNativeModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 13,
+			nativeAbiVersion: 14,
+			queryApiVersion: 8,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 7,
+			queryApiVersion: 8,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
@@ -207,6 +208,9 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const binding = await loadFullTextNativeBinding();
 		const runtime = await binding.runtimeInfo();
 		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
+		assert.strictEqual(runtime.nativeAbiVersion, 14);
+		assert.strictEqual(runtime.queryApiVersion, 8);
+		assert.strictEqual(runtime.telemetryApiVersion, 1);
 		assert.strictEqual(runtime.tantivyVersion, '0.27.0');
 		validateFullTextRuntimeVersions(runtime);
 		assert.strictEqual(runtime.lifecycleApiVersion, 1);
@@ -548,11 +552,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 13,
+			nativeAbiVersion: 14,
+			queryApiVersion: 8,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 7,
+			queryApiVersion: 8,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
@@ -580,7 +585,8 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 13,
+			nativeAbiVersion: 14,
+			queryApiVersion: 8,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
@@ -697,7 +703,7 @@ function upgradeNativeOptions(configuration, lifecycle) {
 	};
 }
 
-describe('published full-text 0.5.0 and 0.7.0 to 0.8.0 migration', function () {
+describe('published full-text historical releases to the pinned release migration', function () {
 	this.timeout(60_000);
 	let binding;
 	let rootPath;
@@ -709,42 +715,46 @@ describe('published full-text 0.5.0 and 0.7.0 to 0.8.0 migration', function () {
 		assert.strictEqual((await binding.runtimeInfo()).packageVersion, fullTextPackageVersion);
 	});
 
-	it('reuses a genuine 0.7 filter-free checkpoint through 0.8 writes and 0.7 reopen', async () => {
-		const configuration = options(path.join(rootPath, 'native-v07-upgrade'), binding, { surfaceTerms: true });
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
-		await lifecycle.initialize({ reclaimRetired: false });
-		const native = upgradeNativeOptions(configuration, lifecycle);
-		const payload = encodeFullTextCursorPayload({ format: 1, logs: { local: 42 } });
-		previousFullTextProcess(
-			'seed',
-			native,
-			[{ id: 'old', version: '1', fields: { title: 'catalog' } }],
-			payload,
-			'0.7.0'
-		);
-		assert.deepStrictEqual(lifecycle.inspect(), { state: 'checkpointed', committedPayload: payload });
-		const index = await lifecycle.open();
-		try {
-			assert.deepStrictEqual(
-				(await index.search({ text: 'catalog' })).hits.map(({ id }) => id),
-				['old']
-			);
-			await index.applyMutationBatch({
-				upserts: [{ id: 'new', version: '2', fields: { title: 'catalog' } }],
-				deletes: [],
+	for (const previousVersion of ['0.7.0', '0.8.0']) {
+		it(`reuses a genuine ${previousVersion} checkpoint through ${fullTextPackageVersion} writes and reopen`, async () => {
+			const configuration = options(path.join(rootPath, `native-${previousVersion}-upgrade`), binding, {
+				surfaceTerms: true,
 			});
-			await index.publish(encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }));
-		} finally {
-			await index.close({ mode: 'rollback' });
-		}
-		const reopened = previousFullTextProcess('inspect', native, undefined, undefined, '0.7.0');
-		assert.deepStrictEqual(reopened.inspection, {
-			state: 'checkpointed',
-			committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }),
+			const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+			await lifecycle.initialize({ reclaimRetired: false });
+			const native = upgradeNativeOptions(configuration, lifecycle);
+			const payload = encodeFullTextCursorPayload({ format: 1, logs: { local: 42 } });
+			previousFullTextProcess(
+				'seed',
+				native,
+				[{ id: 'old', version: '1', fields: { title: 'catalog' } }],
+				payload,
+				previousVersion
+			);
+			assert.deepStrictEqual(lifecycle.inspect(), { state: 'checkpointed', committedPayload: payload });
+			const index = await lifecycle.open();
+			try {
+				assert.deepStrictEqual(
+					(await index.search({ text: 'catalog' })).hits.map(({ id }) => id),
+					['old']
+				);
+				await index.applyMutationBatch({
+					upserts: [{ id: 'new', version: '2', fields: { title: 'catalog' } }],
+					deletes: [],
+				});
+				await index.publish(encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }));
+			} finally {
+				await index.close({ mode: 'rollback' });
+			}
+			const reopened = previousFullTextProcess('inspect', native, undefined, undefined, previousVersion);
+			assert.deepStrictEqual(reopened.inspection, {
+				state: 'checkpointed',
+				committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }),
+			});
+			assert.deepStrictEqual(reopened.searchIds, ['new', 'old']);
+			assert.strictEqual(reopened.openError, undefined);
 		});
-		assert.deepStrictEqual(reopened.searchIds, ['new', 'old']);
-		assert.strictEqual(reopened.openError, undefined);
-	});
+	}
 
 	it('rejects old checkpoints, retires them and refuses unsafe downgrade opens', async () => {
 		const configuration = options(path.join(rootPath, 'native-upgrade-lifecycle'), binding, { surfaceTerms: true });

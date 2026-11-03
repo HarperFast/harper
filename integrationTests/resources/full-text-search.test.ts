@@ -306,10 +306,9 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
 		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
 		assert.strictEqual(info.mutationBatchApiVersion, 5);
-		assert.ok(
-			(info.nativeAbiVersion === 13 && info.queryApiVersion === 7) ||
-				(info.nativeAbiVersion === 14 && info.queryApiVersion === 8)
-		);
+		assert.strictEqual(info.nativeAbiVersion, 14);
+		assert.strictEqual(info.queryApiVersion, 8);
+		assert.strictEqual(info.telemetryApiVersion, 1);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');

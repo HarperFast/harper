@@ -805,11 +805,11 @@ class FakeNativeFullTextModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 13,
+			nativeAbiVersion: 14,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 7,
+			queryApiVersion: 8,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
