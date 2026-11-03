@@ -130,7 +130,7 @@ describe('delegated reads reusing one query object', function () {
 		await Employee.put('50% off', { id: '50% off', name: 'Ada', departmentId: 'd1' });
 	});
 	after(function () {
-		setMainIsWorker(previousMainIsWorker);
+		if (previousMainIsWorker !== undefined) setMainIsWorker(previousMainIsWorker);
 	});
 
 	for (const [mode, getTable] of [
@@ -295,6 +295,51 @@ describe('delegated reads reusing one query object', function () {
 				assertAuthored(root);
 			});
 
+			for (const [shape, Base] of [
+				['class', class {}],
+				['RequestTarget subclass', RequestTarget],
+			]) {
+				it(`reads private-field accessors on a query ${shape}`, async function () {
+					class PrivateQuery extends Base {
+						#conditions = [{ attribute: 'id', value: 'e1' }];
+						#select = authoredSelect();
+						get conditions() {
+							return this.#conditions;
+						}
+						get select() {
+							return this.#select;
+						}
+						get checkPermission() {
+							return true;
+						}
+						get unused() {
+							throw new Error('unused getters must stay unevaluated');
+						}
+					}
+					const root = new PrivateQuery();
+					for (const user of [broadUser, restrictedUser, broadUser])
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+					assert.strictEqual(root.checkPermission, true);
+					assert.deepStrictEqual(plain(root.select), authoredSelect());
+					assert.deepStrictEqual(root.conditions, [{ attribute: 'id', value: 'e1' }]);
+				});
+			}
+
+			it('normalizes iterable conditions on a frozen class copy', async function () {
+				class FrozenQuery {
+					id = 'e1';
+					conditions = new Set([{ attribute: 'id', value: 'e1' }]);
+					select = authoredSelect();
+					checkPermission = true;
+				}
+				const root = Object.freeze(new FrozenQuery());
+				for (const user of [restrictedUser, broadUser])
+					assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+				assert.strictEqual(root.checkPermission, true);
+				assert.deepStrictEqual(plain(root.select), authoredSelect());
+				assert.deepStrictEqual([...root.conditions], [{ attribute: 'id', value: 'e1' }]);
+			});
+
 			it('copies a frozen query object of a class', async function () {
 				class FrozenQuery {
 					constructor() {
@@ -445,8 +490,21 @@ describe('delegated reads reusing one query object', function () {
 		for (const [entry, run] of Object.entries(entries)) {
 			it(`is refused when ${entry} is asked to authorize it`, async function () {
 				await assert.rejects(async () => run(broadUser), refusedAsStale);
+				await assert.rejects(async () => run(restrictedUser), refusedAsStale);
 			});
 		}
+
+		it('refuses a delegate reauthorizing a spread of its narrowed transport target', async function () {
+			class Forwarding extends Employee {
+				get(target) {
+					return Employee.get({ ...target, checkPermission: true }, this.getContext());
+				}
+			}
+			const target = markDispatchTarget(new RequestTarget('/e1'));
+			target.select = authoredSelect();
+			target.checkPermission = true;
+			await assert.rejects(async () => Forwarding.get(target, { user: restrictedUser }), refusedAsStale);
+		});
 
 		it('is still served to a trusted read that asks for no authorization', async function () {
 			const root = stampedRoot({ checkPermission: undefined });

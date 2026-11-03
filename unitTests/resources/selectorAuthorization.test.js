@@ -106,7 +106,7 @@ describe('relationship selector authorization isolation', function () {
 		});
 	});
 	after(function () {
-		setMainIsWorker(previousMainIsWorker);
+		if (previousMainIsWorker !== undefined) setMainIsWorker(previousMainIsWorker);
 	});
 	async function read(
 		method,
@@ -223,6 +223,40 @@ describe('relationship selector authorization isolation', function () {
 				);
 			assertUnchanged(selection, original);
 		});
+		for (const [shape, Base] of [
+			['class', class {}],
+			['array subclass', Array],
+		]) {
+			it(`${method} preserves private-field predicates on a selector ${shape}`, async function () {
+				class FilteredSelection extends Base {
+					#id;
+					name = 'child';
+					select = ['id'];
+					constructor(id) {
+						super();
+						this.#id = id;
+					}
+					get conditions() {
+						return [{ attribute: 'id', value: this.#id }];
+					}
+					get unused() {
+						throw new Error('unused getters must stay unevaluated');
+					}
+				}
+				for (const id of ['missing-child', 'c1']) {
+					const selection = new FilteredSelection(id);
+					for (const user of [restrictedUser, broadUser]) {
+						const result = await read(method, selection, user);
+						assert.strictEqual(result.id, 'p1');
+						if (id === 'c1') assert.deepStrictEqual(result.child, { id: 'c1' });
+						else assert.strictEqual(result.child, undefined);
+					}
+					assert.deepStrictEqual(selection.select, ['id']);
+					assert.deepStrictEqual(selection.conditions, [{ attribute: 'id', value: id }]);
+					assert.deepStrictEqual(Object.getOwnPropertySymbols(selection), []);
+				}
+			});
+		}
 		it(`${method} still omits a related table the caller cannot read`, async function () {
 			const deniedUser = {
 				role: { permission: { [database]: { tables: { Parent: { read: true }, Child: { read: false } } } } },

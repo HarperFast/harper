@@ -1,7 +1,5 @@
 import { threadId } from 'node:worker_threads';
 
-// Each delegate owns ONE module-level query object and reuses it for every request, through the documented
-// pattern: `checkPermission: true` on the query, the requesting context as the second argument.
 const employeeSelect = () => ['id', 'name', { name: 'department', select: ['id', 'label', 'secret'] }];
 const ROOTS = {};
 
@@ -73,7 +71,6 @@ export class SelectorDocs extends Resource {
 	}
 }
 
-// A nested selector shared by a user-facing table resource and trusted server code.
 const INTERNAL_SELECT = employeeSelect();
 export class SharedSelectorCard extends tables.ReuseEmployee {
 	static loadAsInstance = false;
@@ -110,8 +107,6 @@ export class RootState extends Resource {
 	}
 }
 
-// A default-mode resource that forwards the REST target it was dispatched with to a caching table, asking for that
-// table's authorization too: REST reads the cache disposition back off that same target to set `Age`.
 let sourceReads = 0;
 tables.ReuseCachedLabel.sourcedFrom({
 	get(id) {

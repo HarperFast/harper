@@ -298,7 +298,7 @@ import {
 	getStorageSpaceStats,
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
-import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget } from './RequestTarget.ts';
+import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget, copyQueryTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
@@ -2388,7 +2388,7 @@ export function makeTable(options): TableResourceClass {
 			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
 			if (!relatedTable) return property;
 			if (!property.name) property = { name: property };
-			else property = Array.isArray(property) ? Object.assign([], property) : { ...property };
+			else property = copyQueryTarget(property);
 			// a REST property set (`related{a,b}`) is an Array whose entries are the sub-selection
 			if (Array.isArray(property) && (property as any).select == null) (property as any).select = [...property];
 			// authority comes from the request being authorized, never from the selection itself

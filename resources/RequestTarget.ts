@@ -9,11 +9,38 @@ export let markDispatchTarget: (target: RequestTarget) => RequestTarget;
 let isDispatchTarget: (target: any) => boolean;
 let copyRequestTarget: (source: RequestTarget) => RequestTarget;
 
-// own data properties, so the gate's writes never reach an accessor the caller's class defines
-function ownAuthorizationFields(source: any, descriptors: PropertyDescriptorMap): PropertyDescriptorMap {
-	for (const name of ['checkPermission', 'select']) {
-		if (name in source)
-			descriptors[name] = { value: source[name], writable: true, enumerable: true, configurable: true };
+function copyQueryFields(source: any, stop = Object.prototype): PropertyDescriptorMap {
+	const descriptors: PropertyDescriptorMap = Object.create(null);
+	for (let object = source; object && object !== stop; object = Object.getPrototypeOf(object)) {
+		for (const name of Reflect.ownKeys(object)) {
+			if (Object.hasOwn(descriptors, name)) continue;
+			const descriptor = Object.getOwnPropertyDescriptor(object, name);
+			if (!descriptor) continue;
+			if ('value' in descriptor) {
+				if (object !== source && typeof descriptor.value === 'function') continue;
+				descriptors[name] = { ...descriptor, writable: true, configurable: true };
+			} else {
+				const materialize = (receiver: any, value: any) => {
+					Object.defineProperty(receiver, name, {
+						value,
+						writable: true,
+						enumerable: descriptor.enumerable,
+						configurable: true,
+					});
+					return value;
+				};
+				descriptors[name] = {
+					get() {
+						return materialize(this, Reflect.get(source, name, source));
+					},
+					set(value) {
+						materialize(this, value);
+					},
+					enumerable: descriptor.enumerable,
+					configurable: true,
+				};
+			}
+		}
 	}
 	return descriptors;
 }
@@ -32,11 +59,10 @@ export class RequestTarget extends URLSearchParams {
 			for (const [name, value] of source) URLSearchParams.prototype.append.call(copy, name, value);
 			copy.#target = source.#target;
 			copy.#dispatchOwned = true;
-			Object.assign(copy, source);
 			const prototype = Object.getPrototypeOf(source);
-			if (prototype !== RequestTarget.prototype) {
-				Object.defineProperties(copy, ownAuthorizationFields(source, {}));
-				// a subclass's other accessors, such as computed conditions, still answer on the copy
+			if (prototype === RequestTarget.prototype) Object.assign(copy, source);
+			else {
+				Object.defineProperties(copy, copyQueryFields(source, RequestTarget.prototype));
 				Object.setPrototypeOf(copy, prototype);
 			}
 			return copy;
@@ -212,6 +238,25 @@ export class RequestTarget extends URLSearchParams {
 }
 export type RequestTargetOrId = RequestTarget | Id;
 
+export function copyQueryTarget<T>(source: T): T {
+	if (source instanceof RequestTarget) return copyRequestTarget(source) as T;
+	if (source instanceof URLSearchParams) return Object.assign(new URLSearchParams(source), source);
+	const prototype = Object.getPrototypeOf(source);
+	if (Array.isArray(source)) {
+		const copy = Object.assign([], source);
+		copy.length = source.length;
+		if (prototype !== Array.prototype) {
+			const descriptors = copyQueryFields(source, Array.prototype);
+			descriptors.length.configurable = false;
+			Object.defineProperties(copy, descriptors);
+			Object.setPrototypeOf(copy, prototype);
+		}
+		return copy as T;
+	}
+	if (prototype === Object.prototype) return { ...source };
+	return Object.create(prototype, copyQueryFields(source));
+}
+
 /** Authorization writes only on a target this dispatch owns, so a caller's query object stays reusable. */
 export function dispatchTarget<T>(target: T): T {
 	if (isDispatchTarget(target)) return target;
@@ -219,10 +264,5 @@ export function dispatchTarget<T>(target: T): T {
 		throw new ServerError(
 			'Can not authorize a query object that an earlier authorization already narrowed; pass a query object that has not been authorized'
 		);
-	if (target instanceof RequestTarget) return copyRequestTarget(target) as T;
-	if (target instanceof URLSearchParams) return Object.assign(new URLSearchParams(target), target);
-	if (Array.isArray(target)) return Object.assign([], target) as T;
-	const prototype = Object.getPrototypeOf(target);
-	if (prototype === Object.prototype) return { ...target };
-	return Object.create(prototype, ownAuthorizationFields(target, Object.getOwnPropertyDescriptors(target)));
+	return copyQueryTarget(target);
 }
