@@ -939,6 +939,7 @@ function overflowResolver(
 	transaction: any
 ) {
 	let condition = filter;
+	const checkActive = getReadTransactionGuard(transaction);
 	const matches = (record: any) => (condition ??= filterByType(searchCondition, Table, null, filtered, false))(record);
 	const recover = (entry, record) => {
 		entry.recovered =
@@ -947,10 +948,12 @@ function overflowResolver(
 	};
 	return (sync: boolean, entry) => {
 		if (sync) return recover(entry, Table.primaryStore.getEntry(entry.value, { transaction })?.value);
-		const load = () =>
-			when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
+		const load = () => {
+			checkActive?.();
+			return when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
 				recover(entry, loaded?.value)
 			);
+		};
 		if (!filter) return load();
 		return new Promise((resolve, reject) =>
 			setImmediate(() => {

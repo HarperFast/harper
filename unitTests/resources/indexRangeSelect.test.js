@@ -35,7 +35,7 @@ describe('Secondary-index range select', function () {
 	});
 
 	after(function () {
-		Records.dropTable();
+		Records?.dropTable();
 	});
 
 	const range = [{ attribute: 'score', comparator: 'between', value: [3, 6] }];
@@ -233,7 +233,7 @@ describe('Secondary-index range select', function () {
 		});
 
 		after(function () {
-			Covered.dropTable();
+			Covered?.dropTable();
 		});
 
 		async function withReads(Table, callback) {
@@ -554,6 +554,15 @@ describe('Secondary-index range select', function () {
 					{ conditions: [{ attribute: 'tags', comparator: 'ge', value: 'x' }], select: ['id'] },
 					[{ id: 'row-1' }, { id: 'row-2' }]
 				);
+				await Lists.put({ id: ['sku'], score: 9, tags: ['z'], anything: 'z', untyped: 'z', ref: 'z' });
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 9 }], select: ['id', 'score'] }, [
+					{ id: 'sku', score: 9 },
+				]);
+				const { result: loadedId, reads: loadedIdReads } = await withReads(Lists, () =>
+					rows(Lists, { conditions: [{ attribute: 'score', value: 9 }], select: ['id', 'tags'] })
+				);
+				assert.deepStrictEqual(loadedId, [{ id: ['sku'], tags: ['z'] }]);
+				assert.equal(loadedIdReads, 1);
 
 				for (const Keyed of [Composite, ArrayKey]) {
 					await Keyed.put({ id: ['sku'], score: 7, label: 'single-element' });
@@ -881,10 +890,13 @@ describe('Secondary-index range select', function () {
 
 		it('records one db-read per covered row', async function () {
 			const wasEnabled = checkAnalyticsEnabled();
+			setAnalyticsEnabled(false);
 			setAnalyticsEnabled(true);
+			let collecting = true;
 			try {
 				const reads = [];
 				addAnalyticsListener((metrics) => {
+					if (!collecting) return;
 					for (const metric of metrics)
 						if (metric.metric === 'db-read' && metric.path === 'IndexRangeCoveredTest') reads.push(metric);
 				});
@@ -896,9 +908,13 @@ describe('Secondary-index range select', function () {
 				);
 				assert.equal(primaryReads, 0);
 				await waitFor(() => reads.length > 0, { timeout: 10_000, message: 'no analytics report was flushed' });
-				assert.equal(reads[0].count, result.length);
+				assert.equal(
+					reads.reduce((sum, metric) => sum + metric.count, 0),
+					result.length
+				);
 				assert.equal(reads[0].mean, 1);
 			} finally {
+				collecting = false;
 				setAnalyticsEnabled(wasEnabled);
 			}
 		});

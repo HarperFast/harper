@@ -356,7 +356,7 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
-// declared types `validate` holds to one value: `ID` admits an array of strings
+// declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
@@ -7903,6 +7903,7 @@ export function makeTable(options): TableResourceClass {
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
 			try {
+				// resources/DESIGN.md, Per-row read work on RocksDB index scans (and A past-expiry record stays queryable until eviction)
 				const coveredAttribute =
 					select !== undefined &&
 					!postOrdering &&
@@ -8965,7 +8966,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						// resources/DESIGN.md, A past-expiry record stays queryable until eviction
+						// resources/DESIGN.md, A past-expiry record stays queryable until eviction (scheduleCleanup)
 						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
 						if (context.onlyIfCached) {

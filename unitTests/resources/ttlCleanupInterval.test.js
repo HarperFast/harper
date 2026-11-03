@@ -54,11 +54,15 @@ describe('TTL cleanup scan interval', () => {
 
 	it('the number form derives the interval from the new expiration', async () => {
 		const Table = table({ table: 'TtlNumberForm', database: 'test', attributes: [{ name: 'id', isPrimaryKey: true }] });
-		Table.setTTLExpiration(3600);
-		Table.setTTLExpiration(0.05);
-		await Table.put(1, { id: 1 });
-		await Table.primaryStore.committed;
-		await waitFor(() => !stored(Table, 1), { timeout: 5000, message: 'the expired record was never evicted' });
+		try {
+			Table.setTTLExpiration(3600);
+			Table.setTTLExpiration(0.05);
+			await Table.put(1, { id: 1 });
+			await Table.primaryStore.committed;
+			await waitFor(() => !stored(Table, 1), { timeout: 5000, message: 'the expired record was never evicted' });
+		} finally {
+			Table.cleanup();
+		}
 	});
 
 	it('an expired record stays queryable until the scan evicts it', async () => {
@@ -72,19 +76,23 @@ describe('TTL cleanup scan interval', () => {
 				{ name: 'kind', indexed: true },
 			],
 		});
-		await Table.put(1, { id: 1, kind: 'a' });
-		await Table.primaryStore.committed;
-		const { expiresAt } = Table.primaryStore.getEntry(1);
-		await sleep(expiresAt + 10 - Date.now());
-		const rows = [];
-		for await (const row of Table.search({ conditions: [{ attribute: 'kind', value: 'a' }] })) rows.push(row);
-		assert(Date.now() < expiresAt + 2_000, 'the query ran after the eviction window opened');
-		assert.deepStrictEqual(
-			rows.map((row) => row.id),
-			[1]
-		);
-		assert(stored(Table, 1), 'a query does not evict');
-		await waitFor(() => !stored(Table, 1), { timeout: 10_000, message: 'the expired record was never evicted' });
+		try {
+			await Table.put(1, { id: 1, kind: 'a' });
+			await Table.primaryStore.committed;
+			const { expiresAt } = Table.primaryStore.getEntry(1);
+			await sleep(expiresAt + 10 - Date.now());
+			const rows = [];
+			for await (const row of Table.search({ conditions: [{ attribute: 'kind', value: 'a' }] })) rows.push(row);
+			assert(Date.now() < expiresAt + 2_000, 'the query ran after the eviction window opened');
+			assert.deepStrictEqual(
+				rows.map((row) => row.id),
+				[1]
+			);
+			assert(stored(Table, 1), 'a query does not evict');
+			await waitFor(() => !stored(Table, 1), { timeout: 10_000, message: 'the expired record was never evicted' });
+		} finally {
+			Table.cleanup();
+		}
 	});
 
 	it('the number form keeps a configured scanInterval', () => {
@@ -100,14 +108,18 @@ describe('TTL cleanup scan interval', () => {
 			return originalSetTimeout(callback, delay, ...args);
 		};
 		try {
-			Table.setTTLExpiration({ expiration: 0.05, scanInterval: 3600 });
-			delays.length = 0;
-			Table.setTTLExpiration(0.01);
+			try {
+				Table.setTTLExpiration({ expiration: 0.05, scanInterval: 3600 });
+				delays.length = 0;
+				Table.setTTLExpiration(0.01);
+			} finally {
+				global.setTimeout = originalSetTimeout;
+			}
+			// rescheduled only if the interval changed; a derived 2.5ms interval would have rescheduled
+			assert.deepStrictEqual(delays, []);
 		} finally {
-			global.setTimeout = originalSetTimeout;
+			Table.cleanup();
 		}
-		// rescheduled only if the interval changed; a derived 2.5ms interval would have rescheduled
-		assert.deepStrictEqual(delays, []);
 	});
 
 	it('an eviction-only table loaded from the catalog arms the scan', () => {

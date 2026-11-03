@@ -194,7 +194,7 @@ A read-only process stages no writes: every producer passes `DatabaseTransaction
 
 ## A past-expiry record stays queryable until eviction
 
-Eviction trails expiry. Until then search returns an expired record as stored; a caching table's loaded select refreshes it unless only-if-cached or `includeExpired` (SQL writes). With no source get, get, only-if-cached get (504), subscribe and `withLocalEntry` (no `ETag`) treat it as absent (`isHiddenExpiry`). Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
+Eviction (`scheduleCleanup`) trails expiry (`ttlCleanupInterval.test.js`). Search returns an expired record as stored (covered selects too); a caching table's loaded select refreshes it unless only-if-cached or `includeExpired` (SQL). With no source get, get, only-if-cached get (504), subscribe and `withLocalEntry` (no `ETag`) hide it (`isHiddenExpiry`). Expiry resolves at commit (option, context, field, default); an out-of-order write keeps its base's expiry (`onlyIfCachedExpiry.test.js`).
 
 ## RocksDB range activity and snapshot expiration
 
@@ -202,7 +202,7 @@ Eviction trails expiry. Until then search returns an expired record as stored; a
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not the caller's options (`uncachedRead` and cache-disabled reads forward it); add options there. A covered select (`coverIndexEntries`) reads no record (overflow and `-0` keys aside); it covers only attributes declared scalar or untyped/ID PKs (`SCALAR_TYPES`); undeclared bigint/`[x]` ids lose type (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not caller options (`uncachedRead` forwards it); add options there. `coverIndexEntries` reads no record (overflow and `-0` keys aside); it covers attributes declared scalar (`SCALAR_TYPES`) or untyped/`ID` PKs; unvalidated values and untyped/`ID` `[x]` or bigint ids keep index form (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 
