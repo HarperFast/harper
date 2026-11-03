@@ -70,32 +70,15 @@ SES loads once via `loadSES` from `ses/index.js` ESM shims (shared by lockdown a
 
 ## `require()` and `import` pass the same gates in the VM loader (`security/jsLoader.ts`)
 
-In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `importModuleDynamically` hooks, CommonJS `cjsRequire`) apply in order: `'harper'` alias, `checkAllowedModulePath` (`allowedDirectory`, `allowedBuiltInModules`, substitutes like constrained `child_process`), `shouldUseApplicationLoader`, and `readApplicationModule` (byte tracking + TS strip); `require()` differs only in sync native `require(path)` vs `import()`. New entry points/branches owe all four. URL-keyed `cjsCache` (app CommonJS) and `nativeModules` (registered before native `require()`/`import()`, released if failed unloaded) share one instance per scope across `require()` and `import`, returning post-check hits directly. Only a wrapper compile error triggers `createModuleFromSource`'s ESM retry; evaluation throws propagate. Uncovered: app-loaded ESM stays in `moduleCache` only (bare `require()` under `dependencyLoader: native` gets Node's `require(esm)` instance; JSON imports stay default-only), compartment `importHook`, and transitive `require()` in native packages (`CommonJS require` in `unitTests/security/jsLoader/jsLoader.test.js`, `integrationTests/components/cjs-require-loader.test.ts`, `integrationTests/components/require-confinement-parity.test.ts`).
+In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `importModuleDynamically` hooks, CommonJS `cjsRequire`) apply in order: `'harper'` alias, `checkAllowedModulePath` (`allowedDirectory`, `allowedBuiltInModules`, substitutes like constrained `child_process`), `shouldUseApplicationLoader`, and `readApplicationModule` (byte tracking + TS strip); `require()` differs only in sync native `require(path)` vs `import()`. New entry points/branches owe all four. URL-keyed `cjsCache` (app CommonJS) and `nativeModules` (registered before native `require()`/`import()`, released if failed unloaded) share one instance per scope across `require()` and `import`, returning post-check hits directly. Only a wrapper compile error triggers `createModuleFromSource`'s ESM retry; evaluation throws propagate. Uncovered: app-loaded ESM stays in `moduleCache` only (bare `require()` under `dependencyLoader: native` gets Node's `require(esm)` instance; JSON imports stay default-only), compartment `importHook` built-in substitution (see below for its `allowedPath` and CommonJS gates), and transitive `require()` in native packages (`CommonJS require` in `unitTests/security/jsLoader/jsLoader.test.js`, `integrationTests/components/cjs-require-loader.test.ts`, `integrationTests/components/require-confinement-parity.test.ts`).
 
-## The compartment `importHook` checks `allowedPath` before any branch loads a module (`security/jsLoader.ts`)
+### Compartment `importHook` checks `allowedPath` once (`security/jsLoader.ts`)
 
-`checkAllowedModulePath` runs once at the top of the compartment `importHook`, after the synthetic `harper`
-return and ahead of branch selection, so the `.node`, plain-file (`.js`, `.ts`, `.json`) and native-import
-branches cannot load a module it has not approved, and a branch added later inherits it (#3485). Each branch
-used to make its own call and the plain-file branch made none, so compartment mode loaded any file a relative,
-absolute or symlinked specifier reached while VM mode's ESM loader (`createModule`) refused it. This applies
-the existing prefix test only; it is not a containment boundary (#1929 and #2970 track that test's prefix and
-realpath gaps), and files a natively loaded dependency loads itself are outside it. Enforced by the
-`compartment importHook` block in `unitTests/security/jsLoader/jsLoader.test.js` and
-`integrationTests/components/compartment-allowed-directory.test.ts`.
+`checkAllowedModulePath` runs once at the top of the compartment `importHook`, after the synthetic `harper` return and ahead of branch selection, so `.node`, plain-file (`.js`, `.ts`, `.json`), and native-import branches cannot load an unapproved path, and future branches inherit the check (#3485; previously only the `.node` and native-import branches called it, loading out-of-tree plain files that VM `createModule` refused; the returned built-in replacement is still unused, #2284). Applies the existing prefix test only, not a containment boundary (#1929, #2970), and does not cover files loaded by native dependencies themselves. Plain-file refusal is enforced by `compartment importHook` in `unitTests/security/jsLoader/jsLoader.test.js` and `integrationTests/components/compartment-allowed-directory.test.ts`.
 
-## The compartment adds a CommonJS dependency's dynamic names to its native namespace (`security/jsLoader.ts`)
+### Compartment dynamic CommonJS names (`security/jsLoader.ts`)
 
-A bare or `node_modules` import in the compartment `importHook` is a native `import()`. For a CommonJS
-module, `dynamicCjsExports` copies the enumerable `module.exports` data properties the namespace lacks
-(leaving accessors uninvoked, skipping any Proxy trap that throws, and skipping a callable `then`, which
-would make a re-exporting namespace thenable) while every namespace key and the native
-`default` stay as they were (#3485). The module is found through its `require.cache` entry because Node 22
-gives a CommonJS namespace no `'module.exports'` key. `normalizeImportedModule` is not used here: it is a
-no-op on Node 22, and where the key exists it rebuilds the exports from enumerable properties, dropping names
-such as `Object.defineProperty(exports, ...)` and replacing a transpiled module's `default`. The VM loaders
-still use it. Enforced by the `CommonJS dependencies imported natively` block in
-`unitTests/security/jsLoader/jsLoader.test.js`.
+For a bare or `node_modules` native `import()` in the compartment `importHook`, `dynamicCjsExports` copies enumerable `module.exports` data properties the namespace lacks (skipping accessors, throwing Proxy traps, and any callable `then` that would make a re-exporting namespace thenable) while keeping all namespace keys and `default` intact (#3485). It reads `nativeRequire.cache` because Node 22 omits `'module.exports'` from the namespace; `normalizeImportedModule` (still used by the VM loaders) is a Node 22 no-op and elsewhere rebuilds exports from enumerable properties, dropping non-enumerable exports and replacing a transpiled `default` (`CommonJS dependencies imported natively` in `unitTests/security/jsLoader/jsLoader.test.js`).
 
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
