@@ -545,7 +545,9 @@ describe('Test searchValidator module', () => {
 				{
 					schema: 'searchValidatorTest',
 					table: 'test',
-					conditions: [{ attribute: 'children', conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }] }],
+					conditions: [
+						{ attribute: 'children', conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }] },
+					],
 				},
 				'conditions'
 			),
@@ -556,7 +558,9 @@ describe('Test searchValidator module', () => {
 			{
 				schema: 'searchValidatorTest',
 				table: 'test',
-				conditions: [{ attribute: 'unknownRel', conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }] }],
+				conditions: [
+					{ attribute: 'unknownRel', conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }] },
+				],
 			},
 			'conditions'
 		);
@@ -573,5 +577,19 @@ describe('Test searchValidator module', () => {
 		);
 		assert.ok(plainGroupErr instanceof Error);
 		assert.strictEqual(plainGroupErr.message, "unknown attribute 'label'");
+
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					conditions: [
+						{ attribute: null, operator: 'and', conditions: [{ attribute: 'name', comparator: 'equals', value: 'x' }] },
+					],
+				},
+				'conditions'
+			),
+			undefined
+		);
 	});
 });

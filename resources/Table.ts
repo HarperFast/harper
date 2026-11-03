@@ -8382,7 +8382,7 @@ export function makeTable(options): TableResourceClass {
 						conditions: condition.conditions.map((child) => throughRelationship(child, name, relatedKey)),
 					};
 				const attribute = condition[0] ?? condition.attribute;
-				const copy = Array.isArray(condition) ? { ...condition, value: condition[1] } : { ...condition };
+				const copy = { ...condition, value: condition[1] === undefined ? condition.value : condition[1] };
 				delete copy[0];
 				delete copy[1];
 				copy.attribute = [

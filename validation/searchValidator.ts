@@ -257,7 +257,7 @@ export default function (searchObject: any, type: any) {
 				//this is used to validate condition attributes exist in the schema
 				for (const condition of condGroup.conditions) {
 					if (condition.conditions) {
-						if (condition.attribute !== undefined) checkAttributes.push(condition.attribute);
+						if (condition.attribute != null) checkAttributes.push(condition.attribute);
 						else addConditions(condition);
 					}
 					// Table.search resolves full-text names together with source-field authorization.

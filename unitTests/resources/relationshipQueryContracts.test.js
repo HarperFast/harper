@@ -355,7 +355,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					assert.deepStrictEqual(rows, [], name);
 				}
 				assert.strictEqual(reads.sync + reads.async, 0);
-				// a key that matches does not bypass the other conditions on the same related record
+				// a key that matches does not bypass a sibling condition on the relationship
 				for (const [prefix, expected] of [
 					['match', ['parent-1']],
 					['zzz', []],

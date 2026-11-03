@@ -681,9 +681,24 @@ describe('Querying through Resource API', () => {
 			};
 			const name = { attribute: 'name', comparator: 'greater_than', value: 'many-to-many entry 4' };
 			const id = { attribute: 'id', comparator: 'less_than', value: 8 };
+			const expectedIds = [
+				'id-3',
+				'id-33',
+				'id-34',
+				'id-36',
+				'id-4',
+				'id-6',
+				'id-62',
+				'id-63',
+				'id-64',
+				'id-7',
+				'id-89',
+				'id-92',
+				'id-93',
+				'id-94',
+			];
 			let results = await search([{ attribute: 'manyToMany', conditions: [name, id] }]);
-			const sameRecordIds = results.map((r) => r.id).sort();
-			assert.equal(sameRecordIds.length, 14);
+			assert.deepEqual(results.map((r) => r.id).sort(), expectedIds);
 			for (let result of results) {
 				const related = await result.manyToMany;
 				assert(related.every((record) => record.name > 'many-to-many entry 4'));
@@ -693,10 +708,7 @@ describe('Querying through Resource API', () => {
 				{ ...name, attribute: ['manyToMany', 'name'] },
 				{ ...id, attribute: ['manyToMany', 'id'] },
 			]);
-			assert.deepEqual(
-				results.map((r) => r.id).sort(),
-				sameRecordIds
-			);
+			assert.deepEqual(results.map((r) => r.id).sort(), expectedIds);
 			let sawOnlyName = false;
 			let sawOnlyId = false;
 			for (let result of results) {

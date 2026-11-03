@@ -1,4 +1,4 @@
-import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
+import { ClientError, IndexRebuildingError, ServerError, Violation } from '../utility/errors/hdbError.ts';
 import { when } from '../utility/when.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
@@ -1041,9 +1041,10 @@ export function searchByIndex(
 					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
-					// (a same-record group on it is a plain group of paths by now: this join applies no `joined.filters`)
 					if ((joined as any).filters)
-						throw new Error(`A same-record group on ${firstAttributeName} reached a many-to-one join`);
+						throw new ServerError(
+							`A same-record group on ${firstAttributeName} reached a many-to-one join without being flattened`
+						);
 					results = (results as any).flatMap(searchEntry);
 				}
 			}
@@ -1636,7 +1637,7 @@ export function restrictRelationship(filtered, name: string, restriction: Map<an
 }
 /**
  * A same-record relationship condition: `{ attribute: relationship, operator, conditions }`, whose conditions are
- * relative to the related table and are met by one related record. It is identified by `attribute` alone.
+ * relative to the related table and are met by one related record.
  */
 export function isRelationshipGroup(condition): boolean {
 	return Boolean(condition?.conditions) && condition.attribute != null;
@@ -2492,8 +2493,9 @@ function usableIndex(table, attributeName): any {
 }
 
 /**
- * The related records a leading same-record group matches: one inner condition drives the scan and the rest go on
- * the join's `filters`, which the join applies to each related record; an OR unions its branches' scans.
+ * The related records a leading same-record group matches: the narrowest index-driving inner condition (always chosen
+ * by estimate) drives the scan and the rest go on the join's `filters`, which the join applies to each related record;
+ * an OR unions its branches' scans.
  */
 function searchRelatedGroup(group, transaction, reverse: boolean, table, joined, options) {
 	const context = options.leaseContext ?? options.context;
