@@ -154,18 +154,35 @@ function restoreResult(receipt: RestoreReceipt): Record<string, unknown> {
 
 /**
  * Before a new claim of a target: a committed receipt an earlier restore left is finished first, so a
- * new restore never starts over a generation whose bookkeeping is still pending.
+ * new restore never starts over a generation whose bookkeeping is still pending. Online, `reload`
+ * publishes the generation to every thread before the job row says COMPLETE, as the original restore
+ * would have; the claim that follows may refuse the target, so nothing later would reload it.
  */
-export async function finishOutstandingRestore(databaseDir: string): Promise<void> {
+export async function finishOutstandingRestore(databaseDir: string, reload?: () => Promise<void>): Promise<void> {
 	const read = readRestoreReceipt(databaseDir);
 	if (read.kind !== 'valid' || read.receipt.state !== 'committed') return;
+	let published: RestoreReceipt | undefined;
 	const lock = acquireRestoreLock(databaseDir);
 	try {
 		const again = readRestoreReceipt(databaseDir);
-		if (again.kind === 'valid' && again.receipt.state === 'committed')
-			await finishCommittedRestore(lock, again.receipt);
+		if (again.kind === 'valid' && again.receipt.state === 'committed') {
+			publishCommittedRestore(lock, again.receipt);
+			published = again.receipt;
+		}
 	} finally {
 		releaseRestoreLock(lock);
+	}
+	if (!published) return;
+	try {
+		await reload?.();
+	} catch (error) {
+		logger.error(`Restore of '${published.database}' is published, but not every thread reloaded it`, error);
+	}
+	const settling = acquireRestoreLock(databaseDir);
+	try {
+		await settleCommittedRestore(settling, published);
+	} finally {
+		releaseRestoreLock(settling);
 	}
 }
 
@@ -214,7 +231,7 @@ export async function publishRestore(request: PublishRestoreRequest): Promise<Re
 	const releaseMembership = request.checkPeers ? await acquireMembershipFence() : undefined;
 	try {
 		if (request.checkPeers) assertNoReplicationPeers(request.targetDatabase, request.checkPeers === 'routes');
-		await finishOutstandingRestore(request.databaseDir);
+		await finishOutstandingRestore(request.databaseDir, request.online && (() => request.online!.publish()));
 		return await publishUnderFence(request);
 	} finally {
 		releaseMembership?.();

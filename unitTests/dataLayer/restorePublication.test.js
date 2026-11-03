@@ -344,6 +344,73 @@ describeUnlessLmdb('restore publication', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp);
 		});
 
+		it('reloads a recovered restore into a new target before completing its job, though the retry refuses the target', async function () {
+			const fixture = await seededDatabase();
+			const target = `${fixture.name}_copy`;
+			databases.push(target);
+			const targetDir = resolveDatabasePath(target);
+			const markerPath = restoringMarkerPath(targetDir);
+			let marker;
+			// as in plantCommittedRestore: the proof succeeds, then clearing the marker fails as a real unlink does
+			const breakPublication = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (...args) => {
+				const evidence = await runRestoreChild(...args);
+				marker = readFileSync(markerPath);
+				rmSync(markerPath);
+				mkdirSync(join(markerPath, 'occupied'), { recursive: true });
+				return evidence;
+			});
+			let jobId;
+			try {
+				jobId = await seedJob();
+				const saved = process.env.PROCESS_NAME;
+				process.env.PROCESS_NAME = `JOB-${jobId}`;
+				try {
+					await assert.rejects(
+						restoreBackup({ ...SU, database: fixture.name, backup_id: fixture.backupId, target_database: target }),
+						/was applied and proven but could not be published/
+					);
+				} finally {
+					if (saved === undefined) delete process.env.PROCESS_NAME;
+					else process.env.PROCESS_NAME = saved;
+				}
+			} finally {
+				breakPublication();
+			}
+			rmSync(markerPath, { recursive: true });
+			writeFileSync(markerPath, marker);
+			assert.strictEqual(receiptOf(targetDir).state, 'committed');
+			assert.strictEqual(getDatabases()[target], undefined, 'precondition: no thread has the unpublished target');
+
+			const signalling = require('#js/utility/signalling');
+			const signalSchemaChange = signalling.signalSchemaChange;
+			const order = [];
+			const watchSignals = replaceExport(signalling, 'signalSchemaChange', async (message) => {
+				if (message?.restorePhase === 'reload' && message.schema === target) {
+					order.push(`reload (job ${(await job(jobId)).status})`);
+				}
+				return signalSchemaChange(message);
+			});
+			try {
+				// the retry finishes the committed restore first, then refuses the now-populated target
+				await assert.rejects(
+					restoreBackup({ ...SU, database: fixture.name, backup_id: fixture.backupId, target_database: target }),
+					/already exists/
+				);
+			} finally {
+				watchSignals();
+			}
+
+			assert.deepStrictEqual(
+				order,
+				[`reload (job ${JOB_STATUS_ENUM.IN_PROGRESS})`],
+				'reloaded once, before the job completed'
+			);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.strictEqual(readRestoreReceipt(targetDir).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(targetDir), false);
+			assert.ok(getDatabases()[target]?.Items, 'the reload made the restored target available without a rescan');
+		});
+
 		it('removes its receipt before its pin when it fails before destroying anything', async function () {
 			const fixture = await seededDatabase();
 			await closeDatabase(fixture.name);
