@@ -399,7 +399,7 @@ Type: `object`
 
 Default: omitted; collection is disabled
 
-Optionally collect telemetry from already-open [full-text indexes](../full-text-search/overview.md). Defaults are implied; add only the settings you want to change. To enable collection:
+Optionally collect telemetry from already-open [full-text indexes](../full-text-search/overview.md). Defaults are implied; add only the settings you want to change. Operator collection and persistence require Harper analytics to be enabled on a writable node. `analytics.aggregatePeriod: -1` disables analytics; read-only mode (`storage.readOnly`, `HARPER_READONLY` or the `--readonly` flag) also disables it. To enable full-text collection when those prerequisites hold:
 
 ```yaml
 analytics:
@@ -414,7 +414,7 @@ analytics:
 | `histograms`           | `boolean` | `false`       | Record optional latency histograms.                                                                                    |
 | `snapshotBytes`        | `boolean` | `false`       | Request cached reader-byte observations; enabling does not trigger publication or reload.                              |
 
-Set `enabled: false` or remove the block to stop operator collection and export. Invalid edits retain the last valid policy. Deleting the configuration file removes file-based operator demand and reapplies environment overlays to an empty file; collection remains enabled if an environment setting still requests it. Internal consumers can independently keep collection active without enabling persistence. A handle already closing retains its last options until close settles.
+Set `enabled: false` or remove the block to stop operator collection and export. Invalid edits retain the last valid policy. Deleting the configuration file removes file-based operator demand and reapplies `HARPER_DEFAULT_CONFIG`, `HARPER_CONFIG` and `HARPER_SET_CONFIG` overlays to an empty file; collection remains enabled if one of those overlays still requests it. Internal consumers can independently keep collection active without enabling persistence. A handle already closing retains its last options until close settles.
 
 See [Full-text analytics](../analytics/overview.md#full-text-analytics) for fields, cumulative-counter interpretation and collection costs.
 
