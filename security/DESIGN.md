@@ -245,11 +245,11 @@ Two consequences that are easy to miss:
 
 ## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
 
-`updateSession` / `loginWithSession` bind `SessionState` after stored fields are copied; detached calls work (`authSessions.test.js`). A property-assigned function literal pretenures its context (`CheckAssigningFunctionLiteralToProperty`), keeping the request graph until major GC (~1.8 KB/request, nearly 3× major GCs measured). Bind a module function or create a local first. `SESSION_VERSION` shares accessor functions: fresh functions put the clone in dictionary mode. `loadedSessions` keeps the record outside the request's function context.
+`updateSession` / `loginWithSession` bind `SessionState` after stored fields are copied, overriding a stored `update`; detached/copied calls work (`authSessions.test.js`). A property-assigned function literal pretenures its context (`CheckAssigningFunctionLiteralToProperty`), keeping the request graph until major GC (~1.8 KB/request, nearly 3× major GCs). Bind a module function or create a local first. `SESSION_VERSION` shares accessor functions: fresh functions put the clone in dictionary mode. `loadedSessions` keeps the record outside the request's function context.
 
 ## Conditional session updates are a best-effort pre-write check (`auth.ts`)
 
-`updateSession` rechecks outside the request snapshot: RocksDB uses `COMMITTED_SESSION_READ`; LMDB must renew its shared reader. It rejects non-live, changed or `VERSION_REUSED` rows before the ordinary put. In-flight, later or unreplicated writes can still race (`sessionUpdateIfVersion.test.js`).
+`updateSession` rechecks outside the request snapshot: RocksDB uses `COMMITTED_SESSION_READ`; LMDB must renew its shared reader. It rejects non-live, changed, `VERSION_REUSED` or engine-clock-ahead rows before the ordinary put. In-flight, later or unreplicated writes can still race (`sessionUpdateIfVersion.test.js`).
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 

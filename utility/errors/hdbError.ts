@@ -318,7 +318,7 @@ export class VersionConflictError extends ClientError {
 		reason?: string
 	) {
 		super(
-			`Conditional write to ${tableName} rejected: expected version ${expectedVersion}, found ` +
+			`Session update in ${tableName} rejected: expected version ${expectedVersion}, found ` +
 				`${actualVersion ?? 'no record'}${reason ? ` (${reason})` : ''}`,
 			409
 		);
