@@ -416,6 +416,8 @@ analytics:
 
 Set `enabled: false` or remove the block to stop operator collection and export. Invalid edits retain the last valid policy. Deleting the configuration file removes the file-based `analytics.fullText` setting and reapplies `HARPER_DEFAULT_CONFIG`, `HARPER_CONFIG` and `HARPER_SET_CONFIG` overlays to an empty file; collection remains enabled if one of those overlays still requests it. Internal implementation hooks can independently keep collection active without enabling persistence; they are not a public SDK or operator prerequisite. A handle already closing retains its last options until close settles.
 
+The interval controls periodic live sampling. Successful handle closes also collect final counters, so it does not cap total snapshot or export frequency. Qualify reader churn as well as index count and sampling cadence.
+
 See [Full-text analytics](../analytics/overview.md#full-text-analytics) for fields, cumulative-counter interpretation and collection costs.
 
 ---
