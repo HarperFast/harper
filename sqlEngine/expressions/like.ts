@@ -297,7 +297,7 @@ function findClearOfLines(segment: Segment, window: string, relaxedWindow: strin
 	const budget = RELAXED_BUDGET * window.length;
 	let work = 0;
 	const clearFrom = (start: number) => {
-		for (let i = 0, clear = 0; clear < ones.length && start <= lastStart; work++) {
+		for (let i = 0, clear = 0; clear < ones.length && start <= lastStart && work <= budget; work++) {
 			const run = ones[i];
 			const terminator = previousTerminator[start + run.end];
 			if (terminator >= start + run.start) {
@@ -311,16 +311,17 @@ function findClearOfLines(segment: Segment, window: string, relaxedWindow: strin
 		}
 		return start;
 	};
+	// Every start before `start` is ruled out, also when `clearFrom` stopped on the budget.
 	let start = clearFrom(0);
-	while (start <= lastStart) {
-		if (work > budget) return search(segment.regExp!, width, window, start, window.length);
+	while (start <= lastStart && work <= budget) {
 		const found = search(segment.relaxed!, width, relaxedWindow, start, window.length);
 		if (found < 0) return -1;
 		start = clearFrom(found);
+		if (work > budget) break;
 		if (start === found) return found;
 		work += width;
 	}
-	return -1;
+	return start <= lastStart ? search(segment.regExp!, width, window, start, window.length) : -1;
 }
 
 // Finds the leftmost match that ends by `end`, without examining any character at or after it.

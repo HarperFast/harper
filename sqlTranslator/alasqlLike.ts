@@ -16,7 +16,9 @@ let cachedLength = 0;
 
 // alasql passes no escape argument when the LIKE has no ESCAPE clause.
 function alasqlLike(pattern: unknown, value: unknown, escape?: unknown): boolean {
-	const patternText = String(pattern ?? '');
+	// As in v2, which makes it UNKNOWN; alasql's own matcher matched only '' for one.
+	if (pattern != null && typeof pattern !== 'string') return false;
+	const patternText = typeof pattern === 'string' ? pattern : '';
 	if (escape !== undefined && (typeof escape !== 'string' || escape.length !== 1)) {
 		throw new ClientError(`LIKE ESCAPE must be a single character, got ${JSON.stringify(escape)}`);
 	}

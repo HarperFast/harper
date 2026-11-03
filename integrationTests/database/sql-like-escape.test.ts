@@ -157,6 +157,24 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 				}
 			}
 
+			test('a numeric pattern matches no row, on every engine', async () => {
+				await reseed(client);
+				await client
+					.req()
+					.send({ operation: 'upsert', schema: SCHEMA, table: TABLE, records: [{ id: 'n', ip: 'tn', note: '123' }] })
+					.timeout(60_000)
+					.expect(200);
+				deepStrictEqual(
+					await sql(client, `SELECT id FROM ${SCHEMA}.${TABLE} WHERE ip LIKE 't%' AND note LIKE 123`),
+					[]
+				);
+				await client
+					.req()
+					.send({ operation: 'delete', schema: SCHEMA, table: TABLE, hash_values: ['n'] })
+					.timeout(60_000)
+					.expect(200);
+			});
+
 			const lineIds = LINES.map((row) => row.id).sort();
 			const lineCases: { statement: string; check: (body: any) => void }[] = [
 				{

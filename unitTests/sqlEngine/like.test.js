@@ -462,6 +462,9 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.utils.like('s', 'ſ'), false);
 		assert.strictEqual(alasql.utils.like('a%', null), false);
 		assert.strictEqual(alasql.utils.like('12%', 12345), true);
+		// A pattern that is not a string matches nothing, as in v2.
+		assert.strictEqual(alasql.utils.like(123, '123'), false);
+		assert.strictEqual(compileExpr(likeExpr(123)).eval({ v: '123' }), null);
 	});
 
 	it('treats characters alasql leaked into its regex as literals', () => {
