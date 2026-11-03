@@ -1,6 +1,5 @@
 import assert from 'node:assert';
 import { createHash } from 'node:crypto';
-import { runtimeInfo } from '@harperfast/fulltext/native';
 import { writeFile, mkdir, statfs, readFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { once } from 'node:events';
@@ -26,29 +25,19 @@ import {
 	runPhase,
 	cellVerdict,
 	finalizeReport,
-	validateCatalogRows,
 	diskUsageBytes,
 } from './model.mts';
+import { parseOptions, printHelp, formatResult } from '../fulltext-options.mts';
+const options = parseOptions('http');
+if (options.help) {
+	printHelp('http');
+	process.exit(0);
+}
+const { runtimeInfo } = await import('@harperfast/fulltext/native');
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
-const sizes = (process.env.FULLTEXT_HTTP_ROWS || '100000,1000000').split(',').map(Number);
-const largeCatalog = process.env.FULLTEXT_HTTP_LARGE === '1';
-const clients = (process.env.FULLTEXT_HTTP_CLIENTS || '8,32').split(',').map(Number);
-const cases = (process.env.FULLTEXT_HTTP_CASES || 'relevance,sort,highlights,exact,structured').split(',');
-const duration = Number(process.env.FULLTEXT_HTTP_DURATION_MS || 60000);
-const expectedWorkers = Number(process.env.FULLTEXT_HTTP_EXPECTED_WORKERS || (process.platform === 'darwin' ? 1 : 2));
-assert([1, 2].includes(expectedWorkers));
-const writeRates = (process.env.FULLTEXT_HTTP_WRITES || '0,10').split(',').map(Number);
-const commonGitDirectory = (
-	await exec('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: resolve(here, '../..') })
-).stdout.trim();
-const output = resolve(process.env.FULLTEXT_HTTP_OUTPUT || resolve(commonGitDirectory, '../../tmp/fulltext-http'));
-for (const n of sizes) validateCatalogRows(n, largeCatalog);
-for (const n of clients) assert(Number.isInteger(n) && n >= 1 && n <= 32);
-for (const n of writeRates) assert([0, 10].includes(n));
-for (const name of cases) assert(['relevance', 'sort', 'highlights', 'exact', 'structured'].includes(name));
-assert(duration >= 1000 && duration <= 300000);
-await mkdir(output, { recursive: true });
+const { rows: sizes, clients, cases, duration, expectedWorkers, writes: writeRates, output } = options;
+await mkdir(output, { mode: 0o700 });
 process.env.HARPER_INTEGRATION_TEST_MONITOR_DIR = resolve(output, `monitor-${process.pid}`);
 process.env.HARPER_INTEGRATION_TEST_MONITOR_IDLE_MS = '1000';
 process.env.HARPER_INTEGRATION_TEST_MONITOR_INTERVAL_MS = '250';
@@ -56,14 +45,19 @@ const harperHead = (await exec('git', ['rev-parse', 'HEAD'], { cwd: resolve(here
 const nativeRuntime = await runtimeInfo();
 const harnessHashes = Object.fromEntries(
 	await Promise.all(
-		['run.mts', 'model.mts', 'fixture/resources.ts', 'fixture/schema.graphql', 'fixture/config.yaml'].map(
-			async (name) => [
-				name,
-				createHash('sha256')
-					.update(await readFile(resolve(here, name)))
-					.digest('hex'),
-			]
-		)
+		[
+			'run.mts',
+			'model.mts',
+			'../fulltext-options.mts',
+			'fixture/resources.ts',
+			'fixture/schema.graphql',
+			'fixture/config.yaml',
+		].map(async (name) => [
+			name,
+			createHash('sha256')
+				.update(await readFile(resolve(here, name)))
+				.digest('hex'),
+		])
 	)
 );
 const addonFiles = process.report
@@ -101,7 +95,7 @@ await writeFile(
 			compiledHashes,
 			addons,
 			node: process.version,
-			options: { sizes, clients, cases, duration, writeRates, expectedWorkers, largeCatalog },
+			options,
 		},
 		null,
 		2
@@ -111,7 +105,7 @@ const errors = createWriteStream(resolve(output, 'errors.ndjson'), { flags: 'a' 
 async function errorRecord(value) {
 	if (!errors.write(JSON.stringify(value) + '\n')) await once(errors, 'drain');
 }
-const options = {
+const contextOptions = {
 	config: { threads: { count: 2 } },
 	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
 	harperBinPath: resolve(here, '../../dist/bin/harper.js'),
@@ -131,6 +125,7 @@ try {
 		const ctx = createHarperContext(`fulltext-http-${rows}`);
 		const report = {
 			rows,
+			options,
 			node: process.version,
 			osCold: false,
 			defaultQueryLimits: true,
@@ -204,7 +199,7 @@ try {
 			const setupStarted = performance.now();
 			await runPhase(
 				() => stopRequested,
-				() => setupHarperWithFixture(ctx, resolve(here, 'fixture'), options)
+				() => setupHarperWithFixture(ctx, resolve(here, 'fixture'), contextOptions)
 			);
 			auth = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 			for (let start = 0; start < rows; start += 500) {
@@ -259,7 +254,7 @@ try {
 			);
 			await runPhase(
 				() => stopRequested,
-				() => startHarper(ctx, options)
+				() => startHarper(ctx, contextOptions)
 			);
 			const workerReadyStarted = performance.now(),
 				workerSampleStart = report.diagnostics.length;
@@ -406,6 +401,22 @@ try {
 						cell.verdict = cellVerdict(cell.reads, cell.writes);
 						cell.throughput = cell.reads.completed / (elapsed / 1000);
 						report.cells.push(cell);
+						console.log(
+							formatResult('FULLTEXT_HTTP_RESULT', {
+								scale: options.scale,
+								rows,
+								case: name,
+								clients: concurrency,
+								writes_per_sec: writesPerSecond,
+								duration_ms: duration,
+								samples: cell.reads.completed,
+								completed: cell.reads.completed,
+								rejected: cell.reads.rejections,
+								verdict: cell.verdict,
+								read_ops: cell.throughput,
+								p95_ms: cell.reads.completed ? cell.reads.p95 : 'na',
+							})
+						);
 						await writeFile(resolve(output, `${rows}.json`), JSON.stringify(report, null, 2) + '\n');
 						assert(!fatal && !stopRequested, fatal?.message || 'interrupted');
 					}

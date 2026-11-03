@@ -4,8 +4,8 @@ This directory contains single-node storage and throughput benchmarks for Harper
 
 | Benchmark               | File                              | What it measures                                                                                            |
 | ----------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Full-text search        | `fulltext-sort-cost.cjs`          | Stored-key sorting and optional native query latency; [method](fulltext-sort-cost.md)                       |
-| Full-text qualification | `run-fulltext-qualification.cjs`  | Native query/write concurrency, memory and event-loop delay; [method and limits](fulltext-qualification.md) |
+| Full-text search        | `run-fulltext-sort-cost.mts`      | Native Table search, sorting, highlighting and count latency; [method](fulltext-sort-cost.md)               |
+| Full-text qualification | `run-fulltext-qualification.mts`  | Native query/write concurrency, memory and event-loop delay; [method and limits](fulltext-qualification.md) |
 | YCSB                    | `ycsb/`                           | Standard CRUD workloads (A–F) across the REST interface                                                     |
 | HNSW search             | `hnsw-search.js`                  | In-memory vector index search latency and recall                                                            |
 | **Indexed-write**       | `indexed-write/`                  | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                                                  |

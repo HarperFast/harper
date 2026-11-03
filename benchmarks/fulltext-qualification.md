@@ -5,21 +5,37 @@
 Use RocksDB and the installed native fulltext package. The runner isolates each cell in a new process and test database; it does not start an HTTP server.
 
 ```sh
-FULLTEXT_QUALIFICATION_OUTPUT=/absolute/new/results-directory node benchmarks/run-fulltext-qualification.cjs
-FULLTEXT_QUALIFICATION_OUTPUT=/absolute/new/control-directory FULLTEXT_QUALIFICATION_RELEVANCE_CONTROL=1 node benchmarks/run-fulltext-qualification.cjs
+node benchmarks/run-fulltext-qualification.mts
+node benchmarks/run-fulltext-qualification.mts --scale=nightly --output=/absolute/new/results-directory
+node benchmarks/run-fulltext-qualification.mts --relevance-control --writes=0,10 --duration=5
 ```
 
-The output directory must not exist. Keep it outside the checkout. The default matrix is eight 60-second cells: 1/32 sort clauses × 1/4 concurrent closed query loops × 0/10 paced writes per second. The optional relevance control selects two unsorted cells with one query loop and writes off/on. `FULLTEXT_QUALIFICATION_SMOKE=1` selects the first cell; `FULLTEXT_QUALIFICATION_DURATION_MS=5000` shortens its measurement window. A failed cell retains its log and prevents a complete aggregate report; inspect it before rerunning into a new directory.
+Quick, the default, runs one read-only cell with one sort clause and one query loop for one second. Nightly selects eight 60-second cells: 1/32 sort clauses × 1/4 concurrent closed query loops × 0/10 paced writes per second. Flags override presets. Quick verifies the harness; it is not performance qualification.
+
+| Flag                  | Values                                          | Quick / nightly           |
+| --------------------- | ----------------------------------------------- | ------------------------- |
+| `--clauses`           | comma-separated 1,32                            | 1 / 1,32                  |
+| `--clients`           | comma-separated 1,4                             | 1 / 1,4                   |
+| `--writes`            | comma-separated 0,10 per second                 | 0 / 0,10                  |
+| `--duration`          | integer seconds, 1–300                          | 1 / 60                    |
+| `--freshness`         | strict, bounded-lag                             | strict                    |
+| `--relevance-control` | select unsorted queries instead of sort clauses | off                       |
+| `--output`            | new output directory                            | fresh temporary directory |
+| `--help`              | show options without starting Harper            |                           |
+
+The output directory must not exist and its parent must exist. Keep it outside the checkout. Environment-only `FULLTEXT_QUALIFICATION_*` settings are replaced by CLI flags; the runner supplies every internal cell setting explicitly. A failed cell retains its log and prevents a complete aggregate report. Inspect it before rerunning into a new directory.
 
 Each cell seeds 9,000 matching records, with 31 tied string fields and one permuted numeric key. A separate nonmatching indexed record receives writes, preserving a stable ordering oracle while exercising publication. Queries request 20 records and fully consume the result. The first query is recorded separately, followed by three warmups. Setup warms storage; the operating-system cache is uncontrolled.
 
 ## Freshness controls
 
-`FULLTEXT_QUALIFICATION_FRESHNESS` defaults to `strict` (lag 0, wait 30 seconds). `bounded-lag` performs an untimed strict readiness query, then measures lag 5 seconds with no wait option. Positive waits request current coverage regardless of the lag option. This control does not prove concurrent writes are immediately visible. The native writer can catch up after stalls, unlike the paced HTTP writer.
+`--freshness=strict` uses lag 0 and a 30-second wait. `--freshness=bounded-lag` performs an untimed strict readiness query, then measures lag 5 seconds with no wait option. Positive waits request current coverage regardless of the lag option. This control does not prove concurrent writes are immediately visible. The native writer can catch up after stalls, unlike the paced HTTP writer.
 
 ## Output and interpretation
 
-Reports retain latency samples, achieved query/write rates, errors, runtime capabilities, source identity, CPU time, event-loop utilization/delay and memory observations. Rates include draining admitted work after the admission window. Small sample counts provide limited tail-latency resolution.
+The parent prints parseable `FULLTEXT_CONCURRENCY_RESULT` lines with scale, clauses, clients, configured write rate, duration, freshness, sample count, achieved query/write rates and p95 latency. Each child log and report is retained separately. The aggregate `report.json` records resolved options, source identity and harness hashes.
+
+Reports retain latency samples, achieved query/write rates, errors, runtime capabilities, CPU time, event-loop utilization/delay and memory observations. Rates include draining admitted work after the admission window. Small sample counts provide limited tail-latency resolution.
 
 RSS high-water values include seeding, native caches and measurement arrays. Sampled peaks are observations, not guaranteed instantaneous maxima. Instrumentation uses a bounded 20ms time series plus rolling query-boundary peaks; latency arrays remain retained in memory. Long-duration memory/leak studies need instrumentation-overhead controls.
 
@@ -27,6 +43,6 @@ These benchmarks do not establish OS-cold behavior, balanced HTTP worker traffic
 
 ## Related harnesses
 
-- [Cell implementation](fulltext-qualification.cjs) and [isolated runner](run-fulltext-qualification.cjs).
-- [Warm scalar/native cost method](fulltext-sort-cost.md).
+- [Cell implementation](fulltext-qualification.cjs) and [isolated runner](run-fulltext-qualification.mts).
+- [Warm native cost method](fulltext-sort-cost.md).
 - [HTTP qualification harness](fulltext-http/README.md).
