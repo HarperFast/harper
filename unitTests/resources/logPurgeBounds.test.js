@@ -211,7 +211,6 @@ describe('per-log purge bounds', function () {
 		for (let i = 0; i < 3; i++) await Table.put(`manual-${i}`, { name: 'x' });
 		const newest = Math.max(...localLogKeys(Table.auditStore));
 		raiseAuditFloor(Table.auditStore, newest + 1);
-		// a transaction committing near the cutoff may not have been observable, so no log keeps a lower bound
 		assert.ok(getLogPurgeBound(Table.auditStore, scope('local')) >= newest + 1);
 	});
 
@@ -220,7 +219,6 @@ describe('per-log purge bounds', function () {
 		const Table = freshTable();
 		const origin = getIdOfRemoteNode('bound-origin', Table.auditStore);
 		const base = Date.now() + 3_600_000;
-		// the largest key is appended between smaller ones, and all are above the clock
 		for (const offset of [10, 20, 15])
 			await applyAsOrigin(Table, `future-${offset}`, { nodeId: origin, logKey: base + offset });
 		raiseAuditFloor(Table.auditStore, base + 30, true);
@@ -285,7 +283,6 @@ describe('per-log purge bounds', function () {
 		const olderPrune = Date.now() + 120_000;
 		writeMetadata(Table.auditStore, AUDIT_FLOOR_KEY, floorBytes(olderPrune));
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, scope('local')), undefined);
-		// the next tracked prune restarts the record from the floor it found
 		raiseAuditFloor(Table.auditStore, olderPrune + 1000);
 		assert.ok(getLogPurgeBound(Table.auditStore, scope('local')) >= olderPrune);
 	});
