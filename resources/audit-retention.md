@@ -97,8 +97,9 @@ never existed or were removed. `Symbol.for('log-purge-bounds')` holds
 upper bound on every key any prune removed from the named logs.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
-  every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`: a
-  log with no entry at or past the cutoff is quiet, bounded by its largest key, and `quietAt` becomes
+  every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`
+  against the furthest either purge reaches (the cutoff, or the native horizon when audit retention is
+  longer): a log with no entry at or past it is quiet, bounded by its largest key, and `quietAt` becomes
   now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
   anything appended after the probe then lands in a segment the prune cannot remove, and a cutoff at
   or below the epoch needs no observation. Any other prune

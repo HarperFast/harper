@@ -397,7 +397,7 @@ export function openAuditStore(rootStore) {
 							// eligibility only changes on rotation/flush, so the LMDB backoff — keyed on a per-entry
 							// delete count — would only rescan the same segments. A pass every quarter of the native
 							// retention keeps each idle log's quiet time ahead of the native horizon (logPurgeBoundsCover).
-							const nativeRetention = nativeLogRetention(auditStore) || Infinity;
+							const nativeRetention = (!storeClosing() && nativeLogRetention(auditStore)) || Infinity;
 							auditStore.auditCleanupDelay = Math.max(
 								DEFAULT_AUDIT_CLEANUP_DELAY,
 								Math.min(
@@ -824,14 +824,14 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 		const recorded = trustedLogPurgeBounds(auditStore, floor);
 		nativeHorizon = nativePurgeHorizon(auditStore, now);
 		// Unobserved, the cutoff bounds every log: when the native retention cannot be read, and for a cutoff
-		// ahead of the clock, which could remove what is written after the probe. A cutoff at or below the
-		// epoch needs no observation: everything it removes is already under the epoch.
+		// ahead of the clock, which could remove what is written after the probe. Nothing needs observing
+		// while neither purge can reach past the epoch.
 		if (
 			observeLogs &&
 			nativeHorizon !== undefined &&
 			cutoff <= now &&
 			Number.isFinite(floor) &&
-			!(recorded && cutoff <= recorded.epoch)
+			!(recorded && Math.max(cutoff, nativeHorizon) <= recorded.epoch)
 		) {
 			const base = recorded ?? freshLogPurgeBounds(floor, nativeHorizon);
 			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now);
@@ -990,10 +990,12 @@ function lmdbMaximumBelow(auditStore: any, cutoff: number, known: number): numbe
 }
 
 /**
- * Each log's entry after a retention prune at `cutoff`, at `now`. A quiet log is bounded by its largest key.
- * A log written since it was last quiet keeps its bound while that quiet pass is at or past the cutoff:
- * every segment this prune can remove was last written before it. Otherwise, and for a log that cannot be
- * read, the cutoff bounds it. Undefined when the logs cannot be listed, which records the cutoff as the epoch.
+ * Each log's entry after a retention prune at `cutoff`, at `now`, judged against the furthest either purge
+ * reaches (the cutoff, or the native horizon past it). A quiet log, with no entry at or past that reach, is
+ * bounded by its largest key. A log written since it was last quiet keeps its bound while that quiet pass is
+ * at or past the reach: every segment either purge can remove was last written before it. Otherwise, and for
+ * a log that cannot be read, the reach bounds it. Undefined when the logs cannot be listed, which records the
+ * cutoff as the epoch.
  */
 function observeLogPurgeBounds(
 	auditStore: any,
@@ -1015,6 +1017,8 @@ function observeLogPurgeBounds(
 		observed.set(LMDB_PURGE_LOG, [bound, now]);
 		return observed;
 	}
+	// the furthest either purge reaches: this prune's cutoff, or rocksdb-js's own retention when it reaches further
+	const reach = Math.max(cutoff, nativeHorizon);
 	const rootStore = auditStore.rootStore;
 	let names: string[];
 	try {
@@ -1028,15 +1032,15 @@ function observeLogPurgeBounds(
 		const [, quietAt] = recordedEntry(recorded, name);
 		let quietMaximum: number | undefined;
 		try {
-			quietMaximum = quietLogMaximum(rootStore.useLog(name), cutoff, known);
+			quietMaximum = quietLogMaximum(rootStore.useLog(name), reach, known);
 		} catch (error) {
 			warnContained(`Error reading transaction log ${name} to bound a prune`, error);
-			observed.set(name, [Math.max(known, cutoff), quietAt]);
+			observed.set(name, [Math.max(known, reach), quietAt]);
 			continue;
 		}
 		if (quietMaximum !== undefined) observed.set(name, [quietMaximum, now]);
-		else if (quietAt >= cutoff) observed.set(name, [known, quietAt]);
-		else observed.set(name, [Math.max(known, cutoff), quietAt]);
+		else if (quietAt >= reach) observed.set(name, [known, quietAt]);
+		else observed.set(name, [Math.max(known, reach), quietAt]);
 	}
 	// a recorded log with no files left is empty, so quiet
 	const listed = new Set(names);
@@ -1090,6 +1094,11 @@ function raisedLogPurgeBounds(
 		epoch = Math.max(epoch, nativeHorizon);
 	const logs = Object.assign(Object.create(null), base.logs);
 	for (const [name, [bound, quietAt]] of observed ?? []) {
+		// msgpackr renames this key on read, so the epoch carries its bound instead
+		if (name === '__proto__') {
+			epoch = Math.max(epoch, bound);
+			continue;
+		}
 		const [baseBound, baseQuietAt] = logs[name] ?? [0, 0];
 		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt)];
 	}

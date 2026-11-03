@@ -256,6 +256,21 @@ describe('per-log purge bounds', function () {
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['constructor', 'toString']), bound);
 	});
 
+	it('keeps an idle log exact when audit retention reaches past the native retention', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable(400 * DAY_MS);
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		record.observedAt = Date.now();
+		writeRecord(Table.auditStore, record);
+		const retention = nativeRetention(Table.auditStore);
+		const origin = getIdOfRemoteNode('long-retention-origin', Table.auditStore);
+		const lastKey = Date.now() - retention - DAY_MS;
+		await applyAsOrigin(Table, 'idle-past-native', { nodeId: origin, logKey: lastKey });
+		// a cutoff older than the entry, as with an audit retention longer than the native one
+		raiseAuditFloor(Table.auditStore, lastKey - DAY_MS, true);
+		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['long-retention-origin']), lastKey);
+	});
+
 	it('rewrites a quiet time older than half the native retention, keeping the bound', async function () {
 		if (isLMDB) return this.skip();
 		const Table = backdatedTable();
