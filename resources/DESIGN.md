@@ -16,18 +16,18 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 ## An audit record carries two clocks; identity is (nodeId, log key), never a version
 
-`AuditRecord.version` drives last-writer-wins, `@updatedTime` and ETags; `txnLogKey` drives identity, `auditStore.get(logKey, tableId, id, nodeId)` and resume cursors. They diverge for source fills, applied writes and caller timestamps; such a RocksDB record reaches its head through `additionalAuditRefs`.
+`AuditRecord.version` drives last-writer-wins, `@updatedTime` and ETags; `txnLogKey` drives identity, `auditStore.get(logKey, tableId, id, nodeId)` and resume cursors. When they diverge (source fills, applied writes, caller times), `additionalAuditRefs` finds the head.
 
-- `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps unknown-identity tombstones.
-- An applied RocksDB write stores its received version under the origin's log key.
-- A ref states its kind: `additionalAuditRefs` holds log keys, `receivedIdentityRefs` received identities (bit 31), which address no entry and never enter an audit entry; an unaudited record's only re-delivery proof. The walk reads every non-head branch, since a log key does not bound a version. An `identityIsNotKey` write records its head as a log-key ref even when key equals version. **Never "fix" a log key to the version**.
-- An LMDB merge keeps the older version: it is `LMDBTransaction.commit`'s `ifVersion` token.
-- Duplicates are judged by committed identity, read outside the transaction after a same-key relocate or publish restamps the base; only a minted key marks a retry's own staging (`readsOwnStaging`).
-- A RocksDB transaction logs its entry once, at its first commit attempt, and the committed watermark stalls below it, so keyed lookups of a frame committed state names read past it (the duplicate checks stay `committedOnly`); a write staged without appending adds the base head and refs its entry's lineage lacks, head last (`retryAuditChain.test.js`).
-- `FULL_WRITE_HEAD`: the head replaced the whole record, unchanged since; any other write, a base-copy frame included, clears it. An older write skips the walk only while the floor is known and both it and `fullWriteHeadKey` are at or above it.
-- A numeric log selector only looks a log up (`useLog` would create it); `local` reads filter by `nodeId`, received-key dedup skips unnamed ids, and a named-log miss never falls back to `local`.
-- Equal versions tie (0) only within one origin; others order by node name, named above unnamed, then local id. Only the head's own same-origin entry may resolve a 0 (`precedesAudited`).
-- Replay applies stored versions; a replay transaction ends at `endTxn`, a log change or a key change, never by key alone, and one a corrupt frame cut short is discarded.
+- `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps unknown-identity tombstones, as version compares let one write destroy another's.
+- Applied RocksDB writes store their version (`TransactionWrite.recordVersion`) at the origin log key.
+- `additionalAuditRefs` holds log keys; `receivedIdentityRefs` (bit 31, `RECEIVED_IDENTITY_REF`) holds received identities (addressing no entry, omitted from audit entries, proving unaudited re-delivery). Walks read all non-head branches (log keys never bound versions). `identityIsNotKey` writes record the head as a log-key ref even if key == version. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
+- LMDB merges keep the older version (`LMDBTransaction.commit` `ifVersion`, `noAuditOutOfOrderPatch.test.js`).
+- Duplicates use committed identity (read outside the txn after a same-key relocate/publish restamps the base); only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
+- RocksDB logs once; the watermark stalls at uncommitted entries, so ref walks set `readUncommitted` (dedup does not), and retries/replays add the base head and missed refs (`withRefsMissedByLoggedEntry`), head last. Gaps: `crdt` and `subscribe` walk `previousVersion` (`retryAuditChain.test.js`).
+- `FULL_WRITE_HEAD`: the head replaced the record, unchanged since; any other write (base-copy frames included) clears it. Older writes skip the walk only if they and `fullWriteHeadKey` >= a known floor (`fullWriteHead.test.js`).
+- Numeric log selectors only look up (`useLog` creates); `local` reads filter by `nodeId`, received-key dedup skips unnamed ids, and named-log misses never fall back to `local` (`auditLog.test.js`).
+- Equal versions tie (0) only within one origin; others order by node name (named > unnamed), then local id. Only the head's own same-origin entry resolves 0 (`precedesAudited`, `equalVersionOriginOrder.test.js`).
+- Replay applies stored versions; replay transactions end at `endTxn` or log/key change (never key alone), dropping truncated frames (`replayCommitBoundaries.test.js`).
 
 ## Request admission authorizes exactly what the dispatch runs
 

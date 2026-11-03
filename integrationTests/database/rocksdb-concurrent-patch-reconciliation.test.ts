@@ -1,21 +1,3 @@
-/**
- * Concurrent partial updates to an audited RocksDB table, from one or several worker threads, must not
- * lose a committed write.
- *
- * Whatever order the writes commit in, every record must end with `hits === 10`, the `meta`/`tags` of
- * its highest-version patch and the `title` of its highest-version update; the fixture's `Verify` reads
- * those from the audit log.
- *
- * A RocksDB transaction appends its transaction-log entry at its first commit attempt, and a retry
- * after a conflict appends nothing. The test covers both ways that loses a write:
- * - While a retrying transaction's entry is uncommitted it holds back the log's committed watermark, so
- *   the out-of-order walk's keyed lookups (`RocksTransactionLogStore.getSync`) must read past it.
- * - A retry that commits in order keeps the entry it appended before, which names the head it read
- *   then, so the record has to name a write that committed in between.
- *
- * Reproduction:
- *   npm run test:integration -- "integrationTests/database/rocksdb-concurrent-patch-reconciliation.test.ts"
- */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';

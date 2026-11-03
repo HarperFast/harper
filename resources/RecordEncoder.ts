@@ -1162,7 +1162,7 @@ export function recordUpdater(
 					let replacingEntry;
 					if (isRocksDB && existingEntry.additionalAuditRefs) {
 						for (const ref of existingEntry.additionalAuditRefs) {
-							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
+							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId, true);
 							if (
 								candidate?.version === existingEntry.version &&
 								(candidate.nodeId ?? 0) === (existingEntry.nodeId ?? 0)
@@ -1174,7 +1174,7 @@ export function recordUpdater(
 						}
 					}
 					replacingEntry ??= isRocksDB
-						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId)
+						? auditStore.get(replacingId, tableId, id, existingEntry.nodeId, true)
 						: replacingAuditEntry;
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
@@ -1200,7 +1200,17 @@ export function recordUpdater(
 							},
 							{ transaction: options.transaction, nodeId, viaNodeId }
 						);
-						noteStagedAudit(options, extendedType, type, previousVersion, previousAdditionalAuditRefs);
+						noteStagedAudit(
+							options,
+							extendedType,
+							isRocksDB && type !== 'put' && type !== 'delete'
+								? {
+										version: previousVersion,
+										nodeId: replacingEntry.nodeId,
+										additionalAuditRefs: previousAdditionalAuditRefs,
+									}
+								: undefined
+						);
 						return result;
 					}
 				}
@@ -1237,9 +1247,7 @@ export function recordUpdater(
 				noteStagedAudit(
 					options,
 					extendedType,
-					type,
-					isRocksDB ? existingEntry?.version : existingEntry?.localTime,
-					previousAdditionalAuditRefs
+					isRocksDB && type !== 'put' && type !== 'delete' ? (existingEntry ?? null) : undefined
 				);
 			}
 			if (options?.tableToTrack && TRACKED_WRITE_TYPES.has(type)) {
@@ -1266,17 +1274,16 @@ export function recordUpdater(
 function noteStagedAudit(
 	options: any,
 	extendedType: number,
-	type: string,
-	previousVersion: number | undefined,
-	previousAdditionalAuditRefs: Array<{ version: number; nodeId: number }> | undefined
+	loggedBase?: {
+		version?: number;
+		nodeId?: number;
+		additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
+	} | null
 ) {
 	const write = options?.write;
 	if (!write || (options.transaction?.isRetry && !options.transaction.relogOnRetry)) return;
 	if (write.stagedAudit !== 'replicable') write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
-	// a retry restages from this entry's lineage (Table.ts withRefsMissedByLoggedEntry)
-	write.loggedType = type;
-	write.loggedPreviousVersion = previousVersion;
-	write.loggedPreviousRefs = previousAdditionalAuditRefs;
+	if (loggedBase !== undefined) write.loggedBase = loggedBase;
 }
 export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;

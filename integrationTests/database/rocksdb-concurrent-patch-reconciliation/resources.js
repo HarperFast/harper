@@ -18,7 +18,6 @@ export class Seed extends Resource {
 	}
 }
 
-// An update that never reads meta/tags: it can only change them by applying over a stale base.
 export class Updater extends Resource {
 	static loadAsInstance = false;
 	async post(_query, { id, seq }) {
@@ -48,11 +47,6 @@ export class Writer extends Resource {
 	}
 }
 
-/**
- * Each record beside the newest writes its audit log holds since the round's seed: `meta`/`tags` must be the
- * highest-version writer's and `title` the highest-version updater's, since each is last-write-wins by
- * version whatever order they committed in.
- */
 export class Verify extends Resource {
 	static loadAsInstance = false;
 	async post(_query, { ids, seededAt }) {
@@ -67,7 +61,7 @@ export class Verify extends Resource {
 			const value = entry.type === 'patch' && entry.getValue(Doc.primaryStore);
 			const latest = newest.get(entry.recordId);
 			if (!value || !latest || entry.version < latest.put) continue;
-			const kind = value.meta ? 'writer' : 'updater';
+			const kind = value.tags?.[0]?.startsWith('w') ? 'writer' : 'updater';
 			if (!latest[kind] || entry.version > latest[kind].version) latest[kind] = { version: entry.version, value };
 		}
 		const docs = [];

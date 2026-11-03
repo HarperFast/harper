@@ -36,29 +36,34 @@ if (require.main === module) {
 
 	const writeThenCrash = async () => {
 		const base = Date.now() + 86_400_000;
-		writeFileSync(markerPath, String(base));
 		await applyFromOrigin(base, { id: 'r', title: 'seed', meta: 'seed' }, true);
 		const db = Tbl.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
-		let intercepted = false;
+		let intercepted,
+			retried = false;
 		Transaction.prototype.commit = async function (...args) {
-			if (intercepted || this.store?.db !== db) return originalCommit.apply(this, args);
-			intercepted = true;
-			await applyFromOrigin(base + 200, { title: 'intermediate' });
-			// durable up to the intermediate head; the retried write below lives only in its log entry
-			await Tbl.primaryStore.rootStore.flush();
+			if (this.store?.db !== db) return originalCommit.apply(this, args);
+			if (!intercepted) {
+				intercepted = this;
+				await applyFromOrigin(base + 200, { title: 'intermediate' });
+				// durable up to the intermediate head; the retried write below lives only in its log entry
+				await Tbl.primaryStore.rootStore.flush();
+			} else if (this === intercepted) {
+				retried = true;
+			}
 			return originalCommit.apply(this, args);
 		};
 		await applyFromOrigin(base + 300, { meta: 'retried' });
+		writeFileSync(markerPath, JSON.stringify({ base, retried }));
 		process.kill(process.pid, 'SIGKILL');
 	};
 
 	const reportReplay = async () => {
-		const base = Number(readFileSync(markerPath, 'utf8'));
+		const { base, retried } = JSON.parse(readFileSync(markerPath, 'utf8'));
 		const replayed = (await Tbl.get('r'))?.meta === 'retried';
 		await applyFromOrigin(base + 100, { title: 'older' });
 		const { title, meta } = await Tbl.get('r');
-		writeFileSync(markerPath, JSON.stringify({ replayed, title, meta }));
+		writeFileSync(markerPath, JSON.stringify({ retried, replayed, title, meta }));
 		process.exit(0);
 	};
 

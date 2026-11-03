@@ -1,14 +1,9 @@
-// A RocksDB transaction writes its transaction-log entry once, at its first commit attempt, and a retry
-// after a conflict appends nothing. The out-of-order walk has to keep finding every committed write while
-// such an entry is still uncommitted, and after the retry commits over a newer head than the entry names.
 require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { readFileSync, rmSync } = require('node:fs');
-const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
-const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
@@ -20,7 +15,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Audit chain across a conflict retry', function () {
 	this.timeout(20000);
-	let T, origin, dbPath;
+	let T, origin, peerOrigin, dbPath;
 
 	before(function () {
 		if (isLMDB) return;
@@ -33,6 +28,7 @@ describe('Audit chain across a conflict retry', function () {
 			audit: true,
 		});
 		origin = getIdOfRemoteNode('retry-audit-chain-origin', T.auditStore);
+		peerOrigin = getIdOfRemoteNode('retry-audit-chain-origin-b', T.auditStore);
 	});
 
 	beforeEach(function () {
@@ -87,7 +83,8 @@ describe('Audit chain across a conflict retry', function () {
 		assert(interception.retried, 'the write must have retried');
 	}
 	const refsOf = (id) => T.primaryStore.getEntry(id).additionalAuditRefs ?? [];
-	const namesHead = (id, version) => refsOf(id).some((ref) => ref.version === version && ref.nodeId === origin);
+	const namesHead = (id, version, nodeId = origin) =>
+		refsOf(id).some((ref) => ref.version === version && ref.nodeId === nodeId);
 	let nextBase = Date.now() + 86_400_000;
 	const freshBase = () => (nextBase += 86_400_000);
 
@@ -198,6 +195,93 @@ describe('Audit chain across a conflict retry', function () {
 		assert(namesHead('moved', base + 200), 'the record names the head the retry committed over');
 	});
 
+	it('keeps an equal-version head from another origin when the retry commits over it', async () => {
+		const id = 'equal-version-peer';
+		const base = freshBase();
+		await applyFromOrigin(base, put(id, { id, title: 'seed', meta: 'seed' }));
+		const interception = interceptNextCommit(async (commit) => {
+			const context = { source: {}, sourceApply: true, timestamp: base };
+			await transaction(context, async () => {
+				const resource = await T.getResource(id, context);
+				await resource._writeUpdate(id, { title: 'intermediate' }, false, {
+					isNotification: true,
+					nodeId: peerOrigin,
+					version: base,
+				});
+			});
+			return commit();
+		});
+		try {
+			await applyFromOrigin(base + 300, patch(id, { meta: 'retried' }));
+		} finally {
+			interception.restore();
+		}
+		assert(interception.retried, 'the write must have retried');
+		assert(namesHead(id, base, peerOrigin), 'the record names the equal-version peer head');
+		await applyFromOrigin(base - 100, patch(id, { title: 'older' }));
+		const { title, meta } = await T.get(id);
+		assert.deepStrictEqual({ title, meta }, { title: 'intermediate', meta: 'retried' });
+	});
+
+	it('keeps the head a local-origin retry with a minted log key committed over reachable from the record', async () => {
+		const id = 'local-minted';
+		const base = freshBase();
+		await T.put({ id, title: 'seed', meta: 'seed' }, { timestamp: base });
+		const interception = interceptNextCommit(async (commit) => {
+			await T.patch(id, { title: 'intermediate' }, { timestamp: base + 200 });
+			return commit();
+		});
+		try {
+			await T.patch(id, { meta: 'retried' }, { timestamp: base + 300 });
+		} finally {
+			interception.restore();
+		}
+		assert(interception.retried, 'the write must have retried');
+		await T.patch(id, { title: 'older' }, { timestamp: base + 100 });
+		const { title, meta } = await T.get(id);
+		assert.deepStrictEqual({ title, meta }, { title: 'intermediate', meta: 'retried' });
+	});
+
+	it('keeps the head created between attempts when attempt 1 staged against an absent record', async () => {
+		const id = 'created-between';
+		const base = freshBase();
+		const interception = interceptNextCommit(async (commit) => {
+			await applyFromOrigin(base + 200, put(id, { id, title: 'intermediate', meta: 'seed' }));
+			return commit();
+		});
+		try {
+			await applyFromOrigin(base + 300, patch(id, { meta: 'retried' }));
+		} finally {
+			interception.restore();
+		}
+		assert(interception.retried, 'the write must have retried');
+		assert(namesHead(id, base + 200), 'the record names the head created between attempts');
+		await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
+		const { title, meta } = await T.get(id);
+		assert.deepStrictEqual({ title, meta }, { title: 'intermediate', meta: 'retried' });
+	});
+
+	it('adds no ref when replay restages a local patch over an unmoved remote-origin base', async () => {
+		const id = 'replayed-unmoved-remote';
+		const base = freshBase();
+		await applyFromOrigin(base, put(id, { id, title: 'seed', meta: 'seed' }));
+		const context = { timestamp: base + 200 };
+		await transaction(context, async () => {
+			context.transaction.isReplay = true;
+			context.transaction.retries = 1;
+			context.transaction.timestamp = base + 200;
+			const resource = await T.getResource(id, context);
+			await resource._writeUpdate(id, { meta: 'replayed' }, false, {
+				isReplay: true,
+				nodeId: 0,
+				version: base + 200,
+				auditEntry: { type: 'patch', version: base + 200, previousVersion: base },
+			});
+		});
+		assert(!namesHead(id, base, origin), 'replay over an unmoved remote base adds no ref to it');
+		assert.deepStrictEqual(refsOf(id), []);
+	});
+
 	it('adds no ref when a retry re-logs its entry after a pre-log refusal', async () => {
 		const id = 'relogged';
 		const base = freshBase();
@@ -206,8 +290,9 @@ describe('Audit chain across a conflict retry', function () {
 		const db = T.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
 		const attempts = [];
-		let releaseHolder, holderId, submitted;
+		let releaseHolder, markHolderStaged, holderId;
 		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
+		const holderStaged = new Promise((resolve) => (markHolderStaged = resolve));
 		try {
 			const holderContext = { source: {}, sourceApply: true, timestamp: base + 200 };
 			const holder = transaction(holderContext, async () => {
@@ -220,22 +305,23 @@ describe('Audit chain across a conflict retry', function () {
 				const write = holderContext.transaction.writes.find((candidate) => candidate.key === id);
 				await holderContext.transaction.save(write);
 				holderId = holderContext.transaction.transaction.id;
+				markHolderStaged();
 				await holderGate;
 			});
-			await waitFor(() => holderId !== undefined);
+			await holderStaged;
 			Transaction.prototype.commit = async function (...args) {
 				if (this.store?.db !== db || this.id === holderId) return originalCommit.apply(this, args);
-				submitted = true;
+				if (attempts.length === 0) this.setParkDeadline(1);
 				const result = await originalCommit.apply(this, args);
 				attempts.push({ logWritten: this.logWritten() });
+				if (attempts.length === 1) {
+					this.setParkDeadline(0);
+					releaseHolder();
+					await holder;
+				}
 				return result;
 			};
-			const retried = applyFromOrigin(base + 300, patch(id, { meta: 'retried' }));
-			await waitFor(() => submitted);
-			await delay(20); // the native intent check runs on the commit thread after submission
-			releaseHolder();
-			await holder;
-			await retried;
+			await applyFromOrigin(base + 300, patch(id, { meta: 'retried' }));
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 			releaseHolder?.();
@@ -267,6 +353,7 @@ describe('Audit chain across a conflict retry', function () {
 		const replayed = await run('replay');
 		assert.strictEqual(replayed.code, 0, replayed.stderr);
 		assert.deepStrictEqual(JSON.parse(readFileSync(path.join(crashDir, 'marker'), 'utf8')), {
+			retried: true,
 			replayed: true,
 			title: 'intermediate',
 			meta: 'retried',

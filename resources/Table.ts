@@ -1975,20 +1975,27 @@ export function makeTable(options): TableResourceClass {
 		options: any
 	): Array<{ version: number; nodeId: number }> | undefined {
 		if (!isRocksDB || !base) return refs;
-		let type: string, previousVersion: number | undefined, covered: Array<{ version?: number; nodeId?: number }>;
+		let previousVersion: number | undefined,
+			previousNodeId: number | undefined,
+			hasPreviousNodeId = false,
+			covered: Array<{ version?: number; nodeId?: number }> | undefined;
 		const replayed: AuditRecord | undefined = options?.auditEntry;
 		if (replayed) {
-			type = replayed.type;
+			if (replayed.type === 'put' || replayed.type === 'delete') return refs;
 			previousVersion = replayed.previousVersion;
 			covered = replayed.previousAdditionalAuditRefs;
-		} else if (transaction?.isRetry && !transaction.relogOnRetry && write.loggedType !== undefined) {
-			type = write.loggedType;
-			previousVersion = write.loggedPreviousVersion;
-			covered = write.loggedPreviousRefs;
+			previousNodeId =
+				replayed.previousNodeId ??
+				(covered?.length ? resolveAuditHead(id, previousVersion, undefined, covered as any).nodeId : undefined);
+			hasPreviousNodeId = previousNodeId !== undefined;
+		} else if (transaction?.isRetry && !transaction.relogOnRetry && write.loggedBase !== undefined) {
+			previousVersion = write.loggedBase?.version;
+			previousNodeId = write.loggedBase?.nodeId;
+			hasPreviousNodeId = write.loggedBase !== null;
+			covered = write.loggedBase?.additionalAuditRefs;
 		} else return refs;
-		if (type === 'put' || type === 'delete') return refs;
 		const head =
-			base.version === previousVersion
+			base.version === previousVersion && (!hasPreviousNodeId || (base.nodeId ?? 0) === (previousNodeId ?? 0))
 				? undefined
 				: resolveAuditHead(id, base.version, base.nodeId, base.additionalAuditRefs);
 		const isHead = (ref: { version: number; nodeId?: number }) =>
@@ -2042,7 +2049,7 @@ export function makeTable(options): TableResourceClass {
 				if (visited.has(identity)) continue;
 				visited.add(identity);
 				yield;
-				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
+				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId, true);
 				if (!entry) continue;
 				if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
 					return { txnLogKey: ref.version, nodeId: ref.nodeId, entry };
@@ -2056,7 +2063,7 @@ export function makeTable(options): TableResourceClass {
 		if (referencedHead) return referencedHead;
 		if (version != null) {
 			yield;
-			const directHead = auditStore.getSync(version, tableId, id, nodeId);
+			const directHead = auditStore.getSync(version, tableId, id, nodeId, true);
 			if (directHead?.version === version && (nodeId == null || (directHead.nodeId ?? 0) === nodeId))
 				return { txnLogKey: version, nodeId, entry: directHead };
 		}
@@ -6099,7 +6106,7 @@ export function makeTable(options): TableResourceClass {
 					// directions; the table default is the final fallback. -1 means no expiration.
 					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
 					let auditExpiresAt: number | undefined;
-					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
+					let additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					let receivedIdentityRefs: Array<{ version: number; nodeId: number }> | undefined;
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
 					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
@@ -6142,6 +6149,7 @@ export function makeTable(options): TableResourceClass {
 							}
 						}
 						let hasOwnPendingHead = false;
+						let readsOwnStaging = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							let identityRecord: Partial<Entry> | undefined | typeof UNRESOLVED = UNRESOLVED;
@@ -6177,10 +6185,8 @@ export function makeTable(options): TableResourceClass {
 							// transaction to this key: every write in it shares one log key, so the ref that write left is
 							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
 							// and stages nothing. Nor when a retry reads back its own prior staging, recognized by its head
-							// ref being the key minted for this handle (a committed competitor carries another minted head;
-							// in an origin's log a competing delivery shares the key, so only a minted key can tell).
+							// ref being the key minted for this handle.
 							let refBase: Partial<Entry> | undefined;
-							let readsOwnStaging = false;
 							if (!priorChange) {
 								refBase =
 									identityRecord === UNRESOLVED ? identityBase(write, existingEntry, committedBy) : identityRecord;
@@ -6226,6 +6232,8 @@ export function makeTable(options): TableResourceClass {
 								) {
 									hasOwnPendingHead = true;
 								}
+							} else if (readsOwnStaging && precedesExisting === 0 && transaction.hasStagedLog) {
+								hasOwnPendingHead = true;
 							}
 							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
 							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
@@ -6282,7 +6290,7 @@ export function makeTable(options): TableResourceClass {
 							// both stored clocks to match. Committed entries only, here and in `isReDeliveredDuplicate`: another
 							// delivery's entry whose transaction has not committed is no proof the write applied.
 							if (isRocksDB && !replaying && !mayReadOwnOrphan && dedupVersionCouldBeRetained(receivedLogKey)) {
-								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId, true);
+								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
 									priorAudit.txnLogKey === receivedLogKey &&
@@ -6423,7 +6431,7 @@ export function makeTable(options): TableResourceClass {
 							const isReDeliveredDuplicate = () => {
 								if (replaying || mayReadOwnOrphan) return false;
 								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
-								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId, true);
+								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								return (
 									duplicate &&
 									duplicate.txnLogKey === receivedLogKey &&
@@ -6445,7 +6453,7 @@ export function makeTable(options): TableResourceClass {
 									const ownPendingEntry =
 										localTime === appendedLogKey &&
 										((hasOwnPendingHead && !isAdditionalAuditRef) ||
-											(priorStaged &&
+											((priorStaged || readsOwnStaging) &&
 												isRocksDB &&
 												!replaying &&
 												transaction.hasStagedLog &&
@@ -6464,8 +6472,7 @@ export function makeTable(options): TableResourceClass {
 									if (isRocksDB && fullUpdate) {
 										let frameComplete = false;
 										// A keyed lookup hides unreadable siblings before its first match, and a message or older
-										// version can precede newer mutations in the same frame. Read past the committed watermark, as
-										// `RocksTransactionLogStore.getSync` does.
+										// version can precede newer mutations in the same frame. Read past the committed watermark.
 										for (const entry of auditStore.getRange({
 											start: localTime,
 											exactStart: true,
@@ -6497,7 +6504,7 @@ export function makeTable(options): TableResourceClass {
 										auditRecord =
 											resolvedEntry?.txnLogKey === localTime
 												? resolvedEntry
-												: auditStore.get(localTime, tableId, id, nodeId);
+												: auditStore.get(localTime, tableId, id, nodeId, true);
 									}
 									resolvedEntry = undefined;
 									if (!auditRecord) {
@@ -7095,15 +7102,16 @@ export function makeTable(options): TableResourceClass {
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
 					if (isRocksDB && audit && !isCopyApply && !fullUpdate && precedesExisting > 0)
-						withRefsMissedByLoggedEntry(
-							additionalAuditRefs,
-							id,
-							existingEntry,
-							appendedLogKey,
-							write,
-							transaction,
-							options
-						);
+						additionalAuditRefs =
+							withRefsMissedByLoggedEntry(
+								additionalAuditRefs,
+								id,
+								existingEntry,
+								appendedLogKey,
+								write,
+								transaction,
+								options
+							) ?? additionalAuditRefs;
 					// A write whose received identity is not its key keeps that identity on the record too, so a
 					// re-delivery matches it without a walk that may stop short.
 					if (
@@ -9732,7 +9740,7 @@ export function makeTable(options): TableResourceClass {
 								if (!isActive()) return;
 							}
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
-							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
+							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
@@ -14127,7 +14135,7 @@ export function makeTable(options): TableResourceClass {
 				let record = 'entry' in head && head.entry;
 				if (!record) {
 					yield;
-					record = auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId);
+					record = auditStore.getSync(head.txnLogKey, tableId, id, head.nodeId, true);
 				}
 				if (!record) break;
 				for (const file of collectRetainedFileIds(record.getValue(primaryStore)) ?? []) {
