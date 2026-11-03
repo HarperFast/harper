@@ -18,7 +18,8 @@ every existing `get_job` consumer already handles `ERROR`; the distinction lives
 The exit hook uses `startWorker`'s `onUnexpectedExit` option for every exit the worker makes on its
 own, a finished job's included, and its `onPermanentStop` option for a deliberate stop with no
 replacement while the process stays alive. `settleAbandonedJob()` re-reads the row, so a job that
-wrote its own terminal status is left alone. A restart through `startCopy()` does not settle the row,
+wrote its own terminal status is left alone, and so is a deferred one (`deferred_to`, a restart
+restore) while a restore receipt still names it. A restart through `startCopy()` does not settle the row,
 because the replacement re-runs the job from its stored request; that re-run predates this hook, and
 it repeats any effects the first run applied, and a replacement started after the worker wrote `COMPLETE` overwrites it with `ERROR`. Process teardown leaves the row to the boot sweep. A
 settle that fails is logged and not retried in-process; the next boot's sweep claims the row. These are **options** rather than listeners the caller attaches to the

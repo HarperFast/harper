@@ -38,6 +38,8 @@ export type BackupManifest = {
 	 * are reported as unidentified rather than refused.
 	 */
 	producer?: BackupArchiveManifest;
+	/** The restart restore whose rollback copy this is, so a retry adopts it instead of taking another. */
+	pre_restore_for?: string;
 };
 
 function manifestDir(backupDir: string): string {
@@ -56,7 +58,8 @@ export async function writeBackupManifest(
 	backupDir: string,
 	backupId: number,
 	blobs: boolean,
-	producer?: BackupArchiveManifest
+	producer?: BackupArchiveManifest,
+	preRestoreFor?: string
 ): Promise<void> {
 	const dir = manifestDir(backupDir);
 	if (!existsSync(dir)) {
@@ -68,6 +71,7 @@ export async function writeBackupManifest(
 		blobs,
 		completedAt: Date.now(),
 		...(producer ? { producer } : {}),
+		...(preRestoreFor ? { pre_restore_for: preRestoreFor } : {}),
 	};
 	// durable, not just atomic: a restore treats a manifest as proof the backup is whole
 	writeFileDurably(manifestPath(backupDir, backupId), JSON.stringify(manifest), `.tmp-${backupId}.json`);

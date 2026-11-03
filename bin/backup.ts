@@ -83,7 +83,14 @@ export async function runBackupCommand(command: string): Promise<void> {
 		case OPERATIONS_ENUM.PURGE_BACKUPS:
 			result = await purgeBackupsOffline(databaseName, request.keep_count);
 			break;
-		case OPERATIONS_ENUM.RESTORE_BACKUP:
+		case OPERATIONS_ENUM.RESTORE_BACKUP: {
+			// ignoring one would turn a cancel, or a restore scheduled for the next start, into an immediate restore
+			const needsServer = OFFLINE_RESTORE_UNSUPPORTED.filter((field) => request[field] !== undefined);
+			if (needsServer.length > 0) {
+				throw new ClientError(
+					`restore_backup ${needsServer.join(', ')} needs the server running; start Harper and rerun, or restore offline with backup_id=`
+				);
+			}
 			result = await restoreBackupOffline(
 				databaseName,
 				request.backup_id,
@@ -94,11 +101,14 @@ export async function runBackupCommand(command: string): Promise<void> {
 				request.accept_unverified_blobs
 			);
 			break;
+		}
 		default:
 			throw new Error(`Unknown backup command '${command}'`);
 	}
 	console.log(YAML.stringify(result).trim());
 }
+
+const OFFLINE_RESTORE_UNSUPPORTED = ['on_restart', 'retain_previous', 'resume', 'cancel'];
 
 /**
  * Whether the target of a saved `last_target` is the local instance (localhost / loopback). A

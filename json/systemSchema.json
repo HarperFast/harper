@@ -96,6 +96,9 @@
 				"attribute": "owner_pid"
 			},
 			{
+				"attribute": "deferred_to"
+			},
+			{
 				"attribute": "__createdtime__"
 			},
 			{

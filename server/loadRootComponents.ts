@@ -54,6 +54,25 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// would assert "nothing is unreconciled" on a thread that never checked. The loader treats undefined as
 	// "no verdict from boot" instead.
 	let interruptedActivationFailures;
+	// Startup only (it latches), and first: restart restores run here, before secret custody, application
+	// install or any component could open the database they replace. A restart restore left unpublished
+	// starts this boot in safe mode, since a container cannot set its own env for the next boot.
+	let restoreOwnedJobs: Set<string> | undefined;
+	if (isMainThread) {
+		try {
+			const restorePublication = loadRuntimeModule('dataLayer/restorePublication');
+			restoreOwnedJobs = await restorePublication.recoverRestoresAtStartup();
+			const blocked = restorePublication.unpublishedRestoreBlocksComponents();
+			if (blocked && !process.env.HARPER_SAFE_MODE) {
+				process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+				console.error(
+					`The restart restore of '${blocked}' has not published; starting in safe mode. Use restore_backup resume=true, cancel=true, or another backup_id with on_restart=true.`
+				);
+			}
+		} catch (error) {
+			console.error(errorForLog(error));
+		}
+	}
 	try {
 		if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 			interruptedActivationFailures = await recoverInterruptedActivations(
@@ -96,18 +115,13 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// An unreconciled job row is misleading, but it is no reason to refuse to start. This function re-runs
 	// on every root component reload; the sweep itself holds the once-per-process guard.
 	if (isMainThread) {
-		// Startup only (it latches): a restore that committed but could not finish its bookkeeping is
-		// finished here, after `system` is open and before any component could hold its database.
-		try {
-			await loadRuntimeModule('dataLayer/restorePublication').recoverRestoresAtStartup();
-		} catch (error) {
-			console.error(errorForLog(error));
-		}
-		jobOwnershipRuntimeModule
-			.reconcileInterruptedJobsOnce()
-			// A rolling deploy's record is ended by its job, so settle the records once their jobs are.
-			.then(() => settleInterruptedRolloutsOnce())
-			.catch((error) => console.error(errorForLog(error)));
+		// without the owned set the sweep would fail a pending restart restore's job as interrupted
+		if (restoreOwnedJobs)
+			jobOwnershipRuntimeModule
+				.reconcileInterruptedJobsOnce(restoreOwnedJobs)
+				// A rolling deploy's record is ended by its job, so settle the records once their jobs are.
+				.then(() => settleInterruptedRolloutsOnce())
+				.catch((error) => console.error(errorForLog(error)));
 		// Same shape: once per process, not awaited; expiring old payloads is no reason to hold up boot.
 		sweepFailedPayloadsOnce().catch((error) => console.error(errorForLog(error)));
 	}
