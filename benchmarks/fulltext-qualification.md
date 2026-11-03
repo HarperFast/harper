@@ -33,7 +33,7 @@ Each cell seeds 9,000 matching records, with 31 tied string fields and one permu
 
 ## Output and interpretation
 
-The parent prints parseable `FULLTEXT_CONCURRENCY_RESULT` lines with scale, clauses, clients, configured write rate, duration, freshness, sample count, achieved query/write rates and p95 latency. Each child log and report is retained separately. The aggregate `report.json` records resolved options, source identity and harness hashes.
+The parent prints parseable `FULLTEXT_CONCURRENCY_RESULT` lines with scale, clauses, clients, configured write rate, duration, freshness, sample count, achieved query/write rates and p95 latency. Each child log and report is retained separately. The aggregate `report.json` records resolved options, checkout identity and harness hashes; each cell fingerprints its resolved Table/query modules so a stale build can be distinguished.
 
 Reports retain latency samples, achieved query/write rates, errors, runtime capabilities, CPU time, event-loop utilization/delay and memory observations. Rates include draining admitted work after the admission window. Small sample counts provide limited tail-latency resolution.
 

@@ -11,7 +11,7 @@ if (options.help) {
 }
 mkdirSync(options.output, { mode: 0o700 });
 const repository = resolve(import.meta.dirname, '..');
-const reportPath = resolve(options.output, 'report.json');
+const reportPath = resolve(options.output, 'native.json');
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim();
 const harnessSha256 = Object.fromEntries(
 	['fulltext-sort-cost.cjs', 'run-fulltext-sort-cost.mts', 'fulltext-options.mts'].map((name) => [
@@ -49,7 +49,7 @@ const report = JSON.parse(readFileSync(reportPath, 'utf8'));
 report.options = options;
 report.commit = commit;
 report.harnessSha256 = harnessSha256;
-writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
+writeFileSync(resolve(options.output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
 for (const cell of report.nativeQueryCases)
 	console.log(
 		formatResult('FULLTEXT_NATIVE_COST_RESULT', {

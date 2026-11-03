@@ -18,7 +18,7 @@ The parent prints one parseable line per completed case, separately from the chi
 FULLTEXT_NATIVE_COST_RESULT scale=quick case=sort-1 rows=9000 samples=2 p50_ms=... p95_ms=... max_ms=...
 ```
 
-`report.json` retains samples, native capabilities, policy, hashes of the resolved Table/query modules, harness hashes, checkout commit and resolved options. `run.log` retains child output. The checkout commit and harness hashes are captured before the child starts; a checkout revision is not an attestation that its build is current. Source/compiled selection uses normal module resolution: the default measures the built `dist` implementation. The old `FULLTEXT_NATIVE_COST` switch and environment-only report interface are replaced by CLI flags; native query cases always run.
+`report.json` retains samples, native capabilities, policy, hashes of the resolved Table/query modules, harness hashes, checkout commit and resolved options. `native.json` preserves the original completed child report, while `run.log` retains child output. The checkout commit and harness hashes are captured before the child starts; a checkout revision is not an attestation that its build is current. Source/compiled selection uses normal module resolution: the default measures the built `dist` implementation. The old `FULLTEXT_NATIVE_COST` switch and environment-only report interface are replaced by CLI flags; native query cases always run.
 
 The corpus is warm and resident. This measures Table execution, not HTTP latency, with no concurrent clients, writes, OS-cache eviction or process-wide GC isolation. RSS snapshots are not peak allocation, a leak test or a capacity bound. Same-run controls are not a comparison against another Harper revision.
 

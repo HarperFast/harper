@@ -1,6 +1,8 @@
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
+const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { performance, monitorEventLoopDelay } = require('node:perf_hooks');
 const { table } = require('#src/resources/databases');
 const { setupTestDBPath } = require('../unitTests/testUtils');
@@ -13,6 +15,15 @@ const {
 	setFullTextTestConfiguration,
 } = require('../unitTests/resources/fullTextTestConfiguration');
 const { waitFor } = require('../unitTests/waitFor');
+const implementationSha256 = Object.fromEntries(
+	['resources/Table', 'resources/indexes/fullTextQueryIndex', 'resources/indexes/fullTextQueryProtocol'].map((name) => {
+		const filename = require.resolve(`#src/${name}`);
+		return [
+			path.relative(path.resolve(__dirname, '..'), filename),
+			createHash('sha256').update(fs.readFileSync(filename)).digest('hex'),
+		];
+	})
+);
 function summarize(samples) {
 	const sorted = samples.slice().sort((a, b) => a - b);
 	assert(sorted.length);
@@ -194,6 +205,7 @@ describe('isolated native full-text qualification cell', () => {
 			const report = {
 				scope:
 					'Fresh process/reader; setup warms OS caches. Not OS-cold, HTTP/multiworker or catalog-scale release qualification. Lifetime maxRSS includes setup; sampling may miss synchronous peaks.',
+				implementationSha256,
 				node: process.version,
 				platform: process.platform,
 				architecture: process.arch,
