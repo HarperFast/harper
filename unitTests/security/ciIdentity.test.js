@@ -114,7 +114,15 @@ describe('ciIdentity', () => {
 
 		it('holds across audiences for an issuer whose token can name several', () => {
 			const generic = (id, audience) => ({ ...policy(id, 'preview'), issuer: 'https://issuer.example.com', audience });
-			assert.ok(policiesOverlap(generic('a', 'https://one.example.com'), generic('b', 'https://two.example.com')));
+			const one = generic('a', 'https://one.example.com');
+			const two = generic('b', 'https://two.example.com');
+			assert.ok(policiesOverlap(one, two));
+			const pinned = { ...one, claims: { ...one.claims, aud: 'https://one.example.com' } };
+			assert.ok(
+				!policiesOverlap(pinned, two),
+				'a token naming both audiences has an array aud, which no claim matches'
+			);
+			assert.ok(!policiesOverlap(two, pinned));
 		});
 
 		it('does not hold between a GitHub policy that leaves event_name open and one only for pull_request_target', () => {
