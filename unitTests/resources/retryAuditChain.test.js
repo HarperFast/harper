@@ -6,11 +6,14 @@ const assert = require('node:assert');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { readFileSync, rmSync } = require('node:fs');
+const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { setWriteIntentsForTests } = require('#src/resources/transactionLogAbortMarkers');
 const { Transaction } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -193,6 +196,56 @@ describe('Audit chain across a conflict retry', function () {
 		assert(interception.retried, 'the write must have retried');
 		assert.deepStrictEqual(refsOf('unmoved'), []);
 		assert(namesHead('moved', base + 200), 'the record names the head the retry committed over');
+	});
+
+	it('adds no ref when a retry re-logs its entry after a pre-log refusal', async () => {
+		const id = 'relogged';
+		const base = freshBase();
+		await applyFromOrigin(base, put(id, { id, title: 'seed', meta: 'seed' }));
+		const priorIntents = setWriteIntentsForTests(true);
+		const db = T.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		const attempts = [];
+		let releaseHolder, holderId, submitted;
+		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
+		try {
+			const holderContext = { source: {}, sourceApply: true, timestamp: base + 200 };
+			const holder = transaction(holderContext, async () => {
+				const resource = await T.getResource(id, holderContext);
+				await resource._writeUpdate(id, { title: 'intermediate' }, false, {
+					isNotification: true,
+					nodeId: origin,
+					version: base + 200,
+				});
+				const write = holderContext.transaction.writes.find((candidate) => candidate.key === id);
+				await holderContext.transaction.save(write);
+				holderId = holderContext.transaction.transaction.id;
+				await holderGate;
+			});
+			await waitFor(() => holderId !== undefined);
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== db || this.id === holderId) return originalCommit.apply(this, args);
+				submitted = true;
+				const result = await originalCommit.apply(this, args);
+				attempts.push({ logWritten: this.logWritten() });
+				return result;
+			};
+			const retried = applyFromOrigin(base + 300, patch(id, { meta: 'retried' }));
+			await waitFor(() => submitted);
+			await delay(20); // the native intent check runs on the commit thread after submission
+			releaseHolder();
+			await holder;
+			await retried;
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+			releaseHolder?.();
+			setWriteIntentsForTests(priorIntents ?? false);
+		}
+		assert.deepStrictEqual(attempts, [{ logWritten: false }, { logWritten: true }]);
+		assert.deepStrictEqual(refsOf(id), []);
+		await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
+		const { title, meta } = await T.get(id);
+		assert.deepStrictEqual({ title, meta }, { title: 'intermediate', meta: 'retried' });
 	});
 
 	it('recovers the ref when crash replay restages the retried write over the intermediate head', async function () {

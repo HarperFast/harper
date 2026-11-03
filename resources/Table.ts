@@ -1981,7 +1981,7 @@ export function makeTable(options): TableResourceClass {
 			type = replayed.type;
 			previousVersion = replayed.previousVersion;
 			covered = replayed.previousAdditionalAuditRefs;
-		} else if (transaction?.isRetry && write.loggedType !== undefined) {
+		} else if (transaction?.isRetry && !transaction.relogOnRetry && write.loggedType !== undefined) {
 			type = write.loggedType;
 			previousVersion = write.loggedPreviousVersion;
 			covered = write.loggedPreviousRefs;
@@ -6440,6 +6440,17 @@ export function makeTable(options): TableResourceClass {
 									const auditIdentity = `${nodeId ?? 0}:${localTime}`;
 									if (visitedAuditRefs.has(auditIdentity)) break;
 									visitedAuditRefs.add(auditIdentity);
+									// An earlier same-key write in this transaction is not in the committed log yet; an uncommitted read
+									// on retry would see this handle's own unresolved batch from the failed attempt.
+									const ownPendingEntry =
+										localTime === appendedLogKey &&
+										((hasOwnPendingHead && !isAdditionalAuditRef) ||
+											(priorStaged &&
+												isRocksDB &&
+												!replaying &&
+												transaction.hasStagedLog &&
+												(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))));
+									if (ownPendingEntry) break;
 									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
 									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
 									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
@@ -6490,16 +6501,7 @@ export function makeTable(options): TableResourceClass {
 									}
 									resolvedEntry = undefined;
 									if (!auditRecord) {
-										// An earlier same-key write in this transaction is not in the committed log yet.
-										const ownPendingEntry =
-											localTime === appendedLogKey &&
-											((hasOwnPendingHead && !isAdditionalAuditRef) ||
-												(priorStaged &&
-													isRocksDB &&
-													!replaying &&
-													transaction.hasStagedLog &&
-													(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))));
-										if (!ownPendingEntry) auditHistoryMissing = true;
+										auditHistoryMissing = true;
 										break;
 									}
 									isAdditionalAuditRef = false;

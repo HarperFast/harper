@@ -2688,7 +2688,10 @@ export class DatabaseTransaction implements Transaction {
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-			if (stagesLog(transaction)) operation.stagedAudit = 'none';
+			if (stagesLog(transaction)) {
+				operation.stagedAudit = 'none';
+				operation.loggedType = undefined;
+			}
 			try {
 				completion = operation.commit(
 					writeVersion,
