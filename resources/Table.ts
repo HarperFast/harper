@@ -7909,7 +7909,7 @@ export function makeTable(options): TableResourceClass {
 					!recordAccess &&
 					!residencyPolicy &&
 					(context as any)?.replicateFrom !== false
-						? coveredSelectAttribute(select) // covers caching tables without source refresh; record path refreshes at :8707 (DESIGN.md)
+						? coveredSelectAttribute(select)
 						: undefined;
 				const entries = executeConditions(
 					conditions,
@@ -8965,7 +8965,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry)) // sourceless tables stay queryable until setTTLExpiration (:3598, :11442) evicts them (DESIGN.md)
+						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
 						if (context.onlyIfCached) {
 							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;

@@ -784,22 +784,36 @@ describe('Secondary-index range select', function () {
 			try {
 				await Amounts.put(1, { amount: 1.5, when: 1.5 });
 				await Amounts.put(2, { amount: 7, when: 9e15 });
+				await Amounts.put(3, { amount: 8, when: 5 });
 				Amounts = table({
 					table: 'IndexRangeCoveredRedeclareTest',
 					database: 'test',
 					attributes: attributes('BigInt', 'Date'),
 				});
 				await Amounts.indexingOperation;
-				await assertCovered(
-					Amounts,
-					{ conditions: [{ attribute: 'amount', comparator: 'between', value: [1n, 2n] }], select: ['id', 'amount'] },
-					[{ id: 1, amount: 1.5 }]
+				const amountCondition = [{ attribute: 'amount', comparator: 'between', value: [1n, 7n] }];
+				await assertCovered(Amounts, { conditions: amountCondition, select: ['id', 'amount'] }, [
+					{ id: 1, amount: 1.5 },
+					{ id: 2, amount: 7n },
+				]);
+				assert.deepStrictEqual(
+					await rows(Amounts, { conditions: amountCondition, select: ['id', 'amount'], rowFilter: () => true }),
+					[
+						{ id: 1, amount: 1.5 },
+						{ id: 2, amount: 7 },
+					]
 				);
-				await assertCovered(
-					Amounts,
-					{ conditions: [{ attribute: 'when', comparator: 'gt', value: new Date(1) }], select: ['id', 'when'] },
+				const whenCondition = [{ attribute: 'when', comparator: 'gt', value: new Date(1) }];
+				await assertCovered(Amounts, { conditions: whenCondition, select: ['id', 'when'] }, [
+					{ id: 1, when: 1.5 },
+					{ id: 3, when: new Date(5) },
+					{ id: 2, when: 9e15 },
+				]);
+				assert.deepStrictEqual(
+					await rows(Amounts, { conditions: whenCondition, select: ['id', 'when'], rowFilter: () => true }),
 					[
 						{ id: 1, when: 1.5 },
+						{ id: 3, when: 5 },
 						{ id: 2, when: 9e15 },
 					]
 				);

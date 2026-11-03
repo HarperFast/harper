@@ -16,6 +16,7 @@ describe('TTL cleanup scan interval', () => {
 		setMainIsWorker(true);
 	});
 
+	const databaseName = 'ttl_cleanup_interval';
 	// the table as a worker that only loaded it from the catalog sees it
 	const hydrate = (Declared, name, { expirationMS, evictionMS }) =>
 		makeTable({
@@ -27,8 +28,8 @@ describe('TTL cleanup scan interval', () => {
 			tableName: name,
 			tableId: Declared.primaryStore.tableId,
 			primaryKey: 'id',
-			databasePath: 'test',
-			databaseName: 'test',
+			databasePath: databaseName,
+			databaseName,
 			indices: {},
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 			dbisDB: Declared.dbisDB,
@@ -38,7 +39,7 @@ describe('TTL cleanup scan interval', () => {
 	it('a table loaded from the catalog evicts on its expiration, not daily', async () => {
 		const Declared = table({
 			table: 'TtlHydrated',
-			database: 'test',
+			database: databaseName,
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		const Hydrated = hydrate(Declared, 'TtlHydrated', { expirationMS: 50 });
@@ -53,7 +54,11 @@ describe('TTL cleanup scan interval', () => {
 	});
 
 	it('the number form derives the interval from the new expiration', async () => {
-		const Table = table({ table: 'TtlNumberForm', database: 'test', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const Table = table({
+			table: 'TtlNumberForm',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
 		try {
 			Table.setTTLExpiration(3600);
 			Table.setTTLExpiration(0.05);
@@ -68,7 +73,7 @@ describe('TTL cleanup scan interval', () => {
 	it('an expired record stays queryable until the scan evicts it', async () => {
 		const Table = table({
 			table: 'TtlGrace',
-			database: 'test',
+			database: databaseName,
 			expiration: 0.05,
 			eviction: 2,
 			attributes: [
@@ -98,7 +103,7 @@ describe('TTL cleanup scan interval', () => {
 	it('the number form keeps a configured scanInterval', () => {
 		const Table = table({
 			table: 'TtlScanInterval',
-			database: 'test',
+			database: databaseName,
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		const originalSetTimeout = global.setTimeout;
@@ -125,7 +130,7 @@ describe('TTL cleanup scan interval', () => {
 	it('an eviction-only table loaded from the catalog arms the scan', () => {
 		const Declared = table({
 			table: 'TtlEvictionOnly',
-			database: 'test',
+			database: databaseName,
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		const originalSetTimeout = global.setTimeout;
