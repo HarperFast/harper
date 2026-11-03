@@ -65,7 +65,7 @@ import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
-import { redactUrlCredentials } from './status/ComponentStatusRegistry.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { type PluginModule } from './PluginModule.ts';

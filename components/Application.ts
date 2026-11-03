@@ -46,7 +46,7 @@ import {
 	type ResolvedGitCredential,
 } from './gitCredentialServer.ts';
 import { canonicalizePackageJSON } from './canonicalizePackageJSON.ts';
-import { redactUrlCredentials } from './status/ComponentStatusRegistry.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {

@@ -11,7 +11,7 @@ import { getActiveDeployment } from './deploymentRecorder.ts';
 import { logger } from '../utility/logging/logger.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 import { componentGrantOf, grantCoversComponent } from '../security/componentGrant.ts';
-import { redactUrlCredentials } from './status/ComponentStatusRegistry.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 

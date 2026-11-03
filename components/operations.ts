@@ -45,7 +45,7 @@ import {
 	liveDeploymentIdOf,
 } from './Application.ts';
 import { deploymentOfLiveRelease, deploymentRecord } from './deploymentOperations.ts';
-import { redactUrlCredentials } from './status/ComponentStatusRegistry.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 const prepareApplication = _prepareApplication;
 import {
 	COMPONENT_PREPARATION_LOCK_DIR,
