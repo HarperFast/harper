@@ -314,6 +314,6 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 
 ## @harperfast/fulltext-v08 (dev dependency)
 
-- Purpose: Exact 0.8.0 alias for testing checkpoint reuse, current-release writes and previous-release reopen with the previous production package.
-- Cost: Test-only facade and platform native binary; absent from production installs.
-- Maintenance: Kept fixed and excluded from Renovate so the upgrade fixture continues to exercise the historical release.
+- Need for usage: Exact 0.8.0 alias for testing checkpoint reuse, current-release writes and previous-release reopen with the previous production package.
+- Cost and boundary: Test-only facade and platform native binary; absent from production installs.
+- Updates and removal: Renovate leaves this historical alias fixed. Remove it and its exclusion when the 0.8 migration fixture is retired.

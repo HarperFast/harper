@@ -109,6 +109,19 @@ export function validateFullTextFuzzyOptions(
 		throw new ClientError('fuzzyTranspositions must be a boolean', 400);
 }
 
+const FULL_TEXT_SCORING_PROPERTIES = new Set([
+	'comparator',
+	'value',
+	'fields',
+	'boost',
+	'fuzzyDistance',
+	'fuzzyTranspositions',
+]);
+
+function isUnsupportedScoringProperty(name: string): boolean {
+	return !FULL_TEXT_SCORING_PROPERTIES.has(name);
+}
+
 export function validateFullTextScoringOptions(condition: any, mode?: NativeFullTextSearchMode): void {
 	if (condition.boost === undefined && condition.should === undefined) return;
 	if (!mode || condition.negated || condition.conditions)
@@ -126,9 +139,7 @@ export function validateFullTextScoringOptions(condition: any, mode?: NativeFull
 			!clause ||
 			typeof clause !== 'object' ||
 			Array.isArray(clause) ||
-			Object.keys(clause).some(
-				(name) => !['comparator', 'value', 'fields', 'boost', 'fuzzyDistance', 'fuzzyTranspositions'].includes(name)
-			)
+			Object.keys(clause).some(isUnsupportedScoringProperty)
 		)
 			throw new ClientError('should clauses accept only comparator, value, fields, boost and fuzzy controls', 400);
 		const clauseMode = fullTextComparatorMode(clause.comparator);
