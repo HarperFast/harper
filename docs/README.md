@@ -54,7 +54,11 @@ HARPER_DOCS_PATH=../harper npm run dev        # live reload of edits here
 HARPER_DOCS_PATH=../harper npm run build      # fails on broken links, as CI does
 ```
 
-`HARPER_PRO_DOCS_PATH` does the same for a harper-pro checkout; a repo without a path is fetched from `main`. CI runs that build on every PR that changes `docs/`, and uploads the built site as an artifact.
+`HARPER_PRO_DOCS_PATH` does the same for a harper-pro checkout; a repo without a path is fetched at the latest release (`HARPER_PRO_DOCS_REF=main` fetches `main` instead). CI runs that build on every PR that changes `docs/`, against harper-pro at the PR's base branch, and uploads the built site as an artifact.
+
+## When docs publish
+
+The site publishes the latest stable release of harper-pro and the same tag of harper, so docs merged with a change on `main` go live when the release containing it ships. A correction to docs that are already live goes in a PR milestoned to that release line; it is cherry-picked there and goes live with the next patch release.
 
 ## Reference Section Structure
 

@@ -44,6 +44,7 @@ jobs:
         working-directory: site
         env:
           HARPER_DOCS_PATH: ${{ github.workspace }}/harper
+          HARPER_PRO_DOCS_REF: ${{ github.base_ref }}
         run: npm run build
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
