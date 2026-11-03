@@ -14,6 +14,7 @@ const {
 	isHttpPassThroughEnvelope,
 	serialize,
 	serializeMessage,
+	toCsvStream,
 	waitForStreamStartup,
 	discardSerializedStream,
 	brotliOptions,
@@ -1055,5 +1056,61 @@ describe('contentTypes – pass-through envelopes', function () {
 				assert.strictEqual(response.headers.get('Content-Type'), 'x/y');
 			}
 		});
+	});
+});
+
+describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', function () {
+	it('formats scalar columns including null, undefined, 0, false, and arrays without stream truncation', async function () {
+		const columns = Object.assign(['id'], { scalar: true });
+		const syncOut = await streamToString(toCsvStream(['z-1', null, undefined, 0, false, ['a', 'b'], 'z-2'], columns));
+		assert.strictEqual(syncOut, '"id"\n"z-1"\n\n\n0\n"false"\n"[""a"",""b""]"\n"z-2"\n');
+
+		async function* asyncSource() {
+			yield 'z-1';
+			yield null;
+			yield undefined;
+			yield 'z-2';
+		}
+		const asyncOut = await streamToString(toCsvStream(asyncSource(), columns));
+		assert.strictEqual(asyncOut, '"id"\n"z-1"\n\n\n"z-2"\n');
+	});
+
+	it('formats positional tuple (asArray) columns and preserves recovered row errors', async function () {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const tupleColumns = Object.assign(['id', 'note'], { asArray: true });
+		const tupleOut = await streamToString(
+			toCsvStream(
+				[
+					['z-1', 'n1'],
+					['z-2', null],
+				],
+				tupleColumns
+			)
+		);
+		assert.strictEqual(tupleOut, '"id","note"\n"z-1","n1"\n"z-2",\n');
+
+		const scalarFailing = new ExtendedIterable(['z-1', 'z-2', 'z-3']).map((id) => {
+			if (id === 'z-2') throw Object.assign(new Error('row 2 failed'), { partialObject: { id: 'z-2' } });
+			return id;
+		});
+		scalarFailing.getColumns = () => Object.assign(['id'], { scalar: true });
+		const scalarErrOut = await streamToString(
+			serialize(scalarFailing, { headers: { accept: 'text/csv' } }, { headers: { set() {} } })
+		);
+		const scalarLines = scalarErrOut.trim().split('\n');
+		assert.strictEqual(scalarLines[0], '"id"');
+		assert.strictEqual(scalarLines[1], '"z-1"');
+		assert.match(scalarLines[2], /row 2 failed/);
+		assert.strictEqual(scalarLines[3], '"z-3"');
+
+		const tupleFailing = new ExtendedIterable([1, 2, 3]).map((n) => {
+			if (n === 2) throw Object.assign(new Error('row 2 failed'), { partialObject: { id: 'z-2' } });
+			return [`z-${n}`, `n${n}`];
+		});
+		tupleFailing.getColumns = () => Object.assign(['id', 'note'], { asArray: true });
+		const tupleErrOut = await streamToString(
+			serialize(tupleFailing, { headers: { accept: 'text/csv' } }, { headers: { set() {} } })
+		);
+		assert.strictEqual(tupleErrOut, '"id","note"\n"z-1","n1"\n,\n"z-3","n3"\n');
 	});
 });

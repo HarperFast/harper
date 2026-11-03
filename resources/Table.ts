@@ -1480,6 +1480,12 @@ function searchConditions(target: any): any[] {
 	return conditions;
 }
 
+type ColumnsList = string[] & { scalar?: true; asArray?: true };
+
+function isScalarSelect(select: any): boolean {
+	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
+}
+
 function selectRequestsProperty(select: any, propertyName: string): boolean {
 	if (!select) return false;
 	const selected = Array.isArray(select) ? select : [select];
@@ -7381,16 +7387,20 @@ export function makeTable(options): TableResourceClass {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
-			const getColumns = () => {
-				const select = target.select;
-				if (select) {
-					const columns = [];
-					for (const column of select) {
-						if (column === '*') {
+			let effectiveSelect: any;
+			const getColumns = (): ColumnsList => {
+				const currentSelect = effectiveSelect ?? target.select;
+				if (currentSelect) {
+					const columns: ColumnsList = [];
+					const asArray = Boolean(currentSelect.asArray);
+					for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
+						if (column === '*' && !asArray) {
 							for (const attribute of attributes)
-								if (!(select[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+								if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
 						} else columns.push((column as any).name || column);
 					}
+					if (isScalarSelect(currentSelect)) columns.scalar = true;
+					else if (asArray) columns.asArray = true;
 					return columns;
 				}
 				return attributes
@@ -7409,6 +7419,7 @@ export function makeTable(options): TableResourceClass {
 				if (allowed != null && typeof (allowed as any).then === 'function') {
 					const self = this;
 					const gatedResults: any = new ExtendedIterable();
+					let resolvedResults: any;
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
 							if (!resolved) return { allowed: false };
@@ -7416,7 +7427,8 @@ export function makeTable(options): TableResourceClass {
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
-								return { allowed: true, results: await self.search(target), gate: gatedResults };
+								resolvedResults = await self.search(target);
+								return { allowed: true, results: resolvedResults, gate: gatedResults };
 							} catch (error) {
 								return { allowed: true, error };
 							}
@@ -7424,7 +7436,7 @@ export function makeTable(options): TableResourceClass {
 						() => ({ allowed: false })
 					);
 					gatedResults.selectApplied = true;
-					gatedResults.getColumns = getColumns;
+					gatedResults.getColumns = () => (resolvedResults?.getColumns ? resolvedResults.getColumns() : getColumns());
 					gatedResults.iterate = (options: any = {}) => {
 						const asynchronous = options === true || options?.async;
 						const iterationOptions = options === true ? { async: true } : { ...options, async: true };
@@ -7649,13 +7661,13 @@ export function makeTable(options): TableResourceClass {
 					postOrdering = sort;
 				}
 			}
-			const select = includeFullTextHighlights
+			const select = (effectiveSelect = includeFullTextHighlights
 				? target.select === undefined
 					? ['*', '$highlights']
 					: selectRequestsProperty(target.select, '$highlights')
 						? target.select
 						: appendSelectProperty(target.select, '$highlights')
-				: target.select;
+				: target.select);
 			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
 			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
 			// injected full-scan condition). Used to pick the count-estimate source below.
@@ -8873,7 +8885,7 @@ export function makeTable(options): TableResourceClass {
 					};
 					let selected: any;
 					try {
-						if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined)) {
+						if (isScalarSelect(select)) {
 							selectAttribute(select, (value) => {
 								selected = value;
 							});

@@ -856,13 +856,14 @@ function openOnFirstStep(
 			if (closed) return { value: undefined, done: true };
 			if (step.done) return step;
 			const { value } = step;
-			return {
-				value:
-					!async && typeof value?.then === 'function'
-						? value.then((settled) => (closed ? settled : mapValue(settled)))
-						: mapValue(value),
-				done: false,
-			};
+			if (!async && typeof value?.then === 'function') {
+				return {
+					value: value.then((settled) => (closed ? settled : mapValue(settled))),
+					done: false,
+				};
+			}
+			const mapped = mapValue(value);
+			return mapped === value ? step : { value: mapped, done: false };
 		});
 	const deferred: any = {
 		[async ? Symbol.asyncIterator : Symbol.iterator]() {
@@ -1070,17 +1071,38 @@ function transformIterable(iterable, transform, serializeError, eager) {
 	};
 }
 
+function formatCsvCell(value: any) {
+	if (value === null || value === undefined) {
+		return '';
+	}
+	// Serialize objects and arrays as JSON
+	if (typeof value === 'object') {
+		return JSON.stringify(value);
+	}
+	return value;
+}
+
 /**
  * Converts JS objects/arrays/iterators to a CSV stream. Should support iterators with full backpressure handling
  * @param data
  * @returns stream
  */
-export function toCsvStream(data, columns?) {
+export function toCsvStream(data, columns = data?.getColumns?.()) {
+	const scalar = Boolean(columns?.scalar);
+	const asArray = Boolean(columns?.asArray);
 	const source = data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data];
-	const readStream = Readable.from(openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator])));
+	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
+	const readStream = Readable.from(
+		openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator]), scalar ? (value) => value ?? '' : undefined)
+	);
 
 	let headerWritten = false;
 	let fields = columns || null;
+	const rowToValues = scalar
+		? (chunk) => [formatCsvCell(chunk)]
+		: asArray
+			? (chunk) => fields.map((_, index) => formatCsvCell(chunk?.[index]))
+			: (chunk) => fields.map((field) => formatCsvCell(chunk[field]));
 
 	// Create a transform stream to convert objects to CSV
 	const csvTransform = new Transform({
@@ -1100,18 +1122,7 @@ export function toCsvStream(data, columns?) {
 
 				// Convert object to CSV row
 				if (fields) {
-					const values = fields.map((field) => {
-						const value = chunk[field];
-						if (value === null || value === undefined) {
-							return '';
-						}
-						// Serialize objects and arrays as JSON
-						if (typeof value === 'object') {
-							return JSON.stringify(value);
-						}
-						return value;
-					});
-					this.push(escapeCsvRow(values, false) + '\n');
+					this.push(escapeCsvRow(rowToValues(chunk), false) + '\n');
 				}
 
 				callback();
