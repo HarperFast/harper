@@ -337,7 +337,11 @@ describe('@fullText derived-index activation', () => {
 		for (const controls of [{ boost: 1 }, { should: [{ comparator: 'matches', value: 'widget', fields: ['title'] }] }])
 			await assert.rejects(
 				async () => collect(Product.search({ conditions: [{ ...condition, ...controls }] })),
-				(error) => error.statusCode === 400 && /query API 8/.test(error.message)
+				(error) =>
+					error.statusCode === 503 &&
+					error.code === 'FULL_TEXT_SCORING_UNSUPPORTED' &&
+					error.retryable === false &&
+					/query API 8/.test(error.message)
 			);
 		assert.strictEqual((await collect(Product.search({ conditions: [condition] }))).length, 1);
 	});
