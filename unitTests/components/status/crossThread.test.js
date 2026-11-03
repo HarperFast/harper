@@ -143,6 +143,42 @@ describe('CrossThread Module', function () {
 			assert.equal(collected.get('fallbackComp@main').status, 'error');
 		});
 
+		it('labels main-thread statuses as main when threads.count is 0 (setMainIsWorker)', async function () {
+			registry.setStatus('zeroWorkerComp', 'healthy', 'Main thread in zero-worker mode');
+			getWorkerIndexStub.restore();
+			const wasMainWorker = manageThreadsModule.getWorkerIndex() === 0;
+			manageThreadsModule.setMainIsWorker(true);
+
+			try {
+				assert.equal(manageThreadsModule.getWorkerIndex(), 0);
+
+				const collected = await collector.collect(registry);
+				assert.equal(collected.size, 1);
+				assert.equal(collected.has('zeroWorkerComp@worker-0'), false);
+				assert.ok(collected.has('zeroWorkerComp@main'));
+				assert.equal(collected.get('zeroWorkerComp@main').workerIndex, undefined);
+
+				const aggregated = StatusAggregator.aggregate(collected).get('zeroWorkerComp');
+				assert.ok(aggregated.lastChecked.main > 0);
+				assert.deepEqual(aggregated.lastChecked.workers, {});
+
+				sendItcEventStub.rejects(new Error('ITC failure'));
+				const fallback = await collector.collect(registry);
+				assert.equal(fallback.size, 1);
+				assert.equal(fallback.has('zeroWorkerComp@worker-0'), false);
+				assert.ok(fallback.has('zeroWorkerComp@main'));
+				assert.equal(fallback.get('zeroWorkerComp@main').workerIndex, undefined);
+
+				sinon.stub(manageThreadsModule, 'getWorkerIndex').returns(2);
+				const workerLocal = collector['getLocalStatusOnly'](registry, false);
+				assert.equal(workerLocal.size, 1);
+				assert.ok(workerLocal.has('zeroWorkerComp@worker-2'));
+				assert.equal(workerLocal.get('zeroWorkerComp@worker-2').workerIndex, 2);
+			} finally {
+				manageThreadsModule.setMainIsWorker(wasMainWorker);
+			}
+		});
+
 		it('should handle collection timeout', async function () {
 			this.timeout(5000);
 			const shortTimeoutCollector = new CrossThreadStatusCollector(50); // Very short timeout
@@ -608,6 +644,69 @@ describe('CrossThread Module', function () {
 			assert.equal(aggregated.status, 'error');
 			assert.equal(aggregated.abnormalities.size, 1);
 			assert.equal(aggregated.abnormalities.get('service@worker-1').status, 'warning');
+		});
+
+		it('aggregates scoped component names under their own names without an empty-string key', async function () {
+			const allStatuses = new Map([
+				[
+					'@scope/app-a@main',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1000),
+						message: 'App A loaded on main',
+					},
+				],
+				[
+					'@scope/app-a.rest@main',
+					{
+						status: 'healthy',
+						lastChecked: new Date(2000),
+						message: 'App A REST loaded on main',
+					},
+				],
+				[
+					'@scope/app-b@worker-0',
+					{
+						status: 'error',
+						workerIndex: 0,
+						lastChecked: new Date(3000),
+						message: 'App B failed on worker 0',
+					},
+				],
+				[
+					'@scope/app-b@worker-0#thread-8',
+					{
+						status: 'healthy',
+						workerIndex: 0,
+						lastChecked: new Date(4000),
+						message: 'App B replacement healthy on worker 0',
+					},
+				],
+			]);
+
+			const aggregated = StatusAggregator.aggregate(allStatuses);
+
+			assert.equal(aggregated.has(''), false);
+			assert.deepEqual([...aggregated.keys()], ['@scope/app-a', '@scope/app-a.rest', '@scope/app-b']);
+
+			const appA = aggregated.get('@scope/app-a');
+			assert.equal(appA.componentName, '@scope/app-a');
+			assert.equal(appA.status, 'healthy');
+			assert.equal(appA.lastChecked.main, 1000);
+
+			const appARest = aggregated.get('@scope/app-a.rest');
+			assert.equal(appARest.componentName, '@scope/app-a.rest');
+			assert.equal(appARest.status, 'healthy');
+			assert.equal(appARest.lastChecked.main, 2000);
+
+			const appB = aggregated.get('@scope/app-b');
+			assert.equal(appB.componentName, '@scope/app-b');
+			assert.equal(appB.status, 'error');
+			assert.equal(appB.lastChecked.workers[0], 4000);
+			assert.equal(appB.abnormalities.get('@scope/app-b@worker-0').status, 'healthy');
+
+			const appAStatus = await new ComponentStatusRegistry().getAggregatedStatusFor('@scope/app-a', aggregated);
+			assert.equal(appAStatus.status, 'healthy');
 		});
 	});
 });

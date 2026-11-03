@@ -27,6 +27,8 @@ import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
+import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
+import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
@@ -35,6 +37,7 @@ import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { enableCompileCache } from '../server/threads/compileCache.ts';
 
 let pmUtils;
 let cmdArgs;
@@ -67,14 +70,16 @@ function addExitListeners() {
 			beginProcessShutdown();
 			removeHdbPid();
 		});
-		const exit = () => {
-			beginProcessShutdown();
-			removeHdbPid();
-			process.exit(0);
-		};
-		process.on('SIGINT', exit);
-		process.on('SIGQUIT', exit);
-		process.on('SIGTERM', exit);
+		// The pid file stays until 'exit': while draining, the instance is still running and a repeated
+		// `harper stop` is the second signal.
+		const onSignal = createTerminationHandler({
+			getTimeoutMs: getProcessShutdownTimeoutMs,
+			shutdown: shutdownProcess,
+			exit: () => process.exit(0),
+		});
+		process.on('SIGINT', onSignal);
+		process.on('SIGQUIT', onSignal);
+		process.on('SIGTERM', onSignal);
 	}
 }
 
@@ -235,6 +240,9 @@ async function main(calledByInstall = false) {
 			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
+		// after bin/harper.ts's earlier call: covers a fresh install, entries that call main() directly, and a rootPath
+		// that initialize() just moved
+		enableCompileCache(env.get(terms.CONFIG_PARAMS.ROOTPATH));
 
 		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
 
@@ -253,6 +261,11 @@ async function main(calledByInstall = false) {
 			process.env.DEV_MODE
 				? 1
 				: (env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdbTerms.CONFIG_PARAMS.THREADS))
+		);
+		// after main settled interrupted deploys and every pool worker reported what it loaded
+		import('../components/operations.ts').then(
+			({ retryPendingBranchRemovals }) => retryPendingBranchRemovals(),
+			(error) => hdbLogger.error(error)
 		);
 
 		if (!isScripted) started();

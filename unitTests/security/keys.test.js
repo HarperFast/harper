@@ -695,6 +695,125 @@ describe('Test keys module', () => {
 		});
 	});
 
+	describe('createTLSSelector initialized by a request (harper-pro#1189)', () => {
+		let databases;
+		let contextStorage;
+		let suspendDatabaseCommits;
+		let systemDescriptor;
+		let certificates;
+		const restores = [];
+		const restore = () => {
+			while (restores.length) restores.pop()();
+		};
+		// a suspended database fails every certificate-table call with DatabaseClosingError
+		const suspendSystemDatabase = () => {
+			const suspension = suspendDatabaseCommits([certificates.primaryStore.rootStore]);
+			restores.push(() => suspension.release());
+		};
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			contextStorage = require('#src/resources/transaction').contextStorage;
+			({ suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction'));
+			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
+			certificates = databases.system.hdb_certificate;
+		});
+
+		afterEach(() => {
+			restore();
+			delete databases.system;
+			Object.defineProperty(databases, 'system', systemDescriptor);
+		});
+
+		it('builds from the certificate table even when an anonymous request triggered it', async function () {
+			this.timeout(5000);
+			const anonymousRequest = { authorize: true, user: undefined };
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('replication', undefined, true);
+			await contextStorage.run(anonymousRequest, () => selector.initialize(pseudoServer));
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the selector must see the certificate table');
+			assert.strictEqual(anonymousRequest.authorize, true, "the request's authorization gate is left for the request");
+			assert.throws(
+				() => contextStorage.run(anonymousRequest, () => Array.from(certificates.search([]))),
+				/Must login/,
+				'the request itself still cannot read the certificate table'
+			);
+		});
+
+		it('retries a one-shot initialization that rejected', async function () {
+			this.timeout(5000);
+			suspendSystemDatabase();
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('replication', undefined, false);
+			const failed = selector.initialize(pseudoServer);
+			await assert.rejects(failed, { name: 'DatabaseClosingError' });
+			assert.strictEqual(selector.ready, failed, 'holders reading `.ready` directly still see the failure');
+			restore();
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
+		});
+
+		it('keeps a rejected listener selector retrying until it recovers, still subscribed', async function () {
+			this.timeout(15000);
+			suspendSystemDatabase();
+			let notified = 0;
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [() => notified++] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await assert.rejects(selector.initialize(pseudoServer), { name: 'DatabaseClosingError' });
+			restore();
+			await waitFor(() => pseudoServer.secureContexts.size > 0, {
+				timeout: 5000,
+				message: 'a listener that never calls initialize() again must still recover',
+			});
+			assert.ok(notified > 0, 'listeners registered before the failure are told about the recovery');
+			assert.ok(await selector.ready, '`.ready` now reports the recovery');
+			// the first subscribe() threw; the retry must have subscribed, or certificate writes go unseen
+			const notifiedBeforeWrite = notified;
+			const [record] = Array.from(certificates.search([]));
+			await certificates.put({ ...record });
+			await waitFor(() => notified > notifiedBeforeWrite, {
+				timeout: 5000,
+				message: 'a certificate write after recovery must rebuild the selector',
+			});
+		});
+
+		it('replaces a rejected listener attempt when initialize() is called again', async function () {
+			this.timeout(10000);
+			// Suspension fails subscribe() along with search(); this case needs a live subscription to retire,
+			// so only search() is made to fail.
+			let ended = false;
+			const replace = (name, implementation) => {
+				const own = Object.getOwnPropertyDescriptor(certificates, name);
+				certificates[name] = implementation(certificates[name]);
+				restores.push(() => (own ? Object.defineProperty(certificates, name, own) : delete certificates[name]));
+			};
+			replace(
+				'subscribe',
+				(subscribe) =>
+					function (...args) {
+						return subscribe.apply(this, args).then((subscription) => {
+							const end = subscription.end;
+							subscription.end = function () {
+								ended = true;
+								return end.apply(this, arguments);
+							};
+							return subscription;
+						});
+					}
+			);
+			replace('search', () => () => {
+				throw new Error('transient read');
+			});
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await assert.rejects(selector.initialize(pseudoServer), /transient read/);
+			restore();
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
+			await waitFor(() => ended, { timeout: 2000, message: "the replaced attempt's subscription was not ended" });
+		});
+	});
+
 	describe('createTLSSelector when the system database is not yet loaded on this thread', () => {
 		// A raw-socket listener (e.g. MQTT's securePort) can initialize its own TLS selector before
 		// this thread has loaded the system database — selector creation doesn't control

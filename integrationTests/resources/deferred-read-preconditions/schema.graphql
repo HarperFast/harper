@@ -2,3 +2,8 @@ type RestrictedRow @table {
 	id: ID @primaryKey
 	name: String
 }
+
+type CountedRow @table @export {
+	id: ID @primaryKey
+	category: String @indexed
+}

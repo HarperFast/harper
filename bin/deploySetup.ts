@@ -166,6 +166,116 @@ export async function resolveSetupComponent(req: any, message: string, allowPatt
 	return component;
 }
 
+/** The cluster's public secrets key, which only Pro and Fabric provision. */
+export async function fetchSecretsPublicKey(transport: any): Promise<{ publicKey: string; fingerprint: string }> {
+	// Not wrapped in a try/catch: `cliOperations` reports the failure and exits rather than throwing, so
+	// a catch here would be dead code promising a friendlier message that never runs.
+	const keyResponse: any = await cliOperations({ ...transport, operation: 'get_secrets_public_key' }, true);
+	const publicKey: string | undefined = keyResponse?.public_key;
+	const fingerprint: string | undefined = keyResponse?.fingerprint;
+	if (!publicKey || !fingerprint) {
+		throw cliError(
+			"This cluster didn't return a secrets public key — secrets custody isn't initialized on it " +
+				'(available on Harper Pro / Fabric). Without it, a credential cannot be sealed client-side.'
+		);
+	}
+	return { publicKey, fingerprint };
+}
+
+export async function resolveDeployToken(req: any, provider: 'github' | 'npm'): Promise<string> {
+	let token: string | undefined = req.token;
+	if (!token && provider === 'github') {
+		const host = resolveGitHost(req.host ?? 'github.com');
+		// Bound to the host being provisioned: `gh auth token` with no `--hostname` returns whichever
+		// host gh considers default, which for a GHE host is the wrong account's token.
+		const ghToken = tryCommand('gh', ['auth', 'token', '--hostname', host]);
+		// A fine-grained PAT is offered FIRST, and is therefore the default selection. What gets
+		// sealed here is durable and replayed on every cold deploy and rollback, so it should be
+		// the narrowest credential that does the job — one repo, Contents: Read-only. A `gh` CLI
+		// session token is one keypress cheaper but typically carries repo/read:org/gist/workflow
+		// across the whole account, so offering it first would make least privilege the path of
+		// most resistance.
+		const choices: Array<{ name: string; value: string }> = [
+			{ name: 'Paste a fine-grained PAT (Contents: Read-only on this repo) — recommended', value: 'paste' },
+		];
+		// Offered only when gh actually holds a token for *this* host, so choosing it can't fall back
+		// to another host's credential.
+		if (ghToken) {
+			choices.push({ name: `Use your gh CLI session token for ${host} (broad account scopes)`, value: 'gh' });
+		}
+		const how =
+			choices.length === 1
+				? 'paste'
+				: await prompts.select({
+						message: 'How should I get the GitHub token?',
+						choices,
+					});
+		if (how === 'gh') {
+			console.log(
+				chalk.yellow(
+					'Note: your gh CLI token usually carries broad account scopes (repo, read:org, gist,\n' +
+						'  workflow) and is long-lived. It will be stored encrypted and reused for future\n' +
+						'  deploys and rollbacks of this component. A fine-grained PAT is the safer choice.'
+				)
+			);
+			token = ghToken;
+		} else {
+			console.log(
+				chalk.gray(
+					`Create one at https://${host}/settings/personal-access-tokens/new\n` +
+						'  Repository access → only your repo; Permissions → Contents: Read-only.'
+				)
+			);
+			token = await prompts.password({ message: 'Paste the token:', mask: '*' });
+		}
+	} else if (!token) {
+		console.log(chalk.gray('Tip: `npm token create --read-only` mints a granular npm token from the CLI.'));
+		token = await prompts.password({ message: 'Paste the npm token:', mask: '*' });
+	}
+	token = typeof token === 'string' ? token.trim() : undefined;
+	if (!token) throw cliError('No token was provided; nothing to store.');
+	return token;
+}
+
+/**
+ * Sources a token for `provider` (asking for it unless `req.token` carries one), seals it with `key` and stores it as
+ * the secret a deploy of `component` derives, granted to `component` — a name, or a pattern ending in `*`.
+ */
+export async function sealDeployCredential(
+	req: any,
+	transport: any,
+	provider: 'github' | 'npm',
+	component: string,
+	{ publicKey, fingerprint }: { publicKey: string; fingerprint: string }
+): Promise<{ secretName: string; grants: string[]; credentialKey: string; credentialEntry: Record<string, string> }> {
+	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
+	let credentialEntry: Record<string, string>;
+	if (provider === 'github') {
+		const host = resolveGitHost(req.host ?? 'github.com');
+		credentialKey = host;
+		credentialEntry = { host };
+	} else {
+		const registry = typeof req.registry === 'string' && req.registry ? req.registry : 'registry.npmjs.org';
+		credentialKey = registry;
+		credentialEntry = req.scope ? { registry, scope: req.scope } : { registry };
+	}
+	const token = await resolveDeployToken(req, provider);
+
+	// 3. Seal the token locally. Only ciphertext leaves this machine.
+	const envelope = ENV_ENCRYPTED_PREFIX + encryptEnvelope(token, publicKey, fingerprint);
+
+	// 4. Store the sealed token, granted to the component. The server never sees the plaintext. The
+	// derived name is the one the server's literal-token path would use for the same component and
+	// host/registry, so re-running this rotates the same row rather than piling up a second one.
+	const secretName =
+		provider === 'github'
+			? deriveGitSecretName(component, credentialKey)
+			: deriveRegistrySecretName(component, credentialKey);
+	const grants = await storeSealedSecret(transport, secretName, envelope, component);
+	credentialEntry.secret = secretName;
+	return { secretName, grants, credentialKey, credentialEntry };
+}
+
 export async function deploySetup(req: any): Promise<void> {
 	// Every operation this flow issues rides the caller's connection context — the target, the
 	// explicitly passed credentials, the TLS strictness — so the seal is stored on the instance the
@@ -196,18 +306,7 @@ export async function deploySetup(req: any): Promise<void> {
 		return setupGithubActions(req, transport, component);
 	}
 
-	// 1. Fetch the cluster's public secrets key. Not wrapped in a try/catch: `cliOperations` reports
-	// the failure and exits rather than throwing, so a catch here would be dead code promising a
-	// friendlier message that never runs.
-	const keyResponse: any = await cliOperations({ ...transport, operation: 'get_secrets_public_key' }, true);
-	const publicKey: string | undefined = keyResponse?.public_key;
-	const fingerprint: string | undefined = keyResponse?.fingerprint;
-	if (!publicKey || !fingerprint) {
-		throw cliError(
-			"This cluster didn't return a secrets public key — secrets custody isn't initialized on it " +
-				'(available on Harper Pro / Fabric). Without it, a credential cannot be sealed client-side.'
-		);
-	}
+	const key = await fetchSecretsPublicKey(transport);
 
 	// 2. Which component is the credential for? (the grant is scoped to it)
 	const component = await resolveSetupComponent(
@@ -215,86 +314,15 @@ export async function deploySetup(req: any): Promise<void> {
 		'Component (project) name, or a name prefix ending in *, this credential is for:',
 		true
 	);
-
-	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
-	let credentialEntry: Record<string, string>;
-	let token: string | undefined = req.token;
-
-	if (provider === 'github') {
-		const host = resolveGitHost(req.host ?? 'github.com');
-		credentialKey = host;
-		if (!token) {
-			// Bound to the host being provisioned: `gh auth token` with no `--hostname` returns whichever
-			// host gh considers default, which for a GHE host is the wrong account's token.
-			const ghToken = tryCommand('gh', ['auth', 'token', '--hostname', host]);
-			// A fine-grained PAT is offered FIRST, and is therefore the default selection. What gets
-			// sealed here is durable and replayed on every cold deploy and rollback, so it should be
-			// the narrowest credential that does the job — one repo, Contents: Read-only. A `gh` CLI
-			// session token is one keypress cheaper but typically carries repo/read:org/gist/workflow
-			// across the whole account, so offering it first would make least privilege the path of
-			// most resistance.
-			const choices: Array<{ name: string; value: string }> = [
-				{ name: 'Paste a fine-grained PAT (Contents: Read-only on this repo) — recommended', value: 'paste' },
-			];
-			// Offered only when gh actually holds a token for *this* host, so choosing it can't fall back
-			// to another host's credential.
-			if (ghToken) {
-				choices.push({ name: `Use your gh CLI session token for ${host} (broad account scopes)`, value: 'gh' });
-			}
-			const how =
-				choices.length === 1
-					? 'paste'
-					: await prompts.select({
-							message: 'How should I get the GitHub token?',
-							choices,
-						});
-			if (how === 'gh') {
-				console.log(
-					chalk.yellow(
-						'Note: your gh CLI token usually carries broad account scopes (repo, read:org, gist,\n' +
-							'  workflow) and is long-lived. It will be stored encrypted and reused for future\n' +
-							'  deploys and rollbacks of this component. A fine-grained PAT is the safer choice.'
-					)
-				);
-				token = ghToken;
-			} else {
-				console.log(
-					chalk.gray(
-						`Create one at https://${host}/settings/personal-access-tokens/new\n` +
-							'  Repository access → only your repo; Permissions → Contents: Read-only.'
-					)
-				);
-				token = await prompts.password({ message: 'Paste the token:', mask: '*' });
-			}
-		}
-		credentialEntry = { host };
-	} else {
-		const registry = typeof req.registry === 'string' && req.registry ? req.registry : 'registry.npmjs.org';
-		credentialKey = registry;
-		if (!token) {
-			console.log(chalk.gray('Tip: `npm token create --read-only` mints a granular npm token from the CLI.'));
-			token = await prompts.password({ message: 'Paste the npm token:', mask: '*' });
-		}
-		credentialEntry = req.scope ? { registry, scope: req.scope } : { registry };
-	}
-
-	token = typeof token === 'string' ? token.trim() : undefined;
-	if (!token) throw cliError('No token was provided; nothing to store.');
-
-	// 3. Seal the token locally. Only ciphertext leaves this machine.
-	const envelope = ENV_ENCRYPTED_PREFIX + encryptEnvelope(token, publicKey, fingerprint);
-
-	// 4. Store the sealed token, granted to the component. The server never sees the plaintext. The
-	// derived name is the one the server's literal-token path would use for the same component and
-	// host/registry, so re-running this rotates the same row rather than piling up a second one.
-	const secretName =
-		provider === 'github'
-			? deriveGitSecretName(component, credentialKey)
-			: deriveRegistrySecretName(component, credentialKey);
-	const grants = await storeSealedSecret(transport, secretName, envelope, component);
+	const { secretName, grants, credentialKey, credentialEntry } = await sealDeployCredential(
+		req,
+		transport,
+		provider,
+		component,
+		key
+	);
 
 	// 5. Print the credentials reference the deploy should use.
-	credentialEntry.secret = secretName;
 	console.log(chalk.green(`\n✓ Sealed "${credentialKey}" credential and stored it as secret "${secretName}".`));
 	console.log(chalk.gray("  It was encrypted here with the cluster's public key — only ciphertext was sent."));
 	const grantSummary =

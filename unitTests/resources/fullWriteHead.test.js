@@ -191,6 +191,28 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 		assert.equal(flagged(T, id), false, 'a copy frame applied as a put is not certified');
 	});
 
+	it('is not set when a full put merges because its head has no audit entry', async function () {
+		if (isLMDB) return this.skip();
+		const version = Date.now() + DAY;
+		const id = newId();
+		await fromOrigin(
+			T,
+			id,
+			(resource) =>
+				resource._writeUpdate(id, { id, name: 'copied', extra: 'kept' }, true, {
+					isCopyApply: true,
+					nodeId: headOrigin,
+					version,
+				}),
+			{ version }
+		);
+		await apply(T, id, { id, name: 'put' }, { version, fullUpdate: true, logKey: version + 5 });
+		const entry = T.primaryStore.getEntry(id);
+		assert.equal(entry.value.name, 'put');
+		assert.equal(entry.value.extra, 'kept', 'premise: unverifiable history merges instead of replacing');
+		assert.equal(flagged(T, id), false, 'a merged body is not a full write');
+	});
+
 	it('reports the head write’s log key, never another write’s at the same version', async function () {
 		if (isLMDB) return this.skip();
 		const version = Date.now() + DAY;

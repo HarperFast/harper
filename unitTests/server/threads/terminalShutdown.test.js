@@ -29,6 +29,10 @@ describe('terminal worker shutdown', function () {
 		});
 	});
 
+	it('sends a process exit SHUTDOWN to every live worker, including one a restart has marked, and waits', async function () {
+		assert.deepEqual(await runHarness('exit-fan-out'), { deadlines: [true, true], workersAfterShutdown: 0 });
+	});
+
 	it('does not respawn a worker that exits unexpectedly after terminal shutdown begins', async function () {
 		assert.deepEqual(await runHarness('unexpected'), { starts: 1, workersAfterExit: 0 });
 	});

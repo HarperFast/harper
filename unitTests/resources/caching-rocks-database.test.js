@@ -134,14 +134,14 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.put(13, { name: 'base', count: 0 });
 		const baseVersion = store.getBinarySync(13).readDoubleBE(0);
 		const expiresAt = baseVersion + 60_000;
-		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 100 });
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 100, expiresAt });
 		const inOrder = store.getBinarySync(13);
 		const inOrderVersion = inOrder.readDoubleBE(0);
 		assert(inOrderVersion > baseVersion, 'the in-order write advances the big-endian version at offset 0');
 		assert.equal(inOrder[8], VERSION_HEADER_TAG, 'the metadata word starts at offset 8 with its tag byte');
 		assert.equal(nativeReadsVersionNotUnique(inOrder), false, 'an advancing write is not flagged');
 
-		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 50, expiresAt });
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 50 });
 		const resequencedBytes = store.getBinarySync(13);
 		assert.equal(resequencedBytes.readDoubleBE(0), inOrderVersion, 'the resequenced write keeps the existing version');
 		assert.equal(resequencedBytes[8], VERSION_HEADER_TAG, 'the metadata word starts at offset 8 with its tag byte');

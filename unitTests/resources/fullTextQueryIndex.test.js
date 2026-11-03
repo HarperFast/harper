@@ -125,6 +125,8 @@ function definition() {
 function queryLimits(overrides = {}) {
 	const maxSearchWindow = overrides.maxSearchWindow ?? 10_000;
 	return {
+		maxConfiguredQueryTerms: 1024,
+		maxConfiguredQueryClauses: 4096,
 		maxRecordIdBytes: 4_096,
 		maxRecordVersionBytes: 4_096,
 		maxCandidateIds: 1_024,
@@ -301,6 +303,36 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	it('rejects disallowed fuzzy controls before readiness waits or reader opens, even for zero results', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'early-fuzzy-policy';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'rebuilding');
+		let opens = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			onOpen: () => opens++,
+		});
+		try {
+			for (const waitForIndexMilliseconds of [0, 30000])
+				for (const minResults of [0, 1])
+					await assert.rejects(
+						async () =>
+							index.search(
+								{ comparator: 'matches_fuzzy', value: 'catalog', fuzzyDistance: 2, waitForIndexMilliseconds },
+								{},
+								{ minResults }
+							),
+						(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
+					);
+			assert.strictEqual(opens, 0);
+		} finally {
+			await index.close();
+		}
+	});
+
 	it('keeps a filled ordinary request out of native traversal admission', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'ordinary-query-admission';
@@ -1351,7 +1383,7 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(opens, 0);
 	});
 
-	it('retries native capability discovery after a transient failure', async () => {
+	it('retries native capability discovery without unused candidate limits after a transient failure', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'binding-retry';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1370,9 +1402,12 @@ describe('FullTextQueryIndex', () => {
 			binding: {
 				async runtimeInfo() {
 					if (++probes === 1) throw new Error('temporary capability probe failure');
+					const limits = queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 });
+					delete limits.maxCandidateIds;
+					delete limits.maxCandidateBytes;
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
+						limits,
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1403,9 +1438,12 @@ describe('FullTextQueryIndex', () => {
 			'maxAutocompleteResults',
 			'maxRecordIdBytes',
 			'maxRecordVersionBytes',
-			'maxCandidateIds',
-			'maxCandidateBytes',
+			'maxSearchWindow',
+			'maxSearchPageSize',
 			'maxSearchResponseBytes',
+			'maxSearchBudgetMilliseconds',
+			'maxTraceRecords',
+			'maxTraceSourceBytes',
 		]) {
 			const readinessId = `binding-capabilities-${missing}`;
 			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1515,6 +1553,7 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, 'query-errors', 'ready');
 		const errors = [
 			Object.assign(new Error('expanded secret details'), { code: 'E_PREFIX_TOO_BROAD' }),
+			Object.assign(new Error('invalid native details'), { code: 'E_INVALID_ARGUMENT' }),
 			new Error('storage path and internal details'),
 		];
 		const index = new FullTextQueryIndex({
@@ -1550,7 +1589,16 @@ describe('FullTextQueryIndex', () => {
 		const query = { attribute: 'query-errors', comparator: 'matches_prefix', value: 's' };
 		await assert.rejects(
 			index.search(query, {}),
-			(error) => error.statusCode === 400 && error.message === "Full-text query on 'catalogSearch' is invalid"
+			(error) =>
+				error.statusCode === 400 &&
+				error.message === "Full-text prefix on 'catalogSearch' is too broad; use a longer prefix"
+		);
+		await assert.rejects(
+			index.search(query, {}),
+			(error) =>
+				error.statusCode === 400 &&
+				error.message ===
+					"Full-text query on 'catalogSearch' is invalid; check its syntax and storage.fullText.query limits"
 		);
 		await assert.rejects(
 			index.search(query, {}),

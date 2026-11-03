@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), comparing which file a log descriptor is on (`logging/`), or changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`).
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), comparing which file a log descriptor is on (`logging/`), changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`), or minting times with `getNextMonotonicTime` (`lmdb/commonUtility.ts`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -95,3 +95,11 @@ Startup, install, restart, stop, upgrade and status messages about the local ins
 ## Logger status dispatch uses the active runtime facade
 
 `logging/harper_logger.ts` routes `status()` through the runtime's existing public object: CommonJS `module.exports` or the native ESM default facade. Read the CJS object inside each call, after export assignment, so replaced log methods remain observable; source execution must not evaluate an unguarded `module`. Keep new status methods and the existing startup aliases on both facades. The logger completes initialization before status dispatch; `initLogSettings()` does not call `status()`. Enforced by the fresh-process source/compiled checks in `typestrip-runtime.test.mjs`.
+
+## Local times are unique across threads (`utility/lmdb/commonUtility.ts` `getNextMonotonicTime`)
+
+Every thread of a process mints from one clock word, a `SharedArrayBuffer` holding the bit pattern of the last time issued, advanced by compare-and-swap to `max(now, last + 1 ulp)`. Same-node writes with equal versions are treated as re-deliveries (`precedesExistingVersion`), and LMDB keys its audit log by that version, so two threads issuing one time would silently drop the second write. The word reaches workers through `setEnvironmentData` and the `monotonicClock` workerData provider in `server/threads/manageThreads.ts`. Environment data is inherited transitively, so only a thread lineage in which no ancestor loaded the module (never the case under Harper, whose `manageThreads.ts` loads it on the main thread) or another process has a clock of its own. Uniqueness is per process and per run, not across restarts or clock rollback. Enforced by `unitTests/utility/lmdb/monotonicTime.test.js` and `integrationTests/database/lmdb-concurrent-crdt-add.test.ts`.
+
+## RocksDB arena size and flush policy stay rocksdb-js's unless configured (`utility/rocksMemoryConfig.ts`)
+
+Harper sizes the block cache and the WriteBufferManager itself, but `storage.rocks.arenaBlockSize` and `storage.rocks.writeBufferManagerFlushPolicy` only forward an operator's value (the policy only while the WriteBufferManager is enabled): unset or malformed means the key is omitted, never replaced with a Harper default. rocksdb-js derives both from state Harper does not see — the automatic arena from the manager's budget when each column family opens, the policy from `writeBufferManagerAllowStall`, live (an `oldest` policy with stalls allowed can wedge on budget held by idle databases). The arena reaches every column family because `openRocksDatabase` is the one open path for Harper's stores; `bin/copyDb.ts` and `dataLayer/rocksdbBackup.ts` open their own handles and keep the automatic size. rocksdb-js keeps an explicit policy for the life of the process, so removing it from config needs a full restart, not a worker restart. Tests: `unitTests/utility/rocksMemoryConfig.test.js` (omission) and `unitTests/resources/rocksOpenConfig.test.js` (through the open path).

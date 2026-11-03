@@ -226,14 +226,10 @@ export function loadEnabledPolicies(issuer: string): Promise<OidcTrustPolicy[]> 
 }
 
 /**
- * Creates or replaces a trust policy.
- *
- * Replace rather than merge: a partial update to a claim set is how an over-broad policy gets
- * created by accident, and the whole point of `claims` is that every constraint in it was written
- * deliberately.
+ * Every check add_oidc_trust makes before it looks at the user or writes, for a caller that must refuse a policy
+ * before it creates the user that policy names. Returns the normalized issuer.
  */
-export async function addOidcTrust(req: any) {
-	requireSuperUser(req);
+export function assertTrustPolicyWritable(req: any): string {
 	validate(
 		validateBySchema(
 			req,
@@ -267,6 +263,19 @@ export async function addOidcTrust(req: any) {
 	if (req.operations) assertOperationsAreKnown(req.operations);
 	validateClaimConstraintShape(req.claims);
 	profile.assertPolicyIsSpecific(req.claims);
+	return issuer;
+}
+
+/**
+ * Creates or replaces a trust policy.
+ *
+ * Replace rather than merge: a partial update to a claim set is how an over-broad policy gets
+ * created by accident, and the whole point of `claims` is that every constraint in it was written
+ * deliberately.
+ */
+export async function addOidcTrust(req: any) {
+	requireSuperUser(req);
+	const issuer = assertTrustPolicyWritable(req);
 
 	// Resolve the target user now: a policy pointing at a user that does not exist would fail only at
 	// exchange time, in CI, with nothing to point at. Not findAndValidateUser — with validatePassword

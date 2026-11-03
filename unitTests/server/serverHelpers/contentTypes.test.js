@@ -654,6 +654,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 	const { setTimeout: sleep } = require('node:timers/promises');
 	const { registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
 	const { buildMultipartBody } = require('#src/bin/multipartBuilder');
+	const { UNREAD_UPLOAD_GRACE_MS } = require('#src/server/serverHelpers/multipartParser');
 
 	const CHUNK = randomBytes(64 * 1024);
 	let app;
@@ -687,7 +688,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		});
 		app.get('/health', async () => 'ok');
 		app.get('/slow', async () => {
-			await sleep(1500);
+			await sleep(UNREAD_UPLOAD_GRACE_MS + 500);
 			return 'slow';
 		});
 		await app.listen({ port: 0, host: '127.0.0.1' });
@@ -819,7 +820,11 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		this.timeout(20_000);
 		const { statuses, nextAnsweredAfterMs } = await uploadOnRawSocket('/ignore', { next: '/slow' });
 		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
-		assert.ok(nextAnsweredAfterMs >= 1500, `the slow request was answered after ${nextAnsweredAfterMs}ms`);
+		// The grace was armed before the upload ended; the route's sleep itself can read a millisecond short
+		assert.ok(
+			nextAnsweredAfterMs > UNREAD_UPLOAD_GRACE_MS,
+			`the slow request was answered after ${nextAnsweredAfterMs}ms`
+		);
 	});
 
 	it('closes the connection when the rest of a discarded upload stops arriving, after answering', async function () {

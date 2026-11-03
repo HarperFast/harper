@@ -131,6 +131,25 @@ describe('HNSW native plane file-primary delivery', function () {
 		);
 	}
 
+	function nativeMutations(apply) {
+		const plane = customIndex().getPlane();
+		const calls = [];
+		for (const method of ['insert', 'remove']) {
+			const native = plane[method];
+			plane[method] = function (...args) {
+				calls.push(method === 'remove' ? `remove ${args[0]}` : method);
+				return native.apply(this, args);
+			};
+		}
+		try {
+			apply();
+		} finally {
+			delete plane.insert;
+			delete plane.remove;
+		}
+		return calls;
+	}
+
 	before(async () => {
 		delete process.env.HNSW_NO_NATIVE_DEFAULT;
 		setupTestDBPath();
@@ -266,6 +285,61 @@ describe('HNSW native plane file-primary delivery', function () {
 		assert.ok((await nativeSearch(vector)).some((entry) => entry.key === id));
 		index.applyDerivedValue(id, undefined, 3);
 		assert.ok(!(await nativeSearch(vector)).some((entry) => entry.key === id), 'a removal is visible at once');
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+	});
+
+	it('keeps the node of a replayed value still pending in this process', async () => {
+		const id = 50_004;
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		const vector = makeVector(id + 1);
+		index.applyDerivedValue(id, vector, 2);
+		const staged = mapping().id;
+		const mutations = nativeMutations(() => {
+			index.applyDerivedValue(id, vector, 2);
+			index.applyDerivedValue(id, vector, 3);
+			index.applyDerivedValue(id, vector, 1);
+		});
+		assert.deepStrictEqual(mutations, [], 'an unchanged value must not replace its node');
+		assert.equal(mapping().id, staged);
+		assert.equal(mapping().previousId, published, 'replay still needs the published node to remove');
+		assert.equal(mapping().version, 3, 'the newer replay advances the version, the older one is ignored');
+		assert.equal(mapping().pending, true, 'the mapping waits for the native flush');
+		await index.flushDerived();
+		assert.equal(mapping().pending, undefined);
+		assert.equal(mapping().id, staged);
+		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
+		index.applyDerivedValue(id, undefined, 4);
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+	});
+
+	it('re-inserts an unchanged value whose pending mapping only storage holds', async () => {
+		const id = 50_005;
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		const vector = makeVector(id + 1);
+		index.applyDerivedValue(id, vector, 2);
+		const staged = mapping().id;
+		index.pendingDerivedMappings.clear();
+		assert.equal(mapping().pending, true);
+		const mutations = nativeMutations(() => index.applyDerivedValue(id, vector, 2));
+		assert.deepStrictEqual(
+			mutations,
+			[...new Set([published, staged])].map((nodeId) => `remove ${nodeId}`).concat('insert'),
+			'a stored pending mapping does not prove its node survived: both nodes go, then a fresh insert'
+		);
+		assert.equal(mapping().previousId, published);
+		await index.flushDerived();
+		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
+		index.applyDerivedValue(id, undefined, 3);
 		await index.flushDerived();
 		assert.equal(mapping(), undefined);
 	});
@@ -1100,5 +1174,45 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 			results.map((record) => record.id),
 			[0, 6, 12, 18]
 		);
+	});
+
+	it('keeps every node reachable when a replay re-delivers a value still pending', async () => {
+		const Replayed = table({
+			table: 'PlaneAllowReplay',
+			database: 'vector-plane-allow',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		try {
+			await Replayed.indexingOperation;
+			// activates the derived index, so its first rebuild cannot reset the plane under the applies below
+			const anchor = new Array(DIMS).fill(0.01);
+			anchor[0] = -1;
+			await Replayed.put(COUNT, { vector: anchor });
+			await waitFor(() => indexReady(Replayed), { timeout: 30_000, message: 'the derived index did not activate' });
+			const index = Replayed.indices.vector.customIndex;
+			for (let i = 0; i < COUNT; i++) {
+				index.applyDerivedValue(i, allowVector(i), 1);
+				if (i === 16) index.applyDerivedValue(i, allowVector(i), 1);
+			}
+			await index.flushDerived();
+			const allowed = [];
+			for (let i = 0; i < COUNT; i += 3) allowed.push(i);
+			const entries = await index.search(
+				{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+				{ transaction: undefined },
+				{ filter: () => true, candidateKeys: planFor(allowed) }
+			);
+			assert.deepStrictEqual(
+				entries.map((entry) => entry.key),
+				allowed,
+				'every allowed node is reached, nearest first'
+			);
+		} finally {
+			await Replayed.dropTable();
+		}
 	});
 });

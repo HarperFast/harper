@@ -1,5 +1,6 @@
 const assert = require('node:assert');
 const rewire = require('rewire');
+const { AccessViolation } = require('#src/utility/errors/hdbError');
 const transport_mod = rewire('#js/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
@@ -892,6 +893,25 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.result.messages[0].content.text, 'Hello, Ada!');
 			});
 
+			it('prompts/get errors (instead of an empty prompt) when render returns the wrong shape', async () => {
+				const shapes = {
+					bare_array: () => [{ role: 'user', content: { type: 'text', text: 'x' } }],
+					no_result: () => {},
+				};
+				for (const [name, render] of Object.entries(shapes)) addPrompt({ name, profile: 'application', render });
+				for (const name of Object.keys(shapes)) {
+					const res = await handleMcpRequest(
+						makeReq({
+							body: jsonRpc(56, 'prompts/get', { name }),
+							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						})
+					);
+					assert.equal(res.jsonBody.result, undefined, name);
+					assert.equal(res.jsonBody.error.code, -32603, name);
+					assert.match(res.jsonBody.error.message, /expected \{ messages/, name);
+				}
+			});
+
 			it('prompts/get returns -32602 for an unknown prompt', async () => {
 				const res = await handleMcpRequest(
 					makeReq({
@@ -1169,6 +1189,22 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.error.code, -32602);
 			});
 
+			it('returns -32602 permission denied with the request id when the subscribe is denied', async () => {
+				_setSubscribeImplForTest(async () => {
+					throw new AccessViolation({ username: 'alice' });
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(76, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.id, 76);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.match(res.jsonBody.error.message, /^permission denied: /);
+			});
+
 			it('returns -32602 when params.uri is missing', async () => {
 				const res = await handleMcpRequest(
 					makeReq({
@@ -1369,6 +1405,37 @@ describe('mcp/transport', () => {
 				// Application profile rejecting harper://operations → -32602.
 				assert.equal(res.jsonBody.error.code, -32602);
 			});
+		});
+
+		it('passes the request baseUrl to resources/list and harper://openapi', async () => {
+			class Orders {
+				get() {}
+			}
+			_setResourcesForTest(makeFakeResources([['Orders', Orders]]));
+			_setHttpUrlPrefixForTest(undefined);
+			const superUser = { username: 'alice', role: { permission: { super_user: true } } };
+			const baseUrl = 'https://public.example.com';
+			const call = (id, method, params) =>
+				handleMcpRequest(
+					makeReq({
+						body: jsonRpc(id, method, params),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						userObject: superUser,
+						baseUrl,
+					})
+				);
+
+			const list = await call(70, 'resources/list');
+			assert.ok(list.jsonBody.result.resources.some((r) => r.uri === 'harper+rest://public.example.com/Orders'));
+
+			let serverUrl;
+			_setOpenApiGeneratorForTest((_resources, url) => ((serverUrl = url), { openapi: '3.0.3' }));
+			try {
+				await call(72, 'resources/read', { uri: 'harper://openapi' });
+			} finally {
+				_setOpenApiGeneratorForTest(undefined);
+			}
+			assert.equal(serverUrl, baseUrl);
 		});
 	});
 

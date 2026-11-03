@@ -47,6 +47,7 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+let analyticsGeneration = 0;
 
 onStartup(() => {
 	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
@@ -64,15 +65,19 @@ export function checkAnalyticsEnabled(): boolean {
 	return analyticsEnabled;
 }
 
+/** Resets this thread's analytics window; other threads keep their own. */
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
 	if (enabled) startEventLoopDelayMonitor();
 	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
 	sendAnalyticsTimeout = null;
-	// The cancelled window must not stretch the next one's period or skip its histogram reset.
+	// The cancelled window must not stretch the next one's period, skip its histogram reset, or leak its samples.
 	analyticsStart = 0;
 	lastFlushAt = 0;
+	activeActions = new Map();
+	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
+	analyticsGeneration++;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -132,10 +137,25 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
 	if (!checkAnalyticsEnabled()) return;
-	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
+	recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+}
+
+/** recordAction with the key built once, for a hot path that would otherwise concatenate and hash it per call */
+export function actionRecorder(metric: string, path?: string, method?: string, type?: string): (value: Value) => void {
+	const key = actionKey(metric, path, method, type);
+	return (value) => {
+		if (checkAnalyticsEnabled()) recordKeyedAction(key, value, metric, path, method, type);
+	};
+}
+
+function actionKey(metric: string, path?: string, method?: string, type?: string): string {
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
 	if (type !== undefined) key += '-' + type;
+	return key;
+}
+
+function recordKeyedAction(key: string, value: Value, metric: string, path?: string, method?: string, type?: string) {
 	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
@@ -188,6 +208,7 @@ function sendAnalytics() {
 
 async function flushAnalytics() {
 	sendAnalyticsTimeout = null;
+	const generation = analyticsGeneration;
 	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
 	// an entry already reported, and dropped with it.
 	const reportingActions = activeActions;
@@ -248,6 +269,7 @@ async function flushAnalytics() {
 			);
 		}
 		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
+		if (generation !== analyticsGeneration) return;
 	}
 	const memoryUsage = process.memoryUsage();
 	metrics.push({
@@ -284,8 +306,10 @@ async function flushAnalytics() {
 		maxDepth: queueDepths.readMaxDepth,
 	});
 	for (const listener of analyticsListeners) {
+		if (generation !== analyticsGeneration) return;
 		listener(metrics);
 	}
+	if (generation !== analyticsGeneration) return;
 	if (parentPort)
 		parentPort.postMessage({
 			type: ANALYTICS_REPORT_TYPE,

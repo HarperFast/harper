@@ -1,0 +1,4 @@
+type QA786Widget @table @export {
+	id: ID @primaryKey
+	note: String
+}

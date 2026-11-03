@@ -157,16 +157,16 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await new Promise((resolve) => setTimeout(resolve, 150));
 		});
 
-		it('re-checks the super user it remembered', async () => {
-			const remembered = await user.getSuperUser();
-			const superUserRoleId = remembered.role.id;
+		it('finds a super user from the current records, not one an earlier call returned', async () => {
+			const earlier = await user.getSuperUser();
+			const superUserRoleId = earlier.role.id;
 			await testUtils.seedUsers([
-				{ username: remembered.username, active: true, role: { role: 'demoted', permission: {} } },
+				{ username: earlier.username, active: true, role: { role: 'demoted', permission: {} } },
 				{ username: 'zz_lookup_super_user', active: true, role: superUserRoleId },
 			]);
 			const current = await user.getSuperUser();
-			assert.notStrictEqual(current.username, remembered.username, 'the demoted user is not returned');
-			assert.strictEqual(current.role.role, 'super_user');
+			assert.notStrictEqual(current.username, earlier.username, 'the demoted user is not returned');
+			assert.strictEqual(current.role.permission.super_user, true);
 		});
 
 		it('treats a username over the LMDB key-size limit as unauthenticatable, not an internal fault', () => {

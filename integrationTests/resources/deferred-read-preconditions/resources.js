@@ -32,3 +32,21 @@ export class RestrictedItem extends tables.RestrictedRow {
 		return this.search(target);
 	}
 }
+
+export class AllowedItem extends tables.CountedRow {
+	static loadAsInstance = false;
+	async allowRead() {
+		await new Promise((resolve) => setTimeout(resolve, 1));
+		return true;
+	}
+	get(target) {
+		return this.search(target);
+	}
+}
+
+export class AllowedExplain extends AllowedItem {
+	get(target) {
+		target.explain = true;
+		return this.search(target);
+	}
+}

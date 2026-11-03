@@ -124,6 +124,7 @@ const AUTHENTICATION_ERROR_MSGS = {
 	INVALID_BODY: 'invalid body',
 	TOKEN_EXPIRED: 'token expired',
 	REFRESH_TOKEN_SAVE_FAILED: 'unable to store refresh_token',
+	NO_USER_TO_MINT_FOR: 'no user to mint a token for; create a user first',
 };
 
 const OPERATION_AUTH_ERROR_MSGS = {
@@ -205,6 +206,8 @@ const USER_ERROR_MSGS = {
 	LAST_SUPER_USER:
 		'Rejected: this change would leave the instance with no active super_user. Grant super_user to another active user first.',
 	ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`,
+	RESERVED_USERNAME: (user) =>
+		`'${user}' is a reserved username: it identifies requests trusted by their transport (authorizeLocal, the operations domain socket)`,
 	USER_ALREADY_EXISTS: (user) => `User ${user} already exists`,
 	USER_NOT_EXIST: (user) => `User ${user} does not exist`,
 };

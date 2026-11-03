@@ -226,6 +226,49 @@ suite('Configuration', (ctx) => {
 			.expect(200);
 	});
 
+	test('drop_attribute rejects the primary key and keeps the records and schema intact', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'insert',
+				schema: SCHEMA,
+				table: DROP_ATTR_TABLE,
+				records: [{ id: 'pk-1', created_attribute: 'kept' }],
+			})
+			.expect(200);
+		await client
+			.req()
+			.send({ operation: 'drop_attribute', schema: SCHEMA, table: DROP_ATTR_TABLE, attribute: 'id' })
+			.expect((r) => assert.equal(r.body.error, 'You cannot drop a hash attribute', r.text))
+			.expect(400);
+		await client
+			.req()
+			.send({ operation: 'describe_table', table: DROP_ATTR_TABLE, schema: SCHEMA })
+			.expect((r) => {
+				assert.equal(r.body.primary_key, 'id', r.text);
+				assert.ok(
+					r.body.attributes.some((a) => a.attribute === 'id'),
+					r.text
+				);
+			})
+			.expect(200);
+		await client
+			.req()
+			.send({
+				operation: 'search_by_hash',
+				schema: SCHEMA,
+				table: DROP_ATTR_TABLE,
+				hash_values: ['pk-1'],
+				get_attributes: ['*'],
+			})
+			.expect((r) => {
+				assert.equal(r.body.length, 1, r.text);
+				assert.equal(r.body[0].id, 'pk-1', r.text);
+				assert.equal(r.body[0].created_attribute, 'kept', r.text);
+			})
+			.expect(200);
+	});
+
 	// ── get_configuration / read_log ────────────────────────────────────────
 
 	test('get_configuration returns expected top-level keys', async () => {

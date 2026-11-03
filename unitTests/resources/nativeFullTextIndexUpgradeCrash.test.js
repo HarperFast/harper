@@ -49,8 +49,14 @@ describe('published native full-text upgrade process crash recovery', function (
 			const seeded = run('seed');
 			assert.strictEqual(seeded.status, 0, `${root}: ${seeded.stderr || seeded.stdout}`);
 			assert.match(seeded.stdout, /"seeded":true/);
+			assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(root, 'exit-seed.json'), 'utf8')), { code: 0 });
 			const killed = run(checkpoint);
 			assert.ifError(killed.error);
+			const exitPath = path.join(root, `exit-${checkpoint}.json`);
+			assert.ok(
+				!fs.existsSync(exitPath),
+				`${root}: normal exit: ${fs.existsSync(exitPath) ? fs.readFileSync(exitPath, 'utf8') : ''}: ${killed.stderr}`
+			);
 			assert.notStrictEqual(killed.status, 0, `${root}: ${killed.stderr || killed.stdout}`);
 			assert.ok(
 				killed.signal === 'SIGKILL' || (process.platform === 'win32' && killed.status === 1),
@@ -65,6 +71,7 @@ describe('published native full-text upgrade process crash recovery', function (
 			const recovered = run('recover');
 			assert.strictEqual(recovered.status, 0, `${root}: ${recovered.stderr || recovered.stdout}`);
 			assert.match(recovered.stdout, /"recovered":true/);
+			assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(root, 'exit-recover.json'), 'utf8')), { code: 0 });
 		});
 	}
 });

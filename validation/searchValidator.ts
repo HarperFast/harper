@@ -131,7 +131,17 @@ const searchByValueSchema = Joi.object({
 	schema: hdbDatabase,
 	table: hdbTable,
 	attribute: hdbSchemaTable,
-	value: Joi.any().required(),
+	value: Joi.any()
+		.custom((value, helpers) => {
+			if (Array.isArray(value) && value.includes('*')) {
+				return helpers.error('any.invalid');
+			}
+			return value;
+		})
+		.required()
+		.messages({
+			'any.invalid': "{{#label}} must not be an array containing '*'",
+		}),
 	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdbSchemaTable, Joi.object())).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),
@@ -161,6 +171,8 @@ const searchByConditionsSchema = Joi.object({
 						.valid(...SEARCH_BY_CONDITIONS_COMPARATORS)
 						.optional(),
 					fields: Joi.array().min(1).items(hdbSchemaTable).optional(),
+					fuzzyDistance: Joi.number().integer().min(0).max(2).strict().optional(),
+					fuzzyTranspositions: Joi.bool().strict().optional(),
 					includeHighlights: Joi.bool().optional(),
 					maxIndexLagMilliseconds: Joi.number().min(0).optional(),
 					waitForIndexMilliseconds: Joi.number().min(0).max(30_000).optional(),

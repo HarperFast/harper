@@ -73,11 +73,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	getReadTxn(): any {
-		// used optimistically
-		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.renewIdleTimeout();
 		if (this.stale) this.stale = false;
 		if (this.readTxn) {
+			this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 			if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 			return this.readTxn;
 		}
@@ -87,6 +86,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
+		this.readTxnRefCount = 1;
 		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
@@ -119,12 +119,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// nativeCommitAttemptEnded() removes this enrollment once the outcome is known.
 			if (!this.nativeCommitSubmitted) trackedTxns.delete(this as any);
 			this.readTxn = null;
+			this.readTxnRefCount = 0;
+			this.baseReadRefConsumed = true;
 			this.completeDeferredContextRelease();
 		}
 	}
 
 	disregardReadTxn(): void {
-		if (--this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
 			this.doneReadTxn();
 		}
 	}
@@ -137,7 +139,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 			const immediateTxn = new ImmediateTransaction(this.db);
 			// The throwaway owns this write, so it owns the request's cancellation too: this settled chain
 			// would neither refuse on its behalf nor ever release a subscription taken for it.
-			immediateTxn.requestSignal = (this.root ?? this).requestSignal;
+			const root = this.root ?? this;
+			immediateTxn.requestSignalSource = root.requestSignalSource;
+			immediateTxn.requestSignal = root.requestSignal;
 			immediateTxn.addWrite(operation);
 			const result = immediateTxn.commit({}) as any;
 			// Nothing may be sent back to this throwaway: the write is already committed, and its
