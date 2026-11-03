@@ -137,6 +137,31 @@ describe("a held worker's boot outcomes", function () {
 		}
 	});
 
+	it('reports a load failure without the credential of a URL in its message', async () => {
+		plugin('bootThrowsUrlProbe', {
+			start() {
+				throw new Error('Failed to clone package https://deploy:url_secret_3985@example.com/app.git');
+			},
+		});
+		plugin('bootThrowsUrlStringProbe', {
+			start() {
+				throw 'could not reach https://deploy:url_secret_3985@example.com/db';
+			},
+		});
+		await component('boot-url-probe', 'bootThrowsUrlProbe: {}\n');
+		await component('boot-url-string-probe', 'bootThrowsUrlStringProbe: {}\n');
+		componentLoader.trackBootOutcomes(['boot-url-probe', 'boot-url-string-probe']);
+
+		await loadAll();
+
+		for (const [name, message] of [
+			['boot-url-probe', /due to: Failed to clone package https:\/\/\[REDACTED\]@example\.com\/app\.git$/],
+			['boot-url-string-probe', /due to: could not reach https:\/\/\[REDACTED\]@example\.com\/db$/],
+		]) {
+			assert.match(componentLoader.bootVerdictOf(name).failures[0].message, message);
+		}
+	});
+
 	it('reports a component whose env declaration cannot be processed as failed, by why', async () => {
 		await component('boot-env-probe', 'env:\n  - not-a-mapping\n');
 		componentLoader.trackBootOutcomes(['boot-env-probe']);

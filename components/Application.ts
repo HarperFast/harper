@@ -46,6 +46,7 @@ import {
 	type ResolvedGitCredential,
 } from './gitCredentialServer.ts';
 import { canonicalizePackageJSON } from './canonicalizePackageJSON.ts';
+import { redactUrlCredentials } from './status/ComponentStatusRegistry.ts';
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
@@ -489,7 +490,11 @@ async function resolveCommittish(application: Application, committish: string, c
 	// shell, and a `%(...)` format string is unsafe to pass through one.
 	const { code, stdout, stderr } = await nonInteractiveSpawn(application.name, 'git', ['tag', '--list'], cloneDir);
 	if (code !== 0) {
-		throw new Error(`Failed to list tags to resolve '${committish}' for ${application.packageIdentifier}: ${stderr}`);
+		throw new Error(
+			redactUrlCredentials(
+				`Failed to list tags to resolve '${committish}' for ${application.packageIdentifier}: ${stderr}`
+			)
+		);
 	}
 	const tags = stdout
 		.split('\n')
@@ -510,8 +515,10 @@ async function resolveCommittish(application: Application, committish: string, c
 	const resolvedVersion = semver.maxSatisfying([...versionToTag.keys()], range, { loose: true });
 	if (!resolvedVersion) {
 		throw new Error(
-			`Failed to resolve '${committish}' for ${application.packageIdentifier}: no tag satisfies range '${range}'. ` +
-				(tags.length ? `Tags found: ${tags.join(', ')}` : 'No tags were found in the repository.')
+			redactUrlCredentials(
+				`Failed to resolve '${committish}' for ${application.packageIdentifier}: no tag satisfies range '${range}'. ` +
+					(tags.length ? `Tags found: ${tags.join(', ')}` : 'No tags were found in the repository.')
+			)
 		);
 	}
 	// refs/tags/<name> rather than the bare name: an unqualified `git checkout <name>` resolves to a
@@ -553,11 +560,13 @@ async function packGitReferenceWithoutScripts(
 		if (cloneCode !== 0) {
 			if (isSSHAuthFailure(cloneStderr)) {
 				throw new Error(
-					`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
-					{ cause: new Error(cloneStderr) }
+					redactUrlCredentials(
+						`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`
+					),
+					{ cause: new Error(redactUrlCredentials(cloneStderr)) }
 				);
 			}
-			throw new Error(`Failed to clone package ${application.packageIdentifier}: ${cloneStderr}`);
+			throw new Error(redactUrlCredentials(`Failed to clone package ${application.packageIdentifier}: ${cloneStderr}`));
 		}
 
 		if (gitRef.committish) {
@@ -569,7 +578,11 @@ async function packGitReferenceWithoutScripts(
 				cloneDir
 			);
 			if (checkoutCode !== 0) {
-				throw new Error(`Failed to check out '${committish}' for ${application.packageIdentifier}: ${checkoutStderr}`);
+				throw new Error(
+					redactUrlCredentials(
+						`Failed to check out '${committish}' for ${application.packageIdentifier}: ${checkoutStderr}`
+					)
+				);
 			}
 		}
 
@@ -627,11 +640,13 @@ async function runNpmPack(
 	if (code !== 0) {
 		if (isSSHAuthFailure(stderr)) {
 			throw new Error(
-				`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
-				{ cause: new Error(stderr) }
+				redactUrlCredentials(
+					`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`
+				),
+				{ cause: new Error(redactUrlCredentials(stderr)) }
 			);
 		}
-		throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+		throw new Error(redactUrlCredentials(`Failed to download package ${application.packageIdentifier}: ${stderr}`));
 	}
 
 	let packResult: Array<{ filename: string; name?: unknown; version?: unknown; integrity?: unknown }>;
@@ -639,11 +654,15 @@ async function runNpmPack(
 		packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
 	} catch (err) {
 		throw new Error(
-			`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+			redactUrlCredentials(
+				`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+			)
 		);
 	}
 	if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
-		throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+		throw new Error(
+			redactUrlCredentials(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`)
+		);
 	}
 
 	const [packed] = packResult;
@@ -931,7 +950,9 @@ async function resolveApplicationTarball(
 				// fail loudly rather than silently falling through to the unreliable `npm pack
 				// --ignore-scripts` below.
 				throw new Error(
-					`Cannot deploy git-reference package '${packageIdentifierForPack}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
+					redactUrlCredentials(
+						`Cannot deploy git-reference package '${packageIdentifierForPack}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
+					)
 				);
 			}
 
@@ -6078,7 +6099,7 @@ function spawnWithEnv(
 	return new Promise((resolve, reject) => {
 		logger
 			.loggerWithTag(`${applicationName}:spawn:${command}`)
-			.debug?.(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`);
+			.debug?.(redactUrlCredentials(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`));
 
 		const env = { ...process.env };
 
@@ -6197,7 +6218,9 @@ function spawnWithEnv(
 			// buffer stdout for later resolve
 			stdout += chunk.toString();
 			// log stdout lines immediately
-			logger.loggerWithTag(`${applicationName}:spawn:${command}:stdout`).debug?.(chunk.toString());
+			logger
+				.loggerWithTag(`${applicationName}:spawn:${command}:stdout`)
+				.debug?.(redactUrlCredentials(chunk.toString()));
 			stdoutSplitter?.push(chunk);
 		});
 
@@ -6300,7 +6323,7 @@ const PROCESS_CLOSE_WAIT_MS = 5000;
 class CommandTimeoutError extends Error {
 	statusCode = 500;
 	constructor(command: string, args: string[], timeoutMs: number, cause?: unknown) {
-		super(`Command \`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`, { cause });
+		super(redactUrlCredentials(`Command \`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`), { cause });
 		this.name = 'CommandTimeoutError';
 	}
 }
@@ -6395,7 +6418,7 @@ function printStd(
 	level: 'debug' | 'warn' | 'error' = 'debug'
 ) {
 	const stdLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}:${stdStreamLabel}`);
-	for (const line of stdString.split('\n')) {
+	for (const line of redactUrlCredentials(stdString).split('\n')) {
 		stdLogger[level]?.(line);
 	}
 }

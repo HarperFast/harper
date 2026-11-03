@@ -45,6 +45,7 @@ import {
 	liveDeploymentIdOf,
 } from './Application.ts';
 import { deploymentOfLiveRelease, deploymentRecord } from './deploymentOperations.ts';
+import { redactUrlCredentials } from './status/ComponentStatusRegistry.ts';
 const prepareApplication = _prepareApplication;
 import {
 	COMPONENT_PREPARATION_LOCK_DIR,
@@ -1585,7 +1586,12 @@ async function getComponents(req) {
 		if (unsatisfiedEnv.length > 0) entry.unsatisfiedEnv = unsatisfiedEnv;
 		const componentConfig = rootConfig?.[entry.name];
 		if (!componentConfig || typeof componentConfig !== 'object') continue;
-		if (componentConfig.package) entry.package = componentConfig.package;
+		if (componentConfig.package) {
+			entry.package =
+				req?.hdb_user?.role?.permission?.super_user || typeof componentConfig.package !== 'string'
+					? componentConfig.package
+					: redactUrlCredentials(componentConfig.package);
+		}
 		if (componentConfig.urlPath) entry.urlPath = componentConfig.urlPath;
 		if (componentConfig.host) entry.host = componentConfig.host;
 		if (componentConfig.loadComponent) entry.loadComponent = componentConfig.loadComponent;

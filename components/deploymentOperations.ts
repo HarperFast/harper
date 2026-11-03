@@ -11,6 +11,7 @@ import { getActiveDeployment } from './deploymentRecorder.ts';
 import { logger } from '../utility/logging/logger.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 import { componentGrantOf, grantCoversComponent } from '../security/componentGrant.ts';
+import { redactUrlCredentials } from './status/ComponentStatusRegistry.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 
@@ -74,6 +75,21 @@ function stripBlob(row: any): any {
 	return rest;
 }
 
+// A super user deployed with the package's credential and may redeploy from it; anyone else sees no URL credential
+// anywhere in a deployment, including rows recorded before messages were redacted where they are built.
+function visibleTo(hdbUser: unknown, value: any): any {
+	return (hdbUser as PayloadRequest['hdb_user'])?.role?.permission?.super_user ? value : redactCredentials(value);
+}
+
+function redactCredentials(value: any): any {
+	if (typeof value === 'string') return redactUrlCredentials(value);
+	if (Array.isArray(value)) return value.map(redactCredentials);
+	if (value === null || typeof value !== 'object') return value;
+	const redacted = {};
+	for (const key in value) redacted[key] = redactCredentials(value[key]);
+	return redacted;
+}
+
 export async function handleListDeployments(req: ListRequest = {}): Promise<{ deployments: any[]; total: number }> {
 	const table = deploymentTable();
 	const conditions: any[] = [];
@@ -88,7 +104,7 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 	for await (const row of table.search(conditions)) {
 		if (componentGrant && !grantCoversComponent(componentGrant, row.project)) continue;
 		if (req.sha != null && row?.source?.sha !== req.sha) continue;
-		collected.push(stripBlob(row));
+		collected.push(visibleTo(req.hdb_user, stripBlob(row)));
 	}
 	// Newest first by started_at; ties broken by deployment_id for stability.
 	collected.sort(
@@ -195,34 +211,35 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 		let lastReplayedTs = 0;
 		let replayed = false;
 		const liveBuffer: Array<{ t: number; event: { event: string; data: unknown } }> = [];
+		const emit = (event: string, data: unknown) => sse.emit(event, visibleTo(req.hdb_user, data));
 		const unsubscribe = live
 			? live.emitter.subscribe((event) => {
 					const t = Date.now();
 					if (!replayed) liveBuffer.push({ t, event });
-					else sse.emit(event.event, event.data);
+					else emit(event.event, event.data);
 				})
 			: null;
 
 		try {
 			const replayRow = (await table.get(req.deployment_id)) ?? row;
 			for (const entry of replayRow.event_log ?? []) {
-				sse.emit(entry.event, entry.data);
+				emit(entry.event, entry.data);
 				if (typeof entry.t === 'number') lastReplayedTs = Math.max(lastReplayedTs, entry.t);
 			}
 			for (const buffered of liveBuffer) {
-				if (buffered.t > lastReplayedTs) sse.emit(buffered.event.event, buffered.event.data);
+				if (buffered.t > lastReplayedTs) emit(buffered.event.event, buffered.event.data);
 			}
 			replayed = true;
 			// Settles after the recorder's terminal write, so the re-read below sees the final row.
 			if (live && !TERMINAL_STATUSES.has(replayRow.status)) await untilFinished(live.finished, sse.signal);
 			const finalRow = await table.get(req.deployment_id);
-			return stripBlob(finalRow ?? row);
+			return visibleTo(req.hdb_user, stripBlob(finalRow ?? row));
 		} finally {
 			unsubscribe?.();
 		}
 	}
 
-	return stripBlob(row);
+	return visibleTo(req.hdb_user, stripBlob(row));
 }
 
 /** Ends early when the SSE client disconnects, so a dropped tail stops holding the request. */
