@@ -38,6 +38,25 @@ describe('node id mapping writes', function () {
 		setMainIsWorker(true);
 	});
 
+	it('gives the mapping commit a retry budget for workers minting at once', function () {
+		const auditStore = freshStore();
+		if (!auditStore.reusableIterable) return this.skip(); // LMDB serializes writers instead
+		const rootStore = auditStore.rootStore;
+		const transactionSync = rootStore.transactionSync;
+		let options;
+		rootStore.transactionSync = function (callback, transactionOptions) {
+			options = transactionOptions;
+			return transactionSync.call(this, callback, transactionOptions);
+		};
+		try {
+			getIdOfRemoteNode('budgeted-peer', auditStore);
+		} finally {
+			rootStore.transactionSync = transactionSync;
+		}
+		// each attempt re-reads the record; rocksdb-js's default budget runs out with two workers minting at once
+		assert.ok(options?.maxRetries >= 100, `maxRetries ${options?.maxRetries}`);
+	});
+
 	it('does not hand one id to two names when another worker mints between the read and the write', () => {
 		const auditStore = freshStore();
 		const before = getIdOfRemoteNode('seed-node', auditStore);

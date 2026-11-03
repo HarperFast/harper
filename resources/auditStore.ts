@@ -677,6 +677,7 @@ function updateAuditFloor(
  * Write audit metadata records under one store transaction, all or none: every write is read back,
  * and a mismatch throws inside the transaction so it aborts — returning false commits on LMDB.
  */
+const AUDIT_METADATA_COMMIT_RETRIES = 1000;
 export function commitAuditMetadata(
 	store: any,
 	plan: (read: (key: symbol) => any) => Array<[symbol, Uint8Array]> | undefined,
@@ -703,7 +704,9 @@ export function commitAuditMetadata(
 					}
 					return true;
 				},
-				{ retryOnBusy: true }
+				// workers minting node ids at once conflict on the one mapping key, and every attempt re-reads it: the
+				// default budget runs out with as few as two minting threads
+				{ retryOnBusy: true, maxRetries: AUDIT_METADATA_COMMIT_RETRIES }
 			)
 		: transactionOwner.transactionSync(() => {
 				const writes = plan((key) => store.getBinary(key));
