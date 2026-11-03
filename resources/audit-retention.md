@@ -102,7 +102,8 @@ upper bound on every key any prune removed from the named logs.
   longer): a log with no entry at or past it is quiet, bounded by its largest key, and `quietAt` becomes
   now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
   anything appended after the probe then lands in a segment the prune cannot remove, and nothing is
-  observed while neither the cutoff nor the native horizon reaches past the epoch. Any other prune
+  observed while neither the cutoff nor the native horizon reaches past the epoch and the last pass is
+  within half the native retention. Any other prune
   (`deleteHistory`, `delete_transaction_logs_before`, a cutoff ahead of the clock) raises `epoch` to
   its cutoff.
 - **RocksDB removes whole segments by mtime**, so a log written past the reach since its last quiet pass

@@ -825,13 +825,17 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 		nativeHorizon = nativePurgeHorizon(auditStore, now);
 		// Unobserved, the cutoff bounds every log: when the native retention cannot be read, and for a cutoff
 		// ahead of the clock, which could remove what is written after the probe. Nothing needs observing
-		// while neither purge can reach past the epoch.
+		// while neither purge can reach past the epoch and the logs' quiet times are fresh.
 		if (
 			observeLogs &&
 			nativeHorizon !== undefined &&
 			cutoff <= now &&
 			Number.isFinite(floor) &&
-			!(recorded && Math.max(cutoff, nativeHorizon) <= recorded.epoch)
+			!(
+				recorded &&
+				Math.max(cutoff, nativeHorizon) <= recorded.epoch &&
+				(nativeHorizon === 0 || recorded.observedAt >= (now + nativeHorizon) / 2)
+			)
 		) {
 			const base = recorded ?? freshLogPurgeBounds(floor, nativeHorizon);
 			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now);
@@ -991,9 +995,14 @@ function quietLogMaximum(log: any, cutoff: number, known: number): number | unde
 
 function logMaximumFrom(log: any, from: number): number {
 	let high = Date.now() + 86_400_000;
-	for (let found = firstLogKeyFrom(log, high); found !== undefined; found = firstLogKeyFrom(log, high))
-		high = found + (found - from) + 86_400_000;
-	return quietLogMaximum(log, high, from) ?? UNKNOWN_MAXIMUM;
+	// bounded: a garbage key near the top of the float range must not spin a pass
+	for (let step = 0; step < 64; step++) {
+		const found = firstLogKeyFrom(log, high);
+		if (found === undefined) return quietLogMaximum(log, high, from) ?? UNKNOWN_MAXIMUM;
+		if (!(found < UNKNOWN_MAXIMUM)) return UNKNOWN_MAXIMUM;
+		high = Math.min(found + (found - from) + 86_400_000, UNKNOWN_MAXIMUM);
+	}
+	return UNKNOWN_MAXIMUM;
 }
 
 function lmdbMaximumBelow(auditStore: any, cutoff: number, known: number): number {
@@ -1117,8 +1126,9 @@ function raisedLogPurgeBounds(
 			epoch = Math.max(epoch, bound);
 			continue;
 		}
-		const [baseBound, baseQuietAt, baseMaxKey] = logs[name] ?? [0, 0, 0];
-		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt), Math.max(baseMaxKey, maxKey)];
+		const [baseBound, baseQuietAt] = logs[name] ?? [0, 0, 0];
+		// maxKey pairs with this pass's observedAt; the bound above already absorbed the previous one
+		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt), maxKey];
 	}
 	return pack({ epoch, cutoff: Math.max(base.cutoff, cutoff), observedAt: observed ? now : base.observedAt, logs });
 }
@@ -1204,12 +1214,15 @@ export function getLogPurgeBound(auditStore: any, logNames?: Iterable<string> | 
 }
 
 /** Each named log's bound, from one read of the record, or undefined as for `getLogPurgeBound`. */
-export function getLogPurgeBounds(auditStore: any, logNames: Iterable<string>): Map<string, number> | undefined {
+export function getLogPurgeBounds(
+	auditStore: any,
+	logNames: Iterable<string> | string
+): Map<string, number> | undefined {
 	try {
 		const reader = logPurgeBoundReader(auditStore);
 		if (!reader) return undefined;
 		const bounds = new Map<string, number>();
-		for (const name of logNames) bounds.set(name, reader.boundOf(name));
+		for (const name of typeof logNames === 'string' ? [logNames] : logNames) bounds.set(name, reader.boundOf(name));
 		return bounds;
 	} catch (error) {
 		warnContained('Error reading the transaction-log purge bounds', error);

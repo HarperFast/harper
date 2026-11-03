@@ -320,6 +320,27 @@ describe('per-log purge bounds', function () {
 		assert.strictEqual(bounds.get('absent-origin'), getLogPurgeBound(Table.auditStore, ['absent-origin']));
 	});
 
+	it('finishes a pass over a log holding a key at the top of the timestamp range', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		const origin = getIdOfRemoteNode('garbage-origin', Table.auditStore);
+		// the largest timestamp rocksdb-js accepts
+		const farKey = 8_639_999_999_999_000;
+		await applyAsOrigin(Table, 'garbage', { nodeId: origin, logKey: farKey });
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		assert.strictEqual(recordedLogs(Table.auditStore)['garbage-origin'][2], farKey);
+	});
+
+	it('observes a fresh database before its first native retention window ends', async function () {
+		if (isLMDB) return this.skip();
+		const Table = freshTable();
+		await Table.put('early', { name: 'x' });
+		// a cutoff the new epoch covers, which alone would need no observation
+		raiseAuditFloor(Table.auditStore, Date.now() - 60_000, true);
+		assert.ok(recordedLogs(Table.auditStore).local, 'the pass recorded the log');
+	});
+
 	it('reads a single log name passed as a string', async function () {
 		if (isLMDB) return this.skip();
 		const Table = backdatedTable();
@@ -327,6 +348,10 @@ describe('per-log purge bounds', function () {
 		await tick();
 		raiseAuditFloor(Table.auditStore, Date.now(), true);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, 'local'), getLogPurgeBound(Table.auditStore, ['local']));
+		assert.strictEqual(
+			getLogPurgeBounds(Table.auditStore, 'local').get('local'),
+			getLogPurgeBound(Table.auditStore, ['local'])
+		);
 	});
 
 	it('rewrites a quiet time older than half the native retention, keeping the bound', async function () {
@@ -506,6 +531,12 @@ describe('per-log purge bounds', function () {
 			restore();
 		}
 		assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= cutoff);
+		assert.strictEqual(recordedLogs(Table.auditStore).local[2], Number.MAX_SAFE_INTEGER);
+		// a later readable pass replaces the unknown maximum
+		await Table.put('readable-again', { name: 'x' });
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		assert.ok(recordedLogs(Table.auditStore).local[2] < Number.MAX_SAFE_INTEGER);
 	});
 
 	it('probes each log at most twice and takes no write lock when nothing changed', async function () {
