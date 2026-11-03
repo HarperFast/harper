@@ -114,8 +114,8 @@ upper bound on every key any prune removed from the named logs.
 - **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not
   set) when a log opens, closes or rotates, including the file being appended to. That cannot reach past
   `bound` while `quietAt` is within the native retention; once it is not, `exposedBound` adds the native
-  horizon, or the log's oldest surviving key if lower (that purge removes the oldest segments first),
-  in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
+  horizon, or the log's largest key at the last pass if lower (every segment last written before that
+  pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
   that retention and `logPurgeBoundsCover` rewrites a `quietAt` older than half of it, so an idle log on
   a running node never reaches the horizon. A node down longer than the native retention resyncs once.
 - **`epoch` bounds what tracking never saw**: the floor, or the native horizon if later, when the

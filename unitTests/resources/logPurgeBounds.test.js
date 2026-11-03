@@ -14,6 +14,7 @@ const { asBinary } = require('#src/resources/asBinary');
 const {
 	getAuditFloor,
 	getLogPurgeBound,
+	getLogPurgeBounds,
 	raiseAuditFloor,
 	stampDatabaseGeneration,
 	purgeAgedLogs,
@@ -176,7 +177,7 @@ describe('per-log purge bounds', function () {
 		if (isLMDB) return this.skip();
 		const Table = backdatedTable(400 * DAY_MS);
 		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
-		record.logs.local = [1, Date.now() - 400 * DAY_MS];
+		record.logs.local = [1, Date.now() - 400 * DAY_MS, Number.MAX_SAFE_INTEGER];
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
 		const horizon = Date.now() - nativeRetention(Table.auditStore);
@@ -188,7 +189,7 @@ describe('per-log purge bounds', function () {
 		const Table = backdatedTable(400 * DAY_MS);
 		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 		// rocksdb-js may have purged writes made after that quiet pass when the log last opened
-		record.logs.local = [1, Date.now() - 400 * DAY_MS];
+		record.logs.local = [1, Date.now() - 400 * DAY_MS, Number.MAX_SAFE_INTEGER];
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
 		const horizon = Date.now() - nativeRetention(Table.auditStore);
@@ -218,7 +219,7 @@ describe('per-log purge bounds', function () {
 				epoch: floor,
 				cutoff: floor,
 				observedAt: floor,
-				logs: recorded ? { 'down-origin': [floor - 1, floor] } : {},
+				logs: recorded ? { 'down-origin': [floor - 1, floor, floor - 1] } : {},
 			});
 			const origin = getIdOfRemoteNode('down-origin', Table.auditStore);
 			await applyAsOrigin(Table, 'last-write', { nodeId: origin, logKey: downSince });
@@ -247,7 +248,7 @@ describe('per-log purge bounds', function () {
 		const Table = backdatedTable();
 		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 		const bound = Date.now() - 60_000;
-		record.logs = { constructor: [bound, Date.now()] };
+		record.logs = { constructor: [bound, Date.now(), bound] };
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['constructor', 'toString']), bound);
@@ -271,7 +272,7 @@ describe('per-log purge bounds', function () {
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['long-retention-origin']), lastKey);
 	});
 
-	it('bounds a log that went idle after its quiet pass by the key that survives, not the native horizon', async function () {
+	it('bounds a log that went idle after its quiet pass by its largest key at the last pass, not the native horizon', async function () {
 		if (isLMDB) return this.skip();
 		const Table = backdatedTable(400 * DAY_MS);
 		const retention = nativeRetention(Table.auditStore);
@@ -280,7 +281,7 @@ describe('per-log purge bounds', function () {
 		const lastKey = Date.now() - retention - 3_600_000;
 		await applyAsOrigin(Table, 'last', { nodeId: origin, logKey: lastKey });
 		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
-		record.logs['went-idle-origin'] = [lastKey - DAY_MS, lastKey - 7_200_000];
+		record.logs['went-idle-origin'] = [lastKey - DAY_MS, lastKey - 7_200_000, lastKey];
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['went-idle-origin']), lastKey);
@@ -288,6 +289,35 @@ describe('per-log purge bounds', function () {
 		raiseAuditFloor(Table.auditStore, Date.now() - retention, true);
 		assert.strictEqual(recordedLogs(Table.auditStore)['went-idle-origin'][0], lastKey);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, ['went-idle-origin']), lastKey);
+	});
+
+	it('bounds native exposure by the largest key at the last pass, not by a key that survives out of order', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable(400 * DAY_MS);
+		const horizon = Date.now() - nativeRetention(Table.auditStore);
+		const origin = getIdOfRemoteNode('unordered-purge-origin', Table.auditStore);
+		// a delayed key survives in a later segment; a higher key the last pass saw was in an earlier one, since purged
+		const survivor = horizon - 7_200_000;
+		const purged = horizon - 3_600_000;
+		await applyAsOrigin(Table, 'delayed', { nodeId: origin, logKey: survivor });
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		record.logs['unordered-purge-origin'] = [horizon - DAY_MS, horizon - DAY_MS, purged];
+		record.observedAt = Date.now();
+		writeRecord(Table.auditStore, record);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['unordered-purge-origin']) >= purged);
+		raiseAuditFloor(Table.auditStore, Date.now() - nativeRetention(Table.auditStore), true);
+		assert.ok(getLogPurgeBound(Table.auditStore, ['unordered-purge-origin']) >= purged);
+	});
+
+	it('reads each named log from one read of the record', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		await Table.put('many', { name: 'x' });
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		const bounds = getLogPurgeBounds(Table.auditStore, ['local', 'absent-origin']);
+		assert.strictEqual(bounds.get('local'), getLogPurgeBound(Table.auditStore, ['local']));
+		assert.strictEqual(bounds.get('absent-origin'), getLogPurgeBound(Table.auditStore, ['absent-origin']));
 	});
 
 	it('reads a single log name passed as a string', async function () {
@@ -308,7 +338,7 @@ describe('per-log purge bounds', function () {
 		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 		const [bound] = record.logs.local;
 		const aging = Date.now() - nativeRetention(Table.auditStore) * 0.6;
-		record.logs.local = [bound, aging];
+		record.logs.local = [bound, aging, bound];
 		writeRecord(Table.auditStore, record);
 		raiseAuditFloor(Table.auditStore, Date.now(), true);
 		const [rewrittenBound, quietAt] = recordedLogs(Table.auditStore).local;
@@ -345,7 +375,7 @@ describe('per-log purge bounds', function () {
 		const Table = backdatedTable();
 		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 		const aging = Date.now() - nativeRetention(Table.auditStore) * 0.6;
-		record.logs['gone-origin'] = [record.epoch, aging];
+		record.logs['gone-origin'] = [record.epoch, aging, record.epoch];
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
 		await tick();
@@ -448,7 +478,7 @@ describe('per-log purge bounds', function () {
 		['undecodable bytes', new Uint8Array([0xc1, 0xc1])],
 		[
 			'an entry of the wrong shape',
-			pack({ epoch: 1, cutoff: Date.now() * 2, observedAt: 1, logs: { 'local': [1, 2, 0], '': [1, 2, 0] } }),
+			pack({ epoch: 1, cutoff: Date.now() * 2, observedAt: 1, logs: { 'local': [1, 2], '': [1, 2] } }),
 		],
 		['a negative bound', pack({ epoch: 1, cutoff: Date.now() * 2, logs: { 'local': -5, '': -5 } })],
 		['a non-finite epoch', pack({ epoch: Infinity, cutoff: Date.now() * 2, logs: {} })],
