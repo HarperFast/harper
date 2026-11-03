@@ -344,6 +344,10 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		);
 		const ranked = await search(target);
 		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		assert.deepStrictEqual(
+			baseline.map(({ id }) => id),
+			['two', 'one']
+		);
 		assert.notDeepStrictEqual(
 			ranked.map(({ id }) => id),
 			baseline.map(({ id }) => id)
