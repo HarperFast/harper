@@ -989,7 +989,6 @@ function quietLogMaximum(log: any, cutoff: number, known: number): number | unde
 	}
 }
 
-// The largest key of a log holding one at or past `from`, ahead-of-clock keys included.
 function logMaximumFrom(log: any, from: number): number {
 	let high = Date.now() + 86_400_000;
 	for (let found = firstLogKeyFrom(log, high); found !== undefined; found = firstLogKeyFrom(log, high))
@@ -1167,7 +1166,6 @@ function establishLogPurgeBounds(auditStore: any): void {
 	}
 }
 
-// Each named log's bound from one read of the record; undefined when the store cannot vouch for any.
 function logPurgeBoundReader(
 	auditStore: any
 ): { recorded: LogPurgeBounds; boundOf: (name: string) => number } | undefined {
