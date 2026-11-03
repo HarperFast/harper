@@ -14,7 +14,8 @@ import {
 	type PreviewMetadata,
 } from './deploymentProvenance.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
-import { withComponentPreparationLock } from './componentPreparationLock.ts';
+import { withComponentPreparationLock, type ComponentPreparationLockOwner } from './componentPreparationLock.ts';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
 import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 
 const logger = harperLogger.forComponent('previews');
@@ -96,6 +97,8 @@ const admissionLockPath = (componentsRoot: string, app: string) =>
 	join(componentsRoot, `.preview-admission-${encodeURIComponent(app)}`);
 const fencePath = (componentsRoot: string, app: string) =>
 	join(componentsRoot, FENCE_DIRECTORY, `${encodeURIComponent(app)}.json`);
+const isOwnerAlive = (owner: ComponentPreparationLockOwner) =>
+	owner.pid !== process.pid || isThreadRunning(owner.threadId);
 
 async function revokedGenerations(app: string, componentsRoot: string): Promise<string[]> {
 	const path = fencePath(componentsRoot, app);
@@ -140,7 +143,7 @@ export async function fencePreviewGeneration(
 				`.${encodeURIComponent(app)}.json.tmp`
 			);
 		},
-		{ purpose: `fencing previews of ${app}` }
+		{ purpose: `fencing previews of ${app}`, isOwnerAlive }
 	);
 }
 
@@ -187,7 +190,7 @@ export async function admitPreviewActivation(
 			}
 			await activate();
 		},
-		{ purpose: `preview admission for ${preview.app}` }
+		{ purpose: `preview admission for ${preview.app}`, isOwnerAlive }
 	);
 }
 
