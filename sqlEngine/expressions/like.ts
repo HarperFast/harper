@@ -52,30 +52,27 @@ interface Segment {
 	regExp: RegExp | undefined;
 	// No unit matches a line terminator, so no match contains one.
 	lineFree: boolean;
-	// Offsets of each run of `_`.
 	ones: { start: number; end: number }[];
-	// The segment with each `_` as `[^placeholder]`, which also matches line terminators. Every other unit
-	// treats the placeholder and its substitute alike, so in a value with each placeholder replaced by the
-	// substitute it matches wherever the segment would if `_` matched line terminators.
+	// The segment with `_` also matching line terminators, run on the value with each placeholder replaced by
+	// the substitute: `_` is `[^placeholder]`, and every other unit treats the two alike.
 	relaxed: RegExp | undefined;
 	placeholder: string;
 	substitute: string;
-	// Set when only literals match line terminators: then every match window holds line terminators exactly
-	// where the segment has them, so the value's line-terminator kinds (`lineTerminatorKind`) must spell
-	// `lineKinds` there. `lineKindsFailure` is its KMP failure table.
-	lineKinds: Uint8Array | undefined;
-	lineKindsFailure: Int32Array | undefined;
+	// Set when every unit matching a line terminator matches nothing else: then a match window holds line
+	// terminators exactly where those units are, marked 1 here. `linesFailure` is its KMP failure table.
+	lines: Uint8Array | undefined;
+	linesFailure: Int32Array | undefined;
 }
 
 const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
 const LINE_TERMINATORS = ['\n', '\r', '\u2028', '\u2029'];
 const LINE_TERMINATOR = /[\n\r\u2028\u2029]/g;
+const LINE_TERMINATORS_ONLY = /^\[[\n\r\u2028\u2029]+\]$/;
 // A search retrying every start costs at most the width per start; up to this width that is cheaper than
 // stopping at each line terminator (~100 ns each on V8).
 const DIRECT_SEARCH_WIDTH = 64;
 const RELAXED_BUDGET = 8;
-// Noncharacters: no case mapping reaches them. `[^]` cannot stand for `_` here: under `i`, V8 compiles each
-// one about 100x slower than `.`.
+// Noncharacters: no case mapping reaches them.
 const PLACEHOLDERS = ['\uffff', '\ufffe'];
 for (let code = 0xfdd0; code <= 0xfdef; code++) PLACEHOLDERS.push(String.fromCharCode(code));
 
@@ -89,8 +86,9 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	let ones: Segment['ones'] = [];
 	let literals = new Set<string>();
 	let classes: RegExp[] = [];
-	let kinds: number[] = [];
-	let classMatchesLineTerminator = false;
+	let lines: number[] = [];
+	// Some class matches a line terminator and another character.
+	let lineAndOther = false;
 	const endSegment = () => {
 		const literal = text !== undefined && (!flags || units.length === 0);
 		const segment: Segment = {
@@ -103,21 +101,22 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 			relaxed: undefined,
 			placeholder: '',
 			substitute: '',
-			lineKinds: undefined,
-			lineKindsFailure: undefined,
+			lines: undefined,
+			linesFailure: undefined,
 		};
 		if (!literal && !lineFree && ones.length > 0 && units.length > DIRECT_SEARCH_WIDTH) {
-			const pair = placeholderPair(literals, classes);
+			// Under `i`, V8 compiles each `[^]` about 100x slower than `.`, so it gets a placeholder.
+			const pair = flags ? placeholderPair(literals, classes) : ['', ''];
 			if (pair) {
 				segment.placeholder = pair[0];
 				segment.substitute = pair[1];
-				const one = `[^\\u${pair[0].charCodeAt(0).toString(16)}]`;
+				const one = flags ? `[^\\u${pair[0].charCodeAt(0).toString(16)}]` : '[^]';
 				const relaxedUnits = units.slice();
 				for (const run of ones) relaxedUnits.fill(one, run.start, run.end);
 				segment.relaxed = new RegExp(relaxedUnits.join(''), flags + 'g');
-				if (!classMatchesLineTerminator) {
-					segment.lineKinds = Uint8Array.from(kinds);
-					segment.lineKindsFailure = kmpFailure(segment.lineKinds);
+				if (!lineAndOther) {
+					segment.lines = Uint8Array.from(lines);
+					segment.linesFailure = kmpFailure(segment.lines);
 				}
 			}
 		}
@@ -128,8 +127,8 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 		ones = [];
 		literals = new Set();
 		classes = [];
-		kinds = [];
-		classMatchesLineTerminator = false;
+		lines = [];
+		lineAndOther = false;
 	};
 	for (const token of tokens) {
 		if (token.kind === 'any') {
@@ -138,17 +137,20 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 		}
 		if (token.kind === 'literal') {
 			if (text !== undefined) text += token.char;
-			if (LINE_TERMINATORS.includes(token.char)) lineFree = false;
+			const isLine = LINE_TERMINATORS.includes(token.char);
+			if (isLine) lineFree = false;
 			literals.add(token.char);
-			kinds.push(lineTerminatorKind(token.char.charCodeAt(0)));
+			lines.push(isLine ? 1 : 0);
 			units.push(token.char.replace(REGEXP_SYNTAX, '\\$&'));
 		} else {
 			text = undefined;
+			let isLine = false;
 			if (token.kind === 'class') {
 				const unit = new RegExp(token.source, flags);
 				if (LINE_TERMINATORS.some((terminator) => unit.test(terminator))) {
 					lineFree = false;
-					classMatchesLineTerminator = true;
+					isLine = LINE_TERMINATORS_ONLY.test(token.source);
+					if (!isLine) lineAndOther = true;
 				}
 				classes.push(unit);
 			} else {
@@ -156,7 +158,7 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 				if (run?.end === units.length) run.end++;
 				else ones.push({ start: units.length, end: units.length + 1 });
 			}
-			kinds.push(0);
+			lines.push(isLine ? 1 : 0);
 			units.push(token.kind === 'one' ? '.' : token.source);
 		}
 	}
@@ -187,7 +189,6 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	};
 }
 
-// Two placeholders that no literal is and that every class accepts both or neither of.
 function placeholderPair(literals: Set<string>, classes: RegExp[]): [string, string] | undefined {
 	const usable = PLACEHOLDERS.filter((placeholder) => !literals.has(placeholder));
 	for (let i = 0; i < usable.length; i++) {
@@ -216,7 +217,6 @@ function findSegment(segment: Segment, value: string, from: number, lastStart: n
 		regExp.lastIndex = from;
 		found = regExp.test(value) ? regExp.lastIndex - width : -1;
 	} else if (segment.lineFree) return findBetweenLineTerminators(segment, value, from, lastStart);
-	else if (segment.lineKinds) return findByLineKinds(segment, value, from, lastStart);
 	else return findAcrossLineTerminators(segment, value, from, lastStart);
 	return found <= lastStart ? found : -1;
 }
@@ -242,28 +242,43 @@ function findBetweenLineTerminators(segment: Segment, value: string, from: numbe
 	return -1;
 }
 
-// Candidates from a KMP search of the line-terminator kinds, which is linear in the value, and from the
-// relaxed RegExp alternate until they agree; a start both accept is a match.
-function findByLineKinds(segment: Segment, value: string, from: number, lastStart: number): number {
+// A match can hold a line terminator, but not under a `_`. Work through windows of doubling size, so a
+// match near `from` costs about the width rather than the value.
+function findAcrossLineTerminators(segment: Segment, value: string, from: number, lastStart: number): number {
 	const { width } = segment;
-	const lineKinds = segment.lineKinds!;
-	const failure = segment.lineKindsFailure!;
-	const relaxedValue = value.includes(segment.placeholder)
-		? value.replaceAll(segment.placeholder, segment.substitute)
-		: value;
-	const end = lastStart + width;
+	for (let windowStart = from, size = 4 * width; windowStart <= lastStart; size *= 2) {
+		const windowEnd = Math.min(lastStart + width, windowStart + size);
+		const window = value.slice(windowStart, windowEnd);
+		const relaxedWindow =
+			segment.placeholder && window.includes(segment.placeholder)
+				? window.replaceAll(segment.placeholder, segment.substitute)
+				: window;
+		const found = segment.lines
+			? findByLines(segment, window, relaxedWindow)
+			: findClearOfLines(segment, window, relaxedWindow);
+		if (found >= 0) return windowStart + found;
+		windowStart = windowEnd - width + 1;
+	}
+	return -1;
+}
+
+// Candidates from a KMP search for the segment's line terminators, which is linear in the window, and from
+// the relaxed RegExp alternate until they agree; a start both accept is a match.
+function findByLines(segment: Segment, window: string, relaxedWindow: string): number {
+	const { width } = segment;
+	const lines = segment.lines!;
+	const failure = segment.linesFailure!;
 	let matched = 0;
-	let position = from;
-	let atLeast = from;
-	while (position < end) {
-		const kind = lineTerminatorKind(value.charCodeAt(position++));
-		while (matched > 0 && lineKinds[matched] !== kind) matched = failure[matched - 1];
-		if (lineKinds[matched] === kind) matched++;
+	let atLeast = 0;
+	for (let position = 0; position < window.length;) {
+		const line = isLineTerminator(window.charCodeAt(position++)) ? 1 : 0;
+		while (matched > 0 && lines[matched] !== line) matched = failure[matched - 1];
+		if (lines[matched] === line) matched++;
 		if (matched < width) continue;
 		matched = failure[width - 1];
 		const candidate = position - width;
 		if (candidate < atLeast) continue;
-		const found = search(segment.relaxed!, width, relaxedValue, candidate, end);
+		const found = search(segment.relaxed!, width, relaxedWindow, candidate, window.length);
 		if (found < 0) return -1;
 		if (found === candidate) return found;
 		atLeast = found;
@@ -271,37 +286,39 @@ function findByLineKinds(segment: Segment, value: string, from: number, lastStar
 	return -1;
 }
 
-// A match can hold a line terminator, but not under a `_`. Work through windows of doubling size, so a
-// match near `from` costs about the width rather than the value.
-function findAcrossLineTerminators(segment: Segment, value: string, from: number, lastStart: number): number {
-	const { width } = segment;
-	for (let windowStart = from, size = 4 * width; windowStart <= lastStart; size *= 2) {
-		const windowEnd = Math.min(lastStart + width, windowStart + size);
-		const found = findInWindow(segment, value.slice(windowStart, windowEnd));
-		if (found >= 0) return windowStart + found;
-		windowStart = windowEnd - width + 1;
-	}
-	return -1;
-}
-
-function findInWindow(segment: Segment, window: string): number {
+// A class matches a line terminator and other characters, so there is no exact filter: take the relaxed
+// RegExp's candidates and move each run of `_` past the last terminator it covers. A rejected candidate can
+// cost the width, and dense rejections are where the direct search fails fast, so it takes over past a
+// budget. The worst case stays the direct search's.
+function findClearOfLines(segment: Segment, window: string, relaxedWindow: string): number {
 	const { width, ones } = segment;
 	const lastStart = window.length - width;
-	const relaxedWindow = window.includes(segment.placeholder)
-		? window.replaceAll(segment.placeholder, segment.substitute)
-		: window;
 	const previousTerminator = previousLineTerminators(window);
-	// Each relaxed match a `_` rejects can cost the width. Where those come densely, a `_` meets its line
-	// terminator early, which is where the direct search fails fast, so it takes over past this budget.
-	let wasted = 0;
-	let start = clearOfLineTerminators(ones, previousTerminator, 0, lastStart);
+	const budget = RELAXED_BUDGET * window.length;
+	let work = 0;
+	const clearFrom = (start: number) => {
+		for (let i = 0, clear = 0; clear < ones.length && start <= lastStart; work++) {
+			const run = ones[i];
+			const terminator = previousTerminator[start + run.end];
+			if (terminator >= start + run.start) {
+				// Every start up to here keeps that terminator inside the run.
+				start = terminator - run.start + 1;
+				clear = 0;
+			} else {
+				clear++;
+				i = (i + 1) % ones.length;
+			}
+		}
+		return start;
+	};
+	let start = clearFrom(0);
 	while (start <= lastStart) {
-		if (wasted > RELAXED_BUDGET * window.length) return search(segment.regExp!, width, window, start, window.length);
+		if (work > budget) return search(segment.regExp!, width, window, start, window.length);
 		const found = search(segment.relaxed!, width, relaxedWindow, start, window.length);
 		if (found < 0) return -1;
-		start = clearOfLineTerminators(ones, previousTerminator, found, lastStart);
+		start = clearFrom(found);
 		if (start === found) return found;
-		wasted += width;
+		work += width;
 	}
 	return -1;
 }
@@ -313,30 +330,8 @@ function search(regExp: RegExp, width: number, value: string, from: number, end:
 	return regExp.test(value.slice(from, end)) ? from + regExp.lastIndex - width : -1;
 }
 
-// The first start from `start` at which no run of `_` covers a line terminator. Each move puts the last
-// terminator a run covers just before it; every start skipped still has that terminator in that run.
-function clearOfLineTerminators(
-	ones: Segment['ones'],
-	previousTerminator: Int32Array,
-	start: number,
-	lastStart: number
-): number {
-	for (let i = 0, clear = 0; clear < ones.length && start <= lastStart;) {
-		const run = ones[i];
-		const terminator = previousTerminator[start + run.end];
-		if (terminator >= start + run.start) {
-			start = terminator - run.start + 1;
-			clear = 0;
-		} else {
-			clear++;
-			i = (i + 1) % ones.length;
-		}
-	}
-	return start;
-}
-
-function lineTerminatorKind(code: number): number {
-	return code === 10 ? 1 : code === 13 ? 2 : code === 0x2028 ? 3 : code === 0x2029 ? 4 : 0;
+function isLineTerminator(code: number): boolean {
+	return code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
 }
 
 function kmpFailure(pattern: Uint8Array): Int32Array {
@@ -355,8 +350,7 @@ function previousLineTerminators(value: string): Int32Array {
 	let previous = -1;
 	for (let i = 0; i < value.length; i++) {
 		index[i] = previous;
-		const code = value.charCodeAt(i);
-		if (code === 10 || code === 13 || code === 0x2028 || code === 0x2029) previous = i;
+		if (isLineTerminator(value.charCodeAt(i))) previous = i;
 	}
 	index[value.length] = previous;
 	return index;

@@ -263,6 +263,17 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			v2Like('%\n' + run.slice(1) + '%', 'a'.repeat(200) + '\n' + 'a'.repeat(30) + '\n' + 'a'.repeat(38)),
 			false
 		);
+		// The same through a legacy class that also matches other characters.
+		const mixed = '%[^a]' + half + '[^a]' + half + '%';
+		assert.strictEqual(alasql.utils.like(mixed, '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(35)), true);
+		assert.strictEqual(
+			alasql.utils.like(mixed, '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(10) + '\n' + 'a'.repeat(24)),
+			false
+		);
+		assert.strictEqual(
+			alasql.utils.like('%[^a]' + run.slice(1) + '%', 'a'.repeat(200) + '\n' + 'a'.repeat(30) + '\n' + 'a'.repeat(38)),
+			false
+		);
 		// The match starts where the second search window does: 4 x 70 - 70 + 1.
 		const straddling = 'a'.repeat(211) + '\n' + 'b'.repeat(69) + 'c'.repeat(500);
 		assert.strictEqual(v2Like('%\n' + run.slice(1) + '%', straddling), true);
@@ -537,6 +548,9 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		// A line feed under `_` one character in, or at the very end, at nearly every start.
 		['%' + '_\na'.repeat(3_333) + '%', '\n\na', 1_000_000],
 		['%' + 'b\n'.repeat(4_999) + 'b_%', 'b\n', 1_000_000],
+		['%' + 'b[\n]'.repeat(4_999) + 'b_%', 'b\n', 1_000_000, '', 'legacy'],
+		// Every segment fits where it starts, in a value holding the placeholder.
+		[('%\n' + '_'.repeat(65)).repeat(1_000) + '%', '\n' + 'a'.repeat(64) + '\uffff', 1_000_000, '', '', true],
 		// Every segment fits where it starts: finding where the line ends must not cost the value each time.
 		[('%' + '_'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
 	];
