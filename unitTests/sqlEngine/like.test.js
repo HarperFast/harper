@@ -210,18 +210,32 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			return row[value.length];
 		};
 		const next = seededRandom(2028);
-		for (let i = 0; i < 6000; i++) {
+		const ALPHABET = 'aaaaab\n\n\r\uffff';
+		const sample = (accepts) => {
+			for (;;) {
+				const char = ALPHABET[next() % ALPHABET.length];
+				if (accepts(char)) return char;
+			}
+		};
+		for (let i = 0; i < 3000; i++) {
 			const legacy = i % 2 === 1;
 			const pieces = [PIECES[0]];
 			for (let n = 1 + (next() % 6); n > 0; n--) {
 				const piece = PIECES[1 + (next() % (PIECES.length - 1))];
 				if (piece[1] && !legacy) continue;
-				for (let k = piece[0] === '_' ? next() % 8 : 1; k > 0; k--) pieces.push(piece);
+				const ones = next() % 2 ? next() % 8 : 60 + (next() % 20);
+				for (let k = piece[0] === '_' ? ones : 1 + (next() % 3); k > 0; k--) pieces.push(piece);
 			}
 			pieces.push(PIECES[0]);
 			if (next() % 3 === 0) pieces.splice(1 + (next() % (pieces.length - 2)), 0, PIECES[0]);
 			const pattern = pieces.map(([text]) => text).join('');
-			const value = randomString(next, 'aaab\n\n\r\uffff', 40);
+			// Mostly a match with up to two characters changed, so the search moves past near misses.
+			let value = randomString(next, ALPHABET, 20);
+			for (const [, , accepts] of pieces) value += accepts ? sample(accepts) : randomString(next, ALPHABET, 6);
+			for (let n = i % 4 === 0 ? 0 : next() % 3; n > 0; n--) {
+				const at = next() % value.length;
+				value = value.slice(0, at) + ALPHABET[next() % ALPHABET.length] + value.slice(at + 1);
+			}
 			const label = `${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`;
 			const actual = legacy ? alasql.utils.like(pattern, value) : v2Like(pattern, value);
 			assert.strictEqual(actual, reference(pieces, value), (legacy ? 'legacy ' : 'v2 ') + label);
@@ -230,13 +244,25 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 
 	it('moves a run of _ only just past the line terminator it covers', () => {
 		// The only match starts right after the terminator the first candidate puts inside the run.
-		assert.strictEqual(v2Like('%\n__%', '\n\nab'), true);
-		assert.strictEqual(v2Like('%\n__%', '\n\na\n'), false);
-		assert.strictEqual(v2Like('%_\n__%', 'a\n\nx\nbc'), true);
-		assert.strictEqual(alasql.utils.like('%[^a]__%', '\n\nbc'), true);
-		assert.strictEqual(alasql.utils.like('%[^a]__%', '\n\nb\n'), false);
-		assert.strictEqual(v2Like('%___%', 'ab\ncde'), true);
-		assert.strictEqual(v2Like('%___%', 'ab\ncd\ne'), false);
+		const run = '_'.repeat(70);
+		assert.strictEqual(v2Like('%\n' + run + '%', '\n\n' + 'a'.repeat(70)), true);
+		assert.strictEqual(v2Like('%\n' + run + '%', '\n\n' + 'a'.repeat(69) + '\n'), false);
+		assert.strictEqual(v2Like('%_\n' + run + '%', 'a\n\nx\n' + 'b'.repeat(70)), true);
+		assert.strictEqual(alasql.utils.like('%[^a]' + run + '%', '\n\n' + 'b'.repeat(70)), true);
+		assert.strictEqual(alasql.utils.like('%[^a]' + run + '%', '\n\n' + 'b'.repeat(69) + '\n'), false);
+		assert.strictEqual(v2Like('%' + run + '%', 'ab\n' + 'c'.repeat(70)), true);
+		assert.strictEqual(v2Like('%' + run + '%', 'ab\n' + 'c'.repeat(69) + '\nd'), false);
+	});
+
+	it('confirms a candidate where a different line terminator or a U+FFFF stands', () => {
+		const run = '_'.repeat(70);
+		const a = 'a'.repeat(70);
+		assert.strictEqual(v2Like('%' + run + '\n%', a + '\r'), false);
+		assert.strictEqual(v2Like('%' + run + '\n%', a + '\n'), true);
+		assert.strictEqual(v2Like('%\n' + run + '%', '\uffff' + a), false);
+		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\uffff' + a), false);
+		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\n' + a), true);
+		assert.strictEqual(alasql.utils.like('%[b\n]' + run + '%', '\r' + a), false);
 	});
 
 	it('honors ESCAPE for %, _, the escape itself, and an ordinary character', () => {

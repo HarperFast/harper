@@ -64,6 +64,9 @@ interface Segment {
 const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
 const LINE_TERMINATORS = ['\n', '\r', '\u2028', '\u2029'];
 const LINE_TERMINATOR = /[\n\r\u2028\u2029]/g;
+// A search retrying every start costs at most the width per start; up to this width that is cheaper than
+// stopping at each line terminator (~100 ns each on V8).
+const DIRECT_SEARCH_WIDTH = 64;
 
 // Segment RegExps hold no quantifier or alternation, so they cannot backtrack.
 export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false): LikeMatcher {
@@ -169,6 +172,7 @@ function findSegment(segment: Segment, value: string, from: number, lastStart: n
 		return found <= lastStart ? found : -1;
 	}
 	const end = lastStart + segment.width;
+	if (segment.width <= DIRECT_SEARCH_WIDTH) return search(segment.regExp!, segment.width, value, from, end);
 	// A start whose window puts a line terminator on a `_` fails after scanning up to the segment's width,
 	// and a RegExp search retries one position later: values with a line break every <= width characters
 	// cost value x width. So no RegExp here meets a `_` that a line terminator fails.
