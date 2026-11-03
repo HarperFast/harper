@@ -139,8 +139,24 @@ describe('published native full-text Table.search integration', () => {
 		assert(['current', 'bounded'].includes(pending.indexCoverage.state));
 		await pending;
 
-		for (let index = 0; index < baseline.length; index++)
-			assert.strictEqual(boosted[index].$score, Math.fround(baseline[index].$score * 3));
+		const nativeBoosted = await Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+			{
+				...condition,
+				fullTextQuery: { operator: 'boost', boost: 3, clause: { text: 'widget', mode: 'any', fields: ['title'] } },
+			},
+			{},
+			{ minResults: baseline.length }
+		);
+		assert.deepStrictEqual(
+			boosted.map(({ id, $score }) => ({ id, $score })),
+			nativeBoosted.map(({ key, $score }) => ({ id: key, $score }))
+		);
+		// Tantivy applies boosts before BM25 rounding, not to the already-rounded result.
+		for (let index = 0; index < baseline.length; index++) {
+			const expected = baseline[index].$score * 3;
+			assert(expected > 0);
+			assert(Math.abs(boosted[index].$score - expected) <= expected * 2 ** -22);
+		}
 		const zero = await search({ boost: 0 });
 		assert.deepStrictEqual(ids(zero), ids(baseline));
 		assert(zero.every(({ $score }) => $score === 0));

@@ -86,15 +86,15 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		return text ? JSON.parse(text) : undefined;
 	}
 
-	async function operation(body: Record<string, unknown>) {
+	async function operation(body: Record<string, unknown>, auth = authorization, expectedStatus = 200) {
 		const response = await fetch(ctx.harper.operationsAPIURL, {
 			method: 'POST',
-			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
 			body: JSON.stringify(body),
 			signal: AbortSignal.timeout(45_000),
 		});
 		const text = await response.text();
-		assert.strictEqual(response.status, 200, `operation ${body.operation}: ${text}`);
+		assert.strictEqual(response.status, expectedStatus, `operation ${body.operation}: ${text}`);
 		return JSON.parse(text);
 	}
 
@@ -699,10 +699,21 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			scoringRest.map(({ id }) => id),
 			['one', 'two']
 		);
+		const scoringOperations = await operation(
+			{
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				conditions: scoringAllowed.conditions,
+				get_attributes: scoringAllowed.select,
+			},
+			READER_AUTH
+		);
+		assert.deepStrictEqual(scoringOperations, scoringRest);
 		for (const should of [
 			[{ comparator: 'matches', value: 'classified', fields: ['description'] }],
 			[{ comparator: 'matches', value: 'classified' }],
-		])
+		]) {
 			await request(
 				'/Product/',
 				{
@@ -714,6 +725,19 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				},
 				403
 			);
+
+			await operation(
+				{
+					operation: 'search_by_conditions',
+					schema: 'data',
+					table: 'Product',
+					conditions: query('waterproof', { fields: ['title'], should }).conditions,
+					get_attributes: ['id', 'title', '$score'],
+				},
+				READER_AUTH,
+				403
+			);
+		}
 
 		const restHidden = await request('/Product/', {
 			method: 'QUERY',
