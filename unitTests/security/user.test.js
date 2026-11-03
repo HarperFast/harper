@@ -216,8 +216,6 @@ describe('user.ts Unit Tests', () => {
 	describe('Test system table permissions', () => {
 		const COMPONENT_TABLE = 'hdb_test_component_state';
 		const READ_ONLY_ROLE = 'test_read_only_role';
-		// Deliberately not the names dropTestUsers() clears — these users have to outlive the
-		// afterEach so every assertion reads the same cache that was built before COMPONENT_TABLE.
 		const SUPER_USER = 'test_system_perms_su';
 		const READ_ONLY_USER = 'test_system_perms_read_only';
 		let componentTable;
@@ -246,8 +244,6 @@ describe('user.ts Unit Tests', () => {
 				active: true,
 			});
 			assert.ok(!Object.keys(require('../../json/systemSchema.json')).includes(COMPONENT_TABLE));
-			// Build the cache BEFORE the table exists — a component creating a system table at
-			// runtime is exactly the case the old snapshot could not see (harper#2120).
 			await user.setUsersWithRolesCache();
 			componentTable = table({
 				database: 'system',
@@ -259,8 +255,6 @@ describe('user.ts Unit Tests', () => {
 		after(async () => {
 			await user.dropUser({ username: READ_ONLY_USER }).catch(() => {});
 			await user.dropUser({ username: SUPER_USER }).catch(() => {});
-			// The unit suite shares an hdb root, so leaving this behind would let it accumulate in
-			// the shared system database and show up in any later test that enumerates one.
 			await componentTable?.dropTable().catch(() => {});
 		});
 
@@ -306,8 +300,6 @@ describe('user.ts Unit Tests', () => {
 		});
 
 		it('should be a plain cloneable object, since operations are forwarded to worker threads', async () => {
-			// A Proxy here fails the whole operation with DataCloneError: forwarding structured-clones
-			// the request, permissions included (server/operations forwarding, harper#2120 CI).
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const { tables } = permission.system;
 			assert.doesNotThrow(() => structuredClone(tables));
@@ -316,9 +308,6 @@ describe('user.ts Unit Tests', () => {
 		});
 
 		it('should reach identities holding an earlier reference to the map', async () => {
-			// auth.ts serves warmed authorization entries and getSuperUser() hands back cached roles;
-			// neither re-reads the map, so replacing it instead of updating in place would strand them
-			// on the stale copy and reproduce the original 403.
 			const { databaseEventsEmitter } = require('#src/resources/databases');
 			const held = (await cachedRolePermissions(SUPER_USER)).system.tables;
 			const LATE_TABLE = 'hdb_test_late_component';
@@ -338,8 +327,6 @@ describe('user.ts Unit Tests', () => {
 		});
 
 		it('should not let one role mutate the permissions every other role reads', async () => {
-			// The map is shared per read permission so warmed identities stay fresh; that sharing is
-			// only safe while the entries cannot be written through.
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const entry = permission.system.tables[COMPONENT_TABLE];
 			assert.strictEqual(Object.isFrozen(entry), true);
@@ -362,8 +349,6 @@ describe('user.ts Unit Tests', () => {
 		});
 
 		it('should hold a table named __proto__ as an own property', async () => {
-			// A plain assignment would hit the inherited setter, so the table would vanish from
-			// Object.keys and from a structured clone while still appearing to have been granted.
 			const { databaseEventsEmitter } = require('#src/resources/databases');
 			databases.system.__proto__ = { primaryKey: 'id' };
 			databaseEventsEmitter.emit('updateTable', { databaseName: 'system' });
@@ -465,9 +450,6 @@ describe('user.ts Unit Tests', () => {
 		});
 
 		it('should expose the shape hasPermissions reads, keyed by table name', async () => {
-			// hasPermissions itself is unreachable from a CJS test: operation_authorization.ts:406
-			// reassigns module.exports and drops it from the require surface. The end-to-end check
-			// lives in integrationTests/security/system-table-authz.test.ts.
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const { tables } = permission.system;
 			assert.strictEqual(tables[COMPONENT_TABLE].read, true);
