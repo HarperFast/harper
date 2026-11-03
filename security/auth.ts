@@ -61,6 +61,13 @@ let AUTHORIZE_LOCAL: any = envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
 let LOG_AUTH_SUCCESSFUL: boolean = false;
 let LOG_AUTH_FAILED: boolean = false;
 const COMMITTED_SESSION_READ = { uncachedRead: true };
+const loadedSessions = new WeakMap<object, any>();
+const SESSION_VERSION = {
+	get: getSessionVersion,
+	set: setSessionVersion,
+	enumerable: false,
+	configurable: true,
+};
 
 function getSessionTable() {
 	return _sessionTable;
@@ -198,15 +205,8 @@ export async function authentication(request, nextHandler) {
 				typeof session.getUpdatedTime === 'function' &&
 				!Object.prototype.hasOwnProperty.call(request.session, 'version')
 			) {
-				Object.defineProperty(request.session, 'version', {
-					get: () => session.getUpdatedTime?.(),
-					set: (value) => {
-						delete (request.session as any).version;
-						(request.session as any).version = value;
-					},
-					enumerable: false,
-					configurable: true,
-				});
+				loadedSessions.set(request.session, session);
+				Object.defineProperty(request.session, 'version', SESSION_VERSION);
 			}
 		}
 
@@ -541,6 +541,15 @@ function authAuditLog(request, sessionId: string | undefined, username, status, 
 	else authEventLog.error?.(log);
 }
 
+function getSessionVersion(this: object) {
+	return loadedSessions.get(this)?.getUpdatedTime();
+}
+
+function setSessionVersion(this: object, value: any) {
+	Object.defineProperty(this, 'version', { value, writable: true, enumerable: true, configurable: true });
+	loadedSessions.delete(this);
+}
+
 interface SessionState {
 	request: any;
 	headers: any;
@@ -619,7 +628,18 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 			response.headers.set('Set-Cookie', cookie);
 		}
 	}
-	if (useSecure && ifVersion === undefined) markSessionUpdated(this);
+	if (useSecure) {
+		// Indicate that we have successfully updated a session
+		// We make sure this is allowed by CORS so that a client can determine if it has
+		// a valid cookie-authenticated session (studio needs this)
+		if (responseHeaders) {
+			if (origin) responseHeaders.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
+			responseHeaders.push('X-Hdb-Session', 'Secure');
+		} else if (response?.headers?.set) {
+			if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
+			response.headers.set('X-Hdb-Session', 'Secure');
+		}
+	}
 	updatedSession.id = this.sessionId;
 	// trust in the transport must not become a cookie that works from anywhere else
 	if (
@@ -627,26 +647,9 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 		(isLocalPrincipal(request.user) && updatedSession.user === request.user.username)
 	)
 		delete updatedSession.user;
-	const putOptions = { expiresAt: expires ? Date.now() + convertToMS(expires) : undefined };
-	if (ifVersion === undefined) return getSessionTable().put(updatedSession, putOptions);
-	return Promise.resolve(getSessionTable().put(updatedSession, putOptions)).then((result) => {
-		if (useSecure) markSessionUpdated(this);
-		return result;
+	return getSessionTable().put(updatedSession, {
+		expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 	});
-}
-
-function markSessionUpdated(state: SessionState) {
-	// Indicate that we have successfully updated a session
-	// We make sure this is allowed by CORS so that a client can determine if it has
-	// a valid cookie-authenticated session (studio needs this)
-	const { origin, responseHeaders, response } = state;
-	if (responseHeaders) {
-		if (origin) responseHeaders.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
-		responseHeaders.push('X-Hdb-Session', 'Secure');
-	} else if (response?.headers?.set) {
-		if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
-		response.headers.set('X-Hdb-Session', 'Secure');
-	}
 }
 
 async function loginWithSession(this: SessionState, username: string, password?: string, token?: string) {

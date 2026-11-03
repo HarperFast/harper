@@ -215,6 +215,50 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
 	});
 
+	it('preserves application-owned version data and assignments to the metadata accessor', async function () {
+		const cookie = await establishSession();
+		await authentication(newRequest(cookie), async (request) => {
+			request.session.version = 'application version';
+			assert.strictEqual(request.session.version, 'application version');
+			assert.ok(Object.keys(request.session).includes('version'));
+			await request.session.update({ ...request.session });
+			return newResponse();
+		});
+		await authentication(newRequest(cookie), async (request) => {
+			assert.strictEqual(request.session.version, 'application version');
+			assert.strictEqual({ ...request.session }.version, 'application version');
+			return newResponse();
+		});
+	});
+
+	it('keeps the success header when a conditional update is not awaited by the handler', async function () {
+		const cookie = await establishSession();
+		let pendingUpdate;
+		const response = { status: 200, headers: { 'content-type': 'application/json' }, body: '{}' };
+		await authentication(newRequest(cookie), (request) => {
+			pendingUpdate = request.session.update({ greeting: 'unawaited' }, { ifVersion: request.session.version });
+			return response;
+		});
+		try {
+			assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
+		} finally {
+			await pendingUpdate;
+		}
+	});
+
+	it('keeps metadata when assigning version fails on a frozen session', async function () {
+		const cookie = await establishSession();
+		await authentication(newRequest(cookie), (request) => {
+			const version = request.session.version;
+			Object.freeze(request.session);
+			assert.throws(() => {
+				request.session.version = 'replacement';
+			}, TypeError);
+			assert.strictEqual(request.session.version, version);
+			return newResponse();
+		});
+	});
+
 	it('sets the success header for an awaited conditional update', async function () {
 		const cookie = await establishSession();
 		const response = newResponse();
