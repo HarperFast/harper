@@ -983,9 +983,10 @@ function quietLogMaximum(log: any, cutoff: number, known: number): number | unde
 	if (key === undefined) return known;
 	let high = cutoff;
 	for (;;) {
-		if (key >= cutoff) return undefined;
+		// inverted so a NaN key ends the search
+		if (!(key < cutoff)) return undefined;
 		const above = timestampAbove(key);
-		if (above >= high) return key;
+		if (!(above < high)) return key;
 		const middle = Math.max((key + high) / 2, above);
 		const found = firstLogKeyFrom(log, middle);
 		if (found === undefined) high = middle;
@@ -1063,7 +1064,7 @@ function observeLogPurgeBounds(
 			}
 		} catch (error) {
 			warnContained(`Error reading transaction log ${name} to bound a prune`, error);
-			observed.set(name, [Math.max(known, reach), quietAt, UNKNOWN_MAXIMUM]);
+			observed.set(name, [quietAt >= reach ? known : Math.max(known, reach), quietAt, UNKNOWN_MAXIMUM]);
 		}
 	}
 	// a recorded log with no files left is empty, so quiet
@@ -1205,7 +1206,8 @@ export function getLogPurgeBound(auditStore: any, logNames?: Iterable<string> | 
 		if (!reader) return undefined;
 		const { recorded, boundOf } = reader;
 		if (!isRocksStore(auditStore)) return boundOf(LMDB_PURGE_LOG);
-		let scopeBound = recorded.epoch;
+		// no RocksDB log is named '', so this is the bound of a log no pass has recorded
+		let scopeBound = boundOf(LMDB_PURGE_LOG);
 		const names = typeof logNames === 'string' ? [logNames] : logNames;
 		if (names) for (const name of names) scopeBound = Math.max(scopeBound, boundOf(name));
 		else {

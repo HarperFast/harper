@@ -325,9 +325,12 @@ describe('per-log purge bounds', function () {
 		const Table = backdatedTable();
 		await Table.put('garbage', { name: 'x' });
 		// a corrupt frame decoding to an infinite timestamp: every query from any start yields it
-		const restore = interceptQueries(Table.auditStore.rootStore, (name, log, options) =>
-			name === 'local' ? [{ timestamp: Infinity }] : log.query(options)
-		);
+		let probes = 0;
+		const restore = interceptQueries(Table.auditStore.rootStore, (name, log, options) => {
+			// a regression fails here instead of spinning the process
+			if (++probes > 1000) throw new Error('the maximum search did not stop');
+			return name === 'local' ? [{ timestamp: Infinity }] : log.query(options);
+		});
 		try {
 			raiseAuditFloor(Table.auditStore, Date.now() - 1000, true);
 		} finally {
@@ -519,6 +522,25 @@ describe('per-log purge bounds', function () {
 			assert.strictEqual(getLogPurgeBound(auditStore, scope('local')), undefined);
 		});
 	}
+
+	it('keeps an idle log at its bound through a pass that cannot read it', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable();
+		await Table.put('idle', { name: 'x' });
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now(), true);
+		const [bound] = recordedLogs(Table.auditStore).local;
+		const restore = interceptQueries(Table.auditStore.rootStore, (name) => {
+			throw new Error(`cannot read ${name}`);
+		});
+		try {
+			// its quiet pass is past this cutoff, so nothing this prune can remove is above the bound
+			raiseAuditFloor(Table.auditStore, Date.now() - 1000, true);
+		} finally {
+			restore();
+		}
+		assert.strictEqual(recordedLogs(Table.auditStore).local[0], bound);
+	});
 
 	it('bounds a log it cannot read by the cutoff', async function () {
 		if (isLMDB) return this.skip();
