@@ -571,7 +571,7 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 		ifVersion = options.ifVersion;
 		if (typeof ifVersion !== 'number' || !Number.isFinite(ifVersion)) {
 			throw new ClientError(
-				'session.update ifVersion must be a finite number; move application data out of the reserved version field',
+				'session.update ifVersion must be a finite number captured from an existing session; do not use payload version values',
 				400
 			);
 		}
