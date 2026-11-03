@@ -1152,9 +1152,11 @@ export function getLogPurgeBound(auditStore: any, logNames?: Iterable<string>): 
 	const nativeHorizon = nativePurgeHorizon(auditStore, Date.now());
 	if (nativeHorizon === undefined) return undefined;
 	try {
-		const names = logNames ?? new Set([...auditStore.rootStore.listLogs(), ...Object.keys(recorded.logs)]);
 		let scopeBound = recorded.epoch;
-		for (const name of names) scopeBound = Math.max(scopeBound, exposedBound(recorded, name, nativeHorizon));
+		for (const name of logNames ?? auditStore.rootStore.listLogs())
+			scopeBound = Math.max(scopeBound, exposedBound(recorded, name, nativeHorizon));
+		if (!logNames)
+			for (const name in recorded.logs) scopeBound = Math.max(scopeBound, exposedBound(recorded, name, nativeHorizon));
 		return scopeBound;
 	} catch (error) {
 		warnContained('Error reading the transaction-log purge bounds', error);
