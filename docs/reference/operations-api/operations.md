@@ -850,6 +850,8 @@ The operation token is valid for **one hour** — long enough to cover a slow de
 **Every rejection of a well-formed token returns the same message.** The endpoint is unauthenticated, so a caller told which check failed could enumerate a policy one claim at a time. A malformed request — a missing `token`, or one over 8192 characters — is rejected by schema validation before any of that, with its own message; that reveals nothing about a policy. The specific reason is written to the `oidc-trust` logger, which is where to look when a workflow that should match does not.
 :::
 
+**When several policies match a token** (Changed in: v5.4.0), the exchange checks every enabled policy for the token's issuer. Policies that agree, naming the same `user` and the same `operations`, answer with the first by `id`. If two give the token a different user, or different operations, the exchange refuses it, with the same message as any other rejection, and the log names both policies. The token is not spent, so the run can be retried once one of the two is dropped, disabled, or given claims that keep it apart. Operations are compared as the operations they allow: the same names in any order agree, a permission group such as `read_only` equals the operations it expands to, and an unscoped policy differs from every scoped one. Before v5.4.0, the first matching policy by `id` answered, and the others were ignored. [`list_oidc_trust`](#list_oidc_trust) names each such pair.
+
 **An identity token can be exchanged once.** Harper records a SHA-256 fingerprint of each spent token in `system.hdb_oidc_token_use`, expiring with the token itself, so the table stays proportional to in-flight tokens and never holds a credential. The record is written _before_ the operation token is minted: if minting then fails, the identity token is burned, costing a CI re-run, where the reverse order would leave a spendable token behind.
 
 That replay check is replicated, but replication is asynchronous, so two simultaneous replays against **different nodes** can both succeed. This is not a privilege escalation — whoever holds the token could obtain one operation token regardless — and what it does stop is the realistic case: a token that leaks after a legitimate run and is reused inside its window.
@@ -867,6 +869,8 @@ Lists every policy, **including disabled ones**, sorted by `id`. **super_user on
 Returns `{ "policies": [ ... ] }`. Each entry carries `id`, `issuer`, `audience`, `claims`, `user`, `operations` (`null` when unscoped), `enabled`, `description`, `updated_by`, and timestamps.
 
 An entry may also carry **`invalid_reason`** — set when the policy cannot currently authenticate anyone, because it is malformed or because the user it names was deleted or deactivated after the policy was written. Check for it first when diagnosing a rejected exchange: the exchange will not say what failed, so a policy you expected to match that carries an `invalid_reason` is the fastest explanation available.
+
+<VersionBadge type="changed" version="v5.4.0" /> Each entry also carries **`exchangeable`**: `true` when the exchange considers the policy, and `false` when it is disabled, malformed, or not specific enough for its issuer, such as a GitHub Actions policy that pins no ref. A policy that fails the issuer's specificity rules now says why in `invalid_reason`; before v5.4.0 the exchange skipped it and only logged it. And when two exchangeable policies can match the same token but give it a different user or operations, so the exchange [refuses it](#exchange_oidc_token), both carry `invalid_reason`, naming a rival on the same audience first: `can match the same runs as '<other id>', which gives them a different user or operations, so the exchange refuses those runs`. Two policies on different audiences can share only a token that names both audiences, and their `invalid_reason` says so: `can match a token that names both its audience and '<other id>'s, and '<other id>' gives it a different user or operations, so the exchange refuses such a token`. A GitHub Actions token names one audience, so GitHub Actions policies on different audiences never conflict, and neither does one pinned to `event_name: pull_request_target` with one that leaves `event_name` open, since GitHub refuses such a run to the second. Drop or disable one policy of a pair, or give them claims that keep them apart.
 
 #### `drop_oidc_trust`
 
@@ -960,6 +964,9 @@ Detailed documentation: [Components Overview](../components/overview.md)
 | `list_deployments`          | Lists deployment records with optional filters                          | super_user    |
 | `get_deployment`            | Fetches a single deployment record by ID; supports SSE streaming        | super_user    |
 | `list_releases`             | Lists the live release and the releases each node keeps                 | super_user    |
+| `enable_previews`           | Creates an application's PR preview identity (v5.4.0)                   | super_user    |
+| `disable_previews`          | Removes it and every preview of the application (v5.4.0)                | super_user    |
+| `get_preview_policy`        | Returns an application's PR preview identity and limits (v5.4.0)        | super_user    |
 | `get_deployment_payload`    | Returns the tarball stored for a deployment                             | super_user    |
 | `delete_deployment_payload` | Removes the stored tarball to free space                                | super_user    |
 | `add_ssh_key`               | Adds an SSH key for deploying from private repositories                 | super_user    |
@@ -970,7 +977,7 @@ Detailed documentation: [Components Overview](../components/overview.md)
 | `get_ssh_known_hosts`       | Returns the contents of the SSH known_hosts file                        | super_user    |
 | `install_node_modules`      | _(Deprecated)_ Run npm install on component projects                    | super_user    |
 
-A role that is not `super_user` can be granted these operations by listing them in its [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), which is how a deploy-only CI role gets `deploy_component` and `get_deployment`. A few cannot be granted that way, such as `get_deployment_payload`; that section lists them.
+A role that is not `super_user` can be granted these operations by listing them in its [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), which is how a deploy-only CI role gets `deploy_component` and `get_deployment`. A few cannot be granted that way, such as `get_deployment_payload` and the three preview operations; that section lists them. (Added in: v5.4.0) A role's [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants) instead limits `deploy_component`, `drop_component`, `get_components`, `list_deployments` and `get_deployment` to the components whose names it lists, and can require that each deploy be isolated, under a host suffix, on branched databases, or a PR preview.
 
 ### `deploy_component`
 
@@ -980,6 +987,9 @@ Additional parameters:
 
 - `urlPath` — the HTTP URL path the component is mounted at (e.g. `"/api/v2"`). Must not contain `..` or `.` path segments. Persisted on the component's root-config entry; see [HTTP middleware routing](../http/overview.md#middleware-routing).
 - `host` <VersionBadge version="v5.2.0" /> — the virtual hostname the component is served on (e.g. `"api.example.com"`). Must be a bare hostname or IPv6 literal — no scheme, port, path, or brackets. Persisted alongside `urlPath`.
+- `isolated` <VersionBadge version="v5.3.0" /> — `true` to run the application in a worker thread of its own. See [Isolated applications](../components/applications.md#isolated-applications).
+- `branchedDatabases` <VersionBadge version="v5.3.0" /> — `true`, or a list of database names, to give the application a private branch of them. See [Branched databases](../components/applications.md#branched-databases).
+- `preview` <VersionBadge version="v5.4.0" /> — marks the deploy as a pull request's preview, which expires. See [Preview deployments](#preview-deployments).
 - `install_allow_scripts` — set to `true` to allow npm pre/post install scripts (disabled by default)
 - `credentials` — credentials for installing a component from a private npm registry or private git repository (see below)
 - `deployment_timeout` <VersionBadge version="v5.1.4" /> — how long, in milliseconds, a peer waits to receive the replicated deployment payload before failing (default: `120000`)
@@ -987,7 +997,9 @@ Additional parameters:
 - `activate` <VersionBadge version="v5.3.0" /> — set to `false` to build and install the component without making it live. See [Staging a build and activating it later](#staging-a-build-and-activating-it-later).
 - `deployment_id` <VersionBadge version="v5.3.0" /> — make a staged build live, or return to a release a later deploy replaced. Takes no build inputs of its own. See [Going back to a previous release](#going-back-to-a-previous-release).
 
-`urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
+<VersionBadge type="changed" version="v5.4.0" /> A payload deploy, such as `harper deploy` from a directory, can set `host`, `urlPath`, `isolated` and `branchedDatabases` too; before v5.4.0 it refused them, and they could only be added to the component's entry in the root `harper-config.yaml`. See [How a deploy updates the root config](#how-a-deploy-updates-the-root-config) for what it does with the ones it leaves out.
+
+<VersionBadge type="changed" version="v5.4.0" /> `project` must be letters, numbers, `-` and `_`, after a leading npm scope (`@my-org/`) and an archive extension (`.tgz`, `.tar.gz` or `.tar`) are removed. A name with any other character, such as `my-app.pr-12`, fails with `400` before anything is written. Before v5.4.0, the part after its last `.` was dropped, as from a file extension, so `my-app.pr-12` deployed over `my-app`.
 
 :::warning
 Only a deploy that restarts workers can be checked before it serves. On a node running v5.4.0 or later, `"restart": true` or `"restart": "rolling"` [certifies the release in a canary worker](#certifying-a-release-in-a-canary-worker) first, unless the response's `certification` is `uncertified` or `unavailable`, which say why it went out unchecked. A release that fails to load is rejected. The release it replaced is put back, or, if there is none, the component is failed closed on that node. A deploy without `restart` is not test-loaded: a release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
@@ -1006,7 +1018,8 @@ Before its release goes live, a deploy checks the built component for every `jsR
 A deploy changes the component's entry in the root `harper-config.yaml` only once the new release is live on that node. A deploy that fails to install or validate leaves the entry exactly as it was, so a restart does not install a release that never went live. If Harper stops partway through the swap, startup settles it before it installs anything from the root config: either the previous release stays live with its entry, or the new release goes live with its entry, including whether the component runs isolated.
 
 - **A `package` deploy replaces the entry.** The new entry is built from the request: `package`, `install`, `credentials`, `urlPath`, `host`, `branchedDatabases`, and `isolated`.
-- **A `payload` deploy removes `package`, `install`, and `credentials`.** Everything else in the entry is kept, such as `host`, `urlPath`, `isolated`, and `branchedDatabases`, and an entry left with no keys is removed. A `package` key left in place would make a node installing from the root config resolve the old package instead of the payload release that is live.
+- **A `payload` deploy removes `package`, `install`, and `credentials`.** A `package` key left in place would make a node installing from the root config resolve the old package instead of the payload release that is live. A payload deploy that sets none of `host`, `urlPath`, `isolated` and `branchedDatabases` keeps those keys as they are in the entry, and an entry left with no keys is removed.
+- **A `payload` deploy that sets any of those four keys owns all four** <VersionBadge version="v5.4.0" />. The release records them, and the entry gets `host`, `urlPath` and `branchedDatabases` from the request where it sets them, and as the entry has them otherwise. `isolated` stays only if the request sets it to `true`, or leaves it out and the application is isolated now, so `isolated: false` removes it. Going back to that release later puts those four back. A key a payload deploy owns replaces a hand edit of it in the root config.
 - **`drop_component` removes the entry.**
 
 These writes are serialized with each other and with `set_configuration`, so concurrent deploys, drops, and configuration changes do not overwrite one another.
@@ -1105,6 +1118,49 @@ An activation of the id that is already live on a node succeeds there without a 
 The retry also finishes anything the failed attempt left half done on that node, such as writing the root config entry. A node that answers "already live" still restarts if you pass `restart` — every worker, including those of isolated applications, since it cannot tell which ones loaded the previous release. Without `restart`, it marks the component as needing a restart, because it cannot tell whether every worker has loaded that release.
 
 A plain deploy (without `activate: false`) that went live only on the origin leaves the peers nothing to activate. Their retry answers `404`, so deploy the release again instead.
+
+#### Preview deployments
+
+<VersionBadge version="v5.4.0" />
+
+`preview` marks a deploy as a preview of an application for one pull request. Harper drops the preview when it expires, caps how many previews of the application a node keeps, and keeps fewer of its replaced releases. [`harper preview deploy`](../cli/commands.md#harper-preview-deploy) sends it, and [Per-PR previews](/learn/developers/deploying-from-ci#per-pr-previews) sets up the identity that deploys it.
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app-pr-42",
+	"package": "git+https://github.com/my-org/my-app.git#3f9c2e1d...",
+	"host": "fix-cart.app.my-cluster.example.com",
+	"isolated": true,
+	"branchedDatabases": true,
+	"restart": true,
+	"preview": {
+		"app": "my-app",
+		"pr": 42,
+		"branch": "fix/cart",
+		"repository": "my-org/my-app",
+		"sha": "3f9c2e1d...",
+		"expiresAt": "2026-11-10T18:00:00.000Z"
+	}
+}
+```
+
+| Field        | Description                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| `app`        | **Required.** The application this is a preview of.                                        |
+| `pr`         | **Required.** The pull request's number, an integer of 1 or more.                          |
+| `expiresAt`  | **Required.** When the preview expires: an ISO 8601 date, or milliseconds since the epoch. |
+| `branch`     | The PR's head branch, up to 256 characters.                                                |
+| `repository` | The repository, up to 256 characters.                                                      |
+| `sha`        | The commit, 7 to 64 hex characters.                                                        |
+
+Any other field fails with `400`, and so does a `project` other than `<app>-pr-<pr>`: `'preview' describes a preview that must be deployed as 'my-app-pr-42'`. `preview` goes on a package or payload deploy, or a stage. An activation by `deployment_id` refuses it, and takes the staged build's own.
+
+The release keeps its `preview`, and [`get_components`](../components/applications.md#get_components) shows it on the component's entry, while the deployment record carries it as `preview` in [`list_deployments`](#list_deployments) and [`get_deployment`](#get_deployment). A redeploy replaces it, so each deploy of a preview sets its expiry again.
+
+- **Expiry.** Once a node holds a preview, the cluster's scheduler leader looks for expired previews every [`deployment.previews.sweepInterval`](../configuration/options.md#deployment), ten minutes by default. It drops each preview whose `expiresAt` has passed, on every node, and only where that node's live release is still the one it found expired, so a preview redeployed in the meantime stays. An isolated preview's worker stops. A preview that is not isolated keeps being served by the shared workers until they restart.
+- **The cap.** With [`deployment.previews.maxPerApplication`](../configuration/options.md#deployment) set, a node keeps at most that many live previews of one application. The deploy of another is refused with `409`, naming the oldest: `Cannot deploy preview 'my-app-pr-43': 'my-app' already has 5 preview(s), the most deployment.previews.maxPerApplication allows. The oldest is 'my-app-pr-12' (PR 12); drop it, or another, first.` A redeploy of a live preview does not count. The node that receives the deploy checks before it builds, and again when the release goes live; the other nodes do not check, so two deploys through two nodes at once can each take the last place. A [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants)'s `maxPreviews` takes its place for that role's deploys.
+- **Fewer kept releases.** A preview's component keeps [`deployment.previews.stagingRetention.maxCount`](../configuration/options.md#deployment) replaced and staged releases, one by default, in place of `deployment.stagingRetention.maxCount`. The stored payload of a preview deploy that succeeds is removed at once, except for a stage.
 
 #### Deploy credentials (`credentials`)
 
@@ -1443,6 +1499,8 @@ The list is the history of deploys as each receiving node recorded them, newest 
 
 `sha` matches a source the deploying client declared as readily as one an OIDC exchange attested; each record's `source.via` says which.
 
+<VersionBadge version="v5.4.0" /> For a role with a [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants), `list_deployments` lists only the deployments of components the grant covers, and `total` counts only those, and `get_deployment` refuses any other deployment with `403`.
+
 ### `get_deployment`
 
 Returns a single deployment record by `deployment_id`. A request that accepts `text/event-stream` gets the record's event log replayed as [Server-Sent Events](#streaming-deploy-progress), followed by a `done` event carrying the record.
@@ -1479,6 +1537,7 @@ The deployment record includes:
 | `restart_job_id`       | (v5.4.0) For `"restart": "rolling"`, the id of the job that restarts the other nodes, which [`get_job`](#get_job) answers on the node that received the deploy                                                                                                                                                                                                                                                                                                                          |
 | `source`               | (v5.4.0) Where the deploy came from. `via: "oidc"`: attested by an [OIDC exchange](#exchange_oidc_token), with its `policy` and the run's `repository`, `sha`, `ref`, `workflow_ref`, `run_id`, `run_attempt`, `actor` and `environment`, whichever the identity token had. `via: "declared"`: what the client said, such as the `harper` CLI's GitHub Actions run and, for a directory deploy, the checkout's `sha` and whether it was `dirty`. `null` when neither applies            |
 | `credentials`          | The deploy's `credentials`, in reference form (`secret` names, never a token), or `null`                                                                                                                                                                                                                                                                                                                                                                                                |
+| `preview`              | (v5.4.0) A [preview deployment](#preview-deployments)'s `preview`, as recorded: under a role's `maxTtlDays`, with its `expiresAt` lowered. `null` otherwise                                                                                                                                                                                                                                                                                                                             |
 | `activated_from`       | (v5.3.0) On an activation, the id of the deployment it made live: a staged build, or a release a later deploy replaced. [Going back to a previous release](#going-back-to-a-previous-release) writes a new `success` record with this set                                                                                                                                                                                                                                               |
 | `error`                | For a deploy that failed, or a stage whose peers failed: an object with `message`, `code`, and `phase`, the phase it failed in. On a `partial` rolling deploy, also `nodes`, the nodes that did not take the release                                                                                                                                                                                                                                                                    |
 
@@ -1561,6 +1620,122 @@ Response:
 - `at` is when the build was made or, for a kept release, when it was replaced. `size` is its tree's size on disk, in bytes.
 
 With `"replicated": true` the response is `{ "nodes": [...] }`, one entry per node in the shape above, this node first. A node that could not answer has `error` instead of `components`.
+
+### PR Previews
+
+<VersionBadge version="v5.4.0" />
+
+Three operations manage the identity CI deploys an application's pull-request previews as. [`harper preview setup`](../cli/commands.md#harper-preview-setup) and `harper preview teardown` call them, and [Per-PR previews](/learn/developers/deploying-from-ci#per-pr-previews) covers the whole flow.
+
+| Operation            | Description                                                                      | Role Required |
+| -------------------- | -------------------------------------------------------------------------------- | ------------- |
+| `enable_previews`    | Creates an application's preview role, user and trust policies                   | super_user    |
+| `disable_previews`   | Revokes them, drops every preview of the application on every node, removes them | super_user    |
+| `get_preview_policy` | Returns an application's preview identity and limits, and what differs from them | super_user    |
+
+The three check for a `super_user` themselves, so a role's `operations` allowlist cannot grant them, and they are not on the default MCP operations surface. One `enable_previews` or `disable_previews` runs at a time on a node, for any application. A fourth operation, `fence_preview_releases`, is what `disable_previews` calls on each node; it is not meant to be called directly.
+
+What `enable_previews` writes, for the application `my-app`:
+
+- **The role and user `my-app-ci-preview`.** The role's `operations` are `deploy_component`, `drop_component`, `get_components`, `get_deployment` and `registration_info`, and its [`component_deploy`](../users-and-roles/overview.md#component-deploy-grants) grant covers `my-app-pr-*`. It has no table permissions. The user's password is random, and nothing uses it.
+- **The trust policy `github-actions-my-app-preview`**, for the deploy job. It names the user, with the same operations, and pins `repository_id`, `workflow_ref` (the workflow file at the branch), `event_name: pull_request_target` and `environment` (`preview` by default).
+- **The trust policy `github-actions-my-app-preview-cleanup`**, for the job that drops a closed PR's preview. It pins the same claims, except `environment: preview-cleanup`, and narrows the token to `drop_component`.
+
+The grant is where the application's preview limits live, so the cluster enforces them on every deploy, whatever the workflow sends:
+
+| Constraint          | Value                                                                                                                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isolated`          | `true`. Each preview is an isolated application.                                                                                                                                          |
+| `hostSuffix`        | Each preview's `host` ends in it, such as `.app.my-cluster.example.com`.                                                                                                                  |
+| `branchedDatabases` | `"required"`, so each preview runs on its own branch of the databases. Left out with `dataMode: "shared"`.                                                                                |
+| `preview`           | `"required"`. Each deploy carries [`preview`](#preview-deployments) metadata naming `my-app`, as `my-app-pr-<n>`.                                                                         |
+| `maxPreviews`       | How many previews of the application a node keeps live. The deploy that would pass it is refused with `409`, naming the oldest preview. Left out unless set.                              |
+| `maxTtlDays`        | The longest a preview lives after its deploy. A later `expiresAt` is lowered to it, with a warning, and activating a staged build whose `expiresAt` is later is refused. Defaults to `7`. |
+| `generation`        | A random value `enable_previews` writes. Each deploy under the grant carries it, and `disable_previews` revokes it on every node.                                                         |
+
+#### `enable_previews`
+
+```json
+{
+	"operation": "enable_previews",
+	"app": "my-app",
+	"repository": "my-org/my-app",
+	"repository_id": "67890",
+	"branch": "main",
+	"audience": "https://my-cluster.example.com:9925/"
+}
+```
+
+| Parameter       | Description                                                                                                                                                  |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `app`           | **Required.** The application's component name: letters, numbers, `-` and `_`. Its previews deploy as `<app>-pr-<n>`.                                        |
+| `repository`    | **Required.** The GitHub repository, `owner/name`, as GitHub spells it in the token.                                                                         |
+| `repository_id` | **Required.** The repository's numeric id.                                                                                                                   |
+| `branch`        | **Required.** The branch the workflow runs from, usually the default branch. A leading `refs/heads/` is removed.                                             |
+| `audience`      | **Required.** The cluster's URL as the CLI asks for its token: with the port and a trailing slash, as for [`add_oidc_trust`](#add_oidc_trust).               |
+| `workflow`      | The workflow file. Defaults to `.github/workflows/preview.yaml`.                                                                                             |
+| `environment`   | The deploy job's GitHub environment. Defaults to `preview`, and cannot be `preview-cleanup`.                                                                 |
+| `hostSuffix`    | What every preview's host ends in, starting with `.`. Defaults to `.app.<audience host>`; required when the audience's host is an IP address or `localhost`. |
+| `dataMode`      | `branched` (the default), or `shared` to let previews run on the cluster's databases.                                                                        |
+| `maxPreviews`   | A whole number of 1 or more. Without it, a node's [`deployment.previews.maxPerApplication`](../configuration/options.md#deployment) applies.                 |
+| `maxTtlDays`    | A number of days greater than 0. Defaults to `7`.                                                                                                            |
+
+It only creates. It keeps a record that already matches, so running it again changes nothing. If a record exists and differs, such as a role with other limits, it fails with `409`, writes nothing, and lists each difference. So does another enabled trust policy that would match the same runs and give them a different user or operations, since the exchange [refuses such a token](#exchange_oidc_token): give the application its own workflow file. To change the limits, disable previews, then enable them again.
+
+The response has `message`, `created`, the list of records it created, and everything [`get_preview_policy`](#get_preview_policy) returns.
+
+#### `disable_previews`
+
+```json
+{ "operation": "disable_previews", "app": "my-app" }
+```
+
+1. Refuses with `409`, changing nothing, if the records are not the ones `enable_previews` writes: a role that covers more than `<app>-pr-*`, or another user in the role.
+2. Revokes the identity: drops both trust policies and deactivates the user.
+3. Fences every node: each records the identity's `generation` as revoked, under the lock its preview deploys hold while they go live, and then lists its live releases. A preview deploy already going live finishes first, and is listed. One that would go live later, on that node or on a peer applying a replicated deploy, is refused with `403`: `'my-app-pr-12' was not activated: previews of my-app by the identity that built it were disabled`.
+4. Drops each live preview of the application on the node that holds it, and only while it is still that node's live release. If a drop removed nothing, because a newer release went live meanwhile, it lists again.
+5. Removes the user and the role.
+
+A node that fails, does not answer, or does not acknowledge the fence stops it at step 4 with `500`: `Previews of my-app are revoked but not removed: ...`, naming each failure. The identity stays revoked, and the user and role stay, so running `disable_previews` again resumes. Until it finishes, `enable_previews` refuses the inactive user with `409`. Every node has to run a version that acknowledges the fence.
+
+```json
+{
+	"message": "Disabled previews of my-app",
+	"app": "my-app",
+	"dropped": [
+		{
+			"node": "node-a",
+			"project": "my-app-pr-12",
+			"deploymentId": "c91e...",
+			"componentRemoved": true,
+			"message": "Successfully dropped: my-app-pr-12"
+		}
+	],
+	"removed": [
+		"trust policy github-actions-my-app-preview",
+		"trust policy github-actions-my-app-preview-cleanup",
+		"user my-app-ci-preview",
+		"role my-app-ci-preview"
+	]
+}
+```
+
+Each entry of `dropped` is one drop on one node, with the [`drop_component`](../components/applications.md#drop_component) response's `componentRemoved` and `message`; a drop that failed has `error` in their place. `inProgress`, when present, lists previews whose deploy had started and not finished; each is fenced, and dropped when it expires if one goes live anyway. `disable_previews` does not delete a credential sealed for the previews, such as `deploy.my-app-pr-_.git.github.com`, or anything on the GitHub side. With nothing enabled, it answers `Previews of my-app were not enabled; nothing changed`.
+
+#### `get_preview_policy`
+
+```json
+{ "operation": "get_preview_policy", "app": "my-app" }
+```
+
+Returns the application's preview identity as the cluster holds it:
+
+- `app`; `role` and `user`; `components`, the grant's pattern (`my-app-pr-*`).
+- `repository`, `workflow` and `branch`, read from the deploy policy's `workflow_ref`; `repository_id`, `environment` and `audience` from the deploy policy; `cleanupEnvironment` from the cleanup policy.
+- `grant`, the role's `component_deploy`, with its constraints; `operations`, the role's.
+- `trust`, the two trust policies as [`list_oidc_trust`](#list_oidc_trust) returns them.
+- `problems`, each way the records differ from what `enable_previews` writes, such as `user "my-app-ci-preview" is inactive`, `trust policy "github-actions-my-app-preview" is disabled`, or a policy whose operations are not the expected ones.
+- `enabled`, `true` only when `problems` is empty.
 
 ### `add_ssh_key`
 
@@ -1727,6 +1902,8 @@ Add or remove a component from a scoped secret's grants list. Both are idempoten
 ```
 
 Response includes the updated `grants` array and a `changed` flag (`false` when the call was a no-op).
+
+<VersionBadge version="v5.4.0" /> `component` can also be a name prefix followed by one `*`, such as `my-app-pr-*`, which grants the secret to every component whose name starts with the prefix and goes on. A pattern grant counts only when a deploy resolves its `credentials`, so one deploy credential serves every preview of an application. A component's own code never reads a secret through a pattern grant: [the `secrets` accessor](../security/secrets.md#read-scoped-secrets-with-the-secrets-accessor) and `env` use only grants that name the component exactly. Any other `*` fails with `400`.
 
 ### `list_secrets`
 

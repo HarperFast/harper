@@ -36,7 +36,7 @@ http:
 - `sessionAffinity` — Route requests from same client to same worker thread (`ip` or header name)
 - `compressionThreshold` — Response size threshold (bytes) for Brotli compression; `0` disables compression; _Default_: `0`
 - `cors` — Enable CORS; _Default_: `true`
-- `corsAccessList` — Allowed domains for CORS requests
+- `corsAccessList` — Allowed origins for CORS requests. From v5.4.0, an entry such as `https://*.app.example.com` allows any one label in place of `*`; see [`http.corsAccessList`](../http/configuration.md#httpcorsaccesslist)
 - `corsAccessControlAllowHeaders` — `Access-Control-Allow-Headers` value for OPTIONS preflight
 - `headersTimeout` — Max wait for complete HTTP headers (ms); _Default_: `60000`
 - `maxHeaderSize` — Max HTTP header size (bytes); _Default_: `16394`
@@ -194,7 +194,7 @@ operationsApi:
 ```
 
 - `componentFile.maxSize` — Maximum file size in bytes returned by `get_component_file`. Requests for files larger than this limit are rejected with HTTP 413. _Default_: `5242880` (5 MB)
-- `network.cors` / `network.corsAccessList` — CORS settings
+- `network.cors` / `network.corsAccessList` — CORS settings. `network.corsAccessList` takes the same entries as [`http.corsAccessList`](../http/configuration.md#httpcorsaccesslist)
 - `network.domainSocket` — Unix socket path for CLI communication; _Default_: `<rootPath>/hdb/operations-server`
 - `network.headersTimeout` / `network.keepAliveTimeout` / `network.timeout` — Timeout settings (ms)
 - `network.port` — Operations API port; _Default_: `9925`
@@ -662,6 +662,10 @@ deployment:
     failedMaxCount: 2
   stagingRetention:
     maxCount: 5
+  previews:
+    sweepInterval: 600000
+    stagingRetention:
+      maxCount: 1
 ```
 
 - `startupInstallTimeout` <VersionBadge version="v5.3.0" /> — Milliseconds. The longest startup waits for component installs before it opens listeners. While waiting, it logs every 60 seconds which ones remain outstanding — including throughout `0`'s unbounded wait — unless every install settles first, which always ends the wait before that first log, whatever the timeout; a failed install logs immediately regardless of the timeout. A component whose install is still running at the deadline keeps installing in the background, and the node serves the version already installed meanwhile, or nothing for a component that was never installed. When that install succeeds, the swap lands on disk immediately and Harper flags a restart as needed (`restartRequired` in [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status) called with no `id`) — any one component's late success sets it, even while others are still installing. Code already loaded keeps running until that restart, but some component plugins apply an added or changed file on their own rather than waiting for one; content served straight from disk, such as static files, can also reflect the new version before the restart. Outside `harper dev`, which restarts automatically soon after any restart request, Harper does not restart on its own. An install that fails after the deadline does not set the flag; Harper only logs an error naming the component. `0` waits indefinitely, which was the behavior before v5.3.0. An empty value uses the default. A negative, non-finite, or otherwise unparseable value also falls back to it, with a warning in the log; _Default_: `600000` (10 minutes)
@@ -669,6 +673,9 @@ deployment:
 - `payloadRetention.failedMaxAge` <VersionBadge version="v5.4.0" /> — A failed deploy keeps its payload, since that is what you retry or debug with. A failed payload older than this is dropped, as [`delete_deployment_payload`](../operations-api/operations.md#delete_deployment_payload) drops one, keeping the record; each project's newest failed payload is always kept. A number of seconds, or a number with a unit: `m`, `h`, `d`, `M` (30 days) or `y`. Any other value uses the default, and `0` turns the bound off; _Default_: `7d`
 - `payloadRetention.failedMaxCount` <VersionBadge version="v5.4.0" /> — How many failed payloads a project keeps, newest first, counting every node's deploys; older ones are dropped the same way. `0` turns the bound off. Both bounds apply after a deploy fails, for its project, and once at each startup. Each node drops only the payloads of deploys it received, so a deploy received by a node that has since left the cluster keeps its payload; _Default_: `2`
 - `stagingRetention.maxCount` <VersionBadge version="v5.3.0" /> — How many complete builds that are not live may remain per component under `<componentsRoot>/.deploy-staging`: builds staged with `activate: false`, and [releases replaced by a later deploy](../operations-api/operations.md#going-back-to-a-previous-release), which `deployment_id` can make live again. The newest survive; older ones are removed when that component next deploys and at startup. `drop_component` removes all of them. Each is a full installed copy of the component, `node_modules` included. `0` keeps none, and no replaced release is kept. This bounds dormant builds only, not a disk quota: staging directories that belong to an in-flight or unsettled deploy are never touched; _Default_: `5`
+- `previews.maxPerApplication` <VersionBadge version="v5.4.0" /> — How many live [preview deployments](../operations-api/operations.md#preview-deployments) of one application a node keeps. A deploy of another is refused with `409`, naming the oldest; a redeploy of a live preview does not count. Only the node that receives a deploy checks. A role's [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants) can set its own `maxPreviews`, which takes the place of this for that role's deploys. A value that is not a positive whole number is ignored; _Default_: none, no limit
+- `previews.sweepInterval` <VersionBadge version="v5.4.0" /> — Milliseconds. How often the cluster looks for expired previews and drops them. Only a node that holds a preview takes part, and only the scheduler's leader looks. A value that is not a whole number of milliseconds, such as `10m`, uses the default; _Default_: `600000` (10 minutes)
+- `previews.stagingRetention.maxCount` <VersionBadge version="v5.4.0" /> — `stagingRetention.maxCount` for the component of a preview deployment, in its place. `0` keeps none; _Default_: `1`
 
 ---
 

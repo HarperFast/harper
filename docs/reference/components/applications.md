@@ -341,7 +341,7 @@ Like `host` and `urlPath`, these keys say how one deployment of the application 
 
 ### Setting them when you deploy
 
-A `package` deploy, including `harper deploy by_ref=true`, builds the component's root-config entry from the request, so it can set `host`, `urlPath`, `isolated`, and `branchedDatabases` in the same call. The CLI parses `isolated=true` as a boolean and `branchedDatabases='["data"]'` as a list:
+A deploy can set `host`, `urlPath`, `isolated`, and `branchedDatabases` in the same call. A `package` deploy, including `harper deploy by_ref=true`, builds the component's root-config entry from the request, and from v5.4.0 a payload deploy, such as `harper deploy` from a directory, can set them too. The CLI parses `isolated=true` as a boolean and `branchedDatabases='["data"]'` as a list:
 
 ```sh
 harper deploy project=shop-preview by_ref=true \
@@ -349,7 +349,8 @@ harper deploy project=shop-preview by_ref=true \
 ```
 
 - A later `package` deploy that omits `isolated` keeps the current setting, and `isolated=false` removes it.
-- A payload deploy (from a directory, or with `payload`) refuses `isolated` with a `400`: `'isolated' is only supported for package deployments; set it on the application's root config entry instead`. It also refuses `host` and `urlPath`. A payload deploy keeps the keys already on the entry.
+- <VersionBadge type="changed" version="v5.4.0" /> A payload deploy (from a directory, or with `payload`) that sets any of the four keys sets all four: the ones it leaves out keep their current values, except that `isolated=false` removes isolation. One that sets none of them keeps the keys already on the entry. Before v5.4.0, a payload deploy refused `isolated`, `host` and `urlPath` with a `400`, and accepted `branchedDatabases` but dropped it.
+- From v5.3.2, a `package` deploy that sets `branchedDatabases` gives the application a fork, and from v5.4.0 so does a payload deploy.
 - On v5.3.0 and v5.3.1, no deploy request gives an application a fork. A `package` deploy writes `branchedDatabases` into the entry, but the application ignores it when it loads ([harper#3071](https://github.com/HarperFast/harper/issues/3071)). A payload deploy accepts `branchedDatabases` and drops it ([harper#3044](https://github.com/HarperFast/harper/issues/3044)). The manual steps under [Branched databases](#branched-databases) do work.
 
 [How a deploy updates the root config](../operations-api/operations.md#how-a-deploy-updates-the-root-config) has the full rules for the entry.
@@ -358,13 +359,13 @@ harper deploy project=shop-preview by_ref=true \
 
 By default, every worker thread loads every application. An application whose entry sets `isolated: true` is loaded by one dedicated worker thread instead, that thread loads no other application, and no other thread loads it. Its module state, its globals, and its thread's copy of `process.env` are not shared with another application, and a redeploy that keeps it isolated restarts only its own thread.
 
-Its REST export registry also belongs to that worker: exports registered by an isolated application are not registered in the shared workers. See [Deploying from CI](/learn/developers/deploying-from-ci#per-pr-previews-with-shared-databases) for isolated deployments and a preview workflow.
+Its REST export registry also belongs to that worker: exports registered by an isolated application are not registered in the shared workers. See [Deploying from CI](/learn/developers/deploying-from-ci#per-pr-previews) for isolated deployments and a preview for each pull request.
 
 Isolation is about the thread, not the data. The application still reads and writes the same databases as everything else on the instance, unless it also declares [`branchedDatabases`](#branched-databases). Users, roles, and sessions stay instance-wide.
 
 #### Reaching an isolated application
 
-The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request to those ports never reaches the application, even one addressed to its `host`: the shared workers answer it, and they do not load the application. The worker listens only on Unix domain sockets of its own, one for each secure port:
+The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request to those ports never reaches the application, even one addressed to its `host`. (Changed in: v5.4.0) The shared workers answer a request for the `host` of an isolated application with `503`, `Retry-After: 5`, and `Service unavailable: <host> is served by an isolated application whose worker is not running`, and close a WebSocket for it with `1013` (try again later), rather than with another application's routes. The operations API port is not affected. Before v5.4.0 they answered it like any other request. The worker listens only on Unix domain sockets of its own, one for each secure port:
 
 ```
 <rootPath>/sockets/app-<application>-<port>.sock
@@ -372,7 +373,7 @@ The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request t
 
 In the socket name, every character of the application name outside `A–Z`, `a–z`, `0–9`, `.` and `_` is percent-encoded, so `shop-preview` becomes `app-shop%2Dpreview-<port>.sock`. The proxy in front terminates TLS. The socket for `http.securePort` serves plain HTTP, and the socket for the MQTT secure port serves MQTT. A `.yaml` file beside each socket names the application, its `host`, and the TLS certificates the proxy needs.
 
-- **On Harper Fabric**, the platform's proxy routes the application's `host` to its socket, by TLS SNI. It does so only for a host name the cluster claims as a [custom domain](/fabric/custom-domains). Because it picks the socket by host name alone, give each isolated application its own `host`, used by no other application. An isolated application with no `host`, or with a host it shares with another application split by `urlPath`, loads and reports healthy, but no request reaches it. Harper does not refuse these configurations yet ([harper#2757](https://github.com/HarperFast/harper/issues/2757)).
+- **On Harper Fabric**, the platform's proxy routes the application's `host` to its socket, by TLS SNI. It does so for a host name the cluster claims as a [custom domain](/fabric/custom-domains), and for a [preview host](/fabric/cluster-creation-management#preview-hosts) one label under `app.` and the cluster's host name. Because it picks the socket by host name alone, give each isolated application its own `host`, used by no other application. An isolated application with no `host`, or with a host it shares with another application split by `urlPath`, loads and reports healthy, but no request reaches it. Harper does not refuse these configurations yet ([harper#2757](https://github.com/HarperFast/harper/issues/2757)).
 - **On a self-managed instance**, Harper does not route to the socket. Run a proxy that terminates TLS and forwards the application's requests to its socket, by host name or however your proxy routes.
 
 #### Requirements and refusals
@@ -435,7 +436,9 @@ Until that is fixed, use these manual steps for a new application:
 
 #### Reaching the fork from code
 
-Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`. The bare `databases` and `tables` globals are shared by every application in the thread. Code that uses them reads and writes the base database without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
+Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`.
+
+<VersionBadge type="changed" version="v5.4.0" /> The bare `databases` and `tables` globals reach the fork too in an isolated application, whose worker is its own, and under the `vm` and `compartment` [module loaders](./module-loading.md#module-loader-modes), which give each application its own globals. In the shared workers under the default `vm-current-context` loader, or `native`, the globals are shared by every application in the thread, so code that uses them reads and writes the base database without any warning. Before v5.4.0 that was so in every case ([harper#3053](https://github.com/HarperFast/harper/issues/3053)). Importing from `harper` reaches the fork everywhere.
 
 With `branchedDatabases: [inventory]`, this is the fork's `Product` table:
 
@@ -481,7 +484,7 @@ Before v5.4.0, only a drop with `restart=true` removes the forks, once its resta
 
 ## Operations API
 
-Component operations require `super_user`, unless a role's [`operations` allowlist](../users-and-roles/overview.md#operation-permissions) lists them, which is how a deploy-only CI role gets `deploy_component`. A few cannot be granted that way, such as `get_deployment_payload`, and a deploy that passes a literal `token` in `credentials` still needs `super_user`.
+Component operations require `super_user`, unless a role's [`operations` allowlist](../users-and-roles/overview.md#operation-permissions) lists them, which is how a deploy-only CI role gets `deploy_component`. A role's [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants) limits `deploy_component`, `drop_component` and `get_components` to the components it names (Added in: v5.4.0). A few cannot be granted that way, such as `get_deployment_payload`, and a deploy that passes a literal `token` in `credentials` still needs `super_user`.
 
 ### `add_component`
 
@@ -514,6 +517,8 @@ Deploys a component using a package reference or a base64-encoded `.tar` payload
 - `install_command` _(optional)_ — Install command override
 - `install_timeout` _(optional)_ — Install timeout override in milliseconds
 - `install_allow_scripts` _(optional)_ — Allow install scripts to run. Defaults to `false`, which causes `--ignore-scripts` to be passed to the install command (this is ignored with `install_command`).
+- `host`, `urlPath`, `isolated`, `branchedDatabases` _(optional)_ — Set the component's root-config entry, as in [Setting them when you deploy](#setting-them-when-you-deploy).
+- `preview` _(optional)_ <VersionBadge version="v5.4.0" /> — Marks the deploy as a pull request's preview, which expires. See [Preview deployments](../operations-api/operations.md#preview-deployments).
 
 ```json
 {
@@ -534,6 +539,7 @@ Deletes a component project or a specific file within it.
 - `replicated` _(optional)_ — On Harper Pro and Fabric, deletion goes to every cluster node unless this is `false`. The response's `replicated` results report each peer's outcome
 - `restart` _(optional)_ — `true` also restarts the shared workers, when they run the application. Dropping a whole isolated application stops its worker either way, and a node that does not have the application restarts nothing (v5.4.0)
 - `keepBranches` _(optional)_ — `true` keeps the application's [forks](#removing-a-fork). Defaults to `false`. Cannot be combined with `"restart": true` (v5.4.0)
+- `ifDeploymentId` _(optional)_ <VersionBadge version="v5.4.0" /> — Drop the component only where its live release is this deployment. Each node checks its own, and one whose live release is another answers `componentRemoved: false` with `Did not drop <project>: its live release is not deployment <id>`, not an error. A UUID, and only with no `file`. Previews' expiry and `disable_previews` use it, so a preview redeployed in the meantime stays
 
 ```json
 {
@@ -601,6 +607,8 @@ Returns all local component files, folders, and configuration from `harper-confi
 - `restarted_at` — the latest time a worker thread on this node finished loading the component, whether or not the load succeeded; `status` says how it went. A worker restart refreshes it.
 
 Both times are in milliseconds since the epoch, and all three describe the node that answers. [`list_releases`](../operations-api/operations.md#list_releases) lists the releases each node keeps, for the whole cluster with `replicated: true`.
+
+<VersionBadge version="v5.4.0" /> The entry of a [preview deployment](../operations-api/operations.md#preview-deployments) also carries its `preview`: `app`, `pr`, `expiresAt`, and the `branch`, `repository` and `sha` it was deployed with. For a role with a [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants), `entries` lists only the components the grant covers.
 
 ### `get_component_file`
 

@@ -81,7 +81,7 @@ Handlers see the request with the mount already removed from the pathname, so ap
 A mount is a routing prefix, not an isolation boundary:
 
 - **It does not namespace resources within a worker.** Applications loaded in the shared workers use the same export registry, so a table exported by one is reachable through the others' mounted REST routes. An [isolated application](../components/applications.md#isolated-applications) has its own worker and export registry; its exports are not registered in the shared workers.
-- **It does not constrain legacy Fastify routes by host.** `fastifyRoutes` registers as a global fallback outside the routed middleware chain, so those routes answer on every hostname. A `urlPath` mount does apply (it becomes the Fastify route prefix); a `host` mount does not, and Harper refuses to load a host-mounted application that declares `fastifyRoutes` rather than silently serving it unconstrained. Port them to `server.http()` for host routing.
+- **It does not constrain legacy Fastify routes by host.** `fastifyRoutes` registers as a global fallback outside the routed middleware chain, so those routes answer on every hostname. A `urlPath` mount does apply (it becomes the Fastify route prefix); a `host` mount does not, and Harper refuses to load a host-mounted application that declares `fastifyRoutes` rather than silently serving it unconstrained. Port them to `server.http()` for host routing. (Changed in: v5.4.0) An [isolated application](../components/applications.md#isolated-applications) with a `host` loads its `fastifyRoutes`: its worker serves only it, so only its host reaches them.
 
 Host matching ignores the port and is case-insensitive. IPv6 hosts are configured as a bare literal (`::1`), not bracketed.
 
