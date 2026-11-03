@@ -29,16 +29,18 @@ const ESCAPE_CASES: { where: string; expected: string[] }[] = [
 
 const REDOS_PATTERNS = ['%_%_%_%_%_%_%_%_%_%_%_%_%_%_Z', '%a%a%a%a%a%a%a%a%a%a%a%a%a%aZ'];
 
-// 20 rows of 100,000 characters with a line feed every 10,000 (QA SQA-133 arm B). `_` matches no line
-// terminator, so no 10,000-wide window matches; a search retrying every start position took 3.6 s (v2) and
-// 10 s (legacy) per statement.
+// 20 rows of about 100,000 characters (QA SQA-133 arm B), with a line feed every 10,000 characters in even
+// rows and every 9,999 in odd ones. When `_` matched no line terminator, a search retrying every start position
+// took 3.6 s (v2) and 10 s (legacy) per statement.
 const LINES = Array.from({ length: 20 }, (_, i) => ({
 	id: 'line' + i,
 	tag: 'line',
-	note: ('a'.repeat(9_999) + '\n').repeat(10),
+	note: ('a'.repeat(i % 2 ? 9_998 : 9_999) + '\n').repeat(10),
 	flag: 'none',
 }));
 const AT_LIMIT = `'%${'_'.repeat(10_000)}%'`;
+// Two line feeds 9,999 apart: the odd rows.
+const LINE_PAIR = `'%\n${'_'.repeat(9_998)}\n%'`;
 const LINE_STATEMENT_MS = 1_000;
 
 type Client = ReturnType<typeof createApiClient>;
@@ -176,22 +178,31 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 			});
 
 			const lineIds = LINES.map((row) => row.id).sort();
-			const lineCases: { statement: string; check: (body: any) => void }[] = [
+			const oddIds = LINES.filter((_, i) => i % 2)
+				.map((row) => row.id)
+				.sort();
+			const lineCases: { statement: string; check: (body: any) => void; hit?: string[]; deleted?: string[] }[] = [
 				{
 					statement: `SELECT id FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note LIKE ${AT_LIMIT}`,
-					check: (body) => deepStrictEqual(body, []),
+					check: (body) => deepStrictEqual(sortedIds(body), lineIds),
 				},
 				{
 					statement: `SELECT id FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note NOT LIKE ${AT_LIMIT}`,
-					check: (body) => deepStrictEqual(sortedIds(body), lineIds),
+					check: (body) => deepStrictEqual(body, []),
 				},
 				{
-					statement: `SELECT id FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note LIKE '%${'_'.repeat(9_999)}%'`,
-					check: (body) => deepStrictEqual(sortedIds(body), lineIds),
+					statement: `SELECT id FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note LIKE ${LINE_PAIR}`,
+					check: (body) => deepStrictEqual(sortedIds(body), oddIds),
 				},
 				{
-					statement: `UPDATE ${SCHEMA}.Lines SET flag = 'hit' WHERE tag = 'line' AND note LIKE ${AT_LIMIT}`,
-					check: (body) => deepStrictEqual(body.update_hashes, []),
+					statement: `UPDATE ${SCHEMA}.Lines SET flag = 'hit' WHERE tag = 'line' AND note LIKE ${LINE_PAIR}`,
+					check: (body) => deepStrictEqual([...body.update_hashes].sort(), oddIds),
+					hit: oddIds,
+				},
+				{
+					statement: `DELETE FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note LIKE ${LINE_PAIR}`,
+					check: (body) => deepStrictEqual([...body.deleted_hashes].sort(), oddIds),
+					deleted: oddIds,
 				},
 				{
 					statement: `DELETE FROM ${SCHEMA}.Lines WHERE tag = 'line' AND note LIKE '%${'_'.repeat(5_000)}!_${'_'.repeat(4_999)}%' ESCAPE '!'`,
@@ -201,13 +212,13 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 			// Without an index driver, `auto` evaluates the LIKE in alasql.
 			if (sqlEngine !== 'new') {
 				lineCases.push({
-					statement: `SELECT id FROM ${SCHEMA}.Lines WHERE note LIKE ${AT_LIMIT}`,
-					check: (body) => deepStrictEqual(body, []),
+					statement: `SELECT id FROM ${SCHEMA}.Lines WHERE note LIKE ${LINE_PAIR}`,
+					check: (body) => deepStrictEqual(sortedIds(body), oddIds),
 				});
 			}
-			for (const { statement, check } of lineCases) {
-				const shown = statement.replace(/(.)\1{20,}/g, (run, char) => `${char}×${run.length}`);
-				test(`${shown} skips past line terminators`, async () => {
+			for (const { statement, check, hit = [], deleted = [] } of lineCases) {
+				const shown = statement.replace(/(.)\1{20,}/g, (run, char) => `${char}×${run.length}`).replaceAll('\n', '\\n');
+				test(`${shown} matches line feeds under _ promptly`, async () => {
 					await client
 						.req()
 						.send({ operation: 'upsert', schema: SCHEMA, table: 'Lines', records: LINES })
@@ -218,7 +229,11 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 					const ms = performance.now() - start;
 					check(body);
 					const rows = await readTable(client, 'Lines');
-					deepStrictEqual(sortedIds(rows.filter((row) => row.flag === 'none')), lineIds);
+					deepStrictEqual(sortedIds(rows.filter((row) => row.flag === 'hit')), hit);
+					deepStrictEqual(
+						sortedIds(rows),
+						lineIds.filter((id) => !deleted.includes(id))
+					);
 					strictEqual(ms < LINE_STATEMENT_MS, true, `took ${ms.toFixed(0)} ms`);
 				});
 			}

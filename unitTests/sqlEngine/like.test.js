@@ -39,9 +39,7 @@ function regexLike(pattern, value) {
 	return new RegExp(r + '$').test(value);
 }
 
-const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
-
-// `_` matches any character but a line terminator, as in both engines.
+// `_` matches any one code unit, line terminators included, as in both engines.
 function dpLike(pattern, value, escape, caseInsensitive = false) {
 	if (caseInsensitive) {
 		pattern = pattern.toLowerCase();
@@ -60,7 +58,7 @@ function dpLike(pattern, value, escape, caseInsensitive = false) {
 		const next = [token === '%' && row[0]];
 		for (let j = 1; j <= value.length; j++) {
 			if (token === '%') next.push(next[j - 1] || row[j]);
-			else if (token === '_') next.push(row[j - 1] && !LINE_TERMINATOR.test(value[j - 1]));
+			else if (token === '_') next.push(row[j - 1]);
 			else next.push(row[j - 1] && value[j - 1] === token.literal);
 		}
 		row = next;
@@ -185,11 +183,11 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		}
 	});
 
-	it('agrees with the reference when runs of _ meet line terminators the pattern also matches', () => {
+	it('agrees with the reference on wide segments mixing _, line terminators, classes and noncharacters', () => {
 		// [pattern text, legacy only, accepts]
 		const PIECES = [
 			['%', false, null],
-			['_', false, (c) => !LINE_TERMINATOR.test(c)],
+			['_', false, () => true],
 			['a', false, (c) => c === 'a'],
 			['\n', false, (c) => c === '\n'],
 			['\r', false, (c) => c === '\r'],
@@ -197,6 +195,7 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			['[a\n]', true, (c) => c === 'a' || c === '\n'],
 			['[^\uffff]', true, (c) => c !== '\uffff'],
 			['\uffff', false, (c) => c === '\uffff'],
+			['\ufffe', false, (c) => c === '\ufffe'],
 		];
 		const reference = (pieces, value) => {
 			let row = [true, ...Array(value.length).fill(false)];
@@ -210,7 +209,7 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			return row[value.length];
 		};
 		const next = seededRandom(2028);
-		const ALPHABET = 'aaaaab\n\n\r\uffff';
+		const ALPHABET = 'aaaaab\n\n\r\uffff\ufffe';
 		const sample = (accepts) => {
 			for (;;) {
 				const char = ALPHABET[next() % ALPHABET.length];
@@ -242,56 +241,38 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		}
 	});
 
-	it('moves a run of _ only just past the line terminator it covers', () => {
-		// The only match starts right after the terminator the first candidate puts inside the run.
-		const run = '_'.repeat(70);
-		assert.strictEqual(v2Like('%\n' + run + '%', '\n\n' + 'a'.repeat(70)), true);
-		assert.strictEqual(v2Like('%\n' + run + '%', '\n\n' + 'a'.repeat(69) + '\n'), false);
-		assert.strictEqual(v2Like('%_\n' + run + '%', 'a\n\nx\n' + 'b'.repeat(70)), true);
-		assert.strictEqual(alasql.utils.like('%[^a]' + run + '%', '\n\n' + 'b'.repeat(70)), true);
-		assert.strictEqual(alasql.utils.like('%[^a]' + run + '%', '\n\n' + 'b'.repeat(69) + '\n'), false);
-		assert.strictEqual(v2Like('%' + run + '%', 'ab\n' + 'c'.repeat(70)), true);
-		assert.strictEqual(v2Like('%' + run + '%', 'ab\n' + 'c'.repeat(69) + '\nd'), false);
-		// A terminator under the second run only, or under a later candidate's run.
-		const half = '_'.repeat(35);
-		assert.strictEqual(v2Like('%\n' + half + '\n' + half + '%', '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(35)), true);
-		assert.strictEqual(
-			v2Like('%\n' + half + '\n' + half + '%', '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(10) + '\n' + 'a'.repeat(24)),
-			false
-		);
-		assert.strictEqual(
-			v2Like('%\n' + run.slice(1) + '%', 'a'.repeat(200) + '\n' + 'a'.repeat(30) + '\n' + 'a'.repeat(38)),
-			false
-		);
-		// The same through a legacy class that also matches other characters.
-		const mixed = '%[^a]' + half + '[^a]' + half + '%';
-		assert.strictEqual(alasql.utils.like(mixed, '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(35)), true);
-		assert.strictEqual(
-			alasql.utils.like(mixed, '\n' + 'a'.repeat(35) + '\n' + 'a'.repeat(10) + '\n' + 'a'.repeat(24)),
-			false
-		);
-		assert.strictEqual(
-			alasql.utils.like('%[^a]' + run.slice(1) + '%', 'a'.repeat(200) + '\n' + 'a'.repeat(30) + '\n' + 'a'.repeat(38)),
-			false
-		);
-		// The match starts where the second search window does: 4 x 70 - 70 + 1.
-		const straddling = 'a'.repeat(211) + '\n' + 'b'.repeat(69) + 'c'.repeat(500);
-		assert.strictEqual(v2Like('%\n' + run.slice(1) + '%', straddling), true);
-		assert.strictEqual(alasql.utils.like('%\n' + run.slice(1) + '%', straddling), true);
-		// Line breaks fit at 0 and at 35, which overlap; only the second also fits the literals.
-		const twoLines = '%\n' + '_'.repeat(33) + 'x\n' + '_'.repeat(34) + '%';
-		const lines = (x) => '\n' + 'a'.repeat(33) + 'y\n' + 'a'.repeat(33) + x + '\n' + 'a'.repeat(34);
-		assert.strictEqual(v2Like(twoLines, lines('x')), true);
-		assert.strictEqual(v2Like(twoLines, lines('z')), false);
-		// The literals fit at 35, but a line break falls under its last run of _.
-		assert.strictEqual(v2Like(twoLines, lines('x').slice(0, 81) + '\n' + 'a'.repeat(23)), false);
-		assert.strictEqual(alasql.utils.like(twoLines, lines('X')), true);
-		const lineFree = 'a'.repeat(211) + 'b' + 'c'.repeat(69) + 'd'.repeat(500);
-		assert.strictEqual(v2Like('%b' + run.slice(1) + '%', lineFree), true);
-		assert.strictEqual(alasql.utils.like('%b' + run.slice(1) + '%', lineFree), true);
+	it('matches any one code unit with _, in every segment position, on both engines', () => {
+		for (const like of [v2Like, (pattern, value) => alasql.utils.like(pattern, value)]) {
+			for (const terminator of ['\n', '\r', '\u2028', '\u2029']) {
+				assert.strictEqual(like('a_b', `a${terminator}b`), true);
+				assert.strictEqual(like('_%', terminator), true);
+				assert.strictEqual(like('%_', terminator), true);
+				assert.strictEqual(like('%_%', terminator), true);
+			}
+			assert.strictEqual(like('a_b', 'a\r\nb'), false);
+			assert.strictEqual(like('a__b', 'a\r\nb'), true);
+			assert.strictEqual(like('a_b', 'a\ud83d\ude00b'), false);
+			assert.strictEqual(like('a__b', 'a\ud83d\ude00b'), true);
+			assert.strictEqual(like('a_b', 'a\ud83db'), true);
+			// A segment of only `_` matches any units, but needs room for them.
+			assert.strictEqual(like('___', 'ab'), false);
+			assert.strictEqual(like('___', 'a\nb'), true);
+			assert.strictEqual(like('%__%__', 'abc'), false);
+			assert.strictEqual(like('%__%__', 'abcd'), true);
+			assert.strictEqual(like('%__%a', 'aa'), false);
+			assert.strictEqual(like('__%__%__', 'abcde'), false);
+			assert.strictEqual(like('__%__%__', 'abcdef'), true);
+			const run = '_'.repeat(70);
+			assert.strictEqual(like('%a%' + run + '%b', 'xa' + '\n'.repeat(70) + 'b'), true);
+			assert.strictEqual(like('%a%' + run + '%b', 'xa' + '\n'.repeat(69) + 'b'), false);
+			assert.strictEqual(like('%\n' + run + '\n%', 'a\n' + 'b\n'.repeat(35) + '\n'), true);
+			assert.strictEqual(like('%\n' + run + '\n%', 'a\n' + 'b\n'.repeat(35) + 'c'), false);
+		}
+		assert.strictEqual(v2Like('a!_b', 'a\nb', '!'), false);
+		assert.strictEqual(alasql.utils.like('a!_b', 'a\nb', '!'), false);
 	});
 
-	it("keeps a different line terminator or a U+FFFF in the value distinct from the pattern's", () => {
+	it('keeps line terminators and noncharacters in the value distinct from those in the pattern', () => {
 		const run = '_'.repeat(70);
 		const a = 'a'.repeat(70);
 		assert.strictEqual(v2Like('%' + run + '\n%', a + '\r'), false);
@@ -300,6 +281,26 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\uffff' + a), false);
 		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\n' + a), true);
 		assert.strictEqual(alasql.utils.like('%[b\n]' + run + '%', '\r' + a), false);
+		// Past 64 `_`, legacy matches `_` against a placeholder noncharacter, which the value may hold.
+		for (const like of [v2Like, (pattern, value) => alasql.utils.like(pattern, value)]) {
+			assert.strictEqual(like('%a' + run + '%', 'a' + '\uffff'.repeat(70)), true);
+			assert.strictEqual(like('%a' + run + '\uffff%', 'a' + '\ufffe'.repeat(71)), false);
+			assert.strictEqual(like('%a' + run + '\uffff%', 'a' + '\ufffe'.repeat(70) + '\uffff'), true);
+			// A literal in another segment rules a placeholder out as well.
+			assert.strictEqual(like('%\ufffe%a' + run + 'b', '\ufffe' + 'a' + '\uffff'.repeat(70) + 'b'), true);
+			assert.strictEqual(like('%\ufffe%a' + run + '\uffff', '\ufffe' + 'a' + '\ufffe'.repeat(71)), false);
+		}
+		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\ufffe' + '\uffff'.repeat(70)), true);
+		assert.strictEqual(alasql.utils.like('%[\ufffe]%a' + run + 'b', '\ufffe' + 'a' + '\ufdd0'.repeat(70) + 'b'), true);
+		// With every noncharacter a literal, no placeholder is left and `_` is written as any unit.
+		const noncharacters = ['\uffff', '\ufffe'];
+		for (let code = 0xfdd0; code <= 0xfdef; code++) noncharacters.push(String.fromCharCode(code));
+		const all = noncharacters.join('');
+		for (const tail of ['', '\uffff', 'B']) {
+			const value = all + 'a' + all.repeat(3).slice(0, 70) + tail;
+			assert.strictEqual(alasql.utils.like('%' + all + '%a' + run + 'b%', value), tail === 'B');
+			assert.strictEqual(alasql.utils.like('%' + all + '%a' + run + '%', value), true);
+		}
 	});
 
 	it('honors ESCAPE for %, _, the escape itself, and an ordinary character', () => {
@@ -323,14 +324,14 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(compileExpr(likeExpr('12%', undefined, true)).eval({ v: 12345 }), false);
 	});
 
-	it('treats * as a literal and lets % match line terminators, as legacy does', () => {
+	it('treats * as a literal and lets % and _ match line terminators, as legacy does', () => {
 		assert.strictEqual(v2Like('a*', 'a*'), true);
 		assert.strictEqual(v2Like('a*', 'aaa'), false);
 		assert.strictEqual(v2Like('a*', ''), false);
 		assert.strictEqual(v2Like('a%b', 'a\nb'), true);
 		assert.strictEqual(v2Like('a%b', 'a\u2028b'), true);
-		assert.strictEqual(v2Like('a_b', 'a\nb'), false);
-		assert.strictEqual(v2Like('a__b', 'a\r\nb'), false);
+		assert.strictEqual(v2Like('a_b', 'a\nb'), true);
+		assert.strictEqual(v2Like('a__b', 'a\r\nb'), true);
 	});
 
 	it('matches a segment of exactly 10,000 characters between wildcards', () => {
@@ -449,13 +450,13 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.parse(`SELECT id FROM t WHERE ${text}`).statements[0].where.toString(), text);
 	});
 
-	it('keeps alasql semantics: case-insensitive, ESCAPE, classes, and _ excluding line terminators', () => {
+	it('keeps alasql semantics: case-insensitive, ESCAPE and classes; _ matches a line terminator, as in v2', () => {
 		assert.deepStrictEqual(select("c LIKE 't0!%' ESCAPE '!'"), ['t0%', 'T0%']);
 		assert.deepStrictEqual(select("c LIKE 't0%'"), ['t0%', 't0!z', 't0a', 'T0%']);
 		assert.deepStrictEqual(select("c LIKE 't[!_]%'"), ['t_0', 't!x0', 't!_0']);
 		assert.deepStrictEqual(select("c LIKE 't[^!_]%'"), ['tx0', 't0%', 't0!z', 't0a', 'T0%']);
 		assert.deepStrictEqual(select("c LIKE '[s-u]0_'"), ['t0%', 't0a', 'T0%']);
-		assert.strictEqual(alasql.utils.like('a_b', 'a\nb'), false);
+		assert.strictEqual(alasql.utils.like('a_b', 'a\nb'), true);
 		assert.strictEqual(alasql.utils.like('a%b', 'a\nb'), true);
 		assert.strictEqual(alasql.utils.like('ABC', 'abc'), true);
 		assert.strictEqual(alasql.utils.like('é', 'É'), true);
@@ -536,28 +537,77 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		['%' + 'a'.repeat(200) + '_b%', 'a', 10_000],
 		['%' + '_'.repeat(9_999) + 'c%', 'a', 100_000],
 		['%' + 'a'.repeat(9_998) + '_b%', 'a', 100_000],
-		// No 10,000-wide window between line terminators: retrying each start cost value x width (SQA-133).
-		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\n', 1_000_000],
-		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_998) + '\r\n', 1_000_000],
-		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\u2028', 1_000_000],
-		['%' + ('_'.repeat(99) + 'a').repeat(100) + '%', 'a'.repeat(9_999) + '\n', 1_000_000],
+		// When `_` stopped at line terminators, a search retrying every start cost value x width (SQA-133).
+		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', '', true],
+		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_998) + '\r\n', 1_000_000, '', '', true],
+		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\u2028', 1_000_000, '', '', true],
+		['%' + ('_'.repeat(99) + 'a').repeat(100) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', '', true],
 		['%' + '_'.repeat(5_000) + '!_' + '_'.repeat(4_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '!'],
-		['%a%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\n', 1_000_000],
-		['%_%', '\n', 1_000_000],
-		// Units that accept a line terminator: the search must still move each run of _ past one.
-		['%' + '\n'.repeat(5_000) + '_'.repeat(5_000) + '%', '\n', 300_000],
-		['%' + '_'.repeat(5_000) + '[^a]' + '_'.repeat(4_999) + '%', 'a'.repeat(4_998) + '\n', 1_000_000, '', 'legacy'],
-		['%[^\n]' + '_'.repeat(9_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', 'legacy'],
+		['%a%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', '', true],
+		['%_%', '\n', 1_000_000, '', '', true],
+		['%\n' + '_'.repeat(9_998) + '\n%', 'a'.repeat(9_998) + '\n', 1_000_000, '', '', true],
+		['%\n' + '_'.repeat(9_998) + '\n%', 'a'.repeat(9_999) + '\n', 1_000_000],
+		['%' + '\n'.repeat(5_000) + '_'.repeat(5_000) + '%', '\n', 300_000, '', '', true],
+		[
+			'%' + '_'.repeat(5_000) + '[^a]' + '_'.repeat(4_999) + '%',
+			'a'.repeat(4_998) + '\n',
+			1_000_000,
+			'',
+			'legacy',
+			true,
+		],
+		['%[^\n]' + '_'.repeat(9_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', 'legacy', true],
 		['%[b\n-]' + '_'.repeat(9_999) + '%', 'c', 1_000_000, '', 'legacy'],
-		// A line feed under `_` one character in, or at the very end, at nearly every start.
-		['%' + '_\na'.repeat(3_333) + '%', '\n\na', 1_000_000],
-		['%' + 'b\n'.repeat(4_999) + 'b_%', 'b\n', 1_000_000],
-		['%' + 'b[\n]'.repeat(4_999) + 'b_%', 'b\n', 1_000_000, '', 'legacy'],
+		['%' + '_\na'.repeat(3_333) + '%', '\n\na', 1_000_000, '', '', true],
+		['%' + 'b\n'.repeat(4_999) + 'b_%', 'b\n', 1_000_000, '', '', true],
+		['%' + 'b[\n]'.repeat(4_999) + 'b_%', 'b\n', 1_000_000, '', 'legacy', true],
+		// No unit matches a line terminator: only the stretches between them are searched.
+		['%' + '[a-z]'.repeat(10_000) + '%', 'a'.repeat(4_999) + '\n', 1_000_000, '', 'legacy'],
 		// Every segment fits where it starts, in a value holding the placeholder.
 		[('%\n' + '_'.repeat(65)).repeat(1_000) + '%', '\n' + 'a'.repeat(64) + '\uffff', 1_000_000, '', '', true],
-		// Every segment fits where it starts: finding where the line ends must not cost the value each time.
-		[('%' + '_'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
+		[('%a' + '_'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
+		// Finding where the line ends must not cost the value for each segment.
+		[('%' + 'a'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
 	];
+
+	it('matches a 10,000-wide middle segment over 20 values of 100,000 characters with line feeds, under 2 s', () => {
+		const values = Array.from({ length: 20 }, (_, i) => {
+			const unit = 'a'.repeat([4_999, 9_998, 9_999, 3_332][i % 4]) + '\n';
+			return unit.repeat(Math.ceil(100_000 / unit.length)).slice(0, 100_000);
+		});
+		// [pattern, [offset, character] pairs the rest of the segment leaves to `_`]
+		const CASES = [
+			['%' + '_'.repeat(10_000) + '%', []],
+			[
+				'%\n' + '_'.repeat(9_998) + '\n%',
+				[
+					[0, '\n'],
+					[9_999, '\n'],
+				],
+			],
+		];
+		const matchesAt = (value, start, literals) => literals.every(([offset, char]) => value[start + offset] === char);
+		const reference = (value, literals) => {
+			for (let start = 0; start + 10_000 <= value.length; start++) if (matchesAt(value, start, literals)) return true;
+			return false;
+		};
+		const expected = CASES.map(([, literals]) => values.map((value) => reference(value, literals)));
+		assert.deepStrictEqual(new Set(expected[1]), new Set([true, false]));
+		const start = performance.now();
+		for (const [i, [pattern]] of CASES.entries()) {
+			const v2 = compileExpr(likeExpr(pattern));
+			assert.deepStrictEqual(
+				values.map((v) => v2.eval({ v })),
+				expected[i]
+			);
+			assert.deepStrictEqual(
+				values.map((value) => alasql.utils.like(pattern, value)),
+				expected[i]
+			);
+		}
+		const ms = performance.now() - start;
+		assert.ok(ms < 2_000, `took ${ms.toFixed(0)} ms`);
+	});
 
 	for (const engine of ['v2', 'legacy']) {
 		for (const [pattern, valueUnit, valueLength, escape, only, expected = false] of CASES) {
