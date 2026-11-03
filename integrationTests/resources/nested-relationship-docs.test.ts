@@ -1,8 +1,4 @@
-/**
- * Executes the request/response examples that docs/reference/rest/querying.md and
- * docs/reference/resources/resource-api.md publish; unitTests/docs/nestedRelationshipExamples.test.mjs
- * keeps that Markdown equal to this fixture.
- */
+// unitTests/docs/nestedRelationshipExamples.test.mjs holds the published Markdown equal to this fixture.
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';

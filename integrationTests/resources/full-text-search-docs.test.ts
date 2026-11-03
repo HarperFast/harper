@@ -1,7 +1,4 @@
-/**
- * Executes the native full-text schema, resource, JavaScript, REST, and Operations API examples published in
- * docs/reference/full-text-search/. This is the executable contract for those pages.
- */
+// The examples published in docs/reference/full-text-search/; change both together.
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { resolve } from 'node:path';
