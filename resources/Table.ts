@@ -8964,7 +8964,7 @@ export function makeTable(options): TableResourceClass {
 						return SKIP;
 					}
 					if (
-						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
+						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // reload from source if invalidated or evicted
 						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
 						if (context.onlyIfCached) {
