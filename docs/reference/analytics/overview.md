@@ -316,6 +316,43 @@ Harper Pro's CPU profiler (see [`analytics.profiling`](#analyticsprofiling)) sam
 
 A `hdb_raw_analytics` entry whose `metrics` include `profiler-sampling` is one whose `utilization` sample overlapped sampling. Its `total` is the milliseconds sampled since that worker's previous entry, and its `count` is 1. In `hdb_analytics`, the period's `total` is summed over the node's workers, and `count` is the number of entries that overlapped sampling. When using `utilization` as a load signal, set the flagged raw entries aside. An aggregate `utilization` row already includes them, so discard a period whose `profiler-sampling` row has a `count` above 0, or set `analytics.profiling: false`.
 
+## Full-text Analytics
+
+<VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" />
+
+The optional `fulltext` metric reports native search/indexing operations, queues and phases, wrapper logical batches and preparation failures, and cached reader observations. [Configure `analytics.fullText`](../configuration/options.md#analyticsfulltext) to enable it. The omitted block creates no polling timer or full-text export; native accounting still accumulates. Collection uses already-open handles and never opens a cold index.
+
+The implied cadence is 60 seconds per handle, staggered across writers and readers. Rows use the existing raw/aggregate analytics pipeline, retention and protected [analytics operations](./operations.md). Synchronous snapshots and export have measurable cost; qualify your index count and cadence before enabling them broadly. No production overhead bound is implied.
+
+Read the metric with:
+
+```json
+{
+	"operation": "get_analytics",
+	"metric": "fulltext"
+}
+```
+
+Rows are flat JSON scalars. `path` identifies the database/table/index, or `index:<sha256>` for labels longer than 256 bytes; `method` is `writer` or `reader`. Aggregate rows retain the originating worker `thread`, a bounded-lifetime `series` reset marker and actual `sampledAt` time. Rollups select the newest cumulative row per worker/index/role instead of averaging its counters.
+
+| Field example                                   | Interpretation                                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `native_operations_search_completed`            | Cumulative completed native search count.                                             |
+| `native_operations_search_queue_sumNanoseconds` | Cumulative native search queue time.                                                  |
+| `logicalBatches_completed`                      | Cumulative completed wrapper batches; one batch can contain multiple native frames.   |
+| `native_queues_ordinarySearch_commands`         | Current observed queue occupancy, not a cumulative count.                             |
+| `native_reader_snapshotBytes`                   | Cached bytes for the observed reader snapshot, not directory size or resident memory. |
+
+Exact bigint counters, nanoseconds, bytes, histogram counts and finite bounds are decimal strings. Decode counters with `BigInt`. Calculate a rate only between complete, available observations of the same `series`, using their exact counter difference and actual `sampledAt` elapsed time. Check integer safety before converting a difference to a JavaScript number. A new series, unavailable sample or incomplete coverage requires a new baseline; a missing interval is not zero activity.
+
+Availability, pending and error flags distinguish absent observations from zero. `observationAgeMilliseconds` identifies retained observations. `complete: false` flags lost terminal coverage; `droppedRows` counts pending-row overflow. Pending rows coalesce in a 128-row buffer, dropping the oldest on overflow. Null can mean unavailable data, an empty queue's oldest age, or the unbounded final histogram bucket. Histogram buckets are noncumulative; Harper does not invent percentiles.
+
+Reader reopen and overlapping retired readers carry counters forward while their logical series remains alive. Reader document/segment/generation gauges use the newest eligible observation rather than summing duplicate snapshots. Queue occupancy sums live handles of the same role; oldest age uses their maximum. Shared queue capacities overlap, so do not add ordinary/expensive capacities or interpret them as a process-wide budget.
+
+Optional histogram recording and reader-byte observation default to off. Byte values can remain pending until a successful publication/reload; enabling observation creates no native publication. Turning operator collection off stops its timer/export demand and disables options no remaining internal consumer needs on live handles. Disabling Harper analytics also removes its full-text operator demand. A synchronous observation already executing completes, and a closing handle keeps its last options until close settles. Internal consumers are implementation hooks, not a public subscription API; consumer-only collection does not enable persistent analytics.
+
+Do not sum wrapper batches with native frames, overlapping legacy/native timing spans, or reader document counts across workers. Generation IDs are not source-log positions or freshness timestamps. Metrics do not replace [full-text readiness and catch-up](../full-text-search/configuration.md). Detailed automatic merge statistics, native cancellation and per-index RSS are unsupported. Query text, terms, record IDs, users, raw cursors, filesystem paths and raw exception messages are not exported labels.
+
 ## Custom Metrics
 
 Applications can record custom metrics using the `server.recordAnalytics()` API. See [HTTP API](../http/api.md) for details.
