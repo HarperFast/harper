@@ -87,6 +87,9 @@ function warnForStaleRoles(
 async function handleFile(rolesContent, ensureRoleFn: (role: any) => Promise<unknown>) {
 	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true } as any).toJSON();
 	for (const [roleName, role] of Object.entries(rolesToDefine ?? {}) as [string, any][]) {
+		if (role === null || typeof role !== 'object' || Array.isArray(role)) {
+			throw new ClientError(`Role '${roleName}' must be an object`);
+		}
 		if (Object.hasOwn(role.permission ?? role, 'system')) {
 			throw new ClientError(`Role '${roleName}': ${HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED}`);
 		}

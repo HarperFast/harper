@@ -59,6 +59,22 @@ describe('roles entry events', () => {
 		});
 	}
 
+	it('names a null role definition before applying other roles', async () => {
+		const harness = testScope();
+		const applied = [];
+		handleApplication(harness.scope, async (role) => applied.push(role.role));
+		await assert.rejects(
+			harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from('first:\n  super_user: false\ninvalid:\n'),
+			}),
+			(error) => error.statusCode === 400 && /Role 'invalid' must be an object/.test(error.message)
+		);
+		assert.deepStrictEqual(applied, []);
+	});
+
 	it('ignores directory and unlink events without reading file contents', async () => {
 		const harness = testScope();
 		handleApplication(harness.scope, async () => {});

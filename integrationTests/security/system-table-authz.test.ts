@@ -1,11 +1,3 @@
-/**
- * harper#2120 — a system table created at runtime by its owning component must be addressable
- * through the operations API, not reported as nonexistent.
- *
- * `hdb_status` (server/status/index.ts) is created lazily and needs no fixture, so it is the probe:
- * on the unfixed build `describe_database` lists it in the same session where `describe_table` and
- * `search_by_hash` answer "Table 'system.hdb_status' does not exist".
- */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { readFile } from 'node:fs/promises';
@@ -27,8 +19,6 @@ const LEGACY_READER = { username: 'legacy_system_reader', password: 'Legacy-pw-2
 const SUPER_READER = { username: 'system_table_super_user', password: 'Super-pw-2120!' };
 const READER = { username: 'system_table_reader', password: 'Reader-pw-2120!' };
 
-// 403 specifically, not "401 or 403": accepting 401 would let a broken credential or a regression
-// in user lookup satisfy every denial assertion here without authorization ever being consulted.
 const FORBIDDEN = 403;
 
 suite(
@@ -39,9 +29,6 @@ suite(
 		let readerHeaders: Record<string, string>;
 
 		before(async () => {
-			// Every test below assumes COMPONENT_TABLE is created at runtime rather than at install.
-			// If it is ever added to systemSchema.json they would all keep passing while exercising
-			// the seeded path, leaving the registry fallback with no end-to-end coverage.
 			const systemSchema = JSON.parse(
 				await readFile(resolve(import.meta.dirname, '../../json/systemSchema.json'), 'utf8')
 			);
@@ -220,7 +207,6 @@ suite(
 		});
 
 		test('search_by_hash reaches the component-created table for a super_user', async () => {
-			// A miss is the point: the request must be answered, not refused as a nonexistent table.
 			const response = await client
 				.req()
 				.send({
@@ -287,9 +273,6 @@ suite(
 		});
 
 		test('permissions survive forwarding to a worker thread', async () => {
-			// The regression this guards shipped green through every unit test: a Proxy here cloned
-			// fine in-process but failed DataCloneError on this path, breaking every forwarded
-			// component operation.
 			const response = await client.req().send({ operation: 'system_authz_probe' }).expect(200);
 			strictEqual(response.body.executedOnMainThread, false, 'the probe must run off the main thread');
 			ok(response.body.sawSystemTables > 0, 'the system permission map must survive the clone');

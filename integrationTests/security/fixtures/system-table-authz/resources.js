@@ -1,8 +1,3 @@
-/**
- * A component operation runs on a worker thread, so invoking it forwards the whole request —
- * including `hdb_user.role.permission` — through `postMessage`, which structured-clones it. That is
- * the path a `Proxy`-backed system permission map broke with `DataCloneError` (harper#2120).
- */
 import { isMainThread } from 'node:worker_threads';
 
 server.registerOperation({
