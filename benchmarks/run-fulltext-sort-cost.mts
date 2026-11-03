@@ -12,6 +12,15 @@ if (options.help) {
 mkdirSync(options.output, { mode: 0o700 });
 const repository = resolve(import.meta.dirname, '..');
 const reportPath = resolve(options.output, 'report.json');
+const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim();
+const harnessSha256 = Object.fromEntries(
+	['fulltext-sort-cost.cjs', 'run-fulltext-sort-cost.mts', 'fulltext-options.mts'].map((name) => [
+		name,
+		createHash('sha256')
+			.update(readFileSync(resolve(import.meta.dirname, name)))
+			.digest('hex'),
+	])
+);
 const child = spawnSync(
 	process.execPath,
 	[resolve(repository, 'node_modules/mocha/bin/mocha.js'), 'benchmarks/fulltext-sort-cost.cjs'],
@@ -38,15 +47,8 @@ assert.strictEqual(
 );
 const report = JSON.parse(readFileSync(reportPath, 'utf8'));
 report.options = options;
-report.commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim();
-report.harnessSha256 = Object.fromEntries(
-	['fulltext-sort-cost.cjs', 'run-fulltext-sort-cost.mts', 'fulltext-options.mts'].map((name) => [
-		name,
-		createHash('sha256')
-			.update(readFileSync(resolve(import.meta.dirname, name)))
-			.digest('hex'),
-	])
-);
+report.commit = commit;
+report.harnessSha256 = harnessSha256;
 writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
 for (const cell of report.nativeQueryCases)
 	console.log(

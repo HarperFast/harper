@@ -24,9 +24,17 @@ assert(Number.isInteger(samples) && samples >= 1 && samples <= 1000);
 const report = {
 	node: process.version,
 	cpu: os.cpus()[0].model,
-	compiledTableSha256: createHash('sha256')
-		.update(fs.readFileSync(path.join(__dirname, '../dist/resources/Table.js')))
-		.digest('hex'),
+	implementationSha256: Object.fromEntries(
+		['resources/Table', 'resources/indexes/fullTextQueryIndex', 'resources/indexes/fullTextQueryProtocol'].map(
+			(name) => {
+				const filename = require.resolve(`#src/${name}`);
+				return [
+					path.relative(path.resolve(__dirname, '..'), filename),
+					createHash('sha256').update(fs.readFileSync(filename)).digest('hex'),
+				];
+			}
+		)
+	),
 };
 describe('full-text native query cost', () => {
 	before(() => setupTestDBPath());

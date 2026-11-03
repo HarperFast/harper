@@ -2,7 +2,7 @@
 
 ## Run
 
-Use RocksDB and the installed native fulltext package. The runner isolates each cell in a new process and test database; it does not start an HTTP server.
+Run `npm run build` first. Use RocksDB and the installed native fulltext package. The default module resolution measures the built `dist` implementation, matching the HTTP and cost runners. The runner isolates each cell in a new process and test database; it does not start an HTTP server.
 
 ```sh
 node benchmarks/run-fulltext-qualification.mts

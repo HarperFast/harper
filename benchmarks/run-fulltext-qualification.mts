@@ -31,11 +31,7 @@ for (const cell of selected) {
 		output = path.join(outputDirectory, `${name}.json`);
 	const child = spawnSync(
 		process.execPath,
-		[
-			'--conditions=typestrip',
-			path.join(repository, 'node_modules/mocha/bin/mocha.js'),
-			'benchmarks/fulltext-qualification.cjs',
-		],
+		[path.join(repository, 'node_modules/mocha/bin/mocha.js'), 'benchmarks/fulltext-qualification.cjs'],
 		{
 			cwd: repository,
 			env: cellEnvironment(options, { ...cell, output }),
