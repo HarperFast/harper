@@ -1,9 +1,6 @@
 name: Docs
 
-# Builds the documentation site (HarperFast/documentation) with this PR's docs/ in place of
-# main's, so a broken link, import or MDX error fails the PR instead of the next site deploy.
-# The site assembles docs/ from harper and harper-pro, and redeploys by itself after docs/
-# changes on main.
+# Path-filtered, so it must not be a required check (it would stay pending on other PRs).
 
 on:
   pull_request:
@@ -38,6 +35,8 @@ jobs:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: site/package-lock.json
+      - name: Require a site that assembles docs/ from this checkout
+        run: test -f site/scripts/assemble-content.mjs || { echo "::error::HarperFast/documentation main does not assemble docs/ yet, so this build would not read it"; exit 1; }
       - name: Install site dependencies
         working-directory: site
         run: npm ci
