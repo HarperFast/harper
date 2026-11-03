@@ -66,7 +66,7 @@ describe('startTime replay handoff to live delivery', () => {
 					1,
 					`the late lower-key commit was not delivered exactly once: ${JSON.stringify(events.map((e) => e.id))}`
 				);
-				assert.equal(countBy(events, 'newer'), 1, 'the replayed write was delivered again live');
+				assert.equal(countBy(events, 'newer'), 1, 'the replayed write was not delivered exactly once');
 				assert.equal(countBy(events, 'sentinel'), 1);
 			} finally {
 				older.release();
