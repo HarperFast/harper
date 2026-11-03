@@ -162,25 +162,32 @@ export function projectAttributesToProperties(attributes: AttributeLike[]): Reco
 
 const MAX_SCHEMA_DEPTH = 100;
 
-export class SchemaTraversalError extends Error {}
+class SchemaTraversalError extends Error {}
 
-export function jsonValueKey(value: unknown, ancestors = new WeakSet<object>(), depth = 0): string {
-	if (depth > MAX_SCHEMA_DEPTH) throw new RangeError(`Schema JSON value exceeds ${MAX_SCHEMA_DEPTH} levels`);
+const programmaticSchemas = new WeakSet<AttributeLike[]>();
+
+export function isProgrammaticSchema(attributes: AttributeLike[]): boolean {
+	return programmaticSchemas.has(attributes);
+}
+
+export function jsonValueKey(value: unknown, ancestors?: WeakSet<object>, depth = 0, path = 'Schema value'): string {
+	if (depth > MAX_SCHEMA_DEPTH) throw new RangeError(`${path} exceeds ${MAX_SCHEMA_DEPTH} JSON levels`);
 	if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
 	if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
-	if (typeof value !== 'object' || value === null) throw new TypeError('Schema value must be JSON-serializable');
-	if (ancestors.has(value)) throw new TypeError('Schema JSON value contains a cycle');
+	if (typeof value !== 'object' || value === null) throw new TypeError(`${path} must be JSON-serializable`);
+	ancestors ??= new WeakSet<object>();
+	if (ancestors.has(value)) throw new TypeError(`${path} contains a cycle`);
 	const prototype = Object.getPrototypeOf(value);
 	if (!Array.isArray(value) && prototype !== null && Object.getPrototypeOf(prototype) !== null) {
-		throw new TypeError('Schema value must be JSON-serializable using plain objects');
+		throw new TypeError(`${path} must be JSON-serializable using plain objects`);
 	}
 	ancestors.add(value);
 	try {
 		if (Array.isArray(value))
-			return `[${Array.from(value, (item) => jsonValueKey(item, ancestors, depth + 1)).join(',')}]`;
+			return `[${Array.from(value, (item) => jsonValueKey(item, ancestors, depth + 1, path)).join(',')}]`;
 		return `{${Object.keys(value)
 			.sort()
-			.map((key) => `${JSON.stringify(key)}:${jsonValueKey(value[key], ancestors, depth + 1)}`)
+			.map((key) => `${JSON.stringify(key)}:${jsonValueKey(value[key], ancestors, depth + 1, path)}`)
 			.join(',')}}`;
 	} finally {
 		ancestors.delete(value);
@@ -238,12 +245,12 @@ function fragmentToAttribute(
 			}
 			normalizedEnum = new Map();
 			for (const value of fragment.enum) {
-				const key = jsonValueKey(value);
+				const key = jsonValueKey(value, undefined, 0, `Schema property "${name}.enum"`);
 				if (!normalizedEnum.has(key)) normalizedEnum.set(key, JSON.parse(key));
 			}
 		}
 		if (fragment.const !== undefined) {
-			const key = jsonValueKey(fragment.const);
+			const key = jsonValueKey(fragment.const, undefined, 0, `Schema property "${name}.const"`);
 			if (normalizedEnum && !normalizedEnum.has(key)) {
 				throw new TypeError(`Schema property "${name}.const" must be included in its enum`);
 			}
@@ -292,7 +299,11 @@ export function projectPropertiesToAttributes(properties: Record<string, JsonSch
 		throw new TypeError('Resource properties must be an object');
 	}
 	const ancestors = new WeakSet<object>();
-	return Object.entries(properties).map(([name, fragment]) => fragmentToAttribute(name, fragment, ancestors, 1));
+	const attributes = Object.entries(properties).map(([name, fragment]) =>
+		fragmentToAttribute(name, fragment, ancestors, 1)
+	);
+	programmaticSchemas.add(attributes);
+	return attributes;
 }
 
 export function filterAttributeTree(
@@ -376,6 +387,7 @@ export interface SchemaEmitOptions {
 	 * schema, but the key you address a record by is still required to call the tool.
 	 */
 	ignoreHidden?: boolean;
+	valueConstraints?: boolean;
 }
 
 /**
@@ -555,9 +567,9 @@ function emitAttributeSchema(
 		// default — an author writing `{ type: 'Date', format: 'date-time' }` means `date-time`, not the
 		// Harper type name the mapper stamps on.
 		if (attr.description) fragment.description = attr.description;
-		if (attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;
+		if (options.valueConstraints !== false && attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;
 		if (attr.format) fragment.format = attr.format;
-		if (attr.const !== undefined) {
+		if (options.valueConstraints !== false && attr.const !== undefined) {
 			// `const` is JSON Schema draft-06. OpenAPI 3.0.3's Schema Object is the draft-04 subset, so it
 			// has no such keyword — emit the equivalent single-value `enum` for that dialect. MCP speaks
 			// current JSON Schema and takes `const` directly.
@@ -619,9 +631,8 @@ export function resolveAttributes(source?: {
 	if (source?.properties !== undefined) {
 		const required = validateTopLevelRequired(source.required);
 		const requiredNames = new Set(required);
-		const attributes = projectPropertiesToAttributes(source.properties).map((attr) =>
-			requiredNames.has(attr.name) ? { ...attr, requiredOnSchema: true } : attr
-		);
+		const attributes = projectPropertiesToAttributes(source.properties);
+		for (const attr of attributes) if (requiredNames.has(attr.name)) attr.requiredOnSchema = true;
 		for (const name of required) {
 			if (!Object.hasOwn(source.properties, name)) attributes.push({ name, requiredOnSchema: true });
 		}

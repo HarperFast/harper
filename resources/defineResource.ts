@@ -340,14 +340,20 @@ function validateValue(value: any, fragment: JsonSchemaFragment, path: string, i
 		issues.push({ path, code: 'type', message: `${path} must be of type ${types.join(' | ')}` });
 		return value;
 	}
-	if (fragment.enum) {
+	if (fragment.enum && !fragment.enum.includes(value)) {
 		let matches = false;
-		try {
-			const key = jsonValueKey(value);
-			matches = fragment.enum.some((member) => jsonValueKey(member) === key);
-		} catch {}
+		if (value && typeof value === 'object') {
+			try {
+				const key = jsonValueKey(value);
+				matches = fragment.enum.some((member) => member && typeof member === 'object' && jsonValueKey(member) === key);
+			} catch {}
+		}
 		if (!matches) {
-			issues.push({ path, code: 'enum', message: `${path} must be one of: ${fragment.enum.join(', ')}` });
+			issues.push({
+				path,
+				code: 'enum',
+				message: `${path} must be one of: ${fragment.enum.map((member) => JSON.stringify(member)).join(', ')}`,
+			});
 			return value;
 		}
 	}

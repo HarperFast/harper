@@ -84,7 +84,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static preconditions?: boolean;
 	static description?: string;
 	static properties?: { [name: string]: JsonSchemaFragment };
-	/** Property names guaranteed to be present, including names without a declared schema; independent of nullability. */
+	/** For programmatic static properties: names guaranteed to be present, including undeclared names; independent of nullability. */
 	static required?: readonly string[];
 	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
 	static mcp?: { annotations?: { [verb: string]: { [key: string]: unknown } } };

@@ -77,6 +77,7 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('returns a record satisfying the MCP output schema with an undeclared required field', async () => {
+		await mcpClient.listTools();
 		const result = await mcpClient.callTool({ name: 'get_OrderSummary', arguments: { id: 'o1' } });
 		assert.equal(result.isError, undefined);
 		assert.equal(result.structuredContent.extension, true);

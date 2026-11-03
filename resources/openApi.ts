@@ -7,6 +7,7 @@ import {
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
+	isProgrammaticSchema,
 	projectPropertiesToAttributes,
 	resolveAttributes,
 	resolveDeclaredType,
@@ -29,9 +30,10 @@ function warnInvalidResourceSchema(resource: unknown, path: string, error: unkno
  * OpenAPI-specific (`format` carries the Harper type name, which MCP has no equivalent for).
  * Returns `undefined` for a `@hidden` attribute — callers skip it.
  */
-function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | undefined {
+function attributeToOpenApiSchema(attr: AttributeLike, valueConstraints = true): JsonSchemaFragment | undefined {
 	return attributeToSchema(attr, {
 		dialect: 'openapi-3.0.3',
+		valueConstraints,
 		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name),
 	});
 }
@@ -198,7 +200,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 							: { $ref: SCHEMA_COMP_REF + def.type };
 				} else {
 					try {
-						props[name] = attributeToOpenApiSchema(attr) ?? {};
+						props[name] = attributeToOpenApiSchema(attr, isProgrammaticSchema(attributes)) ?? {};
 					} catch (error) {
 						warnInvalidResourceSchema(resource.Resource, resource.path, error);
 						continue resourceLoop;

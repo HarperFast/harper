@@ -5,7 +5,7 @@ const { deriveCreateSchema } = require('#src/components/mcp/tools/schemas/derive
 const emit = (attribute) =>
 	attributeToSchema(attribute, { dialect: 'json-schema', mapPrimitive: (type) => ({ type }) });
 
-describe('PR 1921 schema feedback regressions', () => {
+describe('programmatic schema projection invariants', () => {
 	before(() => require('../testUtils').setupTestDBPath());
 	it('refreshes projections after in-place additions, deletions, and nested edits', () => {
 		const source = { properties: { profile: { type: 'object', properties: { name: { type: 'string' } } } } };
@@ -108,22 +108,60 @@ describe('PR 1921 schema feedback regressions', () => {
 		assert.throws(() => resolveAttributes({ properties: { value: { type: Array(1) } } }), /only strings/);
 	});
 
+	it('does not enforce advisory table enums in response schemas', async () => {
+		const { defineTable, types } = require('#src/resources/defineTable');
+		const Table = defineTable(
+			'AdvisoryEnum',
+			{ id: types.id.primaryKey, status: types.enum(['open', 'closed']) },
+			{ database: 'schemaProjection' }
+		);
+		await Table.put({ id: 'pending', status: 'pending' });
+		const { deriveGetOutputSchema } = require('#src/components/mcp/tools/schemas/derive');
+		const schema = deriveGetOutputSchema(resolveAttributes(Table));
+		assert.equal(schema.properties.status.enum, undefined);
+		const map = new Map([['AdvisoryEnum', { path: 'AdvisoryEnum', Resource: Table }]]);
+		map.allTypes = new Map();
+		const api = require('#src/resources/openApi').generateJsonApi(map, 'https://harper.fast');
+		assert.equal(api.components.schemas.AdvisoryEnum.properties.status.enum, undefined);
+		const path = require('node:path');
+		const provider = path.join(
+			path.dirname(require.resolve('@modelcontextprotocol/sdk/types.js')),
+			'validation',
+			'ajv-provider.js'
+		);
+		const { AjvJsonSchemaValidator } = require(provider);
+		const result = JSON.parse(JSON.stringify(await Table.get('pending')));
+		assert.equal(new AjvJsonSchemaValidator().getValidator(schema)(result).valid, true);
+	});
+
+	it('names the malformed value constraint in schema diagnostics', () => {
+		assert.throws(
+			() => resolveAttributes({ properties: { createdAt: { const: new Date(0) } } }),
+			/createdAt.const.*JSON-serializable/
+		);
+		assert.throws(
+			() => resolveAttributes({ properties: { state: { enum: [new Map()] } } }),
+			/state.enum.*JSON-serializable/
+		);
+	});
+
 	it('uses the non-enumerable target coordinates produced by the GraphQL parser', async () => {
 		await require('#src/resources/graphql').loadGQLSchema(`
-			type FeedbackAuthor @table {
+			type FeedbackAuthor @table(database: "schemaProjection") {
 				id: ID! @primaryKey
 				books: [FeedbackBook] @relationship(to: "authorId")
 			}
-			type FeedbackBook @table {
+			type FeedbackBook @table(database: "schemaProjection") {
 				id: ID! @primaryKey
 				authorId: ID
 				author: FeedbackAuthor @relationship(from: "authorId")
 			}
 		`);
-		const author = tables.FeedbackBook.attributes.find((attribute) => attribute.name === 'author');
-		const books = tables.FeedbackAuthor.attributes.find((attribute) => attribute.name === 'books');
+		const fixture = require('#src/resources/databases').databases.schemaProjection;
+		const author = fixture.FeedbackBook.attributes.find((attribute) => attribute.name === 'author');
+		const books = fixture.FeedbackAuthor.attributes.find((attribute) => attribute.name === 'books');
 		assert.equal(Object.prototype.propertyIsEnumerable.call(author, 'relationshipReference'), false);
-		assert.equal(emit(author).description, 'Reference to data.FeedbackAuthor.');
-		assert.equal(emit(books).description, 'Reference to data.FeedbackBook.');
+		assert.equal(emit(author).description, 'Reference to schemaProjection.FeedbackAuthor.');
+		assert.equal(emit(books).description, 'Reference to schemaProjection.FeedbackBook.');
 	});
 });

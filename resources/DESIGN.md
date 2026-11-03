@@ -91,9 +91,9 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## Typed, discoverable resources
 
-**Runtime metadata is values; types derive from it**, since type stripping erases types (harper#1503). `attributeToFragment` is the one IR for validation, OpenAPI and MCP. Contract types narrow `RequestTarget` only because each declared verb validates its input before dispatch (`ValidationError`). `compileVerb` alone decides `bodyRequired` (`defineResource.test.js`).
+Runtime values carry the schema through type stripping (harper#1503). `attributeToSchema` emits MCP/OpenAPI; contract verbs validate before dispatch (`ValidationError`). `compileVerb` sets `bodyRequired` (`defineResource.test.js`).
 
-Programmatic schema projections are live per read; MCP tools retain their registration snapshot. Required-name, JSON enum and relationship invariants are pinned by `schemaFeedback.test.js`.
+Programmatic projections are live per read; MCP snapshots rebuild on registration. Invariants: `schemaProjectionInvariants.test.js`.
 
 ## Conventions
 

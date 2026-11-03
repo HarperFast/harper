@@ -14,6 +14,7 @@
 import {
 	JSON_SCHEMA_SCALAR_TYPES,
 	attributeToSchema,
+	isProgrammaticSchema,
 	resolveDeclaredType,
 	type AttributeLike,
 	type JsonSchemaFragment,
@@ -104,9 +105,10 @@ function harperTypeToJsonSchema(
  *
  * Returns `undefined` for a `hidden` attribute — callers skip it.
  */
-function attributeToProperty(attr: HarperAttribute): object | undefined {
+function attributeToProperty(attr: HarperAttribute, valueConstraints = true): object | undefined {
 	return attributeToSchema(attr as AttributeLike, {
 		dialect: 'json-schema',
+		valueConstraints,
 		mapPrimitive: (type, a) =>
 			harperTypeToJsonSchema(
 				type,
@@ -341,7 +343,7 @@ function deriveRecordSchema(
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (!attributeVisible(attr, permissions, 'read')) continue;
-		const schema = attributeToProperty(attr);
+		const schema = attributeToProperty(attr, isProgrammaticSchema(attributes));
 		if (!schema) continue;
 		properties[attr.name] = schema;
 		const requiredOnOutput =
