@@ -25,13 +25,12 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	let fsWriteFileSyncStub;
 	let fsRenameSyncStub;
 	let loggerStub;
-	let YAMLStub;
 
 	before(function () {
 		// Stub the dependencies on their shared module objects. configUtils calls
 		// harperConfigEnvVars.prepareRuntimeEnvConfig / .hasPersistedEnvConfigState,
-		// fs.writeFileSync / .renameSync, the logger methods, and YAML.parse/stringify
-		// via these same cached modules, so stubbing here intercepts those calls.
+		// fs.writeFileSync / .renameSync and the logger methods via these same cached
+		// modules, so stubbing here intercepts those calls.
 		prepareRuntimeEnvConfigStub = sinon.stub(harperConfigEnvVars, 'prepareRuntimeEnvConfig');
 		hasPersistedEnvConfigStateStub = sinon.stub(harperConfigEnvVars, 'hasPersistedEnvConfigState');
 		fsWriteFileSyncStub = sinon.stub(fs, 'writeFileSync');
@@ -40,12 +39,6 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 			debug: sinon.stub(loggerObj, 'debug'),
 			warn: sinon.stub(loggerObj, 'warn'),
 			error: sinon.stub(loggerObj, 'error'),
-		};
-
-		// Create default YAML stub
-		YAMLStub = {
-			parseDocument: sinon.stub(YAML, 'parseDocument').returns({ errors: [] }),
-			stringify: sinon.stub(YAML, 'stringify').returns('yaml: content'),
 		};
 	});
 
@@ -69,22 +62,8 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		loggerStub.warn.reset();
 		loggerStub.error.reset();
 
-		// Reset YAML stub to default (no errors)
-		YAMLStub.parseDocument.reset();
-		YAMLStub.parseDocument.returns({ errors: [] });
-		YAMLStub.stringify.reset();
-		YAMLStub.stringify.returns('yaml: content');
-
-		// Create mock config doc
-		mockConfigDoc = {
-			getIn: sinon.stub(),
-			toJSON: sinon.stub(),
-			errors: [],
-		};
-
-		// Default stub returns
-		mockConfigDoc.getIn.withArgs(['rootPath']).returns('/test/root');
-		mockConfigDoc.toJSON.returns({ http: { port: 9925 } });
+		// A real document: the merged config is synced into it in place so comments survive
+		mockConfigDoc = YAML.parseDocument('# keep me\nrootPath: /test/root\nhttp:\n  port: 9925 # inline\n');
 	});
 
 	after(function () {
@@ -158,7 +137,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 	it('should warn and skip when rootPath not found', function () {
 		process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-		mockConfigDoc.getIn.withArgs(['rootPath']).returns(undefined);
+		mockConfigDoc.deleteIn(['rootPath']);
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
@@ -193,8 +172,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	it('should throw error if config doc has errors', function () {
 		process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
 
-		// Override YAML stub to return a doc with errors for this test
-		YAMLStub.parseDocument.returns({ errors: ['Parse error'] });
+		mockConfigDoc.errors = ['Parse error'];
 
 		assert.throws(
 			() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'),
@@ -260,31 +238,23 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 			delete process.env.HARPER_DEFAULT_CONFIG;
 		});
 
-		it('should log error and rethrow when YAML.stringify() fails', function () {
-			// Could happen with circular references or objects that don't serialize well
+		it('should sync the merged config into the document without losing comments', function () {
 			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			YAMLStub.stringify.throws(new Error('Cannot stringify circular reference'));
+			prepareRuntimeEnvConfigStub.callsFake((configObj) => {
+				configObj.http.port = 9999;
+				return {
+					saveState: saveEnvConfigStateStub,
+					confirmConfigWritten: confirmEnvConfigStateStub,
+					commitState: commitEnvConfigStateStub,
+				};
+			});
 
-			assert.throws(
-				() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'),
-				/Cannot stringify circular reference/
-			);
+			applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
-			assert.strictEqual(loggerStub.error.called, true);
-			assert.match(loggerStub.error.firstCall.args[0], /Failed to apply runtime env config/);
-
-			delete process.env.HARPER_DEFAULT_CONFIG;
-		});
-
-		it('should log error and rethrow when YAML.parseDocument() fails', function () {
-			// Could happen if stringify produces invalid YAML (unlikely but possible)
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			YAMLStub.parseDocument.throws(new Error('Invalid YAML structure'));
-
-			assert.throws(() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'), /Invalid YAML structure/);
-
-			assert.strictEqual(loggerStub.error.called, true);
-			assert.match(loggerStub.error.firstCall.args[0], /Failed to apply runtime env config/);
+			assert.strictEqual(mockConfigDoc.getIn(['http', 'port']), 9999);
+			const written = String(mockConfigDoc);
+			assert.match(written, /# keep me/);
+			assert.match(written, /# inline/);
 
 			delete process.env.HARPER_DEFAULT_CONFIG;
 		});

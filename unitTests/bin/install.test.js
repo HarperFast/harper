@@ -10,13 +10,16 @@ const install = rewire('#js/bin/install');
 describe('Test install module', () => {
 	const sandbox = sinon.createSandbox();
 	let installer_stub;
+	let revert_installer;
 
 	before(() => {
 		installer_stub = sandbox.stub();
-		install.__set__('installer.install', installer_stub);
+		revert_installer = install.__set__('installer.install', installer_stub);
 	});
 
 	after(() => {
+		// installer.install is a shared module binding; leaving the stub would break later installer tests
+		revert_installer?.();
 		sandbox.restore();
 	});
 

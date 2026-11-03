@@ -24,7 +24,8 @@ npm run format:write       # Prettier
 
 # Test — run specific suites
 npm run test:unit                  # All unit tests (mocha)
-npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources)
+npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources, install)
+npm run test:unit:install          # Installer suite, its own process: it closes and recreates the shared system database
 npm run test:unit:resources        # Resource layer tests
 npm run test:unit:server           # Server layer tests
 npm run test:unit:dataLayer        # Data layer tests
