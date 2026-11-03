@@ -6414,7 +6414,8 @@ function printStd(
 	level: 'debug' | 'warn' | 'error' = 'debug'
 ) {
 	const stdLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}:${stdStreamLabel}`);
+	if (!stdLogger[level]) return;
 	for (const line of redactUrlCredentials(stdString).split('\n')) {
-		stdLogger[level]?.(line);
+		stdLogger[level](line);
 	}
 }
