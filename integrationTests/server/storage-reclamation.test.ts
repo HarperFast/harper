@@ -164,41 +164,33 @@ suite('Storage reclamation', (ctx: ContextWithHarper) => {
 		ok(insertEntry, 'Should have an insert audit entry');
 	});
 
-	// A query returns an expired record until eviction removes it, so this waits on the cleanup scan. That scan does
-	// not evict this table, created through the operations API, within a minute; the count query used to hide the
-	// expired records instead.
-	test(
-		'records are reclaimed after expiration and reclamation cycle',
-		{
-			todo: 'the cleanup scan does not run for a table created at runtime',
-		},
-		async () => {
-			let countBody;
-			const deadline = Date.now() + 60_000;
-			do {
-				await sleep(1000);
-				const countResponse = await fetch(ctx.harper.operationsAPIURL, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
-					},
-					body: JSON.stringify({
-						operation: 'sql',
-						sql: `select count(*) from ${TEST_DATABASE}.${TEST_TABLE}`,
-					}),
-				});
-				const countText = await countResponse.text();
-				strictEqual(countResponse.status, 200, `Count query after reclamation failed: ${countText}`);
-				countBody = JSON.parse(countText);
-			} while (countBody[0]['COUNT(*)'] >= 50 && Date.now() < deadline);
+	// A query returns an expired record until eviction removes it, so this waits on the cleanup scan.
+	test('records are reclaimed after expiration and reclamation cycle', async () => {
+		let countBody;
+		const deadline = Date.now() + 60_000;
+		do {
+			await sleep(1000);
+			const countResponse = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+				},
+				body: JSON.stringify({
+					operation: 'sql',
+					sql: `select count(*) from ${TEST_DATABASE}.${TEST_TABLE}`,
+				}),
+			});
+			const countText = await countResponse.text();
+			strictEqual(countResponse.status, 200, `Count query after reclamation failed: ${countText}`);
+			countBody = JSON.parse(countText);
+		} while (countBody[0]['COUNT(*)'] >= 50 && Date.now() < deadline);
 
-			// Records should have been reclaimed (count should be less than original 50)
-			// With high reclamation threshold and expired records, most/all should be removed
-			ok(
-				countBody[0]['COUNT(*)'] < 50,
-				`Expected record count to decrease after reclamation, got ${countBody[0]['COUNT(*)']}`
-			);
-		}
-	);
+		// Records should have been reclaimed (count should be less than original 50)
+		// With high reclamation threshold and expired records, most/all should be removed
+		ok(
+			countBody[0]['COUNT(*)'] < 50,
+			`Expected record count to decrease after reclamation, got ${countBody[0]['COUNT(*)']}`
+		);
+	});
 });

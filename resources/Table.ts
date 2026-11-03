@@ -1136,6 +1136,8 @@ interface TableResourceClass {
 	 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 	 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 	 * none of those values preserves the settings already loaded from the catalog.
+	 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
+	 * when none is configured.
 	 */
 	setTTLExpiration(
 		opts:
@@ -3645,6 +3647,8 @@ export function makeTable(options): TableResourceClass {
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 		 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 		 * none of those values preserves the settings already loaded from the catalog.
+		 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
+		 * when none is configured.
 		 */
 		static setTTLExpiration(
 			opts:
@@ -3693,8 +3697,7 @@ export function makeTable(options): TableResourceClass {
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			if (!preserveLoadedConfiguration) {
 				// default to one quarter of the total expiration+eviction window
-				recordCleanupInterval =
-					(typeof opts === 'number' ? recordCleanupInterval : recordScanInterval) || (expirationMs + evictionMs) / 4;
+				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
@@ -11731,7 +11734,7 @@ export function makeTable(options): TableResourceClass {
 	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs) {
+		if (expirationMs || evictionMs) {
 			ttlFromLoad = true;
 			try {
 				TableResource.setTTLExpiration(expirationMs / 1000);
