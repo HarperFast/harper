@@ -200,16 +200,23 @@ function findSegment(segment: Segment, value: string, from: number, lastStart: n
 	return found <= lastStart ? found : -1;
 }
 
-// No match holds a line terminator: search only the stretches between them.
+// No match holds a line terminator: search only the stretches between them. Look for the next one in
+// windows of doubling size, so a match near `from` costs about the width rather than the value.
 function findBetweenLineTerminators(segment: Segment, value: string, from: number, lastStart: number): number {
-	const end = lastStart + segment.width;
-	let start = from;
-	while (start <= lastStart) {
-		LINE_TERMINATOR.lastIndex = start;
-		const lineEnd = LINE_TERMINATOR.test(value) ? LINE_TERMINATOR.lastIndex - 1 : value.length;
-		const found = search(segment.regExp!, segment.width, value, start, Math.min(lineEnd, end));
+	const { width } = segment;
+	const end = lastStart + width;
+	for (let start = from, size = 4 * width; start <= lastStart;) {
+		const scanEnd = Math.min(end, start + size);
+		LINE_TERMINATOR.lastIndex = 0;
+		const lineEnd = LINE_TERMINATOR.test(value.slice(start, scanEnd)) ? start + LINE_TERMINATOR.lastIndex - 1 : -1;
+		const found = search(segment.regExp!, width, value, start, lineEnd < 0 ? scanEnd : lineEnd);
 		if (found >= 0) return found;
-		start = lineEnd + 1;
+		if (lineEnd >= 0) start = lineEnd + 1;
+		else if (scanEnd === end) return -1;
+		else {
+			start = scanEnd - width + 1;
+			size *= 2;
+		}
 	}
 	return -1;
 }

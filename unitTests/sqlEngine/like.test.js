@@ -267,6 +267,9 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		const straddling = 'a'.repeat(211) + '\n' + 'b'.repeat(69) + 'c'.repeat(500);
 		assert.strictEqual(v2Like('%\n' + run.slice(1) + '%', straddling), true);
 		assert.strictEqual(alasql.utils.like('%\n' + run.slice(1) + '%', straddling), true);
+		const lineFree = 'a'.repeat(211) + 'b' + 'c'.repeat(69) + 'd'.repeat(500);
+		assert.strictEqual(v2Like('%b' + run.slice(1) + '%', lineFree), true);
+		assert.strictEqual(alasql.utils.like('%b' + run.slice(1) + '%', lineFree), true);
 	});
 
 	it("keeps a different line terminator or a U+FFFF in the value distinct from the pattern's", () => {
@@ -482,6 +485,17 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.utils.like('a%', 'a'), true);
 	});
 
+	it('matches correctly while evicting cached patterns by total length', () => {
+		const body = ('x'.repeat(5_000) + '%').repeat(10);
+		const patterns = Array.from({ length: 30 }, (_, i) => '%' + String(i).padStart(2, '0') + body);
+		for (let round = 0; round < 2; round++) {
+			for (const [i, pattern] of patterns.entries()) {
+				assert.strictEqual(alasql.utils.like(pattern, String(i).padStart(2, '0') + 'X'.repeat(50_000)), true);
+				assert.strictEqual(alasql.utils.like(pattern, 'nope'), false);
+			}
+		}
+	});
+
 	it('tokenizes unclosed [ in linear time', () => {
 		assert.strictEqual(alasql.utils.like('['.repeat(10_000) + '%', '['.repeat(10_001)), true);
 		// Linear: ~60 ms. Rescanning for `]` at every `[` (quadratic): ~50 s.
@@ -512,10 +526,12 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		['%' + '_'.repeat(5_000) + '[^a]' + '_'.repeat(4_999) + '%', 'a'.repeat(4_998) + '\n', 1_000_000, '', 'legacy'],
 		['%[^\n]' + '_'.repeat(9_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '', 'legacy'],
 		['%[b\n-]' + '_'.repeat(9_999) + '%', 'c', 1_000_000, '', 'legacy'],
+		// Every segment fits where it starts: finding where the line ends must not cost the value each time.
+		[('%' + '_'.repeat(65)).repeat(1_000) + '%', 'a', 10_000_000, '', '', true],
 	];
 
 	for (const engine of ['v2', 'legacy']) {
-		for (const [pattern, valueUnit, valueLength, escape, only] of CASES) {
+		for (const [pattern, valueUnit, valueLength, escape, only, expected = false] of CASES) {
 			if (only && only !== engine) continue;
 			const shown = JSON.stringify(pattern.length > 40 ? pattern.slice(0, 40) + '…' : pattern);
 			const unitShown = JSON.stringify(valueUnit.length > 2 ? '…' + valueUnit.slice(-2) : valueUnit).replace(
@@ -532,7 +548,7 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 				assert.strictEqual(child.signal, null, `matcher did not finish within 20 s (${engine})`);
 				assert.strictEqual(child.status, 0, child.stderr);
 				const { result, ms } = JSON.parse(child.stdout);
-				assert.strictEqual(result, false);
+				assert.strictEqual(result, expected);
 				assert.ok(ms < 200, `${engine} took ${ms.toFixed(1)} ms`);
 			});
 		}

@@ -8,8 +8,11 @@ import {
 } from '../sqlEngine/expressions/like.ts';
 
 const MAX_CACHED_PATTERNS = 1000;
+// A matcher holds RegExps about as long as its pattern.
+const MAX_CACHED_LENGTH = 1_000_000;
 const cacheByEscape = new Map<string, Map<string, LikeMatcher>>();
 let cachedPatterns = 0;
+let cachedLength = 0;
 
 // alasql passes no escape argument when the LIKE has no ESCAPE clause.
 function alasqlLike(pattern: unknown, value: unknown, escape?: unknown): boolean {
@@ -21,20 +24,28 @@ function alasqlLike(pattern: unknown, value: unknown, escape?: unknown): boolean
 	let matches = cacheByEscape.get(escapeText)?.get(patternText);
 	if (!matches) {
 		matches = compileLikeTokens(tokenizeAlasqlLike(patternText, escapeText), true);
-		if (cachedPatterns >= MAX_CACHED_PATTERNS) evictOldestPattern();
+		while (
+			cachedPatterns > 0 &&
+			(cachedPatterns >= MAX_CACHED_PATTERNS || cachedLength + patternText.length > MAX_CACHED_LENGTH)
+		) {
+			evictOldestPattern();
+		}
 		let cache = cacheByEscape.get(escapeText);
 		if (!cache) cacheByEscape.set(escapeText, (cache = new Map()));
 		cache.set(patternText, matches);
 		cachedPatterns++;
+		cachedLength += patternText.length;
 	}
 	return matches('' + (value ?? ''));
 }
 
 function evictOldestPattern(): void {
 	const [escape, cache] = cacheByEscape.entries().next().value!;
-	cache.delete(cache.keys().next().value!);
+	const pattern = cache.keys().next().value!;
+	cache.delete(pattern);
 	if (cache.size === 0) cacheByEscape.delete(escape);
 	cachedPatterns--;
+	cachedLength -= pattern.length;
 }
 
 function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
