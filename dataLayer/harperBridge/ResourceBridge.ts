@@ -618,7 +618,11 @@ export class ResourceBridge extends BridgeMethods {
 						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
 						raiseAuditFloor(table.auditStore, pruneEnd);
 						// the floor and purge bounds reach disk before the files they account for are unlinked
-						if (originFloorsDurable(table.primaryStore)) await table.primaryStore.syncWal();
+						if (originFloorsDurable(table.primaryStore)) {
+							await table.primaryStore.syncWal();
+							// a drop or restore may have closed this handle while the sync was pending
+							if (table.primaryStore.status !== 'open') break;
+						}
 						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);

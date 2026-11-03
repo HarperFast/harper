@@ -94,6 +94,29 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 		assert.strictEqual(typeof results.log_files_deleted, 'number');
 	});
 
+	it('purges nothing when the store closes while the WAL sync is pending', async () => {
+		const stores = [TableA.primaryStore, TableB.primaryStore];
+		const originals = stores.map((store) => ({ syncWal: store.syncWal, purgeLogs: store.purgeLogs }));
+		let purges = 0;
+		for (const store of stores) {
+			store.syncWal = async () => Object.defineProperty(store, 'status', { value: 'closing', configurable: true });
+			store.purgeLogs = () => {
+				purges++;
+				return [];
+			};
+		}
+		try {
+			const results = await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp: Date.now() + 1000 });
+			assert.strictEqual(purges, 0);
+			assert.strictEqual(results.log_files_deleted, 0);
+		} finally {
+			stores.forEach((store, i) => {
+				delete store.status;
+				Object.assign(store, originals[i]);
+			});
+		}
+	});
+
 	it('rejects a prune bound the audit range would honor as a whole-log delete (harper#2447)', async () => {
 		// Audit keys are raw float64, so NaN and negatives sort above every real timestamp and the prune
 		// range spans the whole log. A non-numeric timestamp reaches that via Number.parseInt.
