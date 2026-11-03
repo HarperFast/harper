@@ -1,6 +1,8 @@
 ---
 id: operations
 title: Analytics Operations
+sidebar_position: 20
+sidebar_label: 'Operations'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/operations-api/analytics.md (primary) -->

@@ -1,6 +1,8 @@
 ---
 id: operations
 title: Backup Operations
+sidebar_position: 20
+sidebar_label: 'Operations'
 ---
 
 <!-- Source: HarperFast/harper#1831 (RocksDB managed backup and restore operations) -->

@@ -1,5 +1,7 @@
 ---
 title: Data Loader
+sidebar_position: 40
+sidebar_label: 'Data Loader'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/applications/data-loader.md (primary) -->

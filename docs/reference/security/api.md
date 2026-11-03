@@ -1,5 +1,7 @@
 ---
 title: Security API
+sidebar_position: 90
+sidebar_label: 'API'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/globals.md (auth global) -->

@@ -1,6 +1,8 @@
 ---
 id: api
 title: API
+sidebar_position: 20
+sidebar_label: 'API'
 ---
 
 <!-- Source: harper resources/models/Models.ts, resources/models/types.ts (v5.1, updated through v5.4) -->

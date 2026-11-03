@@ -1,5 +1,7 @@
 ---
 title: Define Fastify Routes
+sidebar_position: 10
+sidebar_label: 'Overview'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/applications/define-routes.md (primary) -->

@@ -1,5 +1,7 @@
 ---
 title: Transaction Logging
+sidebar_position: 100
+sidebar_label: 'Transaction Logging'
 ---
 
 <!-- Source: versioned_docs/version-4.7/administration/logging/transaction-logging.md (primary) -->

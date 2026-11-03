@@ -1,5 +1,7 @@
 ---
 title: Configuration Operations
+sidebar_position: 30
+sidebar_label: 'Operations'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/operations-api/configuration.md (primary) -->

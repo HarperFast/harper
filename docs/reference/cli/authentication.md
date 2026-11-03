@@ -1,5 +1,7 @@
 ---
 title: CLI Authentication
+sidebar_position: 40
+sidebar_label: 'Authentication'
 ---
 
 <!-- Source: versioned_docs/version-4.7/deployments/harper-cli.md (primary) -->

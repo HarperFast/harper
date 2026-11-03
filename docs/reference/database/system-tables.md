@@ -1,5 +1,7 @@
 ---
 title: System Tables
+sidebar_position: 80
+sidebar_label: 'System Tables'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/analytics.md (primary — analytics system tables) -->

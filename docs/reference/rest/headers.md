@@ -1,5 +1,7 @@
 ---
 title: REST Headers
+sidebar_position: 40
+sidebar_label: 'Headers'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/headers.md (primary) -->

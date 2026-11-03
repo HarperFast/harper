@@ -1,5 +1,7 @@
 ---
 title: Scheduler
+sidebar_position: 70
+sidebar_label: 'Scheduler'
 ---
 
 # Scheduler

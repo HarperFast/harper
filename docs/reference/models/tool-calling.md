@@ -1,6 +1,8 @@
 ---
 id: tool-calling
 title: Tool Calling
+sidebar_position: 30
+sidebar_label: 'Tool Calling'
 ---
 
 <!-- Source: harper resources/models/agentLoop.ts, resources/models/types.ts (v5.1) -->

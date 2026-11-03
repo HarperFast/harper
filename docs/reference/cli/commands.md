@@ -1,5 +1,7 @@
 ---
 title: CLI Commands
+sidebar_position: 20
+sidebar_label: 'Commands'
 ---
 
 <!-- Source: versioned_docs/version-4.7/deployments/harper-cli.md (primary) -->

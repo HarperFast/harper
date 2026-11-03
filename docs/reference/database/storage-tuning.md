@@ -1,5 +1,7 @@
 ---
 title: Storage Tuning
+sidebar_position: 60
+sidebar_label: 'Storage Tuning'
 ---
 
 # Storage Tuning

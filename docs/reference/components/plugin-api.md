@@ -1,5 +1,7 @@
 ---
 title: Plugin API
+sidebar_position: 40
+sidebar_label: 'Plugin API'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/components/plugins.md (primary) -->

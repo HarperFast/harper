@@ -1,6 +1,8 @@
 ---
 id: certificate-management
 title: Certificate Management
+sidebar_position: 70
+sidebar_label: 'Certificate Management'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/security/certificate-management.md (primary) -->

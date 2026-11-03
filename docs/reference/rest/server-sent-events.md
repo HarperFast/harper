@@ -1,5 +1,7 @@
 ---
 title: Server-Sent Events
+sidebar_position: 60
+sidebar_label: 'Server Sent Events'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/real-time.md (SSE section - primary) -->

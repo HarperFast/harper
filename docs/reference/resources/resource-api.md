@@ -1,5 +1,7 @@
 ---
 title: Resource API
+sidebar_position: 20
+sidebar_label: 'Resource API'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/resources/index.md (primary) -->
@@ -656,9 +658,7 @@ A programmatic Resource that declares no attributes gets an empty record schema 
 ```typescript
 export class ProductInventory extends Resource {
 	static description = '...';
-	static properties = {
-		/* full record shape */
-	};
+	static properties = {/* full record shape */};
 
 	static outputSchemas = {
 		get: {
@@ -698,9 +698,7 @@ Narrow, MCP-only override for annotation hints that don't fit JSON Schema (such 
 ```typescript
 export class ProductInventory extends Resource {
 	static description = '...';
-	static properties = {
-		/* ... */
-	};
+	static properties = {/* ... */};
 
 	static mcp = {
 		annotations: {

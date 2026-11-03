@@ -1,5 +1,7 @@
 ---
 title: SQL
+sidebar_position: 30
+sidebar_label: 'SQL'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/sql-guide/index.md (primary) -->

@@ -1,5 +1,7 @@
 ---
 title: JavaScript Environment
+sidebar_position: 50
+sidebar_label: 'JavaScript Environment'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/globals.md (primary) -->

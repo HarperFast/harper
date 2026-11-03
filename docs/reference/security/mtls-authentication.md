@@ -1,6 +1,8 @@
 ---
 id: mtls-authentication
 title: mTLS Authentication
+sidebar_position: 60
+sidebar_label: 'mTLS Authentication'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/security/mtls-auth.md (primary) -->

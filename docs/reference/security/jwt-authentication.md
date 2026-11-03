@@ -1,6 +1,8 @@
 ---
 id: jwt-authentication
 title: JWT Authentication
+sidebar_position: 50
+sidebar_label: 'JWT Authentication'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/security/jwt-auth.md (primary) -->s

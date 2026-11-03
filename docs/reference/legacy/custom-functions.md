@@ -1,5 +1,7 @@
 ---
 title: Custom Functions
+sidebar_position: 20
+sidebar_label: 'Custom Functions'
 ---
 
 <!-- Source: versioned_docs/version-4.1/custom-functions/index.md (primary) -->

@@ -1,5 +1,7 @@
 ---
 title: Harper Cloud
+sidebar_position: 10
+sidebar_label: 'Harper Cloud'
 ---
 
 Harper Cloud (also sometimes referred to as Harper Studio) was Harper's original PaaS offering.
