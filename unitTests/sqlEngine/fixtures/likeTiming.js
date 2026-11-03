@@ -1,8 +1,10 @@
 'use strict';
 
 // Times one LIKE evaluation in its own process: a backtracking matcher blocks synchronously, so only a parent
-// with a kill timeout can bound it. argv: <v2|legacy> <pattern> <value unit, repeated> <value length> [escape]
-const [engine, pattern, valueUnit, valueLength, escape] = process.argv.slice(2);
+// with a kill timeout can bound it. stdin: JSON [<v2|legacy>, pattern, value unit (repeated), value length, escape?],
+// since a pattern can exceed Windows' command-line limit.
+const [engine, pattern, valueUnit, valueLength, escapeOrNull] = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const escape = escapeOrNull ?? undefined;
 const value = valueUnit.repeat(Math.ceil(Number(valueLength) / valueUnit.length)).slice(0, Number(valueLength));
 let matches;
 if (engine === 'v2') {

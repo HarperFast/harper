@@ -539,9 +539,8 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 				'\\u2028'
 			);
 			it(`${engine}: ${shown} against ${valueLength.toLocaleString('en-US')} characters of ${unitShown}`, () => {
-				const args = [...process.execArgv, fixture, engine, pattern, valueUnit, String(valueLength)];
-				if (escape) args.push(escape);
-				const child = spawnSync(process.execPath, args, {
+				const child = spawnSync(process.execPath, [...process.execArgv, fixture], {
+					input: JSON.stringify([engine, pattern, valueUnit, valueLength, escape || null]),
 					encoding: 'utf8',
 					timeout: 20_000,
 				});
