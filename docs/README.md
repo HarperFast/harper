@@ -60,6 +60,8 @@ HARPER_DOCS_PATH=../harper npm run build      # fails on broken links, as CI doe
 
 The site publishes harper-pro's latest published stable release, with harper's docs at the commit its `core` submodule points to, so docs merged with a change on `main` go live when the release containing it ships. A correction to docs that are already live goes in a PR milestoned to that release line; it is cherry-picked there and goes live with the next patch release.
 
+Until a release contains `docs/` (5.4.0 is the first), the site publishes `main` instead, so docs go live when they merge there. Release lines cut before then (5.3 and older) have no `docs/`, so docs corrections for them go to `main` only.
+
 To publish a correction before then, tag a harper-pro commit `docs/<release>-<n>`, numbering from 1 for each release (`docs/v5.3.5-1`, then `docs/v5.3.5-2`). The site publishes the highest such tag of its current release, and the next release replaces it. A `docs/` tag runs no release workflow.
 
 - Everything in that commit's `docs/` publishes. Tag the release branch head when every docs change on it since the release is ready to go live; otherwise tag a commit on top of the release tag with only the correction:
