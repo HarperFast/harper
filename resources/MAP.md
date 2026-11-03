@@ -11,7 +11,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `databases.ts` — catalog loading, `table()`/`declareTable`, index backfill, database close and drop
 - `RecordEncoder.ts`, `asBinary.ts` — record metadata encoding, `entryMap`, `RecordObject`
 - `PrimaryRocksDatabase.ts`, `RocksIndexStore.ts` — RocksDB primary and index stores
-- `RocksTransactionLogStore.ts`, `auditStore.ts` — per-origin transaction logs; audit records, audit floor, database generation
+- `RocksTransactionLogStore.ts`, `auditStore.ts` — per-origin transaction logs; audit records, audit floor, per-log purge bounds, database generation
 - `replayLogs.ts`, `replayLogsGuards.ts` — crash replay of the transaction logs
 - `transactionBroadcast.ts`, `IterableEventQueue.ts` — commit notification fan-out; subscription queues
 - `subscriptionCheckpoint.ts`, `originClosedFloor.ts` — per-origin subscription checkpoints; the certified local log floor

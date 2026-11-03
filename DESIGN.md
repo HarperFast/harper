@@ -52,7 +52,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## resources/audit-retention.md — audit retention and cleanup
 
-- [Audit retention floor](resources/audit-retention.md#audit-retention-floor) — The floor records what pruning removed; it is internal, and `Table.commit` skips the out-of-order walk below it.
+- [Audit retention floor](resources/audit-retention.md#audit-retention-floor) · [Per-log purge bounds](resources/audit-retention.md#per-log-purge-bounds) — What pruning removed, per database (`Table.commit` skips walks under it) and per log.
 - [Audit retention cleanup is a self-rearming, engine-independent lifecycle](resources/audit-retention.md#audit-retention-cleanup-is-a-self-rearming-engine-independent-lifecycle) — One `scheduleAuditCleanup` call re-arms until the root store closes; engines differ in the work per pass, not in the lifecycle.
 - [Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise](resources/audit-retention.md#audit-entry-removal-loops-must-track-every-removeauditentryremoveentry-promise) — Every removal promise in a batch loop needs a rejection handler attached immediately.
 
