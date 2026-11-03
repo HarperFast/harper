@@ -93,7 +93,7 @@ Things that are easy to get wrong here:
 A replication source must tell a follower that missed purged entries from one whose source simply
 wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
 never existed or were removed. `Symbol.for('log-purge-bounds')` holds
-`{ epoch, cutoff, observedAt, logs: { name: [bound, quietAt] } }`, and `getLogPurgeBound` returns an
+`{ epoch, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`, and `getLogPurgeBound` returns an
 upper bound on every key any prune removed from the named logs.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
