@@ -8270,7 +8270,9 @@ export function makeTable(options): TableResourceClass {
 									...clause,
 									fields: clause.fields
 										? [...clause.fields]
-										: (defaultFields ??= fullTextDefinition.fields.map(({ name }) => name)).slice(),
+										: defaultFields
+											? defaultFields.slice()
+											: (defaultFields = fullTextDefinition.fields.map(({ name }) => name)),
 								};
 							});
 						condition.includeHighlights =

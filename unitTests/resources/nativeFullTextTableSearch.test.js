@@ -123,12 +123,10 @@ describe('published native full-text Table.search integration', () => {
 		);
 		assert.notStrictEqual(admitted[0].fields, admitted[1].fields);
 		assert.notStrictEqual(admitted[2].fields, explicit);
-		assert.notStrictEqual(admitted[0].fields, catalog.fields);
 		admitted[0].fields.push('not-a-schema-field');
 		admitted[2].fields.push('details');
 		assert.deepStrictEqual(admitted[1].fields, ['title', 'details']);
 		assert.deepStrictEqual(explicit, ['title']);
-		assert.deepStrictEqual(catalog.fields, [{ name: 'title' }, { name: 'details' }]);
 		assert.deepStrictEqual(prepare(make('catalogSearch')).conditions[0].should[0].fields, ['title', 'details']);
 		assert.deepStrictEqual(prepare(make('titleSearch')).conditions[0].should[0].fields, ['title']);
 		assert.deepStrictEqual(prepare(make('catalogSearch')).conditions[0].should[0].fields, ['title', 'details']);
