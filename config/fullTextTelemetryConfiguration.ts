@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { getSharedRootConfigWatcher, type RootConfigWatcher } from './RootConfigWatcher.ts';
 import { overlayRootEnvConfig } from './harperConfigEnvVars.ts';
-import { get, refreshConfigSubtree } from '../utility/environment/environmentManager.ts';
+import { refreshConfigSubtree } from '../utility/environment/environmentManager.ts';
 import { resolveFullTextTelemetryPolicy } from '../resources/analytics/fullTextTelemetry.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -54,11 +54,6 @@ export function watchFullTextTelemetryConfiguration(
 		watcher.off('unavailable', unavailable);
 		watcher.off('available', changed);
 		watcher.off('close', stop);
-	}
-	try {
-		applyPolicy(get(PARAM));
-	} catch {
-		report();
 	}
 	watcher.on('change', changed);
 	watcher.on('unavailable', unavailable);

@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ConfigureTelemetryOptions, FullTextTelemetry } from '@harperfast/fulltext/native';
 import { METRIC } from './metadata.ts';
 import type { NativeFullTextTelemetryHandle } from '../indexes/fullTextNativeBinding.ts';
+
+type ConfigureTelemetryOptions = Parameters<NativeFullTextTelemetryHandle['configureTelemetry']>[0];
+export type FullTextTelemetrySnapshot = ReturnType<NativeFullTextTelemetryHandle['telemetry']>;
 
 export type FullTextTelemetryPolicy = Required<ConfigureTelemetryOptions> & {
 	enabled: boolean;
@@ -42,14 +44,18 @@ export type FullTextTelemetrySample = {
 	role: 'writer' | 'reader';
 	series: string;
 	sampledAt: number;
-	snapshot?: FullTextTelemetry;
+	snapshot?: FullTextTelemetrySnapshot;
 	error?: 'configuration-error' | 'collection-error';
 	stage?: 'closing';
 };
 
 type Scalar = string | number | boolean | null;
 type FullTextTelemetryRow = Record<string, Scalar>;
-type FlatSnapshot = { counters: Map<string, bigint>; gauges: FullTextTelemetryRow };
+type FlatSnapshot = {
+	counters: Map<string, bigint>;
+	gauges: FullTextTelemetryRow;
+	aggregateGauges: Map<string, bigint | null>;
+};
 type Group = {
 	index: string;
 	role: 'writer' | 'reader';
@@ -86,14 +92,18 @@ function isCounter(path: string[]): boolean {
 	return path[0] === 'native' && (path[1] === 'phases' || (path[1] === 'operations' && path[3] !== 'dispatched'));
 }
 
-export function flattenFullTextTelemetry(snapshot: FullTextTelemetry): FlatSnapshot {
+export function flattenFullTextTelemetry(snapshot: FullTextTelemetrySnapshot): FlatSnapshot {
 	const counters = new Map<string, bigint>();
 	const gauges: FullTextTelemetryRow = {};
+	const aggregateGauges = new Map<string, bigint | null>();
 	function visit(value: unknown, path: string[]) {
 		const name = path.join('_');
 		if (typeof value === 'bigint') {
-			if (isCounter(path)) counters.set(name, (counters.get(name) ?? 0n) + value);
-			else gauges[name] = value.toString();
+			if (isCounter(path)) {
+				counters.set(name, (counters.get(name) ?? 0n) + value);
+				return;
+			}
+			gauges[name] = value.toString();
 		} else if (value === null || typeof value === 'boolean' || typeof value === 'number') {
 			gauges[name] = value as Scalar;
 		} else if (typeof value === 'string') {
@@ -103,15 +113,22 @@ export function flattenFullTextTelemetry(snapshot: FullTextTelemetry): FlatSnaps
 			else gauges[name] = path.includes('unsupported') ? 'unsupported' : 'unavailable';
 		} else if (Array.isArray(value)) {
 			for (let i = 0; i < value.length; i++) visit(value[i], [...path, String(i)]);
+			return;
 		} else if (value && typeof value === 'object') {
 			for (const [key, child] of Object.entries(value)) {
 				const boundedKey = path.at(-1) === 'errors' && !/^E_[A-Z_]{1,60}$/.test(key) ? 'other' : key;
 				visit(child, [...path, boundedKey]);
 			}
-		}
+			return;
+		} else return;
+		if (
+			/^native_operations_[A-Za-z]+_dispatched$/.test(name) ||
+			/^native_queues_[A-Za-z]+_(commands|bytes|maxCommands|maxBytes|oldestAgeNanoseconds)$/.test(name)
+		)
+			aggregateGauges.set(name, typeof value === 'bigint' && value >= 0n ? value : null);
 	}
 	visit(snapshot, []);
-	return { counters, gauges };
+	return { counters, gauges, aggregateGauges };
 }
 
 export function fullTextTelemetryIndexLabel(database: string, table: string, index: string): string {
@@ -378,7 +395,12 @@ export class FullTextTelemetryCollector {
 		}
 	}
 
-	#publish(entry: Entry, snapshot?: FullTextTelemetry, error?: FullTextTelemetrySample['error'], stage?: 'closing') {
+	#publish(
+		entry: Entry,
+		snapshot?: FullTextTelemetrySnapshot,
+		error?: FullTextTelemetrySample['error'],
+		stage?: 'closing'
+	) {
 		const sampledAt = Date.now();
 		const revision = this.#revision;
 		if (this.#operator.enabled && stage !== 'closing') {
@@ -409,23 +431,17 @@ export class FullTextTelemetryCollector {
 				available: !error && snapshot?.available === true,
 			};
 			for (const [name, value] of entry.group.totals) row[name] = value.toString();
-			for (const name of Object.keys(row)) {
-				if (
-					/^native_operations_[A-Za-z]+_dispatched$/.test(name) ||
-					/^native_queues_[A-Za-z]+_(commands|bytes|maxCommands|maxBytes|oldestAgeNanoseconds)$/.test(name)
-				) {
-					let total = 0n;
-					let observed = false;
-					for (const candidate of entry.group.entries) {
-						const value = candidate.flat?.gauges[name];
-						if (!candidate.closing && typeof value === 'string' && /^\d+$/.test(value)) {
-							const number = BigInt(value);
-							total = name.endsWith('oldestAgeNanoseconds') ? (number > total ? number : total) : total + number;
-							observed = true;
-						}
+			for (const name of newest.flat?.aggregateGauges.keys() ?? []) {
+				let total = 0n;
+				let observed = false;
+				for (const candidate of entry.group.entries) {
+					const value = candidate.flat?.aggregateGauges.get(name);
+					if (!candidate.closing && typeof value === 'bigint') {
+						total = name.endsWith('oldestAgeNanoseconds') ? (value > total ? value : total) : total + value;
+						observed = true;
 					}
-					row[name] = observed ? total.toString() : null;
 				}
+				row[name] = observed ? total.toString() : null;
 			}
 			if (!this.#pending.has(entry.group) && this.#pending.size >= this.#maxPendingRows) {
 				const oldest = this.#pending.keys().next().value!;

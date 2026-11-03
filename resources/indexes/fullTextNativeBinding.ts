@@ -1,4 +1,3 @@
-import type { FullTextTelemetry, ConfigureTelemetryOptions } from '@harperfast/fulltext/native';
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -98,8 +97,8 @@ export type NativeFullTextTraceResult = {
 };
 
 export interface NativeFullTextTelemetryHandle {
-	telemetry(): FullTextTelemetry;
-	configureTelemetry(options: ConfigureTelemetryOptions): void;
+	telemetry(): { available: boolean };
+	configureTelemetry(options: { histograms?: boolean; snapshotBytes?: boolean }): void;
 }
 
 export interface NativeFullTextReader extends NativeFullTextTelemetryHandle {

@@ -163,6 +163,13 @@ describe('Published full-text telemetry collection', function () {
 		collector.collect(index);
 		assert.strictEqual(samples.length, 1);
 		assert.deepStrictEqual(collector.takeRows(), []);
+		collector.setOperatorPolicy({ enabled: true });
+		collector.collect(index);
+		const combined = row('writer');
+		assert.strictEqual(combined.native_histogramsEnabled, true);
+		assert.strictEqual(combined.native_snapshotBytesEnabled, true);
+		collector.setOperatorPolicy({ enabled: false });
+		assert.strictEqual(collector.collecting, true);
 		removeHistogram();
 		assert.strictEqual(index.telemetry().native.histogramsEnabled, false);
 		assert.strictEqual(index.telemetry().native.snapshotBytesEnabled, true);
@@ -349,6 +356,50 @@ describe('Published full-text telemetry collection', function () {
 		assert.strictEqual(unavailable.gauges.available, false);
 		assert.strictEqual(unavailable.gauges.native_reader_documents, undefined);
 		assert.strictEqual(unavailable.counters.get('logicalBatches_completed'), 1n);
+	});
+	it('preserves peer gauge sums, null ages, newest-key selection and closing exclusions', async () => {
+		const { index } = await writer();
+		const snapshots = [index.telemetry(), index.telemetry()];
+		for (let i = 0; i < snapshots.length; i++) {
+			const native = snapshots[i].native;
+			native.operations.search.dispatched = BigInt(i + 2);
+			native.queues.ordinarySearch.commands = BigInt(i + 3);
+			native.queues.ordinarySearch.bytes = BigInt(i + 4);
+			native.queues.ordinarySearch.oldestAgeNanoseconds = i === 0 ? 7_000_000n : null;
+			native.reader.documents = BigInt(i + 1);
+		}
+		const peers = snapshots.map((snapshot) => ({ telemetry: () => snapshot, configureTelemetry() {} }));
+		collector.setOperatorPolicy({ enabled: true });
+		for (const peer of peers) {
+			collector.register(peer, 'catalog.Product/search', 'reader');
+			collector.collect(peer);
+		}
+		const combined = row();
+		assert.strictEqual(combined.native_operations_search_dispatched, '5');
+		assert.strictEqual(combined.native_queues_ordinarySearch_commands, '7');
+		assert.strictEqual(combined.native_queues_ordinarySearch_bytes, '9');
+		assert.strictEqual(combined.native_queues_ordinarySearch_oldestAgeNanoseconds, '7000000');
+		assert.strictEqual(combined.native_reader_documents, '2');
+		snapshots[1].native.queues.ordinarySearch.oldestAgeNanoseconds = 9_000_000n;
+		collector.collect(peers[1]);
+		assert.strictEqual(row().native_queues_ordinarySearch_oldestAgeNanoseconds, '9000000');
+		delete snapshots[1].native.queues.ordinarySearch.bytes;
+		collector.collect(peers[1]);
+		assert.strictEqual(Object.hasOwn(row(), 'native_queues_ordinarySearch_bytes'), false);
+		snapshots[1].native.queues.ordinarySearch.bytes = null;
+		collector.collect(peers[1]);
+		assert.strictEqual(row().native_queues_ordinarySearch_bytes, '4');
+		snapshots[0].native.queues.ordinarySearch.bytes = -1n;
+		collector.collect(peers[0]);
+		collector.collect(peers[1]);
+		assert.strictEqual(row().native_queues_ordinarySearch_bytes, null);
+		collector.beforeClose(peers[0]);
+		snapshots[1].native.queues.ordinarySearch.oldestAgeNanoseconds = null;
+		collector.collect(peers[1]);
+		const retiring = row();
+		assert.strictEqual(retiring.native_operations_search_dispatched, '3');
+		assert.strictEqual(retiring.native_queues_ordinarySearch_commands, '4');
+		assert.strictEqual(retiring.native_queues_ordinarySearch_oldestAgeNanoseconds, null);
 	});
 	it('validates optional configuration without adding an enabled default', () => {
 		assert.strictEqual(resolveFullTextTelemetryPolicy(undefined).enabled, false);

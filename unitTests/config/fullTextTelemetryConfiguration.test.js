@@ -51,6 +51,17 @@ describe('Live full-text telemetry configuration', function () {
 		watcher = new RootConfigWatcher(file);
 		stop = watchFullTextTelemetryConfiguration((policy) => samples.push(policy), watcher);
 	}
+	it('initializes from the ready nested file policy without an eager aggregate/default application', async () => {
+		writeFileSync(file, stringify(root({ enabled: true, histograms: true })));
+		watcher = new RootConfigWatcher(file);
+		await watcher.ready;
+		const samples = [];
+		stop = watchFullTextTelemetryConfiguration((policy) => samples.push(policy), watcher);
+		assert.deepStrictEqual(samples, []);
+		await waitFor(() => samples.length === 1);
+		assert.strictEqual(samples[0].enabled, true);
+		assert.strictEqual(samples[0].histograms, true);
+	});
 	it('rejects quoted telemetry values consistently at validation and live application', () => {
 		for (const value of [
 			{ enabled: 'true' },
