@@ -570,7 +570,10 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 		}
 		ifVersion = options.ifVersion;
 		if (typeof ifVersion !== 'number' || !Number.isFinite(ifVersion)) {
-			throw new ClientError('session.update ifVersion must be a finite number', 400);
+			throw new ClientError(
+				'session.update ifVersion must be a finite number; move application data out of the reserved version field',
+				400
+			);
 		}
 		if (!this.sessionId)
 			return Promise.reject(new VersionConflictError(getSessionTable().tableName, ifVersion, undefined, true));
