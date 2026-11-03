@@ -14,13 +14,7 @@ import { addAnalyticsListener, recordAction, recordActionBinary } from '../resou
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { Resources } from '../resources/Resources.ts';
-import {
-	Resource,
-	SINGLE_RECORD_COLUMNS,
-	WRITE_CONDITION,
-	missingMethod,
-	allowedMethods,
-} from '../resources/Resource.ts';
+import { Resource, WRITE_CONDITION, missingMethod, allowedMethods } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders, addVaryHeader } from '../server/serverHelpers/Headers.ts';
@@ -711,7 +705,13 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
 				return conditional;
 			}
-			responseObject.body = serialize(responseData, request, responseObject);
+			responseObject.body = serialize(
+				responseData,
+				request,
+				responseObject,
+				method === 'GET' || method === 'HEAD' ? target : undefined,
+				resource
+			);
 			const startup = readStreamStartup(responseObject.body, request.method, method);
 			if (startup) await startup;
 			if (deferredRead) {
@@ -807,7 +807,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			'Age',
 		])
 			headers.delete(header);
-		delete (request as any)[SINGLE_RECORD_COLUMNS];
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
 	} finally {

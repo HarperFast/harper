@@ -15,7 +15,7 @@ import {
 	errorForLog as harperErrorForLog,
 } from '../../utility/logging/harper_logger.ts';
 import { Blob } from '../../resources/blob.ts';
-import { SINGLE_RECORD_COLUMNS } from '../../resources/Resource.ts';
+import { buildSelectColumns } from '../../resources/Resource.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
@@ -109,20 +109,29 @@ mediaTypes.set('application/x-msgpack', {
 	q: 0.9,
 });
 mediaTypes.set('text/csv', {
-	serializeStream(data: any, response: Response, request?: any) {
+	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const singleRecordColumns = request?.[SINGLE_RECORD_COLUMNS];
+		const hasOwnColumns = typeof data?.getColumns === 'function';
+		const singleRecordColumns =
+			!hasOwnColumns && !target?.isCollection && target?.select
+				? buildSelectColumns(target.select, resource?.attributes)
+				: undefined;
 		if (singleRecordColumns && data != null) {
 			return toCsvStream([data.toJSON ? data.toJSON() : data], singleRecordColumns);
 		}
 		return toCsvStream(data, singleRecordColumns);
 	},
-	serialize(data: any, response: Response, request?: any) {
+	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const singleRecordColumns = request?.[SINGLE_RECORD_COLUMNS];
-		const columns = data?.getColumns?.() ?? singleRecordColumns;
+		const hasOwnColumns = typeof data?.getColumns === 'function';
+		const singleRecordColumns =
+			!hasOwnColumns && !target?.isCollection && target?.select
+				? buildSelectColumns(target.select, resource?.attributes)
+				: undefined;
+		const columns = hasOwnColumns ? data.getColumns() : singleRecordColumns;
 		if (
 			data != null &&
+			!hasOwnColumns &&
 			(typeof data !== 'object' || (!data[Symbol.iterator] && !data[Symbol.asyncIterator]) || singleRecordColumns)
 		) {
 			data = [data.toJSON ? data.toJSON() : data];
@@ -518,7 +527,7 @@ export function isHttpPassThroughEnvelope(value: any): boolean {
  * @param responseObject
  * @returns {Uint8Array|*}
  */
-export function serialize(responseData, request, responseObject) {
+export function serialize(responseData, request, responseObject, target?, resource?) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
@@ -561,7 +570,7 @@ export function serialize(responseData, request, responseObject) {
 				});
 				responseData.getColumns = getColumns;
 			}
-			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request);
+			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
 			if (!canCompress) return serialized;
 			// a handler may return a complete body (msgpack does for arrays)
 			if (typeof serialized === 'string' || serialized instanceof Uint8Array) responseBody = serialized;
@@ -572,7 +581,7 @@ export function serialize(responseData, request, responseObject) {
 				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
 				return compressed;
 			}
-		} else responseBody = serializer.serializer.serialize(responseData, responseObject, request);
+		} else responseBody = serializer.serializer.serialize(responseData, responseObject, request, target, resource);
 	}
 	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
@@ -1103,13 +1112,12 @@ export function toCsvStream(data, columns?) {
 	const isRowIterable =
 		typeof data === 'object' && data !== null && Boolean(data[Symbol.iterator] || data[Symbol.asyncIterator]);
 	const source = isRowIterable ? data : [data];
-	const hint = columns ?? data?.getColumns?.();
 	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
 	const readStream = Readable.from(
 		openOnFirstStep(
 			() => source,
 			Boolean(source[Symbol.asyncIterator]),
-			hint?.scalar || data == null ? (value) => value ?? '' : undefined
+			(value) => value ?? ''
 		)
 	);
 
@@ -1140,7 +1148,6 @@ export function toCsvStream(data, columns?) {
 					}
 				}
 
-				// Convert row to CSV row
 				if (rowToValues) {
 					this.push(escapeCsvRow(rowToValues(chunk), false) + '\n');
 				}

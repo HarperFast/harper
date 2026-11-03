@@ -54,7 +54,6 @@ import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lm
 import {
 	Resource,
 	SEARCH_AUTHORIZATION,
-	SINGLE_RECORD_COLUMNS,
 	WRITE_CONDITION,
 	isScalarSelect,
 	isTupleSelect,
@@ -4269,9 +4268,6 @@ export function makeTable(options): TableResourceClass {
 						(record) => {
 							const select = target?.select;
 							if (select && record != null) {
-								if (target && typeof target === 'object') {
-									(target as any)[SINGLE_RECORD_COLUMNS] = buildSelectColumns(select, attributes);
-								}
 								const transform = transformForSelect(select, this.constructor);
 								return transform(record);
 							}
@@ -4290,9 +4286,6 @@ export function makeTable(options): TableResourceClass {
 				const record = this.#record;
 				const select = target?.select;
 				if (select && record != null && constructor.loadAsInstance !== true) {
-					if (target && typeof target === 'object') {
-						(target as any)[SINGLE_RECORD_COLUMNS] = buildSelectColumns(select, attributes);
-					}
 					const transform = transformForSelect(select, this.constructor);
 					return promiseNormalize(transform(record), target);
 				}

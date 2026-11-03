@@ -1121,10 +1121,35 @@ describe('REST and operations API select projection fixes', function () {
 			const PlainInstance = class extends Plain {
 				static loadAsInstance = true;
 			};
+			const CustomInstanceList = class extends Resource {
+				static loadAsInstance = true;
+				async get(target) {
+					if (target.id === '1') return { id: '1', name: 'One', extra: 'e1' };
+					return [
+						{ id: '1', name: 'One', extra: 'e1' },
+						{ id: '2', name: 'Two', extra: 'e2' },
+					];
+				}
+			};
+			const CustomScalar = class extends Resource {
+				async get(target) {
+					if (target.select === 'id') return target.id;
+					return { id: target.id, label: 'custom' };
+				}
+			};
+			const NestedSummary = class extends Resource {
+				static async get(target) {
+					const name = await Plain.get({ id: target.id, select: 'name' });
+					return { name, inStock: true };
+				}
+			};
 
 			mount('Plain', Plain);
 			mount('PlainAsyncMapped', PlainAsyncMapped);
 			mount('PlainInstance', PlainInstance);
+			mount('CustomInstanceList', CustomInstanceList);
+			mount('CustomScalar', CustomScalar);
+			mount('NestedSummary', NestedSummary);
 
 			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' });
 			await Plain.put({
@@ -1458,6 +1483,26 @@ describe('REST and operations API select projection fixes', function () {
 			const instanceTupleCsv = await restGet('/PlainInstance/z-1?select([id,note])', { accept: 'text/csv' });
 			assert.strictEqual(instanceTupleCsv.status, 200);
 			assert.strictEqual(instanceTupleCsv.text, '"id","note"\n"z-1","n1"\n');
+
+			const customInstanceCollectionStar = await restGet('/CustomInstanceList/?select(*)', { accept: 'text/csv' });
+			assert.strictEqual(customInstanceCollectionStar.status, 200);
+			assert.strictEqual(customInstanceCollectionStar.text, '"id","name","extra"\n"1","One","e1"\n"2","Two","e2"\n');
+
+			const customInstanceRecordStar = await restGet('/CustomInstanceList/1?select(*)', { accept: 'text/csv' });
+			assert.strictEqual(customInstanceRecordStar.status, 200);
+			assert.strictEqual(customInstanceRecordStar.text, '"id","name","extra"\n"1","One","e1"\n');
+
+			const customInstanceRecordScalar = await restGet('/CustomInstanceList/1?select(id)', { accept: 'text/csv' });
+			assert.strictEqual(customInstanceRecordScalar.status, 200);
+			assert.strictEqual(customInstanceRecordScalar.text, '"id"\n"1"\n');
+
+			const customScalarCsv = await restGet('/CustomScalar/z-1?select(id)', { accept: 'text/csv' });
+			assert.strictEqual(customScalarCsv.status, 200);
+			assert.strictEqual(customScalarCsv.text, '"id"\n"z-1"\n');
+
+			const nestedSummaryCsv = await restGet('/NestedSummary/z-1', { accept: 'text/csv' });
+			assert.strictEqual(nestedSummaryCsv.status, 200);
+			assert.strictEqual(nestedSummaryCsv.text, '"name","inStock"\n"Zeta-1","true"\n');
 
 			const missingCsv = await restGet('/Plain/does-not-exist?select(id)', { accept: 'text/csv' });
 			assert.strictEqual(missingCsv.status, 404);
