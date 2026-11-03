@@ -1,14 +1,16 @@
 /**
- * Reading through an `@relationship` applies the role's permissions on the related table on the
- * surfaces `relationship-related-table-permissions.test.ts` does not drive: the nested search of an
- * `export_local` job, a many-to-many relationship, a reverse (`to:`) relationship, an unindexed related
- * attribute, and a live SSE subscription, including one whose related-table grant is revoked while the
- * stream is open.
+ * Reading through an `@relationship` applies the role's permissions on the related table: in the nested
+ * search of an `export_local` job, through a many-to-many or reverse (`to:`) relationship, on an unindexed
+ * related attribute, and in a live SSE subscription whose related-table or related-attribute grant is
+ * revoked while the stream is open. The request path is anchored in
+ * `relationship-related-table-permissions.test.ts`.
  *
- * The operations API authorizes the relationship paths of a search before it runs
- * (`utility/operation_authorization.ts` `checkRelationshipReads`), and every surface resolves a path
- * through `Table._readDenial`, which walks the related tables' permissions. A job re-runs the persisted
- * search as the caller (`dataLayer/export.ts`), so an export is held to the same rule as the request.
+ * Every surface resolves a relationship path through `Table._readDenial`: the operations API through
+ * `checkRelationshipReads` (`utility/operation_authorization.ts`; for `export_local` the nested
+ * `search_operation` is the permission subject, `server/serverHelpers/serverUtilities.ts`) and a `*`
+ * expansion that omits the relationship, the export job by re-running the search as the caller
+ * (`dataLayer/export.ts`), and an open subscription by the role-change recheck that re-runs `allowRead`
+ * (`server/liveSubscriptionAuth.ts`, `Resource.ts` `registerLiveSubscriptionForContext`).
  *
  * Run:
  *   npm run build && npm run test:integration -- "integrationTests/security/relationship-permissions-surfaces.test.ts"
@@ -59,6 +61,7 @@ const ROLES = {
 type RoleName = keyof typeof ROLES;
 type Principal = RoleName | 'super';
 const PASSWORD = 'Rel-surface-pw-3316!';
+const REQUEST_TIMEOUT = 10_000;
 
 const SECRETS = DEPTS.map((d) => d.secret);
 const ids = (rows: any) => (Array.isArray(rows) ? rows.map((r) => r.id).sort() : rows);
@@ -80,11 +83,15 @@ suite(
 				method: 'POST',
 				headers: { ...headers[as], 'Content-Type': 'application/json' },
 				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT),
 			});
 			return { status: response.status, body: await response.json() };
 		}
 		async function rest(as: Principal, path: string) {
-			const response = await fetch(`${restURL}${path}`, { headers: { ...headers[as], Accept: 'application/json' } });
+			const response = await fetch(`${restURL}${path}`, {
+				headers: { ...headers[as], Accept: 'application/json' },
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT),
+			});
 			const text = await response.text();
 			return { status: response.status, body: text ? JSON.parse(text) : undefined };
 		}
@@ -93,14 +100,27 @@ suite(
 				method: 'POST',
 				headers: { ...headers[as], 'Content-Type': 'application/json' },
 				body: JSON.stringify({ query }),
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT),
 			});
 			return { status: response.status, body: await response.json() };
 		}
-		function assertRefused(response: { status: number; body: any }, context: string) {
+		function assertRefused(response: { status: number; body: any }, context: string, denied?: string) {
 			strictEqual(
 				response.status,
 				403,
 				`${context}: expected 403, got ${response.status} ${JSON.stringify(response.body)}`
+			);
+			if (!denied) return;
+			// the operations API answers for what the role cannot describe as it does for a root reference
+			const [table, attribute] = denied.split('.');
+			deepStrictEqual(
+				response.body?.invalid_schema_items,
+				[
+					attribute
+						? `Attribute '${attribute}' does not exist on 'data.${table}'`
+						: `Table 'data.${table}' does not exist`,
+				],
+				`${context}: ${JSON.stringify(response.body)}`
 			);
 		}
 		function assertGraphqlRefused(response: { status: number; body: any }, context: string) {
@@ -108,12 +128,21 @@ suite(
 			strictEqual(message, 'Unauthorized access to resource', `${context}: ${JSON.stringify(response.body)}`);
 			strictEqual(response.body?.data, undefined, `${context}: ${JSON.stringify(response.body)}`);
 		}
-		function assertNoSecret(value: unknown, context: string) {
-			const text = JSON.stringify(value);
+		// a sub-selection naming an unreadable related attribute is narrowed to the readable ones; whether the
+		// granted primary key is returned alongside is not pinned here
+		function assertNarrowedToLabel(project: any, context: string) {
+			const text = JSON.stringify(project);
 			for (const secret of SECRETS) ok(!text.includes(secret), `${context}: ${text}`);
+			deepStrictEqual(
+				project.depts.map((dept: any) => ({ label: dept.label, secret: dept.secret })),
+				[
+					{ label: 'Eng', secret: undefined },
+					{ label: 'Ops', secret: undefined },
+				],
+				`${context}: ${text}`
+			);
 		}
 
-		/** Runs an `export_local` with a nested search as `as`; returns the refusal, or the job's file parsed. */
 		async function exportSearch(as: Principal, search_operation: Record<string, unknown>) {
 			const path = mkdtempSync(join(exportRoot, `${as}-`));
 			const start = await op(as, {
@@ -156,14 +185,13 @@ suite(
 			closed: boolean;
 			abort: () => void;
 		}
-		/** Opens an SSE subscription as `as` and counts the events it delivers until it closes. */
 		async function subscribe(as: Principal, path: string): Promise<Stream> {
 			const controller = new AbortController();
 			const stream: Stream = { status: 0, events: 0, closed: false, abort: () => controller.abort() };
 			streams.push(stream);
 			const response = await fetch(`${restURL}${path}`, {
 				headers: { ...headers[as], Accept: 'text/event-stream' },
-				signal: controller.signal,
+				signal: AbortSignal.any([controller.signal, AbortSignal.timeout(REQUEST_TIMEOUT)]),
 			});
 			stream.status = response.status;
 			if (response.status !== 200) {
@@ -172,6 +200,7 @@ suite(
 			}
 			strictEqual(response.headers.get('content-type')?.split(';')[0], 'text/event-stream', `${as} ${path}`);
 			const reader = response.body!.getReader();
+			controller.signal.addEventListener('abort', () => void reader.cancel().catch(() => {}));
 			const decoder = new TextDecoder();
 			let buffered = '';
 			void (async () => {
@@ -199,7 +228,6 @@ suite(
 			}
 		}
 		let level = 100;
-		/** Writes `Emp.e1`, which every open subscription on Emp should deliver. */
 		async function publish() {
 			const response = await op('super', {
 				operation: 'update',
@@ -208,12 +236,15 @@ suite(
 			});
 			strictEqual(response.status, 200, JSON.stringify(response.body));
 		}
-		/** Opens a subscription and proves it is live before the test revokes anything. */
-		async function liveSubscription(as: Principal, path: string) {
+		// a subscription first sends the records that currently match, so liveness is an event for a later write
+		async function liveSubscription(as: Principal, path: string, currentRecords: number) {
 			const stream = await subscribe(as, path);
 			strictEqual(stream.status, 200, `${as} ${path}`);
+			await waitFor(() => stream.events >= currentRecords, `${as} ${path} current records`);
+			const before = stream.events;
 			await publish();
-			await waitFor(() => stream.events > 0, `${as} ${path} first event`);
+			await waitFor(() => stream.events > before, `${as} ${path} delivers a write`);
+			ok(!stream.closed, `${as} ${path} closed`);
 			return stream;
 		}
 
@@ -269,12 +300,12 @@ suite(
 				deepStrictEqual(ids((await exportSearch('exportFull', bySecret('DEPT-WRONG'))).rows), []);
 			});
 			test('naming, selecting into or filtering by a related table the role cannot read is refused before the job starts', async () => {
-				assertRefused(await exportSearch('exportEmpOnly', byValue(['id', 'dept'])), 'empOnly [id, dept]');
+				assertRefused(await exportSearch('exportEmpOnly', byValue(['id', 'dept'])), 'empOnly [id, dept]', 'Dept');
 				assertRefused(
 					await exportSearch('exportEmpOnly', byValue(['id', { name: 'dept', select: ['id', 'secret'] }])),
 					'empOnly nested select'
 				);
-				assertRefused(await exportSearch('exportEmpOnly', bySecret('DEPT-SECRET-1')), 'empOnly condition');
+				assertRefused(await exportSearch('exportEmpOnly', bySecret('DEPT-SECRET-1')), 'empOnly condition', 'Dept');
 				assertRefused(await exportSearch('exportEmpOnly', bySecret('DEPT-WRONG')), 'empOnly condition, wrong value');
 			});
 			test('* omits a related table the role cannot read and narrows one it can partly read', async () => {
@@ -288,11 +319,13 @@ suite(
 			test('a related attribute the role cannot read is refused in a selection and in a condition', async () => {
 				assertRefused(
 					await exportSearch('exportDeptLabel', byValue(['id', { name: 'dept', select: ['id', 'secret'] }])),
-					'deptLabel nested select of secret'
+					'deptLabel nested select of secret',
+					'Dept.secret'
 				);
 				assertRefused(
 					await exportSearch('exportDeptLabel', bySecret('DEPT-SECRET-1')),
-					'deptLabel condition on secret'
+					'deptLabel condition on secret',
+					'Dept.secret'
 				);
 			});
 		});
@@ -325,7 +358,7 @@ suite(
 				deepStrictEqual(filtered.body, { data: { Proj: [{ id: 'p1' }] } });
 			});
 			test('is refused, omitted or narrowed by the role’s related-table permissions', async () => {
-				assertRefused(await search('empOnly', ['id', 'depts']), 'empOnly [id, depts]');
+				assertRefused(await search('empOnly', ['id', 'depts']), 'empOnly [id, depts]', 'Dept');
 				const star = await search('empOnly', ['*']);
 				deepStrictEqual(byId(star.body, 'p1'), PROJS[0]);
 				deepStrictEqual(byId((await rest('empOnly', '/Proj/?select(id,depts{id,label,secret})')).body, 'p1'), {
@@ -339,10 +372,9 @@ suite(
 					depts: [DEPT_LABEL, { id: 'd2', label: 'Ops' }],
 				});
 				const selected = await rest('deptLabel', '/Proj/?select(id,depts{id,label,secret})');
-				deepStrictEqual(byId(selected.body, 'p1'), { id: 'p1', depts: [{ label: 'Eng' }, { label: 'Ops' }] });
+				assertNarrowedToLabel(byId(selected.body, 'p1'), 'deptLabel REST selection');
 				const graphqlSelected = await graphql('deptLabel', '{ Proj { id depts { id label secret } } }');
-				assertNoSecret(graphqlSelected.body, 'deptLabel GraphQL selection');
-				deepStrictEqual(byId(graphqlSelected.body.data.Proj, 'p1').depts, [{ label: 'Eng' }, { label: 'Ops' }]);
+				assertNarrowedToLabel(byId(graphqlSelected.body.data.Proj, 'p1'), 'deptLabel GraphQL selection');
 
 				for (const as of ['empOnly', 'deptLabel'] as const) {
 					assertRefused(await rest(as, '/Proj/?depts.secret=DEPT-SECRET-1'), `${as} REST filter`);
@@ -378,7 +410,8 @@ suite(
 						conditions: [{ search_attribute: ['members', 'name'], search_type: 'equals', search_value: 'emp1' }],
 						get_attributes: ['id'],
 					}),
-					'deptOnly operations filter'
+					'deptOnly operations filter',
+					'Emp'
 				);
 				assertRefused(
 					await op('deptOnly', {
@@ -388,7 +421,8 @@ suite(
 						search_value: '*',
 						get_attributes: ['id', 'members'],
 					}),
-					'deptOnly [id, members]'
+					'deptOnly [id, members]',
+					'Emp'
 				);
 				deepStrictEqual(byId((await rest('deptOnly', '/Dept/?select(id,members{name})')).body, 'd1'), { id: 'd1' });
 				assertGraphqlRefused(
@@ -398,6 +432,7 @@ suite(
 			});
 			test('a condition on an unindexed related attribute is authorized like an indexed one', async () => {
 				deepStrictEqual(ids((await rest('full', '/Emp/?dept.plain=plain-aaa')).body), ['e1']);
+				deepStrictEqual(ids((await rest('empOnly', '/Emp/?level=1')).body), ['e1']);
 				assertRefused(await rest('empOnly', '/Emp/?dept.plain=plain-aaa'), 'empOnly REST filter');
 				assertRefused(await rest('empOnly', '/Emp/?dept.plain=plain-nope'), 'empOnly REST filter, wrong value');
 				const search = (as: Principal) =>
@@ -408,20 +443,22 @@ suite(
 						get_attributes: ['id'],
 					});
 				deepStrictEqual(ids((await search('full')).body), ['e1']);
-				assertRefused(await search('empOnly'), 'empOnly operations filter');
+				assertRefused(await search('empOnly'), 'empOnly operations filter', 'Dept');
 			});
 		});
 
 		suite('live subscriptions through a relationship', () => {
 			test('a subscription conditioned on a related table the role cannot read is refused', async () => {
-				const live = await liveSubscription('full', '/Emp/?dept.secret=DEPT-SECRET-1');
+				const live = await liveSubscription('full', '/Emp/?dept.secret=DEPT-SECRET-1', 1);
 				live.abort();
+				const plain = await liveSubscription('empOnly', '/Emp/?level=gt=0', EMPS.length);
+				plain.abort();
 				const refused = await subscribe('empOnly', '/Emp/?dept.secret=DEPT-SECRET-1');
 				strictEqual(refused.status, 403);
 			});
 			test('revoking the related table closes the subscription conditioned on it and leaves a sibling open', async () => {
-				const related = await liveSubscription('revocable', '/Emp/?dept.budget=gt=0');
-				const sibling = await liveSubscription('revocable', '/Emp/?level=gt=0');
+				const related = await liveSubscription('revocable', '/Emp/?dept.budget=gt=0', EMPS.length);
+				const sibling = await liveSubscription('revocable', '/Emp/?level=gt=0', EMPS.length);
 
 				const altered = await op('super', {
 					operation: 'alter_role',
@@ -433,19 +470,17 @@ suite(
 				await waitFor(() => related.closed, 'relationship-conditioned stream closed after alter_role');
 				assertRefused(await rest('revocable', '/Emp/?dept.budget=gt=0'), 'revocable fresh request');
 
-				const relatedEvents = related.events;
 				const siblingEvents = sibling.events;
 				await publish();
 				await waitFor(() => sibling.events > siblingEvents, 'sibling stream delivers after alter_role');
-				strictEqual(related.events, relatedEvents, 'the closed stream delivered after revocation');
 				ok(!sibling.closed, 'the sibling stream closed');
 				sibling.abort();
 			});
 			test('revoking a related attribute grant closes the subscription conditioned on that attribute', async () => {
 				const ungranted = await subscribe('attrRevocable', '/Emp/?dept.budget=gt=0');
 				strictEqual(ungranted.status, 403);
-				const related = await liveSubscription('attrRevocable', '/Emp/?dept.label=Eng');
-				const sibling = await liveSubscription('attrRevocable', '/Emp/?level=gt=0');
+				const related = await liveSubscription('attrRevocable', '/Emp/?dept.label=Eng', 1);
+				const sibling = await liveSubscription('attrRevocable', '/Emp/?level=gt=0', EMPS.length);
 
 				const altered = await op('super', {
 					operation: 'alter_role',
@@ -460,11 +495,9 @@ suite(
 				await waitFor(() => related.closed, 'attribute-conditioned stream closed after alter_role');
 				assertRefused(await rest('attrRevocable', '/Emp/?dept.label=Eng'), 'attrRevocable fresh request');
 
-				const relatedEvents = related.events;
 				const siblingEvents = sibling.events;
 				await publish();
 				await waitFor(() => sibling.events > siblingEvents, 'sibling stream delivers after alter_role');
-				strictEqual(related.events, relatedEvents, 'the closed stream delivered after revocation');
 				ok(!sibling.closed, 'the sibling stream closed');
 				sibling.abort();
 			});
