@@ -585,7 +585,7 @@ export async function disablePreviews(req: any) {
 		}
 		// A drop that removed nothing may have lost to a newer preview release, which that node rightly kept.
 		if (dropped.some((drop) => !drop.error && !drop.componentRemoved)) {
-			const remaining = await livePreviewReleases(req.app).catch((error) => {
+			const remaining = await livePreviewReleases(req.app, generation).catch((error) => {
 				failed.push(`the census after the drops: ${(error as Error).message}`);
 				return { releases: [], unreachable: [] };
 			});

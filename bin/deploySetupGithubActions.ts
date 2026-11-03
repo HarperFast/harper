@@ -235,9 +235,9 @@ const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clo
 // Read over the whole step: a multi-line quote, a pipe or xargs carries a value onto a git line that shows none of it.
 const DYNAMIC_INPUT = /[$`<|]|\bxargs\b/;
 const COMMAND_ASSIGNMENTS =
-	/(^|[;&|({]|\b(?:then|do|else|export|local|declare|readonly)\b)(?:\s*\w+=(?:"[^"]*"|'[^']*'|\$\{\{[^}]*\}\}|[^\s;&|"'])*)+/g;
+	/(^|[;&|({]|\b(?:then|do|else|export|local|declare|readonly)\b)(?:\s*\w+=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\$\{\{[^}]*\}\}|[^\s;&|"'])*)+/g;
 
-/** Whether a script names the variable other than to read it, as an assignment, `read`, `for` or `printf -v` does. */
+// Any mention but a read counts: shell has more ways to set a variable than a list of them would hold.
 function maySetVariable(script: string, variable: string): boolean {
 	return new RegExp(String.raw`(?<!\$\{?[#!]?|env\.)\b${variable}\b`).test(script);
 }
@@ -352,10 +352,7 @@ function checkSameRepositoryCondition(
 const ACTION_IS_CLOSED = /^(?:github\.event\.action\s*==\s*'closed'|'closed'\s*==\s*github\.event\.action)$/i;
 const ACTION_IS_NOT_CLOSED = /^(?:github\.event\.action\s*!=\s*'closed'|'closed'\s*!=\s*github\.event\.action)$/i;
 
-/**
- * Whether a job runs when a pull request closes: false when its condition, or a needed job's, excludes `closed`, and
- * undefined when it says anything else than that it runs for a closed same-repository pull request.
- */
+/** Undefined when a condition says more than that the job runs for a closed same-repository pull request. */
 function runsOnClose(name: string, jobs: Record<string, any>, path = new Set<string>()): boolean | undefined {
 	if (path.has(name) || !jobs[name]) return undefined;
 	const condition = jobCondition(jobs[name]);

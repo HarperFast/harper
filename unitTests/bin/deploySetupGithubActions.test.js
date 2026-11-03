@@ -413,6 +413,7 @@ jobs:
 				'      - run: git fetch origin "a\\";b" "$SHA"\n',
 				'      - run: git fetch origin a\\;b "$SHA"\n',
 				'      - run: git fetch <&- origin "$SHA"\n',
+				'      - run: FOO="\\"bar" git fetch origin "${{ github.event.pull_request.head.sha }}"\n',
 				'      - uses: actions/checkout@v5\n        with:\n          ref: ${{ env.SHA }}\n',
 				'      - run: |\n          SHA=main\n          git checkout ${{ env.SHA }}\n',
 				'      - run: git checkout ${{ env.SHA }}\n      - run: echo "SHA=main" >> "$GITHUB_ENV"\n',
