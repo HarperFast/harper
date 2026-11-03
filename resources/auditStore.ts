@@ -329,7 +329,10 @@ export function openAuditStore(rootStore) {
 					if (isRocksAuditStore) {
 						const before = retentionCutoff(1 + passCleanupPriority * passCleanupPriority);
 						raiseAuditFloor(auditStore, before, true);
-						auditStore.rootStore.purgeLogs({ before });
+						// the floor and purge bounds reach disk before the files they account for are unlinked;
+						// the boot purge and manual prunes do not wait yet (harper#3947)
+						if (originFloorsDurable(auditStore.rootStore)) await auditStore.rootStore.syncWal();
+						if (!cleanupStopped && !storeClosing()) auditStore.rootStore.purgeLogs({ before });
 					} else {
 						// Driven explicitly rather than with for-of: this loop suspends on the awaits below, and a
 						// close landing mid-pass closes the env under it. for-of calls next() before the body, so a
@@ -821,8 +824,15 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 		const recorded = trustedLogPurgeBounds(auditStore, floor);
 		nativeHorizon = nativePurgeHorizon(auditStore, now);
 		// Unobserved, the cutoff bounds every log: when the native retention cannot be read, and for a cutoff
-		// ahead of the clock, which could remove what is written after the probe.
-		if (observeLogs && nativeHorizon !== undefined && cutoff <= now && Number.isFinite(floor)) {
+		// ahead of the clock, which could remove what is written after the probe. A cutoff at or below the
+		// epoch needs no observation: everything it removes is already under the epoch.
+		if (
+			observeLogs &&
+			nativeHorizon !== undefined &&
+			cutoff <= now &&
+			Number.isFinite(floor) &&
+			!(recorded && cutoff <= recorded.epoch)
+		) {
 			const base = recorded ?? freshLogPurgeBounds(floor, nativeHorizon);
 			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now);
 		}

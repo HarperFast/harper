@@ -100,7 +100,8 @@ upper bound on every key any prune removed from the named logs.
   every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`: a
   log with no entry at or past the cutoff is quiet, bounded by its largest key, and `quietAt` becomes
   now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
-  anything appended after the probe then lands in a segment the prune cannot remove. Any other prune
+  anything appended after the probe then lands in a segment the prune cannot remove, and a cutoff at
+  or below the epoch needs no observation. Any other prune
   (`deleteHistory`, `delete_transaction_logs_before`, a cutoff ahead of the clock) raises `epoch` to
   its cutoff.
 - **RocksDB removes whole segments by mtime**, so a log written past the cutoff since its last quiet pass
@@ -121,8 +122,9 @@ upper bound on every key any prune removed from the named logs.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.
-- Not fsynced before the files go: power loss can lose the record with the floor it shares a
-  transaction with ([harper#3947](https://github.com/HarperFast/harper/issues/3947)).
+- The steady-state RocksDB pass syncs the WAL before `purgeLogs`; the boot purge and manual prunes do
+  not yet, so power loss there can lose the record with the floor it shares a transaction with
+  ([harper#3947](https://github.com/HarperFast/harper/issues/3947)).
 
 ---
 
