@@ -5233,10 +5233,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// options, then sort keys and coerce numeric-looking string scalars so a representation-only
 			// difference (key order, string-vs-number) does not force a needless rebuild. harper#1357
 			const canonicalIndexKey = (indexed: any) => JSON.stringify(canonicalizeIndexOptions(stripSearchOnly(indexed)));
-			// A checkpoint certifies rows indexed under the old computation, so it must not be resumed
+			// A checkpoint certifies rows indexed under the old computation (`version` is how application code signals one)
 			const computationChanged =
 				JSON.stringify(attributeDescriptor?.computed) !== JSON.stringify(attribute.computed) ||
-				attributeDescriptor?.computedFromExpression !== attribute.computedFromExpression;
+				attributeDescriptor?.computedFromExpression !== attribute.computedFromExpression ||
+				attributeDescriptor?.version !== attribute.version;
 			const commonChanged =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||

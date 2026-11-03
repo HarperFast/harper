@@ -130,4 +130,56 @@ describe('re-declaring a table that adds or removes a bare @computed (harper#378
 			assert.deepStrictEqual(matches, ['k-' + i], `row k-${i} was not reindexed under the new expression`);
 		}
 	});
+
+	it('does not resume a certified checkpoint when only the computation version changes', async () => {
+		const Before = declare('ComputedVersionCheckpoint', { computed: true, version: 1 });
+		Before.setComputedAttribute('score', (record) => record.name);
+		let lastPut;
+		for (let i = 0; i < 5; i++) lastPut = Before.put({ id: 'k-' + i, name: 'n' + i });
+		await lastPut;
+		await Before.indexingOperation;
+		await catalogFlushed(Before);
+		const key = 'ComputedVersionCheckpoint/score';
+		const written = Before.dbisDB.put(key, {
+			...Before.dbisDB.getSync(key),
+			indexingPID: 999999,
+			lastIndexedKey: 'k-2',
+			checkpointCertified: 'k-2',
+			checkpointAlgorithm: CHECKPOINT_ALGORITHM,
+		});
+		if (written?.then) await written;
+
+		const After = declare('ComputedVersionCheckpoint', { computed: true, version: 2 });
+		After.setComputedAttribute('score', (record) => record.id);
+		await After.indexingOperation;
+		for (let i = 0; i < 5; i++) {
+			const matches = [];
+			for await (const record of After.search({ conditions: [{ attribute: 'score', value: 'k-' + i }] }))
+				matches.push(record.id);
+			assert.deepStrictEqual(matches, ['k-' + i], `row k-${i} was not reindexed under the new version`);
+		}
+	});
+
+	it('keeps the local computed declaration and its resolver when a cluster snapshot omits it', async () => {
+		const Local = declare('ComputedClusterSnapshot', { computed: true });
+		Local.setComputedAttribute('score', (record) => record.name);
+		await Local.indexingOperation;
+		await catalogFlushed(Local);
+
+		const Merged = table({
+			table: 'ComputedClusterSnapshot',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'score', type: 'String', indexed: true },
+			],
+			origin: 'cluster',
+		});
+		await Merged.indexingOperation;
+		await catalogFlushed(Merged);
+		assert.ok(Merged.attributes.find((attribute) => attribute.name === 'score').computed);
+		assert.ok(Merged.dbisDB.getSync('ComputedClusterSnapshot/score').computed);
+		assert.strictEqual(typeof Merged.userResolvers.score, 'function');
+	});
 });

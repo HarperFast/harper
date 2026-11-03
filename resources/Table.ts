@@ -10666,7 +10666,6 @@ export function makeTable(options): TableResourceClass {
 			for (const a of this.attributes as any[]) if (a?.computed && !a.relationship) computedByName.set(a.name, a);
 			for (const name of Object.keys(this.userResolvers)) {
 				const attribute = computedByName.get(name);
-				// a schema-generated resolver must not outlive the expression that produced it
 				if (
 					!attribute ||
 					(!attribute.computedFromExpression && schemaExpressionResolvers.has(this.userResolvers[name]))
