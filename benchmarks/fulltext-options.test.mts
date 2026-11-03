@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { resolve } from 'node:path';
 import { parseOptions, cellEnvironment, formatResult } from './fulltext-options.mts';
 
 test('default commands select bounded read-only smoke workloads; nightly explicitly restores larger matrices', () => {
@@ -34,7 +35,7 @@ test('explicit flags override presets, duration uses seconds and supported bound
 		[http.rows, http.clients, http.writes, http.duration, http.cases, http.expectedWorkers],
 		[[1000], [1], [0], 1000, ['exact'], 1]
 	);
-	assert(http.output.endsWith('/chosen'));
+	assert.strictEqual(http.output, resolve('chosen'));
 	assert.deepStrictEqual(parseOptions('http', ['--large', '--rows=20000000', '--duration=300']).rows, [20000000]);
 	const cost = parseOptions('cost', ['--samples=1', '--warmups=0']);
 	assert.deepStrictEqual([cost.samples, cost.warmups], [1, 0]);
