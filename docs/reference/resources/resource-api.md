@@ -1075,11 +1075,15 @@ Array of condition objects to filter records. Each condition:
 | `conditions`               | Nested conditions array; with `attribute`, conditions on the related table that one related record must meet (no `comparator` or `value`)                                                                                          |
 | `operator`                 | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
 | `fields`                   | Full-text source fields to search; every name must belong to the selected full-text index                                                                                                                                          |
+| `boost`                    | Optional full-text score multiplier (`number`, default `1`); see v5.4 [query-time relevance controls](../full-text-search/querying.md#query-time-relevance-controls)                                                               |
+| `should`                   | Optional nonempty array of additional scoring clauses; omitted by default; see v5.4 [query-time relevance controls](../full-text-search/querying.md#query-time-relevance-controls)                                                 |
+| `fuzzyDistance`            | Integer edit distance for a fuzzy condition, including negated forms; see [v5.4 fuzzy controls](../full-text-search/querying.md#fuzzy-controls-in-v54) and the server cap.                                                         |
+| `fuzzyTranspositions`      | Boolean controlling whether adjacent transpositions count as one edit on a fuzzy condition; see [v5.4 fuzzy controls](../full-text-search/querying.md#fuzzy-controls-in-v54).                                                      |
 | `includeHighlights`        | Include configured full-text highlights                                                                                                                                                                                            |
 | `maxIndexLagMilliseconds`  | Maximum accepted full-text index lag; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                                 |
 | `waitForIndexMilliseconds` | Time to wait for acceptable full-text coverage; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                       |
 
-The final four properties apply to full-text conditions (v5.3.0). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints, error behavior, and permission requirements for direct server-side searches.
+The `fields`, `includeHighlights`, `maxIndexLagMilliseconds` and `waitForIndexMilliseconds` properties apply to full-text conditions (v5.3.0). The `fuzzyDistance` and `fuzzyTranspositions` properties apply to fuzzy conditions in v5.4. The `boost` and `should` controls are available in v5.4; their constraints are described in [query-time relevance controls](../full-text-search/querying.md#query-time-relevance-controls). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints, error behavior, and permission requirements for direct server-side searches.
 
 Full-text conditions use `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, or `matches_fuzzy_prefix` against a declared full-text index. Each comparator also has a `not_` form: `not_matches`, `not_matches_all`, `not_matches_phrase`, `not_matches_prefix`, `not_matches_fuzzy`, and `not_matches_fuzzy_prefix`. A negated condition requires a positive full-text condition on the same index. See [Full-text query execution](./query-optimization.md#full-text-search-work-and-paging) for paging costs and work limits.
 
@@ -1185,7 +1189,7 @@ Special properties:
 
 Full-text queries add two special properties:
 
-- `$score`: When a query uses a full-text index, returns its BM25 relevance score.
+- `$score`: When a query uses a full-text index, returns its BM25 relevance score. In v5.4, supplied [query-time boosts and optional clauses](../full-text-search/querying.md#query-time-relevance-controls) contribute to this score.
 - `$highlights`: Enables and returns full-text fragments and matching spans when the index has highlighting configured. See [Highlights](../full-text-search/querying.md#highlights).
 
 #### Selecting related records
