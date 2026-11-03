@@ -333,7 +333,7 @@ Read the metric with:
 }
 ```
 
-Rows are flat JSON scalars. `path` identifies the database/table/index, or `index:<sha256>` for labels longer than 256 bytes; `method` is `writer` or `reader`. Aggregate rows retain the originating worker `thread`, a bounded-lifetime `series` reset marker and actual `sampledAt` time. Rollups select the newest cumulative row per worker/index/role instead of averaging its counters.
+Rows are flat JSON scalars. `path` is `<database>.<table>/<index>`, or `index:<sha256>` for labels longer than 256 bytes; `method` is `writer` or `reader`. Aggregate rows retain the originating worker `thread`, a bounded-lifetime `series` reset marker and actual `sampledAt` time. Rollups select the newest cumulative row per worker/index/role instead of averaging its counters.
 
 | Field example                                   | Interpretation                                                                        |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -345,13 +345,17 @@ Rows are flat JSON scalars. `path` identifies the database/table/index, or `inde
 
 Exact bigint counters, nanoseconds, bytes, histogram counts and finite bounds are decimal strings. Decode counters with `BigInt`. Calculate a rate only between complete, available observations of the same `series`, using their exact counter difference and actual `sampledAt` elapsed time. Check integer safety before converting a difference to a JavaScript number. A new series, unavailable sample or incomplete coverage requires a new baseline; a missing interval is not zero activity.
 
-Availability, pending and error flags distinguish absent observations from zero. `observationAgeMilliseconds` identifies retained observations. `complete: false` flags lost terminal coverage; `droppedRows` counts pending-row overflow. Pending rows coalesce in a 128-row buffer, dropping the oldest on overflow. Null can mean unavailable data, an empty queue's oldest age, or the unbounded final histogram bucket. Histogram buckets are noncumulative; Harper does not invent percentiles.
+Check `available` and `collectionError` before interpreting observations; `observationAgeMilliseconds` identifies retained data. `activeHandles` and `closingHandles` count handles in that worker/index/role group. `native_reader_snapshotBytesPending` means a byte observation is still pending, not zero bytes. `native_reader_snapshotBytesError` and `native_reader_snapshotBytesAgeNanoseconds` describe that cached observation separately.
+
+`complete: false` flags lost final-handle counts. The next successful live observation starts a new `series` and restores complete coverage; use that observation as a new rate baseline. Pending rows coalesce in a 128-row buffer, dropping the oldest on overflow. `droppedRows` is a worker-wide cumulative count repeated on its rows; do not sum it across indexes or roles. Dropping a pending row does not lose the group's cumulative counters, although intermediate observations are missing.
+
+Null can mean unavailable data, an empty queue's oldest age, or the unbounded final histogram bucket. Histogram buckets are noncumulative; their changes cover only intervals when histogram recording was enabled. Harper does not invent percentiles.
 
 Reader reopen and overlapping retired readers carry counters forward while their logical series remains alive. Reader document/segment/generation gauges use the newest eligible observation rather than summing duplicate snapshots. Queue occupancy sums live handles of the same role; oldest age uses their maximum. Shared queue capacities overlap, so do not add ordinary/expensive capacities or interpret them as a process-wide budget.
 
-Optional histogram recording and reader-byte observation default to off. Byte values can remain pending until a successful publication/reload; enabling observation creates no native publication. Turning operator collection off stops its timer/export demand and disables options no remaining internal consumer needs on live handles. Disabling Harper analytics also removes its full-text operator demand. A synchronous observation already executing completes, and a closing handle keeps its last options until close settles. Internal consumers are implementation hooks, not a public subscription API; consumer-only collection does not enable persistent analytics.
+Optional histogram recording and reader-byte observation default to off. Byte values can remain pending until a successful publication/reload; enabling observation creates no native publication. Turning operator collection off stops its timer/export demand and disables options no remaining internal consumer needs on live handles. Disabling Harper analytics also removes its full-text operator demand. A synchronous observation already executing completes, and a closing handle keeps its last options until close settles. Internal consumers are implementation hooks, not a public subscription API or a requirement for operators to enable analytics; consumer-only collection does not enable persistent analytics.
 
-Do not sum wrapper batches with native frames, overlapping legacy/native timing spans, or reader document counts across workers. Generation IDs are not source-log positions or freshness timestamps. Metrics do not replace [full-text readiness and catch-up](../full-text-search/configuration.md). Detailed automatic merge statistics, native cancellation and per-index RSS are unsupported. Query text, terms, record IDs, users, raw cursors, filesystem paths and raw exception messages are not exported labels.
+Do not sum wrapper batches with native frames, overlapping timing measurements from different layers, or reader document counts across workers. Generation IDs are not source-log positions or freshness timestamps. Metrics do not replace [full-text readiness and catch-up](../full-text-search/configuration.md). Detailed automatic merge statistics, native cancellation and per-index RSS are unsupported. Query text, terms, record IDs, users, raw cursors, filesystem paths and raw exception messages are not exported labels.
 
 ## Custom Metrics
 
@@ -359,7 +363,7 @@ Applications can record custom metrics using the `server.recordAnalytics()` API.
 
 ## Analytics Configuration
 
-The `analytics` configuration section controls aggregation, replication, and storage-volume sampling. All options are optional.
+The `analytics` configuration section controls aggregation, replication, storage-volume sampling and optional [full-text collection](#full-text-analytics). All options are optional.
 
 ```yaml
 analytics:
@@ -404,6 +408,16 @@ Type: `boolean`
 Default: `true`
 
 Harper Pro only. Runs the CPU profiler that records the `cpu-usage` metric, attributing CPU time to Harper code, application code, hot functions, and child processes. The profiler samples only in a window of one `aggregatePeriod` before each capture and marks the `utilization` samples it affects with `profiler-sampling`; see [`utilization` and the CPU profiler](#utilization-and-the-cpu-profiler). Set to `false` to never start it.
+
+### `analytics.fullText`
+
+<VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" />
+
+Type: `object`
+
+Default: omitted; operator collection is disabled
+
+Enable and tune optional full-text collection with the [`analytics.fullText` options](../configuration/options.md#analyticsfulltext). Defaults are implied; the block is absent from the shipped default configuration. Changes apply dynamically without reopening indexes. Removing the configuration file reapplies environment overlays to an empty file, so file-based operator demand stops unless an environment setting still enables it.
 
 ### `analytics.logging`
 

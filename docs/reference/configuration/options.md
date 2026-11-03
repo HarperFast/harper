@@ -388,6 +388,7 @@ analytics:
 - `storageInterval` — Aggregation cycles between storage-volume measurements (`0` disables); _Default_: `10`
 - `replicate` — Replicate analytics data across cluster; _Default_: `false`
 - `logging` — Per-subsystem logger override for analytics writes. See [Logging Configuration](../logging/configuration.md#analyticslogging)
+- `fullText` <VersionBadge version="v5.4.0" /> — Optional full-text telemetry collection and export; defaults to omitted/off. See [Full-text analytics](../analytics/overview.md#full-text-analytics).
 - `profiling` <VersionBadge type="changed" version="v5.4.0" /> — Harper Pro only. Run the CPU profiler that records `cpu-usage`; it samples only in short windows and flags the `utilization` samples it affects. See [`analytics.profiling`](../analytics/overview.md#analyticsprofiling); _Default_: `true`
 
 ### `analytics.fullText`
@@ -413,7 +414,7 @@ analytics:
 | `histograms`           | `boolean` | `false`       | Record optional latency histograms.                                                                                    |
 | `snapshotBytes`        | `boolean` | `false`       | Request cached reader-byte observations; enabling does not trigger publication or reload.                              |
 
-Set `enabled: false` or remove the block to stop operator collection and export. Invalid edits retain the last valid policy. Deleting the configuration file pauses operator demand until a valid file returns; environment overrides retain their normal precedence. Internal consumers can independently keep collection active without enabling persistence. A handle already closing retains its last options until close settles.
+Set `enabled: false` or remove the block to stop operator collection and export. Invalid edits retain the last valid policy. Deleting the configuration file removes file-based operator demand and reapplies environment overlays to an empty file; collection remains enabled if an environment setting still requests it. Internal consumers can independently keep collection active without enabling persistence. A handle already closing retains its last options until close settles.
 
 See [Full-text analytics](../analytics/overview.md#full-text-analytics) for fields, cumulative-counter interpretation and collection costs.
 

@@ -10,7 +10,9 @@ Harper can build a BM25-ranked full-text index from one or more fields on a tabl
 
 Use full-text search when users need relevance-ranked matching across product names, descriptions, tags, articles, or other natural-language fields. It supports term, all-term, phrase, prefix, fuzzy, and fuzzy-prefix matching.
 
-<VersionBadge type="changed" version="v5.4.0" /> Starting in Harper v5.4, the native engine is **`@harperfast/fulltext` 0.7.0, embedding Tantivy 0.27.0**. Existing fulltext 0.5.0 and prerelease 0.6 indexes require rebuilding. See [Upgrading existing indexes](#upgrading-existing-indexes) before upgrading a node.
+<VersionBadge type="changed" version="v5.4.0" /> Starting in Harper v5.4, the native engine is **`@harperfast/fulltext` 0.9.0, embedding Tantivy 0.27.0**. Existing fulltext 0.5.0 and prerelease 0.6 indexes require rebuilding. See [Upgrading existing indexes](#upgrading-existing-indexes) before upgrading a node. Existing text-only 0.7.0 and 0.8.0 checkpoints with compatible identities are reused by 0.9.0 without another rebuild.
+
+Optional [full-text analytics](../analytics/overview.md#full-text-analytics) can report operation counters, queues and cached reader observations without reopening indexes. Collection is off by default.
 
 ## Requirements
 
@@ -59,7 +61,7 @@ Use `describe_table` to inspect each index's declaration and readiness. See [Ins
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-Harper 5.3.1–5.3.4 ship `@harperfast/fulltext` 0.5.0. Upgrading their current field-based indexes to the 0.7.0 engine in Harper v5.4 requires a full local rebuild. Harper 5.3.0 ships fulltext 0.3.0 and is outside this qualified procedure; plan and validate that migration separately. Prerelease installations using fulltext 0.6 also require rebuilding. This procedure applies to the current field-based declarations; earlier beta declarations and indexes have no supported migration path. Harper initiates the rebuild automatically when the wrapper refuses the old persisted identity; no manual rebuild command or file editing is needed.
+Harper 5.3.1–5.3.4 ship `@harperfast/fulltext` 0.5.0. Upgrading their current field-based indexes to the 0.9.0 engine in Harper v5.4 requires a full local rebuild. Harper 5.3.0 ships fulltext 0.3.0 and is outside this qualified procedure; plan and validate that migration separately. Prerelease installations using fulltext 0.6 also require rebuilding. This procedure applies to the current field-based declarations; earlier beta declarations and indexes have no supported migration path. Harper initiates the rebuild automatically when the wrapper refuses the old persisted identity; no manual rebuild command or file editing is needed. The 0.5/0.6 rebuild requirement does not apply to compatible text-only 0.7.0 and 0.8.0 checkpoints reused by 0.9.0; other older declarations remain outside this qualified migration.
 
 ### Matching and ranking changes
 
@@ -79,7 +81,7 @@ See [freshness controls](./querying.md#freshness-controls) for the condition fie
 
 Keep full-text traffic drained, preserve authoritative data and logs, and correct the reported package, storage or coordination failure before restarting the same v5.4 Harper version. An interrupted rebuild can recover from authoritative records. Do not force readiness or edit, move or delete native index files by hand.
 
-**Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting a 0.7 index identity. If an older version has already been started, stop it and restore the 0.7.0-based Harper version before checking readiness and catch-up again. This is recovery with the current engine, not a supported operator downgrade procedure. If recovery also fails, keep traffic drained and investigate the readiness reason and node logs.
+**Direct downgrade to fulltext 0.5.x is unsupported.** That engine refuses both opening and resetting the current index identity. If an older version has already been started, stop it and restore the 0.9.0-based Harper version before checking readiness and catch-up again. This is recovery with the current engine, not a supported operator downgrade procedure. If recovery also fails, keep traffic drained and investigate the readiness reason and node logs.
 
 ## Write backpressure
 
