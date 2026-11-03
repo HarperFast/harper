@@ -52,8 +52,9 @@ const MCP_SELECTORS = new Map();
 export class SelectorDocs extends Resource {
 	static mcpResources = [
 		{
-			uriTemplate: 'selectors:///{permission}/{ownership}/{order}/{principal}',
+			uriTemplate: 'selectors:///{permission}/{ownership}/{order}',
 			name: 'delegated selector projection',
+			description: 'Read a relationship with a reusable nested selector under the MCP session user',
 			mimeType: 'application/json',
 			method: 'readSelector',
 		},
@@ -62,15 +63,13 @@ export class SelectorDocs extends Resource {
 		const key = `${permission}/${ownership}/${order}`;
 		let select = MCP_SELECTORS.get(key);
 		if (!select) MCP_SELECTORS.set(key, (select = employeeSelect()));
-		const record = await tables.ReuseEmployee.get(
-			{
-				id: 'e1',
-				select: ownership === 'cloned' ? structuredClone(select) : select,
-				checkPermission: permission === 'object' ? context.user.role.permission : true,
-			},
-			context
-		);
-		return { text: JSON.stringify({ record, select }), mimeType: 'application/json' };
+		const record = await tables.ReuseEmployee.get({
+			id: 'e1',
+			select: ownership === 'cloned' ? structuredClone(select) : select,
+			checkPermission: permission === 'object' ? context.user.role.permission : true,
+		});
+		const symbols = [select, select[2]].map((value) => Object.getOwnPropertySymbols(value).map(String));
+		return { text: JSON.stringify({ record, select, symbols }), mimeType: 'application/json' };
 	}
 }
 

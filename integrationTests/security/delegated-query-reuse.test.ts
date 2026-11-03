@@ -155,16 +155,21 @@ suite('Delegated reads reusing one query object', (ctx: ContextWithHarper) => {
 					[RESTRICTED, BROAD, RESTRICTED],
 				]) {
 					for (const ownership of ['cloned', 'shared']) {
+						const snapshots = [];
 						for (const user of order) {
 							const result = await clients.get(user)!.readResource({
-								uri: `selectors:///${permission}/${ownership}/${order[0]}/${user}`,
+								uri: `selectors:///${permission}/${ownership}/${order[0]}`,
 							});
 							assert.strictEqual(result.contents.length, 1);
 							const content = result.contents[0];
 							assert.ok('text' in content);
-							const { record, select } = JSON.parse(content.text as string);
+							const { record, select, symbols } = JSON.parse(content.text as string);
 							assert.deepStrictEqual(record, expectedFor(user), `${permission}/${ownership}/${user}`);
+							if (ownership === 'shared') snapshots.push({ select, symbols });
+						}
+						for (const { select, symbols } of snapshots) {
 							assert.deepStrictEqual(select, AUTHORED_SELECT, 'the authored selector remains unchanged');
+							assert.deepStrictEqual(symbols, [[], []], 'authorization adds no symbols to shared selectors');
 						}
 					}
 				}
