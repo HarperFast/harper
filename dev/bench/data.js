@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793624289050,
+  "lastUpdate": 1793690214863,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8717,6 +8717,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 936.31,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c78e9dc98b1e83e3d6c1e5545fcd2184a2559bc3",
+          "message": "Drain in-flight work and close cleanly on SIGTERM/SIGINT/SIGQUIT, bounded by threads.shutdownTimeout (#3943)\n\n* Drain and close cleanly on SIGTERM/SIGINT/SIGQUIT instead of exiting at once\n\nA terminating signal used to call process.exit(0) immediately, tearing worker\nthreads down mid-request and skipping the worker shutdown sequence entirely.\nIt now runs that sequence for every live worker and the main thread, bounded\nby threads.shutdownTimeout (8 s; 30 s under harper dev; 0 = old behavior), and\na second signal exits at once.\n\n- processShutdown.ts: one exit latch for completion, deadline and second signal\n- SHUTDOWN carries exitDeadline to every live worker (stopWorkersForExit),\n  including one a restart already marked; repeats are harmless (Scope.close\n  and shutdownServers memoized; a later deadline tightens a running drain)\n- one force-terminate timer per worker; every backstop waits for the deadline\n- on a process exit, scope close starts after connections drain; main disposes\n  its scopes and branch databases after its workers exit\n- Bun closeServers awaits server.stop() instead of always waiting 5 s\n- harper stop waits for the process to exit, non-zero if it does not\n\nCloses #3452\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Log exit-time shutdown lines at notify; read every boot's log in the restart check\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Keep a worker alive through deferred scope closes; carry the exit deadline on every SHUTDOWN after a process exit starts\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Hold a worker open from the exit deadline until it exits, covering restart-then-exit and branch close\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Drop comments that restate the code\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Close a scope created after SHUTDOWN arrived; hold a worker open from SHUTDOWN receipt on a process exit\n\nCloses #3937\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Fit server/DESIGN.md under its ceiling after merging main; poll for the restarted boot's log line\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Skip the signal integration suites on Windows, which cannot deliver SIGTERM to a handler\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-03T05:26:57Z",
+          "url": "https://github.com/HarperFast/harper/commit/c78e9dc98b1e83e3d6c1e5545fcd2184a2559bc3"
+        },
+        "date": 1793690212500,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8963.99,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 13848.62,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 13336.1,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 9763.74,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 7100.61,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 13713.56,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1556.05,
             "unit": "ops/sec"
           }
         ]
