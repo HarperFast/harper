@@ -6,7 +6,8 @@ const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // REST condition values arrive as strings; each must be converted with the declared type of the
-// attribute it is compared against (resources/DESIGN.md → "Condition value conversion").
+// attribute it is compared against (resources/DESIGN.md → "Chained query conditions scope one array
+// element; FIQL tokens always advance").
 describe('REST condition value conversion', () => {
 	let Brand, Product;
 
@@ -65,7 +66,6 @@ describe('REST condition value conversion', () => {
 		for await (const record of iterable) ids.push(record.id);
 		return ids.sort((a, b) => a - b);
 	}
-	// the branch REST takes: RequestTarget parses the query string, Table.search prepares it
 	const rest = async (Table, queryString) => collectIds(Table.search(new RequestTarget('?' + queryString)));
 	async function assertRejects400(Table, queryString, attributeName) {
 		await assert.rejects(rest(Table, queryString), (error) => {
@@ -157,5 +157,6 @@ describe('REST condition value conversion', () => {
 	it('strict equality on a typed attribute is converted, as before', async function () {
 		assert.deepStrictEqual(await rest(Product, 'price===25'), [2]);
 		assert.deepStrictEqual(await rest(Product, 'code===007'), [1]);
+		assert.deepStrictEqual(await rest(Product, 'sizes===25'), [2]);
 	});
 });

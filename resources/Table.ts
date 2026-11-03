@@ -8467,7 +8467,6 @@ export function makeTable(options): TableResourceClass {
 						includeFullTextHighlights ||= condition.includeHighlights;
 						continue;
 					}
-					// the leaf a path resolves to, across relationship hops and declared nested objects
 					const leafAttribute =
 						attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
 					let attribute = leafAttribute;
@@ -8586,18 +8585,6 @@ export function makeTable(options): TableResourceClass {
 					else if (fullTextComparatorMode(condition.comparator))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 				}
-			}
-			function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
-				// an array attribute's value comparators compare each immediate element; pattern
-				// comparators (contains, starts_with, ends_with) keep matching the operand as text
-				const compared =
-					attribute.elements?.type &&
-					ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
-						? attribute.elements
-						: attribute;
-				if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
-				if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
-				return coerceType(value, compared, attribute.name);
 			}
 			return {
 				conditions: conditions.length > 0 || operator ? prepareConditions(conditions, operator) : conditions,
@@ -14696,7 +14683,7 @@ function createComputedFrom(computedFromExpression: string, attributesFallback?:
 	return script.runInThisContext()(attributesFallback);
 }
 
-// canonical comparators that compare an operand with a value by order or equality (undefined is equals)
+// undefined is the default comparator, equals
 const ELEMENT_VALUE_COMPARATORS = new Set([
 	undefined,
 	'equals',
@@ -14712,6 +14699,20 @@ const ELEMENT_VALUE_COMPARATORS = new Set([
 	'gtlt',
 	'gtle',
 ]);
+/**
+ * Convert a condition operand with the declared type of the attribute it is compared against
+ */
+function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
+	// an array attribute's value comparators compare each immediate element; pattern
+	// comparators (contains, starts_with, ends_with) keep matching the operand as text
+	const compared =
+		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
+			? attribute.elements
+			: attribute;
+	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
+	if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
+	return coerceType(value, compared, attribute.name);
+}
 const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
