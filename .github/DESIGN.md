@@ -40,7 +40,7 @@ Write a fixture's rows in one transaction and await a write only before the step
 
 ### A native crash in a unit-test step leaves a backtrace, not its memory (`workflows/unit-test.yml`, `scripts/print-core-backtraces.sh`)
 
-Every test step in the `unit-test` job raises its own core limit (a `run` step is a fresh shell), and `core_pattern` names each core by thread and PID so a worker and its parent do not share one file. On failure, `print-core-backtraces.sh` prints each core's threads with frame arguments suppressed, because job logs are public and a native frame can hold a key or passphrase from a test; for the same reason cores are never uploaded. It always exits 0, so the crashed step stays the job's failure.
+Every test step in the `unit-test` job raises its own core limit (a `run` step is a fresh shell), and `core_pattern` names each core by PID so a spawned child's core does not overwrite its parent's. On failure, `print-core-backtraces.sh` prints each core's threads with frame arguments and the command line suppressed, because job logs are public and a native frame can hold a key or passphrase from a test; for the same reason cores are never uploaded. It always exits 0, so the crashed step stays the job's failure.
 
 ## A release cherry-pick skips a change its branch already has (`workflows/cherry-pick-patch.yml`, `scripts/change-landed.sh`)
 

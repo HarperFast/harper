@@ -137,7 +137,7 @@ jobs:
         run: node --enable-source-maps ./dist/bin/harper.js install
 
       # The runner's default core handling discards a crashed process, which leaves a native
-      # segfault (harper#3349, #2669, #1380) as one log line. Each test step raises its own soft limit.
+      # segfault (harper#3349, #2669, #1380) as one log line. A test step added below needs its own `ulimit`.
       - name: Keep native crash cores
         timeout-minutes: 1
         run: |
