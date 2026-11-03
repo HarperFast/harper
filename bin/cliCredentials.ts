@@ -80,10 +80,9 @@ export function normalizeTarget(target: string): string {
 }
 
 /**
- * Environment names that choose where a CLI command connects, which credential it sends or which saved
- * login it reads, whether the connection is verified, or which repository and commit deploy uses and
- * trusts. Upper case: Windows environment names are case-insensitive, and Node reads lowercase proxy
- * names too.
+ * Environment names the CLI process itself reads to pick its target, credential, saved-login file,
+ * TLS/proxy behaviour, or the GitHub repository and commit it deploys and trusts. Upper case: Windows
+ * environment names are case-insensitive, and Node reads lowercase proxy names too.
  */
 const CLI_TRUST_ENV_KEYS = new Set([
 	'HARPER_CLI_TARGET',
@@ -100,28 +99,26 @@ const CLI_TRUST_ENV_KEYS = new Set([
 	'HOME',
 	'USERPROFILE',
 	'NODE_TLS_REJECT_UNAUTHORIZED',
+	'NODE_EXTRA_CA_CERTS',
+	'SSL_CERT_FILE',
+	'SSL_CERT_DIR',
 	'NODE_USE_ENV_PROXY',
 	'HTTP_PROXY',
 	'HTTPS_PROXY',
+	'NO_PROXY',
 ]);
 
-// GIT_* reconfigures the git the CLI runs to find the repository it deploys and trusts.
-function isCliTrustKey(upperCaseKey: string): boolean {
-	return CLI_TRUST_ENV_KEYS.has(upperCaseKey) || upperCaseKey.startsWith('GIT_');
-}
-
 /**
- * Loads the current directory's `.env` (or `.env.vault`) into `process.env` the way `dotenv.config()`
- * does, never overriding an inherited value, but first refuses the whole file if it would supply a
- * `CLI_TRUST_ENV_KEYS` or `GIT_*` value. The working directory is often a cloned project, so it must
- * not decide where credentials go; ignoring those keys instead would silently fall back to the saved
- * login target or, for backup commands, to local files.
+ * Applies the current directory's `.env` (or `.env.vault`) like `dotenv.config()`, never overriding an
+ * inherited value, but refuses the whole file first if it would supply a `CLI_TRUST_ENV_KEYS` value.
+ * Ignoring those keys instead would silently fall back to the saved login target or, for backup
+ * commands, to local files.
  */
 export function loadCliDotenv(): void {
 	const staged: Record<string, string> = {};
 	dotenv.config({ processEnv: staged, quiet: true });
 	const refused = Object.keys(staged).filter(
-		(key) => isCliTrustKey(key.toUpperCase()) && !Object.prototype.hasOwnProperty.call(process.env, key)
+		(key) => CLI_TRUST_ENV_KEYS.has(key.toUpperCase()) && !Object.prototype.hasOwnProperty.call(process.env, key)
 	);
 	if (refused.length > 0) {
 		const them = refused.length === 1 ? 'it' : 'them';

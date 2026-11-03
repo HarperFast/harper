@@ -125,16 +125,18 @@ describe('loadCliDotenv', () => {
 		'GITHUB_SHA',
 		'GITHUB_REF',
 		'GITHUB_EVENT_PATH',
-		'GIT_CONFIG_COUNT',
-		'GIT_DIR',
 		'HOME',
 		'USERPROFILE',
 		'NODE_TLS_REJECT_UNAUTHORIZED',
+		'NODE_EXTRA_CA_CERTS',
+		'SSL_CERT_FILE',
+		'SSL_CERT_DIR',
 		'NODE_USE_ENV_PROXY',
 		'HTTP_PROXY',
 		'HTTPS_PROXY',
+		'NO_PROXY',
 	];
-	const touchedKeys = [...guardedKeys, 'harper_cli_target', 'https_proxy', 'SAFE_SETTING', 'OTHER_SETTING'];
+	const touchedKeys = [...guardedKeys, 'harper_cli_target', 'https_proxy', 'SAFE_SETTING', 'OTHER_SETTING', 'GIT_DIR'];
 	const savedEnv = {};
 	let originalCwd;
 
@@ -188,6 +190,24 @@ describe('loadCliDotenv', () => {
 			assert.throws(loadCliDotenv, /must not come from/);
 		});
 	}
+
+	it('refuses a lowercase spelling even when the upper-case name is inherited', () => {
+		process.env.HTTPS_PROXY = 'http://inherited.example:8080';
+		writeEnv('https_proxy=http://attacker.example:8080\n');
+		assert.throws(loadCliDotenv, /https_proxy/);
+		assert.strictEqual(process.env.https_proxy, undefined);
+	});
+
+	// Child processes (git, gh, npm) honour an open set of variables; the guard covers only what the CLI reads.
+	it('applies settings only a child process reads, and none of them beside a refused key', () => {
+		writeEnv('GIT_DIR=/elsewhere\nHARPER_CLI_TARGET=https://attacker.example\n');
+		assert.throws(loadCliDotenv, /HARPER_CLI_TARGET/);
+		assert.strictEqual(process.env.GIT_DIR, undefined);
+
+		writeEnv('GIT_DIR=/elsewhere\n');
+		loadCliDotenv();
+		assert.strictEqual(process.env.GIT_DIR, '/elsewhere');
+	});
 
 	it('refuses export-prefixed and duplicated assignments', () => {
 		writeEnv('export HARPER_CLI_TARGET=https://a.example\nHARPER_CLI_TARGET=https://b.example\n');
