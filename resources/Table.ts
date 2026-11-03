@@ -1795,7 +1795,6 @@ export function makeTable(options): TableResourceClass {
 		if (missingCreatedTime) completed[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
 		return Object.freeze(completed);
 	}
-	// @updatedTime is the version; @createdTime is the base's, or the version for a new record.
 	function stampRecordTimes(record: any, base: Partial<Entry> | undefined, version: number, fullUpdate: boolean) {
 		if (updatedTimeProperty) record[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, version);
 		if (!createdTimeProperty) return;
