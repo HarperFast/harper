@@ -167,8 +167,11 @@ function validateFullTextBoost(boost: unknown): void {
 
 export function validateFullTextScoringRuntime(queryApiVersion: number | undefined): void {
 	if (queryApiVersion !== FULLTEXT_SCORING_QUERY_API_VERSION)
-		throw new ClientError(
-			'Query scoring requires a full-text wrapper with query API 8; the installed wrapper does not support scoring controls',
-			400
+		throw Object.assign(
+			new ServerError(
+				'Query scoring requires a full-text wrapper with query API 8; the installed wrapper does not support scoring controls',
+				503
+			),
+			{ code: 'FULL_TEXT_SCORING_UNSUPPORTED', retryable: false }
 		);
 }

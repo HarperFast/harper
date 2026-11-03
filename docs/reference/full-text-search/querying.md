@@ -101,7 +101,7 @@ Distance two and fuzzy-prefix are preview features. Qualify the selected fuzzy d
 
 <VersionBadge version="v5.4.0" />
 
-These controls are available in Harper 5.4 with its bundled fulltext wrapper. Earlier 5.4 prerelease builds may not include them. Do not send these keys to builds without query-scoring support: a successful request alone does not prove scoring was applied. A scoring-capable Harper build with an incompatible wrapper returns HTTP 400.
+These controls are available in Harper 5.4 with its bundled fulltext wrapper. Earlier 5.4 prerelease builds may not include them. Do not send these keys to builds without query-scoring support: a successful request alone does not prove scoring was applied. A scoring-capable Harper build with an incompatible wrapper returns HTTP 503 with `code: "FULL_TEXT_SCORING_UNSUPPORTED"` and `retryable: false`. An operator must install the compatible wrapper before scoring queries can succeed.
 
 Use `should` to reward additional text matches while retaining the parent condition's required matches:
 
@@ -258,6 +258,8 @@ for await (const product of Product.search({
 	console.log(product);
 }
 ```
+
+Cold scoring-capability loading and reader acquisition each have a separate index-wait budget, capped at 30 seconds; an explicit `waitForIndexMilliseconds: 0` allows 1 ms per stage. These stages are additional to coverage waiting and native query execution. A capability-loading timeout returns HTTP 503 with `code: "FULL_TEXT_INITIALIZATION_TIMEOUT"` and `retryable: true`.
 
 All full-text conditions combined into one query must use the same freshness values. Harper returns `400` when combined conditions specify different values.
 

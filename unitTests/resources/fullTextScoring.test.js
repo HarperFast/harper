@@ -51,7 +51,11 @@ describe('full-text scoring contract', () => {
 		validateFullTextScoringRuntime(8);
 		assert.throws(
 			() => validateFullTextScoringRuntime(7),
-			(error) => error.statusCode === 400 && /query API 8/.test(error.message)
+			(error) =>
+				error.statusCode === 503 &&
+				error.code === 'FULL_TEXT_SCORING_UNSUPPORTED' &&
+				error.retryable === false &&
+				/query API 8/.test(error.message)
 		);
 	});
 

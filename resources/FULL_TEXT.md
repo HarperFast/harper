@@ -154,7 +154,7 @@ Search settings are under `storage.fullText`:
 | `maxResultsPerRequest`      |  10,000 | Maximum retained offset plus limit, independent of fetched-hit work                                               |
 | `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks and highlight tracing, capped by the native execution limit |
 
-The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Reader acquisition, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.
+The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Cold scoring-capability loading and reader acquisition each use a separate index-wait budget, capped at 30 seconds (an explicit zero allows 1 ms). Capability-loading timeout returns 503 with code `FULL_TEXT_INITIALIZATION_TIMEOUT` and `retryable: true`. These stages, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.
 
 Each setting has the usual configuration parameter name, such as `storage_fullText_maxRawHitsPerRequest`, for `set_configuration` and environment overrides. After changing request limits, restart HTTP workers with `restart_service` (`service: "http_workers"`) or restart Harper. Native process-budget changes require a full process restart.
 
@@ -187,7 +187,7 @@ The policy is captured for the whole process and inherited by HTTP and applicati
 
 ### Query relevance controls
 
-Query scoring requires a wrapper with native ABI 14 and query API 8. The pinned 0.9.0 release provides ABI 14/query API 8. A legacy ABI 13/query API 7 binding retains ordinary searches but rejects scoring controls with 400.
+Query scoring requires a wrapper with native ABI 14 and query API 8. The pinned 0.9.0 release provides ABI 14/query API 8. A legacy ABI 13/query API 7 binding retains ordinary searches but rejects scoring controls with 503, code `FULL_TEXT_SCORING_UNSUPPORTED` and `retryable: false`. Install the compatible wrapper before retrying scoring queries.
 
 Use `boost` to scale the required clause score, and `should` to add optional scoring clauses. Every result must still match the outer condition. An optional clause can improve a result's rank without adding or removing matches. Field-restricted optional clauses compose with configured index field weights, without rebuilding the index:
 

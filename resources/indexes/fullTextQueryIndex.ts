@@ -260,7 +260,7 @@ export class FullTextQueryIndex {
 			if (waiting) {
 				if (scoring) {
 					if (!this.#binding) {
-						await waitForBinding(this.#getBinding(), context?.signal);
+						await waitForBinding(this.#getBinding(), readerAcquisitionTimeout(condition), context?.signal);
 						context?.signal?.throwIfAborted();
 					}
 					if (this.#closed) throw new ServerError('Full-text index is closed', 503);
@@ -306,7 +306,7 @@ export class FullTextQueryIndex {
 					coverageError = error;
 				}
 				if (!this.#binding) {
-					await waitForBinding(this.#getBinding(), context?.signal);
+					await waitForBinding(this.#getBinding(), readerAcquisitionTimeout(condition), context?.signal);
 					context?.signal?.throwIfAborted();
 					validateFullTextScoringRuntime(this.#queryApiVersion);
 				}
@@ -1540,17 +1540,30 @@ function assertQueryPolicy(expression: NativeFullTextSearchExpression, maximum: 
 	return scoring;
 }
 
-async function waitForBinding<T>(binding: Promise<T>, signal?: AbortSignal): Promise<T> {
-	if (!signal) return binding;
-	let abort: () => void;
-	const cancelled = new Promise<never>((_, reject) => {
-		abort = () => reject(signal.reason);
-		if (signal.aborted) abort();
-		else signal.addEventListener('abort', abort, { once: true });
-	});
+function readerAcquisitionTimeout(condition: FullTextCondition): number {
+	return Math.min(
+		MAX_WAIT_FOR_INDEX_MILLISECONDS,
+		Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
+	);
+}
+
+async function waitForBinding<T>(binding: Promise<T>, milliseconds: number, signal?: AbortSignal): Promise<T> {
+	let abort: (() => void) | undefined;
+	const cancelled = signal
+		? new Promise<never>((_, reject) => {
+				abort = () => reject(signal.reason);
+				if (signal.aborted) abort();
+				else signal.addEventListener('abort', abort, { once: true });
+			})
+		: undefined;
 	try {
-		return await Promise.race([binding, cancelled]);
+		return await withTimeout(cancelled ? Promise.race([binding, cancelled]) : binding, milliseconds, () =>
+			Object.assign(new ServerError('Full-text capability loading exceeded the index-wait budget', 503), {
+				code: 'FULL_TEXT_INITIALIZATION_TIMEOUT',
+				retryable: true,
+			})
+		);
 	} finally {
-		signal.removeEventListener('abort', abort!);
+		if (abort) signal!.removeEventListener('abort', abort);
 	}
 }
