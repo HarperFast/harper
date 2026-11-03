@@ -45,7 +45,50 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+export const SINGLE_RECORD_COLUMNS = Symbol.for('harper.singleRecordColumns');
 export const WRITE_CONDITION = Symbol('writeCondition');
+
+export type ColumnsList = string[] & { scalar?: true; asArray?: true };
+
+export function isScalarSelect(select: any): boolean {
+	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
+}
+
+export function isTupleSelect(select: any): boolean {
+	return Array.isArray(select) && Boolean((select as any).asArray);
+}
+
+export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList {
+	if (currentSelect) {
+		const columns: ColumnsList = [];
+		const asArray = isTupleSelect(currentSelect);
+		for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
+			if (column === '*' && !asArray) {
+				if (attributes) {
+					for (const attribute of attributes)
+						if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+				}
+			} else columns.push((column as any).name || column);
+		}
+		if (isScalarSelect(currentSelect)) columns.scalar = true;
+		else if (asArray) columns.asArray = true;
+		return columns;
+	}
+	return (attributes || [])
+		.filter((attribute) => !attribute.computed && !attribute.relationship)
+		.map((attribute) => attribute.name);
+}
+
+function applySingleRecordColumns(result: any, query: any, request: any) {
+	if (request && typeof request === 'object') {
+		if (result != null && query?.[SINGLE_RECORD_COLUMNS]) {
+			request[SINGLE_RECORD_COLUMNS] = query[SINGLE_RECORD_COLUMNS];
+		} else {
+			delete request[SINGLE_RECORD_COLUMNS];
+		}
+	}
+	return result;
+}
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -140,27 +183,39 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			const result = resource.get?.(query);
 			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
 			if (loadAsInstance === false) {
-				return result?.then
+				const authorized = result?.then
 					? result.then((result: any) => authorizeSearchResult(result, request?.user))
 					: authorizeSearchResult(result, request?.user);
+				return when(authorized, (resolved) => applySingleRecordColumns(resolved, query, request));
 			}
 			// for the new API we always apply select in the instance method
-			if (!loadAsInstance) return result;
+			if (!loadAsInstance) {
+				return when(result, (resolved) => applySingleRecordColumns(resolved, query, request));
+			}
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
+					const getColumns = () => buildSelectColumns(select, resource.constructor?.attributes);
 					if (Array.isArray(result)) {
-						return settleAll(result.map(transform));
+						return when(settleAll(result.map(transform)), (resolved: any) => {
+							resolved.getColumns = getColumns;
+							return applySingleRecordColumns(resolved, query, request);
+						});
 					} else if (typeof result?.map === 'function') {
-						return result.map(transform);
+						const mapped = result.map(transform);
+						mapped.getColumns = getColumns;
+						return applySingleRecordColumns(mapped, query, request);
 					} else {
-						return transform(result);
+						if (query && typeof query === 'object') {
+							(query as any)[SINGLE_RECORD_COLUMNS] = getColumns();
+						}
+						return when(transform(result), (resolved) => applySingleRecordColumns(resolved, query, request));
 					}
 				}
-				return result;
+				return applySingleRecordColumns(result, query, request);
 			}
 		},
 		{

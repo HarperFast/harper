@@ -1096,6 +1096,10 @@ describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', 
 		}
 		const asyncOut = await streamToString(toCsvStream(asyncSource(), columns));
 		assert.strictEqual(asyncOut, '"id"\n"z-1"\n""\n""\n"z-2"\n');
+
+		// Direct scalar string passed to toCsvStream with scalar columns must not iterate characters
+		const singleStringOut = await streamToString(toCsvStream('z-1', columns));
+		assert.strictEqual(singleStringOut, '"id"\n"z-1"\n');
 	});
 
 	it('formats positional tuple (asArray) columns and preserves recovered row errors', async function () {

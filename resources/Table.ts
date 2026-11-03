@@ -54,7 +54,12 @@ import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lm
 import {
 	Resource,
 	SEARCH_AUTHORIZATION,
+	SINGLE_RECORD_COLUMNS,
 	WRITE_CONDITION,
+	isScalarSelect,
+	isTupleSelect,
+	buildSelectColumns,
+	type ColumnsList,
 	transformForSelect,
 	nestedSelectTransform,
 	defaultAllowReads,
@@ -1478,35 +1483,6 @@ function searchConditions(target: any): any[] {
 	if (!conditions) return Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
 	if (conditions.length === undefined) return conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
 	return conditions;
-}
-
-type ColumnsList = string[] & { scalar?: true; asArray?: true };
-
-function isScalarSelect(select: any): boolean {
-	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
-}
-
-function isTupleSelect(select: any): boolean {
-	return Array.isArray(select) && Boolean((select as any).asArray);
-}
-
-function buildSelectColumns(currentSelect: any, attributes: any[]): ColumnsList {
-	if (currentSelect) {
-		const columns: ColumnsList = [];
-		const asArray = isTupleSelect(currentSelect);
-		for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
-			if (column === '*' && !asArray) {
-				for (const attribute of attributes)
-					if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
-			} else columns.push((column as any).name || column);
-		}
-		if (isScalarSelect(currentSelect)) columns.scalar = true;
-		else if (asArray) columns.asArray = true;
-		return columns;
-	}
-	return attributes
-		.filter((attribute) => !attribute.computed && !attribute.relationship)
-		.map((attribute) => attribute.name);
 }
 
 function selectRequestsProperty(select: any, propertyName: string): boolean {
@@ -4293,6 +4269,9 @@ export function makeTable(options): TableResourceClass {
 						(record) => {
 							const select = target?.select;
 							if (select && record != null) {
+								if (target && typeof target === 'object') {
+									(target as any)[SINGLE_RECORD_COLUMNS] = buildSelectColumns(select, attributes);
+								}
 								const transform = transformForSelect(select, this.constructor);
 								return transform(record);
 							}
@@ -4311,6 +4290,9 @@ export function makeTable(options): TableResourceClass {
 				const record = this.#record;
 				const select = target?.select;
 				if (select && record != null && constructor.loadAsInstance !== true) {
+					if (target && typeof target === 'object') {
+						(target as any)[SINGLE_RECORD_COLUMNS] = buildSelectColumns(select, attributes);
+					}
 					const transform = transformForSelect(select, this.constructor);
 					return promiseNormalize(transform(record), target);
 				}

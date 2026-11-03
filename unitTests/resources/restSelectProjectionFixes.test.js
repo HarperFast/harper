@@ -1118,9 +1118,13 @@ describe('REST and operations API select projection fixes', function () {
 					return this.search(target).map((row) => row);
 				}
 			};
+			const PlainInstance = class extends Plain {
+				static loadAsInstance = true;
+			};
 
 			mount('Plain', Plain);
 			mount('PlainAsyncMapped', PlainAsyncMapped);
+			mount('PlainInstance', PlainInstance);
 
 			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' });
 			await Plain.put({
@@ -1404,6 +1408,59 @@ describe('REST and operations API select projection fixes', function () {
 			} finally {
 				Plain._prepareQueryConditions = origPrepare;
 			}
+		});
+
+		it('formats single-record URL CSV with scalar, tuple, and keyed select() projections (#3966)', async function () {
+			const scalarIdCsv = await restGet('/Plain/z-1?select(id)', { accept: 'text/csv' });
+			assert.strictEqual(scalarIdCsv.status, 200);
+			assert.strictEqual(scalarIdCsv.text, '"id"\n"z-1"\n');
+
+			const scalarIdJson = await restGet('/Plain/z-1?select(id)', { accept: 'application/json' });
+			assert.strictEqual(scalarIdJson.status, 200);
+			assert.strictEqual(scalarIdJson.body, 'z-1');
+
+			const zeroCountCsv = await restGet('/Plain/z-1?select(count)', { accept: 'text/csv' });
+			assert.strictEqual(zeroCountCsv.status, 200);
+			assert.strictEqual(zeroCountCsv.text, '"count"\n0\n');
+
+			const falseActiveCsv = await restGet('/Plain/z-1?select(active)', { accept: 'text/csv' });
+			assert.strictEqual(falseActiveCsv.status, 200);
+			assert.strictEqual(falseActiveCsv.text, '"active"\n"false"\n');
+
+			const nullTupleNoteCsv = await restGet('/Plain/z-2?select(note,)', { accept: 'text/csv' });
+			assert.strictEqual(nullTupleNoteCsv.status, 200);
+			assert.strictEqual(nullTupleNoteCsv.text, '"note"\n""\n');
+
+			const tagsArrayScalarCsv = await restGet('/Plain/z-1?select(tags)', { accept: 'text/csv' });
+			assert.strictEqual(tagsArrayScalarCsv.status, 200);
+			assert.strictEqual(tagsArrayScalarCsv.text, '"tags"\n"[""t1"",""t2""]"\n');
+
+			const nestedObjectScalarCsv = await restGet('/Plain/z-1?select(child{id,label})', { accept: 'text/csv' });
+			assert.strictEqual(nestedObjectScalarCsv.status, 200);
+			assert.strictEqual(nestedObjectScalarCsv.text, '"child"\n"{""id"":""c1"",""label"":""child-label-v1""}"\n');
+
+			const trailingCommaCsv = await restGet('/Plain/z-1?select(id,)', { accept: 'text/csv' });
+			assert.strictEqual(trailingCommaCsv.status, 200);
+			assert.strictEqual(trailingCommaCsv.text, '"id"\n"z-1"\n');
+
+			const tupleCsv = await restGet('/Plain/z-1?select([id,note])', { accept: 'text/csv' });
+			assert.strictEqual(tupleCsv.status, 200);
+			assert.strictEqual(tupleCsv.text, '"id","note"\n"z-1","n1"\n');
+
+			const keyedCsv = await restGet('/Plain/z-1?select(id,note)', { accept: 'text/csv' });
+			assert.strictEqual(keyedCsv.status, 200);
+			assert.strictEqual(keyedCsv.text, '"id","note"\n"z-1","n1"\n');
+
+			const instanceScalarCsv = await restGet('/PlainInstance/z-1?select(id)', { accept: 'text/csv' });
+			assert.strictEqual(instanceScalarCsv.status, 200);
+			assert.strictEqual(instanceScalarCsv.text, '"id"\n"z-1"\n');
+
+			const instanceTupleCsv = await restGet('/PlainInstance/z-1?select([id,note])', { accept: 'text/csv' });
+			assert.strictEqual(instanceTupleCsv.status, 200);
+			assert.strictEqual(instanceTupleCsv.text, '"id","note"\n"z-1","n1"\n');
+
+			const missingCsv = await restGet('/Plain/does-not-exist?select(id)', { accept: 'text/csv' });
+			assert.strictEqual(missingCsv.status, 404);
 		});
 	});
 });

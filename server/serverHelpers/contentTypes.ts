@@ -15,6 +15,7 @@ import {
 	errorForLog as harperErrorForLog,
 } from '../../utility/logging/harper_logger.ts';
 import { Blob } from '../../resources/blob.ts';
+import { SINGLE_RECORD_COLUMNS } from '../../resources/Resource.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
@@ -108,14 +109,24 @@ mediaTypes.set('application/x-msgpack', {
 	q: 0.9,
 });
 mediaTypes.set('text/csv', {
-	serializeStream(data: any, response: Response) {
+	serializeStream(data: any, response: Response, request?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		return toCsvStream(data);
+		const singleRecordColumns = request?.[SINGLE_RECORD_COLUMNS];
+		if (singleRecordColumns && data != null) {
+			return toCsvStream([data.toJSON ? data.toJSON() : data], singleRecordColumns);
+		}
+		return toCsvStream(data, singleRecordColumns);
 	},
-	serialize(data: any, response: Response) {
+	serialize(data: any, response: Response, request?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const columns = data?.getColumns?.();
-		if (data && !data[Symbol.iterator]) data = [data.toJSON ? data.toJSON() : data];
+		const singleRecordColumns = request?.[SINGLE_RECORD_COLUMNS];
+		const columns = data?.getColumns?.() ?? singleRecordColumns;
+		if (
+			data != null &&
+			(typeof data !== 'object' || (!data[Symbol.iterator] && !data[Symbol.asyncIterator]) || singleRecordColumns)
+		) {
+			data = [data.toJSON ? data.toJSON() : data];
+		}
 		return toCsvStream(data, columns);
 	},
 	q: 0.1,
@@ -561,7 +572,7 @@ export function serialize(responseData, request, responseObject) {
 				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
 				return compressed;
 			}
-		} else responseBody = serializer.serializer.serialize(responseData, responseObject);
+		} else responseBody = serializer.serializer.serialize(responseData, responseObject, request);
 	}
 	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
@@ -1089,7 +1100,9 @@ function formatCsvCell(value: any) {
  * @returns stream
  */
 export function toCsvStream(data, columns?) {
-	const source = data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data];
+	const isRowIterable =
+		typeof data === 'object' && data !== null && Boolean(data[Symbol.iterator] || data[Symbol.asyncIterator]);
+	const source = isRowIterable ? data : [data];
 	const hint = columns ?? data?.getColumns?.();
 	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
 	const readStream = Readable.from(
