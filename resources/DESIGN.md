@@ -202,7 +202,7 @@ Eviction (`scheduleCleanup`) trails expiry (`ttlCleanupInterval.test.js`). Searc
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not caller options (`uncachedRead` forwards it); add options there. `coverIndexEntries` reads no record (overflow and `-0` keys aside), covering `SCALAR_TYPES` and untyped/`ID` PKs; unvalidated values (save `Date`/`BigInt` ints, which decode) and untyped/`ID` `[x]` or bigint ids keep index form (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not caller options (`uncachedRead` forwards it); add options there. `coverIndexEntries` reads no record (overflow and `-0` keys aside), covering `SCALAR_TYPES` and untyped/`ID` PKs; unvalidated values (`Date`/`BigInt` ints still decode) and untyped/`ID` `[x]` or bigint ids keep index form (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 
