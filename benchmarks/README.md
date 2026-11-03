@@ -416,7 +416,7 @@ JSON lines report runtime/platform, every sample, and the median microseconds pe
 Timing includes request construction and a clause-count assertion. It excludes index setup,
 query compilation, reader acquisition, native execution, networking, concurrent requests and the forced GC before samples; allocation
 and in-sample GC costs are not separately measured. These sample means are not request p99
-latencies, and this is not an end-to-end or before/after regression benchmark.
+latencies, and this is not an end-to-end or gating regression benchmark.
 
 Historical scratch-run medians on macOS ARM64, Node 24.16.0, at `3d4a1dc58`:
 
@@ -437,7 +437,7 @@ without optional scoring cannot provide an equivalent baseline for those cases.
 ### Predicate-local lookup reuse comparison
 
 On 2026-11-03, three fresh-process runs per revision compared `3d1fcc45b` with
-the predicate-local lookup reuse change. Node 24.16.0, macOS ARM64; the committed
+the initial predicate-local lookup reuse change at `78cfe495d`. Node 24.16.0, macOS ARM64; the committed
 benchmark and sample counts above were unchanged. Values are medians of the three
 process medians; brackets span process medians, not individual request latencies.
 
@@ -459,8 +459,10 @@ process medians; brackets span process medians, not individual request latencies
 | 16     | 127              | explicit | 96.189 [86.629–103.473] | 63.421 [62.932–64.816] |
 
 The 16-field/127-clause cases improved 32% (default) and 34% (explicit). The
-2-field/1-explicit-clause case increased 0.079 µs with overlapping process ranges;
-this does not establish a universal improvement or regression. All six runs passed.
+2-field/1-explicit-clause case increased 0.079 µs with overlapping process ranges.
+The 2-field/0-clause case also rose 4% (0.013 µs), with non-overlapping process ranges,
+and 2-field/1-default rose 0.007 µs with overlapping ranges. These sequential runs
+do not establish the cause of small changes or a universal improvement. All six runs passed.
 
 Separate Node inspector CPU/allocation sampling covered 364,000 requests per
 revision, including warmup and setup/teardown. Sampling included collected objects
