@@ -9499,7 +9499,7 @@ export function makeTable(options): TableResourceClass {
 							if (reloadPending) pendingRealTimeQueue = [];
 							if (handsOff) {
 								const ids = replayed?.drain === drainCount(subscription) ? replayed.ids : undefined;
-								handOffReplay(subscription, startTime, ids);
+								handOffReplay(subscription, startTime ?? -Infinity, ids);
 							}
 							dropDuringReplay = false;
 							if (reloadPending) {

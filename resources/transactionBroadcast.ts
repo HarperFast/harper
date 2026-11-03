@@ -399,7 +399,8 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 
 export type ReplayedIds = Map<number, Map<number, Set<string | null | undefined>>>;
 interface ReplayGate {
-	after?: number;
+	/** -Infinity takes entries at any key; a number, not undefined, so the per-record compare stays numeric */
+	after: number;
 	ids?: ReplayedIds;
 }
 
@@ -444,10 +445,10 @@ function schedulePass(subscriptions: any): void {
  * dispatched while the replay dropped live ones was visible before that read, so the replay read it, and `ids`
  * (what it handled since the last clean drain) covers the ones the broadcast has not dispatched yet.
  */
-export function handOffReplay(subscription: any, after: number | undefined, ids: ReplayedIds | undefined): void {
+export function handOffReplay(subscription: any, after: number, ids: ReplayedIds | undefined): void {
 	subscription.ungated = true;
 	const subscriptions = subscription.subscriptions?.tables?.envs;
-	if (!subscriptions || (after === undefined && !ids)) return;
+	if (!subscriptions || (after === -Infinity && !ids)) return;
 	subscription.replayGate = { after, ids };
 	if (!ids) return;
 	(subscriptions.replayTails ??= new Set()).add(subscription);
@@ -460,7 +461,7 @@ export function handOffReplay(subscription: any, after: number | undefined, ids:
  */
 export function releaseReplayFloor(subscription: any): void {
 	const gate = subscription.replayGate;
-	if (gate?.ids) gate.after = undefined;
+	if (gate?.ids) gate.after = -Infinity;
 	else subscription.replayGate = undefined;
 }
 
@@ -771,7 +772,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			if (subscriptions.replayTails) {
 				for (const subscription of subscriptions.replayTails) {
 					const gate = subscription.replayGate;
-					if (gate.after === undefined) subscription.replayGate = undefined;
+					if (gate.after === -Infinity) subscription.replayGate = undefined;
 					else gate.ids = undefined;
 				}
 				subscriptions.replayTails = undefined;
