@@ -125,6 +125,8 @@ describe('loadCliDotenv', () => {
 		'GITHUB_SHA',
 		'GITHUB_REF',
 		'GITHUB_EVENT_PATH',
+		'GIT_CONFIG_COUNT',
+		'GIT_DIR',
 		'HOME',
 		'USERPROFILE',
 		'NODE_TLS_REJECT_UNAUTHORIZED',
