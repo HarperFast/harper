@@ -25,6 +25,7 @@ const { forComponent, AuthAuditLog, errorForLog } = harperLogger;
 import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../server/serverHelpers/Headers.ts';
 import { isLocalPeerAddress } from '../server/serverHelpers/peerAddress.ts';
 import { convertToMS } from '../utility/common_utils.ts';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
 	authenticationChallenge,
@@ -585,6 +586,18 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 			if (entry.metadataFlags & VERSION_REUSED)
 				return Promise.reject(
 					new VersionConflictError(getSessionTable().tableName, ifVersion, entry.version, false, 'version reused')
+				);
+			// RocksDB stamps native transactions with a separate clock from LMDB's JS clock.
+			const nextWriteTime = store.getMonotonicTimestamp?.() ?? getNextMonotonicTime();
+			if (entry.version >= nextWriteTime)
+				return Promise.reject(
+					new VersionConflictError(
+						getSessionTable().tableName,
+						ifVersion,
+						entry.version,
+						true,
+						'stored version is ahead of the local write clock'
+					)
 				);
 		} catch (error) {
 			return Promise.reject(error);
