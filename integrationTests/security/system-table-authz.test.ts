@@ -99,6 +99,26 @@ suite(
 			});
 		}
 
+		for (const impersonate of [
+			{ role: { permission: { super_user: true, system: { tables: { [COMPONENT_TABLE]: { read: true } } } } } },
+			{ role_name: ROLE },
+			{ username: READER.username },
+		]) {
+			test(`impersonation ${Object.keys(impersonate)[0]} cannot grant system access`, async () => {
+				await client
+					.req()
+					.send({
+						operation: 'search_by_hash',
+						database: 'system',
+						table: COMPONENT_TABLE,
+						hash_values: ['no-such-status-id'],
+						get_attributes: ['*'],
+						impersonate,
+					})
+					.expect(FORBIDDEN);
+			});
+		}
+
 		test('describe_database lists the component-created table', async () => {
 			const response = await client.req().send({ operation: 'describe_database', database: 'system' }).expect(200);
 			ok(response.body[COMPONENT_TABLE], `${COMPONENT_TABLE} should be enumerated by describe_database`);
