@@ -97,9 +97,12 @@ never existed or were removed. `Symbol.for('log-purge-bounds')` holds
 upper bound on every key any prune removed from the named logs.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
-  every prune path. A retention pass (`observeLogs`) probes each log with `readUncommitted`: a log with
-  no entry at or past the cutoff is quiet, bounded by its largest key, and `quietAt` becomes now. Any
-  other prune (`deleteHistory`, `delete_transaction_logs_before`) raises `epoch` to its cutoff.
+  every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`: a
+  log with no entry at or past the cutoff is quiet, bounded by its largest key, and `quietAt` becomes
+  now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
+  anything appended after the probe then lands in a segment the prune cannot remove. Any other prune
+  (`deleteHistory`, `delete_transaction_logs_before`, a cutoff ahead of the clock) raises `epoch` to
+  its cutoff.
 - **RocksDB removes whole segments by mtime**, so a log written past the cutoff since its last quiet pass
   is bounded by the cutoff. One written since a quiet pass at or past the cutoff keeps its bound: every
   segment the prune can remove was last written before that pass. A key minted ahead of this node's
@@ -112,7 +115,8 @@ upper bound on every key any prune removed from the named logs.
   horizon, in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
   that retention and `logPurgeBoundsCover` rewrites a `quietAt` older than half of it, so an idle log on
   a running node never reaches the horizon. A node down longer than the native retention resyncs once.
-- **`epoch` bounds what tracking never saw**: the floor when the record was created. A log emptied before that reads as purged through it, which forces one conservative resync.
+- **`epoch` bounds what tracking never saw**: the floor, or the native horizon if later, when the
+  record was created (a log the native purge emptied may no longer be listed). A log emptied before that reads as purged through it, which forces one conservative resync.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.

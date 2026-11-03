@@ -6,8 +6,7 @@ import { getThisNodeName } from '../server/nodeName.ts';
 import { pack, unpack } from 'msgpackr';
 import type { Database } from 'lmdb';
 import { server } from '../server/Server.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
-import { asBinary } from './asBinary.ts';
+import { commitAuditMetadata } from './auditStore.ts';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(auditStore) {
@@ -64,41 +63,26 @@ function nextNodeId(nameToId: Record<string, number>): number {
  * hand one id to two names or drop each other's additions. Returns the mapping as committed.
  */
 function updateIdMapping(auditStore: any, mutate: (nameToId: Record<string, number>) => boolean) {
-	const rootStore = auditStore.rootStore;
 	let record: any;
 	let changed = false;
-	const apply = (stored: any, write: (bytes: Buffer) => void) => {
-		record = stored ? unpack(stored) : null;
-		record ??= { remoteNameToId: {} };
-		record.nodeName = getThisNodeName();
-		changed = mutate(record.remoteNameToId);
-		if (changed) write(pack(record));
-		return true;
-	};
-	let committed: unknown = true;
-	if (rootStore instanceof RocksDatabase) {
-		committed = rootStore.transactionSync(
-			(txn: any) => apply(txn.getBinarySync(REMOTE_NODE_IDS), (bytes) => txn.putSync(REMOTE_NODE_IDS, asBinary(bytes))),
-			{ retryOnBusy: true }
-		);
-	} else if (rootStore?.transactionSync) {
-		committed = rootStore.transactionSync(() =>
-			apply(auditStore.getBinary(REMOTE_NODE_IDS), (bytes) => {
-				auditStore
-					.put(REMOTE_NODE_IDS, bytes)
-					?.catch?.((error) => logger.warn?.('Error writing the node id mapping', error));
-				// a write that did not land must abort rather than hand out an id nothing recorded
-				const landed = auditStore.getBinary(REMOTE_NODE_IDS);
-				if (!landed || Buffer.compare(landed, bytes) !== 0) throw new Error('The node id mapping write did not land');
-			})
-		);
-	} else {
-		apply(auditStore.getBinary(REMOTE_NODE_IDS), (bytes) => auditStore.putSync(REMOTE_NODE_IDS, bytes));
-	}
-	// RocksDB reports a swallowed abort as undefined rather than throwing
-	if (committed !== true) throw new Error('The node id mapping transaction did not commit');
+	commitAuditMetadata(
+		auditStore,
+		(read) => {
+			const stored = read(REMOTE_NODE_IDS);
+			record = (stored ? unpack(stored) : null) ?? { remoteNameToId: {} };
+			record.nodeName = getThisNodeName();
+			changed = mutate(record.remoteNameToId);
+			return changed ? [[REMOTE_NODE_IDS, pack(record)]] : undefined;
+		},
+		'node id mapping'
+	);
 	if (changed) invalidateNodeNames(auditStore);
 	return record.remoteNameToId as Record<string, number>;
+}
+
+function hasUnmappedName(remoteMapping: Record<string, number>, nameToId: Record<string, number>): boolean {
+	for (const name in remoteMapping) if (nameToId[name] == undefined) return true;
+	return false;
 }
 
 /**
@@ -106,7 +90,7 @@ function updateIdMapping(auditStore: any, mutate: (nameToId: Record<string, numb
  */
 export function remoteToLocalNodeId(remoteMapping: any, auditStore: any) {
 	let nameToId = getIdMappingRecord(auditStore).remoteNameToId;
-	if (Object.keys(remoteMapping).some((name) => nameToId[name] == undefined)) {
+	if (hasUnmappedName(remoteMapping, nameToId)) {
 		nameToId = updateIdMapping(auditStore, (stored) => {
 			let nextId = nextNodeId(stored);
 			let changed = false;

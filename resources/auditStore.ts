@@ -674,7 +674,7 @@ function updateAuditFloor(
  * Write audit metadata records under one store transaction, all or none: every write is read back,
  * and a mismatch throws inside the transaction so it aborts — returning false commits on LMDB.
  */
-function commitAuditMetadata(
+export function commitAuditMetadata(
 	store: any,
 	plan: (read: (key: symbol) => any) => Array<[symbol, Uint8Array]> | undefined,
 	what: string
@@ -820,9 +820,10 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 		const floor = decodeAuditFloor(stored);
 		const recorded = trustedLogPurgeBounds(auditStore, floor);
 		nativeHorizon = nativePurgeHorizon(auditStore, now);
-		// an unreadable native retention leaves the prune unobserved: the cutoff then bounds every log
-		if (observeLogs && nativeHorizon !== undefined && Number.isFinite(cutoff) && Number.isFinite(floor)) {
-			const base = recorded ?? freshLogPurgeBounds(floor);
+		// Unobserved, the cutoff bounds every log: when the native retention cannot be read, and for a cutoff
+		// ahead of the clock, which could remove what is written after the probe.
+		if (observeLogs && nativeHorizon !== undefined && cutoff <= now && Number.isFinite(floor)) {
+			const base = recorded ?? freshLogPurgeBounds(floor, nativeHorizon);
 			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now);
 		}
 		const resume = resumeTracked ? auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY) : undefined;
@@ -857,6 +858,7 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 				floorBefore,
 				cutoff,
 				observedBounds,
+				nativeHorizon,
 				now
 			);
 			if (bounds) writes.push([LOG_PURGE_BOUNDS_KEY, bounds]);
@@ -917,8 +919,9 @@ function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
 	return { epoch: value.epoch, cutoff: value.cutoff, observedAt: value.observedAt, logs };
 }
 
-function freshLogPurgeBounds(floor: number): LogPurgeBounds {
-	return { epoch: floor, cutoff: floor, observedAt: 0, logs: {} };
+// past the native horizon too: a log that rocksdb-js emptied before tracking began may not be listed at all
+function freshLogPurgeBounds(floor: number, nativeHorizon = 0): LogPurgeBounds {
+	return { epoch: Math.max(floor, nativeHorizon), cutoff: floor, observedAt: 0, logs: {} };
 }
 
 /**
@@ -1025,6 +1028,10 @@ function observeLogPurgeBounds(
 		else if (quietAt >= cutoff) observed.set(name, [known, quietAt]);
 		else observed.set(name, [Math.max(known, cutoff), quietAt]);
 	}
+	// a recorded log with no files left is empty, so quiet
+	const listed = new Set(names);
+	for (const name in recorded.logs)
+		if (!listed.has(name)) observed.set(name, [exposedBound(recorded, name, nativeHorizon), now]);
 	return observed;
 }
 
@@ -1062,10 +1069,11 @@ function raisedLogPurgeBounds(
 	floor: number,
 	cutoff: number,
 	observed: Map<string, LogPurgeEntry> | undefined,
+	nativeHorizon: number | undefined,
 	now: number
 ): Uint8Array | undefined {
 	if (!Number.isFinite(floor)) return undefined;
-	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(floor);
+	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(floor, nativeHorizon);
 	const epoch = observed ? base.epoch : Math.max(base.epoch, cutoff);
 	const logs = { ...base.logs };
 	for (const [name, [bound, quietAt]] of observed ?? []) {
@@ -1103,12 +1111,13 @@ function establishLogPurgeBounds(auditStore: any): void {
 	try {
 		const floor = getAuditFloor(auditStore);
 		if (!Number.isFinite(floor) || auditStore.getBinary(LOG_PURGE_BOUNDS_KEY) !== undefined) return;
+		const nativeHorizon = nativePurgeHorizon(auditStore, Date.now());
 		commitAuditMetadata(
 			auditStore,
 			(read) => {
 				const recordedFloor = decodeAuditFloor(read(AUDIT_FLOOR_KEY));
 				if (read(LOG_PURGE_BOUNDS_KEY) !== undefined || !Number.isFinite(recordedFloor)) return undefined;
-				return [[LOG_PURGE_BOUNDS_KEY, pack(freshLogPurgeBounds(recordedFloor))]];
+				return [[LOG_PURGE_BOUNDS_KEY, pack(freshLogPurgeBounds(recordedFloor, nativeHorizon))]];
 			},
 			'transaction-log purge bounds'
 		);
