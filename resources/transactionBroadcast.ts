@@ -401,7 +401,6 @@ export type ReplayedIds = Map<number, Map<number, Set<string | null | undefined>
 interface ReplayGate {
 	after?: number;
 	ids?: ReplayedIds;
-	/** a certified subscription's floor holds only until the backlog its registration found is dispatched */
 	floorUntilDrain?: boolean;
 }
 

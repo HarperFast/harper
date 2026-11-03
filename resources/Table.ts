@@ -9476,7 +9476,7 @@ export function makeTable(options): TableResourceClass {
 									reloadPending = true;
 									if (handsOff) noteReplayed(auditRecord, null);
 								} else if (thisId == null || isReload || isDescendantId(thisId, id)) {
-									// as live: the broadcast drops a merged write while the replay runs, so this is its delivery
+									// converted as the live path would, since the replay stands in for it while live entries drop
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
 									if (handsOff) noteReplayed(auditRecord, isReload ? null : replayRecordKey(id));
 									if (event) {
