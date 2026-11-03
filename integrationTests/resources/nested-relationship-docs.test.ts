@@ -1,7 +1,7 @@
 /**
- * Executes the request/response examples in the nested-relationship documentation companion:
- * https://github.com/HarperFast/documentation/pull/736.
- * The offline fixtures in that repo are checked against the published Markdown by docs CI.
+ * Executes the request/response examples that docs/reference/rest/querying.md and
+ * docs/reference/resources/resource-api.md publish; unitTests/docs/nestedRelationshipExamples.test.mjs
+ * keeps that Markdown equal to this fixture.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
