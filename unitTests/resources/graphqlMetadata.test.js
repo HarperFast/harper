@@ -243,12 +243,13 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			assert.deepEqual(state.enum, ['open']);
 		});
 
-		it('caches by properties identity and invalidates when the object is replaced', () => {
+		it('projects current properties on each call, including replacement', () => {
 			const { resolveAttributes } = require('#src/resources/jsonSchemaTypes');
 			const properties = { name: { type: 'string' } };
 			const source = { properties, required: ['name'] };
 			const first = resolveAttributes(source);
-			assert.strictEqual(resolveAttributes(source), first);
+			assert.notStrictEqual(resolveAttributes(source), first);
+			assert.deepEqual(resolveAttributes(source), first);
 			assert.equal(first[0].requiredOnSchema, true);
 			source.properties = { count: { type: 'integer' } };
 			source.required = [];
@@ -261,7 +262,10 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			const { resolveAttributes } = require('#src/resources/jsonSchemaTypes');
 			const properties = { name: { type: 'string' } };
 			assert.throws(() => resolveAttributes({ properties, required: ['name', 'name'] }), /unique names/);
-			assert.throws(() => resolveAttributes({ properties, required: ['missing'] }), /unknown property/);
+			assert.deepEqual(resolveAttributes({ properties, required: ['missing'] }).at(-1), {
+				name: 'missing',
+				requiredOnSchema: true,
+			});
 		});
 
 		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {

@@ -17,6 +17,7 @@ import {
 	resolveDeclaredType,
 	type AttributeLike,
 	type JsonSchemaFragment,
+	type JsonValue,
 } from '../../../../resources/jsonSchemaTypes.ts';
 
 export interface HarperAttribute {
@@ -36,7 +37,7 @@ export interface HarperAttribute {
 	assignUpdatedTime?: boolean;
 	expiresAt?: boolean;
 	// JSON-Schema hints a programmatic Resource may carry via `static properties`.
-	enum?: readonly (string | number | boolean | null)[];
+	enum?: readonly JsonValue[];
 	format?: string;
 	const?: unknown;
 	required?: readonly string[];

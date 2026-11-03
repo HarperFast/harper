@@ -13,6 +13,8 @@
 
 import logger from '../utility/logging/harper_logger.ts';
 
+export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+
 export type JsonSchemaType = 'string' | 'integer' | 'number' | 'boolean' | 'object' | 'array' | 'null';
 
 export interface JsonSchemaFragment {
@@ -22,7 +24,7 @@ export interface JsonSchemaFragment {
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
 	hidden?: boolean;
-	enum?: readonly (string | number | boolean | null)[];
+	enum?: readonly JsonValue[];
 	nullable?: boolean;
 	items?: JsonSchemaFragment;
 	properties?: Record<string, JsonSchemaFragment>;
@@ -88,7 +90,7 @@ export interface AttributeLike {
 	properties?: AttributeLike[];
 	// JSON-Schema-only hints an author may declare on `static properties`; carried through the
 	// projection so they survive the properties <-> attributes round-trip.
-	enum?: readonly (string | number | boolean | null)[];
+	enum?: readonly JsonValue[];
 	format?: string;
 	const?: unknown;
 	/** Object-level constraints for a nested object field, carried through the round-trip. */
@@ -96,6 +98,7 @@ export interface AttributeLike {
 	additionalProperties?: boolean;
 	requiredOnSchema?: boolean;
 	relationship?: unknown;
+	relationshipReference?: { database?: string; table?: string };
 	definition?: unknown;
 }
 
@@ -117,8 +120,6 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 		fragment.type = attr.types ? [...attr.types] : 'object';
 		fragment.properties = Object.create(null);
 		for (const sub of attr.properties) fragment.properties[sub.name] = attributeToFragment(sub);
-		if (attr.required) fragment.required = attr.required;
-		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
 	} else if (attr.type === 'array' && attr.elements) {
 		fragment.type = attr.types ? [...attr.types] : 'array';
 		fragment.items = attributeToFragment(attr.elements);
@@ -131,6 +132,8 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 		if (jsonType) fragment.type = jsonType;
 		else if (attr.type) fragment.type = attr.type;
 	}
+	if (attr.required?.length) fragment.required = attr.required;
+	if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
 	if (attr.description) fragment.description = attr.description;
 	if (attr.isPrimaryKey) fragment.primaryKey = true;
 	if (attr.assignCreatedTime) fragment.assignCreatedTime = true;
@@ -157,6 +160,36 @@ export function projectAttributesToProperties(attributes: AttributeLike[]): Reco
 	return result;
 }
 
+const MAX_SCHEMA_DEPTH = 100;
+
+export class SchemaTraversalError extends Error {}
+
+export function jsonValueKey(value: unknown, ancestors = new WeakSet<object>(), depth = 0): string {
+	if (depth > MAX_SCHEMA_DEPTH) throw new RangeError(`Schema JSON value exceeds ${MAX_SCHEMA_DEPTH} levels`);
+	if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+	if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
+	if (typeof value !== 'object' || value === null) throw new TypeError('Schema value must be JSON-serializable');
+	if (ancestors.has(value)) throw new TypeError('Schema JSON value contains a cycle');
+	if (
+		!Array.isArray(value) &&
+		Object.getPrototypeOf(value) !== Object.prototype &&
+		Object.getPrototypeOf(value) !== null
+	) {
+		throw new TypeError('Schema value must be JSON-serializable using plain objects');
+	}
+	ancestors.add(value);
+	try {
+		if (Array.isArray(value))
+			return `[${Array.from(value, (item) => jsonValueKey(item, ancestors, depth + 1)).join(',')}]`;
+		return `{${Object.keys(value)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}:${jsonValueKey(value[key], ancestors, depth + 1)}`)
+			.join(',')}}`;
+	} finally {
+		ancestors.delete(value);
+	}
+}
+
 /**
  * Structural inverse of `attributeToFragment`: rebuild an attribute from a JSON Schema fragment.
  * A programmatic Resource may declare `static properties` (the Record form) without populating the
@@ -164,11 +197,6 @@ export function projectAttributesToProperties(attributes: AttributeLike[]): Reco
  * bare declaration would otherwise yield a skeletal schema. Projecting the fragments back into
  * attributes lets those paths produce the same rich schema they build for table-backed resources.
  */
-const MAX_SCHEMA_DEPTH = 100;
-const projectedProperties = new WeakMap<object, { requiredSignature: string; attributes: readonly AttributeLike[] }>();
-
-export class SchemaTraversalError extends Error {}
-
 function fragmentToAttribute(
 	name: string,
 	fragment: JsonSchemaFragment,
@@ -187,7 +215,7 @@ function fragmentToAttribute(
 			if (!fragment.type.every((type) => typeof type === 'string')) {
 				throw new TypeError(`Schema property "${name}.type" must contain only strings`);
 			}
-			attr.types = fragment.type;
+			attr.types = [...fragment.type];
 			const members = fragment.type.filter((type) => type !== 'null');
 			if (members.length !== fragment.type.length) attr.nullable = true;
 			if (members.length > 0) attr.type = members[0];
@@ -203,37 +231,27 @@ function fragmentToAttribute(
 				throw new TypeError(`Schema property "${name}.required" must contain unique names`);
 			}
 		}
-		let normalizedEnum: JsonSchemaFragment['enum'];
+		let normalizedEnum: Map<string, JsonValue> | undefined;
 		if (fragment.enum !== undefined) {
 			if (!Array.isArray(fragment.enum) || fragment.enum.length === 0) {
 				throw new TypeError(`Schema property "${name}.enum" must be a non-empty array`);
 			}
-			if (
-				!fragment.enum.every(
-					(value) =>
-						value === null ||
-						typeof value === 'string' ||
-						typeof value === 'boolean' ||
-						(typeof value === 'number' && Number.isFinite(value))
-				)
-			) {
-				throw new TypeError(`Schema property "${name}.enum" must contain only JSON scalar values`);
+			normalizedEnum = new Map();
+			for (const value of fragment.enum) {
+				const key = jsonValueKey(value);
+				if (!normalizedEnum.has(key)) normalizedEnum.set(key, JSON.parse(key));
 			}
-			normalizedEnum = [...new Set(fragment.enum)];
 		}
 		if (fragment.const !== undefined) {
-			if (typeof fragment.const === 'number' && !Number.isFinite(fragment.const)) {
-				throw new TypeError(`Schema property "${name}.const" must be JSON-serializable`);
+			const key = jsonValueKey(fragment.const);
+			if (normalizedEnum && !normalizedEnum.has(key)) {
+				throw new TypeError(`Schema property "${name}.const" must be included in its enum`);
 			}
-			try {
-				if (JSON.stringify(fragment.const) === undefined) throw new TypeError();
-			} catch {
-				throw new TypeError(`Schema property "${name}.const" must be JSON-serializable`);
-			}
+			attr.const = JSON.parse(key);
 		}
-		if (normalizedEnum && fragment.const !== undefined && !normalizedEnum.includes(fragment.const as never)) {
-			throw new TypeError(`Schema property "${name}.const" must be included in its enum`);
-		}
+		if (fragment.required) attr.required = [...fragment.required];
+		if (fragment.additionalProperties !== undefined) attr.additionalProperties = fragment.additionalProperties;
+
 		if (fragment.properties !== undefined) {
 			if (
 				fragment.properties === null ||
@@ -246,8 +264,6 @@ function fragmentToAttribute(
 				fragmentToAttribute(subName, sub, ancestors, depth + 1)
 			);
 			attr.type ??= 'object';
-			if (fragment.required) attr.required = fragment.required;
-			if (fragment.additionalProperties !== undefined) attr.additionalProperties = fragment.additionalProperties;
 		}
 		const declaredTypes = Array.isArray(fragment.type) ? fragment.type : [fragment.type];
 		if (declaredTypes.includes('array') && fragment.items !== undefined) {
@@ -259,9 +275,8 @@ function fragmentToAttribute(
 		if (fragment.assignUpdatedTime) attr.assignUpdatedTime = true;
 		if (fragment.hidden) attr.hidden = true;
 		if (fragment.nullable !== undefined) attr.nullable = fragment.nullable;
-		if (normalizedEnum) attr.enum = normalizedEnum;
+		if (normalizedEnum) attr.enum = [...normalizedEnum.values()];
 		if (fragment.format) attr.format = fragment.format;
-		if (fragment.const !== undefined) attr.const = fragment.const;
 		return attr;
 	} finally {
 		ancestors.delete(fragment);
@@ -278,12 +293,6 @@ export function projectPropertiesToAttributes(properties: Record<string, JsonSch
 	}
 	const ancestors = new WeakSet<object>();
 	return Object.entries(properties).map(([name, fragment]) => fragmentToAttribute(name, fragment, ancestors, 1));
-}
-
-function freezeAttribute(attr: AttributeLike): AttributeLike {
-	if (attr.properties) attr.properties = Object.freeze(attr.properties.map(freezeAttribute)) as AttributeLike[];
-	if (attr.elements) freezeAttribute(attr.elements);
-	return Object.freeze(attr);
 }
 
 export function filterAttributeTree(
@@ -312,7 +321,10 @@ export function filterAttributeTree(
 					.filter((child): child is AttributeLike => child !== undefined);
 				if (attribute.required) {
 					const names = new Set(visible.properties.map((child) => child.name));
-					const required = attribute.required.filter((name) => names.has(name));
+					const suppressed = new Set(
+						attribute.properties.filter((child) => !names.has(child.name)).map((child) => child.name)
+					);
+					const required = attribute.required.filter((name) => !suppressed.has(name));
 					if (required.length) visible.required = required;
 					else delete visible.required;
 				}
@@ -332,16 +344,12 @@ export function filterAttributeTree(
 		.filter((attribute): attribute is AttributeLike => attribute !== undefined);
 }
 
-function validateTopLevelRequired(required: readonly string[] | undefined, properties: object): readonly string[] {
+function validateTopLevelRequired(required: readonly string[] | undefined): readonly string[] {
 	if (required === undefined) return [];
 	if (!Array.isArray(required) || !required.every((name) => typeof name === 'string')) {
 		throw new TypeError('Resource required must be an array of strings');
 	}
 	if (new Set(required).size !== required.length) throw new TypeError('Resource required must contain unique names');
-	for (const name of required) {
-		if (!Object.hasOwn(properties, name))
-			throw new TypeError(`Resource required references unknown property "${name}"`);
-	}
 	return required;
 }
 
@@ -437,16 +445,17 @@ function emitAttributeSchema(
 		const fragment: JsonSchemaFragment = {};
 		const reference = attr.relationship;
 		if (reference) {
-			const target = reference as { database?: string; table?: string; type?: string };
-			const label = [target.database, target.table ?? target.type].filter(Boolean).join('.');
+			const target = attr.relationshipReference;
+			const targetType = attr.type === 'array' ? attr.elements?.type : attr.type;
+			const label = [target?.database, target?.table ?? targetType].filter(Boolean).join('.');
 			if (attr.type === 'array') {
 				return {
 					type: 'array',
 					items: {},
-					...(attr.description || label ? { description: attr.description ?? `Reference to ${label}.` } : {}),
+					...(attr.description || label ? { description: attr.description || `Reference to ${label}.` } : {}),
 				};
 			}
-			return attr.description || label ? { description: attr.description ?? `Reference to ${label}.` } : {};
+			return attr.description || label ? { description: attr.description || `Reference to ${label}.` } : {};
 		}
 		// `ignoreHidden` applies to this attribute only — a hidden sub-property of a surfaced primary key
 		// is still a hidden field and stays suppressed.
@@ -535,6 +544,11 @@ function emitAttributeSchema(
 			}
 		}
 
+		if (!attr.properties) {
+			if (attr.required?.length) fragment.required = attr.required;
+			if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
+		}
+
 		const nullOnly = attr.types?.every((member) => member === 'null');
 		if (attr.nullable && !nullOnly) applyNullability(fragment, options.dialect);
 		// An explicitly declared `description`/`format` outranks whatever the primitive mapper supplied as a
@@ -550,9 +564,10 @@ function emitAttributeSchema(
 			if (options.dialect === 'openapi-3.0.3') {
 				// Intersect rather than skip when both are declared: dropping the `const` would leave OpenAPI
 				// advertising a wider value set than MCP, from one declaration.
+				const key = jsonValueKey(attr.const);
 				fragment.enum = fragment.enum
-					? (fragment.enum.filter((value) => value === attr.const) as never[])
-					: [attr.const as never];
+					? fragment.enum.filter((value) => jsonValueKey(value) === key)
+					: [attr.const as JsonValue];
 			} else if (fragment.const === undefined) {
 				fragment.const = attr.const;
 			}
@@ -602,16 +617,14 @@ export function resolveAttributes(source?: {
 	if (source?.attributes?.length) return source.attributes;
 	if (Array.isArray(source?.properties)) return source.properties;
 	if (source?.properties !== undefined) {
-		const required = validateTopLevelRequired(source.required, source.properties);
-		const requiredSignature = JSON.stringify(required);
-		const cached = projectedProperties.get(source.properties);
-		if (cached?.requiredSignature === requiredSignature) return cached.attributes as AttributeLike[];
+		const required = validateTopLevelRequired(source.required);
 		const requiredNames = new Set(required);
 		const attributes = projectPropertiesToAttributes(source.properties).map((attr) =>
-			freezeAttribute(requiredNames.has(attr.name) ? { ...attr, requiredOnSchema: true } : attr)
+			requiredNames.has(attr.name) ? { ...attr, requiredOnSchema: true } : attr
 		);
-		Object.freeze(attributes);
-		projectedProperties.set(source.properties, { requiredSignature, attributes });
+		for (const name of required) {
+			if (!Object.hasOwn(source.properties, name)) attributes.push({ name, requiredOnSchema: true });
+		}
 		return attributes;
 	}
 	return [];

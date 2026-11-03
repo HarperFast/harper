@@ -464,11 +464,12 @@ describe('mcp/resources', () => {
 			class PrivateFields {}
 			PrivateFields.databaseName = 'data';
 			PrivateFields.tableName = 'private_fields';
+			PrivateFields.required = ['extension', 'secret'];
 			PrivateFields.properties = {
 				id: { type: 'string', primaryKey: true },
 				publicProfile: {
 					type: 'object',
-					required: ['publicName', 'secretDetail'],
+					required: ['publicName', 'secretDetail', 'nestedExtension'],
 					properties: {
 						publicName: { type: 'string' },
 						secretDetail: { type: 'string', hidden: true, description: 'internal only' },
@@ -486,7 +487,7 @@ describe('mcp/resources', () => {
 			const body = JSON.parse(res.contents[0].text);
 			assert.deepEqual(
 				body.attributes.map((attribute) => attribute.name),
-				['id', 'publicProfile']
+				['id', 'publicProfile', 'extension']
 			);
 			assert.deepEqual(
 				body.attributes
@@ -496,7 +497,9 @@ describe('mcp/resources', () => {
 			);
 			assert.deepEqual(body.attributes.find((attribute) => attribute.name === 'publicProfile').required, [
 				'publicName',
+				'nestedExtension',
 			]);
+			assert.equal(body.attributes.find((attribute) => attribute.name === 'extension').requiredOnSchema, true);
 			assert.equal(JSON.stringify(body).includes('internal only'), false);
 		});
 

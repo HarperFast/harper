@@ -45,6 +45,22 @@ describe('defineResource / Resource.withSchema — runtime request contract', ()
 		});
 	});
 
+	it('validates object enum members by JSON value rather than identity', async () => {
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'object', enum: [{ a: 1, b: [true, null] }] }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		assert.deepEqual(await Api.post(targetWith('', null), { b: [true, null], a: 1 }), { b: [true, null], a: 1 });
+		await assert.rejects(
+			Promise.resolve().then(() => Api.post(targetWith('', null), { a: 2 })),
+			/must be one of/
+		);
+	});
+
 	describe('named multipart body validation', () => {
 		for (const variant of ['function', 'class']) {
 			it(`resolves named fields before validating the ${variant} contract`, async () => {

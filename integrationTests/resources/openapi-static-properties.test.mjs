@@ -70,8 +70,16 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		assert.deepEqual(create.inputSchema.properties.note.type, ['string', 'null']);
 		assert.deepEqual(create.inputSchema.properties.anything, { type: 'array' });
 		assert.deepEqual(create.inputSchema.properties.choice.enum, ['a', 1]);
+		assert.deepEqual(create.inputSchema.properties.payload.enum, [{ a: 1, b: [true, null] }, ['x']]);
+		assert.deepEqual(create.inputSchema.properties.profile.required, ['name', 'nestedExtension']);
 		assert.equal(create.inputSchema.properties.profile.properties.creditScore, undefined);
-		assert.deepEqual(create.inputSchema.required, ['status', 'note']);
+		assert.deepEqual(create.inputSchema.required, ['status', 'note', 'extension']);
+	});
+
+	test('returns a record satisfying the MCP output schema with an undeclared required field', async () => {
+		const result = await mcpClient.callTool({ name: 'get_OrderSummary', arguments: { id: 'o1' } });
+		assert.equal(result.isError, undefined);
+		assert.equal(result.structuredContent.extension, true);
 	});
 
 	test('emits OpenAPI `nullable` for a top-level nullable property', () => {
@@ -94,9 +102,9 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 
 	test('drops a suppressed name from `required`, and omits `required` when nothing survives', () => {
 		// `required: []` is invalid under draft-04 (which OpenAPI 3.0.3 inherits).
-		assert.deepEqual(schema.properties.profile.required, ['name']);
+		assert.deepEqual(schema.properties.profile.required, ['name', 'nestedExtension']);
 		assert.equal('required' in schema.properties.allHidden, false, 'empty required must be omitted');
-		assert.deepEqual(schema.required, ['status', 'note']);
+		assert.deepEqual(schema.required, ['status', 'note', 'extension']);
 	});
 
 	test('carries enum and description into array items', () => {
@@ -107,6 +115,7 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 	test('emits dialect-valid unconstrained arrays without widening structural enum intersections', () => {
 		assert.deepEqual(schema.properties.anything, { type: 'array', items: {} });
 		assert.deepEqual(schema.properties.choice.enum, ['a', 1]);
+		assert.deepEqual(schema.properties.payload.enum, [{ a: 1, b: [true, null] }]);
 		assert.ok(schema.properties.choice.anyOf.some((arm) => arm.enum?.includes(null)));
 	});
 });

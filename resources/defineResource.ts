@@ -27,7 +27,7 @@
 
 import { resolveBody } from './resolveBody.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
-import { attributeToFragment, type AttributeLike } from './jsonSchemaTypes.ts';
+import { attributeToFragment, jsonValueKey, type AttributeLike } from './jsonSchemaTypes.ts';
 import { ValidationError, type ValidationIssue } from '../utility/errors/hdbError.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,9 +340,16 @@ function validateValue(value: any, fragment: JsonSchemaFragment, path: string, i
 		issues.push({ path, code: 'type', message: `${path} must be of type ${types.join(' | ')}` });
 		return value;
 	}
-	if (fragment.enum && !fragment.enum.includes(value)) {
-		issues.push({ path, code: 'enum', message: `${path} must be one of: ${fragment.enum.join(', ')}` });
-		return value;
+	if (fragment.enum) {
+		let matches = false;
+		try {
+			const key = jsonValueKey(value);
+			matches = fragment.enum.some((member) => jsonValueKey(member) === key);
+		} catch {}
+		if (!matches) {
+			issues.push({ path, code: 'enum', message: `${path} must be one of: ${fragment.enum.join(', ')}` });
+			return value;
+		}
 	}
 	if (primary === 'array' && fragment.items && Array.isArray(value)) {
 		return value.map((el, i) => validateValue(el, fragment.items as JsonSchemaFragment, `${path}[${i}]`, issues));

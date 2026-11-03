@@ -136,6 +136,44 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 		assert.deepEqual(mcp.typoUnion, { type: 'string' });
 		assert.deepEqual(openapi.typoUnion, { type: 'string' });
 	});
+	it('preserves undeclared root required names without exposing hidden fields', () => {
+		const resources = makeResources();
+		const Widget = resources.get('Widget').Resource;
+		Widget.properties.secret = { type: 'string', hidden: true };
+		Widget.required = ['extension', 'secret'];
+		_setResourcesForTest(resources);
+		registerApplicationTools();
+		const create = getTool('create_Widget').inputSchema;
+		const output = getTool('get_Widget').outputSchema;
+		const openapi = generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget;
+		assert.deepEqual(create.required, ['extension']);
+		assert.deepEqual(openapi.required, ['extension']);
+		assert.ok(output.required.includes('extension'));
+		assert.equal(output.additionalProperties, false);
+		assert.deepEqual(output.properties.extension, {});
+		for (const schema of [create, output, openapi]) assert.equal(schema.properties.secret, undefined);
+	});
+
+	it('refreshes both surfaces after an in-place metadata edit and tool rebuild', () => {
+		const resources = makeResources();
+		const Widget = resources.get('Widget').Resource;
+		_setResourcesForTest(resources);
+		registerApplicationTools();
+		generateJsonApi(resources, 'https://harper.fast');
+		Widget.properties.label.description = 'Changed in place';
+		Widget.properties.added = { type: 'integer' };
+		delete Widget.properties.mixed;
+		_resetApplicationToolsRegisteredForTest();
+		registerApplicationTools();
+		for (const properties of [
+			getTool('create_Widget').inputSchema.properties,
+			generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget.properties,
+		]) {
+			assert.equal(properties.label.description, 'Changed in place');
+			assert.equal(properties.added.type, 'integer');
+			assert.equal(properties.mixed, undefined);
+		}
+	});
 });
 
 // #1941 / #1942 — the two surfaces used to diverge below the top level: OpenAPI dropped hints inside
@@ -212,6 +250,15 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 				`${surface}: a hidden sub-property's description must not leak`
 			);
 		}
+	});
+
+	it('preserves JSON enum members and intersects structurally equal const values', () => {
+		const { mcp, openapi } = bothSurfaces({
+			value: { enum: [{ a: 1, b: [true, null] }, ['x']], const: { b: [true, null], a: 1 } },
+		});
+		assert.deepEqual(mcp.value.enum, [{ a: 1, b: [true, null] }, ['x']]);
+		assert.deepEqual(mcp.value.const, { b: [true, null], a: 1 });
+		assert.deepEqual(openapi.value.enum, [{ a: 1, b: [true, null] }]);
 	});
 
 	it('drops a suppressed sub-property from the nested `required` list', () => {
@@ -444,8 +491,8 @@ describe('attributeToSchema — emitter edge cases (#1941, #1942)', () => {
 		const person = { name: 'Person', properties: [dogs] };
 		Object.defineProperty(owner, 'properties', { value: person.properties });
 		Object.defineProperty(dogs.elements, 'properties', { value: dog.properties });
-		assert.deepEqual(emit(owner, 'json-schema'), {});
-		assert.deepEqual(emit(dogs, 'json-schema'), { type: 'array', items: {} });
+		assert.deepEqual(emit(owner, 'json-schema'), { description: 'Reference to Person.' });
+		assert.deepEqual(emit(dogs, 'json-schema'), { type: 'array', items: {}, description: 'Reference to Dog.' });
 	});
 
 	it('prunes hidden children from a cloned required list', () => {
