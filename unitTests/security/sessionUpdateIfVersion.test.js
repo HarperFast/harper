@@ -5,6 +5,8 @@ const { databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { authentication } = require('#src/security/auth');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { claimLocalKey, localIssuanceRatchet } = require('#src/resources/originClosedFloor');
+const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { waitFor } = require('../waitFor.js');
 
 testUtils.preTestPrep();
@@ -177,6 +179,70 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 		});
 		assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined);
 		assert.strictEqual((await Sessions.get(id)).greeting, 'future');
+	});
+
+	it('accepts versions from a local issuance floor and rejects versions above it', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const root = Sessions.primaryStore.rootStore;
+		const parent = { timestamp: root.getMonotonicTimestamp() };
+		const floor = claimLocalKey(root, root.getMonotonicTimestamp() + 1000);
+		try {
+			const cookie = await establishSession();
+			const id = cookie.slice(cookie.indexOf('=') + 1);
+			const response = newResponse();
+			let loadedVersion;
+			await transaction(parent, () =>
+				authentication(newRequest(cookie), async (request) => {
+					assert.strictEqual(parent.transaction.timestamp, parent.timestamp);
+					loadedVersion = request.session.version;
+					assert.ok(loadedVersion > root.getMonotonicTimestamp(), 'version is ahead of the native clock at update');
+					assert.ok(loadedVersion <= localIssuanceRatchet(root), 'local issuance covers the version');
+					await request.session.update({ greeting: 'locally issued' }, { ifVersion: loadedVersion });
+					return response;
+				})
+			);
+			const saved = await Sessions.get(id);
+			assert.strictEqual(saved.greeting, 'locally issued');
+			assert.ok(saved.getUpdatedTime() > loadedVersion);
+			assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
+
+			await Sessions.put({ id, greeting: 'beyond local issuance' }, { timestamp: floor + 60000 });
+			const rejectedResponse = newResponse();
+			await authentication(newRequest(cookie), async (request) => {
+				const version = request.session.version;
+				assert.ok(version > root.getMonotonicTimestamp());
+				assert.ok(version > localIssuanceRatchet(root));
+				await assert.rejects(request.session.update({ greeting: 'discarded' }, { ifVersion: version }), conflict);
+				return rejectedResponse;
+			});
+			assert.strictEqual(rejectedResponse.headers.get('X-Hdb-Session'), undefined);
+			assert.strictEqual((await Sessions.get(id)).greeting, 'beyond local issuance');
+		} finally {
+			await waitFor(() => root.getMonotonicTimestamp() > readLocalIssuanceCeiling(root.auditStore), 30000);
+		}
+	});
+
+	it('reports application-owned numeric version data as a non-retryable conflict', async function () {
+		const cookie = await establishSession();
+		const id = cookie.slice(cookie.indexOf('=') + 1);
+		await Sessions.put({ id, greeting: 'application', version: 7 });
+		const response = newResponse();
+		const update = { greeting: 'discarded' };
+		await authentication(newRequest(cookie), async (request) => {
+			assert.strictEqual(request.session.version, 7);
+			await assert.rejects(request.session.update(update, { ifVersion: request.session.version }), (error) => {
+				assert.strictEqual(error.retryable, false);
+				assert.ok(error.message.includes('reserved version'));
+				assert.ok(!error.message.includes(id));
+				return conflict(error);
+			});
+			return response;
+		});
+		assert.deepStrictEqual(update, { greeting: 'discarded' });
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined);
+		const saved = await Sessions.get(id);
+		assert.strictEqual(saved.version, 7);
+		assert.strictEqual(saved.greeting, 'application');
 	});
 
 	it('rejects a genuinely reused version even when its number matches', async function () {

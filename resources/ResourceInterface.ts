@@ -76,7 +76,7 @@ export interface ResourceInterface<Record extends object = any>
 export interface Session {
 	id?: any;
 	user?: User;
-	/** The stored record's version, read alongside `id`; pass it back as `update()`'s `ifVersion`. */
+	/** Stored version metadata for `update()`'s `ifVersion`, unless application data owns this field. */
 	version?: number;
 	/**
 	 * `ifVersion` rechecks the latest committed local session before writing. Missing, deleted,
@@ -87,7 +87,9 @@ export interface Session {
 	 * Capture `version` before awaiting external work; it describes the initially loaded session
 	 * and is not refreshed.
 	 * `retryable: true` requires a fresh load, such as a later request, rather than retrying this
-	 * request's version. `false` means version equality cannot establish unchanged content.
+	 * request's version. Reused versions and application-owned `version` fields are non-retryable;
+	 * move an application field to another name before using conditional updates.
+	 * Await conditional updates and handle their rejections.
 	 * An explicit options argument requires a finite numeric `ifVersion`; invalid options,
 	 * including an undefined version from a session missing at load, throw a 400 synchronously.
 	 */
