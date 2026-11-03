@@ -125,8 +125,8 @@ upper bound on every key any prune removed from the named logs.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.
-- The steady-state RocksDB pass syncs the WAL before `purgeLogs`; the boot purge and manual prunes do
-  not yet, so power loss there can lose the record with the floor it shares a transaction with
+- The steady-state RocksDB pass and `delete_transaction_logs_before` sync the WAL before `purgeLogs`;
+  the synchronous boot purge does not yet, so power loss there can lose the record with the floor it shares a transaction with
   ([harper#3947](https://github.com/HarperFast/harper/issues/3947)).
 
 ---

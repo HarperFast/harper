@@ -1092,9 +1092,14 @@ function logPurgeBoundsCover(
 	if (!observed) return recorded.epoch >= cutoff;
 	const refreshBefore = nativeHorizon > 0 ? (now + nativeHorizon) / 2 : 0;
 	if (recorded.observedAt < refreshBefore) return false;
-	for (const [name, [bound, quietAt]] of observed) {
+	for (const [name, [bound, quietAt, maxKey]] of observed) {
 		const entry = Object.hasOwn(recorded.logs, name) ? recorded.logs[name] : undefined;
-		if (!entry || bound > Math.max(recorded.epoch, entry[0]) || (quietAt > entry[1] && entry[1] < refreshBefore))
+		if (
+			!entry ||
+			bound > Math.max(recorded.epoch, entry[0]) ||
+			maxKey > entry[2] ||
+			(quietAt > entry[1] && entry[1] < refreshBefore)
+		)
 			return false;
 	}
 	return true;
@@ -1126,9 +1131,10 @@ function raisedLogPurgeBounds(
 			epoch = Math.max(epoch, bound);
 			continue;
 		}
-		const [baseBound, baseQuietAt] = logs[name] ?? [0, 0, 0];
-		// maxKey pairs with this pass's observedAt; the bound above already absorbed the previous one
-		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt), maxKey];
+		const [baseBound, baseQuietAt, baseMaxKey] = logs[name] ?? [0, 0, 0];
+		// a concurrent pass may have seen a larger key; a real read replaces an unknown one
+		const merged = baseMaxKey === UNKNOWN_MAXIMUM ? maxKey : Math.max(baseMaxKey, maxKey);
+		logs[name] = [Math.max(baseBound, bound), Math.max(baseQuietAt, quietAt), merged];
 	}
 	return pack({ epoch, cutoff: Math.max(base.cutoff, cutoff), observedAt: observed ? now : base.observedAt, logs });
 }
