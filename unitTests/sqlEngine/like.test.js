@@ -39,7 +39,14 @@ function regexLike(pattern, value) {
 	return new RegExp(r + '$').test(value);
 }
 
-function dpLike(pattern, value, escape) {
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+
+// `_` matches any character but a line terminator, as in both engines.
+function dpLike(pattern, value, escape, caseInsensitive = false) {
+	if (caseInsensitive) {
+		pattern = pattern.toLowerCase();
+		value = value.toLowerCase();
+	}
 	const tokens = [];
 	for (let i = 0; i < pattern.length; i++) {
 		const ch = pattern[i];
@@ -53,7 +60,7 @@ function dpLike(pattern, value, escape) {
 		const next = [token === '%' && row[0]];
 		for (let j = 1; j <= value.length; j++) {
 			if (token === '%') next.push(next[j - 1] || row[j]);
-			else if (token === '_') next.push(row[j - 1]);
+			else if (token === '_') next.push(row[j - 1] && !LINE_TERMINATOR.test(value[j - 1]));
 			else next.push(row[j - 1] && value[j - 1] === token.literal);
 		}
 		row = next;
@@ -160,6 +167,21 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			if (escape && /(^|[^!])(!!)*!$/.test(pattern)) pattern += 'a';
 			const value = randomString(next, 'ab%_!', 7);
 			assert.strictEqual(v2Like(pattern, value, escape), dpLike(pattern, value, escape), `${value} LIKE ${pattern}`);
+		}
+	});
+
+	it('agrees with the reference on values and patterns holding line terminators, on both engines', () => {
+		const next = seededRandom(3936);
+		for (let i = 0; i < 6000; i++) {
+			const escape = i % 3 === 0 ? '!' : undefined;
+			let pattern = randomString(next, escape ? 'a%___\n!' : 'aA%___\n\r', 12);
+			if (escape && /(^|[^!])(!!)*!$/.test(pattern)) pattern += 'a';
+			const value = randomString(next, 'aaA\n\r\u2028_', 16);
+			const label = `${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`;
+			assert.strictEqual(v2Like(pattern, value, escape), dpLike(pattern, value, escape), label);
+			const legacy =
+				escape === undefined ? alasql.utils.like(pattern, value) : alasql.utils.like(pattern, value, escape);
+			assert.strictEqual(legacy, dpLike(pattern, value, escape, true), `legacy ${label}`);
 		}
 	});
 
@@ -382,13 +404,26 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		['%' + 'a'.repeat(200) + '_b%', 'a', 10_000],
 		['%' + '_'.repeat(9_999) + 'c%', 'a', 100_000],
 		['%' + 'a'.repeat(9_998) + '_b%', 'a', 100_000],
+		// No 10,000-wide window between line terminators: retrying each start cost value x width (SQA-133).
+		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\n', 1_000_000],
+		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_998) + '\r\n', 1_000_000],
+		['%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\u2028', 1_000_000],
+		['%' + ('_'.repeat(99) + 'a').repeat(100) + '%', 'a'.repeat(9_999) + '\n', 1_000_000],
+		['%' + '_'.repeat(5_000) + '!_' + '_'.repeat(4_999) + '%', 'a'.repeat(9_999) + '\n', 1_000_000, '!'],
+		['%a%' + '_'.repeat(10_000) + '%', 'a'.repeat(9_999) + '\n', 1_000_000],
+		['%_%', '\n', 1_000_000],
 	];
 
 	for (const engine of ['v2', 'legacy']) {
-		for (const [pattern, valueChar, valueLength] of CASES) {
-			const shown = pattern.length > 40 ? pattern.slice(0, 40) + '…' : pattern;
-			it(`${engine}: ${shown} against ${valueLength.toLocaleString('en-US')} characters`, () => {
-				const args = [...process.execArgv, fixture, engine, pattern, valueChar, String(valueLength)];
+		for (const [pattern, valueUnit, valueLength, escape] of CASES) {
+			const shown = JSON.stringify(pattern.length > 40 ? pattern.slice(0, 40) + '…' : pattern);
+			const unitShown = JSON.stringify(valueUnit.length > 2 ? '…' + valueUnit.slice(-2) : valueUnit).replace(
+				'\u2028',
+				'\\u2028'
+			);
+			it(`${engine}: ${shown} against ${valueLength.toLocaleString('en-US')} characters of ${unitShown}`, () => {
+				const args = [...process.execArgv, fixture, engine, pattern, valueUnit, String(valueLength)];
+				if (escape) args.push(escape);
 				const child = spawnSync(process.execPath, args, {
 					encoding: 'utf8',
 					timeout: 20_000,

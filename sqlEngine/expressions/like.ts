@@ -50,9 +50,13 @@ interface Segment {
 	text: string | undefined;
 	source: string;
 	regExp: RegExp | undefined;
+	// No unit accepts a line terminator, so no match contains one.
+	lineFree: boolean;
 }
 
 const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/;
+const LINE_TERMINATORS = ['\n', '\r', '\u2028', '\u2029'];
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/g;
 
 // Segment RegExps hold no quantifier or alternation, so they cannot backtrack.
 export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false): LikeMatcher {
@@ -60,11 +64,19 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	const segments: Segment[] = [];
 	let text: string | undefined = '';
 	let units: string[] = [];
+	let lineFree = true;
 	const endSegment = () => {
 		const literal = text !== undefined && (!flags || units.length === 0);
-		segments.push({ width: units.length, text: literal ? text : undefined, source: units.join(''), regExp: undefined });
+		segments.push({
+			width: units.length,
+			text: literal ? text : undefined,
+			source: units.join(''),
+			regExp: undefined,
+			lineFree,
+		});
 		text = '';
 		units = [];
+		lineFree = true;
 	};
 	for (const token of tokens) {
 		if (token.kind === 'any') {
@@ -73,9 +85,14 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 		}
 		if (token.kind === 'literal') {
 			if (text !== undefined) text += token.char;
+			if (LINE_TERMINATORS.includes(token.char)) lineFree = false;
 			units.push(token.char.replace(REGEXP_SYNTAX, '\\$&'));
 		} else {
 			text = undefined;
+			if (token.kind === 'class') {
+				const unit = new RegExp(token.source, flags);
+				if (LINE_TERMINATORS.some((terminator) => unit.test(terminator))) lineFree = false;
+			}
 			units.push(token.kind === 'one' ? '.' : token.source);
 		}
 	}
@@ -114,12 +131,31 @@ function segmentMatchesAt(segment: Segment, value: string, start: number): boole
 }
 
 function findSegment(segment: Segment, value: string, from: number, lastStart: number): number {
-	let found: number;
-	if (segment.text !== undefined) found = value.indexOf(segment.text, from);
-	else {
-		const search = segment.regExp!;
-		search.lastIndex = from;
-		found = search.test(value) ? search.lastIndex - segment.width : -1;
+	if (segment.text !== undefined) {
+		const found = value.indexOf(segment.text, from);
+		return found <= lastStart ? found : -1;
 	}
-	return found <= lastStart ? found : -1;
+	if (!segment.lineFree) return search(segment, value, from, lastStart + segment.width);
+	// A start whose window holds a line terminator fails, after scanning up to the segment's width; a
+	// RegExp search retries one position later, so values with a line break every <= width characters
+	// cost value x width. Search only the stretches between line terminators instead.
+	let start = from;
+	while (start <= lastStart) {
+		LINE_TERMINATOR.lastIndex = start;
+		const lineEnd = LINE_TERMINATOR.test(value) ? LINE_TERMINATOR.lastIndex - 1 : value.length;
+		if (lineEnd - start >= segment.width) {
+			const found = search(segment, value, start, Math.min(lineEnd, lastStart + segment.width));
+			if (found >= 0) return found;
+		}
+		start = lineEnd + 1;
+	}
+	return -1;
+}
+
+// Finds the leftmost match that ends by `end`, without examining any character at or after it.
+function search(segment: Segment, value: string, from: number, end: number): number {
+	if (end - from < segment.width) return -1;
+	const regExp = segment.regExp!;
+	regExp.lastIndex = 0;
+	return regExp.test(value.slice(from, end)) ? from + regExp.lastIndex - segment.width : -1;
 }

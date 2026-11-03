@@ -4,3 +4,10 @@ type Addr @table @export {
 	note: String
 	flag: String
 }
+
+type Lines @table @export {
+	id: ID @primaryKey
+	tag: String @indexed
+	note: String
+	flag: String
+}
