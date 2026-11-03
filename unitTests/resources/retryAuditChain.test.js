@@ -8,8 +8,8 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
-const { setWriteIntentsForTests } = require('#src/resources/transactionLogAbortMarkers');
-const { Transaction } = require('@harperfast/rocksdb-js');
+const { setAbortMarkersForTests, setWriteIntentsForTests } = require('#src/resources/transactionLogAbortMarkers');
+const { Transaction, constants } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -332,6 +332,31 @@ describe('Audit chain across a conflict retry', function () {
 		await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
 		const { title, meta } = await T.get(id);
 		assert.deepStrictEqual({ title, meta }, { title: 'intermediate', meta: 'retried' });
+	});
+
+	it('keeps the intermediate head when abort markers are disabled and a retry is refused before its log write', async () => {
+		const id = 'markers-off';
+		const base = freshBase();
+		const priorMarkers = setAbortMarkersForTests(false);
+		try {
+			await applyFromOrigin(base, put(id, { id, title: 'seed', meta: 'seed' }));
+			const interception = interceptNextCommit(async () => {
+				await applyFromOrigin(base + 200, patch(id, { title: 'intermediate' }));
+				return constants.RETRY_NOW_VALUE;
+			});
+			try {
+				await applyFromOrigin(base + 300, patch(id, { meta: 'retried' }));
+			} finally {
+				interception.restore();
+			}
+			assert(interception.retried, 'the write must have retried');
+			assert(namesHead(id, base + 200), 'the record names the head the retry committed over');
+			await applyFromOrigin(base + 100, patch(id, { title: 'older' }));
+			const { title, meta } = await T.get(id);
+			assert.deepStrictEqual({ title, meta }, { title: 'intermediate', meta: 'retried' });
+		} finally {
+			setAbortMarkersForTests(priorMarkers ?? true);
+		}
 	});
 
 	it('recovers the ref when crash replay restages the retried write over the intermediate head', async function () {

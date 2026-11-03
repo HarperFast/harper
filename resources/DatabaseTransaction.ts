@@ -763,7 +763,7 @@ export type TransactionWrite = {
 	appendedAuditEntry?: boolean;
 	// sticky: such a staging ran with abort markers off, so an aborted attempt can leave its entry readable
 	appendedUnmarkedAuditEntry?: boolean;
-	// what the key held when a first attempt's log batch was written: a retry appends none and restages from it
+	// what the key held when this handle's retained log batch was staged: a retry appends none and restages from it
 	loggedBase?: {
 		version?: number;
 		nodeId?: number;
@@ -1636,8 +1636,9 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	private noteRetryBoundary(transaction: RocksTransaction, error?: { hasLog?: boolean }): number {
 		const txnWithRetry = transaction as RocksTransactionWithRetry;
+		const markersEnabled = abortMarkersEnabled();
 		const logWritten = error?.hasLog === true || transaction.logWritten();
-		if (txnWithRetry.hasStagedLog && logWritten) {
+		if (txnWithRetry.hasStagedLog && (logWritten || !markersEnabled)) {
 			for (const write of this.writes)
 				if (write?.appendedTo === transaction && write.loggedBase === undefined) {
 					const entry = write.entry;
@@ -1645,12 +1646,12 @@ export class DatabaseTransaction implements Transaction {
 						? {
 								version: entry.version,
 								nodeId: entry.nodeId,
-								additionalAuditRefs: entry.additionalAuditRefs,
+								additionalAuditRefs: entry.additionalAuditRefs?.slice(),
 							}
 						: null;
 				}
 		}
-		if (!abortMarkersEnabled()) return txnWithRetry.retries ?? 0;
+		if (!markersEnabled) return txnWithRetry.retries ?? 0;
 		if (transaction.lastConflictKind() === ConflictKind.atCommit)
 			txnWithRetry.commitConflicts = (txnWithRetry.commitConflicts ?? 0) + 1;
 		if (txnWithRetry.hasStagedLog) {
@@ -2710,7 +2711,7 @@ export class DatabaseTransaction implements Transaction {
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 			if (stagesLog(transaction)) {
 				operation.stagedAudit = 'none';
-				if (operation.loggedBase !== undefined) operation.loggedBase = undefined;
+				if (wasSaved && operation.loggedBase !== undefined) operation.loggedBase = undefined;
 			}
 			try {
 				completion = operation.commit(

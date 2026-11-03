@@ -4829,15 +4829,19 @@ export function makeTable(options): TableResourceClass {
 							recordVersion: txnTime,
 							additionalAuditRefs:
 								!isCopyApply && isRocksDB && audit
-									? withRefsMissedByLoggedEntry(
-											txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
-											id,
-											existingEntry,
-											txnLogKey,
-											write,
-											transaction,
-											options
-										)
+									? transaction?.isRetry || options?.auditEntry
+										? withRefsMissedByLoggedEntry(
+												txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
+												id,
+												existingEntry,
+												txnLogKey,
+												write,
+												transaction,
+												options
+											)
+										: txnLogKey !== txnTime
+											? [{ version: txnLogKey, nodeId: options?.nodeId }]
+											: undefined
 									: undefined,
 							localOnly: options?.localOnly,
 						},
@@ -4947,15 +4951,19 @@ export function makeTable(options): TableResourceClass {
 							recordVersion: txnTime,
 							additionalAuditRefs:
 								isRocksDB && audit
-									? withRefsMissedByLoggedEntry(
-											txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
-											id,
-											existingEntry,
-											txnLogKey,
-											write,
-											transaction,
-											options
-										)
+									? transaction?.isRetry || options?.auditEntry
+										? withRefsMissedByLoggedEntry(
+												txnLogKey !== txnTime ? [{ version: txnLogKey, nodeId: options?.nodeId }] : undefined,
+												id,
+												existingEntry,
+												txnLogKey,
+												write,
+												transaction,
+												options
+											)
+										: txnLogKey !== txnTime
+											? [{ version: txnLogKey, nodeId: options?.nodeId }]
+											: undefined
 									: undefined,
 							localOnly: options?.localOnly,
 						},
@@ -7103,7 +7111,14 @@ export function makeTable(options): TableResourceClass {
 						} else if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
-					if (isRocksDB && audit && !isCopyApply && !fullUpdate && precedesExisting > 0)
+					if (
+						isRocksDB &&
+						audit &&
+						!isCopyApply &&
+						!fullUpdate &&
+						precedesExisting > 0 &&
+						(transaction?.isRetry || options?.auditEntry)
+					)
 						additionalAuditRefs =
 							withRefsMissedByLoggedEntry(
 								additionalAuditRefs,
@@ -10073,15 +10088,20 @@ export function makeTable(options): TableResourceClass {
 							write,
 							tableToTrack: tableName,
 							auditLocalOnly: options?.localOnly,
-							additionalAuditRefs: withRefsMissedByLoggedEntry(
-								appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
-								id,
-								existingEntry,
-								appendedLogKey,
-								write,
-								transaction,
-								options
-							),
+							additionalAuditRefs:
+								transaction?.isRetry || options?.auditEntry
+									? withRefsMissedByLoggedEntry(
+											appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
+											id,
+											existingEntry,
+											appendedLogKey,
+											write,
+											transaction,
+											options
+										)
+									: appendedLogKey !== txnTime
+										? [{ version: appendedLogKey, nodeId: options?.nodeId }]
+										: undefined,
 						},
 						'message',
 						false,

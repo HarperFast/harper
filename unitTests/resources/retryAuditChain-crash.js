@@ -23,8 +23,9 @@ if (require.main === module) {
 	let restagedFromUnflushed = false;
 	if (mode === 'replay') {
 		const originalSave = DatabaseTransaction.prototype.save;
-		DatabaseTransaction.prototype.save = function (operation) {
-			const result = originalSave.call(this, operation);
+		DatabaseTransaction.prototype.save = function (...args) {
+			const result = originalSave.apply(this, args);
+			const operation = args[0];
 			if (this.isReplay && operation?.key === 'r' && operation.entry?.value?.meta === 'seed') {
 				restagedFromUnflushed = true;
 			}
