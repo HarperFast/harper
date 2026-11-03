@@ -313,6 +313,10 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 				}
 				receipt = writeRestoreReceipt(claimLock, {
 					...fresh,
+					// taking over a restart restore keeps its trail, so safe mode still covers the target if this fails
+					...(earlier?.route === 'on_restart' || earlier?.superseded_from
+						? { superseded_from: earlier.operation_id }
+						: {}),
 					...(pinId !== undefined ? { source_pin_id: pinId } : {}),
 					...(supersededPinIds.length > 0 ? { superseded_pin_ids: supersededPinIds } : {}),
 					attempts: 1,
@@ -671,8 +675,9 @@ export function unpublishedRestoreBlocksComponents(): string | undefined {
 	for (const { file, read } of scanRestoreReceipts()) {
 		// what an unreadable record would have restored, or how far, is unknown
 		if (read.kind === 'unreadable') return file;
-		if (read.kind !== 'valid' || read.receipt.route !== 'on_restart') continue;
+		if (read.kind !== 'valid') continue;
 		const { receipt } = read;
+		if (receipt.route !== 'on_restart' && !receipt.superseded_from) continue;
 		if (receipt.state === 'terminal') return receipt.database;
 		if (receipt.state !== 'committed' && restoreMarkerPresent(receipt.database_path)) return receipt.database;
 	}

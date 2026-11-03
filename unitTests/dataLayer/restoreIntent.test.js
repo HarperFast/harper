@@ -1159,6 +1159,23 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
 		});
 
+		it('keeps components off the target when a restore that took over a terminal restart restore fails', async function () {
+			const fixture = await seededDatabase();
+			const unprovable = await unprovableBackup(fixture);
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'terminal', attempts: 3 }, { marker: true });
+
+			await assert.rejects(restoreBackupOffline(fixture.name, unprovable), /rerun restore_backup to recover/);
+
+			const taken = receiptOf(fixture.dir);
+			assert.strictEqual(taken.route, 'offline');
+			assert.ok(taken.superseded_from, 'the takeover keeps the restart trail');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), fixture.name);
+			await restoreBackupOffline(fixture.name, fixture.backupIds[0]);
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
+		});
+
 		it('removes a receipt that cannot be read', async function () {
 			const fixture = await seededDatabase();
 			await requestRestore(fixture.name, { on_restart: true });

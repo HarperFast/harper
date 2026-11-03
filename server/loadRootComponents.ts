@@ -66,7 +66,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
 			if (blocked && !process.env.HARPER_SAFE_MODE) {
 				process.env.HARPER_SAFE_MODE = 'restore-unpublished';
 				console.error(
-					`The restart restore of '${blocked}' has not published; starting in safe mode. Use restore_backup resume=true, cancel=true, or another backup_id with on_restart=true.`
+					`A restore (${blocked}) began replacing its database and has not published; starting in safe mode. Finish it with restore_backup: resume=true, or another backup_id with on_restart=true, for a restart restore; otherwise rerun restore_backup for that database.`
 				);
 			}
 		} catch (error) {
