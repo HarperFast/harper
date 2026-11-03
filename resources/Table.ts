@@ -9477,9 +9477,9 @@ export function makeTable(options): TableResourceClass {
 									if (handsOff) noteReplayed(auditRecord, null);
 								} else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									// as live: the broadcast drops a merged write while the replay runs, so this is its delivery
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, handsOff);
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
+									if (handsOff) noteReplayed(auditRecord, isReload ? null : replayRecordKey(id));
 									if (event) {
-										if (handsOff) noteReplayed(auditRecord, isReload ? null : replayRecordKey(id));
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {

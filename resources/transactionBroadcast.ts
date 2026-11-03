@@ -407,7 +407,6 @@ interface ReplayGate {
 
 /** The record's key encoding: distinct ids never share one, and routing text would merge `['a', 'b']` with `'a/b'`. */
 export function replayRecordKey(recordId: any): string | undefined {
-	// an id that failed to decode has no encoding
 	return recordId === undefined ? undefined : toBufferKey(recordId).toString('latin1');
 }
 
@@ -491,7 +490,6 @@ class Subscription extends IterableEventQueue {
 	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
 	ungated?: boolean;
-	/** An ungated subscription's floor and what its replay handled, which the live path skips. */
 	replayGate?: ReplayGate;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
