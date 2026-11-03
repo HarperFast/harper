@@ -108,7 +108,16 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription, certifiedFloors, certifiedThrough, completedReplayThrough } from './transactionBroadcast.ts';
+import {
+	addSubscription,
+	certifiedFloors,
+	certifiedThrough,
+	completedReplayThrough,
+	drainCount,
+	handOffReplay,
+	requestDrain,
+	type ReplayedIds,
+} from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
 	ORIGIN_ID,
@@ -9402,6 +9411,20 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
+						// What the replay handled since the registry's last clean drain (before it, the broadcast
+						// dispatched it already). Undefined for a same-thread registry, which keeps the key gate.
+						const handsOff = drainCount(subscription) !== undefined;
+						let replayed: { drain: number; ids: ReplayedIds } | undefined;
+						const noteReplayed = (auditRecord: any, recordKey: any) => {
+							const drain = drainCount(subscription)!;
+							if (replayed?.drain !== drain) replayed = { drain, ids: new Map() };
+							const nodeId = auditRecord.nodeId ?? 0;
+							let byKey = replayed.ids.get(nodeId);
+							if (!byKey) replayed.ids.set(nodeId, (byKey = new Map()));
+							let records = byKey.get(auditRecord.txnLogKey);
+							if (!records) byKey.set(auditRecord.txnLogKey, (records = new Set()));
+							records.add(recordKey);
+						};
 						const replayRange = auditStore.getRange({
 							start: startTime,
 							exclusiveStart: true,
@@ -9411,6 +9434,7 @@ export function makeTable(options): TableResourceClass {
 							for (const auditRecord of replayRange) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
+									if (replayed) requestDrain(subscription);
 									await rest();
 									if (!isActive()) return;
 									if (checkResume) {
@@ -9445,10 +9469,14 @@ export function makeTable(options): TableResourceClass {
 									return;
 								}
 								// a marker is table-wide, as the live broadcast delivers it
-								if (resnapshots) reloadPending = true;
-								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
+								if (resnapshots) {
+									reloadPending = true;
+									if (handsOff) noteReplayed(auditRecord, null);
+								} else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
+										// only what produced an event: a merged write the replay skips is delivered live
+										if (handsOff) noteReplayed(auditRecord, isReload ? null : keyArrayToString(id));
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
@@ -9457,22 +9485,30 @@ export function makeTable(options): TableResourceClass {
 												if (!checkResume(unreadableLogRefusal(replayRange))) return;
 												resumeCheckedThrough = auditRecord.txnLogKey;
 											}
+											if (replayed) requestDrain(subscription);
 											if ((await subscription.waitForDrain()) === false) return;
 										}
 									}
 								}
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
+							// the finished cursor reads no more commits, so live ones wait behind the scan
+							if (reloadPending) pendingRealTimeQueue = [];
+							if (handsOff) {
+								// no pass can run between the cursor's last read and here
+								const ids = replayed?.drain === drainCount(subscription) ? replayed.ids : undefined;
+								handOffReplay(subscription, reportingProgress ? undefined : startTime, ids);
+							}
+							dropDuringReplay = false;
 							if (reloadPending) {
 								reloadPending = false;
-								// the finished cursor reads no more commits, so live ones wait behind the scan
-								pendingRealTimeQueue = [];
-								dropDuringReplay = false;
 								if (!(await sendCurrentScope())) return;
-								const replayedThrough = handledTxnLogKey;
-								pendingRealTimeQueue = pendingRealTimeQueue.filter(
-									(event) => (event.localTime ?? event.version) > replayedThrough
-								);
+								if (!handsOff) {
+									const replayedThrough = handledTxnLogKey;
+									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+										(event) => (event.localTime ?? event.version) > replayedThrough
+									);
+								}
 								if (!includeSuperseded) {
 									let kept = 0;
 									for (const event of pendingRealTimeQueue) {

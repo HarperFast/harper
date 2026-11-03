@@ -263,10 +263,7 @@ export function completedReplayThrough(subscription: any, key: number): void {
 	if (!subscription.reportsProgress || !subscriptions?.progressConsumers || subscriptions.progressStopped) return;
 	if (subscriptions.sameThread) return;
 	if (!advanceProgress(subscriptions, key, subscriptions.auditStore?.subscriptionLogRange)) return;
-	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
-	if (subscriptions.auditStore?.rootStore?.status !== 'open') return;
-	subscriptions.notifyScheduled = true;
-	setImmediate(() => notifyFromTransactionData(subscriptions, subscriptions.auditStore.subscriptionLogRange, true));
+	schedulePass(subscriptions);
 }
 
 function stopProgress(databaseSubscriptions: any) {
@@ -399,6 +396,65 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 	}
 }
 
+/** Identities a replay handled: origin node id → transaction-log key → record keys (`keyArrayToString`). */
+export type ReplayedIds = Map<number, Map<number, Set<any>>>;
+interface ReplayGate {
+	/** The requested exclusive start; undefined takes entries at any key. */
+	after?: number;
+	/** What the replay handled since the last clean drain; cleared by the next one. */
+	ids?: ReplayedIds;
+}
+
+function replayHandled(gate: ReplayGate, auditRecord: any, timestamp: number, recordKey: any): boolean {
+	if (gate.after >= timestamp) return true;
+	return (
+		gate.ids
+			?.get(auditRecord.nodeId ?? 0)
+			?.get(timestamp)
+			?.has(recordKey) === true
+	);
+}
+
+/**
+ * The cross-thread registry's count of clean drains, or undefined for a same-thread registry, whose passes carry
+ * one commit's entries and so never show that the log was drained.
+ */
+export function drainCount(subscription: any): number | undefined {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscriptions || subscriptions.sameThread) return;
+	return subscriptions.drains ?? 0;
+}
+
+/** Schedules a pass when none is pending, so an idle database still drains and clears replay identities. */
+export function requestDrain(subscription: any): void {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (subscriptions && !subscriptions.sameThread) schedulePass(subscriptions);
+}
+
+function schedulePass(subscriptions: any): void {
+	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
+	const auditStore = subscriptions.auditStore;
+	if (auditStore?.rootStore?.status !== 'open') return;
+	subscriptions.notifyScheduled = true;
+	setImmediate(() =>
+		notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditStore.subscriptionLogRange : null, true)
+	);
+}
+
+/**
+ * Hands a finished replay to live delivery. Must run in the same turn the replay's cursor reported done: every entry
+ * dispatched while the replay dropped live ones was visible before that read, so the replay read it, and `ids`
+ * (what it handled since the last clean drain) covers the ones the broadcast has not dispatched yet.
+ */
+export function handOffReplay(subscription: any, after: number | undefined, ids: ReplayedIds | undefined): void {
+	subscription.replayGate = { after, ids };
+	subscription.ungated = true;
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!ids || !subscriptions) return;
+	(subscriptions.replayTails ??= new Set()).add(subscription);
+	schedulePass(subscriptions);
+}
+
 /**
  * This is the class that is returned from subscribe calls and provide the interface to set a callback, end the
  * subscription and get the initial state.
@@ -423,6 +479,8 @@ class Subscription extends IterableEventQueue {
 	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
 	ungated?: boolean;
+	/** Set when a `startTime` replay hands off: an ungated subscription skips what this says the replay handled. */
+	replayGate?: ReplayGate;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;
@@ -573,7 +631,8 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						trackProgress = false;
 					}
 					// TODO: How to handle invalidation
-					let matchingKey = keyArrayToString(recordId);
+					const recordKey = keyArrayToString(recordId);
+					let matchingKey = recordKey;
 					let ancestorLevel = 0;
 					do {
 						// we iterate through the key hierarchy, notifying all subscribers for each key,
@@ -592,9 +651,10 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 										!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
 									)
 										continue;
-									if (!subscription.ungated && subscription.startTime >= timestamp) {
-										continue;
-									}
+									if (subscription.ungated) {
+										const gate = subscription.replayGate;
+										if (gate !== undefined && replayHandled(gate, auditRecord, timestamp, recordKey)) continue;
+									} else if (subscription.startTime >= timestamp) continue;
 									try {
 										let beginTxn;
 										if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
@@ -643,8 +703,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						try {
 							for (let i = 0, length = keySubscriptions.length; i < length; i++) {
 								const subscription = keySubscriptions[i];
-								if (!subscription.subscriptions || (!subscription.ungated && subscription.startTime >= timestamp))
-									continue;
+								if (!subscription.subscriptions) continue;
+								if (subscription.ungated) {
+									const gate = subscription.replayGate;
+									if (gate !== undefined && replayHandled(gate, auditRecord, timestamp, null)) continue;
+								} else if (subscription.startTime >= timestamp) continue;
 								try {
 									subscription.listener(null, auditRecord, timestamp, false);
 								} catch (error) {
@@ -681,6 +744,14 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 		subscriptions.pendingTxnSubscribers = null;
+		// A failed or corrupt log ends its iterator for good, so what it left undispatched is never dispatched later.
+		if (!iteratorFailed && !subscriptions.sameThread) {
+			subscriptions.drains = (subscriptions.drains ?? 0) + 1;
+			if (subscriptions.replayTails) {
+				for (const subscription of subscriptions.replayTails) subscription.replayGate.ids = undefined;
+				subscriptions.replayTails = undefined;
+			}
+		}
 		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
 			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}
