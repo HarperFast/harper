@@ -158,16 +158,19 @@ export function planIdentityReconcile(
 /**
  * Whether one token could match both policies: the same issuer, and for every claim both constrain, a value both
  * accept. The exchange refuses a token two policies match with different users or operations, so such a pair stops the
- * runs it matches. A token may name several audiences, and the exchange matches a policy for each, so audiences part
- * two policies only for GitHub, whose tokens name one. GitHub also refuses a `pull_request_target` run to a policy that
- * leaves `event_name` open (`vetoClaims`), so such a policy shares no token with one that accepts only those runs.
+ * runs it matches. Only a token naming both audiences can match two policies for different ones, and the exchange
+ * matches a policy for each audience it names. Such a token's `aud` is an array, which no claim constraint matches, and
+ * GitHub's tokens name one audience. GitHub also refuses a `pull_request_target` run to a policy that leaves
+ * `event_name` open (`vetoClaims`), so such a policy shares no token with one that accepts only those runs.
  */
 export function policiesOverlap(left: any, right: any): boolean {
 	if (left?.issuer !== right?.issuer) return false;
 	const github = left?.issuer === GITHUB_ACTIONS_ISSUER;
-	if (github && left?.audience !== right?.audience) return false;
 	const leftClaims = left?.claims ?? {};
 	const rightClaims = right?.claims ?? {};
+	if (left?.audience !== right?.audience && (github || leftClaims.aud !== undefined || rightClaims.aud !== undefined)) {
+		return false;
+	}
 	const accepted = (value: unknown) => (Array.isArray(value) ? value : [value]).map(String);
 	for (const name of Object.keys(leftClaims)) {
 		if (!Object.hasOwn(rightClaims, name)) continue;
