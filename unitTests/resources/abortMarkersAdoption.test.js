@@ -112,13 +112,12 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		});
 	}
 
-	async function relogAfterRefusal(targetTable) {
-		const recordId = id('relog');
-		await seed(targetTable, recordId);
+	// `holder` stages a write intent on `recordId`, which refuses `mine`'s first commit before its log write.
+	async function refuseOnHeldIntent(targetTable, recordId, { holderCommits, mineContext = {}, patch = false }) {
 		const targetDb = targetTable.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
 		const attempts = [];
-		let holderId;
+		let holderId, holderVersion;
 		let submitted = false;
 		Transaction.prototype.commit = async function (...args) {
 			if (this.store?.db !== targetDb || this.id === holderId) return originalCommit.apply(this, args);
@@ -137,23 +136,36 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			const write = holderContext.transaction.writes.find((candidate) => candidate.key === recordId);
 			await holderContext.transaction.save(write);
 			holderId = holderContext.transaction.transaction.id;
+			holderVersion = holderContext.transaction.timestamp;
 			await holderGate;
-			throw new Error('holder gives up');
+			if (!holderCommits) throw new Error('holder gives up');
 		});
 		holder.catch(() => {});
 		await waitFor(() => holderId !== undefined);
-		const mine = writeAfterRead(targetTable, recordId, 'mine');
+		const mine = transaction(mineContext, async () => {
+			await targetTable.get(recordId, mineContext);
+			if (patch) await targetTable.patch(recordId, { writer: 'mine' }, mineContext);
+			else await targetTable.put({ id: recordId, writer: 'mine' }, mineContext);
+		});
 		await waitFor(() => submitted);
 		await delay(20); // the native intent check runs on the commit thread after submission
 		releaseHolder();
 		await mine;
-		await assert.rejects(holder, /holder gives up/);
+		if (holderCommits) await holder;
+		else await assert.rejects(holder, /holder gives up/);
 		assert.equal(attempts.length, 2);
 		assert.deepEqual(
 			{ kind: attempts[0].kind, logWritten: attempts[0].logWritten },
 			{ kind: ConflictKind.intentBeforeLog, logWritten: false }
 		);
 		assert.equal(attempts[1].logWritten, true);
+		return { attempts, holderVersion };
+	}
+
+	async function relogAfterRefusal(targetTable) {
+		const recordId = id('relog');
+		await seed(targetTable, recordId);
+		const { attempts } = await refuseOnHeldIntent(targetTable, recordId, { holderCommits: false });
 		assert.ok(attempts[1].key > attempts[0].key, 'the re-logged retry takes a fresh key');
 		const entries = auditEntries(targetTable, recordId);
 		assert.equal(entries.filter((entry) => entry.txnLogKey === attempts[0].key).length, 0);
@@ -304,56 +316,6 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 		await relogAfterRefusal(Audited);
 	});
 
-	// `mine` writes `recordId` while `holder` holds a write intent on it, so mine's first commit is refused
-	// before its log write; the holder then commits or gives up and mine retries.
-	async function refuseOnHeldIntent(targetTable, recordId, { holderCommits, mineContext = {}, patch = false }) {
-		const targetDb = targetTable.primaryStore.store.db;
-		const originalCommit = Transaction.prototype.commit;
-		const attempts = [];
-		let holderId, holderVersion;
-		let submitted = false;
-		Transaction.prototype.commit = async function (...args) {
-			if (this.store?.db !== targetDb || this.id === holderId) return originalCommit.apply(this, args);
-			submitted = true;
-			const result = await originalCommit.apply(this, args);
-			attempts.push({ kind: this.lastConflictKind(), logWritten: this.logWritten(), key: this.getTimestamp() });
-			return result;
-		};
-		restores.push(() => (Transaction.prototype.commit = originalCommit));
-		let releaseHolder;
-		const holderGate = new Promise((resolve) => (releaseHolder = resolve));
-		const holderContext = {};
-		const holder = transaction(holderContext, async () => {
-			await targetTable.put({ id: recordId, writer: 'holder' }, holderContext);
-			const write = holderContext.transaction.writes.find((candidate) => candidate.key === recordId);
-			await holderContext.transaction.save(write);
-			holderId = holderContext.transaction.transaction.id;
-			holderVersion = holderContext.transaction.timestamp;
-			await holderGate;
-			if (!holderCommits) throw new Error('holder gives up');
-		});
-		holder.catch(() => {});
-		await waitFor(() => holderId !== undefined);
-		const mine = transaction(mineContext, async () => {
-			await targetTable.get(recordId, mineContext);
-			if (patch) await targetTable.patch(recordId, { writer: 'mine' }, mineContext);
-			else await targetTable.put({ id: recordId, writer: 'mine' }, mineContext);
-		});
-		await waitFor(() => submitted);
-		await delay(20); // the native intent check runs on the commit thread after submission
-		releaseHolder();
-		await mine;
-		if (holderCommits) await holder;
-		else await assert.rejects(holder, /holder gives up/);
-		assert.equal(attempts.length, 2);
-		assert.deepEqual(
-			{ kind: attempts[0].kind, logWritten: attempts[0].logWritten },
-			{ kind: ConflictKind.intentBeforeLog, logWritten: false }
-		);
-		assert.equal(attempts[1].logWritten, true);
-		return { attempts, holderVersion };
-	}
-
 	describe('a retry refused before its log write', function () {
 		let Stamped;
 		before(function () {
@@ -400,8 +362,6 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 			});
 		}
 
-		// The caller's timestamp stays the version and the retry re-logs under the key it reserved: only the
-		// base changed, so only created time moves.
 		it('keeps the created time of a concurrent creator under an explicit timestamp', async function () {
 			const recordId = id('stamped-explicit');
 			const timestamp = Date.now() + 60000;
