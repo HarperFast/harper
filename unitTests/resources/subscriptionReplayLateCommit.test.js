@@ -1,7 +1,5 @@
-// A startTime replay hands off to live delivery once its cursor finishes. On RocksDB a transaction's log key is
-// reserved before it commits, so a transaction can commit after the replay passed a higher key: the handoff must
-// deliver it, and must not deliver again what the replay already sent (harper#2311). A transaction whose body
-// awaits stands in for one that commits late.
+// On RocksDB a log key is reserved before its transaction commits, so a transaction can commit after a startTime
+// replay passed a higher key; live delivery must still take it, once (harper#2311).
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -23,8 +21,6 @@ function stageHeldTransaction(write) {
 	});
 	return { isStaged, release, committed };
 }
-
-const nextTurn = () => new Promise(setImmediate);
 
 function countBy(events, id) {
 	return events.filter((event) => event.id === id).length;
@@ -58,8 +54,8 @@ describe('startTime replay handoff to live delivery', () => {
 				const events = [];
 				subscription.on('data', (event) => events.push(event));
 				await waitFor(() => events.some((event) => event.id === 'newer'), { timeout: 5000 });
-				// the replay finishes in the turn its cursor ends; let it and any pass it requested run
-				for (let i = 0; i < 3; i++) await nextTurn();
+				// set when the replay hands off to live delivery
+				await waitFor(() => subscription.ungated, { timeout: 5000 });
 				older.release();
 				await older.committed;
 				await T.put('sentinel', { name: 'sentinel' });
@@ -85,7 +81,7 @@ describe('startTime replay handoff to live delivery', () => {
 		const startTime = Date.now() - 1;
 		const older = stageHeldTransaction((context) => T.put('older', { name: 'older' }, context));
 		let subscription;
-		const total = 300; // above the broadcast's 256-entry batch, so its pass yields mid-stream
+		const total = 300; // above the broadcast's 256-entry batch, so a pass can yield across the handoff
 		try {
 			await older.isStaged;
 			const before = [];

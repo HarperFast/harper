@@ -396,20 +396,22 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 	}
 }
 
-/** Identities a replay handled: origin node id → transaction-log key → record keys (`keyArrayToString`). */
+/** origin node id → transaction-log key → `replayRecordKey` of each record */
 export type ReplayedIds = Map<number, Map<number, Set<any>>>;
 interface ReplayGate {
-	/** The requested exclusive start; undefined takes entries at any key. */
 	after?: number;
-	/** What the replay handled since the last clean drain; cleared by the next one. */
 	ids?: ReplayedIds;
 }
 
-function replayHandled(gate: ReplayGate, auditRecord: any, timestamp: number, recordKey: any): boolean {
-	if (gate.after >= timestamp) return true;
+/** A record id as a set member; routing text would merge `['a', 'b']` with `'a/b'`. */
+export function replayRecordKey(recordId: any): any {
+	return typeof recordId === 'object' && recordId !== null ? JSON.stringify(recordId) : recordId;
+}
+
+function replayHandled(ids: ReplayedIds, auditRecord: any, timestamp: number, recordKey: any): boolean {
 	return (
-		gate.ids
-			?.get(auditRecord.nodeId ?? 0)
+		ids
+			.get(auditRecord.nodeId ?? 0)
 			?.get(timestamp)
 			?.has(recordKey) === true
 	);
@@ -425,7 +427,7 @@ export function drainCount(subscription: any): number | undefined {
 	return subscriptions.drains ?? 0;
 }
 
-/** Schedules a pass when none is pending, so an idle database still drains and clears replay identities. */
+/** An idle database runs no pass of its own, so a replay asks for one to bound what it must remember. */
 export function requestDrain(subscription: any): void {
 	const subscriptions = subscription.subscriptions?.tables?.envs;
 	if (subscriptions && !subscriptions.sameThread) schedulePass(subscriptions);
@@ -447,10 +449,11 @@ function schedulePass(subscriptions: any): void {
  * (what it handled since the last clean drain) covers the ones the broadcast has not dispatched yet.
  */
 export function handOffReplay(subscription: any, after: number | undefined, ids: ReplayedIds | undefined): void {
-	subscription.replayGate = { after, ids };
 	subscription.ungated = true;
 	const subscriptions = subscription.subscriptions?.tables?.envs;
-	if (!ids || !subscriptions) return;
+	if (!subscriptions || (after === undefined && !ids)) return;
+	subscription.replayGate = { after, ids };
+	if (!ids) return;
 	(subscriptions.replayTails ??= new Set()).add(subscription);
 	schedulePass(subscriptions);
 }
@@ -479,7 +482,7 @@ class Subscription extends IterableEventQueue {
 	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
 	ungated?: boolean;
-	/** Set when a `startTime` replay hands off: an ungated subscription skips what this says the replay handled. */
+	/** An ungated subscription's floor and what its replay handled, which the live path skips. */
 	replayGate?: ReplayGate;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
@@ -495,6 +498,10 @@ class Subscription extends IterableEventQueue {
 			this.subscriptions = null;
 			const envSubscriptions = subscriptions.tables?.envs;
 			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
+			if (this.replayGate) {
+				this.replayGate = undefined;
+				envSubscriptions?.replayTails?.delete(this);
+			}
 			if (this.reportsProgress) {
 				this.reportsProgress = false;
 				if (envSubscriptions?.progressConsumers > 0) envSubscriptions.progressConsumers--;
@@ -631,8 +638,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						trackProgress = false;
 					}
 					// TODO: How to handle invalidation
-					const recordKey = keyArrayToString(recordId);
-					let matchingKey = recordKey;
+					let matchingKey = keyArrayToString(recordId);
 					let ancestorLevel = 0;
 					do {
 						// we iterate through the key hierarchy, notifying all subscribers for each key,
@@ -653,7 +659,13 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 										continue;
 									if (subscription.ungated) {
 										const gate = subscription.replayGate;
-										if (gate !== undefined && replayHandled(gate, auditRecord, timestamp, recordKey)) continue;
+										if (
+											gate !== undefined &&
+											(gate.after >= timestamp ||
+												(gate.ids !== undefined &&
+													replayHandled(gate.ids, auditRecord, timestamp, replayRecordKey(recordId))))
+										)
+											continue;
 									} else if (subscription.startTime >= timestamp) continue;
 									try {
 										let beginTxn;
@@ -706,7 +718,12 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 								if (!subscription.subscriptions) continue;
 								if (subscription.ungated) {
 									const gate = subscription.replayGate;
-									if (gate !== undefined && replayHandled(gate, auditRecord, timestamp, null)) continue;
+									if (
+										gate !== undefined &&
+										(gate.after >= timestamp ||
+											(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, null)))
+									)
+										continue;
 								} else if (subscription.startTime >= timestamp) continue;
 								try {
 									subscription.listener(null, auditRecord, timestamp, false);
@@ -748,7 +765,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		if (!iteratorFailed && !subscriptions.sameThread) {
 			subscriptions.drains = (subscriptions.drains ?? 0) + 1;
 			if (subscriptions.replayTails) {
-				for (const subscription of subscriptions.replayTails) subscription.replayGate.ids = undefined;
+				for (const subscription of subscriptions.replayTails) {
+					const gate = subscription.replayGate;
+					if (gate.after === undefined) subscription.replayGate = undefined;
+					else gate.ids = undefined;
+				}
 				subscriptions.replayTails = undefined;
 			}
 		}

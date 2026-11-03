@@ -285,7 +285,7 @@ A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so 
 
 - A floor publishes only after the pass that captured it drains cleanly (`passCapture`).
 - `admitCheckpoint` is rechecked at each yield against `readOriginStateEpoch`.
-- The `startTime` gate drops a late lower-key commit: a live certified subscription is `ungated`, and a `startTime` replay hands off by drain (`handOffReplay`, harper#2311).
+- The `startTime` gate drops a late lower-key commit: a live certified subscription is `ungated`; a `startTime` replay hands off by drain, bar same-thread (`handOffReplay`, harper#2311).
 - Only an origin's direct route sets its current generation; floors never order generations.
 - `updateRecordedSequenceId` is the only writer of a `[seq, P]` row. An audit-less copy writes its bounds (`writeCopyBounds`) before the copied rows; they void older routes (`subscribeCheckpoint.test.js`).
 
@@ -299,11 +299,11 @@ A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so 
 
 ## Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)
 
-- **Registration is the delivery boundary**: a subscriber sees only commits after it registers, except a backlog over one batch, a subscribe inside a dispatch, or an entry behind a still-uncommitted transaction (harper#2928). With none (`activeCount`), a pass does not iterate (`subscriptionRegistrationBoundary.test.js`).
+- **Registration is the delivery boundary**: a subscriber sees only commits after it registers, except a backlog over one batch, a subscribe inside a dispatch, or an entry behind a still-uncommitted transaction (harper#2928). With none (`activeCount`), a pass reads nothing (`subscriptionRegistrationBoundary.test.js`).
 - `notifyScheduled` spans yields, so passes never share an iterator; the same-thread path holds a lock and never yields.
-- A pass skips a closing store, because LMDB emits `'committed'` inside `close()`.
+- A pass skips a closing store: LMDB emits `'committed'` inside `close()`.
 - **The ancestor key walk must strictly shrink** (harper#2687; `transactionBroadcastKeyWalk.test.js`).
-- **Ending a subscription never reshapes an array a loop is walking.** The last traversal compacts it (`transactionBroadcastEndDuringDelivery.test.js`).
+- **Ending a subscription never reshapes an array a loop walks.** The last traversal compacts it (`transactionBroadcastEndDuringDelivery.test.js`).
 - `IterableEventQueue.close(finalMessage)` always finishes, then rethrows.
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source

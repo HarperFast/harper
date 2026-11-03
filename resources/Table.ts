@@ -115,6 +115,7 @@ import {
 	completedReplayThrough,
 	drainCount,
 	handOffReplay,
+	replayRecordKey,
 	requestDrain,
 	type ReplayedIds,
 } from './transactionBroadcast.ts';
@@ -9199,6 +9200,9 @@ export function makeTable(options): TableResourceClass {
 					// a certified subscription takes every live entry from here: the key gate would drop a late
 					// lower-key commit that a floor then certifies as delivered
 					subscription.ungated = true;
+					const gate = subscription.replayGate;
+					if (gate?.ids) gate.after = undefined;
+					else subscription.replayGate = undefined;
 				};
 				const filtersWithoutKey = Boolean(rowFilter || eventFilter) && !request.filterKey;
 				const checkpointScopeId = scope();
@@ -9411,8 +9415,8 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
-						// What the replay handled since the registry's last clean drain (before it, the broadcast
-						// dispatched it already). Undefined for a same-thread registry, which keeps the key gate.
+						// a clean drain dispatched everything read before it, so only what was handled since the last
+						// one can still reach the live path; a same-thread registry never drains and keeps the key gate
 						const handsOff = drainCount(subscription) !== undefined;
 						let replayed: { drain: number; ids: ReplayedIds } | undefined;
 						const noteReplayed = (auditRecord: any, recordKey: any) => {
@@ -9476,7 +9480,7 @@ export function makeTable(options): TableResourceClass {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										// only what produced an event: a merged write the replay skips is delivered live
-										if (handsOff) noteReplayed(auditRecord, isReload ? null : keyArrayToString(id));
+										if (handsOff) noteReplayed(auditRecord, isReload ? null : replayRecordKey(id));
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
@@ -9495,9 +9499,8 @@ export function makeTable(options): TableResourceClass {
 							// the finished cursor reads no more commits, so live ones wait behind the scan
 							if (reloadPending) pendingRealTimeQueue = [];
 							if (handsOff) {
-								// no pass can run between the cursor's last read and here
 								const ids = replayed?.drain === drainCount(subscription) ? replayed.ids : undefined;
-								handOffReplay(subscription, reportingProgress ? undefined : startTime, ids);
+								handOffReplay(subscription, startTime, ids);
 							}
 							dropDuringReplay = false;
 							if (reloadPending) {
