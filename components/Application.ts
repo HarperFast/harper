@@ -6096,7 +6096,7 @@ function spawnWithEnv(
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
-			.loggerWithTag(`${applicationName}:spawn:${command}`)
+			.loggerWithTag(`${applicationName}:spawn:${command}`, true)
 			.debug?.(redactUrlCredentials(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`));
 
 		const env = { ...process.env };
@@ -6413,7 +6413,7 @@ function printStd(
 	stdStreamLabel: 'stdout' | 'stderr',
 	level: 'debug' | 'warn' | 'error' = 'debug'
 ) {
-	const stdLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}:${stdStreamLabel}`);
+	const stdLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}:${stdStreamLabel}`, true);
 	if (!stdLogger[level]) return;
 	for (const line of redactUrlCredentials(stdString).split('\n')) {
 		stdLogger[level](line);
