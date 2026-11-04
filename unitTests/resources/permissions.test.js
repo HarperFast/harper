@@ -988,12 +988,32 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		});
 	}
 
-	it('a full put drops a property the role can update but omitted', async function () {
-		await seed('put-2');
-		await DocTable.put('put-2', { title: 'only title' }, asUser());
-		const stored = JSON.parse(JSON.stringify(await DocTable.get('put-2')));
-		assert.deepEqual(stored, { id: 'put-2', title: 'only title', secret: 'put-2 secret', extra: 'undeclared' });
-	});
+	for (const loadAsInstance of [true, false]) {
+		it(`a restricted full put clears an omitted writable value but retains its key (loadAsInstance=${loadAsInstance})`, async function () {
+			class ShapeDoc extends DocTable {
+				static loadAsInstance = loadAsInstance;
+			}
+			const id = `put-shape-${loadAsInstance}`;
+			await seed(id);
+			await ShapeDoc.put(id, { title: 'only title' }, asUser());
+			const stored = DocTable.primaryStore.getEntry(id).value;
+			assert.strictEqual(Object.hasOwn(stored, 'owner'), true);
+			assert.strictEqual(stored.owner, undefined);
+			assert.ok(Object.keys(stored).includes('owner'));
+			const { pack, unpack } = require('msgpackr');
+			const decoded = unpack(pack(stored));
+			assert.strictEqual(Object.hasOwn(decoded, 'owner'), true);
+			assert.strictEqual(decoded.owner, undefined);
+			assert.deepEqual(JSON.parse(JSON.stringify(await ShapeDoc.get(id))), {
+				id,
+				title: 'only title',
+				secret: `${id} secret`,
+				extra: 'undeclared',
+			});
+			await ShapeDoc.put(id, { title: 'unrestricted replacement' });
+			assert.strictEqual(Object.hasOwn(DocTable.primaryStore.getEntry(id).value, 'owner'), false);
+		});
+	}
 
 	it('a payload setting an attribute the role cannot update is refused', async function () {
 		await seed('refuse-1');
