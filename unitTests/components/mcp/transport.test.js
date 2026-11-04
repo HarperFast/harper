@@ -1,11 +1,13 @@
 const assert = require('node:assert');
-const { threadId } = require('node:worker_threads');
 const rewire = require('rewire');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 const transport_mod = rewire('#js/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const sessionModule = require('#src/components/mcp/session');
-const { _setSessionTableForTest, createSession, loadSession, patchSession } = sessionModule;
+const { _setSessionTableForTest, ensureSessionTable, createSession, loadSession, patchSession } = sessionModule;
+const { waitFor } = require('../../waitFor');
+const { setupTestDBPath } = require('../../testUtils');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	getRegisteredSession,
 	pushSessionFrame,
@@ -25,9 +27,8 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
-const subscriptionRouting = require('#src/components/mcp/subscriptionRouting');
-const { _setSubscriptionItcForTest, _setSubscriptionTimeoutForTest, _resetSubscriptionRoutingForTest } =
-	subscriptionRouting;
+const subscriptionState = require('#src/components/mcp/subscriptionState');
+const { claimSubscriptionOwner, _setSubscriptionTimeoutForTest } = subscriptionState;
 
 function makeFakeResources(entries) {
 	const map = new Map();
@@ -44,45 +45,6 @@ function makeFakeResources(entries) {
 		return best;
 	};
 	return map;
-}
-
-function makeFakeTable() {
-	const store = new Map();
-	const locks = new Set();
-	const waiters = new Map();
-	return {
-		store,
-		primaryStore: {
-			tryLock(key, callback) {
-				if (!locks.has(key)) {
-					locks.add(key);
-					return true;
-				}
-				const queued = waiters.get(key) ?? [];
-				queued.push(callback);
-				waiters.set(key, queued);
-				return false;
-			},
-			unlock(key) {
-				locks.delete(key);
-				const callback = waiters.get(key)?.shift();
-				if (callback) setImmediate(callback);
-			},
-		},
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async patch(record) {
-			store.set(record.id, { ...store.get(record.id), ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
 }
 
 const {
@@ -109,6 +71,13 @@ function jsonRpc(id, method, params) {
 }
 
 describe('mcp/transport', () => {
+	let sessionTable;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		_setSessionTableForTest(undefined);
+		sessionTable = ensureSessionTable();
+	});
 	let envOverrides;
 	const envStub = {
 		get(key) {
@@ -120,24 +89,22 @@ describe('mcp/transport', () => {
 		envOverrides = {};
 		_resetRateLimitForTest();
 		transport_mod.__set__('env', envStub);
-		_setSessionTableForTest(makeFakeTable());
+		_setSessionTableForTest(sessionTable);
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
 		_setResourcesForTest(makeFakeResources([]));
 		_setOpenApiGeneratorForTest(() => ({ openapi: '3.0.3', info: { title: 'fake' }, paths: {} }));
 		_setHttpUrlPrefixForTest('');
-		_setSubscriptionItcForTest({ onMessageByType() {}, sendToThread: () => true });
 	});
 
 	afterEach(() => {
-		_setSessionTableForTest(undefined);
+		_resetSessionRegistryForTest();
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
 		_setResourcesForTest(undefined);
 		_setOpenApiGeneratorForTest(undefined);
 		_setHttpUrlPrefixForTest(undefined);
-		_resetSubscriptionRoutingForTest();
-		_setSubscriptionItcForTest(undefined);
+		_setSubscriptionTimeoutForTest(undefined);
 	});
 
 	describe('POST initialize', () => {
@@ -279,84 +246,6 @@ describe('mcp/transport', () => {
 			);
 			assert.equal(res.status, 200, `SSE open succeeded: ${res.status}`);
 			assert.ok(res.sseIterable, 'SSE stream returned');
-		});
-
-		it('does not close a superseding GET stream when an earlier owner claim fails', async () => {
-			let replacement;
-			const originalClaim = subscriptionRouting.claimSubscriptionOwner;
-			subscriptionRouting.claimSubscriptionOwner = async () => {
-				replacement = registerSession(sessionId, 'application', {
-					username: 'alice',
-					role: { permission: { super_user: true } },
-				});
-				throw new Error('claim failed');
-			};
-			try {
-				const res = await handleMcpRequest(
-					makeReq({
-						method: 'GET',
-						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
-					})
-				);
-				assert.equal(res.status, 500);
-				assert.equal(getRegisteredSession(sessionId), replacement);
-			} finally {
-				subscriptionRouting.claimSubscriptionOwner = originalClaim;
-			}
-		});
-
-		it('serves the GET stream when cross-worker routing is unavailable', async () => {
-			const originalClaim = subscriptionRouting.claimSubscriptionOwner;
-			subscriptionRouting.claimSubscriptionOwner = async () => false;
-			try {
-				const res = await handleMcpRequest(
-					makeReq({
-						method: 'GET',
-						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
-					})
-				);
-				assert.equal(res.status, 200);
-				assert.ok(res.sseIterable);
-				res.sseIterable.emit('close');
-			} finally {
-				subscriptionRouting.claimSubscriptionOwner = originalClaim;
-			}
-		});
-
-		it('returns 404 when the durable session disappears during reconnect', async () => {
-			const originalUpdate = sessionModule.updateSessionSubscriptions;
-			sessionModule.updateSessionSubscriptions = async () => null;
-			try {
-				const res = await handleMcpRequest(
-					makeReq({
-						method: 'GET',
-						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
-					})
-				);
-				assert.equal(res.status, 404);
-				assert.equal(getRegisteredSession(sessionId), undefined);
-			} finally {
-				sessionModule.updateSessionSubscriptions = originalUpdate;
-			}
-		});
-
-		it('closes the registered GET stream when subscription restoration fails', async () => {
-			const originalLock = subscriptionRouting.withSessionSubscriptionLock;
-			subscriptionRouting.withSessionSubscriptionLock = async () => {
-				throw new Error('restore failed');
-			};
-			try {
-				const res = await handleMcpRequest(
-					makeReq({
-						method: 'GET',
-						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
-					})
-				);
-				assert.equal(res.status, 500);
-				assert.equal(getRegisteredSession(sessionId), undefined);
-			} finally {
-				subscriptionRouting.withSessionSubscriptionLock = originalLock;
-			}
 		});
 
 		it('restores subscriptions with the full local principal', async () => {
@@ -1321,7 +1210,7 @@ describe('mcp/transport', () => {
 					username: 'alice',
 					role: { permission: { super_user: true } },
 				});
-				await patchSession(sessionId, { streamOwner: { threadId, token: registered.streamToken } });
+				await claimSubscriptionOwner(sessionId, registered.streamToken);
 				// Inject a fake change stream so dispatch doesn't need the real audit log.
 				// `null` for the sentinel path makes the resource non-subscribable.
 				_setSubscribeImplForTest(async (path) =>
@@ -1401,28 +1290,19 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.error.code, -32602);
 			});
 
-			it('returns a retryable internal error when subscription routing times out', async () => {
-				_setSubscriptionItcForTest({
-					onMessageByType() {},
-					sendToThread() {
-						return true;
-					},
-				});
-				_setSubscriptionTimeoutForTest(5);
-				await patchSession(sessionId, { streamOwner: { threadId: threadId + 1, token: 'remote-owner' } });
-				try {
-					const res = await handleMcpRequest(
-						makeReq({
-							body: jsonRpc(73, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
-							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
-						})
-					);
-					assert.equal(res.jsonBody.error.code, -32603);
-					assert.match(res.jsonBody.error.message, /timed out; retry/);
-				} finally {
-					_resetSubscriptionRoutingForTest();
-					_setSubscriptionItcForTest(undefined);
-				}
+			it('returns a retryable internal error when the persisted owner never acknowledges', async () => {
+				_resetSessionRegistryForTest();
+				await waitFor(async () => !(await loadSession(sessionId)).streamToken);
+				await patchSession(sessionId, { streamToken: 'crashed-owner' });
+				_setSubscriptionTimeoutForTest(10);
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(73, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32603);
+				assert.match(res.jsonBody.error.message, /timed out; retry/);
 			});
 
 			it('unsubscribe removes the URI from the durable record', async () => {
@@ -1443,89 +1323,6 @@ describe('mcp/transport', () => {
 				assert.deepEqual(res.jsonBody.result, {});
 				const saved = await loadSession(sessionId);
 				assert.ok(!(saved.subscriptions ?? []).includes(uri), 'URI dropped from the record');
-			});
-
-			it('reroutes unsubscribe when the stream owner changes during the first attempt', async () => {
-				const uri = 'https://app.test:9926/Product/3';
-				await patchSession(sessionId, { subscriptions: [uri] });
-				let calls = 0;
-				const originalRoute = subscriptionRouting.routeResourceSubscription;
-				subscriptionRouting.routeResourceSubscription = async ({ session }) => {
-					calls++;
-					if (calls === 1) {
-						await patchSession(sessionId, { streamOwner: { threadId: threadId + 1, token: 'new-owner' } });
-						return 'no-live-stream';
-					}
-					assert.deepEqual(session.streamOwner, { threadId: threadId + 1, token: 'new-owner' });
-					await patchSession(sessionId, { subscriptions: [] });
-					return 'success';
-				};
-				try {
-					const res = await handleMcpRequest(
-						makeReq({
-							body: jsonRpc(76, 'resources/unsubscribe', { uri }),
-							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
-						})
-					);
-					assert.equal(res.status, 200);
-					assert.deepEqual(res.jsonBody.result, {});
-					assert.equal(calls, 2);
-					assert.deepEqual((await loadSession(sessionId)).subscriptions, []);
-				} finally {
-					subscriptionRouting.routeResourceSubscription = originalRoute;
-				}
-			});
-
-			it('retains durable state when the unsubscribe owner keeps changing', async () => {
-				const uri = 'https://app.test:9926/Product/5';
-				await patchSession(sessionId, { subscriptions: [uri] });
-				let calls = 0;
-				const originalRoute = subscriptionRouting.routeResourceSubscription;
-				subscriptionRouting.routeResourceSubscription = async () => {
-					calls++;
-					await patchSession(sessionId, { streamOwner: { threadId: threadId + calls, token: `owner-${calls}` } });
-					return 'no-live-stream';
-				};
-				try {
-					const res = await handleMcpRequest(
-						makeReq({
-							body: jsonRpc(78, 'resources/unsubscribe', { uri }),
-							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
-						})
-					);
-					assert.equal(res.status, 200);
-					assert.equal(res.jsonBody.id, 78);
-					assert.equal(res.jsonBody.error.code, -32603);
-					assert.match(res.jsonBody.error.message, /retry/);
-					assert.equal(calls, 3);
-					assert.deepEqual((await loadSession(sessionId)).subscriptions, [uri]);
-				} finally {
-					subscriptionRouting.routeResourceSubscription = originalRoute;
-				}
-			});
-
-			it('contains a durable unsubscribe failure in the request JSON-RPC response', async () => {
-				const originalRoute = subscriptionRouting.routeResourceSubscription;
-				const originalUpdate = sessionModule.updateSessionSubscriptions;
-				subscriptionRouting.routeResourceSubscription = async () => 'no-live-stream';
-				sessionModule.updateSessionSubscriptions = async () => {
-					throw new Error('lock timed out');
-				};
-				try {
-					const res = await handleMcpRequest(
-						makeReq({
-							body: jsonRpc(77, 'resources/unsubscribe', { uri: 'https://app.test:9926/Product/4' }),
-							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
-						})
-					);
-					assert.equal(res.status, 200);
-					assert.equal(res.jsonBody.id, 77);
-					assert.equal(res.jsonBody.error.code, -32603);
-					assert.match(res.jsonBody.error.message, /retry/);
-				} finally {
-					subscriptionRouting.routeResourceSubscription = originalRoute;
-					sessionModule.updateSessionSubscriptions = originalUpdate;
-				}
 			});
 		});
 

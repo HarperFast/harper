@@ -19,7 +19,9 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { Agent, request as httpRequest } from 'node:http';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -377,6 +379,7 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
 				threads: { count: 4 },
+				tls: { unixDomainSockets: true },
 				mcp: { operations: { mountPath: '/mcp' }, application: { mountPath: '/mcp' } },
 			},
 			env: {},
@@ -472,69 +475,40 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 	});
 
 	test('N5: resource subscription routes from a sibling POST worker to the GET-SSE owner', async (t) => {
-		if (process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun') {
-			t.skip(
-				process.platform === 'win32'
-					? 'Harper forces one HTTP worker on Windows'
-					: 'Bun assigns pinned socket probes to one HTTP worker; Node CI covers cross-worker routing'
-			);
+		if (process.platform === 'win32') {
+			t.skip('Harper forces one HTTP worker on Windows');
 			return;
 		}
 		const auth = adminAuth(ctx);
 		const session = await initialize(ctx.harper.httpURL, auth);
-		const firstLocalPort = 20000 + (process.pid % 9000);
-		let getAgent;
-		let getThreadId;
-		let getLocalPort;
-		for (let attempt = 0; attempt < 25; attempt++) {
-			const candidateAgent = new Agent({ keepAlive: true, maxSockets: 1 });
-			try {
-				getLocalPort = firstLocalPort + attempt;
-				getThreadId = await workerIdentity(ctx.harper.httpURL, auth, candidateAgent, getLocalPort);
-				getAgent = candidateAgent;
-				break;
-			} catch (error) {
-				candidateAgent.destroy();
-				if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
-			}
+		const socketDir = join(ctx.harper.dataRootDir, 'sockets');
+		const mirrors = (await readdir(socketDir)).filter((name) => /^\d+-.*:9926\.sock$/.test(name)).sort();
+		ok(mirrors.length >= 2, `expected at least two application worker mirrors: ${mirrors}`);
+		function workerAgent(mirror: string): Agent {
+			const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+			agent.createConnection = () => createConnection(join(socketDir, mirror));
+			return agent;
 		}
-		ok(getAgent && getThreadId !== undefined && getLocalPort !== undefined, 'found a free pinned GET socket');
-		const sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, getLocalPort);
-		let postAgent;
-		let postThreadId = getThreadId;
-		let postLocalPort = getLocalPort;
-		let postConnected = false;
+		const getAgent = workerAgent(mirrors[0]);
+		const postAgent = workerAgent(mirrors[1]);
+		const getThreadId = await workerIdentity(ctx.harper.httpURL, auth, getAgent, 0);
+		const postThreadId = await workerIdentity(ctx.harper.httpURL, auth, postAgent, 0);
+		ok(getThreadId !== postThreadId, 'the GET and POST mirrors select different HTTP workers');
+		let sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, 0);
 		try {
-			strictEqual(sse.status, 200, 'pinned GET SSE establishes');
-			for (let attempt = 0; attempt < 24 && postThreadId === getThreadId; attempt++) {
-				postAgent?.destroy();
-				postAgent = new Agent({ keepAlive: true, maxSockets: 1 });
-				postLocalPort = getLocalPort + attempt + 1;
-				try {
-					postThreadId = await workerIdentity(ctx.harper.httpURL, auth, postAgent, postLocalPort);
-					postConnected = true;
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
-				}
-			}
-			ok(postAgent && postConnected, 'created a POST keep-alive connection on a free local port');
-			ok(
-				postThreadId !== getThreadId,
-				`expected a second application HTTP worker after 24 socket probes; all used thread ${getThreadId}`
-			);
-
+			strictEqual(sse.status, 200, 'GET SSE establishes on its selected worker');
 			const id = `cross_worker_${Date.now().toString(36)}`;
 			const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
 			await putWorkItem(ctx, id, { state: 'pending', payload: 'cross-worker' });
 			const subscription = await mcpCallWithAgent(
 				ctx.harper.httpURL,
 				auth,
-				postAgent!,
+				postAgent,
 				session,
 				'resources/subscribe',
 				{ uri },
 				20,
-				postLocalPort
+				0
 			);
 			strictEqual(
 				subscription.error,
@@ -547,10 +521,45 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 				5000
 			);
 			ok(event, 'the owner worker delivered resources/updated on the pinned GET stream');
+			sse.close();
+			sse = await openSseWithAgent(ctx.harper.httpURL, auth, postAgent, session, 0);
+			strictEqual(sse.status, 200, 'reconnect establishes on the other worker');
+			await putWorkItem(ctx, id, { state: 'reconnected' });
+			ok(
+				await sse.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+					5000
+				),
+				'the new worker restores the persisted subscription'
+			);
+			const unsubscribed = await mcpCallWithAgent(
+				ctx.harper.httpURL,
+				auth,
+				getAgent,
+				session,
+				'resources/unsubscribe',
+				{ uri },
+				21,
+				0
+			);
+			strictEqual(
+				unsubscribed.error,
+				undefined,
+				`cross-worker unsubscribe succeeds: ${JSON.stringify(unsubscribed.error)}`
+			);
+			await putWorkItem(ctx, id, { state: 'unsubscribed' });
+			strictEqual(
+				await sse.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+					1000
+				),
+				undefined,
+				'no resource notification arrives after unsubscribe succeeds'
+			);
 		} finally {
 			sse.close();
 			getAgent.destroy();
-			postAgent?.destroy();
+			postAgent.destroy();
 		}
 	});
 });

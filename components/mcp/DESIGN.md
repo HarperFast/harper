@@ -89,12 +89,9 @@ A handful of design points are non-obvious and easy to break:
   and receives nothing. `harper://*` pseudo-resources are **list-changed-only** (not row-backed). Subscriptions
   use `omitCurrent` (notify on change, not a retained snapshot — the notification just says "re-read this").
 
-- **Subscribe requires a live GET stream; teardown is asymmetric.** `resources/subscribe` rejects (`-32602`)
-  if no GET SSE stream has registered the session — the audit-log iterator has nowhere to deliver, and there'd
-  be no `RegisteredSession` close hook to stop it. The GET `'close'` handler drops **subscriptions only**
-  (`dropSessionSubscriptions`), _not_ pending server requests: those ride the per-call POST stream, so a normal
-  GET reconnect must not reject an in-flight `ctx.serverRequest`. A `DELETE` (explicit session teardown) drops
-  **both**, because it may arrive with no open GET stream.
+- **Subscription state is shared through the session row.** See [Persisted resource subscription state](#persisted-resource-subscription-state).
+  A GET close drops resource iterators but leaves pending server requests alone; those use per-call POST streams.
+  Session DELETE tears down both.
 
 - **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
   assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a
@@ -152,3 +149,35 @@ A handful of design points are non-obvious and easy to break:
   (10,000 items) and `MAX_OPERATION_ITERABLE_BYTES` (10 MiB), enforced by
   `unitTests/components/mcp/tools/operations.test.js` and
   `integrationTests/mcp/operations-iterable-results.test.ts`.
+
+## Persisted resource subscription state
+
+The current GET incarnation must install the durable URI set before a subscription POST succeeds.
+[`subscriptionState.ts`](subscriptionState.ts) watches the existing, non-replicating `system.mcp_session`
+row through `Table.subscribe`; it opens the watcher outside the request context before claiming a fresh
+`streamToken`. No thread address or custom inter-thread command is persisted or sent.
+
+Desired-state changes, token claims, and acknowledgments use the bounded storage lock in
+[`session.ts`](session.ts). The lock covers only reads and writes; resource installation and the
+30-second acknowledgment wait happen outside it. An acknowledgment is valid only for the current
+token, at a revision at least as new as the request. This permits coalescing and lets a reconnect
+complete a waiting mutation without letting the old incarnation overwrite the new acknowledgment.
+
+Each URI has a generation. Timeout cleanup removes only that generation; a later retry survives it.
+The GET stops replaced generations before installing new ones, and `addResourceSubscription` discards
+an installation that finishes after its GET closes. Terminal rejections are removed from the durable
+set. Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
+
+Ordinary principals are reauthorized through the GET principal. Only scoped-token principals persist
+their embedded role and expiry; credentials and custom claims stay out of storage. Same-worker
+requests retain their full principal during installation. Reconnect rejects expired scoped entries.
+
+Activity-only session writes do not trigger reconciliation: the watcher compares the token and revision.
+Native `Table.subscribe` enables auditing for a previously unaudited table, so opening a GET also makes
+subsequent session touches audited when `logging.auditLog` was disabled. This trades that opt-out cost
+for one authoritative row with the existing session TTL and non-replication rules.
+
+Verification: [`subscriptionState.test.js`](../../unitTests/components/mcp/subscriptionState.test.js)
+uses a real session table for installation, coalescing, timeout, ownership, and authorization cases.
+[`sse-listchanged.test.ts`](../../integrationTests/mcp/sse-listchanged.test.ts) selects distinct workers
+through their Unix socket mirrors and checks subscribe, reconnect, and unsubscribe over HTTP.

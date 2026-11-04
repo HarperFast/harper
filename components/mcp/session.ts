@@ -16,6 +16,7 @@ import { table, type Table } from '../../resources/databases.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { AuthedUser } from './toolRegistry.ts';
 import type { McpLogLevel } from './logging.ts';
 import { clearSessionRateState } from './rateLimit.ts';
 import { unregisterSession } from './sessionRegistry.ts';
@@ -64,8 +65,18 @@ export interface McpSessionRecord {
 	 * to clients that declared support. Undefined = client declared none.
 	 */
 	clientCapabilities?: Record<string, unknown>;
-	/** Node-local hint for the worker that owns the current GET-SSE stream. */
-	streamOwner?: { threadId: number; token: string };
+	streamToken?: string;
+	subscriptionRevision?: number;
+	subscriptionGenerations?: Record<string, string>;
+	subscriptionPrincipals?: Record<string, AuthedUser>;
+	subscriptionAck?: {
+		token: string;
+		revision: number;
+		rejected: Record<
+			string,
+			{ generation: string; result: 'not-subscribable' | 'permission-denied' | 'internal-error' }
+		>;
+	};
 }
 
 let _sessionTable: Table | undefined;
@@ -94,7 +105,11 @@ function declareSessionTable(): Table {
 			{ name: 'logLevel' },
 			{ name: 'subscriptions' },
 			{ name: 'clientCapabilities' },
-			{ name: 'streamOwner' },
+			{ name: 'streamToken' },
+			{ name: 'subscriptionRevision' },
+			{ name: 'subscriptionGenerations' },
+			{ name: 'subscriptionPrincipals' },
+			{ name: 'subscriptionAck' },
 		],
 	});
 }
@@ -200,21 +215,15 @@ function acquireSessionSubscriptionLock(store: Table['primaryStore'], key: strin
 	});
 }
 
-/** Serialize durable subscription read-modify-writes across HTTP workers. */
-export async function updateSessionSubscriptions(
+export async function withSessionSubscriptionLock<T>(
 	id: string,
-	update: (subscriptions: string[]) => string[] | Promise<string[]>
-): Promise<McpSessionRecord | null> {
+	operation: (session: McpSessionRecord | null) => Promise<T>
+): Promise<T> {
 	const store = getTable().primaryStore;
 	const key = subscriptionLockKey(id);
 	await acquireSessionSubscriptionLock(store, key);
 	try {
-		const session = await loadSession(id);
-		if (!session) return null;
-		const subscriptions = session.subscriptions ?? [];
-		const updated = await update(subscriptions);
-		if (updated !== subscriptions) await patchSession(id, { subscriptions: updated });
-		return updated === subscriptions ? session : { ...session, subscriptions: updated };
+		return await operation(await loadSession(id));
 	} finally {
 		store.unlock(key);
 	}

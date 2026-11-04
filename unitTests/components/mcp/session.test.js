@@ -4,7 +4,7 @@ const {
 	loadSession,
 	deleteSession,
 	touchSession,
-	updateSessionSubscriptions,
+	withSessionSubscriptionLock,
 	_setSessionTableForTest,
 	_setSubscriptionLockTimeoutForTest,
 } = require('#src/components/mcp/session');
@@ -125,7 +125,7 @@ describe('mcp/session', () => {
 		});
 	});
 
-	describe('updateSessionSubscriptions', () => {
+	describe('withSessionSubscriptionLock', () => {
 		it('times out without acquiring a lock later from a stale wake callback', async () => {
 			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
 			const key = `mcp-subscriptions:${session.id}`;
@@ -136,31 +136,13 @@ describe('mcp/session', () => {
 			_setSubscriptionLockTimeoutForTest(5);
 
 			await assert.rejects(
-				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions),
+				withSessionSubscriptionLock(session.id, async () => {}),
 				/Timed out acquiring MCP subscription lock/
 			);
 			fake.primaryStore.unlock(key);
 			await new Promise(setImmediate);
 
-			await updateSessionSubscriptions(session.id, (subscriptions) => [...subscriptions, 'recovered']);
-			assert.deepEqual((await loadSession(session.id)).subscriptions, ['recovered']);
-		});
-
-		it('serializes concurrent read-modify-writes for the same session', async () => {
-			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
-			fake.store.get(session.id).subscriptions = ['first', 'second'];
-			const originalPatch = fake.patch;
-			fake.patch = async (record) => {
-				if (record.subscriptions) await new Promise((resolve) => setImmediate(resolve));
-				return originalPatch.call(fake, record);
-			};
-
-			await Promise.all([
-				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions.filter((uri) => uri !== 'first')),
-				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions.filter((uri) => uri !== 'second')),
-			]);
-
-			assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+			await withSessionSubscriptionLock(session.id, async () => {});
 		});
 	});
 });

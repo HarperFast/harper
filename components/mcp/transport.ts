@@ -16,7 +16,6 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import {
 	ERROR_CODES,
 	buildError,
@@ -33,36 +32,19 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit, tryAdmitInitialize, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
-import {
-	deleteSession,
-	loadSession,
-	patchSession,
-	touchSession,
-	updateSessionSubscriptions,
-	type McpSessionRecord,
-} from './session.ts';
+import { deleteSession, loadSession, patchSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
-import { dropSessionSubscriptions, restoreResourceSubscriptions } from './subscriptions.ts';
-import {
-	claimSubscriptionOwner,
-	routeResourceSubscription,
-	withSessionSubscriptionLock,
-} from './subscriptionRouting.ts';
+import { dropSessionSubscriptions } from './subscriptions.ts';
+import { claimSubscriptionOwner, updateResourceSubscription } from './subscriptionState.ts';
 import {
 	sendServerRequest,
 	routeClientResponse,
 	dropSessionServerRequests,
 	isClientResponse,
 } from './serverRequests.ts';
-import {
-	registerSession,
-	getRegisteredSession,
-	touchRegisteredSession,
-	replaySince,
-	type SseEvent,
-} from './sessionRegistry.ts';
+import { registerSession, touchRegisteredSession, replaySince, type SseEvent } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
@@ -426,50 +408,15 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 		};
 	}
 	const record = registerSession(sessionId, request.profile, effectiveUser(request));
-	try {
-		await claimSubscriptionOwner(sessionId, record.streamToken);
-	} catch (error) {
+	if (!(await claimSubscriptionOwner(sessionId, record.streamToken))) {
 		record.queue.emit('close');
-		throw error;
+		return { status: 404, headers: {} };
 	}
 	// Seed the live record with any previously-set logging level so a reconnect
 	// (or a setLevel that preceded this stream) keeps delivering notifications/message.
 	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
 	record.logLevel = session.logLevel;
 	seedSessionSnapshot(sessionId);
-	// Tear down live resource subscriptions when this GET SSE stream closes
-	// (disconnect / DELETE / supersede / idle-prune all end via the queue's 'close').
-	// NOTE: pending server→client requests are NOT dropped here — they ride a
-	// per-call POST stream, so a GET reconnect/supersede must not reject an
-	// in-flight `serverRequest`. Those are cleared on session DELETE + by timeout.
-	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
-	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
-	// a URI that's no longer subscribable is dropped from the persisted list.
-	try {
-		const sessionPresent = await withSessionSubscriptionLock(sessionId, async () => {
-			const snapshot = await updateSessionSubscriptions(sessionId, (subscriptions) => subscriptions);
-			if (!snapshot) return false;
-			const attempted = snapshot.subscriptions ?? [];
-			if (!attempted.length) return true;
-			const retained = await restoreResourceSubscriptions(sessionId, attempted, effectiveUser(request));
-			if (retained.length === attempted.length) return true;
-			const attemptedSet = new Set(attempted);
-			const retainedSet = new Set(retained);
-			await updateSessionSubscriptions(sessionId, (subscriptions) => {
-				const updated = subscriptions.filter((uri) => !attemptedSet.has(uri) || retainedSet.has(uri));
-				return updated.length === subscriptions.length ? subscriptions : updated;
-			});
-			return true;
-		});
-		if (!sessionPresent) {
-			record.queue.emit('close');
-			return { status: 404, headers: {} };
-		}
-	} catch (error) {
-		record.queue.emit('close');
-		throw error;
-	}
-	if (getRegisteredSession(sessionId) !== record) dropSessionSubscriptions(sessionId);
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
 	// raw so their original event ids are preserved. Best-effort + per-worker: the
@@ -979,7 +926,7 @@ async function dispatchResourcesSubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/subscribe requires params.uri')
 		);
 	}
-	const result = await routeResourceSubscription({
+	const result = await updateResourceSubscription({
 		session,
 		operation: 'subscribe',
 		uri,
@@ -990,6 +937,9 @@ async function dispatchResourcesSubscribe(
 			200,
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
 		);
+	}
+	if (result === 'permission-denied') {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `permission denied: ${uri}`));
 	}
 	if (result === 'not-subscribable') {
 		// Only row-backed application resources are subscribable; synthetic harper://*
@@ -1022,41 +972,8 @@ async function dispatchResourcesUnsubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/unsubscribe requires params.uri')
 		);
 	}
-	let routedSession = session;
-	let result: Awaited<ReturnType<typeof routeResourceSubscription>> = 'no-live-stream';
-	let ownerChangedAfterFinalAttempt = false;
-	for (let attempt = 0; attempt < 3; attempt++) {
-		result = await routeResourceSubscription({ session: routedSession, operation: 'unsubscribe', uri });
-		if (result !== 'no-live-stream') break;
-		const currentSession = await loadSession(session.id);
-		const owner = routedSession.streamOwner;
-		const currentOwner = currentSession?.streamOwner;
-		if (!currentSession || !currentOwner) break;
-		if (owner && currentOwner.threadId === owner.threadId && currentOwner.token === owner.token) break;
-		routedSession = currentSession;
-		ownerChangedAfterFinalAttempt = attempt === 2;
-	}
-	if (result === 'no-live-stream' && ownerChangedAfterFinalAttempt) {
-		return jsonResponse(
-			200,
-			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe owner changed; retry the request')
-		);
-	}
-	if (result === 'no-live-stream') {
-		// The live owner is already gone. Remove durable state locally so a later
-		// reconnect cannot restore the cancelled subscription.
-		try {
-			await updateSessionSubscriptions(session.id, (subscriptions) =>
-				subscriptions.includes(uri) ? subscriptions.filter((subscription) => subscription !== uri) : subscriptions
-			);
-		} catch (error) {
-			harperLogger.error('MCP resource unsubscribe durable update failed', error);
-			return jsonResponse(
-				200,
-				buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed; retry the request')
-			);
-		}
-	} else if (result === 'timeout') {
+	const result = await updateResourceSubscription({ session, operation: 'unsubscribe', uri });
+	if (result === 'timeout') {
 		return jsonResponse(
 			200,
 			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe timed out; retry the request')
