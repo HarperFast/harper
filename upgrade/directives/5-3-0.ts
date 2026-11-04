@@ -89,8 +89,8 @@ async function patchIsHashAttribute(tableName: string) {
 	);
 }
 
-/** `audit: true` must match systemSchema.json: both decision tables replicate. */
-async function createSystemTableIfMissing(tableName: string, purpose: string) {
+/** `audit: true` must match systemSchema.json: every table created here replicates. */
+export async function createSystemTableIfMissing(tableName: string, purpose: string) {
 	if (databases.system?.[tableName]) {
 		hdbLogger.info(`system.${tableName} already exists; skipping create.`);
 		await patchIsHashAttribute(tableName);
@@ -102,7 +102,7 @@ async function createSystemTableIfMissing(tableName: string, purpose: string) {
 	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[tableName];
 	if (!schema) {
-		throw new Error(`systemSchema.${tableName} is missing; cannot run 5.3.0 directive.`);
+		throw new Error(`systemSchema.${tableName} is missing; cannot create it in an upgrade directive.`);
 	}
 
 	initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, tableName);

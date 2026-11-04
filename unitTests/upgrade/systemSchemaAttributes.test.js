@@ -9,6 +9,10 @@ const directivesController = require('#src/upgrade/directives/directivesControll
 const { UpgradeObject } = require('#src/upgrade/UpgradeObjects');
 
 const attributeNames = (Table) => Table.attributes.map((attribute) => attribute.name);
+const registerAttributesOf540 = () =>
+	directivesController
+		.getDirectiveByVersion('5.4.0')
+		.async_functions.find((fn) => fn.name === 'registerSystemSchemaAttributes');
 
 describe('5.4.0 directive: system-table attributes added after the table was created (harper#2659)', () => {
 	before(async () => {
@@ -26,7 +30,7 @@ describe('5.4.0 directive: system-table attributes added after the table was cre
 		await databases.system.hdb_deployment.removeAttributes(['activated_from']);
 		assert.ok(!attributeNames(databases.system.hdb_deployment).includes('activated_from'));
 
-		const [registerAttributes] = directivesController.getDirectiveByVersion('5.4.0').async_functions;
+		const registerAttributes = registerAttributesOf540();
 		const registered = await registerAttributes();
 
 		assert.deepStrictEqual(registered, ['hdb_deployment.activated_from']);
@@ -45,7 +49,7 @@ describe('5.4.0 directive: system-table attributes added after the table was cre
 	});
 
 	it('changes nothing on a table that already has every attribute', async () => {
-		const [registerAttributes] = directivesController.getDirectiveByVersion('5.4.0').async_functions;
+		const registerAttributes = registerAttributesOf540();
 		assert.deepStrictEqual(await registerAttributes(), []);
 	});
 });
