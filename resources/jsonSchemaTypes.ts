@@ -589,6 +589,9 @@ function emitAttributeSchema(
 			if (items) fragment.items = items;
 		}
 
+		if (options.dialect === 'openapi-3.0.3' && fragment.type === 'array' && fragment.items === undefined)
+			fragment.items = {};
+
 		if (!attr.properties) {
 			if (attr.required?.length) fragment.required = attr.required;
 			if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;

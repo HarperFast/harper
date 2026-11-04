@@ -681,6 +681,8 @@ describe('openApi — type-optional request contracts', () => {
 		{ properties: { label: { type: 'string' } }, required: ['label'], additionalProperties: false, nullable: true },
 		{ items: { items: { type: 'string' } } },
 		{ type: 'array', items: { type: 'string' }, properties: { label: { type: 'string' } } },
+		{ type: 'array', properties: { label: { type: 'string' } } },
+		{ type: 'array', properties: { label: { type: 'string' } }, items: { type: 'string', hidden: true } },
 		{ type: 'string', properties: { label: { type: 'string' } } },
 		{ properties: { labels: { items: { type: 'string' } } }, items: { properties: { label: { type: 'string' } } } },
 	]) {
@@ -700,10 +702,12 @@ describe('openApi — type-optional request contracts', () => {
 			const resources = new Map([['Contract', { path: 'contract', Resource: Contract }]]);
 			resources.allTypes = new Map();
 			const route = JSON.parse(JSON.stringify(generateJsonApi(resources, 'https://harper.fast'))).paths['/contract'];
+			const expected =
+				fragment.type === 'array' && (!fragment.items || fragment.items.hidden) ? { ...fragment, items: {} } : fragment;
 			assert.equal(route.post.requestBody.required, fragment.type === undefined ? undefined : true);
-			assert.deepStrictEqual(route.post.requestBody.content['application/json'].schema, fragment);
-			assert.deepStrictEqual(route.post.responses['200'].content['application/json'].schema, fragment);
-			assert.deepStrictEqual(route.get.parameters.find((parameter) => parameter.name === 'filter').schema, fragment);
+			assert.deepStrictEqual(route.post.requestBody.content['application/json'].schema, expected);
+			assert.deepStrictEqual(route.post.responses['200'].content['application/json'].schema, expected);
+			assert.deepStrictEqual(route.get.parameters.find((parameter) => parameter.name === 'filter').schema, expected);
 		});
 	}
 });

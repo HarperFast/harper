@@ -320,7 +320,8 @@ function formatEnumValue(value: JsonValue): string {
 }
 
 // Shared only within one body validation; declarations may change before the next request.
-type EnumKeyCache = Map<readonly JsonValue[], { keys?: Set<string> | null; description?: string }>;
+type EnumValidation = { keys?: Set<string> | null; description?: string };
+type EnumKeyCache = Map<readonly JsonValue[], EnumValidation>;
 
 /** Validate a JSON value against a fragment (a subset of JSON Schema), pushing structured issues. Returns coerced value. */
 function validateValue(
@@ -360,9 +361,10 @@ function validateValue(
 	}
 	if (fragment.enum) {
 		let matches = false;
-		let cached = enumKeys?.get(fragment.enum);
+		let cached: EnumValidation | undefined;
 		if (value && typeof value === 'object') {
 			try {
+				cached = enumKeys?.get(fragment.enum);
 				if (!cached) {
 					cached = {};
 					enumKeys?.set(fragment.enum, cached);
@@ -373,12 +375,13 @@ function validateValue(
 						fragment.enum.filter((member) => member && typeof member === 'object').map((member) => jsonValueKey(member))
 					);
 				}
-				matches = cached.keys !== null && cached.keys.has(jsonValueKey(value));
+				matches = Boolean(cached.keys?.size && cached.keys.has(jsonValueKey(value)));
 			} catch {}
 		} else {
 			matches = fragment.enum.includes(value);
 		}
 		if (!matches) {
+			cached ??= enumKeys?.get(fragment.enum);
 			if (!cached) {
 				cached = {};
 				enumKeys?.set(fragment.enum, cached);

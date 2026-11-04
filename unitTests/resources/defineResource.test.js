@@ -130,6 +130,29 @@ describe('defineResource / Resource.withSchema — runtime request contract', ()
 		}
 	});
 
+	it('does not traverse object values when an enum has no object members', async () => {
+		let reads = 0;
+		const value = {
+			get unused() {
+				reads++;
+				return 1;
+			},
+		};
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'object', enum: ['scalar'] }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		await assert.rejects(
+			Promise.resolve().then(() => Api.post(targetWith('', null), value)),
+			/must be one of/
+		);
+		assert.equal(reads, 0);
+	});
+
 	it('refreshes object enum keys between requests', async () => {
 		const members = [{ a: 1 }];
 		const Api = defineResource(

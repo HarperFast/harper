@@ -373,11 +373,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 	}
 
-	// Emit OpenAPI paths for a request-contract resource (`defineResource`/`Resource.withSchema`), whether
-	// declared at a static path (`/OrderIntake`) or a parameterised one (`/widget/:id`) — each verb's
-	// query/body/response is driven off the shared `inputSchemas`/`outputSchemas` the contract compiled,
-	// the same `JsonSchemaFragment` IR that drives runtime validation/coercion, so the spec matches what
-	// the server actually enforces (rather than the table-CRUD generation above).
+	// Contract routes describe authored input/output schemas independently of table CRUD assumptions.
 	const emitContractRoutes = (url: string, entry: { Resource: any }, pathParams: any[]) => {
 		if (!entry?.Resource) return;
 		const { prototype } = entry.Resource;
