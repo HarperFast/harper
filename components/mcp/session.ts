@@ -69,6 +69,7 @@ export interface McpSessionRecord {
 	subscriptionRevision?: number;
 	subscriptionGenerations?: Record<string, string>;
 	subscriptionPrincipals?: Record<string, AuthedUser>;
+	subscriptionPrincipalIds?: Record<string, string>;
 	subscriptionAck?: {
 		token: string;
 		revision: number;
@@ -109,6 +110,7 @@ function declareSessionTable(): Table {
 			{ name: 'subscriptionRevision' },
 			{ name: 'subscriptionGenerations' },
 			{ name: 'subscriptionPrincipals' },
+			{ name: 'subscriptionPrincipalIds' },
 			{ name: 'subscriptionAck' },
 		],
 	});

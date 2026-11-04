@@ -279,6 +279,16 @@ describe('MCP persisted subscription state', function () {
 		}
 	});
 
+	it('rejects invalid URI names that collide with Object prototype properties', async () => {
+		await open();
+		for (const uri of ['__proto__', 'constructor', 'toString']) {
+			const result = await subscribe(uri);
+			assert.equal(result, 'not-subscribable', uri);
+			assert.deepEqual((await loadSession(session.id)).subscriptions ?? [], []);
+		}
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+	});
+
 	it('returns a terminal permission denial and removes the rejected desired entry', async () => {
 		await open();
 		_setSubscribeImplForTest(async () => {
@@ -301,21 +311,57 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptionPrincipals, {});
 		const scoped = { ...full, _scopedToken: true, authExpiresAt: Date.now() / 1000 + 60 };
 		assert.equal(await subscribe(URI, scoped), 'success');
-		const stored = (await loadSession(session.id)).subscriptionPrincipals[URI];
+		const saved = await loadSession(session.id);
+		const stored = saved.subscriptionPrincipals[saved.subscriptionPrincipalIds[URI]];
 		assert.equal(stored.password, undefined);
 		assert.equal(stored.customClaim, undefined);
 		assert.equal(stored._scopedToken, true);
 		assert.equal(stored.authExpiresAt, scoped.authExpiresAt);
+		assert.equal(await subscribe(URI + 'other', scoped), 'success');
+		const pooled = await loadSession(session.id);
+		assert.equal(Object.keys(pooled.subscriptionPrincipals).length, 1);
+		assert.equal(pooled.subscriptionPrincipalIds[URI], pooled.subscriptionPrincipalIds[URI + 'other']);
+		assert.equal(await unsubscribe(URI), 'success');
+		assert.equal(Object.keys((await loadSession(session.id)).subscriptionPrincipals).length, 1);
+		assert.equal(await unsubscribe(URI + 'other'), 'success');
+		assert.deepEqual((await loadSession(session.id)).subscriptionPrincipals, {});
 	});
 
 	it('rejects expired scoped-token state on reconnect', async () => {
 		await patchSession(session.id, {
 			subscriptions: [URI],
-			subscriptionPrincipals: { [URI]: { ...USER, _scopedToken: true, authExpiresAt: 1 } },
+			subscriptionPrincipals: { expired: { ...USER, _scopedToken: true, authExpiresAt: 1 } },
+			subscriptionPrincipalIds: { [URI]: 'expired' },
 		});
 		await open();
 		assert.equal(_liveSubscriptionCount(session.id), 0);
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+	});
+
+	it('fails closed when a persisted scoped-principal reference is missing', async () => {
+		await patchSession(session.id, {
+			subscriptions: [URI],
+			subscriptionPrincipalIds: { [URI]: 'missing-grant' },
+			subscriptionPrincipals: {},
+		});
+		await open();
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+	});
+
+	it('closes a failed restore so a new GET can retry the durable subscription', async () => {
+		await patchSession(session.id, { subscriptions: [URI] });
+		let attempts = 0;
+		_setSubscribeImplForTest(async () => {
+			if (++attempts === 1) throw new Error('temporarily unavailable');
+			return changeStream();
+		});
+		const first = registerSession(session.id, 'application', USER);
+		assert.equal(await claimSubscriptionOwner(session.id, first.streamToken), false);
+		assert.equal(getRegisteredSession(session.id), undefined);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, [URI]);
+		await open();
+		assert.equal(_liveSubscriptionCount(session.id), 1);
 	});
 
 	it('does not reopen resource iterators after activity-only writes', async () => {

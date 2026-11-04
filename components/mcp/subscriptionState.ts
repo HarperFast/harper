@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { processIncarnation } from '../../server/threads/processIncarnation.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { AccessViolation } from '../../utility/errors/hdbError.ts';
@@ -60,6 +60,14 @@ async function watchSession(
 	return subscription;
 }
 
+function retainedPrincipals(
+	principals: Record<string, AuthedUser> | undefined,
+	ids: Record<string, string>
+): Record<string, AuthedUser> {
+	const retained = new Set(Object.values(ids));
+	return Object.fromEntries(Object.entries(principals ?? {}).filter(([id]) => retained.has(id)));
+}
+
 function subscriptionUser(user: AuthedUser): AuthedUser {
 	return {
 		...(user.username !== undefined ? { username: user.username } : {}),
@@ -81,12 +89,13 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 	if (!record || record.streamToken !== streamToken) return false;
 	let stopped = false;
 	let claimed = false;
+	let initializing = true;
 	let dirty = false;
 	let running: Promise<void> | undefined;
 	let seenRevision = -1;
 	let watcher: Watcher | undefined;
 	const installed = new Map<string, string>();
-	const rejected: Rejected = {};
+	const rejected: Rejected = Object.create(null);
 	const close = () => {
 		if (stopped) return;
 		stopped = true;
@@ -141,14 +150,22 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 				}
 			}
 			for (const uri of Object.keys(rejected)) {
-				if (!uris.has(uri) || rejected[uri].generation !== generationOf(uri)) delete rejected[uri];
+				if (
+					!uris.has(uri) ||
+					rejected[uri].generation !== generationOf(uri) ||
+					rejected[uri].result === 'internal-error'
+				)
+					delete rejected[uri];
 			}
 			for (const uri of uris) {
 				const generation = generationOf(uri);
 				if (installed.get(uri) === generation || rejected[uri]) continue;
-				const user = localPrincipals.get(generation) ?? session.subscriptionPrincipals?.[uri] ?? record.user;
+				const principalId = session.subscriptionPrincipalIds?.[uri];
+				const user =
+					localPrincipals.get(generation) ??
+					(principalId ? session.subscriptionPrincipals?.[principalId] : record.user);
 				try {
-					if (user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000) {
+					if (!user || (user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000)) {
 						rejected[uri] = { generation, result: 'permission-denied' };
 					} else if (await addResourceSubscription(sessionId, uri, user)) installed.set(uri, generation);
 					else rejected[uri] = { generation, result: 'not-subscribable' };
@@ -157,6 +174,10 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 						generation,
 						result: error instanceof AccessViolation ? 'permission-denied' : 'internal-error',
 					};
+					if (initializing && rejected[uri].result === 'internal-error') {
+						fail();
+						return;
+					}
 				}
 				if (!current()) return;
 				const latest = await loadSession(sessionId);
@@ -178,11 +199,14 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					return;
 				}
 				const terminal = new Set(Object.keys(rejected).filter((uri) => rejected[uri].result !== 'internal-error'));
-				const generations = { ...latest.subscriptionGenerations };
-				const principals = { ...latest.subscriptionPrincipals };
+				const generations: Record<string, string> = Object.assign(Object.create(null), latest.subscriptionGenerations);
+				const principalIds: Record<string, string> = Object.assign(
+					Object.create(null),
+					latest.subscriptionPrincipalIds
+				);
 				for (const uri of terminal) {
 					delete generations[uri];
-					delete principals[uri];
+					delete principalIds[uri];
 				}
 				const appliedRevision = terminal.size ? revision + 1 : revision;
 				seenRevision = appliedRevision;
@@ -191,7 +215,8 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 						? {
 								subscriptions: latest.subscriptions?.filter((uri) => !terminal.has(uri)),
 								subscriptionGenerations: generations,
-								subscriptionPrincipals: principals,
+								subscriptionPrincipalIds: principalIds,
+								subscriptionPrincipals: retainedPrincipals(latest.subscriptionPrincipals, principalIds),
 								subscriptionRevision: appliedRevision,
 							}
 						: {}),
@@ -226,6 +251,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 		claimed = true;
 		schedule();
 		await running;
+		initializing = false;
 		return current();
 	} catch (error) {
 		fail();
@@ -293,21 +319,29 @@ export async function updateResourceSubscription(args: {
 			if (!latest) return { result: 'no-live-stream' as const };
 			const live = !!processIncarnation && latest.streamToken?.startsWith(`${processIncarnation}:`) === true;
 			if (operation === 'subscribe' && (!live || !user)) return { result: 'no-live-stream' as const };
+			if (operation === 'subscribe' && !URL.canParse(uri)) return { result: 'not-subscribable' as const };
 			const subscriptions = (latest.subscriptions ?? []).filter((value) => value !== uri);
-			const generations = { ...latest.subscriptionGenerations };
+			const generations: Record<string, string> = Object.assign(Object.create(null), latest.subscriptionGenerations);
+			const principalIds: Record<string, string> = Object.assign(Object.create(null), latest.subscriptionPrincipalIds);
 			const principals = { ...latest.subscriptionPrincipals };
 			delete generations[uri];
-			delete principals[uri];
+			delete principalIds[uri];
 			if (generation) {
 				subscriptions.push(uri);
 				generations[uri] = generation;
-				if (user?._scopedToken) principals[uri] = subscriptionUser(user);
+				if (user?._scopedToken) {
+					const principal = subscriptionUser(user);
+					const id = createHash('sha256').update(JSON.stringify(principal)).digest('hex');
+					principalIds[uri] = id;
+					principals[id] = principal;
+				}
 			}
 			const revision = (latest.subscriptionRevision ?? 0) + 1;
 			await patchSession(session.id, {
 				subscriptions,
 				subscriptionGenerations: generations,
-				subscriptionPrincipals: principals,
+				subscriptionPrincipalIds: principalIds,
+				subscriptionPrincipals: retainedPrincipals(principals, principalIds),
 				subscriptionRevision: revision,
 			});
 			return { revision, live };
@@ -325,14 +359,21 @@ export async function updateResourceSubscription(args: {
 			try {
 				await withSessionSubscriptionLock(session.id, async (latest) => {
 					if (latest?.subscriptionGenerations?.[uri] !== generation) return;
-					const generations = { ...latest.subscriptionGenerations };
-					const principals = { ...latest.subscriptionPrincipals };
+					const generations: Record<string, string> = Object.assign(
+						Object.create(null),
+						latest.subscriptionGenerations
+					);
+					const principalIds: Record<string, string> = Object.assign(
+						Object.create(null),
+						latest.subscriptionPrincipalIds
+					);
 					delete generations[uri];
-					delete principals[uri];
+					delete principalIds[uri];
 					await patchSession(session.id, {
 						subscriptions: latest.subscriptions?.filter((value) => value !== uri),
 						subscriptionGenerations: generations,
-						subscriptionPrincipals: principals,
+						subscriptionPrincipalIds: principalIds,
+						subscriptionPrincipals: retainedPrincipals(latest.subscriptionPrincipals, principalIds),
 						subscriptionRevision: (latest.subscriptionRevision ?? 0) + 1,
 					});
 				});

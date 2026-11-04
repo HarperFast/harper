@@ -171,10 +171,10 @@ Tokens include Harper's existing process incarnation, so a token from an earlier
 A replacement iterator is installed before the previous one stops, so re-subscribe has no registration gap.
 `addResourceSubscription` discards
 an installation that finishes after its GET closes. Terminal rejections are removed from the durable
-set. Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
+set. A transient failure during initial restore closes the GET and returns retryable 503, retaining the URI for reconnect. Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
 
 Ordinary principals are reauthorized through the GET principal. Only scoped-token principals persist
-their embedded role and expiry; credentials and custom claims stay out of storage. Same-worker
+their embedded role and expiry, once per distinct grant, with per-URI references. Unreferenced grants are pruned. Credentials and custom claims stay out of storage. Same-worker
 requests retain their full principal during installation. Reconnect rejects expired scoped entries.
 
 Activity-only session writes do not trigger reconciliation: the watcher compares the token and revision.
