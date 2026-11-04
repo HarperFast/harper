@@ -2,7 +2,6 @@ const assert = require('node:assert');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
 const { stringify } = require('yaml');
-const { setTimeout: delay } = require('node:timers/promises');
 const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { watchFullTextTelemetryConfiguration } = require('#src/config/fullTextTelemetryConfiguration');
 const { resolveFullTextTelemetryPolicy } = require('#src/resources/analytics/fullTextTelemetry');
@@ -51,6 +50,16 @@ describe('Live full-text telemetry configuration', function () {
 		writeFileSync(file, stringify(root(value)));
 		watcher = new RootConfigWatcher(file);
 		stop = watchFullTextTelemetryConfiguration((policy) => samples.push(policy), watcher);
+	}
+	async function removeConfigAfterObservedRead() {
+		await watcher.ready;
+		const reads = watcher._readCountForTests;
+		rmSync(file);
+		watcher.handleChange();
+		assert.ok(
+			watcher._readCountForTests > reads,
+			'the watcher must finish a real ENOENT read before checking retention'
+		);
 	}
 	it('initializes from the ready nested file policy without an eager aggregate/default application', async () => {
 		writeFileSync(file, stringify(root({ enabled: true, histograms: true })));
@@ -108,8 +117,7 @@ describe('Live full-text telemetry configuration', function () {
 		observe({ enabled: true }, samples);
 		await waitFor(() => samples.at(-1)?.enabled === true);
 		const count = samples.length;
-		rmSync(file);
-		await delay(250);
+		await removeConfigAfterObservedRead();
 		assert.strictEqual(samples.at(-1).enabled, true);
 		assert.strictEqual(samples.length, count);
 		assert.strictEqual(env.getConfigOverrides()[PARAM + '_histograms'], true);
@@ -125,8 +133,7 @@ describe('Live full-text telemetry configuration', function () {
 		const samples = [];
 		observe({ enabled: true }, samples);
 		await waitFor(() => samples.at(-1)?.enabled === true);
-		rmSync(file);
-		await delay(250);
+		await removeConfigAfterObservedRead();
 		assert.strictEqual(samples.at(-1).enabled, true);
 		const retainedCount = samples.length;
 		writeFileSync(file, stringify(root({ enabled: 'invalid' })));
@@ -146,8 +153,7 @@ describe('Live full-text telemetry configuration', function () {
 		writeFileSync(file, stringify(root({ enabled: false, intervalMilliseconds: 3000 })));
 		await waitFor(() => watcher.config?.analytics.fullText.intervalMilliseconds === 3000);
 		assert.strictEqual(samples.at(-1).intervalMilliseconds, 2000);
-		rmSync(file);
-		await delay(250);
+		await removeConfigAfterObservedRead();
 		assert.strictEqual(samples.at(-1).enabled, true);
 		assert.strictEqual(samples.at(-1).intervalMilliseconds, 2000);
 	});

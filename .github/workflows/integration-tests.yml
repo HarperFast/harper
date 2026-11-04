@@ -418,14 +418,14 @@ jobs:
           mkdir -p /tmp/harper-legacy-51
           npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
 
-      # Serve the plaintext app HTTP port(s) through uWebSockets.js instead of the Node http server
-      # (#914). Only non-secure, non-operations TCP ports are affected; secure/replication/ops paths
-      # keep running on Node, so this exercises the uWS request/streaming/WS/GraphQL/Fastify-fallback
-      # path against the full integration suite.
       - name: Provision the historical full-text integration engine
         timeout-minutes: 3
         run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade" 0.5.0
 
+      # Serve the plaintext app HTTP port(s) through uWebSockets.js instead of the Node http server
+      # (#914). Only non-secure, non-operations TCP ports are affected; secure/replication/ops paths
+      # keep running on Node, so this exercises the uWS request/streaming/WS/GraphQL/Fastify-fallback
+      # path against the full integration suite.
       - name: Run Integration Test Shard ${{ matrix.shard }}
         timeout-minutes: 15
         env:

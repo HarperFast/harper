@@ -652,7 +652,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 
 	test(
 		'upgrades a real 0.5 checkpoint on two workers and recovers after an old-engine refusal',
-		{ skip: !process.env.HARPER_FULLTEXT_UPGRADE_ROOT },
+		{ skip: !process.env.HARPER_FULLTEXT_UPGRADE_ROOT && !process.env.CI },
 		async () => {
 			previousFullTextProcess('probe');
 			const records = [
