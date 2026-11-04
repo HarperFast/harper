@@ -442,7 +442,7 @@ describe('mcp/resources', () => {
 			assert.match(res.reason, /table not found/);
 		});
 
-		it('contains a malformed static-properties schema as an actionable read failure', async () => {
+		it('contains a malformed static-properties schema without exposing field details', async () => {
 			const cyclic = { type: 'object', properties: {} };
 			cyclic.properties.self = cyclic;
 			class Broken {}
@@ -456,12 +456,12 @@ describe('mcp/resources', () => {
 				profile: 'application',
 			});
 			assert.equal(res.ok, false);
-			assert.match(res.reason, /invalid schema for data\.broken/);
-			assert.match(res.reason, /cycle/);
+			assert.strictEqual(res.reason, 'invalid schema for data.broken');
 		});
 
-		it('contains null and unprintable metadata getter failures', async () => {
+		it('contains sensitive, null and unprintable metadata getter failures', async () => {
 			for (const error of [
+				new Error('config not found: /private/secret sk-schema-sentinel'),
 				null,
 				{
 					toString() {
@@ -479,8 +479,19 @@ describe('mcp/resources', () => {
 				_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
 				const res = await readResource({ uri: 'harper://schema/data/broken', user: SUPER, profile: 'application' });
 				assert.equal(res.ok, false);
-				assert.match(res.reason, /invalid schema for data\.broken/);
+				assert.strictEqual(res.reason, 'invalid schema for data.broken');
 			}
+		});
+
+		it('does not expose malformed hidden field names', async () => {
+			class Broken {
+				static databaseName = 'data';
+				static tableName = 'broken';
+				static properties = { secretSchemaSentinel: { type: 'string', hidden: true, enum: [] } };
+			}
+			_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+			const res = await readResource({ uri: 'harper://schema/data/broken', user: SUPER, profile: 'application' });
+			assert.deepStrictEqual(res, { ok: false, reason: 'invalid schema for data.broken' });
 		});
 
 		it('does not publish hidden static properties through the schema resource', async () => {

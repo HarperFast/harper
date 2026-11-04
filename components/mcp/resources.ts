@@ -132,6 +132,7 @@ const HTTP_SCHEME = 'http:';
 const HARPER_REST_SCHEME = 'harper+rest:';
 
 const DEFAULT_LIMIT = 200;
+const warnedInvalidSchemas = new WeakSet<object>();
 
 // Test seams. Injecting these lets us unit-test without standing up a full
 // Resources registry or running openapi generation.
@@ -842,7 +843,13 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 		const visibleAttributes = filterAttributeTree(attributes);
 		filteredAttributes = filterAttributesByPermissions(visibleAttributes, perm?.attribute_permissions);
 	} catch (error) {
-		return { ok: false, reason: `invalid schema for ${db}.${table}: ${schemaErrorMessage(error)}` };
+		if (!warnedInvalidSchemas.has(resource)) {
+			warnedInvalidSchemas.add(resource);
+			try {
+				harperLogger.warn(`MCP harper://schema/${db}/${table} invalid schema: ${schemaErrorMessage(error)}`);
+			} catch {}
+		}
+		return { ok: false, reason: `invalid schema for ${db}.${table}` };
 	}
 	const body = {
 		database: db,
