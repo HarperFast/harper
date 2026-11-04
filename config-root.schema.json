@@ -999,6 +999,29 @@
 						}
 					]
 				},
+				"tools": {
+					"type": "object",
+					"additionalProperties": false,
+					"description": "The agent's operator-only tool groups. false removes a group from the agent's toolset; its tool names stay reserved, so no other tool can take them. Read at startup only; set_agent_config cannot change it. A value that is not true or false turns its group off, and an unknown key turns every group off. Default: every group on",
+					"properties": {
+						"filesystem": {
+							"type": "boolean",
+							"description": "The filesystem tools: read_file, write_file, list_dir, grep_files, tail_file. Default: true"
+						},
+						"schedule": {
+							"type": "boolean",
+							"description": "The schedule_followup tool. Default: true"
+						},
+						"inspector": {
+							"type": "boolean",
+							"description": "The V8 inspector tools (inspector_attach, inspector_evaluate, inspector_set_breakpoint, inspector_set_logpoint, inspector_profile_cpu). Default: true"
+						},
+						"bestPractices": {
+							"type": "boolean",
+							"description": "The harper_best_practice tool and the best-practices overview in the system prompt. Default: true"
+						}
+					}
+				},
 				"systemPromptAppend": {
 					"type": "string",
 					"description": "Operator text appended to the agent's system prompt, after the built-in grounding and the Harper best-practices overview. Tunable at runtime via set_agent_config."

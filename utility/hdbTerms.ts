@@ -397,6 +397,7 @@ export const OPERATIONS_ENUM = {
 	CANCEL_AGENT_RUN: 'cancel_agent_run',
 	APPROVE_AGENT_ACTION: 'approve_agent_action',
 	SET_AGENT_CONFIG: 'set_agent_config',
+	GET_AGENT_CONFIG: 'get_agent_config',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -720,6 +721,10 @@ export const CONFIG_PARAMS = {
 	AGENT_CONFIGSCOPE: 'agent_configScope',
 	AGENT_HTTPFETCH: 'agent_httpFetch',
 	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
+	AGENT_TOOLS_FILESYSTEM: 'agent_tools_filesystem',
+	AGENT_TOOLS_SCHEDULE: 'agent_tools_schedule',
+	AGENT_TOOLS_INSPECTOR: 'agent_tools_inspector',
+	AGENT_TOOLS_BESTPRACTICES: 'agent_tools_bestPractices',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',

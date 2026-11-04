@@ -18,6 +18,8 @@
 import { ruleNames, rules, skillSummary } from '@harperfast/skills';
 import type { AgentTool } from './types.ts';
 
+export const BEST_PRACTICE_TOOL_NAME = 'harper_best_practice';
+
 /** The SKILL.md overview (rule index + guidance), for injection into the system prompt. Undefined if unavailable. */
 export function loadBestPracticesOverview(): string | undefined {
 	return skillSummary || undefined;
@@ -31,7 +33,7 @@ export function buildBestPracticeTool(): AgentTool | undefined {
 	if (!ruleNames?.length) return undefined;
 	return {
 		def: {
-			name: 'harper_best_practice',
+			name: BEST_PRACTICE_TOOL_NAME,
 			description:
 				'Read a Harper best-practices rule for detailed guidance and code examples — schema design, relationships, automatic/REST APIs, authentication, custom resources, caching, vector indexing, TypeScript type-stripping, deployment, logging, and more. Call with no `rule` to list the available rule names; then call again with a `rule` to read it. Consult these before designing schemas or building app logic.',
 			parameters: {
