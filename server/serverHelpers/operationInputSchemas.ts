@@ -1,5 +1,6 @@
 /**
- * Hand-maintained projections of Joi, legacy and inline validation.
+ * Interim projections of Joi, legacy and inline validation.
+ * Target: one contract consumed by both runtime validation and registration.
  * Runtime validation remains authoritative; protocol-specific help belongs to MCP.
  */
 export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
