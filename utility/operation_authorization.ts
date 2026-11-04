@@ -1216,7 +1216,7 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 			const path = prefix ? [...prefix, name] : [name];
 			checkRelationshipPath(state, path);
 			checkSelectPaths(state, property?.select, path, relatedTable);
-			checkConditionPaths(state, property?.conditions, path, relatedTable);
+			checkConditionPaths(state, property?.conditions, path, true);
 			checkSortPaths(state, property?.sort, path);
 			continue;
 		}
@@ -1225,22 +1225,26 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 	}
 }
 
-function checkConditionPaths(
-	state: RelationshipReadCheck,
-	conditions: any,
-	prefix?: any[],
-	currentTable = state.tableClass
-) {
+// a same-record group (`{ attribute: relationship, conditions }`) holds conditions relative to its relationship path
+function checkConditionPaths(state: RelationshipReadCheck, conditions: any, prefix?: any[], inSelect = false) {
 	if (!Array.isArray(conditions)) return;
 	for (const condition of conditions) {
-		if (condition?.conditions) checkConditionPaths(state, condition.conditions, prefix, currentTable);
-		else {
-			const attribute = prefix
-				? (condition?.[0] ?? condition?.attribute ?? currentTable.primaryKey)
-				: condition?.attribute;
-			if (attribute !== undefined) checkRelationshipPath(state, prefix ? prefix.concat(attribute) : attribute);
+		const attribute = condition?.attribute;
+		if (condition?.conditions) {
+			const path = attribute == null ? prefix : (prefix ?? []).concat(attribute);
+			if (attribute != null) checkRelationshipPath(state, path);
+			checkConditionPaths(state, condition.conditions, path, inSelect);
+		} else {
+			const leaf = (inSelect ? condition?.[0] : undefined) ?? attribute;
+			if (prefix) checkRelationshipPath(state, prefix.concat(leaf ?? relatedKeyOf(state.tableClass, prefix)));
+			else if (leaf !== undefined) checkRelationshipPath(state, leaf);
 		}
 	}
+}
+function relatedKeyOf(tableClass: any, path: any[]) {
+	let related = tableClass;
+	for (const name of path) related = relatedTableOf(related, name);
+	return related?.primaryKey;
 }
 
 /**
@@ -1462,7 +1466,11 @@ function getRecordAttributes(json, operationName?, relationshipTable?: any) {
 			const addConditionAttributes = (conditions) => {
 				for (const condition of conditions) {
 					if (condition.conditions) {
-						addConditionAttributes(condition.conditions);
+						// a same-record group's conditions are on the related table, which the relationship read check covers
+						if (condition.attribute != null) {
+							const first = Array.isArray(condition.attribute) ? condition.attribute[0] : condition.attribute;
+							if (!relatedTableOf(relationshipTable, first)) affectedAttributes.add(first);
+						} else addConditionAttributes(condition.conditions);
 						continue;
 					}
 					const comparator = condition.comparator ?? condition.search_type;
