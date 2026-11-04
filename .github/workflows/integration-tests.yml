@@ -114,7 +114,8 @@ jobs:
 
       - name: Remove local development link before upload
         timeout-minutes: 1
-        run: node -e "require('node:fs').rmSync('node_modules/harper', { recursive: true, force: true })"
+        run: |
+          node -e "require('node:fs').rmSync('node_modules/harper', { recursive: true, force: true })"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -256,7 +257,8 @@ jobs:
 
       - name: Remove local development link before upload
         timeout-minutes: 1
-        run: node -e "require('node:fs').rmSync('node_modules/harper', { recursive: true, force: true })"
+        run: |
+          node -e "require('node:fs').rmSync('node_modules/harper', { recursive: true, force: true })"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
