@@ -81,6 +81,25 @@ function seededRandom(seed) {
 	};
 }
 
+// Each piece is [pattern text, legacy only, accepts], with no `accepts` for `%`.
+function piecesLike(pieces, value) {
+	let row = [true, ...Array(value.length).fill(false)];
+	for (const [, , accepts] of pieces) {
+		const next = [!accepts && row[0]];
+		for (let j = 1; j <= value.length; j++) {
+			next.push(accepts ? row[j - 1] && accepts(value[j - 1]) : next[j - 1] || row[j]);
+		}
+		row = next;
+	}
+	return row[value.length];
+}
+
+const NONCHARACTERS = ['\uffff', '\ufffe'];
+for (let code = 0xfdd0; code <= 0xfdef; code++) NONCHARACTERS.push(String.fromCharCode(code));
+// Split the noncharacters by index bit, so no two of them are treated alike by every class (QA SF-86).
+const SPLITTING_UNITS = Array.from({ length: 6 }, (_, bit) => NONCHARACTERS.filter((_, i) => (i >> bit) & 1).join(''));
+const SPLITTING_CLASSES = SPLITTING_UNITS.map((units) => `[a${units}]`).join('');
+
 const PARITY_PATTERNS = [
 	'',
 	'%',
@@ -197,17 +216,6 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			['\uffff', false, (c) => c === '\uffff'],
 			['\ufffe', false, (c) => c === '\ufffe'],
 		];
-		const reference = (pieces, value) => {
-			let row = [true, ...Array(value.length).fill(false)];
-			for (const [, , accepts] of pieces) {
-				const next = [!accepts && row[0]];
-				for (let j = 1; j <= value.length; j++) {
-					next.push(accepts ? row[j - 1] && accepts(value[j - 1]) : next[j - 1] || row[j]);
-				}
-				row = next;
-			}
-			return row[value.length];
-		};
 		const next = seededRandom(2028);
 		const ALPHABET = 'aaaaab\n\n\r\uffff\ufffe';
 		const sample = (accepts) => {
@@ -237,7 +245,7 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			}
 			const label = `${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`;
 			const actual = legacy ? alasql.utils.like(pattern, value) : v2Like(pattern, value);
-			assert.strictEqual(actual, reference(pieces, value), (legacy ? 'legacy ' : 'v2 ') + label);
+			assert.strictEqual(actual, piecesLike(pieces, value), (legacy ? 'legacy ' : 'v2 ') + label);
 		}
 	});
 
@@ -302,12 +310,10 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		}
 		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\ufffe' + '\uffff'.repeat(70)), true);
 		assert.strictEqual(alasql.utils.like('%[\ufffe]%a' + run + 'b', '\ufffe' + 'a' + '\ufdd0'.repeat(70) + 'b'), true);
-		// With every noncharacter a literal, no placeholder is left and `_` is written as any unit.
-		const noncharacters = ['\uffff', '\ufffe'];
-		for (let code = 0xfdd0; code <= 0xfdef; code++) noncharacters.push(String.fromCharCode(code));
-		const all = noncharacters.join('');
+		// With every noncharacter a literal, the placeholder comes from the Private Use Area.
+		const all = NONCHARACTERS.join('');
 		for (const tail of ['', '\uffff', 'B']) {
-			const value = all + 'a' + all.repeat(3).slice(0, 70) + tail;
+			const value = all + 'a' + (all + '\uf8ff\uf8fe').repeat(3).slice(0, 70) + tail;
 			assert.strictEqual(alasql.utils.like('%' + all + '%a' + run + 'b%', value), tail === 'B');
 			assert.strictEqual(alasql.utils.like('%' + all + '%a' + run + '%', value), true);
 		}
@@ -514,6 +520,110 @@ describe('legacy alasql LIKE', () => {
 		assert.strictEqual(alasql.utils.like('%ab%ab', 'ab'), false);
 	});
 
+	it('agrees with the reference when classes split the noncharacters past 64 _', () => {
+		// [pattern text, legacy only, accepts]
+		const PIECES = [
+			['%', true, null],
+			['_', true, () => true],
+			['a', true, (c) => c === 'a' || c === 'A'],
+			['\uf8ff', true, (c) => c === '\uf8ff'],
+			['\uf8fc', true, (c) => c === '\uf8fc'],
+			['\ue000', true, (c) => c === '\ue000'],
+			['[\uf800-\uf8fe]', true, (c) => c >= '\uf800' && c <= '\uf8fe'],
+			['[^\uf8fd]', true, (c) => c !== '\uf8fd'],
+			[`[^${SPLITTING_UNITS[0]}]`, true, (c) => !SPLITTING_UNITS[0].includes(c)],
+		];
+		const splitting = SPLITTING_UNITS.map((units) => [
+			`[a${units}]`,
+			true,
+			(c) => c === 'a' || c === 'A' || units.includes(c),
+		]);
+		const ALPHABET = 'aaAb\n\uffff\ufffe\ufdd0\ufdef\uf8ff\uf8fe\uf8fd\uf8fc\uf8fb\uf800\ue000\ue001';
+		const next = seededRandom(86);
+		const sample = (accepts) => {
+			for (;;) {
+				const char = ALPHABET[next() % ALPHABET.length];
+				if (accepts(char)) return char;
+			}
+		};
+		const outcomes = new Set();
+		for (let i = 0; i < 600; i++) {
+			// Items keep a run of 65+ `_` beside another unit, so it counts toward the placeholder threshold.
+			const items = [splitting, [...Array(65 + (next() % 10)).fill(PIECES[1]), PIECES[2]]];
+			for (let n = next() % 6; n > 0; n--) {
+				const piece = PIECES[next() % PIECES.length];
+				items.splice(next() % (items.length + 1), 0, Array(1 + (next() % 3)).fill(piece));
+			}
+			const pieces = items.flat();
+			if (next() % 3) pieces.unshift(PIECES[0]);
+			if (next() % 3) pieces.push(PIECES[0]);
+			const pattern = pieces.map(([text]) => text).join('');
+			let value = pieces[0][2] ? '' : randomString(next, ALPHABET, 6);
+			for (const [, , accepts] of pieces) value += accepts ? sample(accepts) : randomString(next, ALPHABET, 6);
+			for (let n = i % 4 === 0 ? 0 : next() % 3; n > 0; n--) {
+				const at = next() % value.length;
+				value = value.slice(0, at) + ALPHABET[next() % ALPHABET.length] + value.slice(at + 1);
+			}
+			const expected = piecesLike(pieces, value);
+			outcomes.add(expected);
+			assert.strictEqual(
+				alasql.utils.like(pattern, value),
+				expected,
+				`${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`
+			);
+		}
+		assert.deepStrictEqual(outcomes, new Set([true, false]));
+	});
+
+	it('matches values holding the placeholder pair in every segment position', () => {
+		const run = '_'.repeat(65);
+		// U+F8FF and U+F8FE, the first private-use pair, stand in for `_`; U+E000 and U+FFFF are ordinary units.
+		for (const unit of ['\uf8ff', '\uf8fe', '\ue000', '\uffff', '\uf8ff\uf8fe']) {
+			const ones = unit.repeat(65).slice(0, 65);
+			const prefix = 'a'.repeat(6);
+			for (const [pattern, value] of [
+				[SPLITTING_CLASSES + 'a' + run + 'b', prefix + 'a' + ones + 'b'],
+				[SPLITTING_CLASSES + '%a' + run + 'b', prefix + 'xa' + ones + 'b'],
+				['a' + run + 'b%' + SPLITTING_CLASSES, 'a' + ones + 'bx' + prefix],
+				['%' + SPLITTING_CLASSES + '%a' + run + 'b%', 'x' + prefix + 'xa' + ones + 'bx'],
+			]) {
+				assert.strictEqual(alasql.utils.like(pattern, value), true, JSON.stringify(pattern));
+				assert.strictEqual(alasql.utils.like(pattern, value.replace(ones, ones.slice(1))), false);
+				assert.strictEqual(alasql.utils.like(pattern.toUpperCase(), value), true);
+			}
+		}
+	});
+
+	it('refuses a pattern past 64 _ that names a unit of every placeholder pair', () => {
+		const named = [];
+		for (const [low, high] of [
+			[0xfffe, 0xffff],
+			[0xfdd0, 0xfdef],
+			[0xe000, 0xf8ff],
+		]) {
+			for (let code = high - 1; code >= low; code -= 2) named.push(String.fromCharCode(code));
+		}
+		const run = '_'.repeat(65);
+		const pattern = (units) => 'a' + run + '[' + units.join('') + ']';
+		assert.throws(
+			() => alasql.utils.like(pattern(named), 'a'),
+			(error) => error instanceof ClientError && error.statusCode === 400 && /private-use/.test(error.message)
+		);
+		// One unit fewer leaves U+E001 and U+E000, so the pattern matches as usual.
+		const fewer = named.filter((unit) => unit !== '\ue000');
+		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + 'x'.repeat(65) + '\ufffe'), true);
+		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + '\ue001'.repeat(65) + '\ufffe'), true);
+		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + '\ue000'.repeat(65) + '\ufffe'), true);
+		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + '\ue000'.repeat(65) + '\ue000'), false);
+		// A range names only its endpoints.
+		assert.strictEqual(alasql.utils.like('a' + run + '[\ue000-\uf8fe]', 'a' + '\uf8ff'.repeat(65) + '\ue005'), true);
+		// At 64 `_`, `_` is any unit and nothing is refused.
+		assert.strictEqual(
+			alasql.utils.like('a' + '_'.repeat(64) + '[' + named.join('') + ']', 'a' + 'x'.repeat(64) + '\ufffe'),
+			true
+		);
+	});
+
 	it('rejects a malformed pattern or escape with a client error', () => {
 		const clientError = (error) => error instanceof ClientError && error.statusCode === 400;
 		assert.throws(() => alasql.utils.like('[z-a]', 'b'), clientError);
@@ -600,6 +710,33 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 		assert.strictEqual(child.status, 0, child.stderr);
 		return JSON.parse(child.stdout);
 	};
+
+	it('compiles 16 wide segments past classes that split the noncharacters within the merge base time (SF-86)', () => {
+		const tails = Array.from({ length: 16 }, (_, k) => String.fromCharCode(98 + k) + 'b');
+		const pattern = '%' + SPLITTING_CLASSES + '%' + tails.map((tail) => '_'.repeat(9_998) + tail + '%').join('');
+		const match = 'a'.repeat(6) + tails.map((tail) => 'x'.repeat(9_998) + tail).join('');
+		const values = [match, match.slice(0, -2) + 'zz', ...Array(18).fill('x'.repeat(100_000))];
+		const reference = (value) => {
+			let from = value.indexOf('a'.repeat(6));
+			if (from < 0) return false;
+			from += 6;
+			for (const tail of tails) {
+				while (from + 10_000 <= value.length && value.slice(from + 9_998, from + 10_000) !== tail) from++;
+				if (from + 10_000 > value.length) return false;
+				from += 10_000;
+			}
+			return true;
+		};
+		const { result, ms } = time(
+			'legacy',
+			pattern,
+			values.map((value) => [value, value.length])
+		);
+		assert.deepStrictEqual(result, values.map(reference));
+		assert.deepStrictEqual(result.slice(0, 2), [true, false]);
+		// The head before the fix took ~5 s, compiling each `_` as `[^]`; the merge base ~180 ms.
+		assert.ok(ms < 1_000, `legacy took ${ms.toFixed(0)} ms`);
+	});
 
 	it('matches a 10,000-wide middle segment over 20 values of 100,000 characters with line feeds, under 2 s', () => {
 		const units = Array.from({ length: 20 }, (_, i) => [

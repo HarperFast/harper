@@ -1,6 +1,7 @@
 // Leftmost placement of each middle segment is always safe: any match that places it further right still
 // matches with it shifted left, so no position is revisited.
 
+import { ClientError } from '../../utility/errors/hdbError.ts';
 import { EngineRuntimeError } from '../errors.ts';
 
 export type LikeToken =
@@ -66,9 +67,13 @@ const LINE_TERMINATOR = /[\n\r\u2028\u2029]/g;
 const DIRECT_SEARCH_WIDTH = 64;
 // Under `i`, V8 compiles each `[^]` in about 0.05 ms, and `[^X]` for a single X in a fraction of that.
 const PLACEHOLDER_ONES = 64;
-// Noncharacters: no case mapping reaches them.
-const PLACEHOLDERS = ['\uffff', '\ufffe'];
-for (let code = 0xfdd0; code <= 0xfdef; code++) PLACEHOLDERS.push(String.fromCharCode(code));
+// Runs of consecutive units that no case mapping reaches or leaves: noncharacters, then the Private Use Area.
+const PLACEHOLDER_RUNS = [
+	[0xfffe, 0xffff],
+	[0xfdd0, 0xfdef],
+	[0xe000, 0xf8ff],
+];
+const LIKE_NO_PLACEHOLDER = `LIKE pattern with more than ${PLACEHOLDER_ONES} _ names too many private-use characters`;
 
 // Segment RegExps hold no quantifier or alternation, so they cannot backtrack. A fixed count is no exception:
 // `[^]{9998}` searches about 3,000x slower than the same atoms written out.
@@ -92,9 +97,16 @@ export function compileLikeTokens(tokens: LikeToken[], caseInsensitive = false):
 	}
 	// `_` is any one code unit. Under `i`, many `[^]` compile slowly, so `_` becomes `[^placeholder]` over a
 	// value with each placeholder replaced by the substitute, a pair no literal is and every class treats alike.
-	const pair = flags && ones > PLACEHOLDER_ONES ? placeholderPair(literals, [...classes.values()]) : undefined;
-	const [placeholder, substitute] = pair ?? ['', ''];
-	const one = placeholder ? `[^\\u${placeholder.charCodeAt(0).toString(16)}]` : '[^]';
+	// Without a pair, `[^]` would compile for seconds (SF-86), so the pattern is refused.
+	let placeholder = '';
+	let substitute = '';
+	let one = '[^]';
+	if (flags && ones > PLACEHOLDER_ONES) {
+		const pair = placeholderPair(literals, classes);
+		if (!pair) throw new ClientError(LIKE_NO_PLACEHOLDER);
+		[placeholder, substitute] = pair;
+		one = `[^\\u${placeholder.charCodeAt(0).toString(16)}]`;
+	}
 
 	const segments: Segment[] = segmentTokens.map((units, index) => {
 		let text: string | undefined = '';
@@ -157,11 +169,20 @@ function substitutePlaceholder(segment: Segment, value: string): string {
 	return value.includes(segment.placeholder) ? value.replaceAll(segment.placeholder, segment.substitute) : value;
 }
 
-function placeholderPair(literals: Set<string>, classes: RegExp[]): [string, string] | undefined {
-	const usable = PLACEHOLDERS.filter((placeholder) => !literals.has(placeholder));
-	for (let i = 0; i < usable.length; i++) {
-		for (let j = i + 1; j < usable.length; j++) {
-			if (classes.every((unit) => unit.test(usable[i]) === unit.test(usable[j]))) return [usable[i], usable[j]];
+// Within a run, a class can tell two consecutive units apart only if its source names one of them, so the first
+// pair the pattern names neither unit of is found without testing every pair against every class.
+function placeholderPair(literals: Set<string>, classes: Map<string, RegExp>): [string, string] | undefined {
+	const named = new Set(literals);
+	for (const source of classes.keys()) for (let i = 0; i < source.length; i++) named.add(source[i]);
+	const units = [...classes.values()];
+	for (const [low, high] of PLACEHOLDER_RUNS) {
+		for (let code = high; code > low; code--) {
+			const placeholder = String.fromCharCode(code);
+			const substitute = String.fromCharCode(code - 1);
+			if (named.has(placeholder) || named.has(substitute)) continue;
+			if (units.every((unit) => unit.test(placeholder) === unit.test(substitute))) {
+				return [placeholder, substitute];
+			}
 		}
 	}
 	return undefined;

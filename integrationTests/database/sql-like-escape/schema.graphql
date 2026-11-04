@@ -11,3 +11,9 @@ type Lines @table @export {
 	note: String
 	flag: String
 }
+
+type Wide @table @export {
+	id: ID @primaryKey
+	note: String
+	flag: String
+}
