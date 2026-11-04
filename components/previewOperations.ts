@@ -332,6 +332,10 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	const user: any = getUserWithRole(names.user);
 	const trust = previewPolicies(names, await listPolicies(req));
 	const deploy = trust.find((policy) => policy.id === names.policy);
+	const cleanup = trust.find((policy) => policy.id === names.cleanupPolicy);
+	const hasRepositoryId = (policy: any) =>
+		typeof policy?.claims?.repository_id === 'string' && policy.claims.repository_id.length > 0;
+	const hasWorkflowRef = (policy: any) => Boolean(parseWorkflowRef(policy?.claims?.workflow_ref).branch);
 	const problems: string[] = [];
 	if (!role) problems.push(`role "${names.role}" is missing`);
 	else {
@@ -368,12 +372,53 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		else if (policy.enabled === false) problems.push(`trust policy "${id}" is disabled`);
 		else if (policy.invalid_reason) problems.push(`trust policy "${id}" ${policy.invalid_reason}`);
 		else if (policy.user !== names.user) problems.push(`trust policy "${id}" names user "${policy.user}"`);
-		else if (policy.claims?.event_name !== 'pull_request_target' || !policy.claims?.environment) {
-			problems.push(`trust policy "${id}" no longer pins event_name pull_request_target and an environment`);
-		} else if (!sameSet(policy.operations, operations)) {
-			problems.push(
-				`trust policy "${id}" allows ${JSON.stringify(policy.operations ?? null)}, not ${operations.join(', ')}`
-			);
+		else {
+			if (
+				policy.claims?.event_name !== 'pull_request_target' ||
+				typeof policy.claims?.environment !== 'string' ||
+				!policy.claims.environment
+			) {
+				problems.push(`trust policy "${id}" no longer pins event_name pull_request_target and an environment`);
+			} else if (id === names.policy && policy.claims.environment === PREVIEW_CLEANUP_ENVIRONMENT) {
+				problems.push(`trust policy "${id}" pins environment "${PREVIEW_CLEANUP_ENVIRONMENT}", which is for cleanup`);
+			} else if (id === names.cleanupPolicy && policy.claims.environment !== PREVIEW_CLEANUP_ENVIRONMENT) {
+				problems.push(
+					`trust policy "${id}" pins environment ${JSON.stringify(policy.claims.environment)}, not "${PREVIEW_CLEANUP_ENVIRONMENT}"`
+				);
+			}
+			if (!hasRepositoryId(policy) || !hasWorkflowRef(policy)) {
+				problems.push(`trust policy "${id}" no longer pins repository_id and workflow_ref`);
+			}
+			if (id === names.cleanupPolicy && deploy) {
+				if (policy.audience !== deploy.audience) {
+					problems.push(
+						`trust policy "${id}" has audience ${JSON.stringify(policy.audience)}, not ${JSON.stringify(deploy.audience)}`
+					);
+				}
+				if (
+					hasRepositoryId(policy) &&
+					hasRepositoryId(deploy) &&
+					policy.claims.repository_id !== deploy.claims.repository_id
+				) {
+					problems.push(
+						`trust policy "${id}" pins repository_id ${JSON.stringify(policy.claims.repository_id)}, not ${JSON.stringify(deploy.claims.repository_id)}`
+					);
+				}
+				if (
+					hasWorkflowRef(policy) &&
+					hasWorkflowRef(deploy) &&
+					policy.claims.workflow_ref !== deploy.claims.workflow_ref
+				) {
+					problems.push(
+						`trust policy "${id}" pins workflow_ref ${JSON.stringify(policy.claims.workflow_ref)}, not ${JSON.stringify(deploy.claims.workflow_ref)}`
+					);
+				}
+			}
+			if (!sameSet(policy.operations, operations)) {
+				problems.push(
+					`trust policy "${id}" allows ${JSON.stringify(policy.operations ?? null)}, not ${operations.join(', ')}`
+				);
+			}
 		}
 	}
 	return {
@@ -385,7 +430,7 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		...parseWorkflowRef(deploy?.claims?.workflow_ref),
 		repository_id: deploy?.claims?.repository_id,
 		environment: deploy?.claims?.environment,
-		cleanupEnvironment: trust.find((policy) => policy.id === names.cleanupPolicy)?.claims?.environment,
+		cleanupEnvironment: cleanup?.claims?.environment,
 		audience: deploy?.audience,
 		grant: role?.permission?.component_deploy ?? null,
 		operations: role?.permission?.operations ?? null,
