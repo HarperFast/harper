@@ -6214,8 +6214,9 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						logger.error(`Could not flush the indexes of ${Table.tableName} before marking them complete`, error);
 					}
 				}
-				if (!restart && !resolverArrived()) break;
 				// a replacement build owns the index now; it must not lose the entries it has written
+				if (restarted && buildSuperseded(Table, attributes)) return;
+				if (!restart && !resolverArrived()) break;
 				if (buildSuperseded(Table, attributes)) return;
 				// The checkpoint goes before the clear, so a crash in between cannot resume past cleared entries.
 				const puts = [];
