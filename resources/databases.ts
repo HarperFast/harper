@@ -5812,8 +5812,8 @@ function needsResolvedRebuild(Table: any, attribute: any): boolean {
 export function requestComputedIndexRepair(Table: any): void {
 	if (isReadOnlyMode() || !Table.attributes?.some((attribute) => needsResolvedRebuild(Table, attribute))) return;
 	const rootStore = Table.primaryStore.rootStore;
-	const claimed = [];
-	const certifiedEmpty = [];
+	// written to the catalog by `claim`, and applied to the live attributes only once those writes are durable
+	const claims: { attribute: any; descriptor: any; key: string }[] = [];
 	const claim = () => {
 		if (isReadOnlyMode() || generationSuperseded(Table) || Table.dbisDB.getSync(Table.tableName + '/')?.dropping)
 			return;
@@ -5834,29 +5834,34 @@ export function requestComputedIndexRepair(Table: any): void {
 				declarationOf(descriptor) !== declarationOf(attribute)
 			)
 				continue;
-			if (!hasRecords) {
-				// nothing was indexed without the resolver; a build would only hold queries off
-				Table.dbisDB.putSync(key, { ...descriptor, checkpointAlgorithm: RESOLVED_CHECKPOINT_ALGORITHM });
-				certifiedEmpty.push([attribute, attribute.checkpointAlgorithm]);
-				attribute.checkpointAlgorithm = RESOLVED_CHECKPOINT_ALGORITHM;
-				continue;
+			// an empty table: nothing was indexed without the resolver, and a build would only hold queries off
+			const claimed = hasRecords
+				? { ...descriptor }
+				: { ...descriptor, checkpointAlgorithm: RESOLVED_CHECKPOINT_ALGORITHM };
+			if (hasRecords) {
+				delete claimed.lastIndexedKey;
+				delete claimed.checkpointCertified;
+				stampIndexBuildClaim(claimed, restartGeneration);
 			}
+			Table.dbisDB.putSync(key, claimed);
+			claims.push({ attribute, descriptor: claimed, key });
+		}
+	};
+	const launch = () => {
+		const building = [];
+		for (const { attribute, descriptor, key } of claims) {
 			// runIndexing persists this attribute, so it takes exactly the catalog's fields
-			const build = { ...descriptor };
-			delete build.lastIndexedKey;
-			delete build.checkpointCertified;
-			stampIndexBuildClaim(build, restartGeneration);
-			Table.dbisDB.putSync(key, build);
-			for (const field of Object.keys(attribute)) if (!(field in build) && field !== 'resolve') delete attribute[field];
-			for (const field in build) if (field !== 'computed') attribute[field] = build[field];
+			for (const field of Object.keys(attribute))
+				if (!(field in descriptor) && field !== 'resolve') delete attribute[field];
+			for (const field in descriptor) if (field !== 'computed') attribute[field] = descriptor[field];
+			if (!descriptor.indexingPID) continue;
 			Object.defineProperty(attribute, 'key', { value: key, configurable: true });
 			armIndexBuild(attribute, Table.indices[attribute.name]);
 			logger.info(`reindex ${Table.databaseName}.${Table.tableName}.${attribute.name}: reason=resolver-registered`);
-			claimed.push(attribute);
+			building.push(attribute);
 		}
+		return building.length > 0 ? launchIndexing(Table, building, []) : undefined;
 	};
-	// whatever was claimed before a failure is durable, so it is built
-	const launch = () => (claimed.length > 0 ? launchIndexing(Table, claimed, []) : undefined);
 	const publish = (operation: Promise<unknown> | undefined) => {
 		if (!operation) return;
 		const previous = Table.indexingOperation;
@@ -5865,6 +5870,7 @@ export function requestComputedIndexRepair(Table: any): void {
 	const reportFailure = (error: unknown) =>
 		logger.error(`Could not start rebuilding the computed indexes of ${Table.databaseName}.${Table.tableName}`, error);
 	if (rootStore instanceof RocksDatabase) {
+		// each putSync is durable on its own, so whatever was claimed before a failure is built
 		let admitted;
 		try {
 			admitted = withUpdateAttributesLockNonBlocking(
@@ -5888,12 +5894,7 @@ export function requestComputedIndexRepair(Table: any): void {
 			rootStore.transactionSync(claim);
 		} catch (error) {
 			// the transaction rolled back every claim it wrote
-			for (const attribute of claimed.splice(0)) {
-				for (const field of ['indexingPID', 'restartNumber', 'indexingIncarnation', 'indexingBuildId'])
-					delete attribute[field];
-				attribute.dbi.isIndexing = false;
-			}
-			for (const [attribute, algorithm] of certifiedEmpty.splice(0)) attribute.checkpointAlgorithm = algorithm;
+			claims.length = 0;
 			reportFailure(error);
 		}
 		publish(launch());
