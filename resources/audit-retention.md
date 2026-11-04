@@ -70,6 +70,11 @@ Things that are easy to get wrong here:
 - **`getHistory` is not in the floor's time domain.** The floor is an audit-log key (`subscribe`'s
   `localTime`); `getHistory` reports each entry's origin `version` under that name, which a backdated
   or replicated write makes differ, so its cursors cannot be compared against the floor.
+- **History readers skip entries that describe no record's history.** `getHistory` and `getHistoryOfRecord` drop
+  `evict`, lock-control and `reload` entries through `isNonHistoryType` (`auditStore.ts`). Replay and the
+  `previousCount` backfill do not: they must see a `reload` to refuse or re-snapshot. A record with no audit
+  position (an LMDB entry without `localTime`) has an empty history, like an absent record; carrying history
+  across an audit-less base copy is harper#2212's design (`historyNonRecordEntries.test.js`).
 - **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
   purge granularity means the branch cannot know which entries a purge will drop, and the floor is
   written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
