@@ -9,9 +9,7 @@
  *              EngineUnsupportedError (default).
  *
  * The flag is read from the HARPER_SQL_ENGINE environment variable, then
- * harperConfig.sql?.engine, then defaults to 'auto'. We deliberately keep
- * this resolution lazy and lightweight so the router can be invoked without a
- * fully booted Harper config (e.g., in unit tests).
+ * sql.engine in Harper config, then defaults to 'auto'.
  *
  * Phase 5 cutover: the default is now 'auto' — the new engine handles every SQL
  * request it can plan and silently falls back to legacy on anything it can't, so
@@ -25,6 +23,9 @@
  * The remaining cutover work is burn-in (watch `sql-engine v2 fallback:` logs) then
  * flipping to 'new' and deleting the legacy path. See PLAN.md phase-5 notes.
  */
+
+import { getConfigValue } from '../config/configUtils.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 export type SqlEngineMode = 'legacy' | 'new' | 'auto';
 
@@ -48,22 +49,26 @@ function envEngine(): SqlEngineMode | undefined {
 	return undefined;
 }
 
-function harperConfigEngine(): Partial<SqlEngineConfig> {
-	try {
-		const harperConfig = (globalThis as { harperConfig?: { sql?: Partial<SqlEngineConfig> } }).harperConfig;
-		return harperConfig?.sql ?? {};
-	} catch {
-		return {};
-	}
+function configEngine(): SqlEngineMode | undefined {
+	const v = getConfigValue(CONFIG_PARAMS.SQL_ENGINE);
+	if (v === 'legacy' || v === 'new' || v === 'auto') return v;
+	return undefined;
 }
 
 export function getSqlEngineConfig(): SqlEngineConfig {
-	const fromConfig = harperConfigEngine();
 	const fromEnv = envEngine();
+	const fromConfig = configEngine();
+	const allowFullScan = getConfigValue(CONFIG_PARAMS.SQL_ALLOWFULLSCAN);
+	const maxSortRows = getConfigValue(CONFIG_PARAMS.SQL_MAXSORTROWS);
+	const maxHashRows = getConfigValue(CONFIG_PARAMS.SQL_MAXHASHROWS);
 	return {
-		engine: fromEnv ?? fromConfig.engine ?? DEFAULTS.engine,
-		allowFullScan: fromConfig.allowFullScan ?? DEFAULTS.allowFullScan,
-		maxSortRows: fromConfig.maxSortRows ?? DEFAULTS.maxSortRows,
-		maxHashRows: fromConfig.maxHashRows ?? DEFAULTS.maxHashRows,
+		engine: fromEnv ?? fromConfig ?? DEFAULTS.engine,
+		allowFullScan: typeof allowFullScan === 'boolean' ? allowFullScan : DEFAULTS.allowFullScan,
+		maxSortRows: isPositiveInteger(maxSortRows) ? maxSortRows : DEFAULTS.maxSortRows,
+		maxHashRows: isPositiveInteger(maxHashRows) ? maxHashRows : DEFAULTS.maxHashRows,
 	};
+}
+
+function isPositiveInteger(value: unknown): value is number {
+	return typeof value === 'number' && Number.isInteger(value) && value >= 1;
 }

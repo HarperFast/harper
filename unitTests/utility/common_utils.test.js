@@ -5,12 +5,12 @@
 
 const assert = require('assert');
 const chai = require('chai');
-const cu = require('#src/utility/common_utils');
+const cu = require('#js/utility/common_utils');
 const testUtils = require('../testUtils.js');
 // try to move to /bin directory so our properties reader doesn't explode.
 testUtils.changeProcessToBinDir();
 const rewire = require('rewire');
-const cu_rewire = rewire('#src/utility/common_utils');
+const cu_rewire = rewire('#js/utility/common_utils');
 const { expect } = chai;
 const ALL_SPACES = '     ';
 const SEP = require('path').sep;
@@ -173,10 +173,6 @@ describe('Test common_utils module', () => {
 
 		it(`Pass in false, expect true`, function () {
 			assert.equal(cu.isBoolean(false), true);
-		});
-
-		it(`Pass in evaluation, expect true`, function () {
-			assert.equal(cu.isBoolean(2 > 1), true);
 		});
 	});
 
@@ -586,6 +582,28 @@ describe('Test common_utils module', () => {
 		});
 	});
 
+	describe('Test prettyDuration', () => {
+		it('drops only leading zero units', () => {
+			assert.strictEqual(cu.prettyDuration(5000), '5s');
+			assert.strictEqual(cu.prettyDuration(90000), '1m 30s');
+			assert.strictEqual(cu.prettyDuration(97702000), '1d 3h 8m 22s');
+		});
+		it('keeps interior zero units once a larger unit is present', () => {
+			assert.strictEqual(cu.prettyDuration(86405000), '1d 0h 0m 5s');
+		});
+		it('floors sub-second and non-positive values to 0s', () => {
+			assert.strictEqual(cu.prettyDuration(0), '0s');
+			assert.strictEqual(cu.prettyDuration(999), '0s');
+			assert.strictEqual(cu.prettyDuration(-5000), '0s');
+		});
+		it('floors non-finite values to 0s', () => {
+			assert.strictEqual(cu.prettyDuration(NaN), '0s');
+			assert.strictEqual(cu.prettyDuration(Infinity), '0s');
+			assert.strictEqual(cu.prettyDuration(-Infinity), '0s');
+			assert.strictEqual(cu.prettyDuration(cu.convertToMS('abc')), '0s');
+		});
+	});
+
 	describe('Test httpRequest timeout', () => {
 		const http = require('node:http');
 		let server, port;
@@ -622,6 +640,51 @@ describe('Test common_utils module', () => {
 					return true;
 				}
 			);
+		});
+	});
+
+	describe('Test httpRequest abort signal on a trickling response', () => {
+		const http = require('node:http');
+		let trickleServer, port, trickle;
+
+		before((done) => {
+			// A byte every 20ms keeps the idle timer from ever firing.
+			trickleServer = http.createServer((req, res) => {
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				trickle = setInterval(() => res.write(' '), 20);
+				res.on('close', () => clearInterval(trickle));
+			});
+			trickleServer.listen(0, '127.0.0.1', () => {
+				port = trickleServer.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			clearInterval(trickle);
+			if (!trickleServer) return done();
+			trickleServer.closeAllConnections();
+			trickleServer.close(done);
+		});
+
+		it('rejects once the signal aborts, though the body is still arriving', async () => {
+			const started = Date.now();
+			await assert.rejects(
+				cu.httpRequest(
+					{
+						protocol: 'http:',
+						hostname: '127.0.0.1',
+						port,
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						timeout: 1000,
+						signal: AbortSignal.timeout(150),
+					},
+					{}
+				),
+				(err) => err.name === 'AbortError'
+			);
+			assert.ok(Date.now() - started < 1000);
 		});
 	});
 

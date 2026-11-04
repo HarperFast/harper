@@ -45,9 +45,13 @@ class MemoryStore {
 		this._map.delete(this._key(key));
 	}
 	*getKeys({ reverse = false, limit = Infinity, start = -Infinity, end = Infinity } = {}) {
+		// A reverse scan passes the high bound as `start` and the low one as `end`; normalize so
+		// resolveNodeCount's `{start: Infinity, end: 0}` seek matches instead of reading 0 nodes.
+		const low = Math.min(start, end);
+		const high = Math.max(start, end);
 		const keys = [];
 		for (const k of this._map.keys()) {
-			if (typeof k === 'number' && k >= start && k <= end) keys.push(k);
+			if (typeof k === 'number' && k >= low && k <= high) keys.push(k);
 		}
 		keys.sort((a, b) => (reverse ? b - a : a - b));
 		let n = 0;
@@ -219,7 +223,7 @@ for (const p of SELECTIVITIES) {
 
 		// predicate-aware traversal
 		const t0 = performance.now();
-		const pred = hnsw.search({ target: query, comparator: 'sort', descending: false }, {}, filter);
+		const pred = hnsw.search({ target: query, comparator: 'sort', descending: false }, {}, { filter });
 		predNs += (performance.now() - t0) * 1e6;
 		const predIdx = new Set(pred.slice(0, k).map((r) => idxOf(r.key)));
 		predRecall += overlap(gt, predIdx) / k;

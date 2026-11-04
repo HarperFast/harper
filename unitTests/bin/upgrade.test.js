@@ -68,6 +68,13 @@ describe('Test upgrade.js', () => {
 			expect(insertHdbUpgradeInfo_stub.args[0][0]).to.deep.equal(TEST_CURR_VERS);
 		});
 
+		it('Should fall back to the package version when the upgrade object carries none', async () => {
+			await runUpgrade_rw(new UpgradeObject(TEST_DATA_VERS, undefined));
+
+			expect(insertHdbUpgradeInfo_stub.calledOnce).to.be.true;
+			expect(insertHdbUpgradeInfo_stub.args[0][0]).to.equal(TEST_CURR_VERS);
+		});
+
 		it('Should catch and throw exception from runUpgradeDirectives', async () => {
 			processDirectives_stub.throws(test_error);
 
@@ -89,16 +96,26 @@ describe('Test upgrade.js', () => {
 			processDirectives_stub.resolves();
 		});
 
-		it('Should catch an exception from insertHdbUpgradeInfo and continue - i.e. NOT rethrow', async () => {
+		it('Should rethrow an exception from insertHdbUpgradeInfo so boot fails rather than continuing unstamped', async () => {
 			insertHdbUpgradeInfo_stub.throws(test_error);
 
-			await runUpgrade_rw(TEST_UPGRADE_OBJ);
+			let test_result;
 
-			expect(log_error_stub.calledTwice).to.be.true;
-			expect(log_error_stub.args[0][0]).to.eql("Error updating the 'hdb_info' system table.");
-			expect(log_error_stub.args[1][0]).to.deep.equal(test_error);
-			expect(processDirectives_stub.calledOnce).to.be.true;
-			expect(insertHdbUpgradeInfo_stub.called).to.be.true;
+			try {
+				try {
+					await runUpgrade_rw(TEST_UPGRADE_OBJ);
+				} catch (e) {
+					test_result = e;
+				}
+
+				expect(test_result).to.equal(test_error);
+				expect(printToLogAndConsole_stub.calledOnce).to.be.true;
+				expect(printToLogAndConsole_stub.args[0][0]).to.contain('could not be recorded');
+				expect(processDirectives_stub.calledOnce).to.be.true;
+				expect(insertHdbUpgradeInfo_stub.called).to.be.true;
+			} finally {
+				insertHdbUpgradeInfo_stub.resolves();
+			}
 		});
 	});
 

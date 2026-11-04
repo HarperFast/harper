@@ -25,6 +25,7 @@
  * the table's attributes).
  */
 
+import { resolveBody } from './resolveBody.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { attributeToFragment, type AttributeLike } from './jsonSchemaTypes.ts';
 import { ValidationError, type ValidationIssue } from '../utility/errors/hdbError.ts';
@@ -144,6 +145,32 @@ function resolveSourceFragment(source: SchemaSource): JsonSchemaFragment {
 	return source as JsonSchemaFragment;
 }
 
+function isProjectedAttribute(attr: any): boolean {
+	return !(attr.relationship || attr.computed || attr.computedFromExpression);
+}
+
+/**
+ * Overlay `Table.validate`'s null policy onto an attribute's descriptive fragment at every depth: null
+ * is rejected only where `nullable === false`. Nested requiredness ignores the projection because
+ * Table.validate checks nested properties in full even for a patch.
+ */
+function applyTableAttributeRules(attr: any, fragment: JsonSchemaFragment): JsonSchemaFragment {
+	if (attr.nullable !== false) fragment.nullable = true;
+	if (attr.enum) fragment.enum = attr.enum;
+	if (attr.type === 'Date') fragment.format = 'date-time';
+	if (attr.properties && fragment.properties) {
+		const required: string[] = [];
+		for (const sub of attr.properties) {
+			if (!isProjectedAttribute(sub)) continue;
+			applyTableAttributeRules(sub, fragment.properties[sub.name]);
+			if (sub.nullable === false) required.push(sub.name);
+		}
+		if (required.length) fragment.required = required;
+	}
+	if (attr.elements && fragment.items) applyTableAttributeRules(attr.elements, fragment.items);
+	return fragment;
+}
+
 /**
  * Project a table handle's attributes into a JSON-Schema object fragment for the given projection.
  * Reuses the shared `attributeToFragment` per field (NOT a parallel translator) and applies the same
@@ -162,19 +189,13 @@ export function projectTableFragment(table: TableLike, projection: Projection): 
 	const required: string[] = [];
 	for (const attr of attributes) {
 		const a = attr as any;
-		if (a.relationship || a.computed || a.computedFromExpression) continue;
+		if (!isProjectedAttribute(a)) continue;
 		const serverManaged = a.assignCreatedTime || a.assignUpdatedTime || a.expiresAt;
 		const isPk = a.isPrimaryKey;
 		if (projection !== 'record' && projection !== 'query' && serverManaged) continue; // never client-writable
 		if (projection === 'query' && !a.indexed) continue;
 		if (projection === 'patch' && isPk) continue;
-		const fieldFragment = attributeToFragment(attr);
-		// Mirror Table.validate's null policy so a table-derived contract body validates identically:
-		// a column rejects `null` only when `nullable === false` (a required column). Everything else
-		// (nullable columns, PK, server-managed) accepts an explicit null.
-		if (a.nullable !== false) fieldFragment.nullable = true;
-		if (a.enum) fieldFragment.enum = a.enum;
-		properties[attr.name] = fieldFragment;
+		properties[attr.name] = applyTableAttributeRules(a, attributeToFragment(attr));
 		switch (projection) {
 			case 'record':
 				if (a.nullable === false || serverManaged || isPk) required.push(attr.name);
@@ -361,12 +382,16 @@ function validateObject(value: any, fragment: JsonSchemaFragment, path: string, 
 }
 
 /** Validate/coerce a request body against a fragment. Returns the (possibly coerced) body. */
-function validateBody(fragment: JsonSchemaFragment, body: any, issues: ValidationIssue[]): any {
+function validateBody(fragment: JsonSchemaFragment, bodyRequired: boolean, body: any, issues: ValidationIssue[]): any {
 	if (!fragment || fragment.type == null) return body;
 	if (body === undefined) {
-		// a missing body fails each declared required field
-		for (const key of fragment.required ?? [])
-			issues.push({ path: `body.${key}`, code: 'required', message: `body.${key} is required` });
+		if (!bodyRequired) return body;
+		if (fragment.required?.length) {
+			for (const key of fragment.required)
+				issues.push({ path: `body.${key}`, code: 'required', message: `body.${key} is required` });
+		} else {
+			issues.push({ path: 'body', code: 'required', message: 'body is required' });
+		}
 		return body;
 	}
 	// a `null` body is rejected unless the top-level body schema is nullable (validateValue handles it)
@@ -475,11 +500,13 @@ function coerceScalar(
 export interface VerbInputSchema {
 	query?: JsonSchemaFragment;
 	body?: JsonSchemaFragment;
+	bodyRequired?: boolean;
 }
 
 interface CompiledVerb {
 	queryFragment?: JsonSchemaFragment;
 	bodyFragment?: JsonSchemaFragment;
+	bodyRequired: boolean;
 	hasBody: boolean;
 }
 
@@ -487,14 +514,18 @@ function compileVerb(contract: Contract, verb: VerbName): CompiledVerb {
 	const vs = (contract as any)[verb] as VerbSchemas;
 	const queryFragment = vs?.query ? objectFragment(vs.query) : undefined;
 	let bodyFragment: JsonSchemaFragment | undefined;
+	let bodyRequired = false;
 	if (BODY_VERBS.has(verb)) {
 		const bodySchema = vs?.body ?? (verb === 'put' ? contract.record : undefined);
 		if (bodySchema) {
 			const internal = internalOf(bodySchema);
-			if (!internal.passthrough) bodyFragment = internal.fragment;
+			if (!internal.passthrough) {
+				bodyFragment = internal.fragment;
+				bodyRequired = !internal.isOptional && internal.fragment.type != null;
+			}
 		}
 	}
-	return { queryFragment, bodyFragment, hasBody: BODY_VERBS.has(verb) };
+	return { queryFragment, bodyFragment, bodyRequired, hasBody: BODY_VERBS.has(verb) };
 }
 
 /** Build the `{ verb: { query?, body? } }` map for OpenAPI/MCP. */
@@ -502,10 +533,13 @@ function buildInputSchemas(contract: Contract): Record<string, VerbInputSchema> 
 	const inputSchemas: Record<string, VerbInputSchema> = {};
 	for (const verb of ALL_VERBS) {
 		if (!(contract as any)[verb]) continue;
-		const { queryFragment, bodyFragment } = compileVerb(contract, verb);
+		const { queryFragment, bodyFragment, bodyRequired } = compileVerb(contract, verb);
 		const entry: VerbInputSchema = {};
 		if (queryFragment) entry.query = queryFragment;
-		if (bodyFragment) entry.body = bodyFragment;
+		if (bodyFragment) {
+			entry.body = bodyFragment;
+			entry.bodyRequired = bodyRequired;
+		}
 		inputSchemas[verb] = entry;
 	}
 	return inputSchemas;
@@ -549,26 +583,20 @@ function applyContractMetadata(carrier: any, contract: Contract): void {
  * `RequestTarget`); a programmatic `.post(record)` call passes through untouched to `original`.
  */
 function wrapStaticVerb(original: Function, compiled: CompiledVerb): Function {
-	const { queryFragment, bodyFragment, hasBody } = compiled;
+	const { queryFragment, bodyFragment, bodyRequired, hasBody } = compiled;
 	function validateAndDispatch(this: any, target: any, rest: any[], body: any) {
 		const issues: ValidationIssue[] = [];
 		if (queryFragment) coerceAndValidateQuery(queryFragment, target, issues);
-		if (hasBody && bodyFragment) rest[0] = validateBody(bodyFragment, body, issues);
+		if (hasBody && bodyFragment) rest[0] = validateBody(bodyFragment, bodyRequired, body, issues);
 		if (issues.length) throw new ValidationError(issues);
 		return original.call(this, target, ...rest);
 	}
 	return function (this: any, target: any, ...rest: any[]) {
 		if (target instanceof URLSearchParams) {
-			const body = rest[0];
-			// REST.ts's streaming deserializer hands the body over as a still-pending promise
-			// (`request.data`); await it before validating, or it reads as an empty object and every
-			// declared-required field is (incorrectly) reported missing. A plain value (as passed by a
-			// programmatic call or a unit test) validates synchronously, preserving the synchronous-throw
-			// contract those callers rely on.
-			if (hasBody && bodyFragment && body && typeof body.then === 'function') {
-				return body.then((resolvedBody: any) => validateAndDispatch.call(this, target, rest, resolvedBody));
+			if (hasBody && bodyFragment) {
+				return resolveBody(rest[0], true, (body: any) => validateAndDispatch.call(this, target, rest, body));
 			}
-			return validateAndDispatch.call(this, target, rest, body);
+			return validateAndDispatch.call(this, target, rest, rest[0]);
 		}
 		return original.call(this, target, ...rest);
 	};

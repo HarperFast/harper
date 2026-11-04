@@ -9,7 +9,6 @@
 //   GET  /ScanAll/[?batch=X]             — uncached, INDEX-INDEPENDENT full base-store scan.
 //     The oracle: proves a row is physically on disk regardless of any cache/secondary-index
 //     state.
-//   POST /Touch/ { id, sku, batch, name } — write-then-read heal probe.
 
 function getTable() {
 	return databases['qa658']['Widget'];
@@ -57,18 +56,5 @@ export class ScanAll extends Resource {
 			if (batch == null || r.batch === batch) ids.push(r.id);
 		}
 		return { count: ids.length, ids: ids.sort() };
-	}
-}
-
-export class Touch extends Resource {
-	static loadAsInstance = false;
-	async post(query, body) {
-		const b = body || query || {};
-		const { id, sku, batch, name } = b;
-		if (!id) throw new Error('Touch requires id');
-		const table = getTable();
-		await table.put({ id, sku, batch, name, touched: Date.now() });
-		const after = await table.get(id);
-		return { ok: true, id, foundAfterTouch: after != null };
 	}
 }

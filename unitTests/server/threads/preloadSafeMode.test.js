@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const envMgr = require('#src/utility/environment/environmentManager');
 const hdbTerms = require('#src/utility/hdbTerms');
-const { startWorker } = require('#js/server/threads/manageThreads');
+const { startWorker } = require('#src/server/threads/manageThreads');
 
 const FIXTURES = path.join(__dirname, 'preloadSafeMode-fixtures');
 const WORKER_FIXTURE = path.join(FIXTURES, 'worker.cjs');
@@ -18,7 +18,7 @@ async function getWorkerReport() {
 				name: 'safe-mode-preload-test',
 				autoRestart: false,
 				onStarted(spawned) {
-					spawned.once('message', resolve);
+					spawned.on('message', (message) => message.type !== 'os-thread-id' && resolve(message));
 					spawned.once('error', reject);
 					spawned.once('exit', (code) => reject(new Error(`Worker exited before reporting (code ${code})`)));
 				},
@@ -59,7 +59,8 @@ describe('worker preloads in safe mode', () => {
 		assert.strictEqual(report.importLoaded, false);
 		assert.strictEqual(report.requireLoaded, false);
 		assert.strictEqual(report.execArgv.includes('--import'), false);
-		assert.strictEqual(report.execArgv.includes('--require'), false);
+		// a pointer-compression runtime always requires its native addon guard
+		assert.strictEqual(report.execArgv.includes(path.join(FIXTURES, 'require.cjs')), false);
 	});
 
 	it('loads both configured preload forms outside safe mode', async function () {
@@ -69,6 +70,6 @@ describe('worker preloads in safe mode', () => {
 		assert.strictEqual(report.importLoaded, true);
 		assert.strictEqual(report.requireLoaded, true);
 		assert.strictEqual(report.execArgv.includes('--import'), true);
-		assert.strictEqual(report.execArgv.includes('--require'), true);
+		assert.strictEqual(report.execArgv.includes(path.join(FIXTURES, 'require.cjs')), true);
 	});
 });

@@ -1,10 +1,13 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
-import { EventEmitter } from 'node:events';
-import { Readable, PassThrough } from 'node:stream';
+import { setMaxListeners } from 'node:events';
+import { Readable } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
+import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
+import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { ResourceBody } from '../../resources/ResourceInterface.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -26,7 +29,7 @@ interface IncomingMessage extends NodeIncomingMessage {
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
  * and for better conformance to WHATWG standards.
  */
-export class Request {
+export class Request<Body = any> {
 	#body: RequestBody | undefined;
 	#peerCertificate: any;
 	#abortController = new AbortController();
@@ -58,7 +61,7 @@ export class Request {
 	public replicatedConfirmation?: number;
 	public replicateTo?: any;
 	public replicateFrom?: any;
-	public data?: any;
+	public data?: ResourceBody<Body>;
 	public authorize?: boolean;
 	public lastModified?: number;
 	public lastRefreshed?: number;
@@ -71,6 +74,7 @@ export class Request {
 		this.url = url;
 		this.headers = new RequestHeaders(nodeRequest.headers);
 		this.__harperRequestUpgraded = false;
+		setMaxListeners(0, this.#abortController.signal);
 		// Abort the request's signal on premature client disconnect. nodeResponse 'close'
 		// also fires on clean completion; the writableFinished guard restricts to disconnect.
 		if (typeof nodeResponse?.on === 'function') {
@@ -149,7 +153,7 @@ export class Request {
 		return this._nodeRequest.socket.connectionInfo;
 	}
 	get body() {
-		return this.#body || (this.#body = new RequestBody(this._nodeRequest));
+		return this.#body || (this.#body = new RequestBody(this._nodeRequest, this._nodeResponse));
 	}
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
@@ -178,10 +182,8 @@ export class Request {
 	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
 	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
-	 * **Important:** The resolved `body` PassThrough must have an `error` listener attached (or be piped
-	 * to a destination that handles errors) before it is consumed. If the underlying connection is reset
-	 * after headers are sent, the body stream is destroyed with an error — without a listener, Node.js
-	 * will throw an uncaught exception.
+	 * Consume the returned body with `pipeline()`, `finished()` or async iteration so stored stream errors
+	 * and premature closes are reported.
 	 *
 	 * Example:
 	 *   server.http((request, next) =>
@@ -190,11 +192,13 @@ export class Request {
 	 */
 	withNodeAdapter(
 		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void | Promise<void>
-	): Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }> {
-		// Flat headers object matching IncomingMessage.headers format (lowercase keys)
-		const reqHeaders: Record<string, string | string[]> = Object.create(null);
+	): Promise<AdaptedResponse> {
+		const reqHeaders: Record<string, string | string[]> = {};
 		for (const [key, value] of this.headers) {
-			reqHeaders[key.toLowerCase()] = value;
+			const lowerKey = key.toLowerCase();
+			if (lowerKey === '__proto__')
+				Object.defineProperty(reqHeaders, lowerKey, { value, configurable: true, enumerable: true, writable: true });
+			else reqHeaders[lowerKey] = value;
 		}
 
 		// Proxy the underlying IncomingMessage so body streaming works, but expose
@@ -209,131 +213,32 @@ export class Request {
 			},
 		}) as NodeIncomingMessage;
 
-		let resolveResponse!: (value: { status: number; headers: ResponseHeaders; body: PassThrough }) => void;
-		let rejectResponse!: (reason: unknown) => void;
-		const response = new Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>((resolve, reject) => {
-			resolveResponse = resolve;
-			rejectResponse = reject;
+		let nodeRes!: NodeAdapterResponse;
+		const response = new Promise<AdaptedResponse>((resolve, reject) => {
+			nodeRes = new NodeAdapterResponse(nodeReq, this._nodeResponse, resolve, reject);
 		});
 
-		const responseBody = new PassThrough();
-		const capturedHeaders = new ResponseHeaders();
-		let headersFlushed = false;
-		let nodeRes: ReturnType<typeof Object.assign> & NodeServerResponse;
+		const signal = this.signal;
+		const onAbort = () => nodeRes.destroy(nodeRes.headersSent ? undefined : signal.reason);
+		if (signal.aborted) onAbort();
+		else {
+			signal.addEventListener('abort', onAbort, { once: true });
+			nodeRes.once('close', () => signal.removeEventListener('abort', onAbort));
+		}
 
-		const flushHeaders = () => {
-			if (!headersFlushed) {
-				headersFlushed = true;
-				nodeRes.headersSent = true;
-				resolveResponse({ status: nodeRes.statusCode as number, headers: capturedHeaders, body: responseBody });
-			}
+		const onHandlerFailure = (error: Error) => {
+			if (!nodeRes.writableEnded) nodeRes.destroy(error);
+			else harperLogger.warn('withNodeAdapter handler failed after ending its response', error);
 		};
-
-		const applyHeaders = (hdrs: object | unknown[]) => {
-			if (Array.isArray(hdrs)) {
-				if (hdrs.length > 0 && Array.isArray(hdrs[0])) {
-					for (const [name, value] of hdrs as [string, string][]) capturedHeaders.set(name, value);
-				} else {
-					for (let i = 0; i < hdrs.length; i += 2) capturedHeaders.set(hdrs[i] as string, hdrs[i + 1] as string);
-				}
-			} else {
-				for (const [k, v] of Object.entries(hdrs)) capturedHeaders.set(k, v as string);
-			}
-		};
-
-		nodeRes = Object.assign(new EventEmitter(), {
-			statusCode: 200 as number,
-			statusMessage: '',
-			headersSent: false,
-			writable: true,
-			writableEnded: false,
-			writableFinished: false,
-			socket: this._nodeRequest.socket,
-
-			setHeader(name: string, value: string | number | string[]) {
-				if (Array.isArray(value)) {
-					// Use set() for first value (overwrites any existing entry) then append() for
-					// the rest so multiple values — critical for Set-Cookie — are preserved as an
-					// array rather than collapsed into a single comma-joined string.
-					if (value.length > 0) {
-						capturedHeaders.set(name, String(value[0]));
-						for (let i = 1; i < value.length; i++) capturedHeaders.append(name, String(value[i]));
-					}
-				} else {
-					capturedHeaders.set(name, String(value));
-				}
-				return nodeRes;
-			},
-			getHeader(name: string) {
-				return capturedHeaders.get(name);
-			},
-			getHeaders() {
-				return Object.fromEntries(capturedHeaders);
-			},
-			hasHeader(name: string) {
-				return capturedHeaders.has(name);
-			},
-			removeHeader(name: string) {
-				capturedHeaders.delete(name);
-			},
-			flushHeaders() {
-				flushHeaders();
-			},
-			writeHead(statusCode: number, statusMessageOrHeaders?: string | object, maybeHeaders?: object) {
-				if (headersFlushed) return nodeRes;
-				nodeRes.statusCode = statusCode;
-				const hdrs = typeof statusMessageOrHeaders === 'string' ? maybeHeaders : statusMessageOrHeaders;
-				if (hdrs) applyHeaders(hdrs as object | unknown[]);
-				flushHeaders();
-				return nodeRes;
-			},
-			write(
-				chunk: unknown,
-				encoding?: BufferEncoding | ((error?: Error | null) => void),
-				callback?: (error?: Error | null) => void
-			) {
-				flushHeaders();
-				if (typeof encoding === 'function') return responseBody.write(chunk as any, encoding);
-				return responseBody.write(chunk as any, encoding, callback);
-			},
-			end(chunk?: unknown, encoding?: BufferEncoding | (() => void), callback?: () => void) {
-				flushHeaders();
-				nodeRes.writableEnded = true;
-				if (typeof chunk === 'function') responseBody.end(chunk as () => void);
-				else if (typeof encoding === 'function') responseBody.end(chunk as any, encoding);
-				else responseBody.end(chunk as any, encoding, callback);
-				return nodeRes;
-			},
-			destroy(error?: Error) {
-				if (!headersFlushed) {
-					if (error) rejectResponse(error);
-					else rejectResponse(new Error('Response destroyed before headers were sent'));
-					// The error has been forwarded to the response promise; suppress the
-					// PassThrough 'error' event for this one destroy call so Node doesn't
-					// throw due to having no other listeners.
-					responseBody.once('error', () => {});
-				}
-				responseBody.destroy(error);
-				return nodeRes;
-			},
-		}) as unknown as NodeServerResponse;
-
-		responseBody.on('finish', () => {
-			nodeRes.writableFinished = true;
-			(nodeRes as unknown as EventEmitter).emit('finish');
-		});
-		responseBody.on('drain', () => {
-			(nodeRes as unknown as EventEmitter).emit('drain');
-		});
-		responseBody.on('close', () => {
-			(nodeRes as unknown as EventEmitter).emit('close');
-		});
-
-		const handlerResult = handler(nodeReq, nodeRes);
-		if (handlerResult != null && typeof (handlerResult as unknown as Promise<void>).then === 'function') {
-			(handlerResult as unknown as Promise<void>).catch((err: unknown) => {
-				if (!headersFlushed) rejectResponse(err);
-			});
+		let handlerResult: void | Promise<void>;
+		try {
+			handlerResult = handler(nodeReq, nodeRes);
+		} catch (error) {
+			onHandlerFailure(error as Error);
+			return response;
+		}
+		if (typeof (handlerResult as Promise<void>)?.then === 'function') {
+			Promise.resolve(handlerResult).catch(onHandlerFailure);
 		}
 		return response;
 	}
@@ -468,6 +373,9 @@ export class UwsRequest {
 	#isSecure: boolean;
 	#ip: string | undefined;
 	#signal: AbortSignal | undefined;
+	// Created on the first `signal` read: most requests never subscribe to their cancellation.
+	#abortController: AbortController | undefined;
+	#transportAborted = false;
 	public _nodeRequest: any = null;
 	public _nodeResponse: any = null;
 	public method: string;
@@ -497,6 +405,7 @@ export class UwsRequest {
 		this.#ip = source.ip;
 		this.#body = source.body;
 		this.#signal = source.signal;
+		if (this.#signal) setMaxListeners(0, this.#signal);
 		this.__harperRequestUpgraded = false;
 	}
 	get absoluteURL() {
@@ -561,13 +470,25 @@ export class UwsRequest {
 		return '1.1';
 	}
 	get isAborted() {
-		return this.#signal?.aborted ?? false;
+		return this.#transportAborted || (this.#signal?.aborted ?? false);
 	}
 	get signal(): AbortSignal {
-		return this.#signal ?? new AbortController().signal;
+		if (!this.#signal) {
+			this.#abortController = new AbortController();
+			if (this.#transportAborted) this.#abortController.abort();
+			this.#signal = this.#abortController.signal;
+			setMaxListeners(0, this.#signal);
+		}
+		return this.#signal;
 	}
+	/**
+	 * The transport is gone (uWS res.onAborted) or refused the request (an oversized body): cancel it.
+	 * A signal supplied to the constructor (WebSocket upgrades, see server/http.ts's wsHandler) is
+	 * aborted by its own owner.
+	 */
 	_abort(): void {
-		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+		this.#transportAborted = true;
+		this.#abortController?.abort();
 	}
 	get nodeRequest() {
 		return null;
@@ -589,8 +510,10 @@ export class UwsRequestBody extends Readable {
 
 class RequestBody {
 	#nodeRequest: IncomingMessage;
-	constructor(nodeRequest: IncomingMessage) {
+	#nodeResponse?: NodeServerResponse;
+	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
 		this.#nodeRequest = nodeRequest;
+		this.#nodeResponse = nodeResponse;
 	}
 	on(event: string, listener: (...args: any[]) => void) {
 		this.#nodeRequest.on(event, listener);
@@ -598,6 +521,27 @@ class RequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#nodeRequest.pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#nodeRequest.destroy(error);
+	}
+	afterResponse(callback: () => void): () => void {
+		const response = this.#nodeResponse;
+		if (!response || response.writableFinished || response.destroyed) {
+			callback();
+			return () => {};
+		}
+		const detach = () => {
+			response.off('finish', done);
+			response.off('close', done);
+		};
+		const done = () => {
+			detach();
+			callback();
+		};
+		response.once('finish', done);
+		response.once('close', done);
+		return detach;
 	}
 	// Delegate async iteration to the underlying request, which is natively
 	// async-iterable. Without this, `for await (const chunk of request.body)`
@@ -635,6 +579,9 @@ class BunRequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#getReadable().pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#getReadable().destroy(error);
 	}
 	// Mirror RequestBody: delegate async iteration to the underlying Readable
 	// (natively async-iterable) so `for await` consumers work on Bun too (#1317).

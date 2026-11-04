@@ -2,8 +2,8 @@ name: Docker Image Smoke Test
 
 # Builds the container image and boots it to catch breakage that only shows up
 # at runtime (e.g. an empty/unexecutable entrypoint producing "exec format
-# error"). The publish workflow only runs on release and never starts the
-# container, so this guards the gap for changes to the image build.
+# error"). publish-docker.yaml calls this workflow with `publish: true`: every
+# step here gates the release image.
 
 on:
   pull_request:
@@ -13,19 +13,45 @@ on:
       - package.json
       - package-lock.json
       - build-tools/**
+      - bin/restart.ts
+      - bin/restartExitWatchdog.ts
+      - bin/run.ts
+      - server/threads/manageThreads.js
+      - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
+      - .github/scripts/docker-smoke-boot.sh
   push:
-    branches: [main]
+    # Release branches too: the image is built from a release branch at publish time, so a branch
+    # that never runs this has no boot coverage for the artifact it actually ships. Same pattern
+    # unit-test.yml uses.
+    branches: [main, 'v[0-9]+.[0-9]+']
     paths:
       - Dockerfile
       - .dockerignore
       - package.json
       - package-lock.json
       - build-tools/**
+      - bin/restart.ts
+      - bin/restartExitWatchdog.ts
+      - bin/run.ts
+      - server/threads/manageThreads.js
+      - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
+      - .github/scripts/docker-smoke-boot.sh
+  workflow_call:
+    inputs:
+      publish:
+        description: Copy each smoke-tested platform image to Docker Hub by digest and upload its digest artifact for the caller to tag.
+        type: boolean
+        default: false
+    secrets:
+      DOCKERHUB_TOKEN:
+        required: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Not github.workflow: a called workflow sees the caller's name, and a group equal to the
+  # caller's own cancels the run as a deadlock.
+  group: docker-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 # Building and booting the image only needs read access to the checkout.
@@ -34,31 +60,64 @@ permissions:
 
 jobs:
   smoke:
-    # arm64 is exercised only on push to main (the publish workflow ships both
+    # arm64 is exercised on pushes and releases (the publish workflow ships both
     # arches); PRs stay amd64-only to keep the extra build off every PR run.
+    # A called workflow sees the caller's event, so a release is not 'pull_request'.
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ github.event_name == 'push' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
+        include: ${{ github.event_name != 'pull_request' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
     runs-on: ${{ matrix.runner }}
     # Two boot-check loops can each take up to ~6 minutes in the worst case (60 iterations
     # of a 5s curl timeout plus a 1s sleep) on top of the build itself; 20m was tight even
     # before the second (bun) loop existed.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Docker metadata
+        if: inputs.publish
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: harperfast/harper
+
+      - name: Login to Docker Hub
+        if: inputs.publish
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Outside PRs the image is smoke-tested from a runner-local registry, so a release copies
+      # the tested index itself to Docker Hub (.github/DESIGN.md).
+      - name: Start local registry
+        if: github.event_name != 'pull_request'
+        run: docker run -d --name registry -p 5000:5000 registry:3.1.2
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: ${{ github.event_name != 'pull_request' && 'network=host' || '' }}
 
-      - name: Build image (${{ matrix.platform }}, load locally)
+      - name: Build image (${{ matrix.platform }}, ${{ github.event_name == 'pull_request' && 'load locally' || 'push to local registry' }})
         id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          load: true
-          tags: harperfast/harper:smoke-test
+          labels: ${{ steps.meta.outputs.labels }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ github.event_name == 'pull_request' && 'harperfast/harper:smoke-test' || '' }}
+          outputs: ${{ github.event_name != 'pull_request' && 'type=image,name=localhost:5000/harperfast/harper,push-by-digest=true,name-canonical=true,push=true' || '' }}
+
+      - name: Pull the staged image as harperfast/harper:smoke-test
+        if: github.event_name != 'pull_request'
+        env:
+          STAGED: localhost:5000/harperfast/harper@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$STAGED"
+          docker tag "$STAGED" harperfast/harper:smoke-test
 
       - name: Entrypoint is non-empty and valid shell
         run: |
@@ -83,58 +142,173 @@ jobs:
             echo "which harper -> $resolved"
           '
 
-      # Proves the shrinkwrap was actually honored, not just present -- the other checks
-      # here would stay green even if the Dockerfile reverted to `npm install --global
-      # <tarball>` and started re-resolving the tree fresh again (#1960). Compares against
-      # npm-shrinkwrap.packed.json (frozen pre-install by the Dockerfile), not the live
-      # npm-shrinkwrap.json -- npm rewrites the live file to match whatever it installs, so
-      # comparing against it would just compare npm's output to itself.
-      - name: Installed dependency versions match the packed shrinkwrap
+      - name: Installed bundle and native roots match the release lock
         run: |
           docker run --rm \
-            -v "${{ github.workspace }}/build-tools/check-shrinkwrap-pins.mjs:/tmp/check-shrinkwrap-pins.mjs:ro" \
+            -v "${{ github.workspace }}/build-tools:/tmp/build-tools:ro" \
+            -v "${{ github.workspace }}/package-lock.json:/tmp/package-lock.json:ro" \
             --entrypoint sh harperfast/harper:smoke-test -c '
             set -e
             pkgRoot=$(npm root -g)/harper
-            test -f "$pkgRoot/npm-shrinkwrap.packed.json" || { echo "::error::npm-shrinkwrap.packed.json is missing from the installed package"; exit 1; }
-            node /tmp/check-shrinkwrap-pins.mjs "$pkgRoot"
+            node /tmp/build-tools/bundleDependencies.ts installed "$pkgRoot" /tmp/package-lock.json
           '
 
       - name: Container boots and serves the Operations API (default runtime)
+        run: .github/scripts/docker-smoke-boot.sh harperfast/harper:smoke-test harper-smoke
+
+      # @aws-sdk/client-s3 and @aws-sdk/lib-storage are optional peerDependencies the
+      # Dockerfile preinstalls globally so S3 export/import keeps working out of the box
+      # in the official image -- but nothing above proves that install actually resolves.
+      # Anchors a createRequire at harper's own installed dist/utility/AWS/ directory (the
+      # directory awsSdkLoader.js ships in) and requires both packages from there, exactly
+      # the walk awsSdkLoader.ts's default requireFn performs, then asserts the three
+      # symbols AWSConnector.js/dataLayer/export.ts actually use are present.
+      - name: S3 SDK resolves from harper's installed path (default runtime)
         run: |
-          docker run -d --name harper-smoke \
-            -e HDB_ADMIN_USERNAME=admin \
-            -e HDB_ADMIN_PASSWORD=password \
-            -p 9925:9925 \
-            harperfast/harper:smoke-test
-
-          echo "Waiting for Operations API on :9925 ..."
-          for i in $(seq 1 60); do
-            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
-            # Any HTTP response (even 401/404) means the server is up and listening.
-            if [ -n "$code" ] && [ "$code" != "000" ]; then
-              echo "Operations API responded with HTTP $code after ${SECONDS}s"
-              exit 0
-            fi
-            if ! docker ps --filter name=harper-smoke --filter status=running -q | grep -q .; then
-              echo "::error::Container exited before the Operations API came up"
-              docker logs harper-smoke
-              exit 1
-            fi
-            sleep 1
-          done
-
-          echo "::error::Operations API did not come up within ${SECONDS}s"
-          docker logs harper-smoke
-          exit 1
+          npmRoot=$(docker exec harper-smoke npm root -g)
+          awsSdkLoaderDir="$npmRoot/harper/dist/utility/AWS"
+          docker exec harper-smoke node -e '
+            const { createRequire } = require("node:module");
+            const path = require("node:path");
+            const dir = process.argv[1];
+            const req = createRequire(path.join(dir, "awsSdkLoader.js"));
+            const missing = [];
+            let clientS3, libStorage;
+            try {
+              clientS3 = req("@aws-sdk/client-s3");
+            } catch (err) {
+              missing.push(`@aws-sdk/client-s3 did not resolve: ${err.message}`);
+            }
+            try {
+              libStorage = req("@aws-sdk/lib-storage");
+            } catch (err) {
+              missing.push(`@aws-sdk/lib-storage did not resolve: ${err.message}`);
+            }
+            if (clientS3 && typeof clientS3.S3 !== "function") missing.push("@aws-sdk/client-s3 is missing the S3 export");
+            if (clientS3 && typeof clientS3.GetObjectCommand !== "function") missing.push("@aws-sdk/client-s3 is missing the GetObjectCommand export");
+            if (libStorage && typeof libStorage.Upload !== "function") missing.push("@aws-sdk/lib-storage is missing the Upload export");
+            if (missing.length > 0) {
+              console.error("::error::S3 SDK failed to resolve from " + dir + ": " + missing.join("; "));
+              process.exit(1);
+            }
+            console.log("S3 SDK resolves from " + dir + ": S3, GetObjectCommand, Upload all present");
+          ' "$awsSdkLoaderDir"
 
       - name: Container logs (default runtime)
         if: always()
         run: docker logs harper-smoke 2>&1 || true
 
+      - name: Container uses tini and stops gracefully
+        run: |
+          wait_for_start_count() {
+            expected=$1
+            for i in $(seq 1 180); do
+              count=$(docker logs harper-smoke 2>&1 | grep -cF '[notify]: Harper successfully started.' || true)
+              if [ "$count" -ge "$expected" ]; then return 0; fi
+              if ! docker ps --filter name=harper-smoke --filter status=running -q | grep -q .; then
+                echo "::error::Container exited before Harper completed startup"
+                docker logs harper-smoke
+                return 1
+              fi
+              sleep 1
+            done
+            echo "::error::Harper did not complete startup within ${SECONDS}s"
+            docker logs harper-smoke
+            return 1
+          }
+
+          wait_for_start_count 1
+          test "$(docker exec harper-smoke cat /proc/1/comm)" = "tini"
+          docker exec harper-smoke sh -c '
+            found=
+            for child in $(cat /proc/1/task/1/children); do
+              if tr "\0" " " < "/proc/$child/cmdline" | grep -q harper; then found=1; fi
+            done
+            test "$found" = 1
+          '
+          docker stop --timeout 15 harper-smoke
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
+
+          docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
+            harperfast/harper:smoke-test -c 'printf "1\n" > /home/harperdb/harper/hdb.pid'
+          docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
+            harperfast/harper:smoke-test -c 'test "$(cat /home/harperdb/harper/hdb.pid)" = 1'
+          docker start harper-smoke
+          for i in $(seq 1 30); do
+            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then break; fi
+            sleep 1
+          done
+          test -n "$(docker ps --filter name=harper-smoke --filter status=running -q)"
+          wait_for_start_count 2
+          docker stop --timeout 15 harper-smoke
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
+
       - name: Teardown (default runtime)
         if: always()
         run: docker rm -f harper-smoke 2>/dev/null || true
+
+      - name: Container self-restart exits within the advertised bound
+        if: steps.build.outcome == 'success' && (success() || failure())
+        run: |
+          docker run -d --name harper-restart-smoke \
+            -e HDB_ADMIN_USERNAME=admin \
+            -e HDB_ADMIN_PASSWORD=password \
+            -e HARPER_EXIT_ON_RESTART=1 \
+            -e 'HARPER_CONFIG={"logging":{"level":"info"}}' \
+            -p 19925:9925 \
+            harperfast/harper:smoke-test
+
+          for i in $(seq 1 180); do
+            if docker logs harper-restart-smoke 2>&1 | grep -qF '[notify]: Harper successfully started.'; then break; fi
+            if ! docker ps --filter name=harper-restart-smoke --filter status=running -q | grep -q .; then
+              echo "::error::Container exited before Harper completed startup"
+              docker logs harper-restart-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          docker logs harper-restart-smoke 2>&1 | grep -F '[notify]: Harper successfully started.'
+          curl -sS --fail-with-body --max-time 5 -u admin:password \
+            -H 'Content-Type: application/json' \
+            -d '{"operation":"restart"}' \
+            http://localhost:19925/ || true
+          for i in $(seq 1 70); do
+            if ! docker ps --filter name=harper-restart-smoke --filter status=running -q | grep -q .; then break; fi
+            sleep 1
+          done
+          test -z "$(docker ps --filter name=harper-restart-smoke --filter status=running -q)"
+          docker logs harper-restart-smoke 2>&1 | grep -E 'Restart exit watchdog armed for [0-9]+ seconds'
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-restart-smoke)" = "0"
+
+      - name: Teardown (restart runtime)
+        if: always()
+        run: docker rm -f harper-restart-smoke 2>/dev/null || true
+
+      - name: Restart watchdog force-kills a wedged Harper child
+        if: steps.build.outcome == 'success' && (success() || failure())
+        run: |
+          docker run -d --name harper-watchdog-smoke \
+            --entrypoint /usr/bin/tini \
+            harperfast/harper:smoke-test \
+            -g -- node -e '
+              const { armRestartExitWatchdog } = require("/home/harperdb/.npm-global/lib/node_modules/harper/dist/bin/restartExitWatchdog.js");
+              armRestartExitWatchdog(1000).then((armed) => {
+                if (!armed) process.exit(2);
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+              });
+            '
+          for i in $(seq 1 10); do
+            if ! docker ps --filter name=harper-watchdog-smoke --filter status=running -q | grep -q .; then break; fi
+            sleep 1
+          done
+          test -z "$(docker ps --filter name=harper-watchdog-smoke --filter status=running -q)"
+          docker logs harper-watchdog-smoke 2>&1 | grep -E 'restart exit watchdog force-killing pid [0-9]+ after 1 seconds'
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-watchdog-smoke)" = "137"
+
+      - name: Teardown (watchdog fault injection)
+        if: always()
+        run: docker rm -f harper-watchdog-smoke 2>/dev/null || true
 
       # Runs regardless of whether the default-runtime leg above passed -- otherwise a
       # flaky/failed default boot silently skips this leg on the exact runs where a
@@ -144,32 +318,7 @@ jobs:
       # unrelated "pull access denied" instead of a useful signal.
       - name: Container boots and serves the Operations API (HARPER_RUNTIME=bun)
         if: steps.build.outcome == 'success' && (success() || failure())
-        run: |
-          docker run -d --name harper-smoke-bun \
-            -e HARPER_RUNTIME=bun \
-            -e HDB_ADMIN_USERNAME=admin \
-            -e HDB_ADMIN_PASSWORD=password \
-            -p 9925:9925 \
-            harperfast/harper:smoke-test
-
-          echo "Waiting for Operations API on :9925 (bun runtime) ..."
-          for i in $(seq 1 60); do
-            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
-            if [ -n "$code" ] && [ "$code" != "000" ]; then
-              echo "Operations API responded with HTTP $code after ${SECONDS}s"
-              exit 0
-            fi
-            if ! docker ps --filter name=harper-smoke-bun --filter status=running -q | grep -q .; then
-              echo "::error::Container exited before the Operations API came up"
-              docker logs harper-smoke-bun
-              exit 1
-            fi
-            sleep 1
-          done
-
-          echo "::error::Operations API did not come up within ${SECONDS}s"
-          docker logs harper-smoke-bun
-          exit 1
+        run: .github/scripts/docker-smoke-boot.sh harperfast/harper:smoke-test harper-smoke-bun bun
 
       - name: Container logs (HARPER_RUNTIME=bun)
         if: always()
@@ -178,3 +327,29 @@ jobs:
       - name: Teardown (HARPER_RUNTIME=bun)
         if: always()
         run: docker rm -f harper-smoke-bun 2>/dev/null || true
+
+      # Every smoke step above must have passed: the legs that run after an earlier failure still
+      # leave the job failed, so success() is false here.
+      - name: Copy the smoke-tested image to ${{ inputs.publish && 'Docker Hub' || 'a second local repository' }} by digest
+        if: github.event_name != 'pull_request' && success()
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ inputs.publish && 'docker.io/harperfast/harper' || 'localhost:5000/harperfast/harper-promoted' }}
+        run: docker buildx imagetools create -t "$TARGET@$DIGEST" "localhost:5000/harperfast/harper@$DIGEST"
+
+      - name: Export digest
+        if: inputs.publish && success()
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: inputs.publish && success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1

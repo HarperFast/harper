@@ -6,7 +6,7 @@ const fs = require('fs-extra');
 const os = require('node:os');
 const { Readable } = require('node:stream');
 const { decode: decodeCbor } = require('cbor-x');
-const { saveCredentials } = require('#src/bin/cliCredentials');
+const { saveCredentials } = require('#js/bin/cliCredentials');
 const cliOperationsModule = require('#src/bin/cliOperations');
 const commonUtilsModule = require('#src/utility/common_utils');
 const tokenAuthModule = require('#src/security/tokenAuthentication');
@@ -50,6 +50,42 @@ describe('cliOperations', () => {
 	beforeEach(() => {
 		fs.removeSync(path.join(testDir, '.harperdb'));
 		fs.ensureDirSync(testDir);
+	});
+
+	// `token` is stripped from every request body as transport-only, so that a mistyped `deploy
+	// setup=...` cannot carry a PAT to the server. exchange_oidc_token is the one operation whose body
+	// legitimately has a top-level `token` — the identity token IS the request — so the strip must not
+	// apply to it, or the issuer-agnostic path is unusable through the generic CLI (#2171).
+	it('sends the token for exchange_oidc_token instead of stripping it', async () => {
+		let sentBody;
+		commonUtilsModule.httpRequest = async (_options, body) => {
+			sentBody = body;
+			return { statusCode: 200, body: JSON.stringify({ operation_token: 'minted' }) };
+		};
+
+		await cliOperationsModule.cliOperations(
+			{ operation: 'exchange_oidc_token', token: 'the-identity-token', target: 'example.com' },
+			true
+		);
+
+		assert.strictEqual(sentBody.operation, 'exchange_oidc_token');
+		assert.strictEqual(sentBody.token, 'the-identity-token', 'the identity token must reach the server');
+	});
+
+	// The other direction: the strip still protects every other operation.
+	it('still strips a top-level token from other operations', async () => {
+		let sentBody;
+		commonUtilsModule.httpRequest = async (_options, body) => {
+			sentBody = body;
+			return { statusCode: 200, body: JSON.stringify({}) };
+		};
+
+		await cliOperationsModule.cliOperations(
+			{ operation: 'test', token: 'a-pat-that-must-not-leave', target: 'example.com' },
+			true
+		);
+
+		assert.strictEqual(sentBody.token, undefined, 'a PAT must not reach the server on other operations');
 	});
 
 	it('Leg 1: should use non-expired token directly', async () => {
@@ -299,6 +335,159 @@ describe('cliOperations', () => {
 		});
 	});
 
+	// OIDC trusted publishing (#2171): the runner proves its identity to the cluster instead of
+	// carrying a Harper credential. Ambient, so it ranks below everything explicitly configured.
+	describe('CI identity auth (OIDC)', () => {
+		const target = 'https://example.com:9925/';
+		const envVars = [
+			'HARPER_CLI_OPERATION_TOKEN',
+			'HARPER_CLI_REFRESH_TOKEN',
+			'CLI_TARGET_OPERATION_TOKEN',
+			'CLI_TARGET_REFRESH_TOKEN',
+			'ACTIONS_ID_TOKEN_REQUEST_URL',
+			'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+		];
+		const saved = {};
+		let originalFetch;
+		let identityRequests;
+
+		beforeEach(() => {
+			for (const v of envVars) {
+				saved[v] = process.env[v];
+				delete process.env[v];
+			}
+			process.env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://pipelines.example/idtoken?api-version=2.0';
+			process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'runner-request-token';
+
+			identityRequests = [];
+			originalFetch = globalThis.fetch;
+			globalThis.fetch = async (url) => {
+				identityRequests.push(new URL(String(url)));
+				return new Response(JSON.stringify({ value: 'identity.token.value' }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			};
+		});
+
+		afterEach(() => {
+			globalThis.fetch = originalFetch;
+			for (const v of envVars) {
+				if (saved[v] === undefined) delete process.env[v];
+				else process.env[v] = saved[v];
+			}
+		});
+
+		it('exchanges a CI identity for an operation token when nothing else is configured', async () => {
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				if (req.operation === 'exchange_oidc_token') {
+					return {
+						statusCode: 200,
+						body: JSON.stringify({ operation_token: 'oidc-op-token', username: 'ci-deploy', policy: 'p' }),
+					};
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			const result = await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.strictEqual(result.success, true);
+			assert.deepStrictEqual(
+				requested.map((r) => r.operation),
+				['exchange_oidc_token', 'test']
+			);
+			assert.strictEqual(requested[1].auth, 'Bearer oidc-op-token');
+			// The audience must be this instance, not the provider's shared default.
+			assert.strictEqual(identityRequests[0].searchParams.get('audience'), target);
+		});
+
+		// Adding `id-token: write` to a workflow that still sets HARPER_CLI_REFRESH_TOKEN must not
+		// silently change which identity deploys.
+		it('leaves a configured env token in charge', async () => {
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'env-op-token';
+			tokenAuthModule.isJWTExpired = () => false;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(
+				requested.map((r) => r.operation),
+				['test']
+			);
+			assert.strictEqual(requested[0].auth, 'Bearer env-op-token');
+			assert.strictEqual(identityRequests.length, 0, 'must not ask the provider for an identity token');
+		});
+
+		it('leaves saved login credentials in charge', async () => {
+			saveCredentials(target, { operation_token: 'file-token', refresh_token: 'file-refresh' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let seenAuth;
+			commonUtilsModule.httpRequest = async (options) => {
+				seenAuth = options.headers.Authorization;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(seenAuth, 'Bearer file-token');
+			assert.strictEqual(identityRequests.length, 0);
+		});
+
+		// Same rationale as the env-var tokens: a local operation is trusted via bypassLocalAuth,
+		// which only applies when no Authorization header is present.
+		it('does not exchange for a local (no-target) operation', async () => {
+			const originalGetHdbPid = processManagementModule.getHdbPid;
+			const originalInitConfig = configUtilsModule.initConfig;
+			const originalGetConfigPath = configUtilsModule.getConfigPath;
+			const socketPath = path.join(testDir, 'oidc-local-check.sock');
+			fs.ensureFileSync(socketPath);
+			configUtilsModule.initConfig = () => {};
+			processManagementModule.getHdbPid = () => 12345;
+			configUtilsModule.getConfigPath = () => socketPath;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			try {
+				await cliOperationsModule.cliOperations({ operation: 'test' }, true);
+			} finally {
+				processManagementModule.getHdbPid = originalGetHdbPid;
+				configUtilsModule.initConfig = originalInitConfig;
+				configUtilsModule.getConfigPath = originalGetConfigPath;
+			}
+
+			assert.strictEqual(identityRequests.length, 0);
+			assert.strictEqual(requested.length, 1);
+			assert.strictEqual(requested[0].auth, undefined);
+		});
+
+		// A rejected exchange must not leave a half-authenticated request; it goes out with no
+		// Authorization header and fails the way an unauthenticated request normally does.
+		it('proceeds unauthenticated when the exchange is rejected', async () => {
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				if (req.operation === 'exchange_oidc_token') {
+					return { statusCode: 401, body: JSON.stringify({ error: 'Identity token was rejected' }) };
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(requested[1].auth, undefined);
+		});
+	});
+
 	// The resolved target is an identity, not a credential: it keys ~/.harperdb/credentials.json, is
 	// echoed by "Connecting to ...", written to .env, and emitted by `harper login --for-ci`.
 	// Userinfo is stripped once, in normalizeTarget, so none of those sites can leak a password.
@@ -455,6 +644,145 @@ describe('cliOperations', () => {
 			const deploy = calls[1];
 			assert.strictEqual(deploy.options.headers.Accept, 'text/event-stream');
 			assert.strictEqual(result.success, true);
+		});
+	});
+
+	describe('following a rolling deploy until every node has taken it (harper#3058)', () => {
+		const target = 'https://example.com:9925/';
+		const ID = '22222222-2222-2222-2222-222222222222';
+		let originalExit;
+		let originalConsoleError;
+		let originalConsoleLog;
+		let errorLines;
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+			originalExit = process.exit;
+			process.exit = (code) => {
+				throw new ProcessExitSignal(code);
+			};
+			errorLines = [];
+			originalConsoleError = console.error;
+			console.error = (...args) => errorLines.push(args.join(' '));
+			originalConsoleLog = console.log;
+			console.log = () => {};
+		});
+
+		afterEach(() => {
+			if (originalExit) process.exit = originalExit;
+			if (originalConsoleError) console.error = originalConsoleError;
+			if (originalConsoleLog) console.log = originalConsoleLog;
+		});
+
+		const sseDoneResponse = (result) =>
+			Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
+				statusCode: 200,
+				headers: { 'content-type': 'text/event-stream' },
+			});
+
+		function cluster(records) {
+			const calls = [];
+			let read = 0;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				if (req.operation === 'registration_info')
+					return { statusCode: 200, body: JSON.stringify({ version: '5.4.0' }) };
+				if (req.operation === 'get_deployment') {
+					return { statusCode: 200, body: JSON.stringify(records[Math.min(read++, records.length - 1)]) };
+				}
+				return sseDoneResponse({ message: 'activating', status: 'rolling_out', deployment_id: ID, restartJobId: 'j' });
+			};
+			return calls;
+		}
+
+		const deploy = (extra = {}) =>
+			cliOperationsModule.cliOperations(
+				{
+					operation: 'deploy_component',
+					package: '@scope/widget',
+					project: 'widget',
+					restart: 'rolling',
+					target: 'example.com',
+					...extra,
+				},
+				true
+			);
+
+		const activated = (node) => ({ node, activation: { activated: true, certification: 'certified' } });
+
+		it('waits on get_deployment, with the credential the deploy used, and exits 0 once the last node took it', async () => {
+			const calls = cluster([
+				{ deployment_id: ID, status: 'rolling_out', peer_results: [activated('peer-a'), { node: 'peer-b' }] },
+				{ deployment_id: ID, status: 'success', peer_results: [activated('peer-a'), activated('peer-b')] },
+			]);
+			const result = await deploy({ wait_timeout: 60000 });
+
+			const polls = calls.filter(({ req }) => req.operation === 'get_deployment');
+			assert.strictEqual(polls.length, 2);
+			assert.deepStrictEqual(polls[0].req, { operation: 'get_deployment', deployment_id: ID });
+			assert.strictEqual(polls[0].options.headers.Authorization, 'Bearer valid-token');
+			assert.strictEqual(polls[0].options.streamResponse, undefined);
+			const sent = calls.find(({ req }) => req.operation === 'deploy_component').req;
+			assert.strictEqual(sent.wait_timeout, undefined, 'wait options never reach the server');
+			assert.strictEqual(result.rollout.status, 'success');
+			assert.ok(errorLines.includes('  peer-b: took the release (certified)'));
+		});
+
+		it('exits non-zero naming a node whose canary rejected the release', async () => {
+			cluster([
+				{
+					deployment_id: ID,
+					status: 'partial',
+					peer_results: [
+						activated('peer-a'),
+						{ node: 'peer-b', activation: { activated: false, error: 'release failed to load in its canary worker' } },
+					],
+					error: {
+						message: 'Not activated on 1 of 2 peer node(s): peer-b (release failed to load in its canary worker)',
+					},
+				},
+			]);
+			await assert.rejects(deploy(), (error) => error instanceof ProcessExitSignal && error.code === 1);
+			assert.ok(errorLines.some((line) => line.startsWith('error: Not activated on 1 of 2 peer node(s): peer-b')));
+		});
+
+		it('ends at wait_timeout even while a read keeps trickling bytes', async () => {
+			cluster([]);
+			const deployOnly = commonUtilsModule.httpRequest;
+			// A trickle keeps the socket's idle timer reset, so only an absolute deadline ends the read.
+			commonUtilsModule.httpRequest = (options, req) =>
+				req.operation === 'get_deployment'
+					? new Promise((_resolve, reject) =>
+							options.signal?.addEventListener('abort', () => reject(options.signal.reason))
+						)
+					: deployOnly(options, req);
+			const started = Date.now();
+			const outcome = await Promise.race([
+				deploy({ wait_timeout: 200 }).then(
+					() => 'returned',
+					(error) => error
+				),
+				new Promise((resolve) => setTimeout(resolve, 5000, 'still waiting')),
+			]);
+			assert.ok(outcome instanceof ProcessExitSignal && outcome.code === 1, `ended with ${outcome}`);
+			assert.ok(Date.now() - started < 2000);
+			assert.ok(errorLines.some((line) => /^error: timed out after \d+s waiting for deployment/.test(line)));
+		});
+
+		it('refuses a wait_timeout it cannot use before sending anything', async () => {
+			const calls = cluster([{ deployment_id: ID, status: 'success' }]);
+			await assert.rejects(deploy({ wait_timeout: '10m' }), (error) => error instanceof ProcessExitSignal);
+			assert.ok(errorLines.some((line) => line.includes('wait_timeout must be a number of milliseconds')));
+			assert.strictEqual(calls.filter(({ req }) => req.operation === 'deploy_component').length, 0);
+		});
+
+		it('keeps the old behavior with wait=false', async () => {
+			const calls = cluster([{ deployment_id: ID, status: 'partial' }]);
+			const result = await deploy({ wait: false });
+			assert.strictEqual(calls.filter(({ req }) => req.operation === 'get_deployment').length, 0);
+			assert.strictEqual(result.rollout, undefined);
+			assert.strictEqual(calls.find(({ req }) => req.operation === 'deploy_component').req.wait, undefined);
 		});
 	});
 
@@ -810,6 +1138,197 @@ describe('cliOperations', () => {
 		});
 	});
 
+	// Older servers write a refusal made before the stream starts, or a result the version probe could
+	// not route to the legacy path, as one unnamed event-stream frame.
+	describe('deploy_component replies labeled as an event stream', () => {
+		const http = require('node:http');
+		let server;
+		let target;
+		let respond;
+		let originalExit;
+		let originalConsoleError;
+		let exitCalls;
+		let consoleErrorLines;
+
+		before(async () => {
+			server = http.createServer((req, res) => {
+				let body = '';
+				req.on('data', (chunk) => (body += chunk));
+				req.on('end', () => {
+					if (JSON.parse(body).operation === 'registration_info') {
+						res.writeHead(200, { 'content-type': 'application/json' });
+						res.end(JSON.stringify({ version: '5.3.0' }));
+					} else {
+						respond(res);
+					}
+				});
+			});
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			target = `http://127.0.0.1:${server.address().port}`;
+		});
+
+		after(() => new Promise((resolve) => server.close(resolve)));
+
+		beforeEach(() => {
+			commonUtilsModule.httpRequest = originalHttpRequest;
+			exitCalls = [];
+			originalExit = process.exit;
+			process.exit = (code) => {
+				exitCalls.push(code);
+			};
+			consoleErrorLines = [];
+			originalConsoleError = console.error;
+			console.error = (...args) => {
+				consoleErrorLines.push(args.join(' '));
+			};
+		});
+
+		afterEach(() => {
+			process.exit = originalExit;
+			console.error = originalConsoleError;
+		});
+
+		const eventStream = (status, body) => (res) => {
+			res.writeHead(status, { 'content-type': 'text/event-stream' });
+			res.end(body);
+		};
+		const deploy = () =>
+			cliOperationsModule.cliOperations(
+				{
+					operation: 'deploy_component',
+					package: '@scope/widget',
+					project: 'widget',
+					target,
+					auth_username: 'admin',
+					auth_password: 'admin-secret',
+				},
+				true
+			);
+		const refusal = {
+			error: 'This operation is not authorized due to role restrictions and/or invalid database items',
+			unauthorized_access: ["Operation 'deployComponent' is not permitted for this role's operations configuration"],
+			invalid_schema_items: [],
+		};
+
+		it('prints a refusal written as an unnamed frame', async () => {
+			respond = eventStream(403, `data: ${JSON.stringify(refusal)}\n\n`);
+			await deploy();
+			assert.deepStrictEqual(exitCalls, [1]);
+			// YAML folds long lines, so compare with whitespace collapsed.
+			const printed = consoleErrorLines.join(' ').replace(/\s+/g, ' ');
+			assert.ok(
+				printed.includes("Operation 'deployComponent' is not permitted for this role's operations configuration"),
+				printed
+			);
+			assert.ok(!printed.includes('no result payload'), printed);
+		});
+
+		it('prints an error body with no frames as it came', async () => {
+			respond = eventStream(502, '<html><body>Bad Gateway</body></html>');
+			await deploy();
+			assert.deepStrictEqual(exitCalls, [1]);
+			assert.match(consoleErrorLines.join('\n'), /Bad Gateway/);
+		});
+
+		it('returns the last unnamed frame when the stream ends without a done event', async () => {
+			respond = eventStream(
+				200,
+				`data: ${JSON.stringify({ message: 'first' })}\n\ndata: ${JSON.stringify({ message: 'Successfully deployed: widget' })}\n\n`
+			);
+			const result = await deploy();
+			assert.deepStrictEqual(exitCalls, []);
+			assert.strictEqual(result.message, 'Successfully deployed: widget');
+		});
+
+		it('keeps an unnamed frame that is not JSON as text', async () => {
+			respond = eventStream(200, 'data: deployed widget\n\n');
+			const result = await deploy();
+			assert.strictEqual(result.message, 'deployed widget');
+		});
+
+		it('does not promote an unnamed frame over a done event without a result', async () => {
+			respond = eventStream(200, `data: ${JSON.stringify({ message: 'diagnostic' })}\n\nevent: done\ndata: {}\n\n`);
+			const result = await deploy();
+			assert.strictEqual(result.message, 'Deploy completed (no result payload).');
+		});
+
+		it('fails when the stream breaks after an unnamed frame', async () => {
+			respond = (res) => {
+				res.writeHead(200, { 'content-type': 'text/event-stream' });
+				res.write(`data: ${JSON.stringify({ message: 'partial' })}\n\n`, () => res.destroy());
+			};
+			await deploy();
+			assert.deepStrictEqual(exitCalls, [1]);
+		});
+	});
+
+	// `deploy setup=true` introduced `token=` as an arg carrying a durable PAT. A mistyped invocation
+	// (`harper deploy setup token=…` — bare `setup` is dropped by buildRequest) falls through to an
+	// ordinary deploy, so the token must not be loggable or serializable on ANY path, not just the
+	// setup one.
+	describe('token= is never logged or sent', () => {
+		it('redacts token in the parsed-request trace log', () => {
+			const redacted = cliOperationsModule.redactCredentials({
+				operation: 'deploy_component',
+				project: 'web',
+				token: 'github_pat_11ABCDE_secret',
+			});
+			assert.strictEqual(redacted.token, '***');
+			assert.strictEqual(redacted.project, 'web', 'non-secret fields still readable in the log');
+		});
+
+		it('strips token from the operation body sent to the server', async () => {
+			saveCredentials('https://example.com:9925/', { operation_token: 'valid-token', refresh_token: 'r' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let sentBody;
+			commonUtilsModule.httpRequest = async (_options, body) => {
+				sentBody = body;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'set_secret', name: 'deploy.web.git.github.com', token: 'github_pat_11ABCDE_secret' },
+				true
+			);
+
+			assert.ok(sentBody, 'request body was captured');
+			assert.strictEqual(sentBody.token, undefined, 'token must not reach the wire as an operation field');
+			assert.strictEqual(sentBody.name, 'deploy.web.git.github.com', 'real operation fields still sent');
+		});
+	});
+
+	describe('transportContext', () => {
+		// `harper deploy setup=true` issues get_secrets_public_key + set_secret on the caller's behalf.
+		// Dropping the explicit credentials would silently perform (and audit) those mutations as
+		// whoever the saved login token is; dropping rejectUnauthorized would fail a self-signed target.
+		it('carries the connection fields and nothing else', () => {
+			assert.deepStrictEqual(
+				cliOperationsModule.transportContext({
+					operation: 'deploy_component',
+					setup: true,
+					token: 'ghp_secret',
+					package: 'github:owner/repo',
+					json: true,
+					target: 'https://example.com:9925',
+					auth_username: 'admin',
+					auth_password: 'pw',
+					rejectUnauthorized: false,
+				}),
+				{
+					target: 'https://example.com:9925',
+					auth_username: 'admin',
+					auth_password: 'pw',
+					rejectUnauthorized: false,
+				}
+			);
+		});
+
+		it('omits fields the caller did not supply, so normal resolution (env vars, saved token) still applies', () => {
+			assert.deepStrictEqual(cliOperationsModule.transportContext({ operation: 'set_secret' }), {});
+		});
+	});
+
 	describe('operation timeout selection', () => {
 		const target = 'https://example.com:9925/';
 
@@ -1140,6 +1659,44 @@ describe('cliOperations', () => {
 			assert.match(multipartText, /name="operation"/);
 		});
 
+		it('hands the packer its pre-deploy scan, so the links it found to leave out stay out', async () => {
+			const originalScan = packageComponentModule.scanPackageDirectory;
+			const originalStream = packageComponentModule.streamPackagedDirectory;
+			const scan = {
+				totalSize: 0,
+				danglingSymlinks: [],
+				installLinks: [path.join('node_modules', 'plugin', 'node_modules', 'harper')],
+			};
+			packageComponentModule.scanPackageDirectory = async () => scan;
+			let packedWith;
+			packageComponentModule.streamPackagedDirectory = (...args) => {
+				packedWith = args;
+				return Readable.from(Buffer.from('fake-tar-bytes'));
+			};
+			commonUtilsModule.httpRequest = async (options, body) => {
+				if (body && typeof body.operation === 'string' && body.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				for await (const _chunk of body);
+				return Object.assign(
+					Readable.from([`event: done\ndata: ${JSON.stringify({ result: { success: true } })}\n\n`]),
+					{ statusCode: 200, headers: { 'content-type': 'text/event-stream' } }
+				);
+			};
+
+			try {
+				await cliOperationsModule.cliOperations(
+					{ operation: 'deploy_component', project: 'widget', target: 'example.com', skip_node_modules: false },
+					true
+				);
+			} finally {
+				packageComponentModule.scanPackageDirectory = originalScan;
+				packageComponentModule.streamPackagedDirectory = originalStream;
+			}
+
+			assert.strictEqual(packedWith[3], scan);
+		});
+
 		// The credentials of the user being created/altered must never outrank the caller's own
 		// saved session — otherwise `harper login` + `add_user` authenticates as a user that
 		// doesn't exist yet and 401s.
@@ -1371,6 +1928,320 @@ describe('cliOperations', () => {
 				cliOperationsModule.redactCredentials({ target: 'https://example.com:9925/' }).target,
 				'https://example.com:9925/'
 			);
+		});
+	});
+});
+
+describe('deploy by reference (by_ref)', () => {
+	const { prepareDeployByRef, resolveGitTarget, resolveCredentialHost, deriveGitSecretName } = cliOperationsModule;
+	const GITHUB_ENV = ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_EVENT_PATH'];
+	let savedEnv, savedStderrWrite;
+
+	beforeEach(() => {
+		savedEnv = new Map(GITHUB_ENV.map((name) => [name, process.env[name]]));
+		// The default target resolves from env, so tests that aren't about git resolution get a fixed
+		// repo/SHA. The nested repo describe below overrides this to exercise git itself.
+		process.env.GITHUB_REPOSITORY = 'acme/demo';
+		process.env.GITHUB_SHA = 'abc123def456';
+		delete process.env.GITHUB_REF;
+		delete process.env.GITHUB_EVENT_PATH;
+		// Silence the "Deploying … by reference" line prepareDeployByRef writes to stderr.
+		savedStderrWrite = process.stderr.write;
+		process.stderr.write = () => true;
+	});
+
+	afterEach(() => {
+		for (const [name, value] of savedEnv) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		process.stderr.write = savedStderrWrite;
+	});
+
+	// Collects everything written to stderr while fn runs, so warnings/notes can be asserted on.
+	function captureStderr(fn) {
+		const written = [];
+		process.stderr.write = (chunk) => {
+			written.push(String(chunk));
+			return true;
+		};
+		try {
+			fn();
+		} finally {
+			process.stderr.write = () => true;
+		}
+		return written.join('');
+	}
+
+	it('builds a git+https package pinned to the resolved SHA', () => {
+		const req = { by_ref: true, project: 'demo' };
+		prepareDeployByRef(req);
+		assert.strictEqual(req.package, 'git+https://github.com/acme/demo.git#abc123def456');
+		assert.strictEqual(req.credentials, undefined); // no credential requested
+	});
+
+	// Every other CLI value is JSON-parsed, which rewrites a ref that happens to look numeric: `1.0`
+	// parses to the number 1, and no amount of coercion downstream can turn that back into the tag
+	// the user typed. Refs are opaque strings, so they skip the parse entirely.
+	describe('ref parsing', () => {
+		const { buildRequest } = cliOperationsModule;
+		let savedArgv;
+
+		beforeEach(() => {
+			savedArgv = process.argv;
+		});
+
+		afterEach(() => {
+			process.argv = savedArgv;
+		});
+
+		function refFromArgv(arg) {
+			process.argv = ['node', 'harper', 'deploy', arg];
+			return buildRequest().ref;
+		}
+
+		it('keeps a ref that looks numeric exactly as typed', () => {
+			assert.strictEqual(refFromArgv('ref=1.0'), '1.0'); // not the number 1
+			assert.strictEqual(refFromArgv('ref=1.10'), '1.10'); // not 1.1
+			assert.strictEqual(refFromArgv('ref=1e3'), '1e3'); // not 1000
+			assert.strictEqual(refFromArgv('ref=1234567'), '1234567');
+		});
+
+		it('leaves ordinary refs and other fields alone', () => {
+			assert.strictEqual(refFromArgv('ref=v1.2.3'), 'v1.2.3');
+			process.argv = ['node', 'harper', 'deploy', 'by_ref=true'];
+			assert.strictEqual(buildRequest().by_ref, true); // still JSON-parsed
+		});
+	});
+
+	// A real repo with known refs — plus a local bare repo standing in for `origin` — so ref
+	// resolution is asserted against actual git behavior rather than whatever happens to exist in the
+	// checkout running the tests, and without reaching the network.
+	describe('ref resolution against a real repository', () => {
+		const { execFileSync } = require('node:child_process');
+		let rootDir, repoDir, priorCwd, headSha, remoteOnlySha, tagObjectSha;
+
+		before(() => {
+			rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-by-ref-'));
+			repoDir = path.join(rootDir, 'work');
+			const remoteDir = path.join(rootDir, 'remote.git');
+			fs.mkdirSync(repoDir);
+			const runIn = (cwd, ...args) =>
+				execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+			const git = (...args) => runIn(repoDir, ...args);
+			runIn(rootDir, 'init', '-q', '--bare', remoteDir);
+			git('init', '-q');
+			git('config', 'user.email', 'test@example.com');
+			git('config', 'user.name', 'Test');
+			git('commit', '-q', '--allow-empty', '-m', 'first');
+			git('tag', 'v1.2.3');
+			git('branch', '1234567'); // a branch name that JSON.parse turns into a number
+			headSha = git('rev-parse', 'HEAD');
+			git('remote', 'add', 'origin', remoteDir);
+			// A commit + annotated tag that exist only on the remote: pushed from a detached HEAD, then
+			// every local trace removed. This is the shallow/never-fetched case, where local resolution
+			// must fail and `ls-remote` has to supply the SHA.
+			git('checkout', '-q', '--detach');
+			git('commit', '-q', '--allow-empty', '-m', 'second');
+			remoteOnlySha = git('rev-parse', 'HEAD');
+			git('tag', '-a', 'v2.0.0', '-m', 'annotated');
+			tagObjectSha = git('rev-parse', 'v2.0.0'); // the tag object, not the commit it points at
+			git('push', '-q', 'origin', 'HEAD:refs/heads/remote-only', 'v2.0.0');
+			git('tag', '-d', 'v2.0.0');
+			// A pull ref that exists both on the remote and locally, so the namespace rejection is
+			// tested against a ref that would otherwise resolve on either path.
+			git('push', '-q', 'origin', 'HEAD:refs/pull/42/head');
+			git('update-ref', 'refs/pull/42/head', remoteOnlySha);
+			git('checkout', '-q', headSha);
+			// Drop the remote-tracking refs push just created, so nothing resolves locally by accident
+			// (and so the "commit isn't on a remote branch" check has nothing to find).
+			for (const ref of git('for-each-ref', '--format=%(refname)', 'refs/remotes').split('\n').filter(Boolean)) {
+				git('update-ref', '-d', ref);
+			}
+			// runGit shells out against the real process cwd, so mocking process.cwd isn't enough.
+			priorCwd = process.cwd();
+			process.chdir(repoDir);
+		});
+
+		after(() => {
+			process.chdir(priorCwd);
+			fs.rmSync(rootDir, { recursive: true, force: true });
+		});
+
+		// Peers resolve the package independently, so a name that can move (a branch, or a tag
+		// repointed between one peer fetching and another re-fetching after a restart) would let
+		// nodes in the same cluster run different commits.
+		it('resolves a local tag to its commit SHA rather than passing the name through', () => {
+			assert.strictEqual(resolveGitTarget('v1.2.3').committish, headSha);
+		});
+
+		it('resolves a local branch name to its commit SHA', () => {
+			assert.strictEqual(resolveGitTarget('HEAD').committish, headSha);
+		});
+
+		// prepareDeployByRef is exported and callable with a hand-built req, so a number still resolves
+		// rather than being ignored — buildRequest itself no longer produces one (see below).
+		it('coerces a numeric ref to a string', () => {
+			assert.strictEqual(resolveGitTarget(1234567).committish, headSha);
+		});
+
+		it('an explicit ref= wins over GITHUB_SHA', () => {
+			const req = { by_ref: true, ref: 'v1.2.3', project: 'demo' };
+			prepareDeployByRef(req);
+			assert.strictEqual(req.package, `git+https://github.com/acme/demo.git#${headSha}`);
+		});
+
+		it('resolves a ref that exists only on the remote via ls-remote', () => {
+			assert.strictEqual(resolveGitTarget('remote-only').committish, remoteOnlySha);
+		});
+
+		// An annotated tag's own object ID is not a commit, so a checkout of it would fail server-side.
+		it('peels a remote annotated tag to its commit, not the tag object', () => {
+			assert.strictEqual(resolveGitTarget('v2.0.0').committish, remoteOnlySha);
+			assert.notStrictEqual(resolveGitTarget('v2.0.0').committish, tagObjectSha);
+		});
+
+		// Failing closed is the point: passing an unresolvable name through preserved exactly the
+		// divergence the SHA pin exists to prevent.
+		it('fails closed when a ref resolves neither locally nor on the remote', () => {
+			assert.throws(() => resolveGitTarget('no-such-ref-anywhere'), /could not resolve ref=no-such-ref-anywhere/);
+		});
+
+		// The one ref that needs no resolution — it can't move — so an unfetched full SHA still deploys.
+		it('passes a full commit SHA through unresolved', () => {
+			const sha = 'f'.repeat(40);
+			assert.strictEqual(resolveGitTarget(sha).committish, sha);
+		});
+
+		// git parses options anywhere in its argv, so `ref=--upload-pack=<cmd>` would otherwise reach
+		// `git ls-remote` as an option and run that command.
+		it('rejects a ref that would be parsed as a git option', () => {
+			assert.throws(() => resolveGitTarget('--upload-pack=touch /tmp/pwned'), /cannot start with "-"/);
+		});
+
+		// A plain clone fetches refs/heads/* and refs/tags/* only. A commit named through any other
+		// namespace pins to an immutable SHA the cluster still can't check out — the same reachability
+		// failure as the pull_request merge commit, just reached by typing it explicitly.
+		describe('refs outside the cloneable namespaces', () => {
+			it('rejects refs/pull/<n>/head even though it resolves both locally and on the remote', () => {
+				// Guards the ordering: the namespace check runs before local resolution, so a checkout
+				// that has fetched the pull ref can't quietly pin an unreachable commit.
+				assert.throws(
+					() => resolveGitTarget('refs/pull/42/head'),
+					/outside refs\/heads\/ and refs\/tags\/[\s\S]*never check it out/
+				);
+			});
+
+			it('accepts a fully-qualified branch ref', () => {
+				assert.strictEqual(resolveGitTarget('refs/heads/remote-only').committish, remoteOnlySha);
+			});
+
+			it('accepts a fully-qualified tag ref, peeled to its commit', () => {
+				assert.strictEqual(resolveGitTarget('refs/tags/v2.0.0').committish, remoteOnlySha);
+				assert.notStrictEqual(resolveGitTarget('refs/tags/v2.0.0').committish, tagObjectSha);
+			});
+		});
+
+		// The cluster clones from the remote, so an unpushed commit fails server-side with an error far
+		// from the CLI. This repo's remote-tracking refs were dropped above, so nothing looks pushed.
+		it('warns when the commit to deploy is on no remote branch', () => {
+			delete process.env.GITHUB_SHA; // take the local-resolution path, where the check applies
+			const written = captureStderr(() => prepareDeployByRef({ by_ref: true, project: 'demo' }));
+			assert.match(written, /isn't on any remote branch/);
+			assert.match(written, new RegExp(headSha.slice(0, 7))); // abbreviated to git's 7 characters
+		});
+
+		it('skips the push check under GITHUB_SHA, where CI is already on a pushed commit', () => {
+			const written = captureStderr(() => prepareDeployByRef({ by_ref: true, project: 'demo' }));
+			assert.doesNotMatch(written, /isn't on any remote branch/);
+		});
+	});
+
+	// GITHUB_SHA on a pull_request run is the synthetic refs/pull/<n>/merge commit, which a plain clone
+	// never fetches — deploying it fails server-side at clone time.
+	describe('GitHub Actions pull_request runs', () => {
+		let eventDir;
+
+		beforeEach(() => {
+			eventDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-by-ref-event-'));
+			process.env.GITHUB_REF = 'refs/pull/42/merge';
+		});
+
+		afterEach(() => {
+			fs.rmSync(eventDir, { recursive: true, force: true });
+		});
+
+		function writeEvent(payload) {
+			const eventPath = path.join(eventDir, 'event.json');
+			fs.writeFileSync(eventPath, JSON.stringify(payload));
+			process.env.GITHUB_EVENT_PATH = eventPath;
+		}
+
+		it('deploys the pull request head commit instead of the merge commit', () => {
+			writeEvent({ pull_request: { head: { sha: 'deadbeef'.repeat(5), repo: { full_name: 'acme/demo' } } } });
+			const req = { by_ref: true, project: 'demo' };
+			prepareDeployByRef(req);
+			assert.strictEqual(req.package, `git+https://github.com/acme/demo.git#${'deadbeef'.repeat(5)}`);
+		});
+
+		// For a fork PR the head commit lives in the fork, not GITHUB_REPOSITORY — pairing the head SHA
+		// with the base repo would name a commit that repo doesn't have.
+		it('uses the head repository, and says so, when the pull request comes from a fork', () => {
+			writeEvent({ pull_request: { head: { sha: 'abc'.repeat(13) + 'd', repo: { full_name: 'forker/demo' } } } });
+			const req = { by_ref: true, project: 'demo' };
+			const written = captureStderr(() => prepareDeployByRef(req));
+			assert.match(req.package, /^git\+https:\/\/github\.com\/forker\/demo\.git#/);
+			assert.match(written, /pull request head from forker\/demo/);
+		});
+
+		it('fails early with actionable guidance when the head cannot be read', () => {
+			writeEvent({ pull_request: {} });
+			assert.throws(
+				() => prepareDeployByRef({ by_ref: true, project: 'demo' }),
+				/synthetic merge commit[\s\S]*github\.event\.pull_request\.head\.sha/
+			);
+		});
+
+		it('still honors an explicit ref= on a pull_request run', () => {
+			writeEvent({ pull_request: {} }); // unreadable head, but ref= means it is never consulted
+			const sha = 'a'.repeat(40);
+			const req = { by_ref: true, ref: sha, project: 'demo' };
+			prepareDeployByRef(req);
+			assert.strictEqual(req.package, `git+https://github.com/acme/demo.git#${sha}`);
+		});
+	});
+
+	describe('credential reference', () => {
+		it('credential=true attaches a github.com credential reference', () => {
+			const req = { by_ref: true, credential: true, project: 'demo' };
+			prepareDeployByRef(req);
+			assert.deepStrictEqual(req.credentials, [{ host: 'github.com', secret: 'deploy.demo.git.github.com' }]);
+		});
+
+		it('credential=github.com agrees with the package host and is accepted', () => {
+			const req = { by_ref: true, credential: 'github.com', project: 'my-app' };
+			prepareDeployByRef(req);
+			assert.deepStrictEqual(req.credentials, [{ host: 'github.com', secret: 'deploy.my-app.git.github.com' }]);
+		});
+
+		// A credential for another host builds a reference the clone never asks for, so the private
+		// deploy fails as if none were configured — reject it instead of shipping the mismatch.
+		it('rejects a credential host that is not the host the package clones from', () => {
+			assert.throws(
+				() => prepareDeployByRef({ by_ref: true, credential: 'gitlab.com', project: 'demo' }),
+				/credential=gitlab\.com doesn't match the package host github\.com/
+			);
+		});
+
+		it('normalizes an explicit host before comparing it', () => {
+			assert.strictEqual(resolveCredentialHost('https://GitHub.com/acme/demo', 'github.com'), 'github.com');
+			assert.strictEqual(resolveCredentialHost(true, 'github.com'), 'github.com');
+			assert.strictEqual(resolveCredentialHost(undefined, 'github.com'), undefined);
+			assert.strictEqual(resolveCredentialHost('', 'github.com'), undefined);
+		});
+
+		it('deriveGitSecretName matches the server convention (deploy.<component>.git.<host>)', () => {
+			assert.strictEqual(deriveGitSecretName('my-app', 'github.com'), 'deploy.my-app.git.github.com');
 		});
 	});
 });

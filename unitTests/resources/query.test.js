@@ -2,11 +2,12 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { parseQuery } = require('#src/resources/search');
-const { table } = require('#src/resources/databases');
+const { table, databases } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
 const { transaction } = require('#src/resources/transaction');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 let x = 532532;
 function random(max) {
 	x = (x * 16843009 + 3014898611) >>> 0;
@@ -571,20 +572,37 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 2);
 		});
 		it('Query by join with one-to-many with multiple conditions', async function () {
-			let results = [];
-			for await (let record of RelatedTable.search({
-				conditions: [
-					{ attribute: ['relatedToMany', 'id'], comparator: 'greater_than', value: 'id-2' },
-					{ attribute: ['relatedToMany', 'name'], comparator: 'less_than', value: 'name-3' },
-				],
-				select: ['id', 'relatedToMany', 'name'],
-			})) {
-				results.push(record);
-			}
-			assert.equal(results.length, 5);
+			const search = async (conditions) => {
+				const results = [];
+				for await (let record of RelatedTable.search({ conditions, select: ['id', 'relatedToMany', 'name'] }))
+					results.push(record);
+				return results;
+			};
+			const id = { attribute: 'id', comparator: 'greater_than', value: 'id-2' };
+			const name = { attribute: 'name', comparator: 'less_than', value: 'name-3' };
+			let results = await search([{ attribute: 'relatedToMany', conditions: [id, name] }]);
+			assert.deepEqual(
+				results.map((r) => r.id),
+				[0, 1, 2, 3, 4]
+			);
 			let related = await results[0].relatedToMany;
 			assert.equal(related.length, 2);
 			assert.equal(related[0].name, 'name-20');
+			results = await search([
+				{ ...id, attribute: ['relatedToMany', 'id'] },
+				{ ...name, attribute: ['relatedToMany', 'name'] },
+			]);
+			assert.deepEqual(
+				results.map((r) => r.id),
+				[0, 1, 2, 3, 4]
+			);
+			for (const result of results) {
+				related = await result.relatedToMany;
+				assert(related.length > 2);
+				assert(related.some((record) => record.id > 'id-2' && !(record.name < 'name-3')));
+				assert(related.some((record) => record.name < 'name-3' && !(record.id > 'id-2')));
+				assert(related.every((record) => record.id > 'id-2' || record.name < 'name-3'));
+			}
 		});
 		it('Query by join with one-to-many with relational condition as filter', async function () {
 			let results = [];
@@ -652,22 +670,54 @@ describe('Querying through Resource API', () => {
 		});
 
 		it('Query by joined condition with many-to-many and multiple joined condition', async function () {
-			let results = [];
-			for await (let record of QueryTable.search({
-				conditions: [
-					{ attribute: ['manyToMany', 'name'], comparator: 'greater_than', value: 'many-to-many entry 4' },
-					{ attribute: ['manyToMany', 'id'], comparator: 'less_than', value: 8 },
-				],
-				select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
-			})) {
-				results.push(record);
-			}
-			assert.equal(results.length, 14);
+			const search = async (conditions) => {
+				const results = [];
+				for await (let record of QueryTable.search({
+					conditions,
+					select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
+				}))
+					results.push(record);
+				return results;
+			};
+			const name = { attribute: 'name', comparator: 'greater_than', value: 'many-to-many entry 4' };
+			const id = { attribute: 'id', comparator: 'less_than', value: 8 };
+			const expectedIds = [
+				'id-3',
+				'id-33',
+				'id-34',
+				'id-36',
+				'id-4',
+				'id-6',
+				'id-62',
+				'id-63',
+				'id-64',
+				'id-7',
+				'id-89',
+				'id-92',
+				'id-93',
+				'id-94',
+			];
+			let results = await search([{ attribute: 'manyToMany', conditions: [name, id] }]);
+			assert.deepEqual(results.map((r) => r.id).sort(), expectedIds);
 			for (let result of results) {
 				const related = await result.manyToMany;
 				assert(related.every((record) => record.name > 'many-to-many entry 4'));
 				assert(related.every((record) => record.id < 8));
 			}
+			results = await search([
+				{ ...name, attribute: ['manyToMany', 'name'] },
+				{ ...id, attribute: ['manyToMany', 'id'] },
+			]);
+			assert.deepEqual(results.map((r) => r.id).sort(), expectedIds);
+			let sawOnlyName = false;
+			let sawOnlyId = false;
+			for (let result of results) {
+				const related = await result.manyToMany;
+				sawOnlyName ||= related.some((record) => record.name > 'many-to-many entry 4' && !(record.id < 8));
+				sawOnlyId ||= related.some((record) => record.id < 8 && !(record.name > 'many-to-many entry 4'));
+				assert(related.every((record) => record.name > 'many-to-many entry 4' || record.id < 8));
+			}
+			assert(sawOnlyName && sawOnlyId);
 		});
 
 		it('Query with many-to-many selected, but non-existent entries (forward)', async function () {
@@ -923,6 +973,135 @@ describe('Querying through Resource API', () => {
 			let related = await instance.related;
 			assert.equal(related.name, 'related name 1');
 		});
+
+		describe('@relationship with both from and to', function () {
+			const loggedErrors = [];
+			let Team;
+			before(async function () {
+				const originalError = console.error;
+				console.error = (...args) => loggedErrors.push(args.join(' '));
+				try {
+					await loadGQLSchema(`
+						type FromToTeam @table(database: "relationshipFromTo") {
+							id: ID @primaryKey
+							code: String @indexed
+							league: String @indexed
+							players: [FromToPlayer] @relationship(from: "code", to: "teamCode")
+							captain: FromToPlayer @relationship(from: "code", to: "teamCode")
+						}
+						type FromToPlayer @table(database: "relationshipFromTo") {
+							id: ID @primaryKey
+							name: String @indexed
+							teamCode: String @indexed
+						}
+					`);
+				} finally {
+					console.error = originalError;
+				}
+				Team = databases.relationshipFromTo.FromToTeam;
+				const Player = databases.relationshipFromTo.FromToPlayer;
+				await Team.put({ id: 'team-1', code: 'red' });
+				await Team.put({ id: 'team-2', code: 'blue' });
+				await Player.put({ id: 'player-1', name: 'alice', teamCode: 'red' });
+				await Player.put({ id: 'player-2', name: 'bob', teamCode: 'red' });
+				// joins team-1 only if the primary key were used in place of `from`
+				await Player.put({ id: 'player-3', name: 'carol', teamCode: 'team-1' });
+				await Player.put({ id: 'player-4', name: 'dave', teamCode: 'blue' });
+				for (const suffix of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+					await Team.put({ id: `team-${suffix}`, code: `code-${suffix}`, league: suffix < 'f' ? 'north' : 'south' });
+					// a join filter's miss on a bench player is what switches it to an id set
+					await Player.put({ id: `bench-${suffix}`, name: 'bench', teamCode: `code-${suffix}` });
+				}
+				await Player.put({ id: 'erin-1', name: 'erin', teamCode: 'code-e' });
+				await Player.put({ id: 'erin-2', name: 'erin', teamCode: 'team-b' });
+				await Player.put({ id: 'erin-3', name: 'erin', teamCode: 'code-f' });
+				await Player.put({ id: 'erin-4', name: 'erin', teamCode: 'code-g' });
+				await Player.put({ id: 'frank-1', name: 'frank', teamCode: 'code-c' });
+				await Player.put({ id: 'frank-2', name: 'frank', teamCode: 'code-c' });
+				await Player.put({ id: 'frank-3', name: 'frank', teamCode: 'code-c' });
+				await Player.put({ id: 'frank-4', name: 'frank', teamCode: 'code-c' });
+			});
+
+			async function teamsWithPlayerNamed(name, conditions = []) {
+				const teams = [];
+				for await (const record of Team.search({
+					conditions: [{ attribute: ['players', 'name'], value: name }, ...conditions],
+					select: ['id', { name: 'players', select: ['id'] }],
+				})) {
+					teams.push({ id: record.id, players: record.players.map((player) => player.id) });
+				}
+				return teams;
+			}
+
+			it('resolves an array of the records whose `to` attribute equals the local `from` value', async function () {
+				const team = await Team.get('team-1');
+				const players = await team.players;
+				assert(Array.isArray(players));
+				assert.deepStrictEqual(players.map((player) => player.id).sort(), ['player-1', 'player-2']);
+			});
+
+			it('selects the same records through search', async function () {
+				const results = [];
+				for await (const record of Team.search({
+					conditions: [{ attribute: 'id', value: 'team-1' }],
+					select: ['id', { name: 'players', select: ['id'] }],
+				})) {
+					results.push(record);
+				}
+				assert.equal(results.length, 1);
+				assert(Array.isArray(results[0].players));
+				assert.deepStrictEqual(results[0].players.map((player) => player.id).sort(), ['player-1', 'player-2']);
+			});
+
+			it('matches a joined condition against the local `from` value', async function () {
+				assert.deepStrictEqual(await teamsWithPlayerNamed('alice'), [{ id: 'team-1', players: ['player-1'] }]);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('dave'), [{ id: 'team-2', players: ['player-4'] }]);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('carol'), []);
+				const byId = [{ attribute: 'id', value: 'team-1' }];
+				assert.deepStrictEqual(await teamsWithPlayerNamed('alice', byId), [{ id: 'team-1', players: ['player-1'] }]);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('carol', byId), []);
+			});
+
+			it('matches a joined condition against the local `from` value after switching to an id set', async function () {
+				const north = [{ attribute: 'league', value: 'north' }];
+				const explanation = Team.search({
+					conditions: [{ attribute: ['players', 'name'], value: 'erin' }, ...north],
+					explain: true,
+				});
+				assert.equal(explanation.conditions[0].attribute, 'league');
+				assert(explanation.conditions[0].estimated_count > 3);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('erin', north), [{ id: 'team-e', players: ['erin-1'] }]);
+				// four franks keep the join's estimate above league's, so league leads and their single
+				// `to` value takes the id-set switch's size-1 branch
+				assert.deepStrictEqual(await teamsWithPlayerNamed('frank', north), [
+					{ id: 'team-c', players: ['frank-1', 'frank-2', 'frank-3', 'frank-4'] },
+				]);
+			});
+
+			it('does not resolve the scalar form and logs that it must be an array type', async function () {
+				assert(
+					loggedErrors.some(
+						(message) =>
+							message.includes('"captain"') &&
+							message.includes('"FromToTeam"') &&
+							message.includes('must have an array type')
+					),
+					`logged: ${JSON.stringify(loggedErrors)}`
+				);
+				assert(!loggedErrors.some((message) => message.includes('"players"')));
+				const team = await Team.get('team-1');
+				assert.equal(team.captain, undefined);
+				const results = [];
+				for await (const record of Team.search({
+					conditions: [{ attribute: 'id', value: 'team-1' }],
+					select: ['id', 'captain'],
+				})) {
+					results.push(record);
+				}
+				assert.equal(results.length, 1);
+				assert.equal(results[0].captain, undefined);
+			});
+		});
 	});
 	describe('Sorting', function () {
 		it('Query data in a table with sorting', async function () {
@@ -976,6 +1155,50 @@ describe('Querying through Resource API', () => {
 			assert(QueryTable.primaryStore.readCount - start_count < 25);
 			assert.equal(results[0].id, 'id-98');
 			assert.equal(results[1].id, 'id-93');
+		});
+		it('resolves each sort key once, so a record collected before the sort is not re-read per comparison', async function () {
+			if (typeof global.gc !== 'function') this.skip();
+			const sort = { attribute: 'relatedId', next: { attribute: 'name', descending: true } };
+			const expected = [];
+			for await (const record of QueryTable.search({ conditions: [{ attribute: 'relatedId', value: 3 }], sort })) {
+				expected.push(record.id);
+			}
+			assert.equal(expected.length, 20);
+			const ids = [...expected].sort();
+			// Copies of the matching records, reachable only through WeakRef-shaped entries — the shape a cached
+			// entry has once the LRU lets its record go. `pins` keeps them alive until every entry is collected.
+			let pins = ids.map((id) => ({ ...QueryTable.primaryStore.getEntry(id).value }));
+			const entries = pins.map((record, i) => Object.assign(new WeakRef(record), { key: ids[i] }));
+			const source = {
+				hasEntries: true,
+				async *[Symbol.asyncIterator]() {
+					for (const entry of entries) yield entry;
+					pins = null;
+					await new Promise((resolve) => setImmediate(resolve));
+					global.gc();
+				},
+			};
+			const context = {};
+			const startCount = QueryTable.primaryStore.readCount;
+			const results = [];
+			for await (const record of QueryTable.transformToOrderedSelect(
+				source,
+				undefined,
+				sort,
+				context,
+				undefined,
+				QueryTable.transformEntryForSelect(undefined, context, undefined, undefined, true, true, undefined, false, sort)
+			)) {
+				results.push(record.id);
+			}
+			assert.deepEqual(results, expected);
+			const reads = QueryTable.primaryStore.readCount - startCount;
+			// Materialization may read a record once (twice through the prefetch path); the comparator alone
+			// would add two reads per comparison.
+			assert(
+				reads <= 2 * expected.length,
+				`${reads} store reads to order ${expected.length} collected records; only materialization may read`
+			);
 		});
 		it('Query data in a table with and sort on createdAt', async function () {
 			let results = [];

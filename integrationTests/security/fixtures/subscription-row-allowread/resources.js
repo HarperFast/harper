@@ -27,7 +27,11 @@ export class Vault extends tables.Vault {
 	}
 
 	subscribe(request) {
-		request.rowFilter = (record, context) => isSuper(context.user) || record.owner === context.user?.username;
+		request.rowFilter = (record, context) => {
+			// lets a test fail one subscriber's filter while the row is delivered to the others (#2771)
+			if (record.secret === `fail-filter-for-${context.user?.username}`) throw new Error('rowFilter failed');
+			return isSuper(context.user) || record.owner === context.user?.username;
+		};
 		return super.subscribe(request);
 	}
 

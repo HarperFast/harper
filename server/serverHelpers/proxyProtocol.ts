@@ -24,6 +24,7 @@
  */
 
 import { X509Certificate } from 'node:crypto';
+import { formatPeerAddress } from './peerAddress.ts';
 
 // PROXY v1 max header length per spec: 108 bytes
 const PROXY_V1_MAX_HEADER = 108;
@@ -152,7 +153,7 @@ function decodeV2(buffer: Buffer): ProxyHeaderDecision {
 		decoded.srcPort = buffer.readUInt16BE(24);
 		tlvOffset = 16 + 12;
 	} else if (family === PP2_FAMILY_TCP6 && headerLength >= 16 + 36) {
-		decoded.srcIp = formatIpv6(buffer, 16);
+		decoded.srcIp = formatPeerAddress(buffer.subarray(16, 32));
 		decoded.srcPort = buffer.readUInt16BE(48);
 		tlvOffset = 16 + 36;
 	} else {
@@ -221,38 +222,6 @@ function parseSslSubTlvs(buffer: Buffer, start: number, end: number, tls: Forwar
 		}
 		offset = valueEnd;
 	}
-}
-
-/**
- * Format 16 address bytes as compressed IPv6 (longest zero run becomes '::'),
- * matching Node's net.Socket remoteAddress format so downstream string
- * comparisons (logs, allowlists) behave the same as for direct connections.
- */
-function formatIpv6(buffer: Buffer, offset: number): string {
-	const groups: number[] = [];
-	for (let i = 0; i < 16; i += 2) {
-		groups.push(buffer.readUInt16BE(offset + i));
-	}
-	// Find the longest run of zero groups (must be at least 2 to compress)
-	let bestStart = -1;
-	let bestLength = 1;
-	for (let i = 0; i < 8;) {
-		if (groups[i] !== 0) {
-			i++;
-			continue;
-		}
-		let end = i;
-		while (end < 8 && groups[end] === 0) end++;
-		if (end - i > bestLength) {
-			bestStart = i;
-			bestLength = end - i;
-		}
-		i = end;
-	}
-	if (bestStart === -1) return groups.map((g) => g.toString(16)).join(':');
-	const head = groups.slice(0, bestStart).map((g) => g.toString(16));
-	const tail = groups.slice(bestStart + bestLength).map((g) => g.toString(16));
-	return `${head.join(':')}::${tail.join(':')}`;
 }
 
 /**

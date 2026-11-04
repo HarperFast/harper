@@ -11,13 +11,14 @@ const chai = require('chai');
 const chaiAsPromised = require('chai-as-promised').default;
 chai.use(chaiAsPromised);
 const { expect } = chai;
-const env_mgr = require('#src/utility/environment/environmentManager');
+const env_mgr = require('#js/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { databases, table } = require('#src/resources/databases');
 const password = require('#src/utility/password');
-let user = require('#src/security/user');
+const user = require('#src/security/user');
 
 const TEST_PASSWORD = 'test1234!';
+const originalHashFunction = env_mgr.get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION);
 
 async function dropTestUsers() {
 	await user.dropUser({ username: 'test_user' }).catch(() => {});
@@ -38,11 +39,11 @@ async function addTestUser() {
 }
 
 function setHashFunction(hashFunction) {
-	delete require.cache[require.resolve('#src/security/user')];
-	delete require.cache[require.resolve('#src/utility/password')];
 	env_mgr.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, hashFunction);
-	require('#src/utility/password');
-	user = require('#src/security/user');
+}
+
+async function storedHashFunction(username) {
+	return (await databases.system.hdb_user.get(username)).hash_function;
 }
 
 describe('user.ts Unit Tests', () => {
@@ -62,11 +63,14 @@ describe('user.ts Unit Tests', () => {
 				},
 			});
 		} catch {}
-		await user.setUsersWithRolesCache();
 	});
 
 	afterEach(async () => {
 		await dropTestUsers();
+	});
+
+	after(() => {
+		env_mgr.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, originalHashFunction);
 	});
 
 	describe('Test addUser', () => {
@@ -102,6 +106,13 @@ describe('user.ts Unit Tests', () => {
 			expect(users.get('test_user_md5').password.length).to.be.greaterThan(10);
 			expect(users.get('test_user_sha256').password.length).to.be.greaterThan(10);
 			expect(users.get('test_user_argon2id').password.length).to.be.greaterThan(10);
+			expect(await storedHashFunction('test_user_undefined')).to.equal('sha256');
+			expect(await storedHashFunction('test_user_md5')).to.equal('md5');
+			expect(await storedHashFunction('test_user_sha256')).to.equal('sha256');
+			expect(await storedHashFunction('test_user_argon2id')).to.equal('argon2id');
+			expect((await user.findAndValidateUser('test_user_argon2id', 'pass-argon2id')).username).to.equal(
+				'test_user_argon2id'
+			);
 		});
 
 		it('should throw an error if role is not found', async () => {
@@ -129,6 +140,16 @@ describe('user.ts Unit Tests', () => {
 			await user.alterUser(alterUserObj);
 			const findUser = await user.userInfo({ hdb_user: { username: 'test_user' } });
 			expect(findUser.username).to.equal('test_user');
+		});
+
+		it('should store a changed password with the hash function configured at that time', async () => {
+			setHashFunction('sha256');
+			await addTestUser();
+			setHashFunction('argon2id');
+			await user.alterUser({ operation: 'alter_user', username: 'test_user', password: 'new-password' });
+			expect(await storedHashFunction('test_user')).to.equal('argon2id');
+			expect((await user.findAndValidateUser('test_user', 'new-password')).username).to.equal('test_user');
+			await expect(user.findAndValidateUser('test_user', TEST_PASSWORD)).to.be.rejected;
 		});
 
 		it('should throw an error if validation fails', async () => {
@@ -179,7 +200,6 @@ describe('user.ts Unit Tests', () => {
 				role: 'super_user',
 				active: true,
 			});
-			await user.setUsersWithRolesCache();
 			const result = await user.findAndValidateUser('test_user', TEST_PASSWORD);
 			expect(result.username).to.equal('test_user');
 		});
@@ -244,7 +264,7 @@ describe('user.ts Unit Tests', () => {
 				active: true,
 			});
 			assert.ok(!Object.keys(require('../../json/systemSchema.json')).includes(COMPONENT_TABLE));
-			await user.setUsersWithRolesCache();
+			await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD);
 			componentTable = table({
 				database: 'system',
 				table: COMPONENT_TABLE,
@@ -340,9 +360,8 @@ describe('user.ts Unit Tests', () => {
 		});
 
 		it('should reuse one map per read permission and not share across them', async () => {
-			const cache = await user.getUsersWithRolesCache();
-			const first = cache.get(SUPER_USER).role.permission.system.tables;
-			const second = cache.get(READ_ONLY_USER).role.permission.system.tables;
+			const first = user.getUserWithRole(SUPER_USER).role.permission.system.tables;
+			const second = user.getUserWithRole(READ_ONLY_USER).role.permission.system.tables;
 			assert.notStrictEqual(first, second, 'different read permissions must not share a map');
 			const suAgain = (await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD)).role.permission.system.tables;
 			assert.strictEqual(suAgain, first, 'the same read permission must reuse one map instance');
@@ -430,7 +449,7 @@ describe('user.ts Unit Tests', () => {
 				password: TEST_PASSWORD,
 				active: true,
 			});
-			await user.setUsersWithRolesCache();
+			await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD);
 			try {
 				const permission = await cachedRolePermissions(SELF_GRANT_USER);
 				assert.strictEqual(permission.system.tables[COMPONENT_TABLE].read, false);

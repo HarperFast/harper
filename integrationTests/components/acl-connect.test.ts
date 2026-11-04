@@ -29,6 +29,8 @@ const RC = {
 	NOT_AUTHORIZED: [5, 128, 135] as const,
 	SUBACK_DENIAL_CODES: [128, 135] as const,
 	SUBACK_NO_RESOURCE: 143 as const,
+	// PUBACK counterpart of SUBACK's 143: the topic has no resource to handle it (harper#2335).
+	PUBACK_NO_RESOURCE: 144 as const,
 } as const;
 
 function isDenied(code: number | undefined): boolean {
@@ -37,6 +39,10 @@ function isDenied(code: number | undefined): boolean {
 
 function isNoResource(code: number | undefined): boolean {
 	return code === RC.SUBACK_NO_RESOURCE;
+}
+
+function isPublishRejected(code: number | undefined): boolean {
+	return isDenied(code) || code === RC.PUBACK_NO_RESOURCE;
 }
 
 function isRejected(code: number | undefined): boolean {
@@ -350,7 +356,7 @@ suite('Component: acl-connect', { skip: skipSuite }, (ctx: ContextWithHarper) =>
 				// silent drop with PUBACK success — accepted
 			} catch (err) {
 				const code = (err as any)?.code;
-				ok(isDenied(code), `expected silent drop or denial code, got publish error code=${code}`);
+				ok(isPublishRejected(code), `expected silent drop or denial code, got publish error code=${code}`);
 			}
 		} finally {
 			await endQuiet(client);

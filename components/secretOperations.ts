@@ -19,11 +19,12 @@ import * as configUtils from '../config/configUtils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import * as validator from './operationsValidation.js';
+import * as validator from './operationsValidation.ts';
 import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { encryptEnvelope, parseEnvelopeFields } from '../utility/secretEnvelope.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
-import { normalizeGitHost, type ResolvedGitCredential } from './gitCredentialServer.ts';
+import { type ResolvedGitCredential } from './gitCredentialServer.ts';
+import { componentNameMatches, deriveGitSecretName, deriveRegistrySecretName } from '../utility/componentNames.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const SECRET_TABLE = terms.SYSTEM_TABLE_NAMES.SECRET_TABLE_NAME;
@@ -361,39 +362,10 @@ export function isRegistryCredential(entry: any): boolean {
 	return entry?.registry !== undefined;
 }
 
-/**
- * Deterministic name for the auto-minted secret backing a literal registry token: keyed by the
- * deploying component and the registry, so re-supplying (or rotating) the token on a later deploy
- * overwrites the same row rather than accumulating one per deploy. Sanitized to the set_secret name
- * grammar (`\w.-`), since a registry can carry a scheme, port, or path.
- */
-export function deriveRegistrySecretName(component: string, registry: string): string {
-	const registryKey = registry
-		.trim()
-		.replace(/^https?:\/\//i, '')
-		.replace(/^\/\//, '')
-		.replace(/\/+$/, '')
-		.toLowerCase()
-		.replace(/[^\w.-]+/g, '_');
-	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
-	return `deploy.${componentKey}.${registryKey}`;
-}
-
-/**
- * Deterministic name for the secret backing a literal git-host token, following the registry
- * convention above but with a `git` kind segment: a registry entry accepts a bare host too, so
- * without a distinguishing segment a git and a registry credential for the same host would derive
- * the same name and silently overwrite each other's secret. Keyed by host rather than by
- * repository: the credential entry identifies itself by host, so the name has to be derivable from
- * the entry alone for a rotation to overwrite the same row. A per-repository credential is
- * expressible today by scoping the token itself (a fine-grained PAT) rather than by splitting the
- * secret name.
- */
-export function deriveGitSecretName(component: string, host: string): string {
-	const hostKey = normalizeGitHost(host).replace(/[^\w.-]+/g, '_');
-	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
-	return `deploy.${componentKey}.git.${hostKey}`;
-}
+// Re-exported from their shared home (utility/componentNames.ts): `harper deploy setup=true` seals a
+// credential client-side and has to land on the same hdb_secret row this module's literal-token path
+// would, so the derivations can't live behind this module's server-side dependencies.
+export { deriveGitSecretName, deriveRegistrySecretName };
 
 /**
  * An entry's kind, from its identifying key. Every path that rebuilds an entry goes through this, so
@@ -465,7 +437,8 @@ export async function ingestCredentials(req: any, credentials: any[] | undefined
 		// name from its own identifying key.
 		const name = deriveSecretName(entry, component);
 		// Reuse set_secret's seal-and-store path (encrypt with custody, grant to the component, audit
-		// the mutation). The deploy request is already super_user, which set_secret requires.
+		// the mutation). set_secret requires super_user, which a deploy under a component grant is not; it is refused
+		// a literal token before it gets here.
 		await setSecret({
 			operation: terms.OPERATIONS_ENUM.SET_SECRET,
 			hdb_user: req?.hdb_user,
@@ -547,7 +520,12 @@ export async function resolveCredentials(
 			);
 		}
 		const grants = Array.isArray(row.grants) ? row.grants : [];
-		if (!row.processEnv && !grants.includes(component)) {
+		// Only a deploy credential honors a pattern grant: a component's runtime view of its secrets stays exact.
+		if (
+			!row.processEnv &&
+			!grants.includes(component) &&
+			!grants.some((grant) => grant.endsWith('*') && componentNameMatches(grant, component))
+		) {
 			throw new ClientError(
 				`credential secret '${name}' is not granted to component '${component}' ` +
 					`(grant it with grant_secret, or set it processEnv:true)`,

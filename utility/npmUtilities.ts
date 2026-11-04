@@ -1,20 +1,19 @@
 'use strict';
 
 import Joi from 'joi';
-import * as path from 'path';
+import * as path from 'node:path';
 
 import { handleHDBError, hdbErrors } from './errors/hdbError.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 import * as validator from '../validation/validationWrapper.ts';
 import harperLogger from './logging/harper_logger.ts';
 
 import { CONFIG_PARAMS } from './hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { nonInteractiveSpawn } from '../components/Application.ts';
+import { nonInteractiveSpawn, packageManagerInstallArguments } from '../components/Application.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
-import { isThreadRunning } from '../server/threads/manageThreads.js';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
 
 /**
  * Executes npm install against specified custom function projects
@@ -26,18 +25,18 @@ export async function installModules(req: any) {
 		'install_node_modules is deprecated. Dependencies are automatically installed on' +
 		' deploy, and install_node_modules can lead to inconsistent behavior';
 	harperLogger.warn(deprecationWarning, req.projects);
-	const validation = modulesValidator(req);
+	const { error: validation, value: validatedRequest } = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let { projects, dryRun } = req;
+	const { projects, dry_run: dryRun, allowInstallScripts } = validatedRequest;
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 	const responseObject: any = {};
 
-	const args = ['install', '--force', '--omit=dev', '--json'];
+	const args = [...packageManagerInstallArguments('npm', allowInstallScripts, true), '--json'];
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {
@@ -49,14 +48,8 @@ export async function installModules(req: any) {
 				() => nonInteractiveSpawn(project, 'npm', args, projectPath),
 				{ isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId) }
 			);
-			stdout = stdout ? stdout.replace('\n', '') : null;
+			responseObject[project].npm_output = stdout ? parseNpmReport(stdout) : null;
 			stderr = stderr ? stderr.replace('\n', '') : null;
-
-			try {
-				responseObject[project].npm_output = JSON.parse(stdout);
-			} catch {
-				responseObject[project].npm_output = stdout;
-			}
 
 			try {
 				responseObject[project].npm_error = JSON.parse(stderr);
@@ -78,6 +71,22 @@ export async function installModules(req: any) {
 	return responseObject;
 }
 
+// npm before 11.20 prints its human-readable dry-run diff ("add <name> <version>") ahead of the --json
+// report; the report is the last document that starts a line with '{'
+function parseNpmReport(stdout: string) {
+	try {
+		return JSON.parse(stdout);
+	} catch {
+		const reportStart = stdout.lastIndexOf('\n{') + 1;
+		if (reportStart > 0) {
+			try {
+				return JSON.parse(stdout.slice(reportStart));
+			} catch {}
+		}
+		return stdout.replace('\n', '');
+	}
+}
+
 function parseNPMStdErr(stderr: string) {
 	//npm returns errors inconsistently, on 6 it returns json, on 8 it returns json stringified inside of a larger string
 	let startSearchString = '"error": {';
@@ -91,15 +100,19 @@ function parseNPMStdErr(stderr: string) {
 }
 
 /**
- * Validator for both installModules & auditModules
+ * Validator for installModules
  * @param {Object} req
- * @returns {*}
  */
 function modulesValidator(req: any) {
+	// `dryRun` was the only spelling that worked before dry_run was honored; keep it accepted, but
+	// reject a request that carries both rather than picking a winner
 	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
-	});
+		allowInstallScripts: Joi.boolean().default(true),
+	})
+		.rename('dryRun', 'dry_run', { ignoreUndefined: true })
+		.rename('install_allow_scripts', 'allowInstallScripts', { ignoreUndefined: true });
 
-	return validator.validateBySchema(req, funcSchema);
+	return validator.validateAndConvertBySchema(req, funcSchema);
 }

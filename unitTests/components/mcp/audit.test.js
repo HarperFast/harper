@@ -1,5 +1,9 @@
 const assert = require('node:assert');
-const { redactArgs, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
+const { existsSync, readFileSync } = require('node:fs');
+const logger = require('#src/utility/logging/harper_logger');
+const { pinLogConfig } = require('../../logConfigFixture.js');
+const { waitFor } = require('../../waitFor.js');
+const { redactArgs, redactArgsForTool, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
 
 describe('mcp/audit', () => {
 	describe('redactArgs', () => {
@@ -20,30 +24,55 @@ describe('mcp/audit', () => {
 			assert.equal(out.list[0].password, '[redacted]');
 		});
 
-		it('redacts secret-bearing exact field names (value/values/envelope) for secret-bearing tools', () => {
-			// set_secret / set_env_value payloads must not reach the audit log via MCP —
-			// this mirrors the REST ops-log strip in processLocalTransaction. The exact-field
-			// masking is opt-in per tool (third arg), so it fires only for those operations.
-			const input = {
-				name: 'API_KEY',
-				value: 'plaintext-secret',
-				values: { A: '1' },
-				envelope: 'enc:v1:abc',
-				search_value: 'find-me',
-			};
-			const out = redactArgs(input, 0, true);
-			assert.equal(out.name, 'API_KEY');
-			assert.equal(out.value, '[redacted]');
-			assert.equal(out.values, '[redacted]');
-			assert.equal(out.envelope, '[redacted]');
-			assert.equal(out.search_value, 'find-me', 'exact-match only — search_value stays auditable');
+		it('redacts every secret-bearing field for both secret tools', () => {
+			const secret = redactArgsForTool(
+				{ name: 'API_KEY', value: 'plaintext-secret', envelope: 'enc:v1:abc' },
+				'set_secret'
+			);
+			assert.deepStrictEqual(secret, { name: 'API_KEY', value: '[redacted]', envelope: '[redacted]' });
+
+			const environment = redactArgsForTool(
+				{ key: 'DATABASE_URL', value: 'postgres://secret', values: { A: '1' } },
+				'set_env_value'
+			);
+			assert.deepStrictEqual(environment, {
+				key: 'DATABASE_URL',
+				value: '[redacted]',
+				values: '[redacted]',
+			});
+		});
+
+		it('redacts secret fields the tool does not declare', () => {
+			const misdirected = redactArgsForTool({ name: 'API_KEY', values: { A: 'plaintext-secret' } }, 'set_secret');
+			assert.deepStrictEqual(misdirected, { name: 'API_KEY', values: '[redacted]' });
+
+			const environment = redactArgsForTool({ project: 'application', envelope: 'enc:v1:abc' }, 'set_env_value');
+			assert.deepStrictEqual(environment, { project: 'application', envelope: '[redacted]' });
+		});
+
+		it('redacts key for SSH-key tools without hiding generic key fields', () => {
+			const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----';
+			const input = { name: 'deploy', key: privateKey, Key: privateKey };
+
+			for (const tool of ['add_ssh_key', 'update_ssh_key']) {
+				assert.deepStrictEqual(redactArgsForTool(input, tool), {
+					name: 'deploy',
+					key: '[redacted]',
+					Key: '[redacted]',
+				});
+			}
+			assert.deepStrictEqual(redactArgsForTool(input, 'search_by_value'), input);
+			assert.equal(input.key, privateKey, 'redaction must not mutate the caller payload');
+		});
+
+		it('handles tool names that collide with object prototype properties', () => {
+			const input = { key: 'auditable-identifier' };
+			assert.deepStrictEqual(redactArgsForTool(input, 'valueOf'), input);
 		});
 
 		it('leaves generic value/values fields auditable for non-secret tools', () => {
-			// `value`/`values` are non-secret params on many operations; without the per-tool opt-in
-			// they must stay visible so unrelated tools keep a useful audit trail.
 			const input = { value: 'a-search-term', values: [1, 2, 3], password: 'p' };
-			const out = redactArgs(input, 0, false);
+			const out = redactArgsForTool(input, 'search_by_value');
 			assert.equal(out.value, 'a-search-term');
 			assert.deepEqual(out.values, [1, 2, 3]);
 			assert.equal(out.password, '[redacted]', 'credential-named fields are still redacted globally');
@@ -107,6 +136,12 @@ describe('mcp/audit', () => {
 	});
 
 	describe('emitAuditEntry', () => {
+		let restoreLogConfig;
+		before(() => {
+			restoreLogConfig = pinLogConfig({ level: 'info' });
+		});
+		after(() => restoreLogConfig?.());
+
 		it('does not throw on a well-formed entry', () => {
 			assert.doesNotThrow(() =>
 				emitAuditEntry({
@@ -120,6 +155,30 @@ describe('mcp/audit', () => {
 					durationMs: 15,
 				})
 			);
+		});
+
+		it('keeps secret material out of the emitted log record', async () => {
+			const logPath = logger.getLogFilePath();
+			const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
+			emitAuditEntry({
+				timestamp: new Date().toISOString(),
+				profile: 'operations',
+				sessionId: 'abcdefgh-ijkl',
+				tool: 'set_secret',
+				user: 'alice',
+				args: { name: 'API_KEY', value: 'plaintext-secret', values: { A: 'plaintext-secret' } },
+				status: 'isError',
+				durationMs: 1,
+			});
+			// The logger buffers and flushes on a timer, so poll for this entry specifically — an
+			// earlier test's audit line can land after the offset is taken.
+			const written = await waitFor(() => {
+				if (!existsSync(logPath)) return undefined;
+				const tail = readFileSync(logPath, 'utf8').slice(offset);
+				return tail.includes("tool: 'set_secret'") ? tail : undefined;
+			});
+			assert.ok(!written.includes('plaintext-secret'), 'the secret must not reach the log file');
+			assert.ok(written.includes('[redacted]'));
 		});
 
 		it('does not throw on a rate-limited entry with no errorMessage', () => {

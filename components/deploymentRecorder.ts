@@ -13,9 +13,11 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
+import { transaction, contextStorage } from '../resources/transaction.ts';
 import { createBlob, isSaving, deleteBlob, BLOB_UNAVAILABLE_STATUS } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import type { CredentialReference } from './secretOperations.ts';
+import { isInstallFingerprint } from './installFingerprint.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
@@ -29,14 +31,22 @@ import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 const EVENT_LOG_MAX = 200;
 const EVENT_LOG_HEAD_KEEP = 20;
 
-// In-memory registry of live emitters, keyed by deployment_id. Populated for the lifetime
-// of an in-progress deploy on the origin node; get_deployment SSE looks here to tail live
-// events after replaying event_log. Per-node, not replicated — peers don't see another
-// node's in-progress emitters. Cross-node tailing is a later concern.
-const activeEmitters = new Map<string, ProgressEmitter>();
+// In-memory registry of in-progress deploys on the origin node, keyed by deployment_id;
+// get_deployment SSE looks here to tail live events after replaying event_log. Per-node, not
+// replicated — peers don't see another node's in-progress emitters. `finished` settles once the
+// terminal row is written, so a tail ends without an in-band sentinel event that every other
+// subscriber to the emitter (the event_log, a streamed deploy_component) would also receive.
+interface ActiveDeployment {
+	emitter: ProgressEmitter;
+	finished: PromiseWithResolvers<void>;
+}
+const activeDeployments = new Map<string, ActiveDeployment>();
 
-export function getActiveEmitter(deploymentId: string): ProgressEmitter | undefined {
-	return activeEmitters.get(deploymentId);
+export function getActiveDeployment(
+	deploymentId: string
+): { emitter: ProgressEmitter; finished: Promise<void> } | undefined {
+	const active = activeDeployments.get(deploymentId);
+	return active && { emitter: active.emitter, finished: active.finished.promise };
 }
 
 // Cap for the degraded fallback used only when the hdb_deployment table is missing (so the
@@ -54,7 +64,16 @@ type DeploymentStatus =
 	| 'restarting'
 	| 'success'
 	| 'failed'
-	| 'rolled_back';
+	| 'rolled_back'
+	// A rolling deploy took its release on the node that received it, and its activation job is taking it on the
+	// others; the job ends it as `success` or `partial`.
+	| 'rolling_out'
+	// Terminal: some node did not take the release a rolling deploy activated; `error.nodes` names them.
+	| 'partial'
+	// Terminal: the build is complete and certified on disk but was not activated. Terminal rather than
+	// in-flight because nothing further happens to THIS deployment — activating its artifact is a separate
+	// operator action with a row of its own.
+	| 'staged';
 
 interface CreateOptions {
 	project?: string;
@@ -62,12 +81,52 @@ interface CreateOptions {
 	user?: string;
 	restart_mode?: 'immediate' | 'rolling' | null;
 	rollback_of?: string | null;
+	/** The staged deployment whose artifact this deployment activated. */
+	activated_from?: string | null;
 	// Deploy credentials in reference form (`{ registry, secret, scope? }` / `{ host, secret,
 	// username? }`) — never a literal token. Kept so a rollback can re-resolve the credential from
 	// hdb_secret without the operator re-supplying it. Null when the deploy used no credentials or a
 	// no-custody transient token.
 	credentials?: CredentialReference[] | null;
+	preview?: Record<string, unknown> | null;
+	/** Where the deploy came from: attested by an OIDC exchange, or declared by the client (deploymentSource.ts). */
+	source?: Record<string, unknown> | null;
 	emitter?: ProgressEmitter;
+	// Open-transaction budget (ms) for the payload-ingest write, below. Mirrors the
+	// `deployment_timeout` operation parameter already used for the peer-side row/blob waits
+	// (DEFAULT_AWAIT_ROW_TIMEOUT_MS) so operators have one existing knob for all of a deploy's
+	// size-driven timeouts, rather than a new config surface for this one.
+	ingestTimeoutMs?: number;
+}
+
+/**
+ * Run `write()` in a fresh transaction while preserving audit attribution. Recorder writes must
+ * commit independently of a caller's transaction so an older staged row cannot overwrite them;
+ * authorization is enforced by the deploy operation rather than these internal writes.
+ *
+ * `timeoutBudget` is sticky across RocksDB `getReadTxn()` calls, so reads inside `write()` cannot
+ * silently restore the generic default. The transaction uses the larger of this budget and the
+ * configured global limit.
+ */
+function withIsolatedTransaction<T>(write: () => Promise<T>, timeoutMs?: number): Promise<T> {
+	const ambient = contextStorage.getStore();
+	// No `signal`: tracking is observability and the deploy must still succeed, so a deploy client that
+	// stops waiting (CLI ^C, proxy idle timeout) must not poison these writes and strand the row in a
+	// non-terminal phase.
+	const context = {
+		user: ambient?.user,
+		originatingOperation: ambient?.originatingOperation,
+		session: ambient?.session,
+	};
+	return transaction(context, (txn) => {
+		if (timeoutMs != null) {
+			// TODO(harper#2057): only extends the RocksDB DatabaseTransaction head; on
+			// HARPER_STORAGE_ENGINE=lmdb, Table.txnForContext() chains a separate LMDBTransaction
+			// that this budget doesn't reach.
+			txn.timeoutBudget = timeoutMs;
+		}
+		return write();
+	});
 }
 
 export class DeploymentRecorder {
@@ -78,10 +137,13 @@ export class DeploymentRecorder {
 	private pendingPut: Promise<void> | null = null;
 	private dirty = false;
 	private sealed = false;
+	private flushSuppressed = false;
+	private readonly ingestTimeoutMs?: number;
 
-	private constructor(deploymentId: string, initial: Record<string, any>) {
+	private constructor(deploymentId: string, initial: Record<string, any>, ingestTimeoutMs?: number) {
 		this.deploymentId = deploymentId;
 		this.record = initial;
+		this.ingestTimeoutMs = ingestTimeoutMs;
 	}
 
 	static async create(options: CreateOptions): Promise<DeploymentRecorder> {
@@ -104,14 +166,17 @@ export class DeploymentRecorder {
 			completed_at: null,
 			user: options.user ?? null,
 			rollback_of: options.rollback_of ?? null,
+			activated_from: options.activated_from ?? null,
 			credentials: options.credentials ?? null,
+			preview: options.preview ?? null,
+			source: options.source ?? null,
 			error: null,
 		};
-		const recorder = new DeploymentRecorder(deploymentId, record);
+		const recorder = new DeploymentRecorder(deploymentId, record, options.ingestTimeoutMs);
 		await recorder.put();
 		if (options.emitter) {
 			recorder.subscribeTo(options.emitter);
-			activeEmitters.set(deploymentId, options.emitter);
+			activeDeployments.set(deploymentId, { emitter: options.emitter, finished: Promise.withResolvers<void>() });
 		}
 		return recorder;
 	}
@@ -158,9 +223,8 @@ export class DeploymentRecorder {
 	// the record dirty; the chained continuation issues a follow-up put once the prior one
 	// settles. This keeps event_log writes O(1) puts per burst rather than O(N) per event.
 	private scheduleFlush(): void {
-		if (this.sealed) {
-			// Sealed: accumulate state in memory but don't write. finish() does the single
-			// terminal write. See seal() for why. The emitter still emits live SSE events.
+		if (this.sealed || this.flushSuppressed) {
+			// Accumulate state until finish() or the active ingest writes it without a competing put.
 			this.dirty = true;
 			return;
 		}
@@ -175,6 +239,7 @@ export class DeploymentRecorder {
 				this.scheduleFlush();
 			}
 		});
+		this.pendingPut.catch((error) => logger.warn?.('Failed to persist deployment progress', error));
 	}
 
 	/**
@@ -191,6 +256,26 @@ export class DeploymentRecorder {
 	 * materialized by the time they reach us, so they take the simpler buffer path.
 	 */
 	async ingestPayload(source: Readable | Buffer | string): Promise<void> {
+		this.flushSuppressed = true;
+		try {
+			while (this.pendingPut) {
+				try {
+					await this.pendingPut;
+				} catch {
+					/* already logged; the ingest write carries the current row state */
+				}
+			}
+			await this.ingestPayloadWithoutFlush(source);
+		} finally {
+			this.flushSuppressed = false;
+			if (this.dirty && !this.sealed) {
+				this.dirty = false;
+				this.scheduleFlush();
+			}
+		}
+	}
+
+	private async ingestPayloadWithoutFlush(source: Readable | Buffer | string): Promise<void> {
 		const hash = createHash('sha256');
 
 		// In-memory sources: the bytes are already resident, so hashing them and creating a
@@ -202,7 +287,10 @@ export class DeploymentRecorder {
 			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
 			this.record.payload_hash = hash.digest('hex');
 			this.record.payload_size = buffer.length;
-			await this.put();
+			// Same blob-durability gate as the streaming path below applies here too (the commit
+			// waits for the buffer to land on disk), so a large base64-in-JSON/CBOR body needs the
+			// same extended budget.
+			await this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 			return;
 		}
 
@@ -263,6 +351,16 @@ export class DeploymentRecorder {
 		});
 		const blob = createBlob(tap, { type: 'application/gzip' });
 		this.record.payload_blob = blob;
+		// This row's commit is gated on the blob's durable file write (resources/blob.ts,
+		// startPreCommitBlobsForRecord's local-write branch) so a peer never sees a row that
+		// references a not-yet-durable blob — the write transaction is legitimately held open for
+		// as long as the payload takes to land on disk. The deploy system is explicitly designed
+		// to carry arbitrarily large, uncapped components (see the module comment above), so that
+		// duration scales with payload size, not with anything bounded. Run this one put() under
+		// an extended open-time budget instead of the generic storage.maxTransactionOpenTime meant
+		// for ordinary short requests (a large-but-otherwise-healthy ingest tripped that generic
+		// guard on a loaded self-hosted runner — see the Large Deploy Payload Test regression).
+		//
 		// Persisting the row encodes the blob, which synchronously starts the file write that
 		// drains the tap, so `isSaving(blob)` is set as soon as put() is *called*. Await the put,
 		// the source draining (tapDone), and the file flush (saving) together: handing all three
@@ -270,7 +368,7 @@ export class DeploymentRecorder {
 		// a large upload mid-stream (which rejects both tapDone and the blob write) fails the
 		// deploy loudly here instead of leaking an unhandledRejection. This also makes hash/size
 		// correctness independent of the put()/store write timing and of isSaving() being defined.
-		const putDone = this.put();
+		const putDone = this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 		const saving = isSaving(blob) ?? Promise.resolve();
 		try {
 			await Promise.all([putDone, tapDone, saving]);
@@ -288,7 +386,7 @@ export class DeploymentRecorder {
 				// ensures the null-reference write lands after the original reference write
 				// (so it wins) and the blob's file lock is released before we unlink it.
 				await Promise.allSettled([putDone, saving]);
-				await this.put();
+				await this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 				deleteBlob(blob);
 			} catch (cleanupError) {
 				logger.warn?.('Failed to clean up partial deploy payload blob', cleanupError);
@@ -301,7 +399,7 @@ export class DeploymentRecorder {
 		this.record.payload_size = blob.size ?? byteCount;
 		// Persist the now-known hash + size. The blob is already saved, so this re-put does
 		// not re-stream — saveBlob short-circuits on the existing fileId.
-		await this.put();
+		await this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 	}
 
 	/**
@@ -395,17 +493,26 @@ export class DeploymentRecorder {
 		this.sealed = true;
 	}
 
-	async finish(status: 'success' | 'failed' | 'rolled_back', error?: unknown): Promise<void> {
+	async finish(
+		status: 'success' | 'failed' | 'rolled_back' | 'staged' | 'rolling_out',
+		error?: unknown
+	): Promise<void> {
 		if (this.finished) return;
-		// Send a terminal sentinel through the emitter (if any) BEFORE we unsubscribe and
-		// remove it from the registry, so any SSE tail subscribers can resolve their wait
-		// even on a code path that doesn't emit an explicit `error` event.
-		const emitter = activeEmitters.get(this.deploymentId);
-		emitter?.emit('_recorder_finished', { status });
 		this.finished = true;
 		this.unsubscribe?.();
 		this.unsubscribe = null;
-		activeEmitters.delete(this.deploymentId);
+		const active = activeDeployments.get(this.deploymentId);
+		try {
+			await this.writeTerminal(status, error);
+		} finally {
+			// Removed only now, so a tail that arrives during the terminal write waits for it instead of reading the
+			// row before it lands.
+			activeDeployments.delete(this.deploymentId);
+			active?.finished.resolve();
+		}
+	}
+
+	private async writeTerminal(status: DeploymentStatus, error?: unknown): Promise<void> {
 		// Drain the ENTIRE coalesced-flush chain before mutating + persisting the terminal
 		// state. Just awaiting `this.pendingPut` once isn't enough: its `.finally` may
 		// re-schedule another put (when `dirty` was set during the in-flight put), and
@@ -429,22 +536,314 @@ export class DeploymentRecorder {
 				phase: this.record.phase,
 			};
 		}
-		await this.put();
+		if (status !== 'rolling_out') return this.put();
+		const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+		await withRolloutRowLock(table, this.deploymentId, async () => {
+			await this.keepRolloutProgress(table);
+			await this.put();
+		});
+	}
+
+	/**
+	 * A rolling deploy's activation job writes this row too, and normally waits for this write first; should it have
+	 * written already, what it recorded is kept rather than replaced by this in-memory copy. Runs under the row's lock,
+	 * which the job's writes take too, so none lands between this read and the write that follows.
+	 */
+	private async keepRolloutProgress(table: any): Promise<void> {
+		const stored: any =
+			table && (await withIsolatedTransaction(() => table.get(this.deploymentId)).catch(() => undefined));
+		if (!stored) return;
+		if (stored.status === 'success' || stored.status === 'partial') {
+			this.record.status = stored.status;
+			this.record.completed_at = stored.completed_at;
+			this.record.error = stored.error ?? null;
+		}
+		const activations = new Map<string, unknown>();
+		for (const peer of stored.peer_results ?? [])
+			if (peer?.node != null && peer.activation) activations.set(peer.node, peer.activation);
+		if (activations.size === 0) return;
+		const peers = Array.isArray(this.record.peer_results) ? this.record.peer_results : [];
+		for (const peer of peers) if (activations.has(peer?.node)) peer.activation = activations.get(peer.node);
+		for (const [node, activation] of activations) {
+			if (!peers.some((peer) => peer?.node === node)) peers.push({ node, status: null, error: null, activation });
+		}
+		this.record.peer_results = peers;
+		const recorded = new Set(this.record.event_log.map((entry) => JSON.stringify(entry)));
+		for (const entry of stored.event_log ?? []) {
+			if (entry?.event === 'peer_activation' && !recorded.has(JSON.stringify(entry))) this.record.event_log.push(entry);
+		}
 	}
 
 	get row(): Record<string, any> {
 		return this.record;
 	}
 
-	private async put(): Promise<void> {
+	private async put(timeoutMs?: number): Promise<void> {
 		const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 		if (!table) {
 			// Table missing means the upgrade directive hasn't run yet (or the table got dropped).
 			// We tolerate this — tracking is observability; the deploy itself must still succeed.
 			return;
 		}
-		await table.put(this.record);
+		await withIsolatedTransaction(() => table.put(this.record), timeoutMs);
 	}
+}
+
+// How long a rolling deploy's activation job waits for the origin's own write of `rolling_out` before it records a
+// peer's outcome over whatever the row holds. The origin writes it moments after starting the job; a write of its
+// in-memory row that landed after the job's would erase what the job recorded, so this only bounds an origin that
+// failed in between.
+const ROLLOUT_RECORD_WAIT_MS = 10 * 60_000;
+// The least time between two writes to the row while the job runs. A peer that fails at once (connection refused)
+// would otherwise put two writes moments apart, the burst that can commit out of order on a loaded peer (#1170).
+// The job's final write retries this often, `retryDelayMs` apart and growing, before the job fails with every outcome.
+export const rolloutTiming = { writeSpacingMs: 1000, finalWriteAttempts: 3, retryDelayMs: 1000 };
+const lastRolloutWrite = new Map<string, number>();
+// Rows whose wait for the origin's write is over, whether a write of the job's then landed or not.
+const handedOff = new Set<string>();
+
+export interface PeerActivation {
+	node: string;
+	certification?: unknown;
+	message?: string;
+	error?: string;
+}
+
+/**
+ * Record one peer's outcome of a rolling deploy's activation job on the deployment's row, beside the staging outcome
+ * its `peer_results` entry already holds. Runs in the job, on the node that wrote the row, one peer at a time, so
+ * each write lands seconds apart and replicates like the origin's own. Never throws; resolves false when the write
+ * did not land, for the job to carry the outcome into its final write.
+ */
+export function recordPeerActivation(deploymentId: string, outcome: PeerActivation): Promise<boolean> {
+	return updateRolloutRow(deploymentId, (row) => applyPeerActivation(row, outcome));
+}
+
+/**
+ * End a rolling deploy's record once its activation job has visited every peer: `success` when every node took the
+ * release, otherwise `partial`, naming the nodes that did not. `unrecorded` are outcomes no earlier write carried; the
+ * job hands the last peer's here rather than writing it moments before this, since a tight burst of writes to one row
+ * can commit out of order on a loaded peer (#1170). Leaves a row the origin ended some other way (it failed after
+ * starting the job) with the status it has. Retries, then throws, so a job whose record cannot be ended fails with
+ * the outcomes it holds rather than completing over a row still `rolling_out`.
+ */
+export async function finishRollout(
+	deploymentId: string,
+	outcomes: PeerActivation[],
+	unrecorded: PeerActivation[] = []
+): Promise<void> {
+	await updateRolloutRow(
+		deploymentId,
+		(row) => {
+			for (const outcome of unrecorded) applyPeerActivation(row, outcome);
+			// A row still short of the origin's write gets the outcome anyway: the origin's write keeps it
+			// (`keepRolloutProgress`). Only a row the origin ended some other way keeps its status.
+			if (ENDED_ROW_STATUSES.has(row.status)) return;
+			const failed = outcomes.filter((outcome) => outcome.error);
+			row.completed_at = Date.now();
+			if (failed.length === 0) {
+				row.status = 'success';
+				return;
+			}
+			row.status = 'partial';
+			row.error = {
+				message:
+					`Not activated on ${failed.length} of ${outcomes.length} peer node(s): ` +
+					failed.map((outcome) => `${outcome.node} (${outcome.error})`).join('; '),
+				nodes: failed.map((outcome) => outcome.node),
+				phase: 'restart',
+			};
+		},
+		true
+	);
+}
+
+function applyPeerActivation(row: Record<string, any>, outcome: PeerActivation): void {
+	const activation = {
+		activated: !outcome.error,
+		certification: outcome.certification ?? null,
+		message: outcome.message ?? null,
+		error: outcome.error ?? null,
+		completed_at: Date.now(),
+	};
+	const peers = Array.isArray(row.peer_results) ? [...row.peer_results] : [];
+	const index = peers.findIndex((peer) => peer?.node === outcome.node);
+	if (index >= 0) peers[index] = { ...peers[index], activation };
+	else peers.push({ node: outcome.node, status: null, error: null, activation });
+	row.peer_results = peers;
+	row.event_log = [...(row.event_log ?? []), { t: Date.now(), event: 'peer_activation', data: outcome }];
+}
+
+async function updateRolloutRow(
+	deploymentId: string,
+	update: (row: Record<string, any>) => void,
+	required = false
+): Promise<boolean> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return false;
+	const attempts = required ? rolloutTiming.finalWriteAttempts : 1;
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await writeRolloutRow(table, deploymentId, update);
+		} catch (error) {
+			if (attempt < attempts) {
+				await new Promise((resolve) => setTimeout(resolve, rolloutTiming.retryDelayMs * attempt));
+				continue;
+			}
+			logger.warn?.(`Failed to record the rollout of deployment ${deploymentId}`, error);
+			if (required) throw error;
+			return false;
+		}
+	}
+}
+
+async function writeRolloutRow(
+	table: any,
+	deploymentId: string,
+	update: (row: Record<string, any>) => void
+): Promise<boolean> {
+	// Once per row: after a wait that saw the origin's write, or gave up on it, the job's own writes are what change
+	// the row, so waiting again would only hold each later activation back by the whole bound.
+	const deadline = handedOff.has(deploymentId) ? 0 : Date.now() + ROLLOUT_RECORD_WAIT_MS;
+	let current = await table.get(deploymentId);
+	while (current && !ROLLOUT_RECORD_STATUSES.has(current.status) && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		current = await table.get(deploymentId);
+	}
+	if (!current) return false;
+	handedOff.add(deploymentId);
+	// The origin's own `rolling_out` write is one of them: its finish stamps `completed_at`, on this node's clock.
+	const lastWrite = Math.max(lastRolloutWrite.get(deploymentId) ?? 0, current.completed_at ?? 0);
+	const sinceLastWrite = Date.now() - lastWrite;
+	if (sinceLastWrite < rolloutTiming.writeSpacingMs) {
+		await new Promise((resolve) => setTimeout(resolve, rolloutTiming.writeSpacingMs - sinceLastWrite));
+	}
+	await withRolloutRowLock(table, deploymentId, async () => {
+		const row = { ...((await withIsolatedTransaction(() => table.get(deploymentId))) ?? current) };
+		update(row);
+		await withIsolatedTransaction(() => table.put(row));
+	});
+	lastRolloutWrite.set(deploymentId, Date.now());
+	return true;
+}
+
+/**
+ * Runs a read-modify-write of a rollout row under the row's node-scoped record lock. The origin's terminal write and
+ * the activation job's writes both run on the node that received the deploy, so the lock keeps either from landing
+ * between the other's read and write. LMDB has no record locks (501); there, as when the lock cannot be had, the write
+ * goes ahead unlocked.
+ */
+async function withRolloutRowLock<T>(table: any, deploymentId: string, write: () => Promise<T>): Promise<T> {
+	let locked: any;
+	try {
+		locked = await table?.lock?.(deploymentId, { hold: true, scope: 'node' }, {});
+	} catch (error) {
+		if ((error as { statusCode?: number })?.statusCode !== 501)
+			logger.warn?.(`Writing the rollout of deployment ${deploymentId} without its row lock`, error);
+	}
+	try {
+		return await write();
+	} finally {
+		await locked?.unlock?.().catch((error: unknown) => logger.warn?.('Failed to release a rollout row lock', error));
+	}
+}
+
+// The origin's terminal write for a rolling deploy, or one that ended it before the job got here.
+const ROLLOUT_RECORD_STATUSES = new Set(['rolling_out', 'success', 'partial', 'failed', 'rolled_back', 'staged']);
+const ENDED_ROW_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
+
+function unconfirmedPeers(row: Record<string, any>): string[] {
+	return (row.peer_results ?? [])
+		.filter((peer: any) => peer?.activation?.activated !== true)
+		.map((peer: any) => peer?.node ?? 'unknown');
+}
+
+function partialRollout(row: Record<string, any>, reason: string): void {
+	const unconfirmed = unconfirmedPeers(row);
+	row.completed_at = Date.now();
+	row.status = 'partial';
+	row.error = {
+		message: reason + (unconfirmed.length ? `; not confirmed on: ${unconfirmed.join(', ')}` : ''),
+		nodes: unconfirmed,
+		phase: 'restart',
+	};
+}
+
+/**
+ * End a rolling deploy's record `partial` when its activation job failed before it could, naming each peer with no
+ * confirmed activation, so whatever follows the record is not left waiting out its bound on a job that has ended.
+ */
+export async function abandonRollout(deploymentId: string, reason: string): Promise<void> {
+	await updateRolloutRow(
+		deploymentId,
+		(row) => {
+			if (!ENDED_ROW_STATUSES.has(row.status)) partialRollout(row, `The activation job failed: ${reason}`);
+		},
+		true
+	);
+}
+
+/**
+ * End the `rolling_out` records this node wrote whose activation job is no longer running: a restart mid-rollout
+ * settles the job as ERROR (jobOwnership.ts), and nothing would end its record. `success` only when the job finished
+ * and every peer took the release; otherwise `partial`, naming each peer with no confirmed activation. Run at boot,
+ * after interrupted jobs are settled. Returns how many it ended; never throws.
+ */
+export async function settleInterruptedRollouts(): Promise<number> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	const jobs = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
+	if (!table || !jobs) return 0;
+	let settled = 0;
+	try {
+		const origin = hostname();
+		const rows = [];
+		for await (const row of table.search([{ attribute: 'status', value: 'rolling_out' }])) {
+			if (row?.origin_node === origin) rows.push(row);
+		}
+		for (const row of rows) {
+			const job = row.restart_job_id ? await jobs.get(row.restart_job_id) : undefined;
+			if (job?.status === terms.JOB_STATUS_ENUM.CREATED || job?.status === terms.JOB_STATUS_ENUM.IN_PROGRESS) continue;
+			const updated: Record<string, any> = { ...row, completed_at: Date.now() };
+			// The job's own record keeps every outcome it reached, including those whose writes to this row were lost.
+			const outcomes = jobActivations(job);
+			for (const outcome of outcomes) {
+				const recorded = updated.peer_results?.some((peer: any) => peer?.node === outcome.node && peer.activation);
+				if (!recorded) applyPeerActivation(updated, outcome);
+			}
+			const visitedEveryPeer =
+				job?.status === terms.JOB_STATUS_ENUM.COMPLETE ||
+				(outcomes.length > 0 && outcomes.every((outcome) => !outcome.error));
+			if (visitedEveryPeer && unconfirmedPeers(updated).length === 0) {
+				updated.status = 'success';
+			} else {
+				partialRollout(
+					updated,
+					`The activation job ${row.restart_job_id ?? '(none recorded)'} ended without finishing this record`
+				);
+			}
+			await withIsolatedTransaction(() => table.put(updated));
+			settled++;
+		}
+	} catch (error) {
+		logger.warn?.('Failed to settle interrupted rolling deploys', error);
+		rolloutSettlement = undefined;
+	}
+	if (settled > 0) logger.warn?.(`Ended ${settled} rolling deploy record(s) whose activation job was interrupted`);
+	return settled;
+}
+
+/** The peer outcomes an activation job recorded on its own row: its result when it completed, its message when it failed. */
+function jobActivations(job: any): PeerActivation[] {
+	const activated = job?.result?.activated ?? job?.message?.activated;
+	return Array.isArray(activated) ? activated.filter((outcome) => typeof outcome?.node === 'string') : [];
+}
+
+let rolloutSettlement: Promise<number> | undefined;
+
+/** Once per process, since this re-runs on every root component reload; an incomplete pass tries again on the next. */
+export function settleInterruptedRolloutsOnce(): Promise<number> {
+	rolloutSettlement ??= settleInterruptedRollouts();
+	return rolloutSettlement;
 }
 
 // Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,
@@ -455,9 +854,30 @@ export class DeploymentRecorder {
 // via the `deployment_timeout` operation parameter.
 export const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
 
+// Default open-time budget for the origin's payload-ingest write transaction (ingestPayload,
+// below). Distinct from DEFAULT_AWAIT_ROW_TIMEOUT_MS (that one bounds a *replication* wait;
+// this one bounds *local disk I/O* for a component the deploy system explicitly supports at
+// arbitrarily large, uncapped sizes — see the module comment above and the large-payload
+// regression test). 10 minutes comfortably covers a multi-GB ingest even on a slow or loaded
+// disk while still being a bounded safety net, not a disabled one. Overridable via the same
+// `deployment_timeout` operation parameter as the peer-side waits, so operators sizing for
+// even larger components (or a known-slow disk) have one knob, not two.
+export const DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS = 600_000;
+
 export function coerceTimeoutMs(value: unknown, fallback: number): number {
 	const requested = Number(value);
 	return Number.isFinite(requested) && requested >= 0 ? requested : fallback;
+}
+
+// Floored at the default, never lowered by it: `deployment_timeout` also governs the
+// peer-side row/blob wait (awaitDeploymentRow), where 0 means "poll once, don't wait" — a
+// legitimate fast-fail setting for peers that must never also starve the origin's own disk
+// write down to 0ms.
+export function ingestTransactionTimeoutMs(deploymentTimeout: unknown): number {
+	return Math.max(
+		coerceTimeoutMs(deploymentTimeout, DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS),
+		DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS
+	);
 }
 
 /**
@@ -551,11 +971,13 @@ export async function awaitDeploymentRow(
  * slow extraction consumer propagates back to the underlying `Blob.stream()` the same as it
  * did before this wrapper existed.
  *
- * This also bounds *when* a retry is safe: once any chunk has reached the consumer, re-opening
- * from byte 0 would duplicate it, so we only retry while the current attempt has yielded
- * nothing yet — the reported failure mode (no content bytes arrive at all within the
- * no-progress window). A stall after partial content has already been forwarded fails
- * immediately, exactly as an unwrapped read would.
+ * This also bounds *when* a retry is safe: once any byte has reached the consumer, re-opening
+ * from byte 0 would duplicate it, so we only retry while the current attempt has forwarded no
+ * bytes yet — the reported failure mode (no content bytes arrive at all within the no-progress
+ * window). Zero-length chunks are dropped rather than counted: `Blob.stream()`'s first pull over
+ * a file holding only its header (content still replicating in) enqueues one (harper-pro#1185).
+ * A stall after partial content has already been forwarded fails immediately, exactly as an
+ * unwrapped read would.
  *
  * Non-retryable classes — 500 corrupt/incomplete, 404 gone/ENOENT, or anything without a
  * `statusCode` — also fail immediately.
@@ -598,18 +1020,29 @@ async function* readPayloadBlobChunks(
 		if (cell.readable?.destroyed) return;
 		try {
 			for await (const chunk of streamFactory() as unknown as AsyncIterable<Buffer>) {
+				if (chunk.length === 0) {
+					// Readable.from() delivers destroy() only at a `yield`, which a skipped chunk never reaches.
+					if (cell.readable?.destroyed) return;
+					continue;
+				}
 				yield chunk;
 				forwardedAnyBytes = true;
 			}
 			return;
 		} catch (error) {
+			if (cell.readable?.destroyed) return;
 			if (forwardedAnyBytes || (error as { statusCode?: number })?.statusCode !== BLOB_UNAVAILABLE_STATUS) {
 				throw error;
 			}
 			const remaining = deadline - Date.now();
 			if (remaining <= 0) throw error;
+			const delayMs = Math.min(backoffMs, remaining);
+			logger.warn?.(
+				`Deploy payload read is unavailable before any content arrived; retrying in ${delayMs}ms ` +
+					`(${remaining}ms of deployment_timeout left): ${(error as Error).message}`
+			);
 			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, Math.min(backoffMs, remaining));
+				const timer = setTimeout(resolve, delayMs);
 				timer.unref?.();
 			});
 			if (cell.readable?.destroyed) return;
@@ -644,6 +1077,20 @@ function normalizePeerResult(raw: unknown): Record<string, unknown> {
 			: null,
 		started_at: r.started_at ?? null,
 		completed_at: r.completed_at ?? null,
+		...installComparisonFields(r),
+	};
+}
+
+/** Present only once the origin compared this peer's install fingerprint with its own. */
+function installComparisonFields(r: Record<string, unknown>): Record<string, unknown> {
+	if (!('install_matches' in r)) return {};
+	const install = r.install ?? (r.value as any)?.install ?? (r.body as any)?.install;
+	return {
+		install: isInstallFingerprint(install) ? install : null,
+		install_matches: typeof r.install_matches === 'boolean' ? r.install_matches : null,
+		install_differs: Array.isArray(r.install_differs)
+			? r.install_differs.filter((name) => typeof name === 'string')
+			: [],
 	};
 }
 

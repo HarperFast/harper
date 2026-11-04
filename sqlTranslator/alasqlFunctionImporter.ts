@@ -4,12 +4,16 @@
  * PUrpose of this is to set up a central module to define and import custom functions into alasql
  */
 
-import * as alasqlExtension from '../utility/functions/sql/alaSQLExtension.js';
-import * as dateFunctions from '../utility/functions/date/dateFunctions.js';
-import * as geo from '../utility/functions/geo.js';
+import * as alasqlExtension from '../utility/functions/sql/alaSQLExtension.ts';
+import dateFunctions from '../utility/functions/date/dateFunctions.js';
+import * as geo from '../utility/functions/geo.ts';
+import { installLegacySqlText } from './legacySqlText.ts';
+import { installAlasqlLike } from './alasqlLike.ts';
 
 //import the custom function, need to define an upper and lower case version of the function so it is parsed properly in alasql
 export default function (alasql: any) {
+	installLegacySqlText();
+
 	/*
     AGGREGATE FUNCTIONS
      */
@@ -20,6 +24,7 @@ export default function (alasql: any) {
 	alasql.aggr.prod = alasql.aggr.PROD = alasqlExtension.prod;
 	//we are overriding alasql's median function as their algorithm is incorrect
 	alasql.aggr.median = alasql.aggr.MEDIAN = alasqlExtension.median;
+	installAlasqlLike(alasql);
 
 	/*
     CUSTOM FUNCTIONS

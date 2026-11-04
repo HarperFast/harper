@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { lstat, readFile, readlink } from 'node:fs/promises';
 import { createRequire, Module } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { canonicalizePackageJSON } from './canonicalizePackageJSON.ts';
 
 type Source = string | Buffer;
 
@@ -43,7 +44,7 @@ export class RuntimeModuleTracker {
 	recordModule(moduleUrl: string, source: Source): void {
 		const modulePath = this.#localPath(moduleUrl);
 		if (!modulePath) return;
-		if (!this.#modules.has(modulePath)) this.#modules.set(modulePath, digest(source));
+		if (!this.#modules.has(modulePath)) this.#modules.set(modulePath, moduleDigest(modulePath, source));
 		if (this.#deployInFlight) this.#loadedDuringDeploy = true;
 	}
 
@@ -78,7 +79,7 @@ export class RuntimeModuleTracker {
 			const changed = await Promise.all(
 				modules.slice(start, start + MODULE_COMPARE_CONCURRENCY).map(async ([modulePath, previousDigest]) => {
 					try {
-						return digest(await readFile(modulePath)) !== previousDigest;
+						return moduleDigest(modulePath, await readFile(modulePath)) !== previousDigest;
 					} catch {
 						return true;
 					}
@@ -138,8 +139,21 @@ function higherPriorityResolutionCandidates(
 	const candidates = [...new Set(RESOLUTION_EXTENSIONS.map((extension) => basePath + extension))];
 	candidates.push(resolve(basePath, 'package.json'));
 	for (const extension of RESOLUTION_EXTENSIONS.slice(1)) candidates.push(resolve(basePath, `index${extension}`));
-	const resolvedIndex = candidates.indexOf(resolvedPath);
-	if (resolvedIndex === -1) return;
+	let resolvedIndex = candidates.indexOf(resolvedPath);
+	if (resolvedIndex === -1) {
+		let canonicalResolvedPath = resolvedPath;
+		try {
+			canonicalResolvedPath = realpathSync(resolvedPath);
+		} catch {}
+		resolvedIndex = candidates.findIndex((candidate) => {
+			try {
+				return realpathSync(candidate) === canonicalResolvedPath;
+			} catch {
+				return false;
+			}
+		});
+	}
+	if (resolvedIndex === -1) return candidates.slice(0, RESOLUTION_EXTENSIONS.length + 1);
 	return candidates.slice(0, resolvedIndex);
 }
 
@@ -149,7 +163,7 @@ function candidateState(path: string): string {
 		if (stats.isSymbolicLink()) return `link:${readlinkSync(path)}`;
 		if (stats.isDirectory()) return 'directory';
 		if (!stats.isFile()) return 'other';
-		return path.endsWith('package.json') ? `file:${digest(readFileSync(path))}` : 'file';
+		return path.endsWith('package.json') ? `file:${moduleDigest(path, readFileSync(path))}` : 'file';
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
 		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
@@ -162,7 +176,7 @@ async function candidateStateAsync(path: string): Promise<string> {
 		if (stats.isSymbolicLink()) return `link:${await readlink(path)}`;
 		if (stats.isDirectory()) return 'directory';
 		if (!stats.isFile()) return 'other';
-		return path.endsWith('package.json') ? `file:${digest(await readFile(path))}` : 'file';
+		return path.endsWith('package.json') ? `file:${moduleDigest(path, await readFile(path))}` : 'file';
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
 		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
@@ -186,4 +200,13 @@ function invalidateResolutionCache(specifier: string, referrerPath: string, prev
 
 function digest(source: Source): string {
 	return createHash('sha256').update(source).digest('base64');
+}
+
+function moduleDigest(path: string, source: Source): string {
+	if (path.endsWith('package.json')) {
+		try {
+			return digest(JSON.stringify(canonicalizePackageJSON(JSON.parse(source.toString()))));
+		} catch {}
+	}
+	return digest(source);
 }

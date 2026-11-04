@@ -5,10 +5,12 @@ const {
 	createSession,
 	getSession,
 	listSessions,
+	AGENT_SESSION_ATTRIBUTES,
 	appendMessage,
 	setStatus,
 	addPendingApproval,
 	resolveApproval,
+	shrinkNewestToolResults,
 	_setTableForTests,
 } = require('#src/agent/session');
 
@@ -31,6 +33,20 @@ function makeMockTable() {
 		async put(record) {
 			store.set(record.session_id, structuredClone(record));
 		},
+		search({ conditions = [], sort, limit = Infinity } = {}) {
+			let rows = Array.from(store.values());
+			for (const condition of conditions) {
+				if (condition.comparator === 'greater_than') {
+					rows = rows.filter((row) => row[condition.attribute] > condition.value);
+				}
+			}
+			if (sort) {
+				rows.sort((a, b) => ((a[sort.attribute] ?? 0) - (b[sort.attribute] ?? 0)) * (sort.descending ? -1 : 1));
+			}
+			return (async function* () {
+				for (const row of rows.slice(0, limit)) yield read(row);
+			})();
+		},
 		primaryStore: {
 			async put(key, value) {
 				store.set(key, structuredClone(value));
@@ -38,14 +54,28 @@ function makeMockTable() {
 			async get(key) {
 				return read(store.get(key));
 			},
+			// Key-ordered, like the real primary store; insertion order would make a reverse scan
+			// look time-ordered.
 			getRange({ limit = Infinity, reverse } = {}) {
-				const entries = Array.from(store.entries());
+				const entries = Array.from(store.entries()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 				if (reverse) entries.reverse();
 				return entries.slice(0, limit).map(([key, value]) => ({ key, value: read(value) }));
 			},
 		},
 	};
 }
+
+describe('agent/session table definition', () => {
+	// listSessions sorts on `updatedAt` with no conditions, which Table.search only serves from an
+	// index — without one it throws 404. The mock in the suite below sorts in memory whatever it is
+	// asked to, so it cannot notice the attribute losing `indexed`; this asserts the declaration
+	// the query depends on.
+	it('declares updatedAt as indexed, which listSessions sorts on', () => {
+		const updatedAt = AGENT_SESSION_ATTRIBUTES.find((attribute) => attribute.name === 'updatedAt');
+		assert.ok(updatedAt, 'updatedAt attribute is declared');
+		assert.strictEqual(updatedAt.indexed, true);
+	});
+});
 
 describe('agent/session', () => {
 	let mock;
@@ -140,14 +170,43 @@ describe('agent/session', () => {
 		await assert.rejects(resolveApproval(session.session_id, approval.id, true), /already resolved/);
 	});
 
-	it('lists sessions in reverse insertion order', async () => {
-		const a = await createSession({ user: 'admin' });
-		const b = await createSession({ user: 'admin' });
+	// Ids descend while activity time ascends, so a key-ordered scan and a time-ordered one cannot
+	// agree by luck.
+	async function seedSessionsOldestFirst(count) {
+		const created = [];
+		for (let i = 0; i < count; i++) {
+			const session = await createSession({ user: 'admin', sessionId: `id-${count - 1 - i}` });
+			// Explicit activity times: consecutive createSession calls land in the same millisecond,
+			// and tied timestamps would leave these assertions resting on clock granularity.
+			mock.store.get(session.session_id).updatedAt = 1000 + i;
+			created.push(session.session_id);
+		}
+		return created;
+	}
+
+	it('lists sessions most-recently-updated first, not in primary-key order', async () => {
+		const oldestFirst = await seedSessionsOldestFirst(4);
 		const sessions = await listSessions({ limit: 10 });
-		const ids = sessions.map((s) => s.session_id);
-		assert.ok(ids.includes(a.session_id));
-		assert.ok(ids.includes(b.session_id));
-		assert.equal(sessions[0].session_id, b.session_id);
+		assert.deepStrictEqual(
+			sessions.map((s) => s.session_id),
+			[...oldestFirst].reverse()
+		);
+	});
+
+	it('limit keeps the most recent sessions rather than an arbitrary subset', async () => {
+		const oldestFirst = await seedSessionsOldestFirst(5);
+		const sessions = await listSessions({ limit: 2 });
+		assert.deepStrictEqual(
+			sessions.map((s) => s.session_id),
+			[oldestFirst[4], oldestFirst[3]]
+		);
+	});
+
+	it('reflects later activity in the order, so a revived old session sorts first', async () => {
+		const oldestFirst = await seedSessionsOldestFirst(3);
+		await appendMessage(oldestFirst[1], { role: 'user', content: 'revived', createdAt: Date.now() });
+		const sessions = await listSessions({ limit: 10 });
+		assert.strictEqual(sessions[0].session_id, oldestFirst[1]);
 	});
 
 	it('serializes concurrent mutations on the same session (no lost updates)', async () => {
@@ -170,5 +229,54 @@ describe('agent/session', () => {
 		const reloaded = await getSession(session.session_id);
 		assert.equal(reloaded.status, 'error');
 		assert.equal(reloaded.lastError, 'boom');
+	});
+
+	describe('shrinkNewestToolResults', () => {
+		const cut = (content) => `${content.slice(0, 4)}…`;
+
+		async function sessionWith(messages) {
+			const session = await createSession({ user: 'admin' });
+			for (const message of messages) await appendMessage(session.session_id, { createdAt: 1, ...message });
+			return session.session_id;
+		}
+
+		it('shrinks the oversized messages in the newest group that has one, and nothing else', async () => {
+			const sessionId = await sessionWith([
+				{ role: 'tool', toolCallId: 'a', content: 'A'.repeat(100) },
+				{ role: 'assistant', content: 'B'.repeat(100) },
+				{ role: 'tool', toolCallId: 'c', content: 'C'.repeat(100) },
+				{ role: 'tool', toolCallId: 'd', content: 'tiny' },
+				{ role: 'tool', toolCallId: 'e', content: 'E'.repeat(100) },
+				{ role: 'user', content: 'U'.repeat(100) },
+			]);
+
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 2);
+
+			const contents = (await getSession(sessionId)).messages.map((m) => m.content);
+			assert.deepEqual(contents, ['A'.repeat(100), 'B'.repeat(100), 'CCCC…', 'tiny', 'EEEE…', 'U'.repeat(100)]);
+		});
+
+		it('moves to the next older group once the newest is small, and returns 0 when none is left', async () => {
+			const sessionId = await sessionWith([
+				{ role: 'tool', toolCallId: 'a', content: 'A'.repeat(100) },
+				{ role: 'assistant', content: '' },
+				{ role: 'tool', toolCallId: 'b', content: 'B'.repeat(100) },
+			]);
+
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 1);
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 1);
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 0);
+			assert.deepEqual(
+				(await getSession(sessionId)).messages.map((m) => m.content),
+				['AAAA…', '', 'BBBB…']
+			);
+		});
+
+		it('measures messages in UTF-8 bytes', async () => {
+			const fits = await sessionWith([{ role: 'tool', toolCallId: 'a', content: '漢'.repeat(4) }]);
+			assert.equal(await shrinkNewestToolResults(fits, 12, cut), 0);
+			const over = await sessionWith([{ role: 'tool', toolCallId: 'a', content: '漢'.repeat(4) }]);
+			assert.equal(await shrinkNewestToolResults(over, 11, cut), 1);
+		});
 	});
 });

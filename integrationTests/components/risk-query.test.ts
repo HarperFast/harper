@@ -5,33 +5,43 @@
  * shorthand field mapping, upsert, edge cases, and deletion.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { doesNotMatch, match, strictEqual, ok } from 'node:assert';
+import { access } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForLogMatches } from './waitForLog.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = join(__dirname, '../fixtures/risq-1.0.0.tgz');
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
-suite('Component: risk-query', (ctx: ContextWithHarper) => {
+// Quarantined on Windows: deploy_component (restart:true) hangs server-side after npm pack, which
+// stalls before() on undici's 300s headers timeout and cancels every child test. See
+// https://github.com/HarperFast/harper/issues/2273 — remove the skip when the deploy hang is fixed.
+const skipSuite = process.platform === 'win32';
+
+suite('Component: risk-query', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		await startHarper(ctx, { config: { logging: { level: 'debug' } } });
 
 		// Deploy risk-query from local fixture
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'risk-query',
-			package: join(__dirname, '../fixtures/risq-1.0.0.tgz'),
+			package: FIXTURE_PATH,
 			restart: true,
 		});
 		strictEqual(body.message, 'Successfully deployed: risk-query, restarting Harper');
 		ok(typeof body.deployment_id === 'string', `expected deployment_id in deploy response, got ${body.deployment_id}`);
 
-		// Poll until the component is ready
+		// Poll until the component is ready. Each probe carries its own abort timeout: without it, a
+		// connection that opens but never sends headers holds fetch for undici's 300s default and
+		// blows past the deadline check (issue #2273's client-side half).
 		const deadline = Date.now() + 30_000;
 		while (true) {
 			try {
-				const check = await fetch(`${ctx.harper.httpURL}/RisqTable/`);
+				const check = await fetch(`${ctx.harper.httpURL}/RisqTable/`, { signal: AbortSignal.timeout(5_000) });
 				if (check.status === 200) break;
 			} catch {
 				// server not yet accepting connections
@@ -39,6 +49,19 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 			if (Date.now() > deadline) throw new Error('Timed out waiting for risk-query to be ready after deploy');
 			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
+
+		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
+			/Using local component archive directly without npm pack/,
+			/Application risk-query has no production package work; skipping install/,
+			/\[risk-query\]: Registered resource: \/risq/,
+		]);
+		match(instanceLog, /Using local component archive directly without npm pack/);
+		match(instanceLog, /Application risk-query has no production package work; skipping install/);
+		match(instanceLog, /\[risk-query\]: Registered resource: \/risq/);
+		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
+		doesNotMatch(instanceLog, /\[risk-query:spawn:/, 'a dependency-free local archive must not start a child process');
+		await access(FIXTURE_PATH);
 	});
 
 	after(async () => {

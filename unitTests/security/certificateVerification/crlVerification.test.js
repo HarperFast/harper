@@ -16,7 +16,7 @@ describe('certificateVerification/crlVerification.ts', function () {
 
 	before(function () {
 		// Load the actual CRL verification module
-		crlModule = require('#src/security/certificateVerification/crlVerification');
+		crlModule = require('#js/security/certificateVerification/crlVerification');
 		verificationUtils = require('#src/security/certificateVerification/verificationUtils');
 	});
 

@@ -1,0 +1,32 @@
+# `full_record: true` on the operations API — full replace instead of merge.
+#
+# Open (non-@sealed) tables, because the behaviour under test is about attributes coming and
+# going: a sealed table would reject an attribute the schema doesn't declare, which is a
+# different failure from the one these probes look for.
+
+# Timestamps declared so a probe can assert __createdtime__ survives a full replace (a
+# delete-then-insert cannot preserve it, which is the point of exposing this).
+type Dog @table @export {
+	id: ID @primaryKey
+	name: String
+	breed: String
+	color: String
+	createdAt: Float @createdTime
+	updatedAt: Float @updatedTime
+}
+
+# Relationship pair: a full replace must keep a foreign key resolvable, where a
+# delete-then-insert leaves the record absent between the two writes.
+type Owner @table @export {
+	id: ID @primaryKey
+	name: String
+	dogs: [OwnedDog] @relationship(to: "ownerId")
+}
+
+type OwnedDog @table @export {
+	id: ID @primaryKey
+	name: String
+	ownerId: ID @indexed
+	nickname: String
+	owner: Owner @relationship(from: "ownerId")
+}

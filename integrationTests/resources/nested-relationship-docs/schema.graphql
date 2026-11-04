@@ -1,0 +1,12 @@
+type Brand @table @export {
+	id: Int @primaryKey
+	name: String @indexed
+	products: [Product] @relationship(to: "brandId")
+}
+
+type Product @table @export {
+	id: ID @primaryKey
+	brandId: Int @indexed
+	name: String
+	price: Int @indexed
+}

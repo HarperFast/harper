@@ -22,11 +22,21 @@ concurrency:
 
 jobs:
   work:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@54d9e61c9c827d19e34229a5c460773a9fb080a0 # main 2026-07-24 (#79: deep path / :bug,:test escalation -> claude-opus-5)
+    # Calling-job permissions ceiling — union of the reusable's
+    # authorize (contents: read) and work (contents/pull-requests/
+    # issues/id-token: write) jobs, so grants don't depend on the
+    # repo's default-workflow-permissions setting (same rationale as
+    # the review callers' blocks).
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47 # main 2026-10-01 (#93 calibration: week of 2026-08-24; #95 calibration: week of 2026-08-31; #98 ci: mint the ai-review-log token from the HarperFast AI App (retire the personal PAT); #99 ci: calibration-sweep reads ai-review-log via the HarperFast AI App to…; on af81872)
     with:
       # Same SHA as the `uses:` ref above. See the comment in
       # claude-mention.yml for why the duplication is unavoidable.
-      ai-review-prompts-ref: 54d9e61c9c827d19e34229a5c460773a9fb080a0
+      ai-review-prompts-ref: 1ca6d1fa7a9c69ea57c67bdd06fb41bafad2ad47
       repo-specific-conventions: |
         ## Harper core notes
 

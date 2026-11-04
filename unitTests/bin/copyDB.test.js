@@ -3,7 +3,7 @@ const assert = require('assert');
 const path = require('path');
 const sinon = require('sinon');
 const env_mgr = require('#src/utility/environment/environmentManager');
-const { table } = require('#src/resources/databases');
+const { table, getDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const config_utils = require('#src/config/configUtils');
 const copyDB = require('#src/bin/copyDb');
@@ -21,7 +21,9 @@ describe('Test database copy and compact', () => {
 	let update_config_stub;
 	let test_db_path;
 	let test_db_backup_path;
-	if (envGet(CONFIG_PARAMS.STORAGE_ENGINE) !== 'lmdb') return;
+	// HARPER_STORAGE_ENGINE is how `test:unit:lmdb` selects the engine; gating on the config value
+	// alone (unset under mocha) skipped this whole suite in every run.
+	if ((process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb') return;
 	before(async function () {
 		console_error_spy = sandbox.spy(console, 'error');
 		sandbox.spy(console, 'log');
@@ -82,7 +84,7 @@ describe('Test database copy and compact', () => {
 
 	it('Test copyDB copies and compacts a DB', async () => {
 		const compacted_db = path.join(storage_path, 'db-copy.mdb');
-		await copyDB.copyDb('copy-test', compacted_db);
+		await copyDB.copyDb('copy-test', compacted_db, { blobs: 'copy' });
 		await TestTable.put(105, {
 			// should not be written
 			id: 105,
@@ -91,8 +93,13 @@ describe('Test database copy and compact', () => {
 			notIndexed: 'I am a non-indexed value',
 		});
 		const stat_after = await fs.stat(compacted_db);
-		const compaction = 100 - (stat_after.size / stat_before_compact.size) * 100;
-		assert(compaction >= 85, `Compaction should be at least 85% but was ${compaction}%`);
+		// The copy carries the audit log now that it goes to the target environment instead of back
+		// into the source (harper#2048), so it is about the size of the source rather than a fraction
+		// of it — the size drop this used to assert was the audit log being silently dropped.
+		assert(
+			stat_after.size <= stat_before_compact.size,
+			`Compacted copy (${stat_after.size}) should not exceed the source (${stat_before_compact.size})`
+		);
 		assert(!(await TestTable.get(105)));
 		let matches = [];
 		for await (let entry of TestTable.search([{ name: 'about', value: 'about' }])) matches.push(entry);
@@ -104,13 +111,15 @@ describe('Test database copy and compact', () => {
 	it('Test compactOnStart compacts and overwrites DB', async () => {
 		await copyDB.compactOnStart();
 		const stat_after = await fs.stat(path.join(storage_path, 'copy-test.mdb'));
-		const compaction = 100 - (stat_after.size / stat_before_compact.size) * 100;
 		assert(update_config_stub.called, 'updateConfigValue should be called');
 		assert(!console_error_spy.called, 'console.error should not be called');
 		assert(
-			compaction >= 85,
-			'after size ' + stat_after.size + ' should be' + ' much less than before size ' + stat_before_compact.size
+			stat_after.size <= stat_before_compact.size,
+			'after size ' + stat_after.size + ' should not exceed before size ' + stat_before_compact.size
 		);
+		let readable = 0;
+		for (let i = 0; i < 100; i++) if ((await TestTable.get(i))?.notIndexed) readable++;
+		assert.equal(readable, 100, 'every record should still be readable after compaction');
 	});
 
 	it('Test compactOnStart compacts and overwrites DB and keeps backups', async () => {
@@ -119,7 +128,45 @@ describe('Test database copy and compact', () => {
 		const stat_after = await fs.stat(path.join(storage_path, 'copy-test.mdb'));
 		assert(update_config_stub.called);
 		assert(!console_error_spy.called);
-		assert(stat_after.size < 2000000); // 2MB
+		assert(stat_after.size <= stat_before_compact.size);
 		assert(await fs.exists(path.join(storage_path, 'backup', 'copy-test.mdb')));
+	});
+
+	it('does not delete a database whose name matches another database compaction target', async () => {
+		const root_path_before = env_mgr.get(CONFIG_PARAMS.ROOTPATH);
+		const collision_root = path.join(storage_path, 'collision-root');
+		const collision_storage_path = path.join(collision_root, 'database');
+		const collision_path = path.join(collision_storage_path, 'collision-source-copy.mdb');
+		env_mgr.setProperty(CONFIG_PARAMS.ROOTPATH, collision_root);
+		env_mgr.setProperty(CONFIG_PARAMS.STORAGE_PATH, collision_storage_path);
+		resetDatabases();
+		try {
+			const CollisionSourceTable = table({
+				table: 'SourceTable',
+				database: 'collision-source',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const CollisionTable = table({
+				table: 'CollisionTable',
+				database: 'collision-source-copy',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			await CollisionSourceTable.put({ id: 'source' });
+			await CollisionTable.put({ id: 'preserved', value: 'must survive compaction' });
+			assert.ok(getDatabases()['collision-source-copy'], 'the colliding database should be registered by name');
+			const bytes_before = await fs.readFile(collision_path);
+
+			await copyDB.compactOnStart();
+
+			assert.ok(await fs.exists(collision_path), 'the registered copy-target database should remain on disk');
+			assert.ok(
+				(await fs.readFile(collision_path)).equals(bytes_before),
+				'the registered copy-target database should remain byte-identical'
+			);
+		} finally {
+			env_mgr.setProperty(CONFIG_PARAMS.ROOTPATH, root_path_before);
+			env_mgr.setProperty(CONFIG_PARAMS.STORAGE_PATH, storage_path);
+			resetDatabases();
+		}
 	});
 });

@@ -1,0 +1,993 @@
+# resources/indexes/ — Design notes
+
+The derived-index runtime and the HNSW vector index (JS graph and native plane).
+
+**Read this when:** touching `derivedIndexRuntime.ts`, `HierarchicalNavigableSmallWorld.ts`, `hnswDerivedIndex.ts`, `hnswPlaneBinding.ts`, or vector query planning.
+
+Index of every design note: [DESIGN.md](../../DESIGN.md).
+
+---
+
+## Graph size on the HNSW query path must come from node ids (`resources/indexes/HierarchicalNavigableSmallWorld.ts`)
+
+The ef auto-scale needs to know how big the graph is, on every query. Two sources that look right
+are not.
+
+`getKeysCount()` on a RocksDB store is an exact key scan, so it is O(N); calling it per query puts a
+linear-in-corpus-size term in front of every vector search (measured in #2125).
+
+RocksDB's `rocksdb.estimate-num-keys` property is O(1) and looks like the obvious replacement, but it
+counts entries across memtable and SST files without reconciling overwrites. Building an HNSW graph
+rewrites each node many times as its neighbours change, so on a real index it reads far high (#2125),
+and worse after deletes. It reads exact on a fresh store with simple puts, so it validates clean in
+isolation and only misleads on a real index.
+
+Node ids are the sound source. They are allocated monotonically from a `getUserSharedBuffer` counter,
+so the counter (or one reverse seek to the largest id) gives the node count in O(1), unaffected by
+how many times a node has been rewritten. Deletes leave it reading high until a rebuild, which only
+makes ef slightly generous. A file-primary (`nativePlane`) index keeps no node-id keys in its store
+— the plane slot carries the primary key — so its count is the plane's id high-water, read the same way.
+
+Note the unit: the JS index store holds two keys per record — the graph node and the primary-key
+mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that
+reason, and any change between the two units has to move it to keep the resolved ef the same.
+
+## HNSW layers above 0 are for routing only, and must be searched greedily
+
+Each layer above 0 exists to hand the next layer down an entry point: `search()` and `index()` both
+take `results[0]` and discard the rest. Searching them at the full `ef` therefore buys nothing and
+costs work proportional to the layer's population rather than to ef — layer 1 holds ~N/M nodes, a
+second linear-in-N term. Greedy descent (`ROUTING_EF`) is what standard HNSW does; against the same
+graphs searched at the full `ef` on every layer it changed recall@10 at only one of 16 measured
+(size, `ef`) points, by one displaced neighbour (#2125).
+
+The connection-building pass in `index()` is not routing — it selects the edges that get stored — so
+it keeps `efConstruction`. The insert-side descent does alter stored graphs, recoverable only by a
+reindex; its A/B (`benchmarks/hnsw-scale.js --build-upper-ef=100`, #2125) found the two builds
+indistinguishable: the upper layers are sparse enough that a greedy walk reaches the same entry point.
+
+Greedy-equals-full is statistical, not per-graph: rare level layouts route to a different layer-0
+entry point and displace the tail of the top-k (~2-3% of random 600-node graphs in the unit test's
+corpus). Tests that assert exact result-set equality across search strategies must therefore pin the
+graph: level assignment draws from the instance's `random` property (a test seam defaulting to
+`Math.random`), which the routing test replaces with a seeded PRNG. One pinned graph samples the
+property once, so that test sweeps a fixed list of seeds, each verified non-divergent when the list
+was written — a seed that starts diverging after an intentional index change is a re-pin, not
+necessarily a routing regression.
+
+## `efConstruction` and the search-`ef` ceiling both auto-scale with the graph
+
+The connection-building pass selects each node's stored edges from a candidate list of
+`efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
+way no search-side setting can compensate: the missing neighbours are unreachable, not deep in the
+candidate list, so a larger search `ef` buys little recall at a large latency cost, while a larger
+`efConstruction` restores recall and makes queries _faster_ at the same `ef` (sweep in #2180).
+
+So when the schema does not configure `efConstruction`, it scales as `AUTO_EF_BASE * sqrt(nodes /
+AUTO_EFC_REF)`, capped at `AUTO_EFC_MAX`. The healthy write path reads the count directly from the
+shared id counter: one atomic load with no memo lag during bulk ingest. If an update-only worker
+cannot attach that counter, it warns once, falls back to the memoized reverse seek, and retries the
+attach after the memo TTL; a new insert still requires the shared counter rather than risking ids
+from a private counter. Scaling starts at 250K nodes: efC 100 held recall through 500K (0.978), so
+smaller graphs — the common case — build exactly as before. The sqrt shape mirrors the search-side
+scale; the cost is build time (1.77x at 1M for efC 200), paid only by tables that actually grow
+large, and partly returned as cheaper queries.
+
+An explicit `efConstruction` stays authoritative and is structural, so changing it triggers a full
+index rebuild. It also seeds the search `ef`: setting `efConstruction: 100` alone cuts query effort
+to 100. Retaining the former large-graph search default while opting out of build scaling requires
+an explicit `efConstructionSearch` as well (512 after the former auto-scale reached its plateau).
+There is currently no "pinned build, auto search" combination.
+
+The search side scales past its old plateau for the same reason: past `AUTO_EF_LARGE_REF` (1M
+nodes) the scale resumes from `AUTO_EF_MAX` (512) — `512 * sqrt(nodes / 1M)` — up to
+`AUTO_EF_CEILING` (2048, binding at ~16M). Why the plateau was calibrated where it was, and the
+recall a pinned 512 leaves on the table past 1M, are in the comment above `AUTO_EF_BASE` (#2181).
+The default's query latency therefore grows as sqrt(N) on large tables; that is the recall-first
+trade chosen here, and apps preferring latency pin `efConstructionSearch` or a per-query `ef`. The
+filtered-traversal budget (`maxVisits`, #1241) deliberately does not follow the second regime: each
+budgeted visit is a synchronous record load plus predicate evaluation, so an auto-scaled ef's budget
+contribution stays capped at `AUTO_EF_MAX` — the recall decision and the filtered-scan bound are
+separate decisions, and an explicit ef (per-query or schema) still raises the budget for callers who
+own the cost. Both ceilings are finite on purpose: total build work grows as N^1.5 under sqrt
+scaling, and past roughly tens of millions of nodes per graph, sharded medium graphs beat one huge
+graph on build and query cost alike — scaling the constants further is the wrong tool there.
+
+Two caveats are accepted deliberately, both inherited from the count being a lifetime high-water
+mark of allocated node ids rather than a live count. First, churn: a table that deletes heavily
+(TTL eviction, delete-and-reinsert ingest) reads high forever, so its build-side efC can sit at the
+cap while the live graph is small. The 6–7x build-time extrapolation applies to a comparably large
+graph; it is not a bound for a small rolling window. When efC exceeds the live graph size, the
+candidate list cannot fill and an insert can traverse a large fraction of the graph before storing
+only `M << 1` edges. This wastes throughput without improving recall. The search side accepted the
+same over-count as "slightly generous ef" on an opt-in read path; the write path inherits it as a
+known cost until a live count exists (tracked follow-up). Second, ramp history: nodes indexed before
+the graph crossed a scale threshold keep their original edges — the scale applies to inserts from
+that point on. A reindex in a live process rebuilds roughly uniformly (the id counter keeps its
+high-water mark), but a reindex after a restart re-seeds the counter from the largest id in the
+rebuilding store and therefore repeats the ramp — its first 250K nodes rebuild at the base efC.
+Later inserts add reverse edges to older nodes, but convergence to a uniform build is unproven: the
+default-ramp runs (#2181) kept the measured neighbours reachable at 2M and 5M.
+
+Deletes have a separate tail-latency cost: connectivity repair can synchronously reinsert an orphan
+and up to 256 nodes from a severed island. Those reinserts use the current auto-scaled efC, so the
+per-insert build multiplier can land hundreds of times within one delete.
+
+## A JS HNSW update or removal starts from the stored node (`resources/indexes/HierarchicalNavigableSmallWorld.ts` `index()`)
+
+`existingVector` is a hint, not the source of truth: whenever the key already has a node, `index()` loads it and unlinks the old edges from it. A caller cannot always know the old vector — `runIndexing` re-feeding after a crash, or a delete over a residency stub whose computed vector cannot be resolved (`updateIndices`' `existingIsStub`, `resources/Table.ts`) — and a removal from `oldNode = {}` deleted the node but left every neighbour's edge to it. Enforced by `unitTests/resources/residencyReads.test.js` ("evicting a stub whose computed vector cannot be resolved…").
+
+## An approximate index returns at most `ef` rows, so `limit` has to reach it
+
+Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not from the query. A
+`limit` above it came back short with no error: with the 512 cap no vector query could return more
+than 512 rows however large the limit, and `{offset: 250, limit: 200}` returned zero rows, so
+paginating a vector search past the first page returned nothing. `searchByIndex` threads the query's
+`offset + limit` to the custom index as `minResults`, which widens the candidate list to cover the
+request. Any future approximate index needs the same plumbing.
+
+Two bounds keep that from becoming a new problem. `ef` drives a synchronous traversal that holds
+every admitted candidate in a sorted array with an O(len) insert, so a limit-derived `ef` is capped
+at `LIMIT_EF_MAX`; without it, ordinary deep pagination (`offset` in the millions) would walk the
+whole graph on the event loop, which is worse than the truncation being fixed. And schema-level or
+per-query `ef` values stay authoritative: each is an explicit cost ceiling, so it bounds the result
+set rather than being raised by the limit. Only automatically scaled indexes widen toward
+`LIMIT_EF_MAX` to satisfy a larger bounded request.
+
+`LIMIT_EF_MAX` is the _only_ bound on the widening — deliberately not also the graph size. Clamping
+there is tempting and costs more than it saves: the memoized size reads low while a table grows, so
+it truncates the limit it was supposed to honour, and resolving a size exact enough to clamp against
+puts a store lookup back on every query whose `limit` exceeds the table — the linear-in-N term this
+whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
+traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
+
+The filter budget deliberately does not follow a limit-derived `ef`: it is the index's own resolved
+`ef` (capped as in the [auto-scale note](#efconstruction-and-the-search-ef-ceiling-both-auto-scale-with-the-graph))
+times `filterExpansion`. Multiplying it by a caller's `limit` would turn a filtered vector query into a
+record-loading scan wearing an index's clothes.
+
+Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
+search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
+and an HNSW candidate set at a larger `ef` is not guaranteed to be an ordered superset of the smaller
+one, so a record can repeat across pages or be skipped. Honoring `limit` fixes the "second page is
+empty" defect; it does not make offsets a cursor. Callers who need stability should fetch one page
+large enough for the whole result set, or pin an explicit `ef`.
+
+One consumer is still calibrated in index-store keys rather than nodes: `estimateCountAsSort`, the
+planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the count-source
+unit switch does not shift the estimate on its own. The ef term remains the configured search value,
+not the runtime auto-scaled value, so the planner increasingly underestimates vector traversal cost
+as an automatically scaled graph grows.
+
+## A filtered vector search may admit from an index key set only if the set holds every predicate match
+
+`search.ts → planCandidateKeys` turns companion AND conditions a secondary index answers (equality,
+`gt`/`ge`/`lt`/`le`, the `between` family, nested AND/OR over those) into key-only range scans, and the
+HNSW index admits from the keys instead of loading a record per visited node (#2688). A set covering
+every pushed-down condition, with no `rowFilter`/`vectorFilter`, replaces the predicate; otherwise it
+gates the residual predicate. The post-filter re-checks every row, so the set may over-admit but must
+never omit: an omission is unrecoverable and makes results depend on whether the cost model built it.
+
+`planCandidateKeyScan` enforces that by running the condition's own `filterByType` predicate on the
+records an index cannot supply: one lacking the attribute, a null one when the index holds no nulls,
+and a `0`, because a number written as `-0` is indexed under an encoding that sorts past every number
+and decodes to a wrong primary key (ordered-binary; index-led queries miss that row too). A condition
+admitting any of them stays on the predicate path; that declines `ge null` and any range covering 0.
+A range plans only on a declared Int/Long/Float/BigInt/String/Date attribute: an untyped one can hold nested
+arrays, whose elements the predicate matches but no index holds, and BigInts, which share the equal Number's
+index key but not its order, so an untyped equality set gates the predicate. `lt`/`le` start just above the
+null block, as `searchByIndex` does. Normalizing `-0` in the encoder or index writer would let zero-covering
+ranges plan again.
+
+Building the set is a cost decision: one index-entry read per match against a record load per visited
+node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
+is that ratio at the warm, regression-safe end of the measured range; `MAX_CANDIDATE_KEYS` and half the
+node count cap the synchronous scan, and the set is declined up front when the planner's
+`estimated_count` exceeds that key budget. An equality's count is exact; a range on a RocksDB index is a
+statistical estimate (a skip-list sample while the index is memtable-resident), so near the budget
+identical data can take either path. Both admit only matching records, but their visit budgets differ,
+so approximate recall can too. A complete set derives the visit budget from its selectivity,
+widening the `filterExpansion` budget by at most `ALLOW_SET_BUDGET_MAX_WIDENING` and never narrowing it;
+a configured `filterExpansion` stays authoritative. `CandidateKeySet` is the one identity rule for both
+the scan's intersection and admission. A node-id bitset for the native plane is not built: the
+pk → node-id lookup costs more than the record load it saves.
+
+## Filtered full-text search reuses companion secondary indexes before loading source records
+
+Full-text search uses the same `planCandidateKeys` contract as HNSW and chooses between two existing RocksDB access patterns. A selective range becomes a bounded key set; a broad equality condition uses one point read of the existing `[indexed value, primary key]` secondary-index entry per Tantivy hit. This avoids retaining a large set only to reject non-matching hits. Materialization has a 4,096-key budget. HNSW keeps the planner's synchronous collection path; Fulltext requests its cooperative path, which yields every 256 scanned entries to observe cancellation, transaction state and the query deadline.
+
+Point probes run only when their estimated index-read cost does not exceed the source loads they should avoid. The estimate uses the covered terms' selectivity and the same eight-key-reads-per-source-read ratio as materialization. Candidate-set budgets use the expected rejection fraction and the native reported hit count, including unbounded queries whose target fills the native window.
+
+The planner marks a gate complete only when its indexed terms cover every companion condition, the index encoding preserves the predicate's equality semantics and no opaque record guard remains. An indexed numeric equality on an `Any` field is incomplete because storage can encode an equivalent `number` and `bigint` together while the record predicate compares them strictly. An incomplete gate rejects definite misses, but admitted records still run the residual predicate. Both paths retain the normal post-filter, source-version, expiry and current-entry checks. A budget overrun or point-read failure falls back to the record predicate, briefly backs off the failing gate and emits one warning per failure episode. Unless the lead index requests point probes, the planner does not inspect probe capabilities or allocate probe state; ordinary HNSW traversal stays unchanged.
+
+## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
+
+A derived index (the native HNSW or Tantivy full-text plane) is a materialized view
+that lives outside the record transaction: its apply is native and its durability barrier is an
+`msync` or a segment publish, neither of which belongs on the commit path.
+The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
+transaction log is the durable fact, a commit only wakes a runner, and every backend resumes from an
+exact cursor into that log.** There is deliberately no second delivery fact — no transactional
+dirty-key outbox, no `aftercommit` staging — because a second durable write per indexed mutation, a
+cleanup protocol for it, and a new column family for every audited table would still not let an
+engine-specific native file commit atomically with RocksDB, so the cursor protocol would be needed
+anyway.
+
+### Invariants
+
+1. Only committed entries are delivered; the runtime never reads uncommitted log entries.
+2. One worker runs a given backend at a time (a process-wide `tryLock` per backend). The owner
+   merges every physical log into one serial stream and keeps a cursor per log.
+3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> }, floors?: { <log
+name>: <log sequence> } }`. `logs` advances only at `endTxn` and only after the backend's durability
+   barrier covers the whole transaction. `floors` anchors a log that held no completed transaction when
+   the rebuild captured its boundary: the lowest sequence that must stay retained for the log to be read
+   from its beginning — its oldest retained file, or the writer's sequence when none remains (recorded
+   only when past 1). Floors are cursor identity like `logs` — `sameCursor`
+   compares them, so a backend cannot report a floor the owner never offered — and they survive
+   backend persistence (the full-text payload codec carries them; HNSW stores the object).
+4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
+   or a full backend queue delays indexing; it cannot skip durable log work.
+5. Resume proves every saved log position with `exactStart`. A missing, incomplete or duplicate
+   boundary condemns the generation; approximate resume is not permitted. The one exception is a
+   `missing` boundary whose loss is proven harmless (below, `#recoverPurgedAnchors`): that log is
+   re-anchored by a floor instead.
+6. The runtime resolves the current primary entry once per changed record and projects only the
+   registered attributes. Backends never see the log entry's body: a conflict retry can re-resolve a
+   record after its log payload was staged, so the entry is identity and version evidence, not state.
+7. No exception from log iteration, primary reads, projection, backend calls or unlock callbacks
+   escapes the scheduled drain or interferes with subscriptions and replication.
+8. Registration adds nothing to the commit path except a local-only eviction marker for registered
+   caching tables (below). No `aftercommit` listener, no retained `AuditRecord`s, no awaited work.
+
+### Ownership and wake-up
+
+Each worker holds one `DerivedIndexRuntime` per RocksDB root store, with the same schema-derived
+registrations on every worker; the drain is lock-elected, registration is not. The runtime listens
+to the root store's `committed` event and coalesces wakes through `setImmediate`. The winner keeps a
+reusable aggregate iterator (`RocksTransactionLogStore.getRange` with `startByLog`, `exactStart`,
+`resumeAfterExactStart`, `includeLogName`) and drains for bounded count, bytes and wall time per
+turn. Ownership is sticky: the lock is not one record writers take, so holding it across turns
+delays no commit, and it is released only after an idle grace period once durable progress equals
+offered progress. The intended wake for a waiting runner is the lock's own unlock callback
+(`tryLock(key, onUnlocked)`): one primitive, and a holder that dies releases natively and wakes the
+waiters the same way. **Temporarily** the lock is taken without one: rocksdb-js before 2.9.1 queued
+that callback as a thread-safe function of the caller's env, and on Node 22 one left behind by a
+worker that was `terminate()`d aborts the process when another thread unlocks (Harper's thread
+manager terminates workers on restart). The pinned rocksdb-js has the fix (HarperFast/rocksdb-js#849),
+but the workaround is not yet reverted: successors are woken by the releasing owner's `notify()` on
+the `derived-index:<id>:wake` buffer (the readiness buffer when the registration has no
+generation-specific readiness id) and, for an owner that died without releasing, by a retry timer
+(`lockRetryMilliseconds`, 5 s by default); the releasing runner ignores the one notification it
+caused, and a runner already parked on that timer does not re-probe the lock on commit wakes.
+
+Configuration-level database aliases can load several table classes over the same physical audit
+store, index column family and plane file. They must not run that backend more than once. Registration
+therefore hands the backend to the newest class generation: it synchronously retires the predecessor,
+installs the new class's index handle, projection, table id and lag policy, and lets the native lock keep
+the successor idle until the predecessor releases ownership. A normal class cleanup only retires its own
+generation. `dropTable()` is the destructive exception: it fences the immutable table id, retires every
+registered backend for that generation (including settlement chains owned by another alias), and checks
+that the catalog still names that table id before deleting name-keyed storage. A same-name recreation can
+therefore register its new id without being retired by a stale alias.
+
+Transaction timestamps are unique per physical log but **not monotone in physical order**
+(`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
+the runtime never compares timestamps to decide progress or retention. Resume is exact-start: find
+the transaction, iterate after it. Repeat detection is a per-log set of completed timestamps
+retained since the durable cursor. A log the cursor does not anchor by timestamp is read from its
+beginning only while every file from its floor on is still retained —
+`fileCount === 0 ? currentSequenceNumber <= floor : oldestSequenceNumber <= floor`, with floor 1 for a
+log the cursor has no floor for — otherwise the generation is condemned (`log-retention`). Since
+rocksdb-js 2.12 retention can purge every file of a flushed log, so `fileCount === 0` no longer means
+"never written": an emptied log reports `currentSequenceNumber` past 1, and its history since the
+cursor may be gone. The floor is what tells the two apart, which is why a rebuild records it instead
+of failing on a log with no committed tail (the scan covers that log's past, and later commits land
+at the floor or above). The floor is proven at three sites: `#validateLogSet` when a cursor is installed, `#anchor` before the
+log's first completed transaction replaces it with an exact timestamp (files between the floor and that
+transaction may have been purged since the install check), and `#reconcileDurableCursor` before any
+durable advance publishes coverage or ready — the one path every catch-up publication takes, checked
+against the newest accepted vector, since a log anchored there was proven past its floor when read. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
+once; its runtime and HNSW drop the field on clone and judge the log by the old rule.
+
+Retention also purges the file holding a log's **timestamp anchor** once the log is idle and flushed, so
+the next install finds that boundary `missing` although nothing committed after it.
+`#recoverPurgedAnchors` proves this harmless instead of condemning. Persisted `coverage` C is **bound**:
+the index reflects every commit at or before C and none after. Purge deletes only files wholly at or
+before the flush witness W (`lastFlushedPosition`, never moved backwards). If W equals C, every reflected
+commit is flushed (a tail lost at power loss leaves W short of C) and nothing unreflected was purged. C at
+offset 0 of W's next sequence is also accepted, but only with W's segment gone from the inventory: a purge
+removes a segment only once fully flushed, while a size rotation leaves it on disk. The log is then read
+from a floor taken from an inventory sampled in an earlier `getStats` call than W, because one call reads
+the flush position before the inventory.
+
+Binding rules: only an idle pass's capture is persisted (`CoverageCapture.bound`), since a turn that reads
+entries can read some appended after its capture; persisting also needs no mutation accepted past the
+durable vector. Backends keep coverage only for the same vector with nothing applied since, and strip it
+from any cursor they write after applying records (HNSW `#appliedPastCoverage`, full-text
+`#hasStagedMutations`). The conversion is an empty `#pendingBatch` carrying the old coverage (it reflects
+the same commits), so the saved vector stays offered until it is durable. Anything else rebuilds: a
+flushed post-purge write, lagging coverage, other range failures, an unproven sibling. Accepted: coverage
+persisted by an older build, the window between a native flush and its cursor write, and a segment that
+power-loss recovery shortened to W and a purge then removed, all reachable only with a power loss (#3673). A runner's idle grace counts from its last delivered work or acquisition,
+not from its last wake: commits with no log work (the origin-closed floor, every 5 s) wake every runner,
+and must not keep it from releasing. A failure while the root store is closing or closed condemns nothing.
+
+### Offered versus durable progress
+
+A native backend accepts several batches before its next barrier, so the owner tracks **offered**
+progress (cursor vectors of accepted batches, in memory, under the lock) separately from the
+backend's **durable** cursor. Every acquisition mints an owner epoch from a process-wide atomic
+counter and stamps it on each batch; a new epoch — including after a worker restart — resets offered
+progress to the durable cursor before opening its iterator, because replaying work that survived
+in a native queue is safe and trusting a dead worker's non-durable position is not. A reported
+durable cursor must equal one offered vector exactly; validating logs independently would let a
+backend assemble a cursor from different batch boundaries and hide work. Accepted-not-durable
+progress is capped (`maxAcceptedBatchesAhead`, 64); at the cap the owner keeps the lock, stops
+reading (`waiting-durable`) and resumes on a backend state-change wake, not on commit wakes.
+
+### Authoritative record resolution and the eviction marker
+
+The log decides what must be revisited; the primary store decides what is in the index now. A
+present entry yields its current version and projection; a missing, deleted, evicted or
+invalidated entry yields `absent`, which is sound only because every removal now has a durable
+fact: `delete`, `invalidate`, `relocate`, or the local-only `evict` marker that `Table.evict()` and
+`createEvictionBatcher().stageInto()` stage into the same RocksDB transaction as the row removal for
+tables with a registered derived index (`hasDerivedIndexRegistration`). The marker is `LOCAL_ONLY`,
+a no-op in boot replay, filtered from customer history and subscriptions, and rejected by
+replication. `message`, `publish` and structure entries advance progress without becoming
+documents; a `reload` marker (replica base copy) condemns the generation because its rows have no
+per-record entries. A projection that throws a 4xx `ClientError` yields
+`{ kind: 'unindexable', reason: '<class> (<status>)' }` — the backend removes any entry and counts
+it; the message never reaches shared memory or the backend because validation messages quote
+record values. Any other projection or primary-read failure is fail-closed.
+
+### Backend contract
+
+The contract is `DerivedIndexBackend` and `DerivedIndexBatch` in `derivedIndexRuntime.ts`; their doc
+comments state each hook's obligation. Three facts they do not: `records` and `bytes` are
+non-enumerable (a backend that spreads or clones the batch loses them), `bytes` is an estimate, and
+`through` is also absent while a transaction is still open (see Bounded delivery). What an ownership
+handoff has to fence is work that survives a method return — a queued apply, a barrier that completes later, a cursor that
+trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
+handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
+bounded by the runner's turn budget (the runtime cannot bound work it does not perform): the
+expected shape is enqueue, return `accepted`, apply in the backend's own time slices, advance the
+durable cursor at its barrier, return `deferred` when its queue is full. `accepted` means the backend
+owns the batch, not that the cursor may advance. `deferred` holds the batch until a state-change
+wake. `accepted-work-lost` makes the owner rebuild its iterator from the durable cursor; `failed` or
+`DERIVED_INDEX_FAILED` condemns the generation. `reset` is optional — without it `needs-rebuild` is
+terminal — and a backend that implements it owns its crash safety: it must invalidate the cursor
+before anything destructive, because shared readiness is process memory and is no evidence after a
+restart. The runtime also writes a condemnation marker to the root store
+(`Symbol.for('derived-index:<id>:condemned')`) before any reset and clears it at the first durable
+`ready`, so a restart between condemning a cursor and destroying it still rebuilds; a marker that
+cannot be written issues no reset. The cursor's atomic durability mechanism is the backend's
+(Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
+cursor is backend-owned and validation is Harper's.
+
+### Native full-text backend
+
+`resources/indexes/fullTextDerivedIndex.ts` adapts the shared runtime to
+`@harperfast/fulltext/native`; it does not implement another replay or ownership protocol. Harper
+turns each resolved mutation into one stable document id from `tableId` and the record id's
+ordered-binary storage-key bytes, and
+passes only the schema-selected string and array fields to the wrapper. Harper validates each selected
+value, including every array element, and resolves text Blobs before submission. The wrapper owns
+native document validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment
+publication, and file lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
+records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
+long event-loop task. Awaited Blob reads yield the event loop and therefore do not consume that
+conversion budget; otherwise ordinary storage latency would fragment a rebuild into small native
+mutation submissions. Blob-bearing slices also have a wall-time ceiling derived from the writer shutdown
+budget, so a run of slow reads cannot keep one drain turn alive through hundreds of per-record read
+timeouts. A rebuild chunk without a source-size estimate consumes the adapter's entire
+queue-byte allowance, ensuring that only one unknown-size chunk is retained at a time. Wrapper
+rejections remove the previous document and count it as unindexable; they do not leave stale search
+content. A projector returning null or no string-valued fields deletes the prior document rather
+than indexing an empty replacement.
+
+The elected runner opens one writer per index with two Tantivy indexing threads. The wrapper passes
+the 64 MiB total writer budget to Tantivy's multi-threaded writer, which divides it into a 32 MiB
+arena per indexing thread. Harper does not search through that writer handle, so it keeps the one
+search worker required by the wrapper. Query readers can open on every Harper worker, so each uses
+only the wrapper's minimum search pool for ordinary-versus-expensive query isolation rather than
+scaling with host CPU. Read-only handles reserve search threads and queue bytes, but the wrapper
+does not reserve their validation-only indexing-thread or writer-memory values.
+
+Every runtime flush is a native publication barrier. Full-text activation chooses and benchmarks the
+runtime flush thresholds; the adapter does not reinterpret a flush because the runtime uses durable
+cursor progress to bound replay work and transaction-log retention.
+
+The native commit payload contains Harper's exact derived-index cursor. A publish makes the Tantivy
+mutations and that payload visible together; only then does the adapter report durable progress.
+An ordinary apply or publish failure rollback-closes the writer, discards accepted-but-unpublished
+work, and wakes the runtime to replay from the last native payload after exponential backoff to a
+five-second ceiling. It does not condemn a structurally valid generation. During a rebuild, the same
+accepted-work-lost signal aborts that rebuild attempt; the runtime retires the partial generation and
+spends one of its bounded rebuild attempts before rescanning. A mutation-batch protocol
+violation remains permanent because retry cannot change the wrapper contract. Writer open is lazy.
+After a small immediate attempt budget, open errors use the same retry ceiling unless their stable
+code proves the native generation is structurally incompatible or corrupt. Configuration, binding,
+process-state, and unknown codes retry by default: they may require operator action or restart, but do
+not prove the index files should be reset. Persistent writer unavailability emits one warning without native paths
+or record content. Ownership handoff does not finish until drain and close prove quiescence. A
+writer-open failure that lands after shutdown begins discards queued work before finalization so it
+cannot enter another retry drain. Harper
+gives native close its own 35-second bound and bounds the complete handoff at 105 seconds. If that proof fails, shutdown rejects and the runtime keeps its
+runner lock, preventing a second writer. The underlying native operation continues and a later operator
+retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
+the native commit-payload limit is terminal for that backend instance: accepted work is rollback-closed
+and reported lost, then further delivery stays deferred. The adapter does not report a permanent
+backend failure because condemnation and reset cannot shrink the cursor. Automatic reset is refused
+until configuration changes replace the backend instance. This terminal park keeps readiness
+non-terminal; when the derived-index lag policy is enabled, source writes remain rejected after the
+lag limit is crossed until the deployment is changed so the cursor fits and the backend is replaced,
+or the index is disabled. Inspection accepts any payload within Harper's fixed 64 KiB format bound,
+independent of the current publication limit, so lowering that limit never turns an already-valid
+native generation into rebuild work.
+
+Inspection is synchronous and writer-free. The first durable-cursor read in each ownership acquisition
+refreshes native state, while later reads in the same acquisition use the cache; every shutdown path
+invalidates it, including an owner that received no batch. A refresh failure never falls back to a
+cached checkpoint because the runtime can publish `ready` before lazy writer-open reconciliation.
+Query readers never use inspection: their committed payload belongs to the native snapshot they
+actually search, while inspection is an ownership-acquisition and recovery primitive.
+The synchronous backend contract has no retryable acquisition result, so an inspection exception
+deliberately fails closed: the runtime condemns the generation and rebuilds from authoritative
+records rather than trusting an unverified cursor. A transient filesystem error can therefore cost
+a full rescan; reintroducing asynchronous acquisition solely to avoid that trade is out of scope.
+Missing, cursorless, incompatible, or malformed native state has no usable cursor and therefore enters
+the runtime's ordinary local rebuild from records.
+Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
+validated retired paths. The reset operation is tracked and bounded; shutdown attaches to the same
+operation and keeps the runner lock if it cannot prove settlement. If that operation outlives its
+owner's bound, a successor waits for the same operation to settle and then issues its own epoch's
+reset; it does not spend the remaining rebuild attempts on immediate owner-epoch mismatches.
+Retired-path reclamation is
+best-effort, serialized per lifecycle, and never extends that reset handoff. The native directory is node-local derived state: restarts reuse it and
+replay after its payload; replicas independently derive it from their own applied transaction log;
+backup and restore need only authoritative records and schema. A new or unusable directory serves no
+full-text queries until rebuild and catch-up publish `ready`.
+
+A table drop keeps the tombstoned catalog descriptor, including its native index names, until
+retirement completes. The drop broadcast first unloads peer attachments and awaits their writer
+shutdown; only then may the wrapper retire native storage, followed by RocksDB column families and
+catalog rows. If native retirement cannot prove success, the table remains logically dropped and
+unloaded but its tombstone stays durable so restart or same-name creation retries cleanup. Removing
+the catalog first would turn a crash in that interval into an untraceable native-directory leak.
+
+Tantivy files are not an opaque encrypted cache. They contain the document-id term dictionary,
+analyzed term dictionaries, postings, frequencies and optionally positions; `surfaceTerms: true`
+adds an unstemmed companion term field for surface-term features, but does not store the original
+source values. Operators must protect
+the full-text directory with the same filesystem controls as Harper data. Removing source records
+does not erase old segment bytes immediately; normal Tantivy merge/reclamation governs physical
+removal, and destroying an index uses the wrapper's retirement protocol.
+
+The binding remains unloaded until a full-text declaration is activated. Harper exact-pins the
+Fulltext package, documents it in `dependencies.md`, and loads its native prebuild in dedicated
+Linux, macOS, and Windows CI jobs. A missing or incompatible binding is an activation error; Harper
+does not silently omit the declared index.
+
+### Full-text query plane
+
+Each declared full-text index can lazily open a read-only native handle beside its derived-index writer. Readers
+are keyed by native path, readiness id and owner epoch. A process-wide atomic publication generation
+invalidates stale handles and notifies peer workers. A warm reader reloads in the background after a
+notification, while every query still samples the generation and reloads on mismatch; notification
+delivery is an optimization, not a correctness dependency. Workers that never query an index open no
+reader or publication subscription. The shared derived-index runtime allocates this publication state
+only for backends with external reader snapshots; HNSW does not pay for it. A waiting query samples the
+generation after its coverage wait, so the data-publication bump that precedes the covering watermark
+is included in reader acquisition. The wrapper refreshes the reader's committed payload with the
+searcher, and Harper keeps that decoded checkpoint on the reader slot so coverage always describes the
+snapshot being searched.
+Coverage-only publications do not change the document set: the runtime permits them only after every
+accepted index mutation through that capture is durable. The shared live watermark may therefore wake a
+waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
+and the later publication notification reloads its checkpoint. Catalog-scale qualification measures this
+metadata-only reload cadence so unrelated write traffic cannot become a hidden query-plane cost.
+Missing, cursorless or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
+cold worker can return retryable lag while it opens the reader; retrying, or using
+`waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
+inspection. An epoch or query-configuration change requires a replacement handle. A publication reload
+uses the existing handle only while it has no active lease; otherwise Harper opens a replacement and
+retires the old handle after its search finishes. One logical query therefore uses one native snapshot
+across all result pages and highlight tracing. The wrapper's reported query budget bounds that whole
+query, including page fetches, source Blob reads and tracing, rather than restarting for each native
+call. Highlight source materialization is bounded by both the wrapper's trace-record count and source-byte
+limit before Blob reads start. Query leaves with the same field set reuse that materialization; distinct
+field sets remain independently bounded. Requesting highlights from an index that did not enable them is rejected.
+A retired handle accepts no new leases but remains open until its active searches finish.
+Rejected closes remain tracked and are retried during the next pause or close; a fulfilled native
+cleanup warning is logged. Neither replaces an otherwise successful query response.
+One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
+consecutive reload failures retire that handle so the next query reopens from native storage.
+Table close, drop and schema replacement never force-close an active native handle. They stop waiting
+after the wrapper's query budget plus a small settlement grace and report a retryable teardown failure;
+the retired handle remains registered for reset fencing and closes when the query eventually releases
+its lease. It unregisters only after that drain settles.
+
+Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
+active leases to drain. Harper does not force-close a handle that native code may still be using; a
+stuck native request therefore delays reset rather than risking use-after-close. The reset handoff
+allows two reader-coordination bounds plus the native reset bound. Resume carries the
+exact readiness-id and owner-epoch token that paused the path, preventing an old reset from reopening
+readers after a newer owner has paused them. Epochs from different readiness generations are never
+compared because each generation owns an independent counter.
+The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
+broadcast cannot admit a new reader. A worker that misses resume clears a token after that
+token's own shared readiness reaches ready at the same or a newer owner epoch. A predecessor generation
+that crashes during reset may never publish ready again. A successor that observed the foreign token
+before reaching ready can clear it when that same successor becomes ready: reaching ready requires the
+stable backend runner lock, so the predecessor's reset can no longer be active. A generation that was
+already ready when it observed the token must acquire the runner lock before clearing it. Recovery waits
+if a writer still owns that lock.
+The pause covers every reader on the physical path, including a superseded generation. Each active reset
+retains its own token; stale resumes cannot clear newer tokens. A worker with no query index on the path
+retains no token because it has no reader to fence, and any later attachment remains gated by its
+generation's shared readiness.
+After the last local attachment for a superseded readiness id drains and unregisters, Harper clears
+that id's exact-epoch token from surviving readers on the path and remembers that the id retired. A
+delayed pause for that retired id cannot reinstall its fence on a successor. A readiness id never seen
+on this worker is still accepted, so a successor reset fences a predecessor reader on a worker whose
+schema refresh is late. Closing attachments remain registered until their readers drain, and a duplicate
+attachment for the same readiness id keeps the fence. Retirement uses an explicit synthetic token that
+still pauses every reader because it is not tied to a generation attachment. If the native reader
+violates its contract by rejecting close, Harper logs the failure and proceeds with reset rather than
+wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
+
+Weights and highlighting are query configuration. Changing either refreshes readers without rotating
+the persisted generation. Analyzer behavior, stop words, positions, surface terms, synonyms, source
+media types, source-field membership and source order are storage identity and require a new generation. The
+wrapper validates that identity on inspection and open, so an older analyzer generation fails closed
+and rebuilds instead of serving mixed tokenization semantics.
+
+Highlighting is declaration-controlled and off unless configured. Snippet fragments contain source
+plaintext, so Harper authorizes every highlighted source field before search; selecting
+`$highlights` is also selecting that configured plaintext egress. Harper bounds each native trace call
+by both record count and encoded source bytes and sends only the fields used by that query leaf. A
+single record larger than the native trace limit is rejected before crossing the binding.
+
+Search hits carry the source record version. Harper reads the authoritative record in its transaction and omits a hit when the version no longer matches; it never combines an old score or highlight with new content. Bounded searches begin by over-fetching 32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from observed yield. Pages grow within the native response envelope, with 4,096 as an absolute ceiling, then shrink as selectivity improves; a zero-yield page grows geometrically because it provides no selectivity estimate.
+
+Each page yields after at most 256 estimated source and companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate; wider equality plans use the authoritative record predicate. The requested visible `offset + limit` is bounded independently by `maxResultsPerRequest` and the raw-hit budget, not the native ordinary result window. Raising raw work for restrictive filters does not raise the retained-record target. One reader lease keeps every native batch in a request on the same snapshot.
+
+Harper does not configure native `filterFields` or send native `filter` or `candidateIds` payloads. Candidate planning, companion-index probes and the authoritative record predicate remain Harper-owned; the wrapper's candidate limits do not cap those mechanisms.
+
+Keep the first batch on `reader.search` so a filled bounded ordinary query stays in the native ordinary-search lane. Fulltext 0.8.0 classifies every traversal call as expensive (`protocol::search_is_expensive`), sharing the process permit budget and expensive per-index queue with deep/fuzzy work. Unbounded exact-total queries already use expensive admission. The released [per-handle classifier](https://github.com/HarperFast/fulltext/blob/v0.8.0/src/protocol.rs#L615) uses the handle's query policy.
+
+When more hits are needed, switch to `searchPage` on the same reader. Ordinary search supplies no continuation, so validate and skip its bounded prefix before processing new hits. Native order is descending score then ascending native document-ID UTF-8 bytes; disagreement, repeated boundaries or empty pages claiming continuations fail closed. The real-addon regression verifies the collectors agree across modes and page sizes.
+
+Byte-aware batch sizes adapt to filter yield. Oversized responses retry the unchanged boundary at a smaller size under the same deadline. Exhausting the snapshot returns remaining eligible rows. `maxRawHitsPerRequest` caps fetched hits including bounded replay; `maxResultsPerRequest` independently caps retained offset plus limit. Both default to 10,000. Before replay, the first page total supplies a lower bound on the new hits needed to fill or exhaust the request; reject immediately if even that work plus replay cannot fit. Use the smaller of the remaining target and remaining native total so a shorter exhausted result remains valid. A lower-bound total equal to the first batch does not prove that additional hits exist, so only replay can be reserved; traversal must distinguish actual exhaustion from more matches before rejecting. Hitting a bound before exhaustion or filling the requested page throws an explicit error. These are not bounds on Tantivy scorer visits or uninterrupted query construction. Unbounded queries that reach a result/work ceiling must use a limit; they never silently return the retained prefix.
+
+Harper requires Fulltext 0.8.0, native ABI 13 and Query API 7. Traversal response capacity reserves 93 bytes before hits plus 13 bytes per versioned hit before ID/version strings; advertised page and response limits determine the batch ceiling.
+
+Read request policy from its three registered leaf parameters and runtime policy from `storage_fullText_runtime`. The legacy flattener does not retain camel-case aggregate containers such as `storage_fullText`; using that aggregate silently selects defaults. HTTP request settings follow normal worker-restart semantics; native runtime settings remain captured for the full process. Generated configuration omits `storage.fullText.query`; the resolver supplies defaults and preserves partial overrides. `storage.fullText.query` uses that same snapshot for reader term/clause policy and the fuzzy preview maximum; writer limits and persisted identity stay unchanged. Retrieval and highlighting retain the same fuzzy leaf controls.
+
+REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering. Exact count requests return `recordCount: null` and `recordCountExact: false` for full-text custom-index traversal; estimated counts may use the planner unless an opaque row/vector filter suppresses them. Native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. Each request releases its reader lease in `finally`. Separate limit/offset requests execute independently and may see different publications; Harper retains no search state between requests.
+
+A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
+permanently unusable Blob makes that whole document unindexable rather than publishing a partial
+document with different match semantics. A transient Blob read failure rolls back the accepted
+native batch and replays it. Each source read is time-bounded and replay uses the writer's bounded
+backoff, but an unreadable authoritative record never becomes an index deletion. Publication remains
+behind that record until its source is readable, preserving cursor and publication atomicity at the
+cost of delaying unrelated records in the batch. The normal derived-index lag policy makes prolonged
+failure visible and eventually applies write backpressure rather than silently diverging replicas.
+
+### Bounded delivery
+
+A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per
+eligible entry, no primary read — under `maxTransactionsPerTurn`, `maxBytesPerTurn`,
+`maxMillisecondsPerTurn` and `maxChunkRecords` distinct keys, then **resolves** each key once after
+its last collected occurrence, under `maxChunkBytes` and the same wall budget, carrying the
+remainder to the next turn. Resolving after the last occurrence, not on first encounter, is what
+keeps a writer committing between two occurrences of a key from having its later state certified by
+the cursor while the earlier state stayed indexed. An oversized transaction is delivered across
+chunks with `through` withheld until the chunk that contains its `endTxn`; nothing marks such a
+chunk because a backend can do nothing with the distinction, and query-visible atomicity of one
+transaction across chunks is not promised. `bytes` is an estimate from stored record sizes (or the
+log entry size), never a serialization; `maxChunkRecords` is the hard bound. All bounds are settable
+per registration.
+
+### Durability cadence
+
+`maxAcceptedBatchesAhead` is a ceiling; the runtime, which already tracks accepted-not-durable work,
+is the scheduler. It requests `flush('age')` when the first accepted batch since the last request is
+`maxFlushAgeMilliseconds` old (1 s), `flush('threshold')` at `flushAfterMutations` (4096) or
+`flushAfterBytes` (8 MiB), and `flush('shutdown')` at release. The backend runs the barrier
+asynchronously, coalesces requests that arrive mid-barrier, and publishes `through` atomically with
+what the barrier made durable. Reaching the end of the log requests no extra barrier — arrivals
+spaced just beyond drain completion would otherwise pay one per write; the age timer is idle
+completion. The timer is armed at a flush request while earlier work is still non-durable, and
+again after a barrier that stopped short of the offered cursor; a later write keeps an armed timer,
+so a write's barrier lands anywhere in (0, 1 s]. A test that needs a coverage wait to outlive the
+transaction monitor must therefore hold `flushDerived` until the monitor has acted (`holdBarrier`
+in `unitTests/resources/derivedIndexCoverage.test.js`).
+
+### Rebuild
+
+When the backend has `reset` and the runtime was built with `scanRecords`, `needs-rebuild` is a
+phase, not an end state: publish `rebuilding`; `shutdown(previousEpoch)`; mint a new epoch and
+republish; `reset(newEpoch)` (afterwards `getDurableCursor()` must be `undefined`); capture the
+**committed tail** of every log; scan every registered table (tombstones and symbol keys skipped),
+project, deliver bounded chunks with `through` absent; deliver a final chunk with `through` = tail;
+install the tail as offered progress and replay through the ordinary drain; publish `ready` at the
+first durable advance past the tail or the first idle pass with durable == offered.
+
+The tail is safe because a committed read is a contiguous physical prefix: rocksdb-js keeps the
+physically-written-but-uncommitted start offsets in a sorted set and `commitFinished()` advances
+`lastCommittedPosition` to the earliest of them (`TransactionLogStore::commitFinished`,
+`uncommittedTransactionPositions.front()`), so a transaction that wrote at offset 200 and committed
+before one pending at 100 stays invisible until 100 commits. Everything committed before the
+capture is in the scan; everything after it is replayed; a reload marker is therefore met exactly
+once, with no capture-time bookkeeping. A log that cannot be read to its tail fails the attempt
+closed — corruption inside the committed prefix cannot be replayed from any anchor. Attempts retry
+with backoff (`rebuildBackoffMilliseconds` 1 s doubling to 5 min) up to `maxRebuildAttempts` (8),
+then publish `unavailable` and release; the attempt count travels in shared memory so a peer
+honours an exhausted budget. `requestRebuild()` from any worker sets a request word the owner
+consumes at its next wake.
+
+### Native HNSW query coverage
+
+Generation readiness and read freshness are separate. A `ready` native index can still be applying
+committed mutations. Native vector sort/threshold conditions accept `maxIndexLagMilliseconds` on the
+sort object or the vector condition: **3000 ms by default** (`DEFAULT_MAX_INDEX_LAG_MILLISECONDS`),
+`0` for strict coverage, or an explicit finite nonnegative number. This default allows three ordinary
+1000 ms flush ages; it does not change the separate writer backpressure budget. Synchronous/non-native
+indexes ignore the native coverage options.
+
+For read-after-write, the same sort or condition takes `waitForIndexMilliseconds`.
+Omitted or `0` preserves immediate admission; a positive finite number, capped at **30,000 ms**,
+opts into a bounded wait for coverage of writes committed before the native search begins on first iteration.
+The wait takes precedence over lag tolerance: a recent but stale proof cannot satisfy it. An already
+physically current index proceeds immediately. Otherwise the query captures one monotonic target and
+waits for the owner's certified time to reach it; later writes never reset the target. Each consumed
+waiting branch has its own budget; sequential OR or concatenated branches can take longer in total.
+A timeout throws retryable `DERIVED_INDEX_LAGGING`. On an already-started HTTP stream this is an error
+record, not a new HTTP status. Request cancellation and iterator closure also end pending waits and
+skip late result materialization.
+
+Waiting preserves the normal 1000 ms flush-age schedule: a small write followed by a search commonly
+waits about a second plus barrier time. Shorter deadlines are valid but may expire. Replay must reach
+an end-of-log pass with readable committed prefixes to publish a new capture; sustained overload or
+unfinished transactions can prevent certification and cause timeouts even for unaffected tables.
+The wait does not promise exact ANN recall, a historical graph snapshot, or visibility of writes that
+have not committed locally.
+
+When a vector condition also provides the sort order, each explicit coverage option takes precedence;
+missing options inherit the sort's values. The query planner preserves both when combining them.
+
+An ordinary non-waiting native query certifies coverage **at admission**. `Harper-Index-Coverage` is
+`current; lag=0; tolerance=<requested-ms>` or `bounded; lag=<upper-bound-ms>; tolerance=<requested-ms>`.
+Bounded coverage can omit recent committed mutations; it is not a claim of known incompleteness or an
+ANN recall guarantee. The header is exposed to CORS clients and does not certify a later traversal.
+Multiple non-waiting searches append one entry each.
+
+Waiting queries retain the synchronous instance iterable API: custom resources can directly use
+`super.search(query).map(...)` or concatenate results. Validation and unavailable/rebuilding checks
+remain synchronous; the adapter opens a start gate only on consumption, so unused searches start no
+wait or traversal. A zero-size page skips native work. The iterable library can pull one extra source
+row at a page boundary; an exact boundary between branches can therefore start the next branch.
+
+Waiting queries publish no HTTP coverage header: headers precede consumption and cannot certify pending
+work. Consume results and check completion; HTTP 200 alone proves nothing. JSON errors abort without `]`
+after a best-effort diagnostic ([streaming errors](../../server/DESIGN.md#streaming-startup-errors)).
+`mapError` recovery yields a row with a separate `message`; SSE/NDJSON retain terminal errors. Prefix rows
+can precede later errors. Count pages materialize before headers and can return error status; other first-item
+status deferral remains #2670. Direct custom-index arrays retain `indexCoverage`; ordinary native promises
+expose it before await, waiting promises on resolved arrays, except zero-size pages (no certification).
+
+Waiting consumes the ordinary transaction timeout without special monitor renewal. An expired read
+snapshot fails with `ReadSnapshotExpiredError`; timed-out staged writes retain their existing 422
+failure and rollback. The adapter uses the captured snapshot for materialization and guards predicate
+reads, so it never recreates a snapshot after waiting. Lag rejection never invalidates a healthy
+plane. The default/strict no-wait lag rejection remains HTTP 503.
+File-primary node-to-record mappings are read from current storage, just like the native graph itself:
+an older record snapshot must not hide mappings published after a record already visible in that snapshot.
+Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
+
+The runner captures the RocksDB process-wide transaction clock (`getMonotonicTimestamp()`) before
+listing physical logs and polling their committed prefixes. It synchronously adds discovered logs to
+the audit store's worker-local map. A capture is usable only when each stats snapshot's committed
+position equals its written head: an earlier unfinished transaction can hide later committed
+transactions behind the readable prefix. The native statistics counter alone is insufficient here (it
+can remain nonzero at an equal head). Positions include both file sequence and byte offset; cursor
+timestamps and origin clocks are never ordered or subtracted to prove freshness.
+
+After a poll reaches the end with no undelivered records, the capture is associated with its offered
+cursor. Reconciliation publishes it only when that cursor, or a later entry in the ordered offered queue,
+is durable. Unrelated-only progress may publish without a new barrier only if **all** non-durable
+registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
+be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
+optional `coverage` field in the existing durable cursor value, kept and persisted under the binding
+rules in [Ownership and wake-up](#ownership-and-wake-up), and removed with the cursor before reset. No
+native file format changes.
+
+Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic, except
+that a durable vector advance resets the cadence, since the backend dropped the old vector's coverage. The
+shared time can refresh sooner once its prefix is durable. A coverage-only write failure logs and skips
+publication instead of rebuilding the healthy graph. Strict queries may wait for the next persisted proof.
+
+Restart identity relies on the existing storage durability ordering: these index column families disable
+WAL, and [RocksDB's database-flush callback](https://github.com/HarperFast/rocksdb-js/blob/v2.9.1/src/binding/transaction_log/transaction_log_store.cpp#L1080-L1111)
+flushes transaction-log files before their index-store flush can become durable. Under successful storage
+flushes, surviving coverage cannot refer to a lost, reusable log tail. Recovery also protects the flushed
+prefix. [Age-based rotation runs on a write](https://github.com/HarperFast/rocksdb-js/blob/v2.9.1/src/binding/transaction_log/transaction_log_store.cpp#L947-L963),
+so an ordinary idle log does not advance its head merely because time passed. These are dependency
+contracts, not a guarantee against externally replacing log files or failed storage durability.
+
+Bun gives each worker a different `process.hrtime.bigint()` origin, so it cannot certify cross-worker
+coverage. The transaction clock is shared across workers; its milliseconds are encoded as integer
+nanoseconds without multiplying the full epoch-sized floating-point value.
+
+The monotonic time lives only in the process-wide shared readiness buffer and is cleared on non-ready
+health transitions. An owner refreshes idle coverage at its flush cadence without extending its idle
+release deadline. A query within the certified age bound reads only shared memory and the monotonic
+clock; strict or older queries compare the persisted vector with current physical positions. This also
+certifies an unchanged index after owner release or process restart, when no usable time proof remains.
+An old owner can race with a non-ready transition and restore an earlier coverage time, but consumers
+gate the time on stable ready readiness; after rebuild, the rebuilt anchor still covers that earlier true
+prefix.
+Concurrent waiters on one worker/index share a 25 ms poll timer; a new waiter is checked at once and
+moves it only for a sooner deadline. A waiter's target postdates the owner's commit drain, so only a
+later drain answers it: the poll requests one, waking the local runner (which takes an ownerless index)
+and, on a non-owner, notifying the stable-id `derived-index:<id>:coverage` buffer, which only the owner
+acts on, with the coverage wake (no writer-lag accounting, no deferred retry). It is not `:wake`, whose
+notifies are release handoffs a releaser consumes as its own. A request at clock `R` is answered by any
+owner drain after it, so the next goes out only once coverage reaches `R` with a waiter unresolved. A
+failed notify falls back to the flush-cadence refresh. Closing a registration rejects its waiters.
+A completed nonempty drain also attaches its capture to the accepted boundary; ongoing writes need
+not leave an empty turn between batches. The capture remains fenced behind every indexed mutation
+accepted through that boundary.
+The strict/ownerless path costs a cursor read and stats per physical log. If a database-wide backlog
+prevents the owner from inspecting unrelated writes, coverage can conservatively become unprovable
+for an otherwise unaffected index; queries do not scan logs to classify that backlog.
+
+### Handoff fencing
+
+Release drops ownership, calls `flush('shutdown')` then `shutdown(epoch)`, and unlocks only when
+that settles; a rejected `shutdown` **keeps the lock** and publishes `unavailable`, because a backend
+that cannot prove its queue quiescent must not hand the index to another owner. `stop()` and the
+unregister function return one cached promise that resolves after every backend settled and rejects
+if any shutdown failed, so a caller cannot close storage while a backend is still draining into it.
+`isOwnerEpoch(epoch)` is an `Atomics.load` of the shared counter; a backend checks it before each
+apply, after each await and in barrier completions, and drops work for a superseded epoch. The
+runner tracks a generation that changes on every acquisition, discard, reset and release and
+ignores continuations from an earlier one.
+
+### Shared readiness
+
+`indexStore.isIndexing` is per worker, so the owner publishes into one `getUserSharedBuffer`
+allocation per backend (`derived-index:<id>:readiness`, `READINESS_BYTES`): `Int32` words for state
+(`unknown | ready | rebuilding | needs-rebuild | unavailable`), a `DerivedIndexReadinessReason` code,
+attempt count, rebuild request and lag-exceeded flag, then the `BigInt64` owner-epoch counter. Each
+word is read with a plain `Atomics.load`; nothing needs two of them atomically, so there is no
+sequence lock — the owner stores reason and attempts before state. The shared reason is a code,
+never a message. `readDerivedIndexReadiness(logStore, id)` reads it on any worker without a runtime;
+a query path uses it to choose between a 503 and an answer. `Atomics` over rocksdb-js's external
+`ArrayBuffer` wrappers is the same dependency primary-key allocation (`Table.ts`), blob holds
+(`blob.ts`) and HNSW node ids already carry; wakes use the binding's `notify()`, never
+`Atomics.wait`. A successor publishes `ready` on acquisition one `setImmediate` before its lazy
+`exactStart` validation can condemn the inherited cursor; readers see the previous, self-consistent
+generation for that turn.
+
+### Lag policy
+
+Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
+only proven at a barrier). The owner takes the longest of: cursor distance behind what it has read,
+time parked on backpressure or the ceiling, time since the oldest commit it may not have read
+(bounded by how far its newest read trails the clock), and the age of the oldest accepted work not
+yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
+(`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) then
+fails local user writes to the index's tables with `DerivedIndexLagError` — 503,
+`DERIVED_INDEX_LAGGING`, `retryable: true` — at the staging layer (`_writeUpdate`, `_writeDelete`,
+`_writeInvalidate`, `_writeRelocate`), never canonical-source applies (`transaction.sourceApply`),
+crash-recovery replay or replication notifications, since a rejected canonical write would advance
+the source cursor past a write that never landed. The flag is owned by the lock holder: it clears
+with hysteresis once the owner has proven catch-up (a durable advance and the end of the log both
+reached since acquiring, lag below half the budget), and on every transition out of "behind and
+still reading" — entering a rebuild (no cursor to guard; readers act on `rebuilding`), `unavailable`,
+a `needs-rebuild` the runtime cannot leave, a condemnation marker it could not write (its retry
+needs a commit wake, and commits were what was being shed), and a held lock. An ordinary handoff
+preserves it. The policy sheds writes; it does not pin retention — rocksdb-js has no protected
+position registration — so a budget belongs well inside the effective retention window, and it must
+be enabled only once every worker runs a runtime with the admission check.
+
+### Failure flow
+
+```mermaid
+flowchart TD
+    A[load backend cursor] --> B{all saved logs and boundaries exact?}
+    B -->|no| X{backend has reset and runtime has scanRecords?}
+    B -->|yes| C[open aggregate iterator after anchors]
+    C --> D[bounded drain: collect, resolve, deliver]
+    D -->|accepted| E[record offered cursor vector]
+    D -->|deferred| F[park until backend wake]
+    D -->|failed or threw| X
+    E -->|backend barrier| G[durable cursor equals one offered vector]
+    E -->|accepted batches at cap| W[waiting-durable]
+    G --> T[publish ready]
+    X -->|no| Z[terminal: release lock, index unavailable]
+    X -->|yes| Y[publish rebuilding, shutdown old epoch, reset, scan, tail, replay]
+    Y -->|ready after final barrier| T
+    Y -->|failure| K{attempts below cap?}
+    K -->|yes, after backoff| Y
+    K -->|no| U[publish unavailable, release lock]
+```
+
+## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
+
+For a new locally declared HNSW index, Harper uses the native plane by default when the table's
+primary descriptor already stores `audit: true` (or the same declaration explicitly enables it),
+the native binding loads, RocksDB is in use, and the index has compatible geometry. An explicit
+`nativePlane: false` selects the JS graph. The native plane replaces the RocksDB graph with a
+memory-mapped fixed-slot file owned by `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
+dependency; crate at HarperFast/hnsw). The file **is the index**: graph nodes, adjacency, the entry
+point, the id allocator, the freelist and each node's primary key exist only there. RocksDB keeps
+the primary records, the `pk → nodeId` mapping (which node a key owns, for replacement and replay)
+and the one durable replay cursor.
+
+The decision belongs to the durable index-creation boundary, not `openIndex()` or the HNSW
+constructor: those are also catalog-reload paths. An existing descriptor is therefore authoritative
+when a later declaration omits `nativePlane`; legacy descriptors with no field stay on the JS graph,
+and legacy string values retain their historical truthiness while an exactly matching declaration
+keeps the stored spelling; a numerically equivalent value produced by the GraphQL numeric-literal
+coercion does the same for a pre-upgrade numeric spelling. Numeric HNSW options are likewise
+normalized and validated only at the declaration boundary: an exact redeclaration retains persisted
+legacy values and their previous runtime coercion, while a different canonical declaration triggers
+a rebuild when that interpretation changes (notably zero-valued `optimizeRouting` strings). A table
+whose primary descriptor already stores `audit: true` qualifies for the default even when that value
+originally came from the global audit setting. In
+contrast, a new table and its omitted-mode index in the same declaration do not qualify unless that
+declaration explicitly enables audit, because audit was not durable at the index-creation boundary.
+A replicated new attribute uses native mode only when the receiving node is independently audited
+and eligible, because the plane is node-local derived state. An ineligible receiver persists its
+fallback as `nativePlane: false` in the local catalog, so installing the binding or changing storage
+later does not switch that index automatically; redeclare it locally with `nativePlane: true` after
+the node becomes eligible. Set
+`HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
+disable an explicit or already persisted native index. Set it before creating indexes when a
+rollback must remain cheap: an older release sees an omitted declaration against the persisted
+`nativePlane: true` decision as a mode change and rebuilds that index back to JS. In a cluster, keep
+the switch enabled on every node until all nodes run a release with the replicated-attribute fallback.
+
+The default accepts the native implementation's existing operational contract: maintenance is
+post-commit; writes receive retryable 503 responses after derived-index lag exceeds 30 seconds;
+per-query distance overrides are rejected; the default capacity is 16M nodes; and adding the index
+to a populated table keeps searches unavailable for the rebuild, which can take hours at large
+sizes. `nativePlane: false` is the durable per-index opt-out.
+
+The plane's own design — why the whole search loop is native rather than just the distance kernel,
+the file format, per-slot locking and dead-writer takeover, `msync` durability, the search path and
+the platform policy — belongs to the crate and lives in the `DESIGN.md` shipped with
+`@harperfast/hnsw` (HarperFast/hnsw); Harper's measured result is in #2430. What Harper owns:
+
+### File format
+
+One file per index, `<index store path>/<URI-encoded store name>.hnsw` (`hnswPlaneBinding.ts`),
+created sparse at `nativePlaneMaxNodes` slots (16M default; a structural, create-time header field —
+exhausting it makes the index unavailable until the value is raised and the index rebuilt). A
+format-version mismatch is a rebuild, by contract. Each slot ends with the record's msgpack-encoded
+primary key in `nativePlaneKeyCap` inline bytes (default 40, which fits a UUID in the slot padding);
+a longer key spills to the crate's overflow arena, so a table whose keys are mostly longer than 40
+encoded bytes should raise `nativePlaneKeyCap` rather than live in the arena. Searches and predicate
+batches return each hit's key with it, so no lookup by node id remains on the query path.
+
+Degree cap is the per-index `nativePlaneLayer0Cap`, **default 64** (supersedes the fixed 128;
+measured in [hnsw#14](https://github.com/HarperFast/hnsw/pull/14) and #2701): cap 64 holds recall@10
+within ~0.5 pt of cap 128 at every ef ≥ 128 (at 1M and 4M nodes) while cutting the 128-d slot 704 →
+448 B and the 768-d slot 1,344 → 1,088 B, which keeps a 4M-node plane resident under a 2 GB limit
+that makes the cap-128 plane thrash; a live plane's mean layer-0 degree is ~29
+([hnsw#7](https://github.com/HarperFast/hnsw/issues/7)), so the reserved slot was mostly padding.
+Cap 32 halves the slot again but trails cap 128 by 1.3–2.2 pts below ef 1024 at 4M and by 1.7 pts at
+1M for 768-d vectors, so it is a declaration for narrow vectors on a plane that outgrows RAM, not a
+default. The cap is a create-time header field: `getPlane` compares it with the index's value on
+attach and invalidates a plane that disagrees rather than reusing or truncating it, so revising it
+is a rebuild, not a format change. A file-primary index builds no JS graph, so this is the only
+layer-0 maximum it has; the JS graph's own cap in `addConnection` governs non-`nativePlane` indexes
+only. A binary-code v2 slot reopens the question.
+
+Upgrading a plane built at 128 costs one rebuild per node, the first time a process opens it under
+the new default; no GA release line carries plane files, so this reaches 5.3 pre-releases only.
+Declaring `nativePlaneLayer0Cap: 128` does not avoid that rebuild — adding the property changes the
+attribute's canonical structural options, which reindexes the attribute by itself
+(`indexOptionsStructurallyChanged` in `resources/databases.ts`); it preserves the geometry only once
+it is already the persisted declaration. The default is not written into a descriptor that omits
+the option, so nodes upgrade independently: a mixed-version cluster has each node rebuild its own
+file as it reaches the new code, and no node invalidates another's.
+
+### Concurrency and durability
+
+The plane has no cross-slot atomicity: a traversal may see a half-linked graph, or a slot reused
+since it was reached. That relaxed contract is safe only because Harper's read path loads the record
+and rescores exactly, which rejects a wrong candidate; it is not a general storage pattern. The file
+is `msync`ed on a cadence, not per commit, so the graph has bounded-lag durability with
+deterministic catch-up while the source of truth (records, mappings, cursor) stays transactional.
+Backup treats the file as node-local derived state: include it after a barrier, or rebuild on
+restore. A file whose format or checksum does not validate is rebuilt from records. macOS `msync` is a
+weaker barrier than Linux — the crate's `msync()` is a plain mapping flush with no `F_FULLFSYNC` pass —
+so on macOS a power loss after `flushAsync()` resolves and the cursor is written can leave the cursor
+past graph writes the file lost. Those vectors stay missing until a rebuild — nothing compares the
+plane's `getWatermark()` with the cursor on attach — so the Delivery crash contract does not hold there.
+
+### Search
+
+A search is one crossing per query, run off the event loop. An unfiltered search calls
+`plane.search()`; a filtered one always goes through `plane.searchWithPredicate()` — the crate hands
+back batches of candidate keys for `admit()` while traversal keeps expanding — bounded by
+`filterState.maxVisits`, the same `filterExpansion` budget as the JS path, and never passes the crate's
+node-id bitset (see the filtered vector search note above).
+A plane-backed `customIndex.search()` returns a promise-backed, async-only iterable
+(`resources/search.ts` wraps it); a synchronous consumer throws. Auto-ef reads the node count from
+the plane's `idHighWater()` (freed ids are reused, so it stays close to the live count; deletes leave
+it generous until a rebuild, as with the RocksDB graph). Every vector reaching the plane — a
+committed projection or a query target — passes one invariant (`assertPlaneVector`): array-like of
+positive length, every component a finite f32, a magnitude representable in f32, and the plane's
+`dims` once known. What fails it is the client's 400, never a plane failure; a query the plane
+cannot accept must not be read as corruption and cost a rebuild.
+
+### Delivery: a backend on the shared runtime
+
+Maintenance is off the record transaction. The commit path (`prepareCommitted`) only validates a
+changed projection; the derived-index runtime (§ above) reads the committed log and delivers batches
+to `HnswDerivedIndexBackend`:
+
+- `deliver()` enqueues and returns `accepted` (or `deferred` at 64 MiB queued); an applier drains
+  in 5 ms `setImmediate` slices. Each `records` entry (last-write-wins per key) becomes one
+  `applyDerivedValue(pk, vector | undefined, version)`: the mapping's signature short-circuits an
+  unchanged vector — published, or still pending from this process, since a rebuild's scan overlaps
+  its log replay and the plane tombstones a removed node without re-linking its neighbours (only a
+  pending mapping read back from storage is re-inserted, as its node may not have survived a crash) —
+  an older observation is discarded, otherwise the old node is removed and the
+  new vector inserted — with the primary key in its slot, so it is searchable at once — and the
+  `pk -> node` mapping written **pending**. The store holds no `node -> pk` entries: hits and
+  predicate candidates carry their keys out of the plane, and a query deduplicates by key for the
+  crash case where a replayed record's earlier node survives without a published mapping.
+- `flush()` runs at the next completed batch that carries `through`, or at the drain when none does:
+  `plane.flushAsync()`, then pending mappings are published, then that batch's `through` vector is
+  written as the cursor under `Symbol.for('derived-index-cursor')`. Waiting for the drain instead
+  would leave a catch-up — which never empties the queue — with no barrier at all, so the runtime's
+  `flushAfterMutations` / `flushAfterBytes` / `maxFlushAgeMilliseconds` cadence would be inert for
+  its whole duration. A rebuild scan chunk carries no `through` and so never interrupts a slice;
+  its barrier is the drain one, which the runtime's per-chunk `setImmediate` keeps reaching. An
+  interrupting barrier then idles for three times its own duration before another may interrupt:
+  application is paused for a barrier, and the runtime re-requests on a 1 s age timer, so on a plane
+  whose `flushAsync()` costs seconds — measured at 2–6.5 s on the Windows CI runner — honouring every
+  request would spend the whole catch-up inside barriers. The drain barrier is never delayed.
+  Application pauses while a barrier is in flight so the barrier publishes exactly the mappings it
+  covers. That order is the crash contract: a crash before the barrier leaves pending mappings that
+  replay re-derives; after it, a cursor that replays idempotently; never a published mapping to a
+  node the file did not durably get, and never a cursor over uncovered state.
+- `reset(epoch)` removes the cursor first, then the file (invalidated in-band and via a `.stale`
+  sidecar so no peer adopts a stale inode or an undeletable Windows file), then the mappings.
+- A vector the plane cannot hold at apply time (a dimensionality mismatch only the plane-holding
+  worker can see) is skipped and counted, never a rebuild.
+
+Readiness is the runtime's shared record on every worker, not `indexStore.isIndexing`: a search on
+a non-`ready` index is a 503 (`unavailable` after the rebuild budget); a `ready` index with no file
+and no surviving node mapping answers no results; one whose file is gone while mappings survive
+asks its owner for a rebuild. A search failure detaches this process from the plane and requests a
+rebuild — only the owner's `reset` destroys state, so a failure observed after a peer has already
+replaced the file cannot take out the replacement. Writer backpressure is the runtime's lag policy
+(`maxLagMilliseconds`, 30 s default on a `nativePlane` attribute), required because accepting
+unique-key load above native insert throughput and then rebuilding at that same throughput cannot
+converge.
+
+### What native-plane mode requires, and what it does not promise
+
+| requirement                                                                                                                                                                                                                                                                                                                                                                                                                                                 | enforcement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| For the automatic default, a primary descriptor with `audit: true` or an explicit `audit: true` in the same local declaration — the transaction log is the recovery source, and the default must not widen the audit-readable surface by inheriting the global setting. On an existing table whose durable audit field is absent, explicit native mode may pin the effective audit value; a stored `false` wins. A new table still requires explicit audit. | On an existing table, `table()` writes an audit enable before the native index row. A new table publishes its primary row last as the catalog-completeness marker, already carrying explicit audit. Disabling audit writes every non-primary descriptor first, whether native mode is opted out or the index is removed, then writes the primary row last. Catalog reload propagates durable audit to an already-loaded class, and `attachDerivedIndexes()` checks the runtime flag; enabling logs warns once that the audit API retains full record history for the retention window. |
+| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                                                                                                                                                                                                                                                                            | `ClientError` at index construction — never a silent rebuild under native defaults                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `@harperfast/hnsw` loads on the platform                                                                                                                                                                                                                                                                                                                                                                                                                    | absence is 503, not degraded: there is no JS graph to fall back to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| The log retains entries back to the cursor                                                                                                                                                                                                                                                                                                                                                                                                                  | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+Not promised: a single total order across concurrent CRDT/source-resolution arrivals (both delivery
+and replay re-read the authoritative record, so the index converges on what the primary store
+resolved; divergence is bounded by candidate selection, which the exact rescore filters), byte-identical
+graphs across nodes or rebuilds, or in-place format upgrades. Rebuild rate falls with graph size
+(measured in #2430), so a 16M rebuild is hours of 503; the pinned `@harperfast/hnsw` (0.4.0) exports
+a native `insertBatch`, but the rebuild does not use it yet.

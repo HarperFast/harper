@@ -5,9 +5,7 @@
 #   that every returned `value` equals the seeded constant (torn-value = non-seeded value
 #   visible in a single response = within-request snapshot break).
 #
-# Account: the F-029 cross-check table. A constant A+B invariant is maintained by
-#   concurrent TransferAccount calls. A single-request AccountPairSnap reads both
-#   keys in one request transaction; A+B != constant = within-request snapshot tear.
+# Account: seeded and summed by the Q0 readiness check.
 type Ledger @table @export {
 	id: ID @primaryKey
 	bucket: String @indexed

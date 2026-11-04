@@ -1,0 +1,5 @@
+type Telemetry @table(audit: true) @export {
+	id: ID @primaryKey
+	sequence: Int
+	payload: String
+}

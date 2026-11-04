@@ -1,0 +1,761 @@
+import assert from 'node:assert';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { normalizePrFiles, readBounded } from './collectPrFiles.mjs';
+import { evaluatePrFormat } from './evaluatePrFormat.mjs';
+import { checkBodyLinks, fileAnchorHash, parseBodyAnchors } from './prFormatLinks.mjs';
+
+const REPO = 'HarperFast/harper';
+const NUMBER = 2338;
+const HEAD = '609896d762efe2c9f529a0f9989ce0a53dd29b40';
+const FILE = 'resources/auditStore.ts';
+const HASH = 'db526bfa2603e0ee94ab17a9ea8c2b8bd02e1f626dd6907624cfe8508ad356ba';
+const LINK = `https://github.com/${REPO}/pull/${NUMBER}/changes?w=1#diff-${HASH}R211`;
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PR_FILES = {
+	version: 1,
+	complete: true,
+	files: [{ path: FILE, patchAvailable: true, ranges: { L: [[200, 220]], R: [[205, 266]] } }],
+};
+const body = ({ link = LINK, head = HEAD.slice(0, 12) } = {}) =>
+	[
+		`Audit retention now runs continuously${link ? ` in [the cleanup loop](${link})` : ''}.`,
+		'',
+		'## For the human reviewer',
+		'',
+		'No open judgment calls.',
+		'',
+		'## Verification',
+		'',
+		'Focused retention tests passed.',
+		'',
+		'Complexity: complicated',
+		'',
+		`<sub>Review-Coverage: authored=codex; ran=claude; rounds=1 @ ${head}</sub>`,
+		'',
+		`<sub>Human-Review-Need: 2 @ ${head}</sub>`,
+	].join('\n');
+const pr = (over = {}) => ({
+	user: { login: 'kriszyp', type: 'User' },
+	author_association: 'MEMBER',
+	body: body(),
+	additions: 160,
+	deletions: 31,
+	draft: false,
+	head: { sha: HEAD },
+	...over,
+});
+
+test('the remediated #2338 shape passes with a current line anchor', () => {
+	assert.strictEqual(fileAnchorHash(FILE), HASH, "fixture pins GitHub's sha256(path) anchor contract");
+	const result = evaluatePrFormat(pr(), { mode: 'enforce', repo: REPO, number: NUMBER, prFiles: PR_FILES });
+	assert.strictEqual(result.pass, true);
+	assert.strictEqual(result.compliant, true);
+	assert.strictEqual(result.links.lineAnchored.length, 1);
+});
+
+test('ordinary prose and inline examples do not trigger AI-shape fields', () => {
+	const humanBody = [
+		`This lowers algorithmic complexity: fewer branches; the \`Human-Review-Need:\` field is unchanged. [Code](${LINK})`,
+		'',
+		'## Verification',
+		'',
+		'Focused test passed.',
+	].join('\n');
+	const result = evaluatePrFormat(pr({ body: humanBody }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+	assert.strictEqual(result.compliant, true);
+});
+
+test('the motivating same-head link removal fails independently of footer freshness', () => {
+	const result = evaluatePrFormat(pr({ body: body({ link: '' }) }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, false);
+	assert.match(result.problems.join('\n'), /no line-anchored PR-diff link/);
+	assert.ok(pr().head.sha.startsWith(HEAD.slice(0, 12)), 'fixture footers remain pinned to the same head');
+});
+
+test('drafts report defects but stay green; ready PRs fail enforce mode', () => {
+	const broken = { body: 'Summary only.', draft: true };
+	const draft = evaluatePrFormat(pr(broken), { mode: 'enforce', repo: REPO, number: NUMBER });
+	assert.strictEqual(draft.pass, true);
+	assert.strictEqual(draft.compliant, false);
+	assert.strictEqual(
+		evaluatePrFormat(pr({ ...broken, draft: false }), { mode: 'enforce', repo: REPO, number: NUMBER }).pass,
+		false
+	);
+});
+
+test('bot, external, and trivial PRs are exempt before PR-files access', () => {
+	for (const candidate of [
+		pr({ user: { login: 'renovate[bot]', type: 'Bot' } }),
+		pr({ author_association: 'CONTRIBUTOR' }),
+		pr({ additions: 1, deletions: 1 }),
+	]) {
+		const result = evaluatePrFormat(candidate, { mode: 'enforce', repo: REPO, number: NUMBER });
+		assert.strictEqual(result.pass, true);
+		assert.ok(result.exempt);
+	}
+});
+
+test('every live anchor must target this PR and a current hunk line', () => {
+	const foreign = body().replace(`/pull/${NUMBER}/`, '/pull/999/');
+	assert.match(
+		evaluatePrFormat(pr({ body: foreign }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/points at HarperFast\/harper#999/
+	);
+	const drifted = body().replace('R211', 'R400');
+	assert.match(
+		evaluatePrFormat(pr({ body: drifted }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/not in a current diff hunk/
+	);
+});
+
+test('fenced examples do not satisfy the line-link requirement', () => {
+	const fenced = body({ link: '' }).replace(
+		'Audit retention now runs continuously.',
+		`Audit retention now runs continuously.\n\n\`\`\`md\n${LINK}\n\`\`\``
+	);
+	assert.strictEqual(parseBodyAnchors(fenced).length, 0);
+});
+
+test('inline-code and HTML-comment links do not satisfy the line-link requirement', () => {
+	for (const hidden of [`\`${LINK}\``, `<!-- ${LINK} -->`]) {
+		const result = evaluatePrFormat(
+			pr({ body: body({ link: '' }).replace('continuously.', `continuously. ${hidden}`) }),
+			{
+				mode: 'enforce',
+				repo: REPO,
+				number: NUMBER,
+				prFiles: PR_FILES,
+			}
+		);
+		assert.match(result.problems.join('\n'), /no line-anchored PR-diff link/);
+	}
+});
+
+test('a stray backtick cannot hide later Markdown blocks', () => {
+	const humanBody = [
+		`Refactors the \` operator handling. [Code](${LINK})`,
+		'',
+		'## Verification',
+		'',
+		'Ran `npm run test:unit`.',
+	].join('\n');
+	const result = evaluatePrFormat(pr({ body: humanBody }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+});
+
+test('nested-list and list-continuation links remain visible', () => {
+	for (const evidence of [
+		`- Ran focused tests:\n    - [cleanup loop](${LINK})`,
+		`- Ran focused tests:\n    [cleanup loop](${LINK})`,
+	]) {
+		const humanBody = ['Summary.', '', '## Verification', '', evidence].join('\n');
+		const result = evaluatePrFormat(pr({ body: humanBody }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.strictEqual(result.pass, true, evidence);
+	}
+});
+
+test('an unterminated fence reports its cause', () => {
+	const result = evaluatePrFormat(pr({ body: `${body()}\n\n\`\`\`md\nexample` }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /unterminated fenced code block/);
+});
+
+test('an unterminated HTML comment reports its cause', () => {
+	const result = evaluatePrFormat(pr({ body: `${body()}\n\n<!-- unfinished` }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /unterminated HTML comment/);
+});
+
+test('comment and fenced-code tokens do not consume one another', () => {
+	for (const suffix of ['<!-- ```suggestion\nold code\n``` -->', '```md\n<!-- unfinished\n```']) {
+		const result = evaluatePrFormat(pr({ body: `${body()}\n\n${suffix}` }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.strictEqual(result.pass, true, suffix);
+	}
+});
+
+test('indented-code links do not satisfy the line-link requirement', () => {
+	const indented = body({ link: '' }).replace('continuously.', `continuously.\n\n    ${LINK}`);
+	const result = evaluatePrFormat(pr({ body: indented }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /no line-anchored PR-diff link/);
+});
+
+test('older files URLs and per-commit paths use the same anchor contract', () => {
+	const url = `https://github.com/${REPO}/pull/${NUMBER}/files/abc123?w=1#diff-${HASH}R211-R220`;
+	const result = checkBodyLinks({ body: url, prFiles: PR_FILES, repo: REPO, number: NUMBER });
+	assert.strictEqual(result.ok, true);
+	assert.strictEqual(result.lineAnchored[0].line, 211);
+	assert.strictEqual(result.lineAnchored[0].endLine, 220);
+});
+
+test('both endpoints of a range link must remain in current hunks', () => {
+	const staleRange = `${LINK}-R400`;
+	const result = checkBodyLinks({ body: staleRange, prFiles: PR_FILES, repo: REPO, number: NUMBER });
+	assert.strictEqual(result.ok, false);
+	assert.match(
+		result.problems.map(({ message }) => message).join('\n'),
+		/auditStore\.tsR400 is not in a current diff hunk/
+	);
+});
+
+test('every recognized PR-diff link needs a line anchor', () => {
+	const fileOnly = `https://github.com/${REPO}/pull/${NUMBER}/changes#diff-${HASH}`;
+	const result = evaluatePrFormat(pr({ body: `${body()}\n\nSee also ${fileOnly}.` }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /PR-diff link has no line anchor/);
+});
+
+test('partial or non-resolving anchor URLs are not accepted', () => {
+	for (const malformed of [LINK.replace('/changes?', '/changes-bogus?'), `${LINK}evil`])
+		assert.strictEqual(parseBodyAnchors(malformed).length, 0);
+});
+
+test('PR-files normalization implements unified-diff count semantics', () => {
+	const normalized = normalizePrFiles([
+		[
+			{ filename: 'new.js', patch: '@@ -0,0 +1,3 @@\n+a\n+b\n+c' },
+			{ filename: 'edit.js', patch: '@@ -8 +10 @@\n-old\n+new' },
+			{ filename: 'binary.dat' },
+		],
+	]);
+	assert.deepStrictEqual(normalized.files[0].ranges, { L: [], R: [[1, 3]] });
+	assert.deepStrictEqual(normalized.files[1].ranges, { L: [[8, 8]], R: [[10, 10]] });
+	assert.strictEqual(normalized.files[2].patchAvailable, false);
+});
+
+test('an omitted patch or incomplete file list is explicitly unverifiable', () => {
+	const unavailable = {
+		version: 1,
+		complete: true,
+		files: [{ path: FILE, patchAvailable: false, ranges: { L: [], R: [] } }],
+	};
+	assert.strictEqual(
+		checkBodyLinks({ body: LINK, prFiles: unavailable, repo: REPO, number: NUMBER }).unverifiable,
+		true
+	);
+	assert.strictEqual(
+		checkBodyLinks({ body: LINK, prFiles: { version: 1, complete: false, files: [] }, repo: REPO, number: NUMBER })
+			.unverifiable,
+		true
+	);
+	const missing = checkBodyLinks({ body: LINK, prFiles: null, repo: REPO, number: NUMBER });
+	assert.strictEqual(missing.unverifiable, true);
+	assert.doesNotMatch(missing.problems.map(({ message }) => message).join('\n'), /does not match a file/);
+});
+
+test('PR-files input is rejected while streaming beyond the byte cap', async () => {
+	await assert.rejects(readBounded(Readable.from([Buffer.alloc(5), Buffer.alloc(6)]), 10), /exceeds 10 bytes/);
+});
+
+test('AI fields require the complete ordered body shape', () => {
+	const broken = body()
+		.replace('## For the human reviewer', '## Notes')
+		.replace('Complexity: complicated', 'Complexity: enormous')
+		.concat('\nReview-Coverage: duplicate malformed field');
+	const result = evaluatePrFormat(pr({ body: broken }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /For the human reviewer/);
+	assert.match(result.problems.join('\n'), /valid Complexity/);
+	assert.match(result.problems.join('\n'), /pinned Review-Coverage footer \(found 2 field\(s\), 1 valid\)/);
+});
+
+test('AI field recognition is case-consistent', () => {
+	const lower = body()
+		.replace('Complexity:', 'complexity:')
+		.replace('Review-Coverage:', 'review-coverage:')
+		.replace('Human-Review-Need:', 'human-review-need:');
+	const result = evaluatePrFormat(pr({ body: lower }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+});
+
+test('ordinary leading whitespace is allowed on Complexity', () => {
+	const result = evaluatePrFormat(pr({ body: body().replace('Complexity:', ' Complexity:') }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+});
+
+test('the coverage footer must be pinned to the current head; the review-need pin may lag it', () => {
+	const result = evaluatePrFormat(pr({ body: body({ head: 'deadbeef1234' }) }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /Review-Coverage footer is not pinned to the current head/);
+	assert.doesNotMatch(result.problems.join('\n'), /Human-Review-Need footer/);
+});
+
+test('a review-need footer carrying decision slugs is a valid footer', () => {
+	const decorated = body().replace(
+		/<sub>Human-Review-Need: (\d)/,
+		'<sub>Human-Review-Need: $1 (decisions: api-naming, delete-semantics)'
+	);
+	assert.notEqual(decorated, body(), 'fixture carries a review-need footer to decorate');
+	const result = evaluatePrFormat(pr({ body: decorated }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.doesNotMatch(result.problems.join('\n'), /Human-Review-Need/);
+	assert.strictEqual(result.compliant, true);
+});
+
+test('a Review-Attention footer is accepted, with or without detail and pin', () => {
+	for (const footer of [
+		`<sub>Review-Attention: read ~30m @ ${HEAD.slice(0, 12)}</sub>`,
+		'<sub>Review-Attention: skim ~5m</sub>',
+		'<sub>Review-Attention: deep ~150m (critical: transaction_log.cpp +1; decisions: a, b; raised: degraded review)</sub>',
+		'<sub>Review-Attention: study ~60m (decisions: a) @ abcdef123456</sub>',
+	]) {
+		const replaced = body().replace(/<sub>Human-Review-Need:[^\n]*/, footer);
+		assert.notEqual(replaced, body());
+		const result = evaluatePrFormat(pr({ body: replaced }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.deepStrictEqual(result.problems, [], footer);
+	}
+});
+
+test('a malformed Review-Attention footer is a format problem', () => {
+	for (const footer of [
+		'<sub>Review-Attention: medium ~30m</sub>',
+		'<sub>Review-Attention: read 30m</sub>',
+		'<sub>Review-Attention: read ~30m (a) (b)</sub>',
+		'Review-Attention: read ~30m',
+	]) {
+		const result = evaluatePrFormat(pr({ body: body().replace(/<sub>Human-Review-Need:[^\n]*/, footer) }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.match(
+			result.problems.join('\n'),
+			/exactly one valid Review-Attention footer.*1 field\(s\), 0 valid/,
+			footer
+		);
+	}
+});
+
+test('exactly one of Review-Attention or the legacy footer; both, or two of either, is a problem', () => {
+	const attention = '<sub>Review-Attention: read ~30m</sub>';
+	const legacy = `<sub>Human-Review-Need: 2 @ ${HEAD.slice(0, 12)}</sub>`;
+	for (const extra of [attention, legacy]) {
+		const result = evaluatePrFormat(pr({ body: `${body()}\n\n${extra}` }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.match(result.problems.join('\n'), /exactly one valid Review-Attention footer.*2 field\(s\)/, extra);
+	}
+	const twoAttention = body().replace(/<sub>Human-Review-Need:[^\n]*/, `${attention}\n\n${attention}`);
+	assert.match(
+		evaluatePrFormat(pr({ body: twoAttention }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/2 field\(s\)/
+	);
+});
+
+test('Review-Attention alone marks a description AI-shaped and is the last machine footer', () => {
+	const attentionOnly = `Fix.\n\n## Verification\n\nRan the suite.\n\n<sub>Review-Attention: read ~30m</sub>`;
+	const result = evaluatePrFormat(pr({ body: attentionOnly }), {
+		mode: 'enforce',
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /For the human reviewer/);
+	assert.match(result.problems.join('\n'), /valid Complexity/);
+	assert.doesNotMatch(result.problems.join('\n'), /Verification needs executed evidence/);
+	const reordered = body().replace(/(<sub>Review-Coverage:[^\n]*)\n\n(<sub>Human-Review-Need:[^\n]*)/, '$2\n\n$1');
+	assert.notEqual(reordered, body());
+	const swapped = reordered.replace(/<sub>Human-Review-Need:[^\n]*/, '<sub>Review-Attention: read ~30m</sub>');
+	assert.match(
+		evaluatePrFormat(pr({ body: swapped }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/Complexity, Review-Coverage, Review-Attention \(or legacy Human-Review-Need\) order/
+	);
+});
+
+test('footer text cannot satisfy an empty Verification section', () => {
+	const broken = body().replace('Focused retention tests passed.\n\n', '');
+	assert.match(
+		evaluatePrFormat(pr({ body: broken }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/Verification needs executed evidence/
+	);
+});
+
+test('HTML-only content cannot satisfy Verification', () => {
+	const broken = body().replace('Focused retention tests passed.', '<br>');
+	assert.match(
+		evaluatePrFormat(pr({ body: broken }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/Verification needs executed evidence/
+	);
+});
+
+test('visible fenced or indented code can satisfy Verification without exposing Markdown tokens', () => {
+	for (const evidence of ['```text\n80 passing\n```', '    80 passing']) {
+		const result = evaluatePrFormat(pr({ body: body().replace('Focused retention tests passed.', evidence) }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.strictEqual(result.pass, true, evidence);
+	}
+});
+
+test('an empty fenced block does not satisfy Verification', () => {
+	const result = evaluatePrFormat(pr({ body: body().replace('Focused retention tests passed.', '```text\n```') }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /Verification needs executed evidence/);
+});
+
+test('code-only blocks do not satisfy prose sections', () => {
+	const summaryOnlyCode = body().replace(/^Audit retention[^\n]+/, '```text\nstack trace\n```');
+	assert.match(
+		evaluatePrFormat(pr({ body: summaryOnlyCode }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/needs summary prose/
+	);
+	const reviewerOnlyCode = body().replace('No open judgment calls.', '```text\nreview output\n```');
+	assert.match(
+		evaluatePrFormat(pr({ body: reviewerOnlyCode }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/For the human reviewer needs a decision ledger/
+	);
+});
+
+test('a lowercase AI field ends an empty Verification section', () => {
+	const broken = body().replace('Focused retention tests passed.\n\nComplexity:', 'complexity:');
+	assert.match(
+		evaluatePrFormat(pr({ body: broken }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/Verification needs executed evidence/
+	);
+});
+
+test('a superseded run is neutral even in enforce mode', () => {
+	const result = evaluatePrFormat(pr({ body: '' }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		superseded: true,
+	});
+	assert.strictEqual(result.pass, true);
+	assert.match(result.exempt, /superseded/);
+});
+
+test('body parsing is bounded at GitHub description size', () => {
+	const result = evaluatePrFormat(pr({ body: `${body()}${'x'.repeat(65_536)}` }), {
+		mode: 'report',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+	assert.match(result.problems.join('\n'), /exceeds 65536 characters/);
+});
+
+test('the enforcing workflow never runs from the PR checkout', () => {
+	// The whole basis for enforcing at all. Drop the `ref:` and the job checks out fork-PR head,
+	// then runs `uses: ./.github/actions/review-coverage` — attacker-supplied — under the base
+	// repo's token. Nothing else in the suite would notice.
+	const workflow = readFileSync(fileURLToPath(new URL('../../workflows/review-coverage.yml', import.meta.url)), 'utf8');
+	assert.match(workflow, /^on:\n\s+pull_request_target:/m);
+	assert.doesNotMatch(workflow, /^on:\n\s+pull_request:/m);
+	assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.ref \}\}/);
+	assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\./);
+	assert.match(workflow, /permissions:\n\s+contents: read\n\s+pull-requests: read/);
+	assert.doesNotMatch(
+		workflow,
+		/^\s*(?:permissions\s*:\s*(?:['"]?write-all\b|\{[^\n}]*\b(?:write|write-all)\b)|[\w-]+:[ \t]*['"]?(?:write|write-all)\b)/m
+	);
+	assert.match(workflow, /mode: enforce/);
+});
+
+test('the report workflow keeps the existing check identity and gates PR-files collection', () => {
+	const workflow = readFileSync(fileURLToPath(new URL('../../workflows/review-coverage.yml', import.meta.url)), 'utf8');
+	assert.match(workflow, /jobs:\n\s+coverage:\n\s+runs-on:/);
+	assert.doesNotMatch(workflow, /\n\s+name:\s+report/);
+	assert.match(workflow, /author_association == 'MEMBER'/);
+	assert.doesNotMatch(workflow, /pull_request\.additions > 2/);
+	assert.match(workflow, /continue-on-error: true/);
+	assert.match(workflow, /persist-credentials: false/);
+	assert.match(workflow, /format_mode: report/);
+	assert.match(workflow, /framing_mode: enforce/);
+	for (const framingPath of [
+		'resources/Table.ts',
+		'resources/RecordEncoder.ts',
+		'resources/tracked.ts',
+		'resources/PrimaryRocksDatabase.ts',
+		'replication/**',
+		'resources/branchDatabase.ts',
+		'resources/indexes/HierarchicalNavigableSmallWorld.ts',
+		'utility/lmdb/writeUtility.ts',
+	])
+		assert.match(workflow, new RegExp(`^\\s+${escapeRegExp(framingPath)}\\s*$`, 'm'));
+	assert.strictEqual(
+		workflow.match(/api_with_retry "\$head_response"/g)?.length,
+		2,
+		'head is checked before and after collection'
+	);
+	assert.match(workflow, /for attempt in 1 2 3/);
+	assert.match(workflow, /pr_files_superseded:/);
+});
+
+test('Harper framing policy covers every production storage-binding importer', () => {
+	const root = fileURLToPath(new URL('../../../', import.meta.url));
+	const sourceRoots = [
+		'bin',
+		'components',
+		'config',
+		'dataLayer',
+		'resources',
+		'security',
+		'server',
+		'sqlEngine',
+		'sqlTranslator',
+		'upgrade',
+		'utility',
+		'validation',
+		'launchServiceScripts',
+	];
+	const files = [];
+	const visit = (directory) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const entryPath = path.join(directory, entry.name);
+			if (entry.isDirectory()) visit(entryPath);
+			else if (/\.(?:js|ts)$/.test(entry.name) && !/\.test\.[jt]s$/.test(entry.name)) files.push(entryPath);
+		}
+	};
+	for (const sourceRoot of sourceRoots) {
+		const directory = path.join(root, sourceRoot);
+		if (existsSync(directory)) visit(directory);
+	}
+	const bindingImport =
+		/(?:\bfrom\s+|\bimport\s*\(|\brequire\s*\()\s*['"](?:lmdb|@harperfast\/rocksdb-js)(?:\/[^'"]*)?['"]/;
+	const importers = files
+		.filter((file) => bindingImport.test(readFileSync(file, 'utf8')))
+		.map((file) => path.relative(root, file).replaceAll(path.sep, '/'));
+	const workflow = readFileSync(path.join(root, '.github/workflows/review-coverage.yml'), 'utf8');
+	for (const importer of importers)
+		assert.match(
+			workflow,
+			new RegExp(`^\\s+${escapeRegExp(importer)}\\s*$`, 'm'),
+			`${importer} imports a storage binding — add it to framing_paths in .github/workflows/review-coverage.yml`
+		);
+});
+
+const newBody = ({ problemCall = true, verification = '## ✅ Verification', head = HEAD.slice(0, 12) } = {}) =>
+	[
+		`Audit retention now runs continuously in [the cleanup loop](${LINK}).`,
+		'',
+		'## ⊙ Problem',
+		'',
+		'Expired audit rows are never reclaimed.',
+		'',
+		...(problemCall ? ['> ❓ **Your call:** Should retention be per-table or global?', ''] : []),
+		'## 💡 Solution',
+		'',
+		'A continuous cleanup loop.',
+		'',
+		verification,
+		'',
+		'Focused retention tests passed.',
+		'',
+		'Complexity: complicated',
+		'',
+		`<sub>Review-Coverage: authored=codex; ran=claude; rounds=1 @ ${head}</sub>`,
+		'',
+		`<sub>Review-Attention: read ~30m @ ${head}</sub>`,
+	].join('\n');
+const evaluateNew = (text) =>
+	evaluatePrFormat(pr({ body: text }), { mode: 'enforce', repo: REPO, number: NUMBER, prFiles: PR_FILES });
+
+test('the new Problem/Solution/Verification shape passes with either Verification heading', () => {
+	for (const verification of ['## ✅ Verification', '## Verification']) {
+		const result = evaluateNew(newBody({ verification }));
+		assert.deepStrictEqual(result.problems, [], verification);
+		assert.strictEqual(result.compliant, true);
+	}
+});
+
+test('the new shape accepts optional Alternatives, Changes and Look-hardest lines', () => {
+	const extended = newBody().replace(
+		'## ✅ Verification',
+		'## ⚖️ Alternatives\n\nWeighed a timer.\n\n> ⚠️ **Look hardest:** the sweep bound.\n\n## 🔧 Changes\n\n- the loop\n\n## ✅ Verification'
+	);
+	assert.deepStrictEqual(evaluateNew(extended).problems, []);
+});
+
+test('the new shape requires a Problem section', () => {
+	const result = evaluateNew(newBody().replace('## ⊙ Problem', '## Problem'));
+	assert.strictEqual(result.compliant, false);
+	assert.match(result.problems.join('\n'), /needs a ## ⊙ Problem section with a > ❓ \*\*Your call:\*\* line/);
+	assert.match(result.problems.join('\n'), /legacy ## For the human reviewer/);
+	const twice = evaluateNew(newBody().replace('## 💡 Solution', '## ⊙ Problem\n\n## 💡 Solution'));
+	assert.match(twice.problems.join('\n'), /found 2 ## ⊙ Problem/);
+});
+
+test('the new shape requires a Your call line under Problem, not only elsewhere', () => {
+	const none = evaluateNew(newBody({ problemCall: false }));
+	assert.match(none.problems.join('\n'), /no > ❓ \*\*Your call:\*\* line\)/);
+	const elsewhere = evaluateNew(
+		newBody({ problemCall: false }).replace('A continuous cleanup loop.', '> ❓ **Your call:** Is a loop fine?')
+	);
+	assert.match(elsewhere.problems.join('\n'), /no > ❓ \*\*Your call:\*\* line under ## ⊙ Problem/);
+});
+
+test('a Your call line inside a code fence or HTML comment does not count', () => {
+	const fenced = newBody({ problemCall: false }).replace(
+		'Expired audit rows are never reclaimed.',
+		'```text\n> ❓ **Your call:** Should retention be per-table?\n```'
+	);
+	assert.match(evaluateNew(fenced).problems.join('\n'), /no > ❓ \*\*Your call:\*\* line\)/);
+	const commented = newBody({ problemCall: false }).replace(
+		'Expired audit rows are never reclaimed.',
+		'<!--\n> ❓ **Your call:** Should retention be per-table?\n-->'
+	);
+	assert.strictEqual(evaluateNew(commented).compliant, false);
+	const empty = newBody().replace('Should retention be per-table or global?', '');
+	assert.strictEqual(evaluateNew(empty).compliant, false);
+});
+
+test('Problem must precede Verification, and Verification forms are exclusive', () => {
+	const late = newBody().replace(/## ⊙ Problem[\s\S]*?(?=## 💡 Solution)/, '');
+	const moved = late.replace(
+		'Focused retention tests passed.',
+		'Focused retention tests passed.\n\n## ⊙ Problem\n\n> ❓ **Your call:** Late?'
+	);
+	assert.match(evaluateNew(moved).problems.join('\n'), /Problem must precede Verification/);
+	const both = newBody().replace('## 💡 Solution', '## Verification\n\nEarly.\n\n## 💡 Solution');
+	assert.match(
+		evaluateNew(both).problems.join('\n'),
+		/exactly one ## Verification or ## ✅ Verification section \(found 2\)/
+	);
+});
+
+test('an empty emoji Verification section still needs evidence, and AI fields must follow it', () => {
+	const empty = newBody().replace('Focused retention tests passed.\n\n', '');
+	assert.match(evaluateNew(empty).problems.join('\n'), /Verification needs executed evidence/);
+	const early = 'Complexity: complicated\n\n' + newBody().replace('\n\nComplexity: complicated', '');
+	assert.match(evaluateNew(early).problems.join('\n'), /AI fields must follow Verification/);
+});
+
+test('the new shape requires a 💡 Solution between ⊙ Problem and Verification', () => {
+	assert.match(
+		evaluateNew(newBody().replace(/## 💡 Solution[\s\S]*?(?=## )/, '')).problems.join('\n'),
+		/exactly one ## 💡 Solution/
+	);
+	const swapped = newBody().replace(/(## ⊙ Problem[\s\S]*?)(## 💡 Solution[\s\S]*?)(?=## )/, '$2$1');
+	assert.match(evaluateNew(swapped).problems.join('\n'), /Solution must follow ## ⊙ Problem/);
+});

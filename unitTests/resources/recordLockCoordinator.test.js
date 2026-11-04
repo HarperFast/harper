@@ -1,0 +1,5678 @@
+const assert = require('assert');
+const {
+	LockCoordinator,
+	LOCK_LEASE_SKEW_MS,
+	DELEGATION_LEASE_MS,
+	RECALL_RETRY_MS,
+	receiveLockControlEntry,
+	registerClusterLockTransport,
+	unregisterClusterLockTransport,
+	compareTokens,
+	retireDelegateEpoch,
+	HOME_RESTART_RIDE_THROUGH_MS,
+	RESTART_ATTEMPT_MS,
+	decodeLockControlPayload,
+	encodeLockControlPayload,
+	homeFor,
+	quiesceDelegations,
+	recallDelegationsFromHome,
+	ringKeyFor,
+	acquireForRelay,
+	releaseForRelay,
+	revokeRelayedAdmission,
+	fenceRelayedAdmissions,
+	setLockCoordinatorResolver,
+} = require('#src/resources/recordLockCoordinator');
+const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
+const { toBufferKey } = require('ordered-binary');
+const { ClientError } = require('#src/utility/errors/hdbError');
+const { waitFor } = require('../waitFor');
+
+/** A real lock handle over a fake store, so revocation is tested through production code. */
+function realHandle(lease = LEASE) {
+	const unlocked = [];
+	let mono = 1;
+	const store = { unlock: (key) => unlocked.push(key), getMonotonicTimestamp: () => mono++ };
+	const handle = makeKeyLockHandle(store, ['k'], 'k', lease, true);
+	return { handle, unlocked };
+}
+
+/**
+ * A single-node coordinator on a fixed injected clock, with NO `grantableAfterMono` override — so it
+ * runs the production §4.3 default, whose horizon is measured from construction — so an injected
+ * clock is what makes it assertable without depending on the suite's own uptime.
+ */
+let coldSequence = 0;
+function coldCoordinator(monotonic, options = {}) {
+	const sequence = ++coldSequence;
+	return new LockCoordinator({
+		// Its own database unless the caller names one: the generation rollback floor is per database.
+		database: options.database ?? `cold${sequence}`,
+		table: options.table ?? `ColdStart${sequence}`,
+		adopt: options.adopt,
+		nodeId: 'alpha',
+		transport: {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => true,
+			establishLockFreshness:
+				options.establishLockFreshness ?? (async (_database, _table, _key, dependencies) => dependencies ?? []),
+			requestDelegation: () => {
+				throw new Error('a single-node home must not send a request');
+			},
+			recallDelegation: () => {
+				throw new Error('a single-node home must not send a recall');
+			},
+			...options.transport,
+		},
+		writeControl: () => {},
+		keyIdOf: (key) => String(key),
+		nextTimestamp: () => 1,
+		monotonic,
+		grantableAfterMono: options.grantableAfterMono,
+		autoTick: false,
+	});
+}
+
+// Cluster record locks (harper#483 Phase 1): amortized per-record ownership, driven by a set of
+// coordinators over an in-process transport with controllable delay, denial, replay and node death.
+// No database is involved — the coordinator is pure, with every clock injected.
+//
+// Every node has its OWN monotonic clock, advanced independently. A single shared fake clock cannot
+// express the property the design rests on — that a home outwaits its delegate by skew measured on
+// two different clocks — so it would silently pass a coordinator that compared a remote reading
+// against a local one. `docs/record-lock-ownership.md` §12 calls for exactly this.
+//
+// The invariant under test throughout: for one key, at most one node may admit a critical section at
+// any instant, and a delegate stops admitting before its home will re-grant.
+
+const delayMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const LEASE = 30_000;
+const WAIT = 30_000;
+
+/** A cluster of coordinators exchanging delegation messages in memory. */
+let clusterSequence = 0;
+
+class FakeCluster {
+	constructor(nodeNames, options = {}) {
+		this.tsCounter = 0;
+		this.skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
+		// A distinct table per cluster, because module-level coordinator state — the bound a closed
+		// coordinator leaves its replacement — is correctly keyed by (database, table). One shared name
+		// would let one test's closed coordinator quarantine every later test's grants.
+		this.table = `LockTest${++clusterSequence}`;
+		// Its own database too: the generation rollback floor is per database, and tests move
+		// generations in both directions, so a shared name would leak one test's floor into the next.
+		this.database = options.database ?? `test${clusterSequence}`;
+		this.generation = options.generation ?? 1;
+		this.skewMs = options.skewMs;
+		this.grantableAfterMono = options.grantableAfterMono ?? -Infinity;
+		this.homes = [...nodeNames];
+		this.nodes = new Map();
+		/** Every delegation request that crossed the wire, for message-count assertions. */
+		this.requests = [];
+		this.replies = [];
+		this.recalls = [];
+		for (const name of nodeNames) this.#addNode(name, options);
+	}
+
+	#addNode(name, options) {
+		const node = {
+			name,
+			alive: true,
+			owns: true,
+			/**
+			 * This node's OWN monotonic offset, advanced independently of every other node's. Real
+			 * elapsed time is added on read so a retry loop inside the coordinator actually terminates;
+			 * the offset is what lets a test move one node's clock without moving another's.
+			 *
+			 * The real component is `performance.now()` and NOT a delta from cluster construction,
+			 * because `KeyLockHandle.joinClusterRound` measures a round's remaining lease as
+			 * `leaseMs - (performance.now() - mintedMono)`. On a construction-based origin the two
+			 * clocks disagree by however long the process has been up, so a test driving a real handle
+			 * passed only while that was under one lease — in a full-suite run every round looked
+			 * already expired and `joinClusterRound` silently returned false.
+			 */
+			mono: 0,
+			/**
+			 * Bumped to simulate a restart of this node in its role as a home. Settable at construction
+			 * because a coordinator that sees the incarnation CHANGE under it reads that as another
+			 * coordination incarnation having run and re-arms the §4.3 quarantine — which is the point,
+			 * but not what a test about a home that restarted BEFORE this coordinator existed is saying.
+			 */
+			incarnation: options.incarnations?.[name] ?? 1,
+			/** This node's delegate epoch for the database (§4.5); undefined sends no epoch, as an older build. */
+			epoch: options.epochs?.[name],
+			/** Where this node's coordination interval began, on its own clock; undefined anchors at construction. */
+			startedMono: undefined,
+			/** Whether this node's restart round is in flight, so its quarantine refusals say `recovering`. */
+			recovering: false,
+			/** Set by a test to make this node's control-entry writer throw synchronously. */
+			writerThrows: false,
+			writerCalls: 0,
+			writerReturnsVoid: false,
+			freshnessCalls: [],
+			freshnessError: undefined,
+			/** Set to make this node report no agreed home map — a generation change, or a digest mismatch. */
+			mapless: false,
+			/** Set to make this node's map read below a generation it already acted under: refused at once, never ridden through. */
+			staleMap: false,
+			written: [],
+		};
+		node.coordinator = this.#buildCoordinator(node, { grantableAfterMono: this.grantableAfterMono });
+		this.nodes.set(name, node);
+		return node;
+	}
+
+	#buildCoordinator(node, options) {
+		const name = node.name;
+		return new LockCoordinator({
+			database: this.database,
+			table: this.table,
+			nodeId: name,
+			transport: {
+				homeMap: () =>
+					node.mapless
+						? undefined
+						: {
+								generation: node.staleMap ? 0 : this.generation,
+								homes: [...this.homes],
+								homeIncarnation: node.incarnation,
+							},
+				ownsCoordination: () => node.owns,
+				requestDelegation: (target, database, table, request) => this.#deliverRequest(name, target, request),
+				recallDelegation: (target, database, table, recall) => this.#deliverRecall(name, target, recall),
+				establishLockFreshness: (database, table, key, dependencies, deadlineMs) =>
+					this.#establishFreshness(name, database, table, key, dependencies, deadlineMs),
+				quiescedIncarnation: () => node.quiesced,
+				delegateEpoch: () => node.epoch,
+				coordinationStartedMono: () => node.startedMono,
+				restartRecovering: () => node.recovering,
+			},
+			writeControl: this.writeControlFor(name),
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => ++this.tsCounter,
+			monotonic: () => node.mono + performance.now(),
+			skewMs: this.skewMs,
+			// The harness drives an injected clock whose readings say nothing about process start, so the
+			// §4.3 restart quarantine is opted into per test rather than inherited from real uptime.
+			grantableAfterMono: options.grantableAfterMono,
+			autoTick: false,
+		});
+	}
+
+	/**
+	 * A process restart of one node: a fresh cold coordinator under a higher incarnation and epoch,
+	 * carrying nothing over and running the production §4.3 quarantine from its construction (or from
+	 * `startedMono` when a test sets one). The old coordinator is simply dropped, as a dead process is.
+	 */
+	restart(name, options = {}) {
+		const node = this.node(name);
+		node.incarnation = options.incarnation ?? node.incarnation + 1;
+		if (node.epoch !== undefined || options.epoch !== undefined) node.epoch = options.epoch ?? node.epoch + 1;
+		node.quiesced = undefined;
+		node.startedMono = options.startedMono;
+		node.recovering = options.recovering ?? false;
+		node.coordinator = this.#buildCoordinator(node, { grantableAfterMono: options.grantableAfterMono });
+		return node;
+	}
+
+	node(name) {
+		return this.nodes.get(name);
+	}
+
+	/**
+	 * Writing to the local transaction log IS the send, so a release both lands in this node's `written`
+	 * and reaches every peer's apply loop. Shared with `replace()`: a successor coordinator that cannot
+	 * write a release would leave every home holding its grant, which is a harness artifact and not
+	 * anything the coordinator does.
+	 */
+	writeControlFor(name) {
+		return (entry) => {
+			const node = this.node(name);
+			// A test sets this to fail the WRITER itself, which is a different containment path from a
+			// dead node: `#writeControlSafely` must swallow it, not the transport.
+			if (node?.writerThrows) {
+				node.writerCalls++;
+				throw new Error('transaction log is not accepting control entries');
+			}
+			if (!node?.alive) return Promise.resolve();
+			const position = ++this.tsCounter;
+			node.written.push({ ...entry, position });
+			this.#broadcastRelease(name, entry, position);
+			return Promise.resolve(node.writerReturnsVoid ? undefined : position);
+		};
+	}
+
+	/** Advance ONE node's clock. Nothing else moves. */
+	advance(name, ms) {
+		const node = this.node(name);
+		node.mono += ms;
+		node.coordinator.tick();
+	}
+
+	advanceAll(ms) {
+		for (const node of this.nodes.values()) {
+			node.mono += ms;
+			node.coordinator.tick();
+		}
+	}
+
+	async #deliverRequest(from, to, request) {
+		this.requests.push({ from, to, key: request.key, request });
+		const target = this.node(to);
+		if (!target || !target.alive) {
+			this.onUnreachable?.(from, to);
+			throw new Error(`${to} is unreachable`);
+		}
+		const reply = await target.coordinator.onDelegationRequest(request);
+		if (this.duplicateRequests) this.replies.push(await target.coordinator.onDelegationRequest({ ...request }));
+		this.replies.push(reply);
+		// Lets a test act while the requester is still awaiting this reply — the window a component
+		// reload lands in.
+		await this.beforeReply?.(from, to, request, reply);
+		return reply;
+	}
+
+	async #deliverRecall(from, to, recall) {
+		this.recalls.push({ from, to, key: recall.key, token: recall.token });
+		const target = this.node(to);
+		if (!target || !target.alive) throw new Error(`${to} is unreachable`);
+		return target.coordinator.onDelegationRecall(recall);
+	}
+
+	async #establishFreshness(name, database, table, key, dependencies, deadlineMs) {
+		const node = this.node(name);
+		node.freshnessCalls.push({ database, table, key, dependencies, deadlineMs });
+		if (this.beforeFreshness) await this.beforeFreshness(name, key, dependencies);
+		if (node.freshnessError) throw node.freshnessError;
+		return dependencies === null ? this.homes.map((origin) => [origin, 0]) : undefined;
+	}
+
+	/** A release entry replicates to every node, as a transaction-log entry does. */
+	#broadcastRelease(author, entry, position) {
+		for (const [name, node] of this.nodes) {
+			if (name === author || !node.alive) continue;
+			node.coordinator.applyEntry(entry, author, position);
+		}
+	}
+
+	/** The node that homes this key under the current membership. */
+	homeOf(key) {
+		// The coordinator hashes database ‖ table ‖ key (§4.4); the harness must scope it identically
+		// or every keyHomedOn() would pick a different node than the coordinator does.
+		return homeFor(ringKeyFor(this.database, this.table, key), this.homes);
+	}
+
+	/** A key homed on the given node, found by search so tests never hardcode a hash result. */
+	keyHomedOn(name, prefix = 'k') {
+		for (let i = 0; i < 10_000; i++) {
+			const key = `${prefix}${i}`;
+			if (this.homeOf(key) === name) return key;
+		}
+		throw new Error(`no key in the first 10000 homes on ${name}`);
+	}
+}
+
+describe('record lock delegations', () => {
+	describe('the home ring', () => {
+		it('agrees across nodes and is stable for a fixed membership', () => {
+			const members = ['alpha', 'beta', 'gamma'];
+			const shuffled = ['gamma', 'alpha', 'beta'];
+			for (let i = 0; i < 200; i++) {
+				const key = `key-${i}`;
+				// Order of `members` must not change the answer, or two nodes holding the same agreed set
+				// in different orders would pick different homes for one key.
+				assert.strictEqual(homeFor(key, members), homeFor(key, shuffled));
+			}
+		});
+
+		it('spreads keys across every member', () => {
+			const members = ['alpha', 'beta', 'gamma'];
+			const counts = new Map(members.map((m) => [m, 0]));
+			for (let i = 0; i < 600; i++)
+				counts.set(homeFor(`key-${i}`, members), counts.get(homeFor(`key-${i}`, members)) + 1);
+			for (const member of members)
+				assert.ok(counts.get(member) > 50, `${member} homed only ${counts.get(member)} keys`);
+		});
+
+		it('moves only the departing member’s keys when membership shrinks', () => {
+			const before = ['alpha', 'beta', 'gamma'];
+			const after = ['alpha', 'beta'];
+			let moved = 0;
+			let homedOnGamma = 0;
+			for (let i = 0; i < 600; i++) {
+				const key = `key-${i}`;
+				const was = homeFor(key, before);
+				if (was === 'gamma') homedOnGamma++;
+				else if (homeFor(key, after) !== was) moved++;
+			}
+			// Rendezvous hashing is chosen over a modulo precisely for this: every re-homed key pays the
+			// §7.2 recovery path on its next lock, so a membership change must not re-home the world.
+			assert.strictEqual(moved, 0);
+			assert.ok(homedOnGamma > 50);
+		});
+
+		it('returns nothing for an empty member set', () => {
+			assert.strictEqual(homeFor('k', []), undefined);
+		});
+	});
+
+	describe('acquisition', () => {
+		it('grants a cold key from its home and admits the caller', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round.tsR > 0);
+			assert.strictEqual(cluster.requests.length, 1);
+			assert.deepStrictEqual(
+				{ from: cluster.requests[0].from, to: cluster.requests[0].to },
+				{ from: 'alpha', to: 'beta' }
+			);
+		});
+
+		it('costs zero cluster messages on a repeat lock — the amortization', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
+			assert.strictEqual(cluster.requests.length, 1);
+			for (let i = 0; i < 25; i++) {
+				// Advance between locks. Without this the whole loop runs inside one clock tick, and a
+				// delegation sized to the lock's own lease would pass — which is exactly the defect a
+				// same-instant loop hid: every repeat lock renewed and paid a round trip.
+				cluster.advance('alpha', 1_000);
+				const repeat = await alpha.acquire(key, LEASE, WAIT);
+				alpha.release(key, repeat.admissionId);
+			}
+			// This is the whole point of the design: releasing the application lock does not release the
+			// delegation, so 26 locks spread over 25 seconds cost one round.
+			assert.strictEqual(cluster.requests.length, 1);
+			assert.strictEqual(cluster.node('alpha').freshnessCalls.length, 0, 'the cached path ran a freshness barrier');
+		});
+
+		it('grants a binary record id homed on a peer', async () => {
+			// A `Bytes` primary key is an ordinary record id: `ordered-binary` encodes it and
+			// `checkValidId` passes it. Refusing the shape made the home answer `not-home` for a key
+			// nobody held, which `acquire` retried every 25 ms to its own 423 — and only for peer-homed
+			// keys, because `#grantLocally` never goes through `onDelegationRequest`.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			let key;
+			for (let i = 0; !key && i < 10_000; i++) {
+				const candidate = new Uint8Array([i & 0xff, i >>> 8]);
+				if (cluster.homeOf(candidate) === 'beta') key = candidate;
+			}
+			assert.ok(key, 'no binary key in the first 10000 homes on beta');
+			// A short wait, because the failure this guards is a retry loop that ends in a 423.
+			const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, 250);
+			assert.ok(round.tsR > 0);
+			assert.strictEqual(cluster.requests.length, 1);
+		});
+
+		it('needs no message at all when this node is the key’s own home', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('alpha');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 0);
+		});
+
+		it('renews rather than stretching when too little of the lease is left', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
+			// Close enough to the delegation's end that a fresh full-lease admission no longer fits
+			// inside it. An admission that outlived its delegation is exactly what the home's skew margin
+			// assumes cannot happen.
+			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE + 1);
+			await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 2);
+		});
+	});
+
+	describe('exclusion', () => {
+		it('never lets two nodes hold a delegation for one key', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// Beta asks while alpha is still inside its critical section. Beta must run out of wait
+			// rather than be admitted alongside alpha.
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 200), /not released in time/);
+			assert.ok(cluster.recalls.some((r) => r.to === 'alpha'));
+			assert.strictEqual(cluster.node('beta').coordinator.stats.delegations, 0);
+		});
+
+		it('hands the key over once the predecessor drains and releases', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const alphaRound = await alpha.acquire(key, LEASE, WAIT);
+			// Alpha finishes its critical section. The recall arrives, alpha is idle, so it surrenders.
+			alpha.release(key, alphaRound.admissionId);
+			const beta = cluster.node('beta').coordinator;
+			const round = await beta.acquire(key, LEASE, WAIT);
+			assert.ok(round.tsR > 0);
+			assert.ok(cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'));
+		});
+
+		it('drains a live admission before the successor is admitted', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			// Alpha is INSIDE its critical section — it has not released. Beta's acquisition must not
+			// resolve while that is true, whatever the home does about the recall.
+			let betaAdmitted = false;
+			const betaAcquire = cluster
+				.node('beta')
+				.coordinator.acquire(key, LEASE, 5_000)
+				.then(() => {
+					betaAdmitted = true;
+				});
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(betaAdmitted, false, 'beta was admitted while alpha was still inside');
+			assert.ok(
+				cluster.recalls.some((r) => r.to === 'alpha'),
+				'the home did not recall the holder'
+			);
+			alpha.release(key, round.admissionId);
+			await betaAcquire;
+			assert.strictEqual(betaAdmitted, true);
+		});
+
+		it('ends a wait the home answered contended as 423, and sends no probe it cannot complete', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// Beta's backoff reaches its deadline, so any further request would go out with no budget and
+			// could only come back as beta's own `timeout`. The stall makes that the outcome if one is
+			// sent at all: a wait that watched the key held must not report it unheld.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) return cluster.advance('beta', 180);
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			};
+			const sent = cluster.requests.length;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.requests.length, sent + 1, 'a probe went out with no budget to complete in');
+		});
+
+		it('ends on the last reply the home completed, so a later not-home is not reported as contention', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The home stops owning coordination between beta's two passes. Contention is what beta saw
+			// first, but the ring disagreement is the fresher fact and the one the caller has to act on.
+			let replies = 0;
+			cluster.beforeReply = (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) {
+					cluster.node('gamma').owns = false;
+					return cluster.advance('beta', 200);
+				}
+				cluster.advance('beta', 100);
+			};
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered not-home/);
+		});
+
+		it('retires an observation the ring has moved on from, rather than reporting it as contention', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// A new generation is a new route. What the previous home said about the key describes an
+			// arrangement that no longer owns it, so the wait must answer from its own probe.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) {
+					cluster.generation = 2;
+					return cluster.advance('beta', 200);
+				}
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				/no reply from the key's home/
+			);
+		});
+
+		it('retires an observation a generation activated while the last probe was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The pass that ends the wait read its map before sending, so only a fresh read sees a
+			// generation that was activated while its probe was still out.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) return cluster.advance('beta', 200);
+				cluster.generation = 2;
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				/home map changed generation/
+			);
+		});
+
+		it('retires this pass own contended reply when a generation activated while it was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The reply that ends the wait is itself `contended`, but it describes the ring that was
+			// current when it was computed. The route rule has to reach it too, not only a carried one.
+			cluster.beforeReply = (from) => {
+				if (from !== 'beta') return;
+				cluster.generation = 2;
+				cluster.advance('beta', 1_000);
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				/home map changed generation/
+			);
+		});
+	});
+
+	describe('successor freshness', () => {
+		it('waits for the releasing origin before admitting a clean successor', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const held = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, held.admissionId);
+
+			const beta = cluster.node('beta');
+			let releaseBarrier;
+			cluster.beforeFreshness = (name) =>
+				name === 'beta' ? new Promise((resolve) => (releaseBarrier = resolve)) : undefined;
+			const acquiring = beta.coordinator.acquire(key, LEASE, WAIT);
+			await waitFor(() => beta.freshnessCalls.length === 1);
+			assert.strictEqual(beta.coordinator.stats.delegations, 0, 'the successor admitted before the barrier');
+			releaseBarrier();
+			const successor = await acquiring;
+			assert.strictEqual(beta.freshnessCalls.length, 1);
+			assert.deepStrictEqual(beta.freshnessCalls[0].dependencies, [
+				['alpha', cluster.node('alpha').written[0].position],
+			]);
+			beta.coordinator.release(key, successor.admissionId);
+		});
+
+		it('inherits dependencies transitively through a holder that made no writes', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const alphaRound = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, alphaRound.admissionId);
+
+			const beta = cluster.node('beta').coordinator;
+			const betaRound = await beta.acquire(key, LEASE, WAIT);
+			beta.release(key, betaRound.admissionId);
+			const gamma = cluster.node('gamma');
+			const gammaRound = await gamma.coordinator.acquire(key, LEASE, WAIT);
+			assert.deepStrictEqual(
+				gamma.freshnessCalls.at(-1).dependencies.map(([origin]) => origin),
+				['alpha', 'beta']
+			);
+			gamma.coordinator.release(key, gammaRound.admissionId);
+		});
+
+		it('fails 503 on an unsatisfied barrier and preserves known lineage for the next requester', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const alphaRound = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, alphaRound.admissionId);
+
+			const beta = cluster.node('beta');
+			beta.freshnessError = new Error('origin position was purged');
+			await assert.rejects(
+				() => beta.coordinator.acquire(key, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /origin position was purged/.test(error.message)
+			);
+			beta.freshnessError = undefined;
+			const gamma = cluster.node('gamma');
+			const recovered = await gamma.coordinator.acquire(key, LEASE, WAIT);
+			assert.deepStrictEqual(
+				gamma.freshnessCalls.at(-1).dependencies.map(([origin]) => origin),
+				['alpha'],
+				'the failed barrier discarded or changed exact lineage'
+			);
+			gamma.coordinator.release(key, recovered.admissionId);
+		});
+
+		it('does not install a grant recalled while its freshness barrier is pending', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const alphaRound = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, alphaRound.admissionId);
+
+			cluster.beforeFreshness = (name) => (name === 'beta' ? new Promise(() => {}) : undefined);
+			const beta = cluster.node('beta');
+			const pendingAcquire = beta.coordinator.acquire(key, LEASE, WAIT);
+			await waitFor(() => beta.freshnessCalls.length === 1);
+			await cluster.node('gamma').coordinator.onDelegationRequest({
+				key,
+				requester: 'gamma',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			await waitFor(() => cluster.recalls.some(({ to }) => to === 'beta'));
+			beta.staleMap = true;
+			await assert.rejects(pendingAcquire, /No agreed record lock home map/);
+			assert.strictEqual(beta.coordinator.stats.delegations, 0);
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+			const contender = await cluster.node('gamma').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('gamma').coordinator.release(key, contender.admissionId);
+		});
+
+		it('cancels a pending freshness barrier when its coordinator closes', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+
+			cluster.beforeFreshness = (name) => (name === 'beta' ? new Promise(() => {}) : undefined);
+			const beta = cluster.node('beta');
+			const acquiring = beta.coordinator.acquire(key, LEASE, WAIT);
+			await waitFor(() => beta.freshnessCalls.length === 1);
+			beta.coordinator.close();
+			await assert.rejects(acquiring, /coordination was closed/);
+		});
+
+		it('does not lose a recall that arrives before the grant reply', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+
+			const beta = cluster.node('beta');
+			cluster.beforeReply = async (from, _to, _request, reply) => {
+				if (from !== 'beta' || !reply.granted) return;
+				cluster.beforeReply = undefined;
+				// Gamma asks its local home while beta's grant reply is still held in the transport. The
+				// resulting recall reaches beta before it knows the token it is about to receive.
+				await cluster.node('gamma').coordinator.onDelegationRequest({
+					key,
+					requester: 'gamma',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				await waitFor(() => cluster.recalls.some(({ to }) => to === 'beta'));
+				beta.staleMap = true;
+			};
+
+			await assert.rejects(() => beta.coordinator.acquire(key, LEASE, WAIT), /No agreed record lock home map/);
+			assert.strictEqual(beta.coordinator.stats.delegations, 0, 'the recalled reply was installed');
+			assert.strictEqual(beta.freshnessCalls.length, 0, 'a recalled reply launched an unused freshness barrier');
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+			const contender = await cluster.node('gamma').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('gamma').coordinator.release(key, contender.admissionId);
+		});
+
+		it('settles an early recall of an in-flight renewal before another node acquires', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha');
+			const first = await alpha.coordinator.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			// Leave the first admission active while advancing far enough that a second maximum
+			// lease requires renewal. Table's native key lock normally serializes these calls, but
+			// exercising the coordinator directly proves its recall state machine does not clear the
+			// home grant while an inherited admission is still holding.
+			cluster.advance('alpha', DELEGATION_LEASE_MS - MAX_LOCK_LEASE_MS + 1);
+
+			cluster.beforeReply = async (from, _to, _request, reply) => {
+				if (from !== 'alpha' || !reply.granted) return;
+				cluster.beforeReply = undefined;
+				await cluster.node('gamma').coordinator.onDelegationRequest({
+					key,
+					requester: 'beta',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				await waitFor(() => cluster.recalls.some(({ to }) => to === 'alpha'));
+				alpha.staleMap = true;
+			};
+
+			const renewal = alpha.coordinator.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			renewal.catch(() => {});
+			await waitFor(() => cluster.recalls.some(({ to }) => to === 'alpha'));
+			// The recall names the renewed token, which alpha never installed; it is a recall of the
+			// delegation alpha holds (harper#3268), so it drains the inherited admission before anything is
+			// released, and the home keeps its grant until then.
+			await assert.rejects(() => renewal, /No agreed record lock home map/);
+			await new Promise(setImmediate);
+			assert.strictEqual(alpha.written.length, 0, 'the recalled renewal released its home grant before draining');
+			assert.strictEqual(
+				cluster.node('gamma').coordinator.stats.granted,
+				1,
+				'the home cleared the grant before the drain'
+			);
+			alpha.coordinator.release(key, first.admissionId);
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+			// Released under the token the home holds, so the home can match it.
+			const release = alpha.written.find((entry) => entry.type === 'lockRelease');
+			assert.ok(release, 'no release was written');
+			assert.strictEqual(release.token[2], cluster.recalls.find(({ to }) => to === 'alpha').token[2]);
+			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('beta').coordinator.release(key, successor.admissionId);
+		});
+
+		it('does not repeat a recovery barrier for a continuous renewal', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			cluster.advanceAll(DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			const beta = cluster.node('beta');
+			const recovered = await beta.coordinator.acquire(key, LEASE, WAIT);
+			beta.coordinator.release(key, recovered.admissionId);
+			assert.strictEqual(beta.freshnessCalls.length, 1);
+
+			cluster.advance('beta', DELEGATION_LEASE_MS - LEASE + 1);
+			const renewed = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.length, 1, 'the renewal repeated the recovery barrier');
+			beta.coordinator.release(key, renewed.admissionId);
+		});
+
+		it('hands back a grant whose barrier leaves too little lease to admit', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+
+			const beta = cluster.node('beta');
+			cluster.beforeFreshness = (name) => {
+				if (name !== 'beta') return;
+				cluster.beforeFreshness = undefined;
+				beta.mono += 61_000;
+				beta.staleMap = true;
+			};
+			await assert.rejects(
+				() => beta.coordinator.acquire(key, MAX_LOCK_LEASE_MS, 120_000),
+				/No agreed record lock home map/
+			);
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+		});
+
+		it('does not trust virgin-key absence after a coordinator retires', async () => {
+			const table = `RetiredFreshness${Date.now()}`;
+			const database = `retiredFreshness${Date.now()}`;
+			const mono = () => performance.now();
+			const predecessor = coldCoordinator(mono, { table, database, grantableAfterMono: -Infinity });
+			await predecessor.acquire('seen-before-close', LEASE, WAIT);
+			predecessor.close();
+
+			const calls = [];
+			const successor = coldCoordinator(mono, {
+				table,
+				database,
+				grantableAfterMono: -Infinity,
+				establishLockFreshness: async (_database, _table, _key, dependencies) => {
+					calls.push(dependencies);
+					return [];
+				},
+			});
+			const round = await successor.acquire('seen-before-close', LEASE, WAIT);
+			assert.deepStrictEqual(calls, [null]);
+			successor.release('seen-before-close', round.admissionId);
+			successor.close();
+		});
+
+		it('clears a self-home grant when a successful writer returns no position', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('alpha');
+			const alpha = cluster.node('alpha');
+			alpha.writerReturnsVoid = true;
+			const held = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, held.admissionId);
+
+			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(alpha.written.some((entry) => entry.type === 'lockRelease'));
+			cluster.node('beta').coordinator.release(key, successor.admissionId);
+		});
+
+		it('takes recovery for an unremembered key after a cold start', async () => {
+			let mono = 0;
+			const calls = [];
+			const coordinator = coldCoordinator(() => mono, {
+				establishLockFreshness: async (_database, _table, _key, dependencies) => {
+					calls.push(dependencies);
+					return [];
+				},
+			});
+			mono = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+			const round = await coordinator.acquire('cold-key', LEASE, WAIT);
+			assert.deepStrictEqual(calls, [null]);
+			coordinator.release('cold-key', round.admissionId);
+			coordinator.close();
+		});
+
+		it('hands the transport the wait remaining on the lock deadline', async () => {
+			// On a fixed clock the remaining wait is the whole wait.
+			const calls = [];
+			const coordinator = coldCoordinator(() => 5_000, {
+				grantableAfterMono: -Infinity,
+				establishLockFreshness: async (_database, _table, _key, dependencies, deadlineMs) => {
+					calls.push({ dependencies, deadlineMs });
+					return [];
+				},
+			});
+			coordinator.close();
+			const successor = coldCoordinator(() => 5_000, {
+				database: coordinator.database,
+				table: coordinator.table,
+				grantableAfterMono: -Infinity,
+				establishLockFreshness: async (_database, _table, _key, dependencies, deadlineMs) => {
+					calls.push({ dependencies, deadlineMs });
+					return [];
+				},
+			});
+			const round = await successor.acquire('deadline-key', LEASE, 7_500);
+			assert.deepStrictEqual(calls, [{ dependencies: null, deadlineMs: 7_500 }]);
+			successor.release('deadline-key', round.admissionId);
+			successor.close();
+		});
+
+		it('admits a recovery-marked grant once the transport has written a barrier and drained to it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha');
+			const home = cluster.node('gamma').coordinator;
+			const held = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			const predecessorWrite = ++cluster.tsCounter;
+			alpha.written.push({ type: 'put', key, position: predecessorWrite });
+			home.applyEntry(
+				{ type: 'lockRelease', key, requester: 'alpha', token: held.token, dependencies: 'lost' },
+				'alpha',
+				++cluster.tsCounter
+			);
+
+			const beta = cluster.node('beta');
+			const applied = { alpha: 0, beta: 0, gamma: 0 };
+			cluster.beforeFreshness = async (name, _key, dependencies) => {
+				if (name !== 'beta' || dependencies !== null) return;
+				for (const origin of cluster.homes) {
+					const position = await cluster.writeControlFor(origin)({ type: 'lockBarrier', nonce: 1 });
+					for (const entry of cluster.node(origin).written)
+						if (entry.position <= position) applied[origin] = Math.max(applied[origin], entry.position);
+				}
+			};
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null, 'the grant carried the recovery marker');
+			assert.ok(applied.alpha >= predecessorWrite, 'the drain reached the predecessor’s write');
+			const alphaBarrier = alpha.written.find((entry) => entry.type === 'lockBarrier');
+			assert.ok(alphaBarrier.position > predecessorWrite, 'the barrier is ordered after the write');
+			for (const node of cluster.nodes.values())
+				assert.strictEqual(
+					node.coordinator.stats.granted,
+					node.name === 'gamma' ? 1 : 0,
+					`${node.name} acted on a barrier`
+				);
+			beta.coordinator.release(key, successor.admissionId);
+		});
+
+		it('takes recovery after a delegate expires without a clean release', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+			const betaRound = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('beta').coordinator.release(key, betaRound.admissionId);
+			cluster.advanceAll(DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			const gamma = cluster.node('gamma');
+			const round = await gamma.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(gamma.freshnessCalls.at(-1).dependencies, null);
+			gamma.coordinator.release(key, round.admissionId);
+		});
+
+		it('takes recovery when a renewed grant is handed back without clean lineage', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha');
+			const first = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, first.admissionId);
+
+			const renewed = await cluster.node('gamma').coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(renewed.granted, true);
+			cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
+			await cluster.writeControlFor('alpha')({
+				type: 'lockRelease',
+				key,
+				requester: 'alpha',
+				token: renewed.token,
+				dependencies: null,
+			});
+
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(key, successor.admissionId);
+		});
+
+		it('ignores recovery positions for nodes outside the current lock map', async () => {
+			let mono = 0;
+			const coordinator = coldCoordinator(() => mono, {
+				establishLockFreshness: async () => [
+					['alpha', 3],
+					['former-member', 9],
+				],
+			});
+			mono = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+			const round = await coordinator.acquire('recovered-key', LEASE, WAIT);
+			coordinator.release('recovered-key', round.admissionId);
+			coordinator.close();
+		});
+
+		it('takes recovery for a virgin key after the home-map generation changes', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const firstKey = cluster.keyHomedOn('gamma', 'generation-one-');
+			await cluster.node('alpha').coordinator.acquire(firstKey, LEASE, WAIT);
+			cluster.generation = 2;
+			const secondKey = cluster.keyHomedOn('gamma', 'generation-two-');
+			const beta = cluster.node('beta');
+			const round = await beta.coordinator.acquire(secondKey, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(secondKey, round.admissionId);
+		});
+	});
+
+	describe('independent clocks', () => {
+		it('lets the home outwait its delegate even when the two clocks run apart', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { skewMs: 5_000 });
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
+			// Alpha's clock runs past the delegation; beta's has not reached the grant's deadline yet.
+			cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
+			assert.strictEqual(alpha.stats.delegations, 0, 'the delegate must stop admitting first');
+			cluster.advance('beta', DELEGATION_LEASE_MS + 1);
+			assert.strictEqual(
+				cluster.node('beta').coordinator.stats.granted,
+				1,
+				'the home must still be holding the grant through the skew margin'
+			);
+			cluster.advance('beta', LOCK_LEASE_SKEW_MS);
+			assert.strictEqual(cluster.node('beta').coordinator.stats.granted, 0);
+		});
+
+		it('does not let a home forget a grant before its own deadline', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			cluster.advance('beta', DELEGATION_LEASE_MS - 1);
+			assert.strictEqual(cluster.node('beta').coordinator.stats.granted, 1);
+		});
+	});
+
+	describe('failing closed', () => {
+		it('refuses to acquire with no agreed home map, after riding it through for the wait', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			cluster.node('alpha').mapless = true;
+			// A withheld map is what this node sees while it boots, so it is retried for up to the
+			// ride-through (§4.5) — here bounded by the short wait — before the refusal.
+			const startedAt = performance.now();
+			await assert.rejects(
+				() => cluster.node('alpha').coordinator.acquire('k1', LEASE, 300),
+				/No agreed record lock home map/
+			);
+			assert.ok(performance.now() - startedAt >= 100, 'the withheld map was not ridden through');
+		});
+
+		it('refuses to acquire off the coordinating thread', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			cluster.node('alpha').owns = false;
+			await assert.rejects(
+				() => cluster.node('alpha').coordinator.acquire('k1', LEASE, WAIT),
+				/not owned by this worker/
+			);
+		});
+
+		it('refuses to acquire when the home cannot be reached', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			cluster.node('beta').alive = false;
+			// Ridden through for the wait (§4.5), then refused.
+			await assert.rejects(() => cluster.node('alpha').coordinator.acquire(key, LEASE, 300), /Could not reach beta/);
+		});
+
+		it('blocks only the keys the unreachable node homes', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			cluster.node('beta').alive = false;
+			const elsewhere = cluster.keyHomedOn('gamma');
+			// The availability property the whole redesign exists for: one node down does not stop the
+			// cluster from locking, only its own share of the ring.
+			const round = await cluster.node('alpha').coordinator.acquire(elsewhere, LEASE, WAIT);
+			assert.ok(round.tsR > 0);
+		});
+
+		it('refuses to acquire after the coordinator is closed', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			cluster.node('alpha').coordinator.close();
+			await assert.rejects(() => cluster.node('alpha').coordinator.acquire('k1', LEASE, WAIT), /was closed/);
+		});
+
+		it('denies a request whose generation does not match the home’s', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const reply = await cluster
+				.node('beta')
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 99, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, false);
+			assert.strictEqual(reply.reason, 'generation');
+			assert.strictEqual(reply.generation, 1);
+		});
+
+		it('denies a request from a node the map does not name', async () => {
+			// An authenticated replication identity outlives membership, and the generation alone proves
+			// nothing about who is in it. Without this a decommissioned node takes delegations against
+			// live members — and recalls the legitimate delegate to get them.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const reply = await beta.onDelegationRequest({ key, requester: 'retired', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, false);
+			assert.strictEqual(reply.reason, 'unknown-node');
+			// And nothing was allocated for it: the next live member still gets the key.
+			assert.strictEqual(beta.stats.granted, 0, 'a refused non-member still consumed a grant');
+			const member = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(member.granted, true);
+		});
+
+		it('denies a request for a key it does not home', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const foreign = cluster.keyHomedOn('gamma');
+			const reply = await cluster
+				.node('beta')
+				.coordinator.onDelegationRequest({ key: foreign, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, false);
+			assert.strictEqual(reply.reason, 'not-home');
+		});
+
+		it('rejects a malformed inbound request rather than granting on it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			for (const bad of [
+				{ key, requester: '', generation: 1, leaseMs: LEASE },
+				{ key: { not: 'encodable' }, requester: 'alpha', generation: 1, leaseMs: LEASE },
+				{ key, requester: 'alpha', generation: 1, leaseMs: MIN_LOCK_LEASE_MS - 1 },
+				{ key, requester: 'alpha', generation: 1, leaseMs: MAX_LOCK_LEASE_MS + 1 },
+			]) {
+				const reply = await beta.onDelegationRequest(bad);
+				assert.strictEqual(reply.granted, false, `granted on ${JSON.stringify(bad)}`);
+			}
+			assert.strictEqual(beta.stats.granted, 0);
+		});
+	});
+
+	describe('fencing tokens', () => {
+		it('orders lexicographically by generation, then incarnation, then counter', () => {
+			assert.ok(compareTokens([1, 1, 5], [2, 1, 1]) < 0);
+			assert.ok(compareTokens([1, 1, 5], [1, 2, 1]) < 0);
+			assert.ok(compareTokens([1, 1, 5], [1, 1, 6]) < 0);
+			assert.strictEqual(compareTokens([1, 1, 5], [1, 1, 5]), 0);
+		});
+
+		it('outranks a restarted home’s earlier counters through the incarnation', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			const first = await cluster
+				.node('beta')
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			// Beta restarts as a home and its counter begins again — the incarnation is what keeps the
+			// new token ahead of the old one, which a random value could not do.
+			cluster.node('beta').incarnation = 2;
+			cluster.node('beta').coordinator.close();
+			const fresh = new FakeCluster(['alpha', 'beta', 'gamma'], { incarnations: { beta: 2 } });
+			const key2 = fresh.keyHomedOn('beta');
+			const second = await fresh
+				.node('beta')
+				.coordinator.onDelegationRequest({ key: key2, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.ok(compareTokens(first.token, second.token) < 0);
+		});
+
+		it('does not let a stale release clear a newer delegation', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(beta.stats.granted, 1);
+			// A release naming a counter that is not the live one — a delayed entry from a previous
+			// delegation, or one replayed from the log long after its producer is gone.
+			beta.applyEntry(
+				{
+					type: 'lockRelease',
+					key,
+					requester: 'alpha',
+					token: [granted.token[0], granted.token[1], granted.token[2] - 1],
+				},
+				'alpha'
+			);
+			assert.strictEqual(beta.stats.granted, 1);
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+			assert.strictEqual(beta.stats.granted, 0);
+		});
+
+		it('ignores a release written by a node that does not hold the grant', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'gamma', token: granted.token }, 'gamma');
+			assert.strictEqual(beta.stats.granted, 1, 'a non-delegate must not be able to clear a grant');
+		});
+
+		it('ignores a release whose payload names a node other than its author', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			// The payload is peer-supplied; the author comes from the audit header. They must agree.
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'gamma');
+			assert.strictEqual(beta.stats.granted, 1);
+		});
+	});
+
+	describe('a replaced transport', () => {
+		/** Build a successor coordinator that adopts a predecessor's live authority, as Table.ts does. */
+		function replace(cluster, name) {
+			const node = cluster.node(name);
+			const predecessor = node.coordinator;
+			const successor = new LockCoordinator({
+				database: cluster.database,
+				table: cluster.table,
+				nodeId: name,
+				transport: predecessor.transport,
+				writeControl: cluster.writeControlFor(name),
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => ++cluster.tsCounter,
+				monotonic: () => node.mono + performance.now(),
+				adopt: predecessor,
+				// As in the harness constructor: an injected clock says nothing about process start, so the
+				// §4.3 quarantine is opted into per test. It is NOT inherited from the predecessor here —
+				// the adopting successor takes the max of the two, and both are waived.
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			predecessor.close();
+			node.coordinator = successor;
+			return { predecessor, successor };
+		}
+
+		it('installs a grant that arrived after the swap on the successor, not the coordinator it left', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// The reload lands while the home's reply is still in flight. The grant is authority for the
+			// NODE; installed on the coordinator that asked, it would admit a caller that no recall could
+			// ever reach, alongside whoever the home grants next.
+			let swapped;
+			cluster.beforeReply = () => {
+				cluster.beforeReply = undefined;
+				swapped = replace(cluster, 'alpha');
+			};
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(swapped.predecessor.stats.delegations, 0, 'the delegation landed on a closed coordinator');
+			assert.strictEqual(swapped.successor.stats.delegations, 1, 'the successor did not receive the late grant');
+
+			// And the recall for it reaches the handle that grant admitted.
+			const { handle } = realHandle();
+			// Asserted, not called for effect: a round the handle refuses leaves `onRelease` unset, so
+			// the drain never completes and the assertion below would fail for the wrong reason.
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () =>
+					swapped.successor.release(key, round.admissionId)
+				),
+				true
+			);
+			swapped.successor.registerAdmission(round.admissionId, () => handle.revokeLease());
+			handle.release();
+			await cluster.node('gamma').coordinator.acquire(key, LEASE, 5_000);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'no recall could reach the late grant’s handle');
+		});
+
+		it('does not re-grant a key its own closed predecessor still has outstanding', async () => {
+			// Closing is a LOCAL event. `close()` without a successor drops the grant table, but the
+			// delegation it authorized is live on the other node until that node's own deadline, and no
+			// peer saw the close. A replacement built before then must refuse rather than hand the key to
+			// someone else — `#grantableAfterMono` covers a process restart, not this.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const issued = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(issued.granted, true);
+			beta.coordinator.close();
+
+			const replacement = new LockCoordinator({
+				database: cluster.database,
+				table: cluster.table,
+				nodeId: 'beta',
+				transport: beta.coordinator.transport,
+				writeControl: cluster.writeControlFor('beta'),
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => ++cluster.tsCounter,
+				monotonic: () => beta.mono + performance.now(),
+				autoTick: false,
+			});
+			beta.coordinator = replacement;
+			const denied = await replacement.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'a replacement granted a key alpha still holds');
+
+			// And its tokens must not tie the ones the closed coordinator already issued.
+			cluster.advance('beta', DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			const regranted = await replacement.onDelegationRequest({
+				key,
+				requester: 'gamma',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(regranted.granted, true);
+			assert.strictEqual(
+				compareTokens(regranted.token, issued.token) > 0,
+				true,
+				'the replacement restarted the counter into a token its predecessor already issued'
+			);
+		});
+
+		it('cannot grant a key whose predecessor delegation is still live', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			await cluster
+				.node('beta')
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			// A component reload swaps the transport. The delegation alpha holds is untouched by that,
+			// so the successor must not hand the key to gamma.
+			const { successor } = replace(cluster, 'beta');
+			assert.strictEqual(successor.stats.granted, 1, 'the successor adopted the live grant');
+			const reply = await successor.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, false);
+			assert.strictEqual(reply.reason, 'contended');
+		});
+
+		it('does not hand back a grant through the coordinator the swap emptied', async () => {
+			// The two-holder path this combines: a renewal reply that lost its race is cleaned up by the
+			// coordinator that SENT it, and `handOffTo` has already emptied that object's delegations. The
+			// "not while a delegation for the key is held" guard then reads an empty map, gives back the
+			// token the home renewed in place, and the home is free to grant the key to another node while
+			// the successor is still admitting under the pre-renewal delegation.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const home = cluster.node('beta').coordinator;
+			let deliverFirst;
+			const realRequest = alpha.coordinator.transport.requestDelegation;
+			alpha.coordinator.transport.requestDelegation = (target, database, table, request) =>
+				new Promise((resolve) => {
+					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
+				});
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
+			alpha.coordinator.transport.requestDelegation = realRequest;
+			await alpha.coordinator.acquire(key, LEASE, WAIT);
+
+			// The reload lands between the stalled request and its reply.
+			const { predecessor, successor } = replace(cluster, 'alpha');
+			assert.strictEqual(predecessor.stats.delegations, 0);
+			assert.strictEqual(successor.stats.delegations, 1);
+
+			await deliverFirst();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(home.stats.granted, 1, 'the handback cleared the grant backing a live delegation');
+			assert.strictEqual(successor.stats.delegations, 1, 'the successor lost the delegation it adopted');
+			const denied = await home.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'the home granted a key alpha is still inside');
+		});
+
+		it('keeps serving the node that already holds the delegation', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
+			// Alpha is the delegate, not the home. Swapping ITS transport must not cost it the
+			// delegation — the amortization would be lost on every component reload.
+			const { successor } = replace(cluster, 'alpha');
+			assert.strictEqual(successor.stats.delegations, 1);
+			const requestsBefore = cluster.requests.length;
+			await successor.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, requestsBefore, 'the adopted delegation still serves locks');
+		});
+
+		it('acquires through the successor when the swap closed the coordinator the caller captured', async () => {
+			// `Table.lock()` captures a coordinator, then waits on the native key lock — long enough for a
+			// reload to close what it captured. Authority moved to the successor, not away.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const { predecessor, successor } = replace(cluster, 'alpha');
+			const round = await predecessor.acquire(key, LEASE, WAIT);
+			assert.strictEqual(successor.stats.delegations, 1, 'the delegation landed somewhere else');
+			assert.strictEqual(predecessor.stats.delegations, 0, 'the closed coordinator took the delegation');
+			successor.release(key, round.admissionId);
+		});
+
+		it('carries what the wait already saw into the successor, so a swap mid-wait still ends 423', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The swap lands while beta's probe is still out and its deadline passes with it, so the
+			// successor inherits a wait with nothing left to probe with. Without the predecessor's
+			// observation it would report a held key as a coordination failure.
+			let swapped = false;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (!swapped) {
+					swapped = true;
+					replace(cluster, 'beta');
+					return cluster.advance('beta', 1_000);
+				}
+				// The successor's own probe carries no budget, so only the predecessor's observation can
+				// tell this wait that the key was held.
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
+		});
+
+		it('carries it across a swap that lands inside the backoff, not only inside a probe', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The other side of the same hop: beta's reply lands with budget to spare, so it is inside
+			// `delay()` when the swap closes it. The observation has to survive that path too.
+			let swapped = false;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (swapped) return new Promise((resolve) => setTimeout(resolve, 200));
+				swapped = true;
+				setTimeout(() => {
+					replace(cluster, 'beta');
+					cluster.advance('beta', 1_000);
+				}, 5);
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 1_000),
+				(error) => error.statusCode === 423
+			);
+		});
+
+		it('does not restart the counter, so a successor token never ties a predecessor’s', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const beta = cluster.node('beta');
+			const keyA = cluster.keyHomedOn('beta', 'ca-');
+			const first = await beta.coordinator.onDelegationRequest({
+				key: keyA,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			const { successor } = replace(cluster, 'beta');
+			const keyB = cluster.keyHomedOn('beta', 'cb-');
+			const second = await successor.onDelegationRequest({
+				key: keyB,
+				requester: 'gamma',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.ok(compareTokens(first.token, second.token) < 0, 'the successor minted a lesser-or-equal token');
+		});
+
+		it('expires the delegations it issued when closed WITHOUT a successor', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(alpha.stats.delegations, 1);
+			// Nothing adopted this one, so it must not leave authority behind it.
+			alpha.close();
+			assert.strictEqual(alpha.stats.delegations, 0);
+		});
+	});
+
+	describe('defects the pre-push review found, as regressions', () => {
+		it('rejects a grant reply that outlived the delegation it grants', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			// The home grants, then the reply is delayed past the whole delegation. Anchoring the
+			// delegate's deadline on the reply's ARRIVAL would hand it a full fresh lease while the home
+			// had already expired the grant and could hand the key to someone else.
+			alpha.coordinator.transport.requestDelegation = async (target, database, table, request) => {
+				const reply = await cluster.node(target).coordinator.onDelegationRequest(request);
+				cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
+				return reply;
+			};
+			// 503, not 423: the home granted the key to US and the reply merely arrived too late to use, so
+			// nobody ever held it. 423 would send the caller to retry a contention that did not happen.
+			await assert.rejects(
+				() => alpha.coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 503 && /arrived too late to use/.test(error.message)
+			);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a dead reply must not install a delegation');
+			// And the home must not be left holding a grant nobody will use: every retry renews it in
+			// place, so without the handback the key answers `contended` to every other node until the
+			// grant expires on the home's own clock.
+			assert.strictEqual(
+				cluster.node('beta').coordinator.stats.granted,
+				0,
+				'the home kept a grant the delegate never installed'
+			);
+			const gamma = await cluster.node('gamma').coordinator.acquire(key, LEASE, 1_000);
+			cluster.node('gamma').coordinator.release(key, gamma.admissionId);
+		});
+
+		it('does not re-send a recall the delegate already confirmed', async () => {
+			// A contender polls the home every 25 ms, and `#beginRecall` used to re-arm as soon as the
+			// previous recall settled — so one handoff became a recall RPC per pass for the rest of the
+			// delegation. A confirmed recall is never re-sent: the grant clears on its release or on its
+			// own deadline.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round, 'alpha did not take the key');
+			// The delegate confirms the recall but never writes the release, which is the case that used
+			// to leave the grant re-armable for its whole lifetime.
+			let recallsSent = 0;
+			cluster.node('beta').coordinator.transport.recallDelegation = async () => {
+				recallsSent++;
+			};
+			await assert.rejects(
+				() => cluster.node('gamma').coordinator.acquire(key, LEASE, 300),
+				() => true
+			);
+			assert.strictEqual(recallsSent, 1, `the confirmed recall was re-sent ${recallsSent} times`);
+		});
+
+		it('admits from a live delegation with no wait budget left', async () => {
+			// `Table.lock()` reaches the cluster step only after the native key lock, and that wait can
+			// consume the caller's whole timeout. It used to throw 423 there rather than call `acquire` at
+			// all — but a live delegation admits with zero messages and needs no budget, so the amortized
+			// path was being skipped and the caller told a key nobody holds was held. Raised by the
+			// round-24 outside lens against the 423/503 contract drawn one layer down.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+			const requestsBefore = cluster.requests.length;
+
+			const admitted = await alpha.acquire(key, LEASE, 0);
+			assert.ok(admitted, 'the amortized path needs no wait budget');
+			assert.strictEqual(cluster.requests.length, requestsBefore, 'it sent a message it did not need to');
+			alpha.release(key, admitted.admissionId);
+
+			// The home's own key is the same: granting locally is synchronous.
+			const localKey = cluster.keyHomedOn('alpha');
+			const local = await alpha.acquire(localKey, LEASE, 0);
+			assert.ok(local, 'a local grant needs no wait budget either');
+			alpha.release(localKey, local.admissionId);
+		});
+
+		it('re-arms the quarantine when a thread becomes the coordination owner later', async () => {
+			// A coordinator is built when a transport registers, but `ownsCoordination()` can flip long
+			// afterwards — a thread taking over from an owner that died. The construction horizon has aged
+			// out by then, so anchoring only there let the new owner grant immediately over delegations the
+			// previous OWNER issued. Found by the round-24 graded pass, on the anchor two earlier rounds
+			// had already moved.
+			let owns = false;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `owner${Date.now()}`,
+				table: 'OwnerSwap',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				autoTick: false,
+			});
+			// Long past the construction horizon, and only now does this thread take coordination over.
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'owned',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a new owner granted over its predecessor’s delegations');
+			assert.strictEqual(denied.reason, 'quarantine');
+
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const granted = await coordinator.onDelegationRequest({
+				key: 'owned',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the ownership quarantine never ended');
+			coordinator.close();
+		});
+
+		it('re-arms the quarantine when ownership is lost and regained', async () => {
+			// The takeover anchor was only ever read from `#grant`, and `onDelegationRequest` answers
+			// `not-home` before reaching it while this thread does not own coordination — so a
+			// non-owning interval was never observed at all. Ownership moving A→B→A left A's anchor
+			// dated from before the gap, and A granted straight over the delegations B had issued.
+			let owns = true;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `regain${Date.now()}`,
+				table: 'OwnerRegain',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				autoTick: false,
+			});
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+			const warm = await coordinator.onDelegationRequest({
+				key: 'regained',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(warm.granted, true, 'an unbroken owner never leaves its own quarantine');
+
+			// The gap. `tick()` is the poll production runs on its own while a coordinator owns.
+			owns = false;
+			coordinator.tick();
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'regained',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a regained owner granted over the gap’s delegations');
+			assert.strictEqual(denied.reason, 'quarantine');
+
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const granted = await coordinator.onDelegationRequest({
+				key: 'regained',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the re-armed quarantine never ended');
+			coordinator.close();
+		});
+
+		it('does not let a cold-start waiver cover a later takeover', async () => {
+			// `grantableAfterMono` attests that no previous INCARNATION OF THIS PROCESS issued anything —
+			// a fresh database, a first start, a test. It latched `#quarantineWaived` for the
+			// coordinator's whole life, so the same attestation also disabled the takeover quarantine,
+			// which it says nothing about.
+			let owns = true;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `waived${Date.now()}`,
+				table: 'WaivedTakeover',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			const cold = await coordinator.onDelegationRequest({
+				key: 'waived',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(cold.granted, true, 'the cold-start waiver did not apply');
+
+			owns = false;
+			coordinator.tick();
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'waived',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a fresh-database attestation waived a takeover too');
+			assert.strictEqual(denied.reason, 'quarantine');
+			coordinator.close();
+		});
+
+		it('fails a recall routed to a thread that does not own coordination', async () => {
+			// `acquire` refuses off the owner thread, so a delegation only ever lives on the coordinating
+			// one. A recall that lands anywhere else finds nothing, and resolving tells the home the
+			// delegate drained — it latches `recallConfirmed` and never re-sends — while the real
+			// delegate on the owner thread keeps admitting for the rest of its lease.
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round, 'alpha did not take the key');
+			alpha.owns = false;
+			await assert.rejects(
+				() => alpha.coordinator.onDelegationRecall({ key, token: round.token ?? [1, 1, 1] }),
+				/not owned by this worker thread/
+			);
+		});
+
+		it('re-arms the quarantine on an incarnation change the ownership poll never sampled', async () => {
+			// Sampling `ownsCoordination()` proves the answer at the instant it is read, never that
+			// ownership was unbroken between two reads — ownership alternating faster than the poll, with
+			// each sample landing inside this thread's own interval, aliases away completely. §5.1's
+			// incarnation is the statement about continuity that a boolean cannot make: a value this
+			// coordinator has not granted under says another coordination incarnation ran, whatever the
+			// boolean said in between.
+			let incarnation = 1;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `alias${Date.now()}`,
+				table: 'PollAlias',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: incarnation }),
+					// Never observed false: every sample lands inside an interval this thread owns.
+					ownsCoordination: () => true,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			const first = await coordinator.onDelegationRequest({
+				key: 'aliased',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(first.granted, true);
+
+			// Coordination went elsewhere and came back. Nothing sampled it; the incarnation says so.
+			incarnation = 2;
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			coordinator.tick();
+			const denied = await coordinator.onDelegationRequest({
+				key: 'aliased-2',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'an ownership change no poll saw did not re-arm the quarantine');
+			assert.strictEqual(denied.reason, 'quarantine');
+
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const granted = await coordinator.onDelegationRequest({
+				key: 'aliased-2',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the re-armed quarantine never ended');
+			coordinator.close();
+		});
+
+		it('does not waive the quarantine for a coordinator that was not owning when it was built', async () => {
+			// `Table.lockCoordinator` constructs unconditionally, so every 503 `lock()` on a non-owning
+			// worker builds one. Clearing the waiver only on an OBSERVED gap never fired for those: they
+			// had no ownership to lose, so the takeover kept the waiver and granted immediately over the
+			// delegations the outgoing owner thread was still admitting on.
+			let owns = false;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `unowned${Date.now()}`,
+				table: 'BuiltUnowned',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'unowned',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a coordinator built off the owner thread kept the waiver');
+			assert.strictEqual(denied.reason, 'quarantine');
+			coordinator.close();
+		});
+
+		it('does not let a transport reload re-waive a quarantine the predecessor lost', async () => {
+			// `handOffTo` carries the horizon and the ownership clock, but the successor reads
+			// `grantableAfterMono` off the NEW transport and re-latched the waiver from it — so a
+			// component reload after a takeover put the node back to granting immediately.
+			let owns = true;
+			let mono = 1_000;
+			const transport = {
+				homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+				ownsCoordination: () => owns,
+				requestDelegation: () => Promise.reject(new Error('single node')),
+				recallDelegation: () => Promise.resolve(),
+			};
+			const options = {
+				database: `reload${Date.now()}`,
+				table: 'WaiverReload',
+				nodeId: 'alpha',
+				transport,
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			};
+			const predecessor = new LockCoordinator(options);
+			// The gap, then the takeover: the predecessor loses the waiver here.
+			owns = false;
+			predecessor.tick();
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const afterTakeover = await predecessor.onDelegationRequest({
+				key: 'reloaded',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(afterTakeover.reason, 'quarantine', 'the takeover did not re-arm the quarantine');
+
+			const successor = new LockCoordinator({ ...options, adopt: predecessor });
+			const denied = await successor.onDelegationRequest({
+				key: 'reloaded',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a reload re-waived the quarantine the takeover armed');
+			assert.strictEqual(denied.reason, 'quarantine');
+			successor.close();
+		});
+
+		it('leaves a grant recallable when a local recall fails', async () => {
+			// The home's own delegate goes through `#beginRecall`'s local branch, which used to assign
+			// `grant.recalling` and never clear it on a rejection — so one failed recall latched the grant
+			// for the rest of the delegation and no contender could prompt another. The remote branch had
+			// always cleared it and armed `RECALL_RETRY_MS`; both settle the same way now.
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const own = await beta.acquire(key, LEASE, WAIT);
+			assert.ok(own, 'beta did not take the key it homes');
+
+			let recalls = 0;
+			let lastRecall;
+			beta.onDelegationRecall = () => {
+				recalls++;
+				// Awaited rather than slept past: `#beginRecall` attaches its handlers to this promise
+				// inside the request below, so a handler the test attaches afterwards runs strictly after
+				// the bookkeeping being asserted.
+				return (lastRecall = Promise.reject(new Error('the drain failed')));
+			};
+			const settled = () => lastRecall.catch(() => {});
+			const first = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(first.granted, false, 'alpha was granted over a live local delegation');
+			await settled();
+			assert.strictEqual(recalls, 1, 'the contender did not prompt a recall');
+
+			// Only on the retry interval, not on the contender's 25 ms poll.
+			const tooSoon = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(tooSoon.granted, false);
+			await settled();
+			assert.strictEqual(recalls, 1, 'a failed recall was re-sent on the contender’s poll interval');
+
+			cluster.advance('beta', RECALL_RETRY_MS + 100);
+			const retried = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(retried.granted, false);
+			await settled();
+			assert.strictEqual(recalls, 2, `a failed local recall was never retried (${recalls} sent)`);
+		});
+
+		it('arms the retry interval when the recall transport throws synchronously', async () => {
+			// `Promise.resolve(recallDelegation(...))` evaluates the call first, so a synchronous throw
+			// escaped `#beginRecall` entirely: the handlers never ran, `recallRetryAfterMono` was never
+			// set, and the next contender pass threw again immediately instead of backing off. Third
+			// instance of this pattern on this branch, so it is pinned rather than just fixed.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(granted.granted, true);
+
+			let attempts = 0;
+			cluster.node('beta').coordinator.transport.recallDelegation = () => {
+				attempts++;
+				throw new Error('transport is not connected');
+			};
+			// The contender must get a denial, not the transport's throw.
+			const first = await beta.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(first.granted, false, 'a throwing recall must not grant');
+			await delayMs(5);
+			// And the next pass must be throttled rather than throwing again straight away.
+			const second = await beta.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(second.granted, false);
+			assert.strictEqual(attempts, 1, `the failed recall was re-sent ${attempts} times without backing off`);
+		});
+
+		it('does not renew a delegate that already confirmed a recall', async () => {
+			// The hole the confirmed-recall guard opened, found on the next round. The delegate can confirm
+			// and re-ask before its release reaches the home — the production writer is an async log commit
+			// plus replication — and renewing then mints a token the pending release no longer matches,
+			// leaves a grant `#beginRecall` will never recall again, and starves the contender for the rest
+			// of the lease.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const first = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(first.granted, true);
+
+			// Gamma contends, so the home recalls alpha; alpha confirms but its release has not landed.
+			cluster.node('beta').coordinator.transport.recallDelegation = async () => {};
+			const contended = await beta.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(contended.granted, false, 'gamma was granted over a live delegation');
+			await delayMs(5);
+
+			// Alpha's amortized next lock must NOT be renewed in place while that recall stands.
+			const renewal = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(renewal.granted, false, 'the home renewed a delegate it had just recalled');
+			assert.strictEqual(renewal.reason, 'contended');
+		});
+
+		it('does not latch a generation it never minted under', async () => {
+			// The rollback floor has to be raised where authority is TAKEN, not where a map is read. One
+			// `homeMap()` returning a too-large generation — a partial publish, a transport glitch — would
+			// otherwise pin the floor above anything the operator ever publishes and fail every later lock
+			// on the database until the thread restarts, for a key nobody holds. Raised by the round-22
+			// outside lens against the floor added earlier in this branch.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// One glitched read on the requester's side, of a generation nobody grants under. The home is
+			// untouched and still on 1, so it refuses and nothing is ever minted under 99.
+			const realMap = cluster.node('alpha').coordinator.transport.homeMap;
+			cluster.node('alpha').coordinator.transport.homeMap = () => ({
+				...realMap(),
+				generation: 99,
+			});
+			await assert.rejects(
+				() => alpha.acquire(key, LEASE, 100),
+				(error) => error.statusCode === 503
+			);
+
+			// The real generation still works: nothing was minted under 99, so nothing is protected from.
+			cluster.node('alpha').coordinator.transport.homeMap = realMap;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			assert.ok(round, 'a glitched read poisoned the generation floor');
+			alpha.release(key, round.admissionId);
+		});
+
+		it('refuses a home map whose generation went backwards', async () => {
+			// The generation is the high-order component of every fencing token, so re-minting under an
+			// older one hands out tokens that order BELOW ones already issued — and a delayed write under
+			// the newer generation then defeats its successor. An operator-published map makes the
+			// rollback route a config restore or a partial publish, not a protocol bug, so core refuses it
+			// rather than assuming it away.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+			cluster.generation = 2;
+			const second = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, second.admissionId);
+			const underTwo = await cluster.node('beta').coordinator.onDelegationRequest({
+				key: cluster.keyHomedOn('beta', 'gen2-'),
+				requester: 'gamma',
+				generation: 2,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(underTwo.token[0], 2, 'the home did not mint under the new generation');
+
+			cluster.generation = 1;
+			await assert.rejects(() => alpha.acquire(key, LEASE, 200), /No agreed record lock home map/);
+			const denied = await cluster
+				.node('beta')
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'a home granted under a rolled-back generation');
+			assert.strictEqual(denied.reason, 'generation');
+		});
+
+		it('answers a generation mismatch and an unnamed node with 503, not a 423 after the full wait', async () => {
+			// The same defect class as the quarantine denial: neither condition can be waited out inside a
+			// `lock()` timeout, so retrying spends the caller's whole budget holding the native key and
+			// then reports 423 — "held by someone else" — on a key nobody holds. Raised on the PR by
+			// cb1kenobi against the head this landed on.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+
+			// The home is a generation ahead of the requester.
+			cluster.node('beta').coordinator.transport.homeMap = () => ({
+				generation: 2,
+				homes: [...cluster.homes],
+				homeIncarnation: 1,
+			});
+			await assert.rejects(
+				() => alpha.coordinator.acquire(key, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /home map generation 2 and this node holds 1/.test(error.message)
+			);
+
+			// And a requester the map does not name at all.
+			const cluster2 = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key2 = cluster2.keyHomedOn('beta');
+			cluster2.node('beta').coordinator.transport.homeMap = () => ({
+				generation: 1,
+				homes: ['beta', 'gamma'],
+				homeIncarnation: 1,
+			});
+			await assert.rejects(
+				() => cluster2.node('alpha').coordinator.acquire(key2, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /not named in the record lock home map/.test(error.message)
+			);
+		});
+
+		it('reports 423 only for real contention, and 503 for a ring the map never agrees on', async () => {
+			// The third case in the same round-9 finding as the quarantine and generation denials, and the
+			// reason this is a class fix rather than a fourth branch: `not-home` IS worth retrying, because
+			// a stale map on our side converges. What is wrong is the terminal answer — two maps under one
+			// generation number never converge, and 423 tells the caller a key nobody holds is held.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			// The home agrees on the generation but derives a different ring, so it answers `not-home`
+			// forever rather than for a pass or two.
+			cluster.node('beta').coordinator.transport.homeMap = () => ({
+				generation: 1,
+				homes: ['alpha', 'gamma'],
+				homeIncarnation: 1,
+			});
+			await assert.rejects(
+				() => cluster.node('alpha').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 503 && /home answered not-home/.test(error.message)
+			);
+
+			// And genuine contention still ends as a 423: the key is held by another node's delegation.
+			const contended = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key2 = contended.keyHomedOn('beta');
+			const gamma = await contended.node('gamma').coordinator.acquire(key2, LEASE, WAIT);
+			assert.ok(gamma, 'gamma did not take the key');
+			contended.node('beta').coordinator.transport.recallDelegation = () => new Promise(() => {});
+			await assert.rejects(
+				() => contended.node('alpha').coordinator.acquire(key2, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
+		});
+
+		it('drops a delegation when the generation changes under it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			const { handle, unlocked } = realHandle();
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () => alpha.release(key, round.admissionId)),
+				true
+			);
+			alpha.registerAdmission(round.admissionId, () => handle.revokeLease());
+			assert.strictEqual(handle.isLeaseExpired(), false, 'the handle expired before the generation changed');
+			assert.strictEqual(alpha.stats.delegations, 1);
+			// A generation change may have re-homed the key to a node that knows nothing of this token.
+			// Keeping its live handle would let alpha commit alongside whoever the new home grants.
+			cluster.generation = 2;
+			const requestsBefore = cluster.requests.length;
+			const replacement = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'the stale-generation handle was not fenced');
+			assert.strictEqual(unlocked.length, 1, 'revoking the held handle did not return the native key');
+			assert.ok(cluster.requests.length > requestsBefore, 'the stale-generation delegation was reused');
+			assert.strictEqual(alpha.stats.delegations, 1, 'the replacement delegation was not installed');
+			alpha.release(key, replacement.admissionId);
+		});
+
+		it('refuses to grant before its configured horizon', async () => {
+			// Relative to the same clock the coordinator reads, not an absolute constant: the fake
+			// monotonic is `performance.now()`-based, so a fixed horizon silently falls into the past
+			// once the process has been up longer than it.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], {
+				grantableAfterMono: performance.now() + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS,
+			});
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const denied = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a cold home must not grant over an unseen predecessor');
+			assert.strictEqual(denied.reason, 'quarantine');
+			cluster.advance('beta', DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true);
+		});
+
+		describe('coordination incarnation before home-map agreement', () => {
+			const horizon = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			let mono, incarnation, owns, ready, reads, coordinators;
+			beforeEach(() => {
+				mono = 1_000;
+				incarnation = 1;
+				owns = true;
+				ready = false;
+				reads = 0;
+				coordinators = [];
+			});
+			afterEach(() => {
+				if (coordinators) {
+					for (const coordinator of coordinators) coordinator.close();
+				}
+			});
+			function create(options = {}) {
+				const coordinator = coldCoordinator(() => mono, {
+					grantableAfterMono: -Infinity,
+					...options,
+					transport: {
+						homeMap: () => (ready ? { generation: 1, homes: ['alpha'], homeIncarnation: incarnation } : undefined),
+						ownsCoordination: () => owns,
+						coordinationIncarnation: () => {
+							reads++;
+							return incarnation;
+						},
+						...options.transport,
+					},
+				});
+				coordinators.push(coordinator);
+				return coordinator;
+			}
+			const request = (coordinator, key = 'bootstrap') =>
+				coordinator.onDelegationRequest({
+					key,
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+
+			it('keeps a fresh owner grantable once agreement arrives, reading identity only at construction', async () => {
+				const coordinator = create();
+				assert.strictEqual(reads, 1);
+				assert.strictEqual((await request(coordinator)).reason, 'generation');
+				ready = true;
+				for (let i = 0; i < 3; i++) assert.strictEqual((await request(coordinator, `key-${i}`)).granted, true);
+				assert.strictEqual(reads, 1, 'grants must not refresh the construction baseline');
+			});
+
+			it('grants after a true restart at construction + 365s, not agreement + 365s', async () => {
+				incarnation = 2;
+				const constructed = mono;
+				const coordinator = create({ grantableAfterMono: undefined });
+				mono += 120_000;
+				ready = true;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon - 120_000);
+				mono = constructed + horizon - 1;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), 1);
+				mono++;
+				assert.strictEqual(mono, constructed + 365_000);
+				assert.strictEqual((await request(coordinator)).granted, true);
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), 0);
+			});
+
+			for (const adopt of [false, true]) {
+				it(`quarantines an incarnation bump while the map is withheld${adopt ? ', including after adoption' : ''}`, async () => {
+					let coordinator = create();
+					incarnation++;
+					mono += 120_000;
+					if (adopt)
+						coordinator = create({ database: coordinator.database, table: coordinator.table, adopt: coordinator });
+					ready = true;
+					assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+					assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon);
+					mono += horizon;
+					assert.strictEqual((await request(coordinator)).granted, true);
+				});
+			}
+
+			it('does not read identity when not the owner or let the waiver cover a later takeover', async () => {
+				owns = false;
+				const coordinator = create();
+				assert.strictEqual(reads, 0);
+				mono += horizon * 2;
+				owns = ready = true;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(reads, 0);
+			});
+
+			for (const waived of [false, true]) {
+				it(`quarantines adoption of an unknown incarnation with an ${waived ? 'explicitly waived' : 'expired'} clock`, async () => {
+					const predecessor = create({
+						grantableAfterMono: waived ? -Infinity : undefined,
+						transport: { coordinationIncarnation: () => undefined },
+					});
+					mono += horizon;
+					// Another owner can have granted while the idle predecessor could not observe identity.
+					const homes = ['alpha', 'beta'];
+					let key = 'bootstrap';
+					while (homeFor(ringKeyFor(predecessor.database, predecessor.table, key), homes) !== 'alpha') key += 'x';
+					incarnation = 2;
+					ready = true;
+					const sibling = create({
+						database: predecessor.database,
+						table: predecessor.table,
+						grantableAfterMono: undefined,
+						transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: 2 }) },
+					});
+					mono += horizon;
+					const grantedAt = mono;
+					const prior = await sibling.onDelegationRequest({
+						key,
+						requester: 'beta',
+						generation: 1,
+						leaseMs: LEASE,
+					});
+					assert.strictEqual(prior.granted, true);
+					incarnation = 3;
+					ready = false;
+					mono++;
+					const successor = create({
+						database: predecessor.database,
+						table: predecessor.table,
+						adopt: predecessor,
+						transport: { homeMap: () => (ready ? { generation: 1, homes, homeIncarnation: 3 } : undefined) },
+					});
+					ready = true;
+					assert.ok(grantedAt + prior.leaseMs > mono, 'the prior delegation must still be live');
+					assert.strictEqual((await request(successor, key)).reason, 'quarantine');
+					assert.strictEqual(successor.unprovenOwnershipMs(), horizon);
+					mono += horizon - 1;
+					assert.strictEqual((await request(successor, key)).reason, 'quarantine');
+					mono++;
+					assert.ok(mono >= grantedAt + prior.leaseMs);
+					assert.strictEqual((await request(successor, key)).granted, true);
+				});
+			}
+
+			it('carries a known incarnation and its construction deadline through adoption before agreement', async () => {
+				const constructed = mono;
+				const predecessor = create({ grantableAfterMono: undefined });
+				mono += 120_000;
+				const successor = create({ database: predecessor.database, table: predecessor.table, adopt: predecessor });
+				ready = true;
+				assert.strictEqual((await request(successor)).reason, 'quarantine');
+				assert.strictEqual(successor.unprovenOwnershipMs(), horizon - 120_000);
+				mono = constructed + horizon;
+				assert.strictEqual((await request(successor)).granted, true);
+			});
+
+			for (const value of [
+				undefined,
+				0,
+				-1,
+				1.5,
+				NaN,
+				Infinity,
+				Number.MAX_SAFE_INTEGER + 1,
+				'1',
+				new Error('unknown'),
+			]) {
+				it(`fails closed with an unavailable map and incarnation ${String(value)}`, async () => {
+					const coordinator = create({
+						transport: {
+							coordinationIncarnation() {
+								if (value instanceof Error) throw value;
+								return value;
+							},
+						},
+					});
+					ready = true;
+					assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				});
+				it(`falls back to an available map with incarnation ${String(value)}`, async () => {
+					ready = true;
+					const coordinator = create({
+						transport: {
+							coordinationIncarnation() {
+								if (value instanceof Error) throw value;
+								return value;
+							},
+						},
+					});
+					assert.strictEqual((await request(coordinator)).granted, true);
+				});
+			}
+		});
+
+		it('quarantines a cold home by default, on its own process clock', async () => {
+			// §4.3: the home map is immutable, so a restart advances no generation and nothing external
+			// bounds what a previous incarnation granted. Neither process start nor thread start is a
+			// sound anchor — `performance.now()` is process-wide inside a worker, and a thread can take
+			// coordination ownership long after it booted — so the horizon runs from CONSTRUCTION, the
+			// only instant core can prove nothing else was granting under.
+			let mono = 1_000;
+			const cold = coldCoordinator(() => mono);
+			const denied = await cold.onDelegationRequest({
+				key: 'quarantined',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a cold home granted over an unseen predecessor');
+			assert.strictEqual(denied.reason, 'quarantine');
+
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS - 1;
+			const stillDenied = await cold.onDelegationRequest({
+				key: 'quarantined',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(stillDenied.reason, 'quarantine', 'the horizon ended a millisecond early');
+
+			mono += 1;
+			const granted = await cold.onDelegationRequest({
+				key: 'quarantined',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the quarantine outlasted the delegation lease');
+			cold.close();
+		});
+
+		it('answers a quarantined home with 503 rather than burning the caller’s wait for a 423', async () => {
+			// The quarantine runs a full delegation lease (365s) and MAX_LOCK_TIMEOUT_MS is 300s, so no
+			// legal caller can wait it out. Retrying it as ordinary contention would spend the whole
+			// budget and then report 423 — "held by someone else" — for a key nobody holds.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], {
+				grantableAfterMono: performance.now() + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS,
+			});
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('alpha');
+			await assert.rejects(
+				() => alpha.acquire(key, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+		});
+
+		it('does not start a fresh quarantine when a warm coordinator is adopted', async () => {
+			// Adoption carries the predecessor's horizon exactly. Recomputing from the successor's own
+			// construction would reject this node's whole home share for a delegation lease on every
+			// transport reload, which is a component reload away.
+			const table = `WarmSwap${Date.now()}`;
+			const database = `warmswap${Date.now()}`;
+			let mono = 1_000;
+			const predecessor = coldCoordinator(() => mono, { table, database });
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const successor = coldCoordinator(() => mono, { table, database, adopt: predecessor });
+			const granted = await successor.onDelegationRequest({
+				key: 'warm',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'a transport reload restarted the quarantine');
+			predecessor.close();
+			successor.close();
+		});
+
+		it('carries the cold-start quarantine across a transport swap', async () => {
+			// The successor adopts the predecessor's live authority, so it need not wait on THAT — but the
+			// quarantine bounds what a previous incarnation of the process granted, which neither
+			// coordinator can see. A component reload is not evidence about it.
+			const mono = () => 5_000;
+			const table = `ColdSwap${Date.now()}`;
+			const database = `coldswap${Date.now()}`;
+			const predecessor = coldCoordinator(mono, { table, database });
+			const successor = coldCoordinator(mono, { table, database, adopt: predecessor });
+			const denied = await successor.onDelegationRequest({
+				key: 'swapped',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a transport swap cleared the cold-start quarantine');
+			assert.strictEqual(denied.reason, 'quarantine');
+			predecessor.close();
+			successor.close();
+		});
+
+		it('revokes a REAL handle whose write was staged and then unlocked', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			// A real handle wired exactly as Table.ts wires one, not a stub: a bare callback would assert
+			// only that the coordinator CALLS a revoker, while the production `revokeLease` is what has
+			// to fence the staged write.
+			const { handle } = realHandle();
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () => alpha.release(key, round.admissionId)),
+				true
+			);
+			alpha.registerAdmission(round.admissionId, () => handle.revokeLease());
+
+			// The caller staged a write and then unlocked; its transaction has not committed.
+			handle.release();
+			assert.strictEqual(handle.isLeaseExpired(), false, 'a clean unlock alone must not fence the write');
+
+			await cluster.node('beta').coordinator.acquire(key, LEASE, 5_000);
+			// This is the §6 property: the successor is admitted only once the predecessor's staged write
+			// can no longer commit. `isLeaseExpired()` is exactly what the pre-submit commit fence reads.
+			assert.strictEqual(handle.isLeaseExpired(), true, 'the handoff did not fence the predecessor’s staged write');
+		});
+
+		it('keeps an unlocked-but-staged write revocable across a renewal', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// Move to just inside the renewal threshold, so the handle admitted next is still live when
+			// the renewal happens. A renewal can only occur in the delegation's last lease-length, which
+			// is exactly the window where a handle admitted moments earlier is still able to commit.
+			await alpha.acquire(key, LEASE, WAIT);
+			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE - 1_000);
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 1, 'the second lock should still be on the first delegation');
+
+			const { handle } = realHandle();
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () => alpha.release(key, round.admissionId)),
+				true
+			);
+			alpha.registerAdmission(round.admissionId, () => handle.revokeLease());
+			handle.release();
+
+			// Past the threshold: the next lock renews. The handle above has not reached its own lease.
+			cluster.advance('alpha', 2_000);
+			const renewed = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 2, 'the lock after the threshold should have renewed');
+			alpha.release(key, renewed.admissionId);
+
+			// A renewal installed a fresh delegation object once, dropping the predecessor's revokers on
+			// the floor; the next recall then surrendered while that handle could still commit.
+			await cluster.node('gamma').coordinator.acquire(key, LEASE, 5_000);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'a renewed delegation lost track of a live handle');
+		});
+
+		it('refuses a grant minted under a generation that advanced while the reply was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// The membership changes after the home granted but before the requester saw the reply. Under
+			// the new generation the key may be homed elsewhere, and that home can already have granted it
+			// — so admitting on the generation-1 token would put two nodes inside one key with no message
+			// between them. The acquisition itself should still succeed, by asking again under generation 2.
+			cluster.beforeReply = () => {
+				cluster.beforeReply = undefined;
+				cluster.generation = 2;
+			};
+			await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 2, 'the superseded-generation grant was admitted rather than redone');
+			const released = cluster.node('alpha').written.filter((entry) => entry.type === 'lockRelease');
+			assert.strictEqual(released.length, 1, 'the stale grant was not handed back');
+			assert.strictEqual(released[0].token[0], 1, 'the handed-back token was not the superseded one');
+			assert.strictEqual(alpha.stats.delegations, 1);
+		});
+
+		it('does not let a release from a previous home incarnation clear a live grant', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			// A home that restarts begins counting again, so the SAME counter can belong to two
+			// different delegations. Only the whole token identifies one.
+			const stale = [granted.token[0], granted.token[1] - 1, granted.token[2]];
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: stale }, 'alpha');
+			assert.strictEqual(beta.stats.granted, 1, 'a previous incarnation’s release cleared a live grant');
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+			assert.strictEqual(beta.stats.granted, 0);
+		});
+
+		it('collects an expired grant rather than answering contended forever', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			await beta.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			// Past the grant's deadline, with tick() deliberately NOT run — a table whose expiry budget
+			// is saturated is exactly the case where that happens.
+			beta.mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+			const reply = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'gamma',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(reply.granted, true, 'an uncollected expired grant blocked every other node');
+		});
+	});
+
+	describe('defects the second review round found, as regressions', () => {
+		it('does not let a superseded handle decrement its successor’s admissions', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			// The delegation is replaced while the first handle is still open — a generation change is the
+			// cheapest way to force that here.
+			cluster.generation = 2;
+			const second = await alpha.acquire(key, LEASE, WAIT);
+			assert.notStrictEqual(first.admissionId, second.admissionId, 'a second admission was not created');
+			// The OLD handle unlocks late. Untokened, this would decrement the new delegation and let it
+			// be surrendered while its own caller is still inside.
+			alpha.release(key, first.admissionId);
+			assert.strictEqual(alpha.stats.admitted, 1, 'the superseded handle decremented the successor');
+		});
+
+		it('does not hand back a grant while it still holds a delegation for the key', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const home = cluster.node('beta').coordinator;
+			// R1 stalls on the wire. R2 goes through, alpha installs that token and is inside the key.
+			let deliverFirst;
+			const realRequest = alpha.coordinator.transport.requestDelegation;
+			// In place for the whole first acquisition, not just its first send: the retry loop would
+			// otherwise reach the home on its own and the acquisition would never time out.
+			alpha.coordinator.transport.requestDelegation = (target, database, table, request) =>
+				new Promise((resolve) => {
+					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
+				});
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
+			alpha.coordinator.transport.requestDelegation = realRequest;
+			await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 1);
+
+			// R1 lands at the home NOW. The home sees the same requester and renews IN PLACE, minting a
+			// token alpha never receives. R1's cleanup must not release it: the home's grant is what
+			// backs the delegation alpha is using, whatever token the home currently records it under.
+			await deliverFirst();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(home.stats.granted, 1, 'a live delegation lost the grant backing it');
+			const denied = await home.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'the home handed the key onward while alpha was inside it');
+		});
+
+		it('hands back a delegation whose reply arrived after the caller stopped waiting', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			let resolveReply;
+			alpha.coordinator.transport.requestDelegation = (target, database, table, request) =>
+				new Promise((resolve) => {
+					resolveReply = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
+				});
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
+			// The home grants only now, to a caller that has already given up. Nothing would ever claim
+			// or release it, so the home would deny every other node for the whole delegation.
+			await resolveReply();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(cluster.node('beta').coordinator.stats.granted, 0, 'the stranded grant was not returned');
+		});
+	});
+
+	describe('a home across a generation change (harper-pro#973)', () => {
+		async function gammaHeldThenStopped() {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const keys = [cluster.keyHomedOn('alpha'), cluster.keyHomedOn('alpha', 'j')];
+			let token;
+			cluster.beforeReply = (from, to, request, reply) => {
+				if (from === 'gamma' && request.key === keys[0]) token = reply.token;
+			};
+			const gamma = cluster.node('gamma').coordinator;
+			for (const key of keys) {
+				const round = await gamma.acquire(key, LEASE, WAIT);
+				gamma.release(key, round.admissionId);
+			}
+			cluster.beforeReply = undefined;
+			cluster.node('gamma').alive = false;
+			return { cluster, key: keys[0], token };
+		}
+
+		async function drainAlpha(cluster, budgetMs = 1_000) {
+			const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+			await cluster.node('alpha').coordinator.quiesce(result, () => budgetMs);
+			assert.deepStrictEqual(
+				result.outstanding.map((entry) => entry.delegate),
+				['gamma', 'gamma']
+			);
+		}
+
+		it('serves a key granted to a node the next generation drops, once that generation is current', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			await drainAlpha(cluster);
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			assert.strictEqual(cluster.homeOf(key), 'alpha');
+			const round = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
+			assert.ok(round.admissionId);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 1, "gamma's other grant outlived the change");
+			assert.strictEqual(cluster.node('beta').freshnessCalls.at(-1).dependencies, null);
+		});
+
+		it('keeps that grant exclusive while the generation is unchanged', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.node('beta').coordinator.stats.delegations, 0);
+		});
+
+		it('keeps an older grant to a node still in the ring until its lease or release ends it', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			await drainAlpha(cluster);
+			cluster.generation = 2;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
+		});
+
+		it('keeps a recall-confirmed older grant to a node still in the ring until its release or lease', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('alpha');
+			const gamma = cluster.node('gamma');
+			const round = await gamma.coordinator.acquire(key, LEASE, WAIT);
+			gamma.coordinator.release(key, round.admissionId);
+			// Gamma confirms the recall but its release never lands, so the grant stays recall-confirmed.
+			gamma.writerThrows = true;
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300));
+			assert.ok(gamma.writerCalls > 0, 'gamma surrendered');
+			cluster.generation = 2;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
+		});
+
+		it('serves the key when the drain recall to the dropped node is still in flight at its deadline', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			cluster.node('alpha').coordinator.transport.recallDelegation = () => new Promise(() => {});
+			await drainAlpha(cluster, 50);
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			const round = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
+			assert.ok(round.admissionId);
+		});
+
+		it('keeps an older grant to a dropped node that no drain reached, even after a contended recall failed', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
+		});
+
+		it('a recall that arrives while the delegate is still fencing its surrender waits for the fence', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			let token;
+			cluster.beforeReply = (from, to, request, reply) => {
+				if (from === 'alpha') token = reply.token;
+			};
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			let releaseFence;
+			alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+			alpha.release(key, round.admissionId);
+			const first = alpha.onDelegationRecall({ key, token });
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
+			let secondDone = false;
+			const second = alpha.onDelegationRecall({ key, token }).then(() => (secondDone = true));
+			const drain = quiesceDelegations(cluster.database, 30);
+			const drained = await drain;
+			assert.ok(
+				drained.outstanding.some((entry) => /has not fenced every handle/.test(entry.reason)),
+				JSON.stringify(drained.outstanding)
+			);
+			assert.strictEqual(secondDone, false, 'the second recall confirmed while a handle could still commit');
+			releaseFence();
+			await Promise.all([first, second]);
+		});
+
+		for (const coldClose of [false, true])
+			it(`a drain still checks the ownership of a coordinator rebuilt while it waits on a surrender${coldClose ? ', and closed again' : ''}`, async () => {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const node = cluster.node('alpha');
+				const key = cluster.keyHomedOn('gamma');
+				let token;
+				cluster.beforeReply = (from, to, request, reply) => {
+					if (from === 'alpha') token = reply.token;
+				};
+				const round = await node.coordinator.acquire(key, LEASE, WAIT);
+				let releaseFence;
+				node.coordinator.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+				node.coordinator.release(key, round.admissionId);
+				// Only alpha is still inside its ownership horizon, so only alpha's coordinator can fail the proof.
+				for (const name of ['beta', 'gamma']) cluster.advance(name, DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+				const surrender = node.coordinator.onDelegationRecall({ key, token });
+				const drain = quiesceDelegations(cluster.database, 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				// The transport is replaced mid-drain, as staging a generation does; the successor adopts
+				// alpha's unproven ownership.
+				const predecessor = node.coordinator;
+				const successor = new LockCoordinator({
+					database: cluster.database,
+					table: cluster.table,
+					nodeId: 'alpha',
+					transport: predecessor.transport,
+					writeControl: cluster.writeControlFor('alpha'),
+					keyIdOf: (k) => String(k),
+					nextTimestamp: () => ++cluster.tsCounter,
+					monotonic: () => node.mono + performance.now(),
+					grantableAfterMono: -Infinity,
+					adopt: predecessor,
+					autoTick: false,
+				});
+				predecessor.close();
+				if (coldClose) successor.close();
+				releaseFence();
+				const drained = await drain;
+				await surrender;
+				assert.ok(
+					drained.outstanding.some(
+						(entry) => entry.table === cluster.table && /has not coordinated/.test(entry.reason)
+					),
+					JSON.stringify(drained.outstanding)
+				);
+				successor.close();
+			});
+
+		it('sweeps again for grants a drain marked after this generation already swept', async () => {
+			const { cluster } = await gammaHeldThenStopped();
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			const beta = cluster.node('beta').coordinator;
+			const first = cluster.keyHomedOn('alpha', 'm');
+			const round = await beta.acquire(first, LEASE, WAIT);
+			beta.release(first, round.admissionId);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 3, 'nothing was marked yet');
+			await drainAlpha(cluster);
+			await beta.acquire(cluster.keyHomedOn('alpha', 'n'), LEASE, WAIT);
+			assert.strictEqual(
+				cluster.node('alpha').coordinator.stats.granted,
+				1,
+				"gamma's marked grants outlived the drain"
+			);
+		});
+
+		it('does not let a late release of the old grant clear its successor', async () => {
+			const { cluster, key, token } = await gammaHeldThenStopped();
+			await drainAlpha(cluster);
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			const beta = cluster.node('beta').coordinator;
+			await beta.acquire(key, LEASE, 1_000);
+			const alpha = cluster.node('alpha').coordinator;
+			alpha.applyEntry({ type: 'lockRelease', key, requester: 'gamma', token, dependencies: null }, 'gamma', 1);
+			assert.strictEqual(alpha.stats.granted, 1, "gamma's generation-1 release cleared beta's grant");
+			const denied = await alpha.onDelegationRequest({ key, requester: 'alpha', generation: 2, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'alpha re-granted a key beta still holds');
+		});
+	});
+
+	describe('bounded state', () => {
+		it('refuses a request once the per-requester cap is reached', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const beta = cluster.node('beta').coordinator;
+			let denied;
+			// 2000 is the per-requester cap; walk past it and assert the denial is capacity, not a throw.
+			for (let i = 0; i < 2_100 && !denied; i++) {
+				const reply = await beta.onDelegationRequest({
+					key: cluster.keyHomedOn('beta', `cap${i}-`),
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				if (!reply.granted) denied = reply;
+			}
+			assert.ok(denied, 'the per-requester cap never engaged');
+			assert.strictEqual(denied.reason, 'capacity');
+		});
+
+		it('releases a requester’s budget when its grants are cleared', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(beta.stats.granted, 1);
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+			assert.strictEqual(beta.stats.granted, 0);
+			const again = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(again.granted, true);
+		});
+
+		it('collects expired admissions hidden behind a longer-lease one', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			// Homed here, so the whole run is local and no renewal crosses the wire to confuse the count.
+			const key = cluster.keyHomedOn('alpha');
+			const alpha = cluster.node('alpha').coordinator;
+			// A handle that staged a write and then unlocked stays revocable for its OWN lease, so this
+			// one sits at the head of the admission map — insertion order, not expiry order — for five
+			// minutes while every short admission behind it expires within a second.
+			const long = await alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			alpha.release(key, long.admissionId);
+			for (let i = 0; i < 200; i++) {
+				cluster.advance('alpha', 1_100);
+				const short = await alpha.acquire(key, 1_000, WAIT);
+				alpha.release(key, short.admissionId);
+			}
+			assert.strictEqual(alpha.stats.admitted, 0, 'every admission in the run unlocked');
+			// Without the sweep the leading long admission blocks the scan for its whole lease and all
+			// 201 entries are still retained, each holding its handle.
+			assert.ok(
+				alpha.stats.revocable < 100,
+				`expired admissions accumulated behind the long one: ${alpha.stats.revocable} retained`
+			);
+		});
+
+		it('still fences a longer-lease admission the sweep walked past', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const long = await alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			const { handle } = realHandle(MAX_LOCK_LEASE_MS);
+			assert.strictEqual(
+				handle.joinClusterRound(long.tsR, MAX_LOCK_LEASE_MS, long.mintedMono, () =>
+					alpha.release(key, long.admissionId)
+				),
+				true
+			);
+			alpha.registerAdmission(long.admissionId, () => handle.revokeLease());
+			// Staged a write, then unlocked: still revocable, and still at the head of the map.
+			handle.release();
+			for (let i = 0; i < 200; i++) {
+				cluster.advance('alpha', 1_100);
+				const short = await alpha.acquire(key, 1_000, WAIT);
+				alpha.release(key, short.admissionId);
+			}
+			// The sweep may only drop admissions that can no longer commit. Losing this one to it would
+			// be the §6 defect the head-only scan never had.
+			await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'the surviving long admission was not revoked');
+		});
+	});
+
+	describe('the release control entry', () => {
+		it('round-trips through the private packr', () => {
+			for (const key of ['record-1', 42, 9007199254740993n, ['a', 1], [1, ['b']]]) {
+				const entry = {
+					type: 'lockRelease',
+					key,
+					requester: 'alpha',
+					token: [1, 2, 7],
+					dependencies: [
+						['alpha', 11],
+						['beta', 11],
+					],
+				};
+				const decoded = decodeLockControlPayload('lockRelease', encodeLockControlPayload(entry));
+				assert.deepStrictEqual(decoded, entry);
+			}
+		});
+
+		it('decodes the historical five-field release as unknown lineage', () => {
+			assert.deepStrictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 2, 7]), {
+				type: 'lockRelease',
+				key: 'k',
+				requester: 'alpha',
+				token: [1, 2, 7],
+			});
+		});
+
+		it('accepts every record-id shape the key encoder does', () => {
+			// The predicate and the encoder have to agree shape by shape; drift off that rule in the
+			// tight direction is what refused binary record ids above.
+			const accepted = [
+				'record-1',
+				42,
+				-1.5,
+				NaN,
+				Infinity,
+				1n,
+				2n ** 70n,
+				true,
+				false,
+				null,
+				new Uint8Array([1, 2]),
+				Buffer.from([3]),
+				// `Id` declares `(number | string | null)[]`, and a composite key is the shape most likely
+				// to carry the scalars a table would not use on their own.
+				[1n, 'k', null, true, new Uint8Array([4])],
+			];
+			for (const key of accepted) {
+				assert.doesNotThrow(() => toBufferKey(key), `${String(key)} is encodable`);
+				assert.ok(decodeLockControlPayload('lockRelease', [key, 'alpha', 1, 1, 1]), `${String(key)} is accepted`);
+			}
+			// Shapes `toBufferKey` throws on, plus the ones it would encode to something no record id
+			// can be — those must still be refused rather than reaching the delegation table.
+			for (const key of [{ not: 'a key' }, new Date(0), ['ok', { nested: 1 }], undefined, Symbol('s')])
+				assert.strictEqual(
+					decodeLockControlPayload('lockRelease', [key, 'alpha', 1, 1, 1]),
+					undefined,
+					`${String(key)} is refused`
+				);
+		});
+
+		it('rejects malformed tuple headers and treats malformed dependencies as unknown lineage', () => {
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1, 1, 'extra']), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', [2, 'k', 'alpha', 1, 1, 1, []]), undefined);
+			const unknownLineage = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1] };
+			for (const dependencies of [[['', 2]], [['beta', Infinity]], 'not a dependency set'])
+				assert.deepStrictEqual(decodeLockControlPayload('lockRelease', [1, 'k', 'alpha', 1, 1, 1, dependencies]), {
+					...unknownLineage,
+					dependencies: undefined,
+				});
+			assert.strictEqual(decodeLockControlPayload('lockRelease', 'not a tuple'), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', '', 1, 1, 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1, 'not a number']), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', [{ bad: 'key' }, 'alpha', 1, 1, 1]), undefined);
+		});
+
+		it('clears an exact grant with malformed lineage and makes its successor recover', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const home = cluster.node('gamma').coordinator;
+			const granted = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			const release = decodeLockControlPayload('lockRelease', [
+				1,
+				key,
+				'alpha',
+				...granted.token,
+				'corrupt dependencies',
+			]);
+			home.applyEntry(release, 'alpha', 11);
+
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(key, successor.admissionId);
+		});
+
+		it('round-trips the barrier entry and refuses every other shape of it', () => {
+			const barrier = { type: 'lockBarrier', nonce: 281_474_976_710_655 };
+			assert.deepStrictEqual(decodeLockControlPayload('lockBarrier', encodeLockControlPayload(barrier)), barrier);
+			assert.deepStrictEqual(decodeLockControlPayload('lockBarrier', [1, 0]), { type: 'lockBarrier', nonce: 0 });
+			assert.strictEqual(decodeLockControlPayload('lockBarrier', [2, 7]), undefined);
+			for (const malformed of [[1], [1, 7, 8], [1, 'nonce'], [1, Infinity], ['1', 7], 'not a tuple', 7])
+				assert.strictEqual(decodeLockControlPayload('lockBarrier', malformed), undefined, JSON.stringify(malformed));
+			assert.strictEqual(decodeLockControlPayload('lockRelease', encodeLockControlPayload(barrier)), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', [1, 7]), undefined);
+			const release = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1] };
+			assert.strictEqual(decodeLockControlPayload('lockBarrier', encodeLockControlPayload(release)), undefined);
+		});
+
+		it('applies a barrier as a no-op: the grant and its lineage survive', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const home = cluster.node('gamma').coordinator;
+			const granted = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(home.stats.granted, 1);
+			home.applyEntry({ type: 'lockBarrier', nonce: 1 }, 'alpha', 50);
+			assert.strictEqual(home.stats.granted, 1, 'a barrier from the delegate cleared its grant');
+
+			home.applyEntry(
+				{ type: 'lockRelease', key, requester: 'alpha', token: granted.token, dependencies: [] },
+				'alpha',
+				60
+			);
+			assert.strictEqual(home.stats.granted, 0);
+			// A later barrier from the same origin must not advance or drop the retained lineage.
+			home.applyEntry({ type: 'lockBarrier', nonce: 2 }, 'alpha', 70);
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.deepStrictEqual(beta.freshnessCalls.at(-1).dependencies, [['alpha', 60]]);
+			beta.coordinator.release(key, successor.admissionId);
+		});
+
+		it('no longer decodes the retired Ricart–Agrawala types', () => {
+			// Nibbles 9 and 10 were retired rather than migrated; 9 is now eviction. A historical entry
+			// replayed from the log must decode to nothing rather than to something this version acts on.
+			assert.strictEqual(decodeLockControlPayload('lockRequest', ['k', 'alpha', 1, 1, 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockGrant', ['k', 'alpha', 1, 1, 1]), undefined);
+		});
+
+		it('is dropped off the coordinating thread rather than applied', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			beta.owns = false;
+			beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+			assert.strictEqual(beta.coordinator.stats.granted, 1);
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+		});
+
+		it('is relayed off the coordinating thread when the transport can, with author and position', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			const relayed = [];
+			beta.coordinator.transport.relayControlEntry = (...args) => relayed.push(args);
+			beta.owns = false;
+			const entry = { type: 'lockRelease', key, requester: 'alpha', token: granted.token, dependencies: null };
+			beta.coordinator.applyEntry(entry, 'alpha', 42);
+			assert.deepStrictEqual(relayed, [[cluster.database, cluster.table, entry, 'alpha', 42]]);
+			assert.strictEqual(beta.coordinator.stats.granted, 1, 'the non-owner applied nothing itself');
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 0);
+			beta.owns = true;
+			beta.coordinator.applyEntry(...relayed[0].slice(2));
+			assert.strictEqual(beta.coordinator.stats.granted, 0);
+		});
+
+		it('counts a drop when an asynchronous relay rejects, and never leaves an unhandled rejection', async () => {
+			const rejections = [];
+			const onUnhandled = (reason) => rejections.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const key = cluster.keyHomedOn('beta');
+				const beta = cluster.node('beta');
+				const granted = await beta.coordinator.onDelegationRequest({
+					key,
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				beta.coordinator.transport.relayControlEntry = async () => {
+					throw new Error('owner port closed');
+				};
+				beta.owns = false;
+				beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.deepStrictEqual(rejections, []);
+				assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+			} finally {
+				process.removeListener('unhandledRejection', onUnhandled);
+			}
+		});
+
+		it('relays through the registered transport on a thread that never built a coordinator for the table', () => {
+			const relayed = [];
+			const transport = {
+				homeMap: () => undefined,
+				ownsCoordination: () => false,
+				requestDelegation: async () => ({ granted: false, reason: 'not-home' }),
+				recallDelegation: async () => undefined,
+				establishLockFreshness: async () => undefined,
+				relayControlEntry: (...args) => relayed.push(args),
+			};
+			setLockCoordinatorResolver(
+				() => undefined,
+				() => undefined
+			);
+			registerClusterLockTransport('cold-db', transport);
+			try {
+				const entry = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1], dependencies: null };
+				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 9);
+				assert.deepStrictEqual(relayed, [['cold-db', 'cold-table', entry, 'alpha', 9]]);
+				transport.onControlEntry('cold-db', 'cold-table', entry, 'alpha', 12);
+				assert.strictEqual(relayed.length, 2, 'the registered receive callback takes the same boundary');
+				receiveLockControlEntry('cold-db', 'cold-table', { type: 'lockBarrier', nonce: 1 }, 'alpha', 10);
+				assert.strictEqual(relayed.length, 2, 'only releases are relayed');
+				transport.ownsCoordination = () => true;
+				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 11);
+				assert.strictEqual(relayed.length, 2, 'the owner thread with no coordinator holds no grant to clear');
+			} finally {
+				unregisterClusterLockTransport('cold-db', true);
+				setLockCoordinatorResolver(() => undefined);
+			}
+		});
+
+		it('counts a drop when the relay throws, and never surfaces the throw', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			beta.coordinator.transport.relayControlEntry = () => {
+				throw new Error('port closed');
+			};
+			beta.owns = false;
+			assert.doesNotThrow(() =>
+				beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha')
+			);
+			assert.strictEqual(beta.coordinator.stats.granted, 1);
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+		});
+
+		it('contains a malformed entry rather than surfacing it to the apply loop', async () => {
+			// A malformed entry must not reach the replicated apply loop, which would drop the whole
+			// enclosing transaction and stall replication for the database.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			const before = alpha.coordinator.stats.delegations;
+			assert.doesNotThrow(() => alpha.coordinator.applyEntry(null, 'alpha'));
+			assert.doesNotThrow(() =>
+				alpha.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: [1, 1, 1] }, null)
+			);
+			// And neither one moved any state: a malformed entry is dropped, not half-applied.
+			assert.strictEqual(alpha.coordinator.stats.delegations, before, 'a malformed entry changed the delegation table');
+			alpha.coordinator.release(key, round.admissionId);
+		});
+
+		it('contains a throw from a failing writer rather than surfacing it', async () => {
+			// What the name says, which the previous version of this test did not do — it injected
+			// malformed apply entries and then asserted `ok(true)`. Here the WRITER throws:
+			// `#writeControlSafely` has to swallow that, because the home outwaits this delegate either
+			// way and an escaping rejection would take down whatever drove the surrender.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 1);
+
+			alpha.writerThrows = true;
+			alpha.coordinator.release(key, round.admissionId);
+			// Gamma contends, so the home recalls alpha; alpha surrenders and writes the release, which
+			// throws. Neither that throw nor an unhandled rejection may reach this caller.
+			await cluster
+				.node('gamma')
+				.coordinator.acquire(key, LEASE, 500)
+				.catch(() => {});
+			assert.ok(alpha.writerCalls > 0, 'the failing writer was never reached');
+			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a throwing writer left the delegation held');
+
+			// The delegation is deleted before the write is attempted and every caller above catches, so
+			// neither assertion above can tell containment from a rejection absorbed further up. The home
+			// can: a recall that RESOLVED is confirmed and never re-sent, while a rejected one is re-sent
+			// once past the retry interval.
+			const recalled = () => cluster.recalls.filter((recall) => recall.to === 'alpha').length;
+			const confirmed = recalled();
+			cluster.advance('beta', RECALL_RETRY_MS + 100);
+			await cluster
+				.node('gamma')
+				.coordinator.acquire(key, LEASE, 100)
+				.catch(() => {});
+			assert.strictEqual(
+				recalled(),
+				confirmed,
+				'the writer throw escaped the surrender, so the home retried the recall'
+			);
+		});
+
+		it('recovers immediately when a self-home release writer fails', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('alpha');
+			const alpha = cluster.node('alpha');
+			const first = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, first.admissionId);
+			alpha.writerThrows = true;
+
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(alpha.writerCalls > 0, 'the self-home release writer did not fail');
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(key, successor.admissionId);
+		});
+	});
+});
+
+describe('quiesceDelegations (harper-pro#856)', () => {
+	/** A coordinator that is a HOME for `alpha` and can grant to a peer, with a scriptable recall. */
+	function homeWithPeer(database, table, recall, adopt) {
+		// Ownership continuity is what proves quiescence, so a coordinator has to have owned for a full
+		// lease before a sweep is a proof. These tests are about the sweep itself, so they start the
+		// clock past that horizon; the handoff test below is the one that exercises the horizon.
+		const clock = { now: DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1 };
+		const coordinator = new LockCoordinator({
+			database,
+			table,
+			nodeId: 'alpha',
+			transport: {
+				homeMap: () => ({ generation: 1, homes: ['alpha', 'beta'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: recall,
+			},
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => clock.now,
+			grantableAfterMono: -Infinity,
+			adopt,
+			autoTick: false,
+		});
+		// Ownership was recorded at construction on this clock; move past its horizon.
+		clock.now += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+		return coordinator;
+	}
+
+	it('sweeps a coordinator that replaced one the sweep had not reached yet', async () => {
+		const keyHomedOnAlpha = (table) =>
+			Array.from({ length: 1000 }, (_, i) => `k${i}`).find(
+				(key) => homeFor(ringKeyFor('q-rebuilt', table, key), ['alpha', 'beta']) === 'alpha'
+			);
+		const unreachable = async () => {
+			throw new Error('beta is unreachable');
+		};
+		let replaced;
+		const first = homeWithPeer('q-rebuilt', 'T1', async () => {
+			// While the sweep waits on T1, T2's transport is replaced, as staging a generation does.
+			replaced = homeWithPeer('q-rebuilt', 'T2', unreachable, second);
+			second.close();
+		});
+		const second = homeWithPeer('q-rebuilt', 'T2', unreachable);
+		for (const [coordinator, table] of [
+			[first, 'T1'],
+			[second, 'T2'],
+		])
+			assert.strictEqual(
+				(
+					await coordinator.onDelegationRequest({
+						key: keyHomedOnAlpha(table),
+						requester: 'beta',
+						generation: 1,
+						leaseMs: LEASE,
+					})
+				).granted,
+				true
+			);
+		const result = await quiesceDelegations('q-rebuilt', 1000);
+		assert.strictEqual(result.complete, false, 'the grant T2 handed to its successor was never recalled');
+		assert.deepStrictEqual(
+			result.outstanding.map((entry) => [entry.table, entry.delegate]),
+			[['T2', 'beta']]
+		);
+		first.close();
+		replaced.close();
+	});
+
+	it('reports a clean database as quiesced with nothing outstanding', async () => {
+		const coordinator = homeWithPeer('q1', 'T', async () => {});
+		const result = await quiesceDelegations('q1', 1000);
+		assert.deepStrictEqual(result.outstanding, []);
+		assert.strictEqual(result.surrendered, 0);
+		assert.strictEqual(result.recalled, 0);
+		coordinator.close();
+	});
+
+	it('an empty sweep is not a proof: a table nothing has touched has no coordinator to sweep', async () => {
+		// No coordinator, no transport attestation — the sweep sees nothing and must say so rather than
+		// reporting a clean drain that would let an orchestrator skip the interval.
+		const result = await quiesceDelegations('never-touched', 1000);
+		assert.deepStrictEqual(result.outstanding.length > 0 || result.complete === false, true);
+		assert.strictEqual(result.complete, false, 'an unattested, unswept database cannot be proven quiesced');
+	});
+
+	it('a thread that took ownership recently cannot prove quiescence, however long it has been up', async () => {
+		// cursor-grok's counterexample: worker A owns the database, grants, and exits. Worker B built
+		// empty coordinators earlier (a cluster_status poll), so its registry is non-empty and its uptime
+		// is long — but A's delegates still admit. Ownership continuity, not uptime, is the proof.
+		let mono = 0;
+		const coordinator = new LockCoordinator({
+			database: 'handoff',
+			table: 'T',
+			nodeId: 'alpha',
+			transport: {
+				homeMap: () => ({ generation: 1, homes: ['alpha', 'beta'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: async () => {},
+			},
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => mono,
+			// No grantableAfterMono: this is NOT a first incarnation, so nothing is waived.
+			autoTick: false,
+		});
+		// Take ownership "now", then let a lot of wall time pass without the horizon elapsing.
+		const taken = await quiesceDelegations('handoff', 100);
+		assert.strictEqual(taken.complete, false, 'ownership just started: authority from the previous owner may be live');
+		assert.ok(taken.outstanding.some((o) => /long enough to rule out authority/.test(o.reason)));
+		// Past the horizon, the same sweep is a proof.
+		mono = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+		const later = await quiesceDelegations('handoff', 100);
+		assert.deepStrictEqual(later.outstanding, []);
+		assert.strictEqual(later.complete, true);
+		coordinator.close();
+	});
+
+	it("a closed coordinator's remote grants are still reported, though no live coordinator holds them", async () => {
+		// close() parks the latest deadline of grants issued to OTHER nodes and clears its own table, so
+		// the delegates keep admitting with nothing live to sweep. Reporting only what is live would call
+		// that quiesced.
+		const coordinator = homeWithPeer('retired1', 'T', async () => {});
+		const [key] = keysHomedHere('retired1', 'T', 1);
+		assert.strictEqual(
+			(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: MAX_LOCK_LEASE_MS }))
+				.granted,
+			true
+		);
+		coordinator.close();
+		const result = await quiesceDelegations('retired1', 100);
+		assert.strictEqual(result.complete, false, "a closed coordinator's grants outlive it on their delegates");
+		assert.ok(
+			result.outstanding.some((entry) => /closed coordinator/.test(entry.reason)),
+			JSON.stringify(result.outstanding)
+		);
+	});
+
+	it('never reports complete alongside outstanding work', async () => {
+		const coordinator = homeWithPeer('q7', 'T', async () => {
+			throw new Error('unreachable');
+		});
+		const [key] = keysHomedHere('q7', 'T', 1);
+		await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 });
+		const result = await quiesceDelegations('q7', 300);
+		assert.ok(result.outstanding.length > 0);
+		assert.strictEqual(result.complete, false);
+		coordinator.close();
+	});
+
+	/** Keys are homed by rendezvous hash, so a test that needs THIS node to be the home must pick one. */
+	function keysHomedHere(database, table, count, homes = ['alpha', 'beta']) {
+		const found = [];
+		for (let i = 0; found.length < count; i++) {
+			const key = `k${i}`;
+			if (homeFor(ringKeyFor(database, table, key), homes) === 'alpha') found.push(key);
+		}
+		return found;
+	}
+
+	it('recalls a grant this node issued and counts it once confirmed', async () => {
+		const recalls = [];
+		const coordinator = homeWithPeer('q2', 'T', async (node, _db, _table, recall) => {
+			recalls.push({ node, key: recall.key });
+		});
+		// A grant to a peer, through the production request path.
+		const [key] = keysHomedHere('q2', 'T', 1);
+		const reply = await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 });
+		assert.strictEqual(reply.granted, true, 'the test key must be homed on this node');
+		const result = await quiesceDelegations('q2', 1000);
+		assert.deepStrictEqual(
+			recalls.map((r) => [r.node, r.key]),
+			[['beta', key]]
+		);
+		assert.strictEqual(result.recalled, 1);
+		assert.deepStrictEqual(result.outstanding, []);
+		coordinator.close();
+	});
+
+	it('reports an unconfirmed delegate as outstanding instead of claiming a drain', async () => {
+		const coordinator = homeWithPeer('q3', 'T', async () => {
+			throw new Error('unreachable');
+		});
+		const [key] = keysHomedHere('q3', 'T', 1);
+		assert.strictEqual(
+			(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 })).granted,
+			true
+		);
+		const result = await quiesceDelegations('q3', 500);
+		assert.strictEqual(result.recalled, 0);
+		assert.strictEqual(result.outstanding.length, 1);
+		assert.strictEqual(result.outstanding[0].delegate, 'beta');
+		assert.strictEqual(result.outstanding[0].key, key);
+		assert.match(result.outstanding[0].reason, /did not confirm|recall failed/);
+		coordinator.close();
+	});
+
+	it('one unreachable delegate does not hide the rest', async () => {
+		const [good1, bad, good2] = keysHomedHere('q4', 'T', 3);
+		const coordinator = homeWithPeer('q4', 'T', async (_node, _db, _table, recall) => {
+			if (recall.key === bad) throw new Error('unreachable');
+		});
+		for (const key of [good1, bad, good2])
+			assert.strictEqual(
+				(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 })).granted,
+				true
+			);
+		const result = await quiesceDelegations('q4', 500);
+		assert.strictEqual(result.recalled, 2, 'the reachable grants still drained');
+		assert.deepStrictEqual(
+			result.outstanding.map((o) => o.key),
+			[bad]
+		);
+		coordinator.close();
+	});
+
+	it('only touches the named database, and a closed coordinator is not swept', async () => {
+		const a = homeWithPeer('q5', 'T', async () => {});
+		const b = homeWithPeer('q6', 'T', async () => {});
+		const [keyA] = keysHomedHere('q5', 'T', 1);
+		const [keyB] = keysHomedHere('q6', 'T', 1);
+		await a.onDelegationRequest({ key: keyA, requester: 'beta', generation: 1, leaseMs: 1000 });
+		await b.onDelegationRequest({ key: keyB, requester: 'beta', generation: 1, leaseMs: 1000 });
+		assert.strictEqual((await quiesceDelegations('q5', 1000)).recalled, 1);
+		b.close();
+		assert.strictEqual((await quiesceDelegations('q6', 1000)).recalled, 0, 'closed coordinators are deregistered');
+		a.close();
+	});
+});
+
+// harper-pro#852: the "owner" and "caller" are two coordinators in one process, wired the way the
+// transport wires them, so the remote-admission lifecycle is exercised without a real worker mesh.
+describe('relayed admissions across worker threads (harper-pro#852)', () => {
+	function makeCoordinator(database, transport, overrides = {}) {
+		return new LockCoordinator({
+			database,
+			table: 'T',
+			nodeId: 'alpha',
+			transport,
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => performance.now(),
+			grantableAfterMono: -Infinity,
+			autoTick: false,
+			...overrides,
+		});
+	}
+
+	/** An owner coordinator (self-home, owns coordination) and a caller coordinator that relays its
+	 * acquires to the owner exactly as the transport does: the owner mints and registers a revoker that
+	 * fences the caller's handle, the caller records the round under a fresh LOCAL id. `acquire()`
+	 * returns both the local round the handle uses and the owner id the wire's release/revoke name. */
+	function relaySetup(database, options = {}) {
+		const ownerMap = { generation: 1, homes: ['alpha'], homeIncarnation: 1 };
+		const owner = makeCoordinator(database, {
+			homeMap: () => ownerMap,
+			ownsCoordination: () => true,
+			establishLockFreshness:
+				options.establishLockFreshness ?? (async (_d, _t, _k, dependencies) => dependencies ?? []),
+			requestDelegation: () => {
+				throw new Error('a single-node home must not request');
+			},
+			recallDelegation: () => {
+				throw new Error('a single-node home must not recall');
+			},
+		});
+		const released = [];
+		/** Every admission id the OWNER minted, in order, so a test can name the id the wire uses. */
+		const minted = [];
+		let caller;
+		caller = makeCoordinator(database, {
+			homeMap: () => ownerMap,
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async (_db, _table, key, lease, wait) => {
+				const round = await owner.acquire(key, lease, wait);
+				minted.push(round.admissionId);
+				owner.registerAdmission(round.admissionId, () => caller.revokeRemoteAdmission(round.admissionId));
+				return round;
+			},
+			releaseOnOwner: (_db, _table, key, ownerAdmissionId) => {
+				released.push(ownerAdmissionId);
+				return owner.release(key, ownerAdmissionId);
+			},
+		});
+		return { owner, caller, released, minted };
+	}
+
+	afterEach(() => setLockCoordinatorResolver(() => undefined));
+
+	it('mints on the owner, records a LOCAL id on the caller, and never reuses the owner id', async () => {
+		const { owner, caller } = relaySetup('r1');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		assert.ok(round && typeof round.admissionId === 'number');
+		assert.strictEqual(caller.stats.relayedAdmissions, 1, 'the caller counts a relayed admission');
+		assert.strictEqual(caller.stats.admitted, 0, 'the caller holds no local delegation');
+		assert.strictEqual(owner.stats.admitted, 1, 'the owner holds the admission');
+	});
+
+	it('fails closed off the owner when the transport cannot relay', async () => {
+		const noRelay = makeCoordinator('r2', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+		});
+		await assert.rejects(noRelay.acquire('k', LEASE, WAIT), /not owned by this worker thread/);
+	});
+
+	it('times out a wedged owner acquire and releases a grant that arrives afterward', async () => {
+		let grant;
+		const released = [];
+		const caller = makeCoordinator('r2a', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: () => new Promise((resolve) => (grant = resolve)),
+			releaseOnOwner: (_database, _table, key, ownerAdmissionId) => {
+				released.push({ key, ownerAdmissionId });
+			},
+		});
+		await assert.rejects(caller.acquire('k', LEASE, 0), /the coordinating worker did not answer/);
+		assert.deepStrictEqual(released, [], 'the backstop released an admission the owner had not granted');
+		grant({ tsR: 1, mintedMono: performance.now(), admissionId: 77 });
+		await waitFor(() => released.length === 1, {
+			message: 'the grant that arrived after the backstop was not released to the owner',
+		});
+		assert.deepStrictEqual(released, [{ key: 'k', ownerAdmissionId: 77 }]);
+		assert.strictEqual(caller.stats.relayedAdmissions, 0, 'the late grant was installed locally');
+	});
+
+	it('installs the handle revoker and fences it on a revoke, resolving the ack', async () => {
+		const { caller } = relaySetup('r3');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		// The wire names the OWNER id; here owner and caller share the id space (single-node self-home),
+		// so the round's own id is the owner's.
+		await caller.revokeRemoteAdmission(round.admissionId);
+		assert.strictEqual(fenced, 1, 'the handle was fenced and the ack resolved');
+	});
+
+	it('holds the ack until an asynchronous fence actually lands', async () => {
+		const { caller } = relaySetup('r3a');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let landFence;
+		let acked = false;
+		caller.registerAdmission(round.admissionId, () => new Promise((resolve) => (landFence = resolve)));
+		const ack = caller.revokeRemoteAdmission(round.admissionId).then(() => (acked = true));
+		await Promise.resolve();
+		assert.strictEqual(acked, false, 'the ack resolved before the async fence landed');
+		landFence();
+		await ack;
+		assert.strictEqual(acked, true, 'the ack resolved once the fence landed');
+	});
+
+	it('fails the ack when the fence does, so the owner waits out the lease instead of releasing', async () => {
+		// The owner writes the delegation release the moment this ack resolves. A revoker that rejects —
+		// a cross-thread relay revoker on a dead sibling port — has NOT fenced the handle, so resolving
+		// would admit a successor over a writer that can still commit.
+		const { caller } = relaySetup('r3b');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fired = 0;
+		caller.registerAdmission(round.admissionId, () => {
+			fired++;
+			return Promise.reject(new Error('sibling port gone'));
+		});
+		await assert.rejects(caller.revokeRemoteAdmission(round.admissionId), /sibling port gone/);
+		// The entry is kept rather than dropped: the handle is still committable until its own lease, and
+		// a retried revoke has to be able to fire the revoker again.
+		await assert.rejects(caller.revokeRemoteAdmission(round.admissionId), /sibling port gone/);
+		assert.strictEqual(fired, 2, 'the retried revoke did not reach the handle');
+	});
+
+	it('rejects rather than throwing synchronously when the revoker throws', async () => {
+		const { caller } = relaySetup('r3c');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		caller.registerAdmission(round.admissionId, () => {
+			throw new Error('revoker exploded');
+		});
+		await assert.rejects(caller.revokeRemoteAdmission(round.admissionId), /revoker exploded/);
+	});
+
+	it('resolves the ack only after the handle is fenced when the revoke lands before the handle registers', async () => {
+		const { caller } = relaySetup('r4');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		let acked = false;
+		// A revoke arrives before Table.lock installs the real revoker: the ack must NOT resolve yet.
+		const ack = caller.revokeRemoteAdmission(round.admissionId).then(() => (acked = true));
+		await Promise.resolve();
+		assert.strictEqual(acked, false, 'the ack resolved before the handle was fenced');
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		await ack;
+		assert.strictEqual(fenced, 1, 'the latched revoke fenced the handle the instant it joined');
+		assert.strictEqual(acked, true, 'the ack resolved once the fence landed');
+	});
+
+	it('waits for an ASYNC revoker registered after a latched revoke before resolving the ack', async () => {
+		// Same race as above, but the handle's revoker is asynchronous. The ack the owner is waiting on
+		// must not resolve until that promise settles: the owner writes the delegation release the moment
+		// it is acked, so an early ack puts a successor in against a handle that is still committable.
+		const { caller } = relaySetup('r4-async');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let releaseFence;
+		let acked = false;
+		const ack = caller.revokeRemoteAdmission(round.admissionId).then(() => (acked = true));
+		await Promise.resolve();
+		caller.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(acked, false, 'the ack resolved before the async fence settled');
+		releaseFence();
+		await ack;
+		assert.strictEqual(acked, true, 'the ack resolves once the async fence settles');
+	});
+
+	it('latches a revoke that arrives before the admission is even installed', async () => {
+		// The owner registers its revoker before it posts the grant reply, so a recall in that window can
+		// fire the revoke before `#acquireFromOwner` has recorded the entry. The ack must wait for the
+		// eventual fence, never resolve against a handle that does not exist yet.
+		const { caller } = relaySetup('r4b');
+		let acked = false;
+		// Owner id 1 is what a single-node self-home mints first; revoke it before acquiring.
+		const ack = caller.revokeRemoteAdmission(1).then(() => (acked = true));
+		await Promise.resolve();
+		assert.strictEqual(acked, false, 'a pre-install revoke resolved with no handle to fence');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		await ack;
+		assert.strictEqual(fenced, 1, 'the pre-install revoke fenced the handle once it installed and registered');
+		assert.strictEqual(acked, true);
+	});
+
+	it('separates the local id the handle uses from the owner id the wire names', async () => {
+		// The id-collision guard: the caller records a relayed admission under a FRESH local id, and the
+		// wire's release names the OWNER's id. Advancing the owner's own admission counter first makes the
+		// two ids differ, so a test would catch the caller confusing them.
+		const { owner, caller, released } = relaySetup('r5');
+		const throwaway = await owner.acquire('warm', LEASE, WAIT); // advance the owner's admission counter
+		owner.release('warm', throwaway.admissionId);
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		await caller.release('k', round.admissionId);
+		assert.strictEqual(released.length, 1, 'exactly one release reached the owner');
+		assert.notStrictEqual(round.admissionId, released[0], 'the local handle id and the owner id are distinct');
+		assert.strictEqual(owner.stats.admitted, 0, 'the owner dropped the relayed admission, not the warm-up one');
+	});
+
+	it('forwards a release to the owner and keeps the entry until lease', async () => {
+		const { owner, caller, released } = relaySetup('r6');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		caller.registerAdmission(round.admissionId, () => {});
+		await caller.release('k', round.admissionId);
+		assert.strictEqual(released.length, 1, 'the release reached the owner');
+		assert.strictEqual(owner.stats.admitted, 0, 'the owner dropped the admission');
+	});
+
+	it('does not raise an unhandled rejection when a fire-and-forget revoke rejects', async () => {
+		// `close()`/`tick()` discard the revoke outcomes, so a relayed revoker that rejects (a dead sibling
+		// port) — or a handle revoker that throws synchronously — must not become an unhandled rejection,
+		// which Node's default policy turns into a worker exit.
+		const rejections = [];
+		const onUnhandled = (reason) => rejections.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			const owner = makeCoordinator('reject-cl', {
+				homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: () => {
+					throw new Error('unused');
+				},
+			});
+			const key = 'k';
+			const round = await owner.acquire(key, LEASE, WAIT);
+			// A revoker that rejects, as a cross-thread relay revoker would on a dead port.
+			owner.registerAdmission(round.admissionId, () => Promise.reject(new Error('sibling port gone')));
+			owner.close();
+			// A throwing revoker on another admission, via a second owner.
+			const owner2 = makeCoordinator('reject-cl2', {
+				homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: () => {
+					throw new Error('unused');
+				},
+			});
+			const round2 = await owner2.acquire(key, LEASE, WAIT);
+			owner2.registerAdmission(round2.admissionId, () => {
+				throw new Error('revokeLease threw');
+			});
+			owner2.close();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.deepStrictEqual(rejections, [], `a fire-and-forget revoke rejection escaped: ${rejections}`);
+		} finally {
+			process.removeListener('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('fences a remote handle when the caller coordinator closes', async () => {
+		const { caller } = relaySetup('r7');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		caller.close();
+		assert.strictEqual(fenced, 1, 'closing fenced the relayed handle');
+	});
+
+	it('fences every remote handle when the owner is declared gone', async () => {
+		const { caller } = relaySetup('r8');
+		const first = await caller.acquire('k1', LEASE, WAIT);
+		const second = await caller.acquire('k2', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(first.admissionId, () => fenced++);
+		caller.registerAdmission(second.admissionId, () => fenced++);
+		caller.fenceAllRemoteAdmissions();
+		assert.strictEqual(fenced, 2, 'both relayed handles were fenced fail-closed');
+	});
+
+	it('fences a stale relayed handle when a replacement owner reuses an admission id', async () => {
+		// A replacement owner restarts its admission counter, so it can mint an id a departed owner's
+		// still-live entry already holds. On the collision, the old entry must be fenced fail-closed
+		// before the new one takes the id, so a later revoke for the id can only reach the live handle.
+		let nextOwnerId = 5;
+		const caller = makeCoordinator('reuse', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async (_db, _table, _key, _lease) => ({
+				tsR: 1,
+				mintedMono: performance.now(),
+				admissionId: nextOwnerId,
+			}),
+			releaseOnOwner: () => {},
+		});
+		const first = await caller.acquire('k', LEASE, WAIT);
+		let staleFenced = 0;
+		caller.registerAdmission(first.admissionId, () => staleFenced++);
+		// The replacement owner mints the SAME id 5 for a new grant on the same key.
+		nextOwnerId = 5;
+		const second = await caller.acquire('k', LEASE, WAIT);
+		assert.strictEqual(staleFenced, 1, 'the stale relayed handle was not fenced when the owner reused its id');
+		assert.notStrictEqual(first.admissionId, second.admissionId, 'the two grants share a local id');
+		// A revoke naming owner id 5 now reaches only the live (second) handle.
+		let liveFenced = 0;
+		caller.registerAdmission(second.admissionId, () => liveFenced++);
+		await caller.revokeRemoteAdmission(5);
+		assert.strictEqual(liveFenced, 1, 'the revoke did not reach the live handle');
+		assert.strictEqual(staleFenced, 1, 'the stale handle was fenced a second time');
+	});
+
+	it("passes the owner's 423 through, and turns any other relay failure into a retryable 503", async () => {
+		let failure;
+		const caller = makeCoordinator('relay-verdict', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async () => {
+				throw failure;
+			},
+			releaseOnOwner: () => {},
+		});
+		// the shape harper-pro's relay rethrows (recordLockRpc.ts: ClientError with the owner's statusCode)
+		failure = new ClientError('Record is locked and was not released in time', 423);
+		await assert.rejects(caller.acquire('k', LEASE, WAIT), (error) => error.statusCode === 423);
+		failure = new Error('the owner worker is not reachable');
+		// Retried inside the wait (§4.5), so the wait is what ends it.
+		await assert.rejects(
+			caller.acquire('k', LEASE, 400),
+			(error) => error.statusCode === 503 && error.code === 'LOCK_UNAVAILABLE'
+		);
+	});
+
+	it('carries a remote admission to a successor across a transport swap', async () => {
+		const { caller } = relaySetup('r9');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		const successor = makeCoordinator('r9', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async () => {
+				throw new Error('unused');
+			},
+			releaseOnOwner: () => {},
+		});
+		caller.handOffTo(successor);
+		await successor.revokeRemoteAdmission(round.admissionId);
+		assert.strictEqual(fenced, 1, 'the successor drove the fence for the carried admission');
+	});
+
+	it('drives the exported owner-side entry points (acquireForRelay / releaseForRelay)', async () => {
+		const owner = makeCoordinator('r10', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => true,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+		});
+		setLockCoordinatorResolver(() => owner);
+		let revoked = 0;
+		const round = await acquireForRelay('r10', 'T', 'k', LEASE, WAIT, () => () => revoked++);
+		assert.ok(round && typeof round.admissionId === 'number', 'acquireForRelay returned a round');
+		assert.strictEqual(owner.stats.admitted, 1);
+		await releaseForRelay('r10', 'T', 'k', round.admissionId);
+		assert.strictEqual(owner.stats.admitted, 0, 'releaseForRelay ended the admission');
+	});
+
+	it('drives the exported caller-side entry points (revokeRelayedAdmission / fenceRelayedAdmissions)', async () => {
+		const { owner, caller, minted } = relaySetup('r11');
+		// Advance the owner's counter first, so the entry point is proven to address the OWNER's id
+		// rather than passing because a fresh owner and caller both happen to start at 1.
+		const throwaway = await owner.acquire('warm', LEASE, WAIT);
+		owner.release('warm', throwaway.admissionId);
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		setLockCoordinatorResolver(() => caller);
+		assert.notStrictEqual(minted[0], round.admissionId, 'the owner id and the local id must differ here');
+		await revokeRelayedAdmission('r11', 'T', minted[0]);
+		assert.strictEqual(fenced, 1, 'revokeRelayedAdmission fenced through the resolver');
+		const second = await caller.acquire('k2', LEASE, WAIT);
+		caller.registerAdmission(second.admissionId, () => fenced++);
+		fenceRelayedAdmissions('r11', 'T');
+		assert.strictEqual(fenced, 2, 'fenceRelayedAdmissions fenced the remaining handle');
+	});
+
+	it('does not write the delegation release until the relayed handle confirms it is fenced', async () => {
+		// The invariant the whole relay exists to keep: an unlocked-but-staged write on another worker
+		// is still committable, so the owner must fence it BEFORE it writes the release that lets the
+		// home re-grant. Modeled with an admission whose revoke resolves only when the test says so.
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		const alpha = cluster.node('alpha').coordinator;
+		const round = await alpha.acquire(key, LEASE, WAIT);
+		let releaseFence;
+		const fenced = new Promise((resolve) => (releaseFence = resolve));
+		// A relayed handle: its revoke is asynchronous and settles only on the caller's ack.
+		alpha.registerAdmission(round.admissionId, () => fenced);
+		alpha.release(key, round.admissionId); // the caller unlocked, but the staged write can still commit
+
+		let betaAdmitted = false;
+		const betaAcquire = cluster
+			.node('beta')
+			.coordinator.acquire(key, LEASE, WAIT)
+			.then(() => (betaAdmitted = true));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.ok(
+			cluster.recalls.some((r) => r.to === 'alpha'),
+			'the home recalled the holder'
+		);
+		assert.strictEqual(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			false,
+			'the release was written before the relayed handle was fenced'
+		);
+		assert.strictEqual(betaAdmitted, false, 'the successor was admitted before the fence');
+		releaseFence();
+		await betaAcquire;
+		assert.ok(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			'the release is written once the fence confirms'
+		);
+		assert.strictEqual(betaAdmitted, true);
+	});
+
+	it('writes one release for a delegation recalled twice, and not before the fence', async () => {
+		// The home re-sends a recall RECALL_RETRY_MS after its own recall call failed — far inside a
+		// delegation lease — so two recalls for the same token can both be parked on the drain and
+		// resume together. The second must not find the admissions the first already emptied and write
+		// the release while that first surrender is still waiting for the relayed handle's fence.
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		const alpha = cluster.node('alpha').coordinator;
+		const round = await alpha.acquire(key, LEASE, WAIT);
+		let releaseFence;
+		const fenced = new Promise((resolve) => (releaseFence = resolve));
+		alpha.registerAdmission(round.admissionId, () => fenced);
+
+		const betaAcquire = cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const recall = cluster.recalls.find((r) => r.to === 'alpha');
+		assert.ok(recall, 'the home recalled the holder');
+		const retried = alpha.onDelegationRecall({ key, token: recall.token });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		alpha.release(key, round.admissionId); // the caller unlocks: both recalls drain together
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.strictEqual(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			false,
+			'the retried recall wrote the release before the relayed handle was fenced'
+		);
+		releaseFence();
+		await Promise.all([betaAcquire, retried]);
+		assert.strictEqual(
+			cluster.node('alpha').written.filter((entry) => entry.type === 'lockRelease').length,
+			1,
+			'one handoff must write exactly one release entry'
+		);
+	});
+
+	it('waits out the handle lease rather than releasing when the relayed fence rejects', async () => {
+		// The owner half of the same invariant: a fence that failed is not a fence, so `#revokeAllAndSettle`
+		// must fall through to the admission's own lease before `#surrender` publishes the release.
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		const alpha = cluster.node('alpha').coordinator;
+		const shortLease = 300;
+		const round = await alpha.acquire(key, shortLease, WAIT);
+		alpha.registerAdmission(round.admissionId, () => Promise.reject(new Error('sibling port gone')));
+		alpha.release(key, round.admissionId); // unlocked, but the staged write is still committable
+
+		const betaAcquire = cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.strictEqual(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			false,
+			'a rejected fence was treated as a fence and released the delegation'
+		);
+		await betaAcquire;
+		assert.ok(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			'the release is written once the handle lease has run out'
+		);
+	});
+
+	it('refuses a grant that lands after the owner worker was declared gone', async () => {
+		// The owner can grant and then die before the reply is processed. `fenceAllRemoteAdmissions` fails
+		// the existing grants closed, but the in-flight one resolves AFTERWARDS. Installing it would let
+		// this thread write under an admission the replacement owner — which starts empty — knows nothing
+		// about, while that owner grants the same key to another worker. Two writers, silently.
+		let grant;
+		const released = [];
+		let attempts = 0;
+		const caller = makeCoordinator('r-generation', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			// The first attempt is the one the departed owner answers late; the retry against the
+			// successor meets contention, a verdict core passes through as it is.
+			acquireOnOwner: () =>
+				++attempts === 1
+					? new Promise((resolve) => (grant = resolve))
+					: Promise.reject(new ClientError('Record is locked and was not released in time', 423)),
+			releaseOnOwner: (_db, _table, _key, ownerAdmissionId) => {
+				released.push(ownerAdmissionId);
+			},
+		});
+		const acquiring = caller.acquire('k', LEASE, WAIT);
+		await new Promise((resolve) => setImmediate(resolve)); // let the acquire reach the transport
+		caller.fenceAllRemoteAdmissions(); // the owner worker is declared gone, mid-flight
+		grant({ tsR: 1, mintedMono: performance.now(), admissionId: 77 });
+		await assert.rejects(acquiring, (error) => error.statusCode === 423);
+		assert.strictEqual(attempts, 2, 'the refused grant was not retried against the successor');
+		assert.deepEqual(released, [77], 'the orphaned grant must be handed straight back to the owner');
+		assert.strictEqual(caller.stats.relayedAdmissions, 0, 'no orphaned admission may be installed');
+	});
+
+	it('carries the highest dependency position to first, amortized, renewed and relayed admissions', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta']);
+		const key = cluster.keyHomedOn('beta');
+		const alpha = cluster.node('alpha').coordinator;
+		const beta = cluster.node('beta').coordinator;
+
+		const betaRound = await beta.acquire(key, LEASE, WAIT);
+		beta.release(key, betaRound.admissionId);
+		const futureReleasePos = Date.now() + 120_000;
+		cluster.tsCounter = futureReleasePos - 1;
+
+		const alphaRound1 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			alphaRound1.dependencyFloor,
+			futureReleasePos,
+			'first admission on delegation carries LOCK_RELEASE dependencyFloor'
+		);
+		alpha.release(key, alphaRound1.admissionId);
+
+		const alphaRound2 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			alphaRound2.dependencyFloor,
+			futureReleasePos,
+			'amortized admission on retained delegation preserves dependencyFloor'
+		);
+		alpha.release(key, alphaRound2.admissionId);
+
+		cluster.advanceAll(DELEGATION_LEASE_MS - LEASE + 1_000);
+		const alphaRound3 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			cluster.node('alpha').freshnessCalls.length,
+			1,
+			'continuous in-place renewal skips a second freshness barrier'
+		);
+		assert.strictEqual(
+			alphaRound3.dependencyFloor,
+			futureReleasePos,
+			'continuous in-place delegation renewal preserves dependencyFloor'
+		);
+		alpha.release(key, alphaRound3.admissionId);
+
+		const renewedFloor = futureReleasePos + 20_000;
+		const gammaRound = await beta.acquire(key, LEASE, WAIT);
+		assert.deepEqual(
+			cluster.node('alpha').written.at(-1)?.dependencies,
+			[['beta', futureReleasePos]],
+			'surrender after in-place renewal preserves inherited lineage'
+		);
+		beta.release(key, gammaRound.admissionId);
+		cluster.tsCounter = renewedFloor - 1;
+		const alphaRound4 = await alpha.acquire(key, LEASE, WAIT);
+		assert.strictEqual(
+			alphaRound4.dependencyFloor,
+			renewedFloor,
+			'subsequent delegation handoff advances dependencyFloor to the newer LOCK_RELEASE position'
+		);
+		alpha.release(key, alphaRound4.admissionId);
+
+		const { owner, caller } = relaySetup('r-dep-floor', {
+			establishLockFreshness: async () => [['alpha', futureReleasePos + 5_000]],
+		});
+		const priorGrant = await owner.onDelegationRequest({
+			key: 'k-relayed',
+			requester: 'alpha',
+			generation: 1,
+			leaseMs: 1000,
+		});
+		owner.applyEntry(
+			{
+				type: 'lockRelease',
+				key: 'k-relayed',
+				requester: 'alpha',
+				token: priorGrant.token,
+				dependencies: null,
+			},
+			'alpha',
+			1
+		);
+		const relayedRound = await caller.acquire('k-relayed', LEASE, WAIT);
+		assert.strictEqual(
+			relayedRound.dependencyFloor,
+			futureReleasePos + 5_000,
+			'relayed admission preserves max dependencyFloor from freshness barrier'
+		);
+		caller.release('k-relayed', relayedRound.admissionId);
+	});
+});
+
+describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
+	const horizon = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+
+	describe('the home side: the transport attests a ring-wide recall', () => {
+		let mono, incarnation, attested, coordinators;
+		beforeEach(() => {
+			mono = 1_000;
+			incarnation = 2;
+			attested = undefined;
+			coordinators = [];
+		});
+		afterEach(() => {
+			for (const coordinator of coordinators) coordinator.close();
+		});
+		function restarted(options = {}) {
+			const coordinator = coldCoordinator(() => mono, {
+				grantableAfterMono: undefined,
+				...options,
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: incarnation }),
+					coordinationIncarnation: () => incarnation,
+					quiescedIncarnation: () => attested,
+					...options.transport,
+				},
+			});
+			coordinators.push(coordinator);
+			return coordinator;
+		}
+		const request = (coordinator, key = 'k') =>
+			coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+
+		it('grants as soon as the current incarnation is attested, not at construction + 365s', async () => {
+			const coordinator = restarted();
+			mono += 5_000;
+			assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+			assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon - 5_000);
+			attested = 2;
+			assert.strictEqual(coordinator.unprovenOwnershipMs(), 0, 'an attested drain is provable');
+			assert.strictEqual((await request(coordinator)).granted, true, 'the attestation did not end the quarantine');
+		});
+
+		it('counts only an attestation for the incarnation it coordinates under', async () => {
+			const coordinator = restarted();
+			attested = 1;
+			assert.strictEqual((await request(coordinator)).reason, 'quarantine', 'a stale incarnation ended the quarantine');
+			attested = 3;
+			assert.strictEqual(
+				(await request(coordinator)).reason,
+				'quarantine',
+				'a future incarnation ended the quarantine'
+			);
+			assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon);
+			attested = 2;
+			assert.strictEqual((await request(coordinator)).granted, true);
+		});
+
+		it('re-arms on an incarnation change until that incarnation is attested in turn', async () => {
+			const coordinator = restarted();
+			attested = 2;
+			assert.strictEqual((await request(coordinator)).granted, true);
+			incarnation = 3;
+			assert.strictEqual(
+				(await request(coordinator, 'k2')).reason,
+				'quarantine',
+				'a takeover kept the old attestation'
+			);
+			assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon);
+			attested = 3;
+			assert.strictEqual((await request(coordinator, 'k2')).granted, true);
+		});
+
+		it('a table first locked after the attestation grants on its first request', async () => {
+			attested = 2;
+			mono += 60 * 60_000;
+			const coordinator = restarted();
+			assert.strictEqual((await request(coordinator)).granted, true);
+		});
+
+		it('still waits out a retirement record from this incarnation, which the recall never asked for', async () => {
+			const table = `Retired${Date.now()}`;
+			const database = `retired${Date.now()}`;
+			const homes = ['alpha', 'beta'];
+			let key;
+			for (let i = 0; i < 10_000 && !key; i++)
+				if (homeFor(ringKeyFor(database, table, `k${i}`), homes) === 'alpha') key = `k${i}`;
+			const predecessor = restarted({
+				table,
+				database,
+				grantableAfterMono: -Infinity,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			const granted = await predecessor.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(granted.granted, true);
+			const closedAt = mono;
+			predecessor.close();
+			attested = 2;
+			const successor = restarted({
+				table,
+				database,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			const denied = await successor.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.reason, 'quarantine', "beta's delegation from the closed coordinator is still live");
+			mono = closedAt + horizon;
+			const after = await successor.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(after.granted, true);
+		});
+
+		it('releases a retirement record from an earlier incarnation once that incarnation is recalled', async () => {
+			const table = `RetiredBelow${Date.now()}`;
+			const database = `retiredBelow${Date.now()}`;
+			const homes = ['alpha', 'beta'];
+			let key;
+			for (let i = 0; i < 10_000 && !key; i++)
+				if (homeFor(ringKeyFor(database, table, `k${i}`), homes) === 'alpha') key = `k${i}`;
+			incarnation = 1;
+			const predecessor = restarted({
+				table,
+				database,
+				grantableAfterMono: -Infinity,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			assert.strictEqual(
+				(await predecessor.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE })).granted,
+				true
+			);
+			predecessor.close();
+			incarnation = 2;
+			attested = 2;
+			const successor = restarted({
+				table,
+				database,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			const reply = await successor.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, true, "beta's incarnation-1 delegation was recalled by the round for 2");
+		});
+
+		it('an empty replacement that closes leaves an older retirement record at its own incarnation', async () => {
+			const table = `RetiredEmpty${Date.now()}`;
+			const database = `retiredEmpty${Date.now()}`;
+			const homes = ['alpha', 'beta'];
+			let key;
+			for (let i = 0; i < 10_000 && !key; i++)
+				if (homeFor(ringKeyFor(database, table, `k${i}`), homes) === 'alpha') key = `k${i}`;
+			incarnation = 1;
+			const first = restarted({
+				table,
+				database,
+				grantableAfterMono: -Infinity,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			await first.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+			first.close();
+			incarnation = 2;
+			const empty = restarted({
+				table,
+				database,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			empty.close();
+			attested = 2;
+			const successor = restarted({
+				table,
+				database,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			const reply = await successor.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, true, 'the empty replacement relabelled incarnation 1 grants as incarnation 2');
+		});
+
+		it('holds a key whose own delegation is still fencing a sibling handle after a close', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('alpha');
+			const node = cluster.node('alpha');
+			const round = await node.coordinator.acquire(key, LEASE, WAIT);
+			let releaseFence;
+			node.coordinator.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+			node.coordinator.release(key, round.admissionId);
+			node.coordinator.close();
+			const successor = new LockCoordinator({
+				database: cluster.database,
+				table: cluster.table,
+				nodeId: 'alpha',
+				transport: node.coordinator.transport,
+				writeControl: cluster.writeControlFor('alpha'),
+				keyIdOf: (k) => String(k),
+				nextTimestamp: () => ++cluster.tsCounter,
+				monotonic: () => node.mono + performance.now(),
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			node.coordinator = successor;
+			const held = await successor.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(held.granted, false, 'granted while the closed coordinator was still fencing a handle');
+			assert.strictEqual(held.reason, 'contended');
+			releaseFence();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			const after = await successor.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(after.granted, true);
+			successor.close();
+		});
+
+		it('a transport without the hook, or one that throws, keeps the timer', async () => {
+			const plain = restarted({ transport: { quiescedIncarnation: undefined } });
+			assert.strictEqual((await request(plain)).reason, 'quarantine');
+			const throwing = restarted({
+				transport: {
+					quiescedIncarnation: () => {
+						throw new Error('not ready');
+					},
+				},
+			});
+			assert.strictEqual((await request(throwing)).reason, 'quarantine');
+			mono += horizon;
+			assert.strictEqual((await request(plain)).granted, true, 'the timer still ends the quarantine');
+		});
+	});
+
+	describe('the delegate side: recallFromHome', () => {
+		it('drains exactly the delegations the named home issued below the incarnation, and nothing else', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const fromGamma = cluster.keyHomedOn('gamma', 'g-');
+			const fromBeta = cluster.keyHomedOn('beta', 'b-');
+			const g1 = await alpha.coordinator.acquire(fromGamma, LEASE, WAIT);
+			const b1 = await alpha.coordinator.acquire(fromBeta, LEASE, WAIT);
+			alpha.coordinator.release(fromGamma, g1.admissionId);
+			alpha.coordinator.release(fromBeta, b1.admissionId);
+			cluster.node('gamma').incarnation = 2;
+			cluster.node('gamma').quiesced = 2;
+			const fromGammaNew = cluster.keyHomedOn('gamma', 'gn-');
+			const g2 = await alpha.coordinator.acquire(fromGammaNew, LEASE, WAIT);
+			alpha.coordinator.release(fromGammaNew, g2.admissionId);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 3);
+
+			await alpha.coordinator.recallFromHome('gamma', alpha.coordinator.transport.homeMap(cluster.database), 2);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 2, 'only the old gamma delegation was surrendered');
+			const releases = alpha.written.filter((entry) => entry.type === 'lockRelease');
+			assert.deepStrictEqual(
+				releases.map((entry) => [entry.key, entry.token[1]]),
+				[[fromGamma, 1]],
+				'one release, for the old gamma delegation'
+			);
+			await alpha.coordinator.recallFromHome('gamma', alpha.coordinator.transport.homeMap(cluster.database), 2);
+			assert.strictEqual(alpha.written.filter((entry) => entry.type === 'lockRelease').length, 1);
+		});
+
+		it('covers a home that restarted twice: an i-2 delegation is recalled by the i round', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, round.admissionId);
+			await alpha.coordinator.recallFromHome('gamma', alpha.coordinator.transport.homeMap(cluster.database), 3);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 0);
+		});
+
+		it('resolves only once a live holder has unlocked and its handle is fenced', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			let settled = false;
+			const recall = alpha
+				.recallFromHome('gamma', alpha.transport.homeMap(cluster.database), 2)
+				.then(() => (settled = true));
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			assert.strictEqual(settled, false, 'answered while the holder was still inside its critical section');
+			alpha.release(key, round.admissionId);
+			await recall;
+			assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
+		});
+
+		for (const direct of [false, true])
+			it(`a retried recall${direct ? ' on the table itself' : ''} joins a surrender whose relayed fence is still pending, instead of answering early`, async () => {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const alpha = cluster.node('alpha').coordinator;
+				const key = cluster.keyHomedOn('gamma');
+				const round = await alpha.acquire(key, LEASE, WAIT);
+				let releaseFence;
+				alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+				alpha.release(key, round.admissionId); // unlocked, but the staged write can still commit
+				registerClusterLockTransport(cluster.database, alpha.transport);
+				try {
+					let firstDone = false;
+					let secondDone = false;
+					const first = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (firstDone = true));
+					await new Promise((resolve) => setTimeout(resolve, 10));
+					assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
+					const second = (
+						direct
+							? alpha.recallFromHome('gamma', alpha.transport.homeMap(cluster.database), 2)
+							: recallDelegationsFromHome(cluster.database, 'gamma', 1, 2)
+					).then(() => (secondDone = true));
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					assert.strictEqual(secondDone, false, 'the retry answered before the fence it depends on');
+					assert.strictEqual(firstDone, false);
+					assert.strictEqual(
+						cluster.node('alpha').written.some((e) => e.type === 'lockRelease'),
+						false,
+						'no release before the fence'
+					);
+					releaseFence();
+					await Promise.all([first, second]);
+					assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
+				} finally {
+					unregisterClusterLockTransport(cluster.database, true);
+				}
+			});
+
+		it('surrenders a grant from the dead incarnation that lands after the recall, rather than admitting on it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			let recalled = false;
+			cluster.beforeReply = async (from, to) => {
+				if (from !== 'alpha' || to !== 'gamma' || recalled) return;
+				recalled = true;
+				await alpha.coordinator.recallFromHome('gamma', alpha.coordinator.transport.homeMap(cluster.database), 2);
+				cluster.node('gamma').incarnation = 2;
+				cluster.node('gamma').quiesced = 2;
+			};
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(recalled);
+			const releases = alpha.written.filter((e) => e.type === 'lockRelease');
+			assert.deepStrictEqual(
+				releases.map((e) => e.token[1]),
+				[1],
+				'the incarnation-1 grant was handed back, never admitted on'
+			);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 1, 'the retry under incarnation 2 was admitted');
+			alpha.coordinator.release(key, round.admissionId);
+		});
+
+		it('outwaits the fences a close without a successor fired, when the close lands during a drain', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			let releaseFence;
+			alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+			registerClusterLockTransport(cluster.database, alpha.transport);
+			try {
+				let settled = false;
+				const sweep = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (settled = true));
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				alpha.close();
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				assert.strictEqual(settled, false, 'the sweep answered while the handle on the other worker was unfenced');
+				assert.strictEqual(
+					cluster.node('alpha').written.some((e) => e.type === 'lockRelease'),
+					false,
+					'the release was written before the fence the close fired had landed'
+				);
+				releaseFence();
+				await sweep;
+				assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('a recall addressed to a coordinator that already handed off drains the successor it handed to', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const node = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			const round = await node.coordinator.acquire(key, LEASE, WAIT);
+			node.coordinator.release(key, round.admissionId);
+			const predecessor = node.coordinator;
+			const successor = new LockCoordinator({
+				database: cluster.database,
+				table: cluster.table,
+				nodeId: 'alpha',
+				transport: predecessor.transport,
+				writeControl: cluster.writeControlFor('alpha'),
+				keyIdOf: (k) => String(k),
+				nextTimestamp: () => ++cluster.tsCounter,
+				monotonic: () => node.mono + performance.now(),
+				adopt: predecessor,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			predecessor.close();
+			node.coordinator = successor;
+			assert.strictEqual(successor.stats.delegations, 1);
+			await predecessor.recallFromHome('gamma', successor.transport.homeMap(cluster.database), 2);
+			assert.strictEqual(
+				successor.stats.delegations,
+				0,
+				'the stale handle answered for a delegation it no longer holds'
+			);
+			assert.strictEqual(node.written.filter((e) => e.type === 'lockRelease').length, 1);
+		});
+
+		it('follows a transport swap that lands while a table is draining, and resolves only after the successor released', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const node = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			const round = await node.coordinator.acquire(key, LEASE, WAIT);
+			registerClusterLockTransport(cluster.database, node.coordinator.transport);
+			try {
+				let settled = false;
+				const sweep = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (settled = true));
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				const predecessor = node.coordinator;
+				const successor = new LockCoordinator({
+					database: cluster.database,
+					table: cluster.table,
+					nodeId: 'alpha',
+					transport: predecessor.transport,
+					writeControl: cluster.writeControlFor('alpha'),
+					keyIdOf: (k) => String(k),
+					nextTimestamp: () => ++cluster.tsCounter,
+					monotonic: () => node.mono + performance.now(),
+					adopt: predecessor,
+					grantableAfterMono: -Infinity,
+					autoTick: false,
+				});
+				predecessor.close();
+				node.coordinator = successor;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.strictEqual(settled, false, 'the sweep answered while the successor still held the key');
+				successor.release(key, round.admissionId);
+				await sweep;
+				assert.strictEqual(successor.stats.delegations, 0);
+				assert.strictEqual(node.written.filter((e) => e.type === 'lockRelease').length, 1);
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('refuses an invalid bound or a home the ring does not name rather than answer "holds nothing"', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, round.admissionId);
+			registerClusterLockTransport(cluster.database, alpha.coordinator.transport);
+			try {
+				for (const bad of [NaN, 0, -1, 1.5, '2'])
+					await assert.rejects(
+						() => recallDelegationsFromHome(cluster.database, 'gamma', 1, bad),
+						(error) => error.statusCode === 400,
+						`bound ${bad}`
+					);
+				await assert.rejects(
+					() => recallDelegationsFromHome(cluster.database, 'Gamma', 1, 2),
+					(error) => error.statusCode === 403
+				);
+				assert.strictEqual(alpha.coordinator.stats.delegations, 1, 'a refused recall drained nothing');
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('refuses off the owner thread, and the module entry refuses a withheld or differently numbered map', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const homeMap = alpha.coordinator.transport.homeMap(cluster.database);
+			alpha.owns = false;
+			await assert.rejects(() => alpha.coordinator.recallFromHome('gamma', homeMap, 2), /not owned by this worker/);
+			alpha.owns = true;
+			await assert.rejects(
+				() => recallDelegationsFromHome('no-such-db', 'gamma', 1, 2),
+				(error) => error.statusCode === 503
+			);
+			registerClusterLockTransport(cluster.database, alpha.coordinator.transport);
+			try {
+				await assert.rejects(
+					() => recallDelegationsFromHome(cluster.database, 'gamma', 2, 2),
+					(error) => error.statusCode === 409
+				);
+				alpha.mapless = true;
+				await assert.rejects(
+					() => recallDelegationsFromHome(cluster.database, 'gamma', 1, 2),
+					(error) => error.statusCode === 503
+				);
+				alpha.mapless = false;
+				const key = cluster.keyHomedOn('gamma');
+				const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+				alpha.coordinator.release(key, round.admissionId);
+				await recallDelegationsFromHome(cluster.database, 'gamma', 1, 2);
+				assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'the module entry sweeps every live coordinator');
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+	});
+});
+
+describe('record locks across a node restart (harper#3768, #2582, #3268)', () => {
+	const horizon = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+	const ask = (home, key, requester, fields = {}) =>
+		home.onDelegationRequest({ key, requester, generation: 1, leaseMs: LEASE, ...fields });
+	let requestSequence = 1_000_000;
+	const nextId = () => ++requestSequence;
+
+	describe('the delegate epoch and the retire (§4.5)', () => {
+		it('a retire frees a dead epoch’s grant and keeps a renewed one', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1 } });
+			const gamma = cluster.node('gamma').coordinator;
+			const dead = cluster.keyHomedOn('gamma', 'dead-');
+			const kept = cluster.keyHomedOn('gamma', 'kept-');
+			assert.strictEqual((await ask(gamma, dead, 'alpha', { delegateEpoch: 1, requestId: nextId() })).granted, true);
+			assert.strictEqual((await ask(gamma, kept, 'alpha', { delegateEpoch: 1, requestId: nextId() })).granted, true);
+			// Alpha's new epoch asks for `kept` before any retire reaches gamma: a renewal, re-tagged with
+			// the new epoch — the same node's own earlier writes are its own, so the lineage is kept.
+			const regrant = await ask(gamma, kept, 'alpha', { delegateEpoch: 2, requestId: nextId() });
+			assert.strictEqual(regrant.granted, true);
+			assert.deepStrictEqual(regrant.dependencies, [], 'the renewal lost its clean lineage');
+			registerClusterLockTransport(cluster.database, gamma.transport);
+			try {
+				await retireDelegateEpoch(cluster.database, 'alpha', 2);
+				assert.strictEqual(gamma.stats.granted, 1, 'the retire did not free exactly the dead epoch’s grant');
+				// Freed with its lineage dropped, so the next holder takes the recovery barrier, at once.
+				const next = await ask(gamma, dead, 'beta', { delegateEpoch: 1, requestId: nextId() });
+				assert.strictEqual(next.granted, true, JSON.stringify(next));
+				assert.strictEqual(next.dependencies, null);
+				// Still held by alpha's live epoch.
+				assert.strictEqual(
+					(await ask(gamma, kept, 'beta', { delegateEpoch: 1, requestId: nextId() })).reason,
+					'contended'
+				);
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('one database’s handoff does not retire another database’s grants', async () => {
+			const first = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1 } });
+			const second = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1 } });
+			for (const cluster of [first, second]) {
+				const gamma = cluster.node('gamma').coordinator;
+				assert.strictEqual(
+					(await ask(gamma, cluster.keyHomedOn('gamma'), 'alpha', { delegateEpoch: 1, requestId: nextId() })).granted,
+					true
+				);
+				registerClusterLockTransport(cluster.database, gamma.transport);
+			}
+			try {
+				await retireDelegateEpoch(first.database, 'alpha', 2);
+				assert.strictEqual(first.node('gamma').coordinator.stats.granted, 0);
+				assert.strictEqual(second.node('gamma').coordinator.stats.granted, 1, 'the other database lost its grant');
+			} finally {
+				for (const cluster of [first, second]) unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('refuses a request below a retired floor, and repeated or reordered notices are no-ops', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1 } });
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			registerClusterLockTransport(cluster.database, gamma.transport);
+			try {
+				await retireDelegateEpoch(cluster.database, 'alpha', 3);
+				const stale = await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: nextId() });
+				assert.strictEqual(stale.reason, 'retired');
+				assert.strictEqual(gamma.stats.granted, 0, 'a dead epoch minted a grant nobody holds');
+				assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 3, requestId: nextId() })).granted, true);
+				// A reordered notice for a lower epoch, and a repeat of the current one, change nothing.
+				await retireDelegateEpoch(cluster.database, 'alpha', 2);
+				await retireDelegateEpoch(cluster.database, 'alpha', 3);
+				assert.strictEqual(gamma.stats.granted, 1);
+				assert.strictEqual(
+					(await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: nextId() })).reason,
+					'retired'
+				);
+				// Without an epoch (an older build) the floor does not apply.
+				assert.strictEqual((await ask(gamma, cluster.keyHomedOn('gamma', 'old-'), 'alpha')).granted, true);
+				// A malformed epoch is refused, never read as an untagged request.
+				assert.strictEqual(
+					(await ask(gamma, cluster.keyHomedOn('gamma', 'bad-'), 'alpha', { delegateEpoch: 1.5, requestId: nextId() }))
+						.granted,
+					false
+				);
+				for (const [args, status] of [
+					[[cluster.database, 'alpha', 0], 400],
+					[[cluster.database, 'alpha', 1.5], 400],
+					[[cluster.database, 'nobody', 4], 403],
+					[['no-such-db', 'alpha', 4], 503],
+				])
+					await assert.rejects(
+						() => retireDelegateEpoch(...args),
+						(error) => error.statusCode === status
+					);
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('a renewal never lowers a grant’s epoch', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const granted = await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: nextId() });
+			assert.strictEqual(granted.granted, true);
+			// A delayed request from the dead epoch 1 must not pull the grant's lifetime below its live
+			// holder's: a later retire below 2 would then free a key epoch 2 still admits on.
+			assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: nextId() })).reason, 'retired');
+			const renewed = await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: nextId() });
+			assert.strictEqual(renewed.granted, true);
+			assert.ok(compareTokens(renewed.token, granted.token) > 0, 'the renewal did not advance the token');
+			assert.deepStrictEqual(renewed.dependencies, granted.dependencies);
+			registerClusterLockTransport(cluster.database, gamma.transport);
+			try {
+				await retireDelegateEpoch(cluster.database, 'alpha', 2);
+				assert.strictEqual(gamma.stats.granted, 1, 'the live epoch’s renewed grant was retired');
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('refuses a recall for a token an earlier epoch of this node held, so the home never counts it drained', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 2 } });
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			await assert.rejects(
+				() => alpha.onDelegationRecall({ key, token: [1, 1, 7], delegateEpoch: 1 }),
+				/epoch 1.*exited/
+			);
+			// The current epoch, or no epoch at all (an older home): an unknown token is a no-op, as before.
+			await alpha.onDelegationRecall({ key, token: [1, 1, 7], delegateEpoch: 2 });
+			await alpha.onDelegationRecall({ key, token: [1, 1, 7] });
+			// A tagged recall cannot be confirmed while this node's own epoch is not known.
+			cluster.node('alpha').epoch = undefined;
+			await assert.rejects(
+				() => alpha.onDelegationRecall({ key, token: [1, 1, 7], delegateEpoch: 2 }),
+				/not known yet/
+			);
+			cluster.node('alpha').epoch = 2;
+			// The home side of that refusal: the recall fails, the grant stays recallable, and the retire
+			// is what frees the key — the contender then gets it with the recovery barrier.
+			const gamma = cluster.node('gamma').coordinator;
+			cluster.node('alpha').epoch = 1;
+			const held = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, held.admissionId);
+			cluster.restart('alpha'); // epoch 2, nothing carried over
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 200), /not released in time/);
+			assert.ok(
+				cluster.recalls.some(({ to }) => to === 'alpha'),
+				'the home never recalled'
+			);
+			assert.strictEqual(gamma.stats.granted, 1, 'the home counted a refused recall as drained and cleared the grant');
+			registerClusterLockTransport(cluster.database, gamma.transport);
+			try {
+				await retireDelegateEpoch(cluster.database, 'alpha', 2);
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+			const round = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round.tsR > 0);
+			assert.strictEqual(cluster.node('beta').freshnessCalls.at(-1).dependencies, null, 'no recovery barrier');
+		});
+
+		it('a holder that outlives its home’s restart stays the only holder', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const held = await alpha.acquire(key, LEASE, WAIT);
+			cluster.restart('gamma', { recovering: true });
+			const gamma = cluster.node('gamma');
+			// The restarted home refuses while its recall round is incomplete; the contender waits it out
+			// inside its deadline rather than failing at once, and the wait ends 503 — not 423, since
+			// nobody the home knows of holds the key.
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 400),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+			let drained = false;
+			const recall = alpha
+				.recallFromHome('gamma', alpha.transport.homeMap(cluster.database), 2)
+				.then(() => (drained = true));
+			const contender = cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			await delayMs(500);
+			assert.strictEqual(drained, false, 'the round completed while the holder was inside its critical section');
+			assert.strictEqual(gamma.coordinator.stats.granted, 0, 'the restarted home granted during its quarantine');
+			alpha.release(key, held.admissionId);
+			await recall;
+			gamma.quiesced = 2;
+			const round = await contender;
+			assert.ok(round.tsR > 0);
+			assert.strictEqual(alpha.stats.delegations, 0, 'the previous holder kept a delegation after it released');
+		});
+
+		it('a down peer keeps the timer, anchored at the database’s ownership epoch rather than at construction', async () => {
+			let mono = 100_000;
+			const started = mono;
+			mono += 60_000;
+			const coordinator = coldCoordinator(() => mono, {
+				transport: { coordinationStartedMono: () => started },
+			});
+			try {
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon - 60_000);
+				const refused = await coordinator.onDelegationRequest({
+					key: 'k',
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				assert.strictEqual(refused.reason, 'quarantine');
+				assert.strictEqual(
+					refused.quarantineMs,
+					Math.ceil(horizon - 60_000),
+					'the remainder is what the requester waits on'
+				);
+				mono = started + horizon;
+				assert.strictEqual(
+					(await coordinator.onDelegationRequest({ key: 'k', requester: 'alpha', generation: 1, leaseMs: LEASE }))
+						.granted,
+					true
+				);
+			} finally {
+				coordinator.close();
+			}
+			// A reading from the future is another clock; it dates nothing and falls back to construction.
+			const future = coldCoordinator(() => mono, { transport: { coordinationStartedMono: () => mono + 5_000 } });
+			try {
+				assert.strictEqual(future.unprovenOwnershipMs(), horizon);
+			} finally {
+				future.close();
+			}
+		});
+	});
+
+	describe('waiting out a refusal that will end soon (§4.5)', () => {
+		it('waits out a booting home, with a jittered backoff from 250 ms', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const gamma = cluster.node('gamma').coordinator;
+			let refusals = 2;
+			const ready = gamma.onDelegationRequest.bind(gamma);
+			gamma.onDelegationRequest = async (request) =>
+				refusals-- > 0 ? { granted: false, reason: 'quarantine', recovering: true, retryAfterMs: 250 } : ready(request);
+			const startedAt = performance.now();
+			const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, 5_000);
+			assert.ok(round.tsR > 0);
+			assert.strictEqual(cluster.requests.length, 3);
+			// 250 ms then 500 ms, each jittered to no less than half.
+			assert.ok(performance.now() - startedAt >= 0.5 * (250 + 500), 'the retries did not back off');
+		});
+
+		it('waits out a home whose map is still withheld, as a booting one', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const gamma = cluster.node('gamma');
+			gamma.mapless = true;
+			const startedAt = performance.now();
+			const round = cluster.node('alpha').coordinator.acquire(key, LEASE, 5_000);
+			await delayMs(250);
+			gamma.mapless = false;
+			assert.ok((await round).tsR > 0);
+			assert.ok(cluster.requests.length >= 2, 'the withheld map was not retried');
+			assert.ok(performance.now() - startedAt >= 125);
+			assert.strictEqual(cluster.replies[0].reason, 'generation');
+			assert.strictEqual(cluster.replies[0].recovering, true);
+		});
+
+		it('rides out an unreachable home for at most the ride-through, each request capped to it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			cluster.node('gamma').alive = false;
+			// Each failed attempt costs alpha 5 s of its own clock, counted from the first request's send:
+			// the second attempt fails at the window's end and nothing is tried past it.
+			cluster.onUnreachable = () => (alpha.mono += HOME_RESTART_RIDE_THROUGH_MS / 2);
+			await assert.rejects(
+				() => alpha.coordinator.acquire(key, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /Could not reach gamma/.test(error.message)
+			);
+			assert.strictEqual(
+				cluster.requests.length,
+				2,
+				'the home was not retried inside the window, or was retried past it'
+			);
+			// A home that comes back inside the window is simply granted.
+			cluster.requests.length = 0;
+			cluster.onUnreachable = () => {
+				alpha.mono += 1_000;
+				cluster.node('gamma').alive = true;
+			};
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round.tsR > 0);
+			assert.strictEqual(cluster.requests.length, 2);
+		});
+
+		it('an exhausted quarantine wait is 503, never 423', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			cluster.restart('gamma', { recovering: true });
+			await assert.rejects(
+				() => cluster.node('alpha').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+			assert.ok(cluster.requests.length >= 2, 'the quarantine was not retried inside the deadline');
+			// A quarantine with no round in flight that cannot end inside the deadline fails fast, as before.
+			cluster.node('gamma').recovering = false;
+			cluster.requests.length = 0;
+			await assert.rejects(
+				() => cluster.node('alpha').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+			assert.strictEqual(cluster.requests.length, 1);
+		});
+	});
+
+	describe('request identity (harper#2582, §5.2)', () => {
+		it('a duplicated request returns the same token, and the delegate’s release frees the key at once', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			cluster.duplicateRequests = true;
+			const alpha = cluster.node('alpha').coordinator;
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.replies.length, 2);
+			const [second, first] = cluster.replies;
+			assert.deepStrictEqual(second.token, first.token, 'the duplicate minted a token the delegate never received');
+			assert.ok(second.leaseMs <= first.leaseMs);
+			assert.strictEqual(second.requestId, first.requestId);
+			alpha.release(key, round.admissionId);
+			cluster.duplicateRequests = false;
+			// The contender's recall drains alpha, whose release names the one token the home holds.
+			const contender = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(contender.tsR > 0);
+			assert.strictEqual(gamma.stats.granted, 1, 'the old grant was never cleared by the release');
+			assert.strictEqual(alpha.stats.delegations, 0);
+		});
+
+		it('a duplicate that arrives after a contender recalled the grant its first copy minted gets that token, and the requester hands it back', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha').coordinator;
+			const beta = cluster.node('beta').coordinator;
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const admitted = new Set();
+			const lock = (name, coordinator, waitMs) => {
+				const round = coordinator.acquire(key, LEASE, waitMs).then((granted) => {
+					assert.strictEqual(admitted.size, 0, `${name} was admitted while ${[...admitted]} held the key`);
+					admitted.add(name);
+					return { coordinator, granted, name };
+				});
+				round.catch(() => {});
+				return round;
+			};
+			const realRecall = gamma.transport.recallDelegation;
+			let recalled;
+			gamma.transport.recallDelegation = (...args) => {
+				gamma.transport.recallDelegation = realRecall;
+				return (recalled = realRecall(...args));
+			};
+			const realRequest = alpha.transport.requestDelegation;
+			let copy;
+			let contender;
+			alpha.transport.requestDelegation = async (target, database, table, request) => {
+				alpha.transport.requestDelegation = realRequest;
+				copy = await gamma.onDelegationRequest({ ...request });
+				contender = lock('beta', beta, 3_000);
+				await waitFor(() => recalled !== undefined, 2_000);
+				await recalled;
+				// A macrotask turn, so the home has latched the confirmation before the awaited delivery.
+				await new Promise((resolve) => setImmediate(resolve));
+				cluster.node('gamma').mono += 1_000;
+				return realRequest(target, database, table, request);
+			};
+			const requester = lock('alpha', alpha, 3_000);
+			await waitFor(() => contender !== undefined, 2_000);
+			const winner = await Promise.race([contender, requester]);
+			assert.strictEqual(copy.granted, true);
+			const duplicate = cluster.replies.find((reply) => reply.requestId === copy.requestId);
+			assert.deepStrictEqual(duplicate?.token, copy.token, 'the duplicate was refused instead of answered');
+			assert.ok(duplicate.leaseMs < copy.leaseMs, 'the duplicate renewed the recalled grant');
+			assert.ok(
+				cluster.node('alpha').written.some((entry) => compareTokens(entry.token, copy.token) === 0),
+				'alpha never released the grant it was given'
+			);
+			admitted.delete(winner.name);
+			winner.coordinator.release(key, winner.granted.admissionId);
+			const loser = await (winner.name === 'alpha' ? contender : requester);
+			assert.ok(loser.granted.tsR > winner.granted.tsR);
+			loser.coordinator.release(key, loser.granted.admissionId);
+		});
+
+		it('a duplicate that arrives while the recall of the grant its first copy minted is in flight gets that token, and the recall drains it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha').coordinator;
+			const beta = cluster.node('beta').coordinator;
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const realRecall = gamma.transport.recallDelegation;
+			let deliverRecall;
+			gamma.transport.recallDelegation = (...args) => {
+				gamma.transport.recallDelegation = realRecall;
+				return new Promise((resolve) => (deliverRecall = resolve)).then(() => realRecall(...args));
+			};
+			const realRequest = alpha.transport.requestDelegation;
+			let copy;
+			let contender;
+			let contenderAdmitted = false;
+			alpha.transport.requestDelegation = async (target, database, table, request) => {
+				alpha.transport.requestDelegation = realRequest;
+				copy = await gamma.onDelegationRequest({ ...request });
+				contender = beta.acquire(key, LEASE, 5_000).then((round) => {
+					contenderAdmitted = true;
+					return round;
+				});
+				contender.catch(() => {});
+				await waitFor(() => deliverRecall !== undefined, 2_000);
+				cluster.node('gamma').mono += 1_000;
+				return realRequest(target, database, table, request);
+			};
+			const held = await alpha.acquire(key, LEASE, 5_000);
+			const duplicate = cluster.replies.find((reply) => reply.requestId === copy.requestId);
+			assert.deepStrictEqual(duplicate.token, copy.token);
+			assert.ok(duplicate.leaseMs < copy.leaseMs, 'the duplicate renewed the grant being recalled');
+			deliverRecall();
+			await delayMs(50);
+			assert.strictEqual(contenderAdmitted, false, 'the contender was admitted while alpha held the key');
+			alpha.release(key, held.admissionId);
+			const round = await contender;
+			assert.ok(round.tsR > held.tsR);
+			assert.strictEqual(alpha.stats.delegations, 0);
+		});
+
+		it('a late duplicate during a recall gets the same token without renewing it, and a release naming that token cannot clear the successor’s grant', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { epochs: { alpha: 1, beta: 1, gamma: 1 } });
+			const alpha = cluster.node('alpha').coordinator;
+			const beta = cluster.node('beta').coordinator;
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const held = await alpha.acquire(key, LEASE, WAIT);
+			const minting = cluster.requests.find((entry) => entry.from === 'alpha').request;
+			const first = cluster.replies.find((reply) => reply.requestId === minting.requestId);
+			const contender = beta.acquire(key, LEASE, 5_000);
+			contender.catch(() => {});
+			await waitFor(() => cluster.recalls.length > 0, 2_000);
+			cluster.node('gamma').mono += 1_000;
+			const late = await gamma.onDelegationRequest({ ...minting });
+			assert.strictEqual(late.granted, true, JSON.stringify(late));
+			assert.deepStrictEqual(late.token, first.token, 'the late duplicate renewed the recalled grant');
+			assert.ok(late.leaseMs < first.leaseMs);
+			alpha.release(key, held.admissionId);
+			const round = await contender;
+			assert.ok(round.tsR > held.tsR);
+			gamma.applyEntry(
+				{ type: 'lockRelease', key, requester: 'alpha', token: late.token, dependencies: [] },
+				'alpha',
+				++cluster.tsCounter
+			);
+			assert.strictEqual(gamma.stats.granted, 1, 'a release naming the recalled token cleared the successor’s grant');
+			beta.release(key, round.admissionId);
+		});
+
+		it('a replay of a request the home already answered cannot mint a grant nobody holds', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const minted = nextId();
+			const first = await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: minted });
+			assert.strictEqual(first.granted, true);
+			const renewed = await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: nextId() });
+			assert.ok(compareTokens(renewed.token, first.token) > 0);
+			gamma.applyEntry(
+				{ type: 'lockRelease', key, requester: 'alpha', token: renewed.token, dependencies: [] },
+				'alpha',
+				5
+			);
+			assert.strictEqual(gamma.stats.granted, 0);
+			const replay = await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: minted });
+			assert.strictEqual(replay.reason, 'stale');
+			assert.strictEqual(gamma.stats.granted, 0, 'the replay minted a ghost grant');
+			// Reordered but new ids are fine; so is the same id under a new epoch, whose counter restarts.
+			assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: nextId() })).granted, true);
+			assert.strictEqual(
+				(await ask(gamma, cluster.keyHomedOn('gamma', 'e2-'), 'alpha', { delegateEpoch: 2, requestId: minted }))
+					.granted,
+				true
+			);
+		});
+
+		it('discards a reply whose requestId is not the outstanding request', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			let misdelivered = false;
+			cluster.beforeReply = (from, to, request, reply) => {
+				if (misdelivered) return;
+				misdelivered = true;
+				reply.requestId = request.requestId + 1;
+			};
+			const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round.tsR > 0);
+			assert.strictEqual(cluster.requests.length, 2, 'the stray reply was installed');
+			// The stray grant was handed back rather than left holding the key on the home.
+			assert.strictEqual(cluster.node('gamma').coordinator.stats.granted, 1);
+		});
+	});
+
+	describe('recall against a renewal in flight, and a drain inside the backoff (harper#3268)', () => {
+		it('a recall for the renewed token resolves only after the inherited admissions drain and the reply is disposed of', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const held = await alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			const first = cluster.replies[0].token;
+			// A renewal whose reply is held in flight.
+			let releaseReply;
+			cluster.beforeReply = (from) => {
+				if (from !== 'alpha') return;
+				cluster.beforeReply = undefined;
+				return new Promise((resolve) => (releaseReply = resolve));
+			};
+			cluster.advance('alpha', DELEGATION_LEASE_MS - MAX_LOCK_LEASE_MS + 1);
+			const renewal = alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			await waitFor(() => releaseReply !== undefined);
+			const renewedToken = cluster.replies[1].token;
+			assert.ok(compareTokens(renewedToken, first) > 0);
+			let recalled = false;
+			const recall = alpha.onDelegationRecall({ key, token: renewedToken }).then(() => (recalled = true));
+			await delayMs(30);
+			assert.strictEqual(recalled, false, 'confirmed while the first admission was still holding');
+			alpha.release(key, held.admissionId);
+			await delayMs(30);
+			assert.strictEqual(recalled, false, 'confirmed while the renewal reply was still in flight');
+			releaseReply();
+			await recall;
+			const releases = cluster.node('alpha').written.filter((e) => e.type === 'lockRelease');
+			assert.ok(releases.length >= 1, 'no release');
+			assert.deepStrictEqual(releases[0].token, renewedToken, 'released under a token the home no longer holds');
+			// The renewal's own reply was handed back, and its caller then took the key afresh.
+			const again = await renewal;
+			assert.ok(again.tsR > 0);
+			assert.ok(compareTokens(cluster.replies.at(-1).token, renewedToken) > 0, 'the recalled grant was admitted on');
+		});
+
+		it('a drain inside the recall backoff still sends', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const gamma = cluster.node('gamma').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, round.admissionId);
+			alpha.alive = false;
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 100));
+			const failed = cluster.recalls.length;
+			assert.ok(failed >= 1, 'no contention recall was sent');
+			alpha.alive = true;
+			const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+			await gamma.quiesce(result, () => 5_000);
+			assert.strictEqual(cluster.recalls.length, failed + 1, 'the drain did not send inside the backoff');
+			assert.strictEqual(result.recalled, 1);
+			assert.deepStrictEqual(result.outstanding, []);
+		});
+	});
+});
+
+describe('record locks across a node restart: edge cases of the delegate epoch and the renewal drain', () => {
+	const ask = (home, key, requester, fields = {}) =>
+		home.onDelegationRequest({ key, requester, generation: 1, leaseMs: LEASE, ...fields });
+	let requestSequence = 2_000_000;
+	const nextId = () => ++requestSequence;
+
+	it('a recall naming a renewed token while the older token’s surrender is still fencing waits for the fence, then releases under the newer token', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const round = await alpha.acquire(key, LEASE, WAIT);
+		const first = cluster.replies[0].token;
+		let releaseFence;
+		alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+		alpha.release(key, round.admissionId);
+		// The home's own contention recall starts the surrender; its relayed fence is still pending.
+		const surrender = alpha.onDelegationRecall({ key, token: first });
+		await delayMs(10);
+		assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
+		// Meanwhile the home renewed the grant in place (a renewal reply in flight) and recalls THAT token.
+		const renewed = [first[0], first[1], first[2] + 1];
+		let recalled = false;
+		const recall = alpha.onDelegationRecall({ key, token: renewed }).then(() => (recalled = true));
+		await delayMs(30);
+		assert.strictEqual(recalled, false, 'confirmed while a handle under the older token could still commit');
+		releaseFence();
+		await Promise.all([surrender, recall]);
+		const releases = cluster
+			.node('alpha')
+			.written.filter((e) => e.type === 'lockRelease')
+			.map((e) => e.token[2]);
+		assert.deepStrictEqual(releases, [first[2], renewed[2]], 'the newer token the home holds was never released');
+	});
+
+	it('hands an unclaimed grant back only once the key’s in-flight fence has settled', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		// A long admission lease, so the handle is still live (and its relayed fence still pending) once
+		// the clock has moved far enough that the delegation needs renewing.
+		const round = await alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+		const first = cluster.replies[0].token;
+		let releaseFence;
+		alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+		alpha.release(key, round.admissionId);
+		// A renewal whose reply takes longer than the caller waits; the home renews in place meanwhile.
+		const renewed = [first[0], first[1], first[2] + 1];
+		alpha.transport.requestDelegation = () =>
+			delayMs(60).then(() => ({ granted: true, token: renewed, leaseMs: DELEGATION_LEASE_MS, dependencies: [] }));
+		cluster.advance('alpha', DELEGATION_LEASE_MS - MAX_LOCK_LEASE_MS + 1);
+		const late = assert.rejects(() => alpha.acquire(key, MAX_LOCK_LEASE_MS, 5));
+		// Before that reply lands, the older token is recalled and its handle's fence is still pending.
+		await delayMs(10);
+		const surrender = alpha.onDelegationRecall({ key, token: first });
+		await delayMs(100);
+		await late;
+		const written = () =>
+			cluster
+				.node('alpha')
+				.written.filter((e) => e.type === 'lockRelease')
+				.map((e) => e.token[2]);
+		assert.ok(!written().includes(renewed[2]), 'the renewed token was handed back while the old handle was unfenced');
+		releaseFence();
+		await surrender;
+		await waitFor(() => written().includes(renewed[2]));
+	});
+
+	it('a dead epoch’s delayed request neither resets the live epoch’s replay window nor is admitted', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const minted = nextId();
+		assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: minted })).granted, true);
+		const other = cluster.keyHomedOn('gamma', 'other-');
+		// Below the grant's epoch on the held key: refused. On another key: the window must not move.
+		assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: nextId() })).reason, 'retired');
+		assert.strictEqual((await ask(gamma, other, 'alpha', { delegateEpoch: 1, requestId: nextId() })).reason, 'stale');
+		assert.strictEqual(gamma.stats.granted, 1, 'the dead epoch minted a grant');
+		gamma.applyEntry(
+			{
+				type: 'lockRelease',
+				key,
+				requester: 'alpha',
+				token: cluster.replies.at?.(0)?.token ?? [1, 1, 1],
+				dependencies: [],
+			},
+			'alpha',
+			9
+		);
+		// A replay of the live epoch's answered request is still a replay.
+		const replay = await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: minted });
+		assert.strictEqual(replay.reason, 'stale');
+	});
+
+	it('a concurrent retire at the same bound joins the running sweep instead of reporting it done', async () => {
+		const database = `retire-sweep-${Date.now()}`;
+		const first = new FakeCluster(['alpha', 'beta', 'gamma'], { database });
+		const second = new FakeCluster(['alpha', 'beta', 'gamma'], { database });
+		for (const cluster of [first, second]) {
+			const gamma = cluster.node('gamma').coordinator;
+			assert.strictEqual(
+				(await ask(gamma, cluster.keyHomedOn('gamma'), 'alpha', { delegateEpoch: 1, requestId: nextId() })).granted,
+				true
+			);
+		}
+		registerClusterLockTransport(database, first.node('gamma').coordinator.transport);
+		try {
+			const [a, b] = await Promise.all([
+				retireDelegateEpoch(database, 'alpha', 2),
+				retireDelegateEpoch(database, 'alpha', 2),
+			]);
+			assert.strictEqual(a + b, 2, `the two calls retired ${a} + ${b} grants, not both tables`);
+			assert.strictEqual(first.node('gamma').coordinator.stats.granted, 0);
+			assert.strictEqual(second.node('gamma').coordinator.stats.granted, 0);
+		} finally {
+			unregisterClusterLockTransport(database, true);
+		}
+	});
+
+	it('a hook that throws keeps today’s behavior', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		for (const node of cluster.nodes.values()) {
+			node.coordinator.transport.delegateEpoch = () => {
+				throw new Error('no epoch');
+			};
+			node.coordinator.transport.coordinationStartedMono = () => {
+				throw new Error('no clock');
+			};
+			node.coordinator.transport.restartRecovering = () => {
+				throw new Error('no round');
+			};
+		}
+		const key = cluster.keyHomedOn('gamma');
+		const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+		assert.ok(round.tsR > 0);
+		assert.strictEqual(cluster.requests[0].request.delegateEpoch, undefined, 'a throwing hook tagged the request');
+		cluster.restart('gamma');
+		const refused = await cluster
+			.node('gamma')
+			.coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+		assert.strictEqual(refused.reason, 'quarantine');
+		assert.strictEqual(refused.recovering, undefined);
+	});
+
+	it('a home that never answers is a timed-out wait, classified as no reply', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		cluster.node('alpha').coordinator.transport.requestDelegation = () => new Promise(() => {});
+		const startedAt = performance.now();
+		await assert.rejects(
+			() => cluster.node('alpha').coordinator.acquire(key, LEASE, 400),
+			(error) => error.statusCode === 503 && /no reply from the key's home within the wait/.test(error.message)
+		);
+		assert.ok(performance.now() - startedAt >= 350);
+	});
+
+	it('a recalled renewal reply that lands while the held admission still drains is handed back after the drain', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha').coordinator;
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const held = await alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+		let releaseReply;
+		cluster.beforeReply = (from) => {
+			if (from !== 'alpha') return;
+			cluster.beforeReply = undefined;
+			return new Promise((resolve) => (releaseReply = resolve));
+		};
+		cluster.advance('alpha', DELEGATION_LEASE_MS - MAX_LOCK_LEASE_MS + 1);
+		const renewal = alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+		await waitFor(() => releaseReply !== undefined);
+		const renewedToken = cluster.replies[1].token;
+		// A contender makes the home recall the renewed token while the renewal reply is in flight.
+		const contender = cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		await waitFor(() => cluster.recalls.some(({ to, token }) => to === 'alpha' && token[2] === renewedToken[2]));
+		// The reply lands first, while the first admission still holds: it must not be admitted on, and
+		// the home must keep its grant until the drain.
+		releaseReply();
+		await delayMs(50);
+		assert.strictEqual(gamma.stats.granted, 1);
+		assert.strictEqual(alpha.stats.admitted, 1, 'the first admission was fenced or dropped');
+		// Whichever of the renewing node and the contender wins the key after the drain, each releases it.
+		renewal.then((again) => alpha.release(key, again.admissionId));
+		alpha.release(key, held.admissionId);
+		const next = await contender;
+		assert.ok(next.tsR > 0, 'the contender was not admitted after the drain');
+		cluster.node('beta').coordinator.release(key, next.admissionId);
+		const releases = cluster.node('alpha').written.filter((e) => e.type === 'lockRelease');
+		assert.ok(
+			releases.some((e) => e.token[2] === renewedToken[2]),
+			'no release under the token the home held'
+		);
+		const again = await renewal;
+		assert.ok(again.tsR > 0);
+	});
+
+	it('an untagged request neither resets a tagged replay window nor is refused for it', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const minted = nextId();
+		assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: minted })).granted, true);
+		// A hook that threw on one request: untagged, accepted, and the window's history stays.
+		assert.strictEqual((await ask(gamma, key, 'alpha', { requestId: nextId() })).granted, true);
+		gamma.applyEntry(
+			{
+				type: 'lockRelease',
+				key,
+				requester: 'alpha',
+				token: cluster.replies.at(-1)?.token ?? [1, 1, 2],
+				dependencies: [],
+			},
+			'alpha',
+			9
+		);
+		assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 2, requestId: minted })).reason, 'stale');
+		// A window that began untagged takes the first tag without losing its history.
+		const other = cluster.keyHomedOn('gamma', 'untagged-');
+		const first = nextId();
+		assert.strictEqual((await ask(gamma, other, 'beta', { requestId: first })).granted, true);
+		assert.strictEqual((await ask(gamma, other, 'beta', { delegateEpoch: 1, requestId: nextId() })).granted, true);
+		assert.strictEqual((await ask(gamma, other, 'beta', { delegateEpoch: 1, requestId: first })).reason, 'stale');
+	});
+
+	it('an untagged renewal clears the grant’s tag, so a retire of the epoch it was minted under leaves it alone', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: nextId() })).granted, true);
+		// The successor incarnation's hook is still unknown: it renews untagged.
+		assert.strictEqual((await ask(gamma, key, 'alpha', { requestId: nextId() })).granted, true);
+		// A delayed request from the dead epoch must not tag it back.
+		assert.strictEqual((await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: nextId() })).granted, true);
+		registerClusterLockTransport(cluster.database, gamma.transport);
+		try {
+			assert.strictEqual(await retireDelegateEpoch(cluster.database, 'alpha', 2), 0);
+			assert.strictEqual(gamma.stats.granted, 1, 'a grant the successor renewed was retired under it');
+		} finally {
+			unregisterClusterLockTransport(cluster.database, true);
+		}
+	});
+
+	it('a grant minted untagged stays untagged, and an older request delivered late is answered with the grant as it stands', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		// The successor's epoch is unknown to it: an untagged first grant.
+		const first = nextId();
+		const minted = await ask(gamma, key, 'alpha', { requestId: first });
+		assert.strictEqual(minted.granted, true);
+		// The dead predecessor's delayed request, tagged epoch 1 and older than the successor's: refused,
+		// never a renewal that would move the token, and nothing re-tagged.
+		const delayed = await ask(gamma, key, 'alpha', { delegateEpoch: 1, requestId: first - 1 });
+		assert.strictEqual(delayed.reason, 'stale');
+		registerClusterLockTransport(cluster.database, gamma.transport);
+		try {
+			assert.strictEqual(await retireDelegateEpoch(cluster.database, 'alpha', 2), 0);
+			assert.strictEqual(gamma.stats.granted, 1, 'an untagged grant was retired');
+		} finally {
+			unregisterClusterLockTransport(cluster.database, true);
+		}
+	});
+
+	it('a retried request whose first attempt answers late does not hand back the token its retry installs', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha').coordinator;
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const original = alpha.transport.requestDelegation;
+		let attempts = 0;
+		let answerFirst;
+		// The first attempt is answered only after the second one was: the home sees them in the order
+		// R2 then R1, and answers R1 as stale.
+		alpha.transport.requestDelegation = (...args) => {
+			if (++attempts === 1) return new Promise((resolve) => (answerFirst = () => resolve(original(...args))));
+			const second = original(...args);
+			second.then(() => answerFirst?.());
+			return second;
+		};
+		const round = await alpha.acquire(key, LEASE, WAIT);
+		assert.ok(round.tsR > 0);
+		await delayMs(50);
+		assert.strictEqual(attempts, 2);
+		assert.strictEqual(gamma.stats.granted, 1, 'the late first attempt handed back the grant the retry installed');
+		assert.strictEqual(cluster.node('alpha').written.length, 0, 'a release was written for a grant in use');
+		assert.strictEqual(cluster.replies.at(-1).reason, 'stale');
+		alpha.release(key, round.admissionId);
+	}).timeout(20_000);
+
+	it('a late first reply from an older home, carrying the token the retry is installing, is not handed back', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha');
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		// A previous holder, so alpha's grant carries lineage and runs a freshness barrier.
+		const previous = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		cluster.node('beta').coordinator.release(key, previous.admissionId);
+		const original = alpha.coordinator.transport.requestDelegation;
+		let attempts = 0;
+		let answerFirst;
+		alpha.coordinator.transport.requestDelegation = (...args) => {
+			if (++attempts === 1) return new Promise((resolve) => (answerFirst = resolve));
+			return original(...args);
+		};
+		// The retry's grant is held in its barrier; the first attempt's reply lands meanwhile, as an
+		// older home answers it — renewed in place, so with the home's current token.
+		let releaseBarrier;
+		cluster.beforeFreshness = (name) => {
+			if (name !== 'alpha') return;
+			cluster.beforeFreshness = undefined;
+			return new Promise((resolve) => (releaseBarrier = resolve));
+		};
+		gamma.onDelegationRequest = (() => {
+			const real = gamma.onDelegationRequest.bind(gamma);
+			return async (request) => real({ ...request, requestId: undefined, delegateEpoch: undefined });
+		})();
+		const round = alpha.coordinator.acquire(key, LEASE, WAIT);
+		await waitFor(() => releaseBarrier !== undefined, 10_000);
+		answerFirst({
+			granted: true,
+			token: cluster.replies.at(-1).token,
+			leaseMs: DELEGATION_LEASE_MS,
+			dependencies: null,
+		});
+		await delayMs(50);
+		assert.strictEqual(alpha.written.length, 0, 'the token the retry is installing was handed back');
+		releaseBarrier();
+		const admitted = await round;
+		assert.ok(admitted.tsR > 0);
+		assert.strictEqual(gamma.stats.granted, 1);
+		// Installed under the token the home holds now, so this node's release clears the home's grant
+		// and a contender takes the key over through the ordinary recall.
+		alpha.coordinator.release(key, admitted.admissionId);
+		const contender = await cluster.node('beta').coordinator.acquire(key, LEASE, 5_000);
+		assert.ok(contender.tsR > 0);
+	}).timeout(20_000);
+
+	/**
+	 * The retry's grant T1 waits in its freshness barrier while the first attempt, delivered late to an
+	 * older home (no request ids), renews that grant in place to T2. Resolves once T2's reply has landed
+	 * on alpha, with the barrier still held.
+	 */
+	async function renewedInPlaceDuringBarrier() {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha');
+		const gamma = cluster.node('gamma').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const previous = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		cluster.node('beta').coordinator.release(key, previous.admissionId);
+		const original = alpha.coordinator.transport.requestDelegation;
+		let attempts = 0;
+		let deliverFirst;
+		alpha.coordinator.transport.requestDelegation = (...args) => {
+			if (++attempts === 1) return new Promise((resolve) => (deliverFirst = () => original(...args).then(resolve)));
+			return original(...args);
+		};
+		let releaseBarrier;
+		cluster.beforeFreshness = (name) => {
+			if (name !== 'alpha') return;
+			cluster.beforeFreshness = undefined;
+			return new Promise((resolve) => (releaseBarrier = resolve));
+		};
+		gamma.onDelegationRequest = (() => {
+			const real = gamma.onDelegationRequest.bind(gamma);
+			return async (request) => real({ ...request, requestId: undefined, delegateEpoch: undefined });
+		})();
+		const round = alpha.coordinator.acquire(key, LEASE, WAIT);
+		round.catch(() => {});
+		await waitFor(() => releaseBarrier !== undefined, 10_000);
+		const t1 = cluster.replies.at(-1).token;
+		const replied = cluster.replies.length;
+		deliverFirst();
+		await waitFor(() => cluster.replies.length > replied, 10_000);
+		const t2 = cluster.replies.at(-1).token;
+		assert.ok(t2[2] > t1[2], 'the late request did not renew the grant in place');
+		await delayMs(50);
+		assert.strictEqual(alpha.written.length, 0, 'a token was handed back while the retry still waits on it');
+		return { cluster, alpha, key, round, releaseBarrier, t1, t2 };
+	}
+
+	it('a grant the home renewed in place during the barrier installs under the newer token', async () => {
+		const { cluster, alpha, key, round, releaseBarrier, t2 } = await renewedInPlaceDuringBarrier();
+		releaseBarrier();
+		const admitted = await round;
+		alpha.coordinator.release(key, admitted.admissionId);
+		// Surrendering releases under the installed token; only T2 clears the home's grant.
+		const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+		await alpha.coordinator.quiesce(result, () => 1_000);
+		assert.strictEqual(result.surrendered, 1);
+		assert.deepStrictEqual(
+			alpha.written.filter((e) => e.type === 'lockRelease').map((e) => e.token),
+			[t2]
+		);
+		const contender = await cluster.node('beta').coordinator.acquire(key, LEASE, 2_000);
+		assert.ok(contender.tsR > 0);
+	}).timeout(20_000);
+
+	it('a grant the home renewed in place during a barrier that then fails is handed back under both tokens', async () => {
+		const { cluster, alpha, key, round, releaseBarrier, t1, t2 } = await renewedInPlaceDuringBarrier();
+		alpha.freshnessError = new Error('freshness unavailable');
+		releaseBarrier();
+		await assert.rejects(round, /Could not establish successor freshness/);
+		await waitFor(() => alpha.written.filter((e) => e.type === 'lockRelease').length === 2, 5_000);
+		assert.deepStrictEqual(
+			alpha.written.filter((e) => e.type === 'lockRelease').map((e) => e.token),
+			[t1, t2]
+		);
+		alpha.freshnessError = undefined;
+		const contender = await cluster.node('beta').coordinator.acquire(key, LEASE, 2_000);
+		assert.ok(contender.tsR > 0);
+	}).timeout(20_000);
+
+	it('a late reply arriving while a retry is pending is handed back once that retry has settled without the key', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha');
+		const key = cluster.keyHomedOn('gamma');
+		let attempts = 0;
+		let answerFirst;
+		alpha.coordinator.transport.requestDelegation = () => {
+			if (++attempts === 1) return new Promise((resolve) => (answerFirst = resolve));
+			return Promise.resolve({ granted: false, reason: 'unknown-node' });
+		};
+		const failed = assert.rejects(
+			() => alpha.coordinator.acquire(key, LEASE, WAIT),
+			/not named in the record lock home map/
+		);
+		await waitFor(() => attempts === 2, 10_000);
+		answerFirst({ granted: true, token: [1, 1, 9], leaseMs: DELEGATION_LEASE_MS, dependencies: [] });
+		await failed;
+		await waitFor(() => alpha.written.some((e) => e.type === 'lockRelease' && e.token[2] === 9), 10_000);
+	}).timeout(20_000);
+
+	it('a home that stops answering one request is asked again on a fresh one inside the ride-through', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha').coordinator;
+		const key = cluster.keyHomedOn('gamma');
+		const original = alpha.transport.requestDelegation;
+		let attempts = 0;
+		alpha.transport.requestDelegation = (...args) => (++attempts === 1 ? new Promise(() => {}) : original(...args));
+		const startedAt = performance.now();
+		const round = await alpha.acquire(key, LEASE, WAIT);
+		assert.ok(round.tsR > 0);
+		assert.strictEqual(attempts, 2, 'the blackholed request was never retried on a fresh one');
+		const elapsed = performance.now() - startedAt;
+		assert.ok(
+			elapsed >= RESTART_ATTEMPT_MS - 50 && elapsed < HOME_RESTART_RIDE_THROUGH_MS,
+			`granted after ${elapsed}ms`
+		);
+	}).timeout(20_000);
+
+	it('a blackholed home is ridden through for the ride-through from the first silent request, not for the whole wait', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		cluster.node('alpha').coordinator.transport.requestDelegation = () => new Promise(() => {});
+		const startedAt = performance.now();
+		await assert.rejects(
+			() => cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT),
+			(error) => error.statusCode === 503 && /No reply from gamma/.test(error.message)
+		);
+		const elapsed = performance.now() - startedAt;
+		assert.ok(
+			elapsed >= HOME_RESTART_RIDE_THROUGH_MS - 100 && elapsed < HOME_RESTART_RIDE_THROUGH_MS + 1_500,
+			`failed after ${elapsed}ms`
+		);
+	}).timeout(20_000);
+
+	it('an off-owner acquire retries an owner that is not assigned yet, or that departed, inside its wait', async () => {
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const alpha = cluster.node('alpha');
+		alpha.owns = false;
+		let attempts = 0;
+		const retryable = (message) => Object.assign(new ClientError(message, 503), { ownerUnavailable: true });
+		alpha.coordinator.transport.acquireOnOwner = async () => {
+			if (++attempts < 3) throw retryable('No record lock coordinating worker is known yet');
+			return { tsR: 7, mintedMono: performance.now(), admissionId: 41 };
+		};
+		alpha.coordinator.transport.releaseOnOwner = () => {};
+		const startedAt = performance.now();
+		const round = await alpha.coordinator.acquire('k', LEASE, 5_000);
+		assert.strictEqual(round.tsR, 7);
+		assert.strictEqual(attempts, 3);
+		assert.ok(performance.now() - startedAt >= 0.5 * (250 + 500), 'the retries did not back off');
+		// A verdict is not retried: the owner's 423 reaches the caller as it is.
+		alpha.coordinator.transport.acquireOnOwner = async () => {
+			throw new ClientError('Record is locked and was not released in time', 423);
+		};
+		await assert.rejects(
+			() => alpha.coordinator.acquire('k2', LEASE, 1_000),
+			(error) => error.statusCode === 423
+		);
+		// And the wait bounds the retries, while an unmarked refusal is a verdict.
+		alpha.coordinator.transport.acquireOnOwner = async () => {
+			throw retryable('the record lock owner worker is not reachable');
+		};
+		await assert.rejects(
+			() => alpha.coordinator.acquire('k3', LEASE, 600),
+			(error) => error.statusCode === 503
+		);
+		attempts = 0;
+		alpha.coordinator.transport.acquireOnOwner = async () => {
+			attempts++;
+			throw new ClientError('This node is not named in the record lock home map', 503);
+		};
+		await assert.rejects(
+			() => alpha.coordinator.acquire('k4', LEASE, 5_000),
+			(error) => error.statusCode === 503
+		);
+		assert.strictEqual(attempts, 1, 'a verdict was retried');
+	});
+
+	it('a handle reports what remains of its native lease', async () => {
+		const { handle } = realHandle(1_000);
+		const remaining = handle.leaseRemainingMs();
+		assert.ok(remaining > 0 && remaining <= 1_000, `${remaining}`);
+		handle.revokeLease();
+		assert.strictEqual(handle.leaseRemainingMs(), 0);
+	});
+});

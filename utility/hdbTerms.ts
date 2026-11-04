@@ -13,6 +13,12 @@ export const HARPER_CONFIG_FILE = 'harper-config.yaml';
 export const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 /** Harper Root Directory Name */
 export const HDB_ROOT_DIR_NAME = 'harper';
+
+/**
+ * The peer an operation was forwarded from, set by `server.operation` from its context. A symbol, so a
+ * JSON request body cannot claim it.
+ */
+export const REPLICATED_FROM = Symbol('replicatedFrom');
 /** Harper Component Config File */
 export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
 
@@ -111,7 +117,11 @@ export const RESERVED_DATABASE_NAMES = [
 	'structure_user',
 	'operations',
 	'_expandedOperations',
+	'component_deploy',
 ] as const;
+
+/** Keys that address a plain object's prototype rather than an own entry; refused as new database and table names. */
+export const PROTOTYPE_POLLUTING_NAMES = ['__proto__', 'constructor', 'prototype'] as const;
 
 /** Email address for support requests */
 export const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
@@ -143,6 +153,9 @@ export const HDB_HOME_DIR_NAME = '.harperdb';
 /** License Key directory */
 export const LICENSE_KEY_DIR_NAME = 'keys';
 
+/** Git deploy key directory under rootPath (keys written by Harper Pro's `add_ssh_key`) */
+export const SSH_KEY_DIR_NAME = 'ssh';
+
 /** Harper Boot Properties file name */
 export const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 
@@ -154,6 +167,9 @@ export const MAX_SET_TIMEOUT_MS = 2147483647;
 
 /** Harper File Permissions Mode */
 export const HDB_FILE_PERMISSIONS = 0o700;
+
+/** Smallest `threads.maxHeapMemory` (MB) a worker thread is accepted on — see server/threads/threadHeapMemory.ts */
+export const MIN_THREAD_HEAP_MEMORY_MB = 64;
 
 /** Database directory */
 export const DATABASES_DIR_NAME = 'database';
@@ -197,6 +213,12 @@ export const UPGRADE_JSON_FIELD_NAMES_ENUM = {
 	UPGRADE_VERSION: 'upgrade_version',
 } as const;
 
+/**
+ * Set by the Fastify injection on Bun and uWS, whose mock socket always reports 127.0.0.1, and stripped
+ * from client headers there; read by set_network_access's lockout check.
+ */
+export const INTERNAL_CLIENT_ADDRESS_HEADER = 'x-harper-internal-client-address';
+
 /** System table names */
 export const SYSTEM_TABLE_NAMES = {
 	JOB_TABLE_NAME: 'hdb_job',
@@ -209,8 +231,15 @@ export const SYSTEM_TABLE_NAMES = {
 	USER_TABLE_NAME: 'hdb_user',
 	INFO_TABLE_NAME: 'hdb_info',
 	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
+	RESIDENCY_SLOTS_TABLE_NAME: 'hdb_residency_slots',
 	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
 	SECRET_TABLE_NAME: 'hdb_secret',
+	OIDC_TRUST_TABLE_NAME: 'hdb_oidc_trust',
+	OIDC_TOKEN_USE_TABLE_NAME: 'hdb_oidc_token_use',
+	MODEL_DECISIONS_TABLE_NAME: 'hdb_model_decisions',
+	MODEL_OUTCOMES_TABLE_NAME: 'hdb_model_outcomes',
+	MODEL_CALIBRATIONS_TABLE_NAME: 'hdb_model_calibrations',
+	NETWORK_ACCESS_TABLE_NAME: 'hdb_network_access',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -245,6 +274,7 @@ export const OPERATIONS_ENUM = {
 	INSERT: 'insert',
 	UPDATE: 'update',
 	UPSERT: 'upsert',
+	PUT: 'put',
 	SEARCH_BY_CONDITIONS: 'search_by_conditions',
 	SEARCH_BY_HASH: 'search_by_hash',
 	SEARCH_BY_ID: 'search_by_id',
@@ -342,12 +372,23 @@ export const OPERATIONS_ENUM = {
 	CLEAR_STATUS: 'clear_status',
 	LIST_DEPLOYMENTS: 'list_deployments',
 	GET_DEPLOYMENT: 'get_deployment',
+	LIST_RELEASES: 'list_releases',
 	SET_SECRET: 'set_secret',
 	GRANT_SECRET: 'grant_secret',
 	REVOKE_SECRET: 'revoke_secret',
 	LIST_SECRETS: 'list_secrets',
 	DELETE_SECRET: 'delete_secret',
 	GET_SECRETS_PUBLIC_KEY: 'get_secrets_public_key',
+	ADD_OIDC_TRUST: 'add_oidc_trust',
+	LIST_OIDC_TRUST: 'list_oidc_trust',
+	DROP_OIDC_TRUST: 'drop_oidc_trust',
+	EXCHANGE_OIDC_TOKEN: 'exchange_oidc_token',
+	ENABLE_PREVIEWS: 'enable_previews',
+	DISABLE_PREVIEWS: 'disable_previews',
+	FENCE_PREVIEW_RELEASES: 'fence_preview_releases',
+	GET_PREVIEW_POLICY: 'get_preview_policy',
+	SET_NETWORK_ACCESS: 'set_network_access',
+	GET_NETWORK_ACCESS: 'get_network_access',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',
@@ -356,6 +397,7 @@ export const OPERATIONS_ENUM = {
 	CANCEL_AGENT_RUN: 'cancel_agent_run',
 	APPROVE_AGENT_ACTION: 'approve_agent_action',
 	SET_AGENT_CONFIG: 'set_agent_config',
+	GET_AGENT_CONFIG: 'get_agent_config',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -404,6 +446,7 @@ export const SERVICE_ACTIONS_ENUM = {
 	MCP: 'mcp',
 	AGENT: 'agent',
 	CHAT: 'chat',
+	PREVIEW: 'preview',
 } as const;
 
 /** describes the Geo Conversion types */
@@ -484,7 +527,9 @@ export const LEGACY_CONFIG_PARAMS = {
 /**
  * All configuration parameters for Harper
  *
- * If a param is added to config it must also be added here.
+ * If a param is added to config it must also be added here. `env.get`, per-key env vars, CLI flags and
+ * set_configuration resolve a name only through this registry: an unregistered param reads as `undefined`
+ * even when the config file sets it, and none of the other three can set it by name.
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
@@ -492,6 +537,11 @@ export const CONFIG_PARAMS = {
 	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
 	ANALYTICS_STORAGEINTERVAL: 'analytics_storageInterval',
+	ANALYTICS_LOGGING_LEVEL: 'analytics_logging_level',
+	ANALYTICS_LOGGING_PATH: 'analytics_logging_path',
+	ANALYTICS_LOGGING_ROOT: 'analytics_logging_root',
+	ANALYTICS_LOGGING_STDSTREAMS: 'analytics_logging_stdStreams',
+	ANALYTICS_LOGGING_TAG: 'analytics_logging_tag',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
 	AUTHENTICATION_COOKIE_DOMAINS: 'authentication_cookie_domains',
@@ -500,6 +550,11 @@ export const CONFIG_PARAMS = {
 	AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'authentication_operationTokenTimeout',
 	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',
 	AUTHENTICATION_HASHFUNCTION: 'authentication_hashFunction',
+	AUTHENTICATION_LOGGING_LEVEL: 'authentication_logging_level',
+	AUTHENTICATION_LOGGING_PATH: 'authentication_logging_path',
+	AUTHENTICATION_LOGGING_ROOT: 'authentication_logging_root',
+	AUTHENTICATION_LOGGING_STDSTREAMS: 'authentication_logging_stdStreams',
+	AUTHENTICATION_LOGGING_TAG: 'authentication_logging_tag',
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
 	APPLICATIONS_MODULELOADER: 'applications_moduleLoader',
 	APPLICATIONS_LOCKDOWN: 'applications_lockdown',
@@ -508,6 +563,14 @@ export const CONFIG_PARAMS = {
 	APPLICATIONS_ALLOWEDBUILTINMODULES: 'applications_allowedBuiltInModules',
 	APPLICATIONS_ALLOWEDSPAWNCOMMANDS: 'applications_allowedSpawnCommands',
 	APPLICATIONS_ALLOWEDDIRECTORY: 'applications_allowedDirectory',
+	STATUS_HEALTHCHECKS_ENABLED: 'status_healthChecks_enabled',
+	STATUS_HEALTHCHECKS_INTERVALSECONDS: 'status_healthChecks_intervalSeconds',
+	STATUS_HEALTHCHECKS_THRESHOLDS_DISK_WARNING: 'status_healthChecks_thresholds_disk_warning',
+	STATUS_HEALTHCHECKS_THRESHOLDS_DISK_ERROR: 'status_healthChecks_thresholds_disk_error',
+	STATUS_HEALTHCHECKS_THRESHOLDS_MEMORY_WARNING: 'status_healthChecks_thresholds_memory_warning',
+	STATUS_HEALTHCHECKS_THRESHOLDS_MEMORY_ERROR: 'status_healthChecks_thresholds_memory_error',
+	STATUS_HEALTHCHECKS_THRESHOLDS_CPU_WARNING: 'status_healthChecks_thresholds_cpu_warning',
+	STATUS_HEALTHCHECKS_THRESHOLDS_CPU_ERROR: 'status_healthChecks_thresholds_cpu_error',
 	THREADS: 'threads',
 	THREADS_COUNT: 'threads_count',
 	THREADS_DEBUG: 'threads_debug',
@@ -516,9 +579,12 @@ export const CONFIG_PARAMS = {
 	THREADS_DEBUG_HOST: 'threads_debug_host',
 	THREADS_DEBUG_WAITFORDEBUGGER: 'threads_debug_waitForDebugger',
 	THREADS_MAXHEAPMEMORY: 'threads_maxHeapMemory',
+	THREADS_MAXISOLATED: 'threads_maxIsolated',
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
 	THREADS_PRELOAD: 'threads_preload',
 	THREADS_PRELOADREQUIRE: 'threads_preloadRequire',
+	THREADS_SHUTDOWNTIMEOUT: 'threads_shutdownTimeout',
+	THREADS_V8FLAGS: 'threads_v8Flags',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',
@@ -548,8 +614,17 @@ export const CONFIG_PARAMS = {
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
 	HTTP_REQUESTQUEUELIMIT: 'http_requestQueueLimit',
+	HTTP_READREQUESTQUEUELIMIT: 'http_readRequestQueueLimit',
 	HTTP_MAXREQUESTBODYSIZE: 'http_maxRequestBodySize',
 	HTTP_HTTP2: 'http_http2',
+	HTTP_LOGGING_LEVEL: 'http_logging_level',
+	HTTP_LOGGING_PATH: 'http_logging_path',
+	HTTP_LOGGING_ROOT: 'http_logging_root',
+	HTTP_LOGGING_STDSTREAMS: 'http_logging_stdStreams',
+	HTTP_LOGGING_TAG: 'http_logging_tag',
+	HTTP_LOGGING_TIMING: 'http_logging_timing',
+	HTTP_LOGGING_HEADERS: 'http_logging_headers',
+	HTTP_LOGGING_ID: 'http_logging_id',
 	LICENSE_MODE: 'license_mode',
 	LICENSE_REGION: 'license_region',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
@@ -585,6 +660,13 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
+	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE: 'deployment_payloadRetention_failedMaxAge',
+	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT: 'deployment_payloadRetention_failedMaxCount',
+	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
+	DEPLOYMENT_PREVIEWS_MAXPERAPPLICATION: 'deployment_previews_maxPerApplication',
+	DEPLOYMENT_PREVIEWS_SWEEPINTERVAL: 'deployment_previews_sweepInterval',
+	DEPLOYMENT_PREVIEWS_STAGINGRETENTION_MAXCOUNT: 'deployment_previews_stagingRetention_maxCount',
+	DEPLOYMENT_STARTUPINSTALLTIMEOUT: 'deployment_startupInstallTimeout',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
@@ -592,6 +674,7 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_TIMEOUT: 'operationsApi_network_timeout',
 	OPERATIONSAPI_SYSINFO_NETWORK: 'operationsApi_sysInfo_network',
 	OPERATIONSAPI_SYSINFO_DISK: 'operationsApi_sysInfo_disk',
+	MCP_OPERATIONS_ENABLED: 'mcp_operations_enabled',
 	MCP_OPERATIONS_MOUNTPATH: 'mcp_operations_mountPath',
 	MCP_OPERATIONS_ALLOW: 'mcp_operations_allow',
 	MCP_OPERATIONS_DENY: 'mcp_operations_deny',
@@ -603,6 +686,9 @@ export const CONFIG_PARAMS = {
 	MCP_OPERATIONS_RATELIMIT_PERCLIENTPERSECOND: 'mcp_operations_rateLimit_perClientPerSecond',
 	MCP_OPERATIONS_RATELIMIT_PERCLIENTBURST: 'mcp_operations_rateLimit_perClientBurst',
 	MCP_OPERATIONS_RATELIMIT_IDENTITYHEADER: 'mcp_operations_rateLimit_identityHeader',
+	MCP_OPERATIONS_RATELIMIT_INITIALIZEPERSECOND: 'mcp_operations_rateLimit_initializePerSecond',
+	MCP_OPERATIONS_RATELIMIT_INITIALIZEBURST: 'mcp_operations_rateLimit_initializeBurst',
+	MCP_APPLICATION_ENABLED: 'mcp_application_enabled',
 	MCP_APPLICATION_MOUNTPATH: 'mcp_application_mountPath',
 	MCP_APPLICATION_ALLOW: 'mcp_application_allow',
 	MCP_APPLICATION_DENY: 'mcp_application_deny',
@@ -615,22 +701,36 @@ export const CONFIG_PARAMS = {
 	MCP_APPLICATION_RATELIMIT_PERCLIENTPERSECOND: 'mcp_application_rateLimit_perClientPerSecond',
 	MCP_APPLICATION_RATELIMIT_PERCLIENTBURST: 'mcp_application_rateLimit_perClientBurst',
 	MCP_APPLICATION_RATELIMIT_IDENTITYHEADER: 'mcp_application_rateLimit_identityHeader',
+	MCP_APPLICATION_RATELIMIT_INITIALIZEPERSECOND: 'mcp_application_rateLimit_initializePerSecond',
+	MCP_APPLICATION_RATELIMIT_INITIALIZEBURST: 'mcp_application_rateLimit_initializeBurst',
 	MCP_SESSION_IDLETIMEOUTSECONDS: 'mcp_session_idleTimeoutSeconds',
 	MCP_SESSION_ALLOWCLIENTDELETE: 'mcp_session_allowClientDelete',
 	AGENT_ENABLED: 'agent_enabled',
 	AGENT_PROVIDER: 'agent_provider',
 	AGENT_MODEL: 'agent_model',
 	AGENT_MAXTURNS: 'agent_maxTurns',
+	AGENT_MAXTOKENS: 'agent_maxTokens',
+	AGENT_MAXSESSIONTOKENS: 'agent_maxSessionTokens',
+	AGENT_MAXTOOLRESULTBYTES: 'agent_maxToolResultBytes',
 	AGENT_MAXCOSTUSD: 'agent_maxCostUsd',
 	AGENT_AUTOAPPROVE: 'agent_autoApprove',
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
 	AGENT_USER: 'agent_user',
+	AGENT_SYSTEMPROMPTAPPEND: 'agent_systemPromptAppend',
 	AGENT_COMPONENTSSCOPE: 'agent_componentsScope',
+	AGENT_CONFIGSCOPE: 'agent_configScope',
+	AGENT_HTTPFETCH: 'agent_httpFetch',
+	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
+	AGENT_TOOLS_FILESYSTEM: 'agent_tools_filesystem',
+	AGENT_TOOLS_SCHEDULE: 'agent_tools_schedule',
+	AGENT_TOOLS_INSPECTOR: 'agent_tools_inspector',
+	AGENT_TOOLS_BESTPRACTICES: 'agent_tools_bestPractices',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',
 	REPLICATION_PORT: 'replication_port',
 	REPLICATION_SECUREPORT: 'replication_securePort',
+	REPLICATION_THREADS: 'replication_threads',
 	REPLICATION_ROUTES: 'replication_routes',
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
@@ -649,19 +749,60 @@ export const CONFIG_PARAMS = {
 	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_FAILUREMODE:
 		'replication_mtls_certificateVerification_ocsp_failureMode',
 	REPLICATION_SHARD: 'replication_shard',
+	REPLICATION_SHARDS: 'replication_shards',
+	REPLICATION_EXPERIMENTALATTRIBUTESLOTS: 'replication_experimentalAttributeSlots',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
+	REPLICATION_CONFIRMATIONTIMEOUT: 'replication_confirmationTimeout',
+	REPLICATION_SHARDINGCONFIRMATIONTIMEOUT: 'replication_shardingConfirmationTimeout',
+	REPLICATION_BLOBGAPRECONNECTMS: 'replication_blobGapReconnectMs',
+	REPLICATION_BLOBGAPESCALATIONCYCLES: 'replication_blobGapEscalationCycles',
+	REPLICATION_BLOBGAPESCALATIONMS: 'replication_blobGapEscalationMs',
+	REPLICATION_COPYCURSORFLUSHBYTES: 'replication_copyCursorFlushBytes',
+	REPLICATION_COPYCURSORFLUSHINTERVALMS: 'replication_copyCursorFlushIntervalMs',
 	REPLICATION_BLOBSENDDRAINTIMEOUT: 'replication_blobSendDrainTimeout',
 	REPLICATION_FAILOVER: 'replication_failover',
 	REPLICATION_BLOBCONCURRENCY: 'replication_blobConcurrency',
 	REPLICATION_MAXPAYLOAD: 'replication_maxPayload',
 	REPLICATION_RECORDCONCURRENCY: 'replication_recordConcurrency',
+	// Byte ceiling on inbound replication frames accepted but not yet processed. Without it the
+	// receive path's frame queue is unbounded and a receiver slower than its peer grows it at the full
+	// inbound line rate until the worker is OOM-killed (harper#2226, harper-pro#659).
+	REPLICATION_RECEIVEQUEUEHIGHWATERMARK: 'replication_receiveQueueHighWaterMark',
+	// Times a replicated frame whose transaction failed is replayed before the receiver moves past it (harper#1162).
+	REPLICATION_FAILEDFRAMEREPLAYS: 'replication_failedFrameReplays',
 	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
 	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
 	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',
 	REPLICATION_LEADINGDUPLICATESKIP: 'replication_leadingDuplicateSkip',
 	REPLICATION_REPLAYTIMEOUT: 'replication_replayTimeout',
+	REPLICATION_RECEIVEEVENTHIGHWATERMARK: 'replication_receiveEventHighWaterMark',
+	REPLICATION_RECEIVEYIELDINTERVAL: 'replication_receiveYieldInterval',
+	REPLICATION_COPYCHECKPOINTRECORDS: 'replication_copyCheckpointRecords',
+	REPLICATION_COPYCHECKPOINTMAXINTERVALMS: 'replication_copyCheckpointMaxIntervalMs',
+	REPLICATION_SUBSCRIPTIONRESOLVETIMEOUT: 'replication_subscriptionResolveTimeout',
+	REPLICATION_PAUSESTALLTIMEOUT: 'replication_pauseStallTimeout',
+	REPLICATION_RECORDLOCKS: 'replication_recordLocks',
+	REPLICATION_LOGGING_LEVEL: 'replication_logging_level',
+	REPLICATION_LOGGING_PATH: 'replication_logging_path',
+	REPLICATION_LOGGING_ROOT: 'replication_logging_root',
+	REPLICATION_LOGGING_STDSTREAMS: 'replication_logging_stdStreams',
+	REPLICATION_LOGGING_TAG: 'replication_logging_tag',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
+	STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS: 'storage_fullText_requestBudgetMilliseconds',
+	STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST: 'storage_fullText_maxRawHitsPerRequest',
+	STORAGE_FULL_TEXT_MAX_RESULTS_PER_REQUEST: 'storage_fullText_maxResultsPerRequest',
+	STORAGE_FULL_TEXT_QUERY: 'storage_fullText_query',
+	STORAGE_FULL_TEXT_QUERY_MAX_QUERY_TERMS: 'storage_fullText_query_maxQueryTerms',
+	STORAGE_FULL_TEXT_QUERY_MAX_QUERY_CLAUSES: 'storage_fullText_query_maxQueryClauses',
+	STORAGE_FULL_TEXT_QUERY_MAX_FUZZY_DISTANCE: 'storage_fullText_query_maxFuzzyDistance',
+	STORAGE_FULL_TEXT_RUNTIME: 'storage_fullText_runtime',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_RESIDENT_INDEXES: 'storage_fullText_runtime_maxResidentIndexes',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_INDEXING_THREADS: 'storage_fullText_runtime_maxIndexingThreads',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_SEARCH_THREADS: 'storage_fullText_runtime_maxSearchThreads',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_WRITER_MEMORY_BYTES: 'storage_fullText_runtime_maxWriterMemoryBytes',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_QUEUED_BYTES: 'storage_fullText_runtime_maxQueuedBytes',
+	STORAGE_FULL_TEXT_RUNTIME_MAX_EXPENSIVE_SEARCHES: 'storage_fullText_runtime_maxExpensiveSearches',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',
@@ -671,14 +812,18 @@ export const CONFIG_PARAMS = {
 	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
 	STORAGE_ENCRYPTION: 'storage_encryption',
 	STORAGE_MAXTRANSACTIONQUEUETIME: 'storage_maxTransactionQueueTime',
+	STORAGE_MAXLOCKCLOCKSKEW: 'storage_maxLockClockSkew',
 	STORAGE_MAXTRANSACTIONOPENTIME: 'storage_maxTransactionOpenTime',
 	STORAGE_MAX_READ_TRANSACTION_OPEN_TIME: 'storage_maxReadTransactionOpenTime',
 	STORAGE_DEBUGLONGTRANSACTIONS: 'storage_debugLongTransactions',
+	STORAGE_LONGTRANSACTIONREPORTTHRESHOLD: 'storage_longTransactionReportThreshold',
 	STORAGE_PATH: 'storage_path',
 	STORAGE_BACKUPPATH: 'storage_backupPath',
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
+	STORAGE_BLOBS_COMPRESSION: 'storage_blobs_compression',
 	STORAGE_BLOBCLEANUPSPEED: 'storage_blobCleanupSpeed',
 	STORAGE_BLOBREADTIMEOUT: 'storage_blobReadTimeout',
+	STORAGE_BLOBRETENTION: 'storage_blobRetention',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	STORAGE_MAXFREESPACETOLOAD: 'storage_maxFreeSpaceToLoad',
 	STORAGE_MAXFREESPACETORETAIN: 'storage_maxFreeSpaceToRetain',
@@ -694,11 +839,20 @@ export const CONFIG_PARAMS = {
 	STORAGE_TRANSACTIONLOG_COOLINGINTERVAL: 'storage_transactionLog_coolingInterval',
 	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
+	STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS: 'storage_rocks_transactionLogAbortMarkers',
+	STORAGE_ROCKS_TRANSACTIONLOGWRITEINTENTS: 'storage_rocks_transactionLogWriteIntents',
 	STORAGE_ROCKS_COMPRESSION: 'storage_rocks_compression',
 	STORAGE_ROCKS_BLOCKCACHESIZE: 'storage_rocks_blockCacheSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE: 'storage_rocks_writeBufferManagerSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE: 'storage_rocks_writeBufferManagerCostToCache',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL: 'storage_rocks_writeBufferManagerAllowStall',
+	STORAGE_ROCKS_WRITEBUFFERMANAGERFLUSHPOLICY: 'storage_rocks_writeBufferManagerFlushPolicy',
+	STORAGE_ROCKS_ARENABLOCKSIZE: 'storage_rocks_arenaBlockSize',
+	STORAGE_LOGGING_LEVEL: 'storage_logging_level',
+	STORAGE_LOGGING_PATH: 'storage_logging_path',
+	STORAGE_LOGGING_ROOT: 'storage_logging_root',
+	STORAGE_LOGGING_STDSTREAMS: 'storage_logging_stdStreams',
+	STORAGE_LOGGING_TAG: 'storage_logging_tag',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',
 	MQTT_NETWORK_PORT: 'mqtt_network_port',
@@ -709,6 +863,11 @@ export const CONFIG_PARAMS = {
 	MQTT_NETWORK_MTLS_CERTIFICATEAUTHORITY: 'mqtt_network_mtls_certificateAuthority',
 	MQTT_NETWORK_MTLS_USER: 'mqtt_network_mtls_user',
 	MQTT_REQUIREAUTHENTICATION: 'mqtt_requireAuthentication',
+	MQTT_LOGGING_LEVEL: 'mqtt_logging_level',
+	MQTT_LOGGING_PATH: 'mqtt_logging_path',
+	MQTT_LOGGING_ROOT: 'mqtt_logging_root',
+	MQTT_LOGGING_STDSTREAMS: 'mqtt_logging_stdStreams',
+	MQTT_LOGGING_TAG: 'mqtt_logging_tag',
 	COMPONENTSROOT: 'componentsRoot',
 	TLS_CERTIFICATE: 'tls_certificate',
 	TLS_PRIVATEKEY: 'tls_privateKey',
@@ -720,6 +879,10 @@ export const CONFIG_PARAMS = {
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',
 	NODE_URL: 'node_url',
+	SQL_ENGINE: 'sql_engine',
+	SQL_ALLOWFULLSCAN: 'sql_allowFullScan',
+	SQL_MAXSORTROWS: 'sql_maxSortRows',
+	SQL_MAXHASHROWS: 'sql_maxHashRows',
 } as const;
 
 /**
@@ -916,13 +1079,19 @@ export const JWT_ENUM = {
 export const ITC_EVENT_TYPES = {
 	SHUTDOWN: 'shutdown',
 	CHILD_STARTED: 'child_started',
+	CHILD_STARTUP_PHASE: 'child_startup_phase',
+	// A worker held for certification reports its load before binding a listener, and binds only once admitted.
+	CHILD_COMPONENT_VERDICT: 'child_component_verdict',
+	CHILD_ADMITTED: 'child_admitted',
+	CERTIFICATION_REQUEST: 'certification_request',
+	CERTIFICATION_RESPONSE: 'certification_response',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
-	USER: 'user',
 	METRICS: 'metrics',
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
 	START_JOB: 'start_job',
+	JOB_CLEANUP_COMPLETE: 'job_cleanup_complete',
 	COMPONENT_STATUS_REQUEST: 'component_status_request',
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
@@ -941,12 +1110,15 @@ export const ITC_EVENT_TYPES = {
 	OPERATION_REGISTERED: 'operation_registered',
 	OPERATION_EXECUTE_REQUEST: 'operation_execute_request',
 	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
+	DROP_COMPONENT_REQUEST: 'drop_component_request',
+	MAIN_THREAD_RESPONSE: 'main_thread_response',
 } as const;
 
 /** Supported thread types */
 export const THREAD_TYPES = {
 	HTTP: 'http',
 	JOB: 'job',
+	REPLICATION: 'replication',
 } as const;
 
 /** A version string for pre 4.0.0 comparison */

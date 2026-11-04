@@ -3,11 +3,12 @@
 import * as search from './search.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import * as write from './insert.ts';
+import * as _write from './insert.ts';
+const write = _write;
 import clone from 'clone';
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 
 const pGetTableSchema = util.promisify(globalSchema.getTableSchema);
 const pSearch = util.promisify(search.search);

@@ -32,6 +32,7 @@ import type {
 } from './ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { functionRegistry } from '../functions/registry.ts';
+import { assertLikeEscape, tokenizeLike } from '../expressions/like.ts';
 
 interface AlaSqlNode {
 	[key: string]: unknown;
@@ -156,8 +157,20 @@ function normalizeSelect(stmt: AlaSqlNode): SelectNode {
 
 	const where = stmt.where ? normalizeExpr(extractWhere(stmt.where as AlaSqlNode)) : undefined;
 	const orderBy = stmt.order ? (stmt.order as AlaSqlNode[]).map(normalizeSort) : undefined;
-	const limit = readNumValue(stmt.limit as AlaSqlNode | undefined);
-	const offset = readNumValue(stmt.offset as AlaSqlNode | undefined);
+	// `SELECT TOP n` is AlaSQL's SQL-Server spelling of `LIMIT n`. The normalizer
+	// previously read neither `stmt.top` nor `stmt.percent`, so `new`/`auto` mode
+	// silently dropped TOP — returning *all* rows and, producing a valid plan, never
+	// falling back to legacy. Map TOP to the limit, but defer the spellings a plain
+	// LIMIT can't reproduce: `TOP n PERCENT` (a fraction of rows, not a count) and
+	// `TOP` combined with `LIMIT` (ambiguous — legacy lets TOP win).
+	const topNode = stmt.top as AlaSqlNode | undefined;
+	const limitNode = stmt.limit as AlaSqlNode | undefined;
+	if (topNode != null) {
+		if (stmt.percent) throw new EngineUnsupportedError('TOP … PERCENT is not supported', stmt);
+		if (limitNode != null) throw new EngineUnsupportedError('TOP combined with LIMIT is not supported', stmt);
+	}
+	const limit = readRowCount(limitNode ?? topNode, 'LIMIT', 1);
+	const offset = readRowCount(stmt.offset as AlaSqlNode | undefined, 'OFFSET', 0);
 	const distinct = !!stmt.distinct;
 
 	return {
@@ -264,12 +277,29 @@ function normalizeSort(node: AlaSqlNode): SortNode {
 	};
 }
 
-function readNumValue(node: AlaSqlNode | undefined): number | undefined {
+/** Largest row count the legacy engine handles before its 32-bit coercion diverges. */
+const MAX_ROW_COUNT = 0x7fffffff;
+
+/**
+ * Read a LIMIT/OFFSET/TOP clause as an integer in [min, 0x7fffffff], or undefined
+ * when the clause is absent. Values outside that window are deferred to the legacy
+ * engine instead of fed to the new one, because legacy's behavior there is a set of
+ * quirks the new engine doesn't reproduce: a limit of 0 means "no limit" (all
+ * rows), and any count >= 2^31 is coerced to 32 bits (`LIMIT 2^32` returns none).
+ * Deferring keeps `auto` mode identical to legacy. Fractional counts are floored to
+ * match legacy truncation (`LIMIT 2.9` -> 2 rows) — PhysicalLimit's `>= cap` check
+ * would otherwise over-yield a fractional cap. A present-but-unreadable clause
+ * (unreachable today — AlaSQL only accepts a numeric literal here) also defers
+ * rather than silently dropping the clause.
+ */
+function readRowCount(node: AlaSqlNode | undefined, clause: string, min: number): number | undefined {
 	if (node == null) return undefined;
-	const v = node.value;
-	if (typeof v === 'number') return v;
-	if (typeof v === 'string') return Number(v);
-	return undefined;
+	const raw = node.value;
+	const value = Math.floor(typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN);
+	if (!Number.isFinite(value) || value < min || value > MAX_ROW_COUNT) {
+		throw new EngineUnsupportedError(`unsupported ${clause} value`, node);
+	}
+	return value;
 }
 
 const ALASQL_BINARY_OPS: Record<string, BinaryOp> = {
@@ -360,6 +390,13 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 		return { kind: 'literal', value: val, sqlType };
 	}
 
+	// AlaSQL wraps parenthesized expressions `(expr)` in `new yy.UniOp({ right })` with
+	// `op === undefined` and `left === undefined`. Unary operators (`NOT`, `-`, `+`, `~`, `#`)
+	// also use `yy.UniOp` but always set `op`, and binary `yy.Op` nodes always set `op` and `left`.
+	if (node.op == null && node.left == null && node.right != null) {
+		return normalizeExpr(node.right as AlaSqlNode);
+	}
+
 	if (typeof node.op === 'string') {
 		const op = node.op.toUpperCase();
 		switch (op) {
@@ -419,16 +456,16 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 				};
 			case 'LIKE':
 			case 'NOT LIKE':
-				return {
-					kind: 'like',
-					expr: normalizeExpr(node.left as AlaSqlNode),
-					pattern: normalizeExpr(node.right as AlaSqlNode),
-					negated: op === 'NOT LIKE',
-				};
+				return normalizeLike(node, op === 'NOT LIKE');
 			case 'IS': {
-				const right = node.right as AlaSqlNode | undefined;
+				let right = node.right as AlaSqlNode | undefined;
+				let negated = !!node.not;
+				// AlaSQL parses `x IS NOT NULL` as `x IS (NOT NULL)`
+				if (right?.op === 'NOT') {
+					right = right.right as AlaSqlNode | undefined;
+					negated = !negated;
+				}
 				const isEmpty = right != null && Object.keys(right).length === 0;
-				const negated = !!node.not;
 				if (isEmpty) {
 					return { kind: 'isNull', expr: normalizeExpr(node.left as AlaSqlNode), negated };
 				}
@@ -443,4 +480,26 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 	}
 
 	throw new EngineUnsupportedError(`could not normalize expression`, node);
+}
+
+function normalizeLike(node: AlaSqlNode, negated: boolean): ExprNode {
+	const like: Extract<ExprNode, { kind: 'like' }> = {
+		kind: 'like',
+		expr: normalizeExpr(node.left as AlaSqlNode),
+		pattern: normalizeExpr(node.right as AlaSqlNode),
+		negated,
+	};
+	if (node.escape != null) {
+		const escape = normalizeExpr(node.escape as AlaSqlNode);
+		if (escape.kind !== 'literal') {
+			throw new EngineUnsupportedError('LIKE ESCAPE operand that is not a literal', node);
+		}
+		assertLikeEscape(escape.value);
+		like.escape = escape.value;
+	}
+	// Past this point scan validation can turn the error into a legacy fallback.
+	if (like.pattern.kind === 'literal' && typeof like.pattern.value === 'string') {
+		tokenizeLike(like.pattern.value, like.escape);
+	}
+	return like;
 }

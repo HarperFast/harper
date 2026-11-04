@@ -1,0 +1,397 @@
+// Rows reach peers through system-table replication, so these operations do not call replicateOperation.
+
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { isIP } from 'node:net';
+import Joi from 'joi';
+import { getDatabases, onUpdatedTable } from '../resources/databases.ts';
+import { contextStorage } from '../resources/transaction.ts';
+import * as terms from '../utility/hdbTerms.ts';
+import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { validateBySchema } from '../validation/validationWrapper.ts';
+import { loggerWithTag } from '../utility/logging/logger.ts';
+import * as env from '../utility/environment/environmentManager.ts';
+
+const { HTTP_STATUS_CODES } = hdbErrors;
+const NETWORK_ACCESS_TABLE = terms.SYSTEM_TABLE_NAMES.NETWORK_ACCESS_TABLE_NAME;
+const logger = loggerWithTag('network-access');
+
+const NETWORK_ACCESS_SCOPES = ['operations'] as const;
+type NetworkAccessScope = (typeof NETWORK_ACCESS_SCOPES)[number];
+const MAX_ALLOW_ENTRIES = 1000;
+const SUBSCRIPTION_RETRY_MS = 1000;
+let reconcileIntervalMs = 60_000;
+
+interface ParsedAddress {
+	family: 4 | 6;
+	bits: bigint;
+}
+
+// Parsed and formatted here rather than with node:net's SocketAddress, which Bun does not canonicalize.
+function parseAddress(address: string): ParsedAddress | undefined {
+	const family = address.includes('%') ? 0 : isIP(address);
+	if (family === 4)
+		return { family, bits: address.split('.').reduce((bits, octet) => (bits << 8n) | BigInt(octet), 0n) };
+	if (family !== 6) return undefined;
+	let text = address;
+	const lastColon = text.lastIndexOf(':');
+	if (text.includes('.', lastColon)) {
+		const [a, b, c, d] = text
+			.slice(lastColon + 1)
+			.split('.')
+			.map(Number);
+		text = `${text.slice(0, lastColon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+	}
+	const groups = (part: string) => (part ? part.split(':') : []);
+	const [head, tail] = text.split('::');
+	const hextets =
+		tail === undefined
+			? groups(head)
+			: [...groups(head), ...Array(8 - groups(head).length - groups(tail).length).fill('0'), ...groups(tail)];
+	return { family, bits: hextets.reduce((bits, hextet) => (bits << 16n) | BigInt(parseInt(hextet, 16)), 0n) };
+}
+
+/** An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) as the IPv4 address it maps. */
+function unmapped(address: ParsedAddress): ParsedAddress {
+	return address.family === 6 && address.bits >> 32n === 0xffffn
+		? { family: 4, bits: address.bits & 0xffffffffn }
+		: address;
+}
+
+/** RFC 5952: lowercase, no leading zeros, the longest run of two or more zero groups as `::`. */
+function formatAddress({ family, bits }: ParsedAddress): string {
+	if (family === 4) return [24n, 16n, 8n, 0n].map((shift) => Number((bits >> shift) & 255n)).join('.');
+	if (bits >> 32n === 0xffffn) return `::ffff:${formatAddress({ family: 4, bits: bits & 0xffffffffn })}`;
+	const hextets = [112n, 96n, 80n, 64n, 48n, 32n, 16n, 0n].map((shift) => Number((bits >> shift) & 0xffffn));
+	let runStart = -1;
+	let runLength = 1;
+	for (let start = 0; start < 8;) {
+		let end = start;
+		while (end < 8 && hextets[end] === 0) end++;
+		if (end - start > runLength) [runStart, runLength] = [start, end - start];
+		start = end + 1;
+	}
+	const hex = hextets.map((hextet) => hextet.toString(16));
+	if (runStart === -1) return hex.join(':');
+	return `${hex.slice(0, runStart).join(':')}::${hex.slice(runStart + runLength).join(':')}`;
+}
+
+/**
+ * `<ip>` or `<ip>/<prefix>`, returned as `<canonical ip>/<prefix>` (a bare IP is a /32 or /128). Host
+ * bits are kept, as the consuming proxy's parser keeps them. An IPv4-mapped IPv6 network is stored as the
+ * IPv4 network it covers: the proxy matches by family, after unmapping a mapped peer.
+ */
+export function normalizeCidr(entry: unknown): string {
+	if (typeof entry !== 'string') throw new ClientError(`Network access entry ${JSON.stringify(entry)} is not a string`);
+	const slash = entry.indexOf('/');
+	const prefixText = slash === -1 ? undefined : entry.slice(slash + 1);
+	let network = parseAddress(slash === -1 ? entry : entry.slice(0, slash));
+	if (!network) throw new ClientError(`'${entry}' is not an IPv4 or IPv6 address or CIDR`);
+	const maxPrefix = network.family === 4 ? 32 : 128;
+	let prefix = maxPrefix;
+	if (prefixText !== undefined) {
+		prefix = /^\d{1,3}$/.test(prefixText) ? Number(prefixText) : NaN;
+		if (!(prefix <= maxPrefix)) {
+			throw new ClientError(`'${entry}' has an invalid prefix length; expected 0-${maxPrefix}`);
+		}
+	}
+	if (network.family === 6 && prefix >= 96 && unmapped(network).family === 4) {
+		network = unmapped(network);
+		prefix -= 96;
+	}
+	return `${formatAddress(network)}/${prefix}`;
+}
+
+export function normalizeAllowList(allow: unknown[]): string[] {
+	return [...new Set(allow.map(normalizeCidr))];
+}
+
+/**
+ * Matches only entries of the address's own family, after unmapping an IPv4-mapped address, as the proxy
+ * does; an IPv6 rule such as `::/0` never admits an IPv4 address.
+ */
+export function addressIsAllowed(address: string, allow: string[]): boolean {
+	const parsed = parseAddress(address);
+	if (!parsed) return false;
+	const caller = unmapped(parsed);
+	return allow.some((cidr) => {
+		const [networkText, prefixText] = cidr.split('/');
+		const network = parseAddress(networkText);
+		if (network?.family !== caller.family) return false;
+		const hostBits = BigInt((caller.family === 4 ? 32 : 128) - Number(prefixText));
+		return caller.bits >> hostBits === network.bits >> hostBits;
+	});
+}
+
+function requireSuperUser(req: any): void {
+	if (!req?.hdb_user?.role?.permission?.super_user) {
+		throw new ClientError(
+			`Operation '${req?.operation}' is restricted to super_user roles`,
+			HTTP_STATUS_CODES.FORBIDDEN
+		);
+	}
+}
+
+function networkAccessTable() {
+	const table = getDatabases().system?.[NETWORK_ACCESS_TABLE];
+	if (!table) {
+		throw new ClientError(
+			`Network access is not initialized on this node (system.${NETWORK_ACCESS_TABLE} missing). ` +
+				`Run upgrade or restart the server to provision the table.`
+		);
+	}
+	return table;
+}
+
+const SCOPE = Joi.string()
+	.valid(...NETWORK_ACCESS_SCOPES)
+	.messages({ 'any.only': `'scope' must be one of: ${NETWORK_ACCESS_SCOPES.join(', ')}` });
+
+function validate(validation: any): void {
+	if (validation) throw new ClientError(validation.message);
+}
+
+// Async context, not the operation body, which is untrusted (server/DESIGN.md, "Operations authorization
+// boundary").
+const callerAddressStorage = new AsyncLocalStorage<{ address: string | null | undefined }>();
+
+/**
+ * Runs an operations API request with its source address, as `clientAddressOf` in serverHandlers.ts
+ * derives it: a string; undefined for the local operations domain socket, which no proxy fronts; or null
+ * when it is unknown.
+ */
+export function runWithCallerAddress<T>(address: string | null | undefined, callback: () => T): T {
+	return callerAddressStorage.run({ address }, callback);
+}
+
+/**
+ * The lockout check skips only the local operations domain socket, the recovery path. An unknown address,
+ * including a call with no caller context (MCP, `server.operation()`), needs `force`.
+ */
+export async function setNetworkAccess(req: any) {
+	requireSuperUser(req);
+	validate(
+		validateBySchema(
+			req,
+			Joi.object({
+				scope: SCOPE.required(),
+				allow: Joi.array().max(MAX_ALLOW_ENTRIES).required(),
+				// strict: validateBySchema discards Joi's coerced value, so `"false"` would otherwise pass
+				force: Joi.boolean().strict(),
+			}).unknown(true)
+		)
+	);
+	const scope: NetworkAccessScope = req.scope;
+	const allow = normalizeAllowList(req.allow);
+	const context = callerAddressStorage.getStore();
+	const callerAddress = context ? context.address : null;
+	if (allow.length > 0 && req.force !== true && callerAddress === null) {
+		throw new ClientError(
+			`This request's source address is unknown, so the new '${scope}' allowlist may block this connection. ` +
+				`Pass force: true to set it anyway.`,
+			HTTP_STATUS_CODES.CONFLICT
+		);
+	}
+	if (
+		allow.length > 0 &&
+		req.force !== true &&
+		typeof callerAddress === 'string' &&
+		callerAddress !== '' &&
+		!addressIsAllowed(callerAddress, allow)
+	) {
+		throw new ClientError(
+			`The new '${scope}' allowlist does not include this request's source address ${callerAddress}, so it would ` +
+				`block this connection. Add the address, or pass force: true to set it anyway.`,
+			HTTP_STATUS_CODES.CONFLICT
+		);
+	}
+	const table = networkAccessTable();
+	if (allow.length === 0) {
+		await table.delete(scope);
+		return { message: `Removed the '${scope}' network access restriction`, scope, allow };
+	}
+	await table.put(scope, { scope, allow, updatedBy: req.hdb_user?.username ?? null, updatedAt: Date.now() });
+	// The list replicates to nodes whose replication topology this node cannot see, so the peer advisory is
+	// unconditional.
+	const warnings = [
+		'If replication peers or Studio reach the operations API through the proxy (replication uses this port ' +
+			'unless it has its own), their source addresses must be in this list: an excluded peer cannot reconnect, ' +
+			'and a later correction may not reach it, needing the local CLI on that node.',
+	];
+	if (
+		!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) ||
+		!env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)
+	) {
+		warnings.unshift(
+			'This node publishes no operations API socket metadata (it needs tls.unixDomainSockets and ' +
+				'operationsApi.network.securePort), so nothing here enforces the list; it is stored and replicated to nodes that do.'
+		);
+	}
+	return { message: `Set the '${scope}' network access allowlist`, scope, allow, warning: warnings.join(' ') };
+}
+
+function viewOf(scope: string, row: any) {
+	return {
+		scope,
+		allow: Array.isArray(row?.allow) ? [...row.allow] : [],
+		updatedBy: row?.updatedBy ?? null,
+		updatedAt: row?.updatedAt ?? null,
+	};
+}
+
+export async function getNetworkAccess(req: any) {
+	requireSuperUser(req);
+	validate(validateBySchema(req, Joi.object({ scope: SCOPE }).unknown(true)));
+	const table = networkAccessTable();
+	if (req.scope) return viewOf(req.scope, await table.get(req.scope));
+	const views = [];
+	for (const scope of NETWORK_ACCESS_SCOPES) views.push(viewOf(scope, await table.get(scope)));
+	return views;
+}
+
+/** Returns whether its output now reflects `allowedSourcesFor(scope)`. */
+type Publisher = () => boolean;
+
+interface ScopeWatch {
+	scope: NetworkAccessScope;
+	/** undefined until the first successful read */
+	allow?: string[];
+	/** what each publisher last published successfully, as a key of `allow` */
+	publishers: Map<Publisher, string | undefined>;
+	reading: boolean;
+	dirty: boolean;
+	subscribedTable?: any;
+	subscription?: Promise<any>;
+	timer?: ReturnType<typeof setInterval>;
+}
+
+const watches = new Map<NetworkAccessScope, ScopeWatch>();
+let tableListener: { remove(): void } | undefined;
+
+/**
+ * This thread's current list for the scope (`[]` = unrestricted), or undefined until it has been read.
+ * A publisher must not publish while it is undefined: that would advertise no restriction for a scope
+ * that may have one.
+ */
+export function allowedSourcesFor(scope: NetworkAccessScope): string[] | undefined {
+	return watches.get(scope)?.allow;
+}
+
+/**
+ * Calls `publish` once the scope's list is known and again whenever it changes, from this node or a
+ * replicated write. A publish that reports failure is retried on the periodic re-read, which also
+ * covers a change notification that never arrived.
+ */
+export function watchNetworkAccess(scope: NetworkAccessScope, publish: Publisher): void {
+	let watch = watches.get(scope);
+	if (!watch) {
+		watch = { scope, publishers: new Map(), reading: false, dirty: false };
+		watches.set(scope, watch);
+		const started = watch;
+		watch.timer = setInterval(() => reconcile(started), reconcileIntervalMs).unref();
+		tableListener ??= onUpdatedTable((table: any) => {
+			if (table.databaseName === terms.SYSTEM_SCHEMA_NAME && table.tableName === NETWORK_ACCESS_TABLE) {
+				for (const each of watches.values()) reconcile(each);
+			}
+		});
+	}
+	watch.publishers.set(publish, undefined);
+	if (watch.allow) publishAll(watch);
+	else reconcile(watch);
+}
+
+function reconcile(watch: ScopeWatch): void {
+	if (watches.get(watch.scope) !== watch) return;
+	if (watch.reading) {
+		watch.dirty = true;
+		return;
+	}
+	watch.reading = true;
+	watch.dirty = false;
+	let table: any;
+	// outside any request context, whose transaction snapshot the read would otherwise use; async, so a
+	// synchronous throw (a closing database) reaches the rejection handler instead of wedging `reading`
+	contextStorage
+		.exit(async () => {
+			table = getDatabases().system?.[NETWORK_ACCESS_TABLE];
+			if (!table) return undefined;
+			subscribe(watch, table);
+			return await table.get(watch.scope);
+		})
+		.then(
+			(row: any) => {
+				watch.reading = false;
+				if (watches.get(watch.scope) !== watch) return;
+				// a read from a replaced table object may predate the replacement's contents
+				if (getDatabases().system?.[NETWORK_ACCESS_TABLE] !== table) watch.dirty = true;
+				else {
+					watch.allow = Array.isArray(row?.allow) ? row.allow.filter((entry) => typeof entry === 'string') : [];
+					publishAll(watch);
+				}
+				if (watch.dirty) reconcile(watch);
+			},
+			(error: Error) => {
+				watch.reading = false;
+				logger.warn?.(`Could not read system.${NETWORK_ACCESS_TABLE} '${watch.scope}'; keeping the last list`, error);
+				if (watch.dirty && watches.get(watch.scope) === watch) reconcile(watch);
+			}
+		);
+}
+
+function publishAll(watch: ScopeWatch): void {
+	const key = JSON.stringify(watch.allow);
+	for (const [publish, published] of watch.publishers) {
+		if (published === key) continue;
+		let ok = false;
+		try {
+			ok = publish();
+		} catch (error) {
+			logger.warn?.(`Publishing the '${watch.scope}' network access list failed`, error);
+		}
+		if (ok) watch.publishers.set(publish, key);
+	}
+}
+
+function subscribe(watch: ScopeWatch, table: any): void {
+	if (watch.subscribedTable === table) return;
+	const previous = watch.subscription;
+	watch.subscribedTable = table;
+	const subscription = (async () =>
+		table.subscribe({ id: watch.scope, omitCurrent: true, listener: () => reconcile(watch) }))();
+	watch.subscription = subscription;
+	const lost = () => {
+		if (watch.subscription === subscription) watch.subscribedTable = undefined;
+	};
+	// the re-read resubscribes; delayed so a subscription that closes as soon as it opens cannot spin
+	const closed = () => {
+		lost();
+		setTimeout(() => reconcile(watch), SUBSCRIPTION_RETRY_MS).unref();
+	};
+	subscription.then(
+		(opened: any) => {
+			if (opened?.closed) closed();
+			else opened?.on?.('close', closed);
+		},
+		(error: Error) => {
+			lost();
+			logger.warn?.(`Could not subscribe to system.${NETWORK_ACCESS_TABLE}; relying on periodic re-reads`, error);
+		}
+	);
+	previous?.then(
+		(opened: any) => opened?.end?.(),
+		() => {}
+	);
+}
+
+export function resetNetworkAccessWatches(intervalMs = 60_000): void {
+	for (const watch of watches.values()) {
+		clearInterval(watch.timer);
+		watch.subscription?.then(
+			(opened: any) => opened?.end?.(),
+			() => {}
+		);
+	}
+	watches.clear();
+	tableListener?.remove();
+	tableListener = undefined;
+	reconcileIntervalMs = intervalMs;
+}

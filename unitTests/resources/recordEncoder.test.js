@@ -1,8 +1,13 @@
 require('../testUtils');
 const assert = require('assert');
-const { RecordEncoder, RecordObject, isMissingStructureError } = require('#src/resources/RecordEncoder');
-const harperLogger = require('#src/utility/logging/harper_logger');
-const { Encoder } = require('msgpackr');
+const {
+	RecordEncoder,
+	RecordObject,
+	isMissingStructureError,
+	DEFAULT_MAX_TYPED_STRUCTURES,
+} = require('#src/resources/RecordEncoder');
+const harperLogger = require('#js/utility/logging/harper_logger');
+const { Encoder } = require('../packageBindings.mts').packageBindings('msgpackr');
 
 // Shared structures persisted as an encoded buffer (mirrors how a DBI stores them under
 // Symbol.for('structures')), so struct/record structures cross between encoder instances.
@@ -167,5 +172,465 @@ describe('RecordEncoder missing-structure handling (harper#1163)', () => {
 		assert.strictEqual(enc.decode(truncated), null, 'corrupt (non-structure) decode should still return null');
 		assert.strictEqual(errors.length, 1, 'genuine corruption should use the generic error path');
 		assert.strictEqual(warnings.length, 0, 'genuine corruption should not use the missing-structure warning');
+	});
+});
+
+describe('RecordEncoder structure-dictionary bound & observability (harper#2220)', () => {
+	let warnings, restoreWarn;
+	beforeEach(() => {
+		warnings = [];
+		restoreWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => warnings.push(args);
+	});
+	afterEach(() => {
+		harperLogger.warn = restoreWarn;
+	});
+	const saturationWarnings = () => warnings.filter((w) => /Typed-structure dictionary/.test(w[0]));
+
+	function makeCappedEncoder(store, maxOwnStructures) {
+		return new RecordEncoder({
+			structures: [],
+			randomAccessStructure: true,
+			maxOwnStructures,
+			getStructures: store.get,
+			saveStructures: store.save,
+		});
+	}
+
+	it('defaults the typed-structure dictionary to the documented bound', () => {
+		const enc = makeEncoder(true, sharedStore());
+		assert.strictEqual(enc.maxOwnStructures, DEFAULT_MAX_TYPED_STRUCTURES);
+		assert.strictEqual(enc.getStructureCounts().typedLimit, DEFAULT_MAX_TYPED_STRUCTURES);
+	});
+
+	it('stops minting typed structures at the bound, and past-cap records still round-trip', () => {
+		const enc = makeCappedEncoder(sharedStore(), 4);
+		// Each novel field name is a novel shape, so this would mint 20 structures if uncapped.
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 4, 'dictionary must stop growing at the bound');
+		const bytes = Buffer.from(enc.encode({ beyond: 'the cap' }));
+		assert.deepStrictEqual(enc.decode(bytes), { beyond: 'the cap' }, 'past-cap shapes fall back to plain encoding');
+	});
+
+	it("reports the durable dictionary, not this encoder's own arrays", () => {
+		// The failure this guards: each worker owns its own encoder and loads lazily, so a worker that
+		// never encoded for a store holds empty arrays for a store whose durable dictionary is full.
+		// Reporting the local arrays would tell an operator there is full headroom when there is none.
+		const store = sharedStore();
+		const writer = makeCappedEncoder(store, 8);
+		for (let i = 0; i < 20; i++) writer.encode({ ['f' + i]: i });
+		assert.strictEqual(writer.getStructureCounts().typed, 8);
+
+		const idleWorker = makeCappedEncoder(store, 8);
+		assert.strictEqual(idleWorker.typedStructs.length, 0, 'precondition: this encoder has loaded nothing');
+		assert.strictEqual(idleWorker.getStructureCounts().typed, 8, 'counts must come from the durable payload');
+	});
+
+	it('does not report zero typed structures for a named-only durable payload', () => {
+		// structon keeps this encoder's typed dictionary for the legacy bare-array and cbor-x
+		// {structures} payloads -- both carry named structures only. Reading typed as 0 for those
+		// would show an empty dictionary for a store that is actually saturated.
+		const store = sharedStore();
+		const enc = makeCappedEncoder(store, 8);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.typedStructs.length, 8, 'precondition: this encoder holds a full dictionary');
+
+		store.save(['someNamedStructure']); // legacy bare-array form
+		assert.strictEqual(enc.getStructureCounts().typed, 8, 'bare-array payload must not zero the typed count');
+
+		store.save({ structures: ['someNamedStructure'] }); // cbor-x SharedData form
+		assert.strictEqual(enc.getStructureCounts().typed, 8, 'cbor-x payload must not zero the typed count');
+	});
+
+	it('reports zero for a store whose structures have never been saved', () => {
+		const enc = makeCappedEncoder(sharedStore(), 8);
+		assert.deepStrictEqual(enc.getStructureCounts(), {
+			typed: 0,
+			classic: 0,
+			typedLimit: 8,
+			typedEnabled: true,
+		});
+	});
+
+	it('reports zeros rather than throwing for a store with no shared-structures mechanism', () => {
+		// msgpackr only defines getStructures when the option was supplied, so the captured super is
+		// undefined here; Table.getStructureCounts() is public and must not throw on such a store.
+		const enc = new RecordEncoder({ structures: [], randomAccessStructure: true });
+		const counts = enc.getStructureCounts();
+		assert.strictEqual(counts.typed, 0);
+		assert.strictEqual(counts.classic, 0);
+	});
+
+	it('reports whether typed encoding is enabled at all', () => {
+		// Random-access fields default off (utility/lmdb/OpenDBIObject.ts), so a typed count of 0
+		// against a limit of 256 is the normal state for most tables, not spare headroom.
+		assert.strictEqual(makeEncoder(true, sharedStore()).getStructureCounts().typedEnabled, true);
+		assert.strictEqual(makeEncoder(false, sharedStore()).getStructureCounts().typedEnabled, false);
+	});
+
+	it('reports classic (named-record) structures separately from typed ones', () => {
+		const enc = makeEncoder(false, sharedStore()); // struct hook bails -> msgpackr records mode
+		enc.encode(record);
+		const counts = enc.getStructureCounts();
+		assert.strictEqual(counts.typed, 0, 'records mode must not mint typed structures');
+		assert.ok(counts.classic > 0, 'records mode mints a classic named-record structure');
+	});
+
+	it('warns exactly once when the typed-structure dictionary saturates', () => {
+		const enc = makeCappedEncoder(sharedStore(), 4);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(saturationWarnings().length, 1, 'saturation should be reported once, not per write');
+		assert.match(saturationWarnings()[0][0], /reached its limit of 4 structures/);
+	});
+
+	it('does not warn while the dictionary still has headroom', () => {
+		const enc = makeCappedEncoder(sharedStore(), 64);
+		for (let i = 0; i < 8; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 8);
+		assert.strictEqual(saturationWarnings().length, 0, 'no warning below the bound');
+	});
+
+	it('does not fail the write when the log sink throws on the saturation warning', () => {
+		// The structures are already durably committed by the time this runs, so a failing sink must
+		// not turn a committed save into a reported failure.
+		harperLogger.warn = () => {
+			throw new Error('log sink unavailable');
+		};
+		const enc = makeCappedEncoder(sharedStore(), 4);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 4);
+		const bytes = Buffer.from(enc.encode({ still: 'writable' }));
+		assert.deepStrictEqual(enc.decode(bytes), { still: 'writable' });
+	});
+
+	it('does not warn when the structure save was declined', () => {
+		// A declined save means the dictionary this encoder holds was never persisted; warning on it
+		// would report saturation of a dictionary that does not exist durably.
+		const enc = new RecordEncoder({
+			structures: [],
+			randomAccessStructure: true,
+			maxOwnStructures: 4,
+			getStructures: () => undefined,
+			saveStructures: () => false,
+		});
+		for (let i = 0; i < 20; i++) {
+			try {
+				enc.encode({ ['f' + i]: i });
+			} catch {
+				// structon surfaces sustained save contention; the point here is the absent warning
+			}
+		}
+		assert.strictEqual(saturationWarnings().length, 0, 'a declined save must not report saturation');
+	});
+
+	it('counts key order and per-field value width as distinct shapes, not just the field set', () => {
+		// The growth driver behind harper#2220: dictionary size is combinatorial in
+		// (field subset) x (key order) x (per-field value width class), not linear in column count.
+		const byOrder = makeEncoder(true, sharedStore());
+		byOrder.encode({ a: 1, b: 1, c: 1 });
+		byOrder.encode({ c: 1, b: 1, a: 1 });
+		assert.strictEqual(byOrder.getStructureCounts().typed, 2, 'same field set, different key order, two shapes');
+
+		const byWidth = makeEncoder(true, sharedStore());
+		byWidth.encode({ id: 'k', v: 1 }); // 1-byte int
+		byWidth.encode({ id: 'k', v: 70000 }); // 4-byte int
+		assert.strictEqual(byWidth.getStructureCounts().typed, 2, 'same field set, different value width, two shapes');
+	});
+});
+
+describe('PrimaryRocksDatabase non-initStore transactional saveStructures (__dbis__)', () => {
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+	const { Worker } = require('worker_threads');
+	const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+	const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
+
+	let tmpDir;
+	let errors, restoreError;
+	const openedDbs = [];
+
+	function trackDb(db) {
+		openedDbs.push(db);
+		return db;
+	}
+
+	function openDbisHandle(
+		dir = tmpDir,
+		{ isPrimary = false, isObject = false, randomAccessStructure = false, name = '__dbis__', useVersions = false } = {}
+	) {
+		const dbiInit = { ...new OpenDBIObject(isPrimary, isObject), randomAccessStructure, disableWAL: false, name };
+		const db = trackDb(PrimaryRocksDatabase.open(dir, dbiInit));
+		db.encoder.useVersions = useVersions;
+		return db;
+	}
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-dbis-struct-'));
+		errors = [];
+		restoreError = harperLogger.error;
+		harperLogger.error = (...args) => errors.push(args);
+	});
+
+	afterEach(() => {
+		harperLogger.error = restoreError;
+		while (openedDbs.length) {
+			try {
+				openedDbs.pop().close();
+			} catch {}
+		}
+		if (tmpDir) {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	for (const [label, firstRow, secondRow] of [
+		[
+			'4-field vs 3-field seq rows',
+			{ seqId: 100, nodes: [{ id: 1, originLogKey: 90, closedFloor: 80, relayable: true }] },
+			{ seqId: 200, nodes: [{ id: 2, originLogKey: 190, closedFloor: 180 }] },
+		],
+		[
+			'3-field vs 4-field seq rows',
+			{ seqId: 200, nodes: [{ id: 2, originLogKey: 190, closedFloor: 180 }] },
+			{ seqId: 100, nodes: [{ id: 1, originLogKey: 90, closedFloor: 80, relayable: true }] },
+		],
+	]) {
+		it(`resolves concurrent structure saves via txn.getBinarySync without clobbering (${label})`, () => {
+			const db1 = openDbisHandle();
+			const db2 = openDbisHandle();
+			const origTxn2 = db2.transactionSync;
+			let injected = false;
+			db2.transactionSync = function (callback, options) {
+				return origTxn2.call(
+					this,
+					(txn, attempt) =>
+						callback(
+							new Proxy(txn, {
+								get(target, prop) {
+									if (prop === 'putSync' && !injected) {
+										return (...args) => {
+											injected = true;
+											db1.putSync([Symbol.for('seq'), 1], firstRow);
+											return target.putSync(...args);
+										};
+									}
+									const value = target[prop];
+									return typeof value === 'function' ? value.bind(target) : value;
+								},
+							}),
+							attempt
+						),
+					options
+				);
+			};
+
+			db2.putSync([Symbol.for('seq'), 2], secondRow);
+			assert.ok(injected, 'precondition: db1 committed inside db2 saveStructures read-to-put window');
+			db1.close();
+			db2.close();
+
+			const db3 = openDbisHandle();
+			assert.deepEqual(db3.getSync([Symbol.for('seq'), 1]), firstRow);
+			assert.deepEqual(db3.getSync([Symbol.for('seq'), 2]), secondRow);
+			assert.strictEqual(errors.length, 0, `expected zero decode errors, got: ${JSON.stringify(errors)}`);
+		});
+	}
+
+	it('returns false and leaves structureUpdate unset when transactionSync returns undefined (aborted txn)', () => {
+		const db = openDbisHandle();
+		db.transactionSync = () => undefined;
+		db.encoder.structureUpdate = undefined;
+		const saved = db.encoder.saveStructures([['a']], () => true);
+		assert.strictEqual(saved, false);
+		assert.strictEqual(db.encoder.structureUpdate, undefined);
+	});
+
+	it('throws and marks structures.uninitialized when existingStructuresBuffer fails to decode', () => {
+		const db = openDbisHandle();
+		const origTxn = db.transactionSync;
+		let putCalled = false;
+		db.transactionSync = (cb) =>
+			cb({
+				getBinarySync: () => Buffer.from([0xd9, 0x10, 0x61]),
+				putSync: () => {
+					putCalled = true;
+				},
+			});
+		assert.throws(() => {
+			db.putSync('bad1', { alpha: 1, beta: 2 });
+		}, /Failed to decode existing structures for __dbis__/);
+		assert.strictEqual(putCalled, false, 'must not overwrite durable structures when existing bytes fail to decode');
+		assert.strictEqual(
+			db.encoder.structures.uninitialized,
+			true,
+			'must mark structures.uninitialized on throw so later writes reload before using the minted id'
+		);
+
+		db.transactionSync = origTxn;
+		db.putSync('good1', { alpha: 1, beta: 2 });
+		db.close();
+		const reader = openDbisHandle();
+		assert.deepEqual(reader.getSync('good1'), { alpha: 1, beta: 2 });
+	});
+
+	it('resolves two-encoder structure conflicts on a non-versioned custom-object index store (randomAccessStructure: true, no initStore)', () => {
+		const opts = {
+			isPrimary: false,
+			isObject: true,
+			randomAccessStructure: true,
+			name: 'CustomIdx',
+			useVersions: false,
+		};
+		const db1 = openDbisHandle(tmpDir, opts);
+		const db2 = openDbisHandle(tmpDir, opts);
+		const origTxn2 = db2.transactionSync;
+		let injected = false;
+		db2.transactionSync = function (callback, options) {
+			return origTxn2.call(
+				this,
+				(txn, attempt) =>
+					callback(
+						new Proxy(txn, {
+							get(target, prop) {
+								if (prop === 'putSync' && !injected) {
+									return (...args) => {
+										injected = true;
+										db1.putSync('k1', { a: 1, b: 2 });
+										return target.putSync(...args);
+									};
+								}
+								const value = target[prop];
+								return typeof value === 'function' ? value.bind(target) : value;
+							},
+						}),
+						attempt
+					),
+				options
+			);
+		};
+
+		db2.putSync('k2', { a: 1, c: 3 });
+		const raw1 = db1.getBinarySync('k1');
+		const raw2 = db2.getBinarySync('k2');
+		assert.ok(raw1[0] >= 0x20 && raw1[0] < 0x40, `expected typed struct byte for k1, got 0x${raw1[0].toString(16)}`);
+		assert.ok(raw2[0] >= 0x20 && raw2[0] < 0x40, `expected typed struct byte for k2, got 0x${raw2[0].toString(16)}`);
+		assert.ok(
+			db1.getBinarySync(Symbol.for('structures'))?.length > 0,
+			'structures must be saved in the store column family'
+		);
+		db1.close();
+		db2.close();
+
+		const db3 = openDbisHandle(tmpDir, opts);
+		assert.deepEqual(db3.getSync('k1'), { a: 1, b: 2 });
+		assert.deepEqual(db3.getSync('k2'), { a: 1, c: 3 });
+		assert.strictEqual(errors.length, 0);
+	});
+
+	it('gives initStore(rootStore) precedence over rocksStore so table structures live in rootStore', () => {
+		const rootDb = openDbisHandle(tmpDir, { isPrimary: false, isObject: false, name: '__dbis__', useVersions: false });
+		const tableDb = openDbisHandle(tmpDir, { isPrimary: true, isObject: true, name: 'MyTable', useVersions: true });
+		tableDb.initStore(rootDb);
+		tableDb.putSync('row1', { id: 'row1', title: 'hello' });
+
+		assert.ok(
+			rootDb.getBinarySync([Symbol.for('structures'), 'MyTable'])?.length > 0,
+			'table structures must be stored under [Symbol.for("structures"), name] in rootStore'
+		);
+		assert.strictEqual(
+			tableDb.getBinarySync(Symbol.for('structures')),
+			undefined,
+			'table column family must not store its own Symbol.for("structures") after initStore'
+		);
+	});
+
+	it('decodes classic structure #2 (leading byte 0x42) on __dbis__ without misreading it as a RocksDB version prefix', () => {
+		const db1 = openDbisHandle();
+		assert.ok(!db1.encoder.isRocksDB, 'precondition: __dbis__ must not set encoder.isRocksDB');
+		db1.putSync('s0', { s0: 1 });
+		db1.putSync('s1', { s1: 2 });
+		const shape2 = { a: 10, b: 20, c: 30, d: 40 };
+		db1.putSync('s2', shape2);
+
+		const raw = db1.getBinarySync('s2');
+		assert.strictEqual(raw[0], 0x42, 'third classic structure must start with byte 0x42');
+		assert.deepEqual(db1.getSync('s2'), shape2);
+		db1.close();
+
+		const db2 = openDbisHandle();
+		assert.deepEqual(db2.getSync('s2'), shape2);
+		assert.strictEqual(errors.length, 0);
+	});
+
+	it('survives 4 worker_threads concurrently minting classic structures in __dbis__', async function () {
+		this.timeout(15_000);
+		const dbInit = openDbisHandle();
+		dbInit.putSync('seed', { seed: 0 });
+		dbInit.close();
+
+		const workerCount = 4;
+		const shapesPerWorker = 12;
+		const barrier = new Int32Array(new SharedArrayBuffer(4));
+
+		const workers = Array.from({ length: workerCount }, (_, workerIdx) => {
+			return new Promise((resolve, reject) => {
+				const w = new Worker(
+					`
+					const { workerData, parentPort } = require('worker_threads');
+					const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+					const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
+
+					const dbiInit = { ...new OpenDBIObject(false, false), disableWAL: false, name: '__dbis__' };
+					const db = PrimaryRocksDatabase.open(workerData.tmpDir, dbiInit);
+					db.encoder.useVersions = false;
+
+					Atomics.add(workerData.barrier, 0, 1);
+					Atomics.notify(workerData.barrier, 0);
+					while (Atomics.load(workerData.barrier, 0) < workerData.workerCount) {
+						Atomics.wait(workerData.barrier, 0, Atomics.load(workerData.barrier, 0), 50);
+					}
+
+					for (let i = 0; i < workerData.shapesPerWorker; i++) {
+						const key = 'w' + workerData.workerIdx + '_' + i;
+						const row = {
+							['w' + workerData.workerIdx + '_f' + i]: i,
+							nested: [{ ['n' + workerData.workerIdx + '_' + i]: i * 10, extra: workerData.workerIdx }],
+						};
+						db.putSync(key, row);
+					}
+					db.close();
+					parentPort.postMessage('ok');
+					`,
+					{
+						eval: true,
+						workerData: { tmpDir, workerIdx, workerCount, shapesPerWorker, barrier },
+					}
+				);
+				w.once('message', resolve);
+				w.once('error', reject);
+			});
+		});
+
+		const captureErrors = harperLogger.error;
+		harperLogger.error = restoreError;
+		try {
+			await Promise.all(workers);
+		} finally {
+			harperLogger.error = captureErrors;
+		}
+
+		const reader = openDbisHandle();
+		for (let workerIdx = 0; workerIdx < workerCount; workerIdx++) {
+			for (let i = 0; i < shapesPerWorker; i++) {
+				const key = `w${workerIdx}_${i}`;
+				const expected = {
+					[`w${workerIdx}_f${i}`]: i,
+					nested: [{ [`n${workerIdx}_${i}`]: i * 10, extra: workerIdx }],
+				};
+				assert.deepEqual(reader.getSync(key), expected, `failed to decode ${key}`);
+			}
+		}
+		assert.strictEqual(errors.length, 0, `expected zero decode errors, got: ${JSON.stringify(errors)}`);
 	});
 });

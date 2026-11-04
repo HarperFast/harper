@@ -6,13 +6,12 @@ testUtils.preTestPrep();
 const assert = require('node:assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
-const { applyImpersonation } = require('#src/security/impersonation');
+const { applyImpersonation } = require('#js/security/impersonation');
 const userModule = require('#src/security/user');
 const roleModule = require('#src/security/role');
 const harperLogger = require('#src/utility/logging/harper_logger');
 
-// Separate sandbox for per-test stubs (e.g. getUsersWithRolesCache in Mode B tests)
-// so we can restore them without killing the permanent logger stub.
+// Separate sandbox for per-test stubs so we can restore them without killing the permanent logger stub.
 const perTestSandbox = sinon.createSandbox();
 
 function makeSuperUser(username = 'HDB_ADMIN') {
@@ -59,8 +58,9 @@ describe('security/impersonation.ts', () => {
 		perTestSandbox.restore();
 	});
 
-	after(() => {
+	after(async () => {
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	describe('applyImpersonation - gate check', () => {
@@ -283,7 +283,7 @@ describe('security/impersonation.ts', () => {
 			const result = await applyImpersonation(su, payload);
 			assert.strictEqual(result.username, 'HDB_ADMIN');
 			assert.strictEqual(result.role.permission.super_user, false);
-			assert.strictEqual(result.role.role, '_impersonated');
+			assert.match(result.role.role, /^_impersonated_[0-9a-f]{24}$/);
 			assert.deepStrictEqual(result.role.permission.dev, payload.role.permission.dev);
 		});
 
@@ -342,7 +342,7 @@ describe('security/impersonation.ts', () => {
 
 			const result = await applyImpersonation(su, payload);
 			// Should use inline permissions, not look up 'custom_context' from cache
-			assert.strictEqual(result.role.role, '_impersonated');
+			assert.match(result.role.role, /^_impersonated_[0-9a-f]{24}$/);
 			assert.strictEqual(result.username, 'custom_context');
 			assert.ok(result.role.permission.dev);
 		});
@@ -353,7 +353,7 @@ describe('security/impersonation.ts', () => {
 			const su = makeSuperUser();
 			const targetUser = makeNonSuperUser('readonly_user');
 			const cacheMap = new Map([['readonly_user', targetUser]]);
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 
 			const result = await applyImpersonation(su, { username: 'readonly_user' });
 			assert.strictEqual(result.username, 'readonly_user');
@@ -370,7 +370,7 @@ describe('security/impersonation.ts', () => {
 		it('should throw 404 for non-existent user', async () => {
 			const su = makeSuperUser();
 			const cacheMap = new Map();
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 
 			await assert.rejects(
 				() => applyImpersonation(su, { username: 'ghost_user' }),
@@ -386,7 +386,7 @@ describe('security/impersonation.ts', () => {
 			const su = makeSuperUser();
 			const targetSU = makeSuperUser('other_admin');
 			const cacheMap = new Map([['other_admin', targetSU]]);
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 
 			const result = await applyImpersonation(su, { username: 'other_admin' });
 			assert.strictEqual(result.role.permission.super_user, false);
@@ -406,7 +406,7 @@ describe('security/impersonation.ts', () => {
 				},
 			};
 			const cacheMap = new Map([['cluster_user', targetCluster]]);
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 
 			const result = await applyImpersonation(su, { username: 'cluster_user' });
 			assert.strictEqual(result.role.permission.cluster_user, false);
@@ -416,13 +416,11 @@ describe('security/impersonation.ts', () => {
 			const su = makeSuperUser();
 			const targetSU = makeSuperUser('other_admin');
 			const cacheMap = new Map([['other_admin', targetSU]]);
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 
 			await applyImpersonation(su, { username: 'other_admin' });
 
-			// The original cache entry must still have super_user: true
-			const cached = cacheMap.get('other_admin');
-			assert.strictEqual(cached.role.permission.super_user, true);
+			assert.strictEqual(userModule.getUserWithRole('other_admin').role.permission.super_user, true);
 		});
 
 		it('should reject impersonation of inactive user with 403', async () => {
@@ -430,7 +428,7 @@ describe('security/impersonation.ts', () => {
 			const inactiveUser = makeNonSuperUser('disabled_user');
 			inactiveUser.active = false;
 			const cacheMap = new Map([['disabled_user', inactiveUser]]);
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 
 			await assert.rejects(
 				() => applyImpersonation(su, { username: 'disabled_user' }),
@@ -446,7 +444,7 @@ describe('security/impersonation.ts', () => {
 			const su = makeSuperUser();
 			const noRoleUser = { username: 'norole_user', active: true };
 			const cacheMap = new Map([['norole_user', noRoleUser]]);
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 
 			const result = await applyImpersonation(su, { username: 'norole_user' });
 			assert.strictEqual(result.username, 'norole_user');
@@ -553,7 +551,7 @@ describe('security/impersonation.ts', () => {
 			};
 
 			const result = await applyImpersonation(su, payload);
-			assert.strictEqual(result.role.role, '_impersonated');
+			assert.match(result.role.role, /^_impersonated_[0-9a-f]{24}$/);
 			assert.ok(result.role.permission.dev);
 		});
 	});
@@ -585,7 +583,7 @@ describe('security/impersonation.ts', () => {
 			// Mode B
 			const targetUser = makeNonSuperUser('lookup_user');
 			const cacheMap = new Map([['lookup_user', targetUser]]);
-			perTestSandbox.stub(userModule, 'getUsersWithRolesCache').resolves(cacheMap);
+			await testUtils.seedUsers(cacheMap);
 			const modeB = await applyImpersonation(su, { username: 'lookup_user' });
 			assert.strictEqual(modeB.role.id, '_impersonated_lookup_user');
 			perTestSandbox.restore();
@@ -601,6 +599,119 @@ describe('security/impersonation.ts', () => {
 			perTestSandbox.stub(roleModule, 'getRoleByName').resolves(roleRecord);
 			const modeC = await applyImpersonation(su, { role_name: 'test_role', username: 'ctx_user' });
 			assert.strictEqual(modeC.role.id, '_impersonated_ctx_user');
+		});
+	});
+
+	describe('token operation scope survives impersonation (#2174)', () => {
+		// A scoped operation token constrains the credential regardless of which principal it acts as,
+		// so impersonating must not shed the scope — otherwise a scoped super_user token escalates by
+		// impersonating a broader (still-downgraded) role.
+		const INLINE_ROLE = { role: { permission: { super_user: false, dev: { tables: {} } } } };
+
+		it('carries tokenOperations onto the impersonated user', async () => {
+			const su = makeSuperUser();
+			su.tokenOperations = ['deploy_component'];
+			const impersonated = await applyImpersonation(su, INLINE_ROLE);
+			assert.deepStrictEqual(impersonated.tokenOperations, ['deploy_component']);
+		});
+
+		// Impersonation returns a NEW principal, so dropping the provenance marker would let a
+		// workload token launder it — impersonate, then mint the 30-day credential that
+		// createTokens would otherwise refuse. Carried for the same reason the scope is (#2171).
+		it('carries workload identity provenance onto the impersonated user', async () => {
+			const su = makeSuperUser();
+			su.fromWorkloadIdentity = true;
+			const impersonated = await applyImpersonation(su, INLINE_ROLE);
+			assert.strictEqual(impersonated.fromWorkloadIdentity, true);
+		});
+
+		it('marks no provenance when the authenticating token was password-minted', async () => {
+			const impersonated = await applyImpersonation(makeSuperUser(), INLINE_ROLE);
+			assert.strictEqual(impersonated.fromWorkloadIdentity, undefined);
+		});
+
+		it('adds no scope when the authenticating token was unscoped', async () => {
+			const impersonated = await applyImpersonation(makeSuperUser(), INLINE_ROLE);
+			assert.strictEqual(impersonated.tokenOperations, undefined);
+		});
+	});
+
+	describe('buildScopedTokenUser', () => {
+		const { buildScopedTokenUser } = require('#src/security/impersonation');
+
+		before(async () => {
+			await testUtils.seedUsers([{ username: 'real_user', active: true }]);
+		});
+
+		it('trusted internal dispatch can mint without an authenticated minter', async () => {
+			const user = await buildScopedTokenUser(
+				undefined,
+				{ username: 'internal-svc', role: { permission: { operations: ['read_only'] } } },
+				true
+			);
+			assert.strictEqual(user.username, 'internal-svc');
+			assert.match(user.role.role, /^_scoped_token_[0-9a-f]{24}$/);
+			assert.strictEqual(user.role.permission.super_user, false);
+		});
+
+		it('untrusted mint without a super_user minter is rejected with 403', async () => {
+			await assert.rejects(
+				() => buildScopedTokenUser(undefined, { role: { permission: { operations: ['read_only'] } } }, false),
+				(err) => err.statusCode === 403
+			);
+		});
+
+		it('trusted mint without any username is rejected', async () => {
+			await assert.rejects(
+				() => buildScopedTokenUser(undefined, { role: { permission: { operations: ['read_only'] } } }, true),
+				(err) => /username/.test(err.message)
+			);
+		});
+
+		it('an attribution username naming an existing user is rejected', async () => {
+			await assert.rejects(
+				() =>
+					buildScopedTokenUser(
+						undefined,
+						{ username: 'real_user', role: { permission: { operations: ['read_only'] } } },
+						true
+					),
+				(err) => /must not name an existing user/.test(err.message)
+			);
+		});
+
+		it('default attribution is the scoped-prefixed minter name', async () => {
+			const minter = makeSuperUser('the_admin');
+			const user = await buildScopedTokenUser(minter, { role: { permission: { operations: ['read_only'] } } });
+			assert.strictEqual(user.username, 'scoped:the_admin');
+		});
+
+		it('identical permission content produces the same synthetic role identity', async () => {
+			const a = await buildScopedTokenUser(
+				undefined,
+				{ username: 'a', role: { permission: { operations: ['read_only'] } } },
+				true
+			);
+			const b = await buildScopedTokenUser(
+				undefined,
+				{ username: 'b', role: { permission: { operations: ['read_only'] } } },
+				true
+			);
+			const c = await buildScopedTokenUser(
+				undefined,
+				{ username: 'c', role: { permission: { operations: ['insert'] } } },
+				true
+			);
+			assert.strictEqual(a.role.role, b.role.role);
+			assert.notStrictEqual(a.role.role, c.role.role);
+		});
+
+		it('permission key order does not change the synthetic role identity', async () => {
+			const p1 = { operations: ['read_only'], structure_user: false };
+			const p2 = { structure_user: false, operations: ['read_only'] };
+			const a = await buildScopedTokenUser(undefined, { username: 'a', role: { permission: p1 } }, true);
+			const b = await buildScopedTokenUser(undefined, { username: 'b', role: { permission: p2 } }, true);
+			assert.strictEqual(a.role.role, b.role.role, 'reordered keys must map to the same cache identity');
 		});
 	});
 });

@@ -1,0 +1,188 @@
+# components/mcp/ — Design notes
+
+The MCP Streamable-HTTP surface.
+
+**Read this when:** adding or changing an MCP method, tool, prompt or profile.
+
+Index of every design note: [DESIGN.md](../../DESIGN.md).
+
+---
+
+## MCP protocol surface (`components/mcp/`)
+
+The MCP Streamable-HTTP transport (spec `2025-06-18`) is served at `/mcp` under **two profiles**: an
+_operations_ profile (mounted on the Fastify operations server) and an _application_ profile (mounted on
+the Harper application HTTP server). Both share `transport.ts` (the JSON-RPC dispatcher) but differ in what
+they expose — operations surfaces management operations as tools; application surfaces exported
+Resources/tables. Profile gating runs throughout (`completeResourceArgument`, prompt visibility, tool
+`visibleTo`), so when adding a method, decide which profile(s) it belongs to rather than assuming both.
+
+A handful of design points are non-obvious and easy to break:
+
+- **The application profile reads its own request body, so it enforces `http.maxRequestBodySize` itself.**
+  `readBody` in `adapters/harperHttp.ts` shares `getMaxRequestBodySize()` with the REST reader, answers 413
+  for a declared `Content-Length` over the limit or once the streamed bytes pass it, and keeps a discarding
+  `'data'` listener on the body afterwards: a uWS body is a paused `Readable` that buffers the whole upload
+  unless something reads it. Like REST, it does not close the connection or bound the discard. The
+  operations profile is capped by Fastify's `bodyLimit` instead.
+- **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
+  (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
+  API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on
+  `'close'`. The streaming tool handler is therefore dispatched inside a `setImmediate` (a _detached_,
+  deferred task) so the adapter's consumer attaches **before** any frame is produced. Without the defer, a
+  fast handler emits its final frame + `close` synchronously; the queue buffers `'data'` but not `'close'`,
+  and the stream hangs. Any handler on this path must check `signal.aborted` first (cancellation can land
+  before the deferred task runs).
+
+- **Server→client requests are correlated across workers.** `serverRequests.ts` lets a streaming `tools/call`
+  call _back_ into the client (`sampling/createMessage`, `elicitation/create`, `roots/list`) and await the
+  reply. The request frame rides **the call's POST SSE stream**; the client's response is a _fresh POST_ that
+  can land on **any worker**. The pending-promise registry is per-worker, so a response with no local match
+  is fanned out over ITC (`MCP_CLIENT_RESPONSE`) and the worker holding the promise resolves it (mirrors
+  `components/status/crossThread.ts`). Request ids are `srv-${randomUUID()}` — **not** a per-worker counter,
+  which would collide on `(sessionId, id)` across workers and misroute responses. Methods are capability-gated
+  (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
+  (timeout + high-water-mark) so a non-responding client can't leak promises.
+
+- **Session creation is bounded per client, not by what the client sends.** The application profile accepts
+  anonymous `initialize`, and each session is a `system.mcp_session` row kept for the idle timeout. So
+  `initialize` persists only the capability names `METHOD_CAPABILITY` gates on (as `{}`), never the client's
+  object, and `tryAdmitInitialize` throttles creation per client identity — on by default, unlike the
+  `tools/call` per-client bucket, because creation is what writes to disk. This bounds sessions created and
+  then abandoned; a client that keeps N sessions alive pays a request per session per idle window, like any
+  request flood. A fixed lifetime for anonymous sessions would bound that too, at the cost of breaking every
+  long-lived anonymous client.
+
+  The bucket is **per worker thread**, like every MCP rate limit (in-memory, not shared across workers):
+  `initializePerSecond` and `initializeBurst` bound one worker. A client opening fresh connections that the OS
+  spreads over the application profile's `threads.count` workers gets up to that many times the configured
+  figure (5 per worker × 4 workers = 20 admitted at `initializeBurst: 5`); one reused connection stays on one
+  worker and gets the configured figure. Dividing the config by `threads.count` was rejected: it assumes an
+  even spread, which the exclusive operations-API listener and macOS binds (`noReusePort`, `server/http.ts`)
+  do not give, and it turns `initializeBurst: 50` into one token per worker at 32 threads, so a client reusing
+  one connection would get a 429 on its second session.
+
+- **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
+  application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change
+  ITC events — both of which fire while the `@table` classes register, **before** the `jsResource` plugin
+  registers the component's exported `class X extends tables.X` subclass. That subclass is the object the
+  registry ends up holding (REST routes to it) and the only place author opt-ins (`static mcpTools`/
+  `mcpPrompts`) live, so a scan that ran earlier sees only the base table class and misses them (#1448). The
+  fix: `jsResource` fires `signalResourcesRegistered()` (a deliberately **local-only**, non-ITC signal in
+  `utility/signalling.ts`, backed by `resourceHandler` in `server/itc/serverHandlers.js` — each worker
+  registers its own JS resources, so the rebuild belongs in that worker) after registration; `listChanged`
+  subscribes and re-runs the scan. Consequence: the verb tools (`create_*` etc.) now bind to the subclass and
+  honor its `post`/`patch` overrides, matching REST — previously they bound to the base table class and
+  silently bypassed those overrides. Advertised CRUD output schemas are still table-derived, so an overridden
+  write verb whose return diverges from `{ id }`/`{ ok }`/`{ deleted }` advertises a subset shape (the in-use
+  SDK tolerates supersets; tightening per-override envelopes is sibling-issue work — see the `tools/schemas/derive.ts`
+  envelope note).
+
+- **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
+  Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as
+  [Audit-store `'committed'` notification batching](../../resources/DESIGN.md#audit-store-committed-notification-batching-transactionbroadcastts)). The targeting is the subtle part:
+  `getMatch` returns the matched Resource plus the remaining path on `relativeURL`, and `subscribeToResource`
+  sets **both** `request.id` (the record key, or `undefined`) **and** `request.isCollection` from it. A record
+  URI (`…/WorkItem/42`) watches that record; a collection URI (`…/WorkItem`, what `resources/list` advertises)
+  watches the whole table. `new RequestTarget(path)` parses an id out of the path on its own, so _both_ fields
+  must be overridden — otherwise a collection URI silently watches a phantom record named after the resource
+  and receives nothing. `harper://*` pseudo-resources are **list-changed-only** (not row-backed). Subscriptions
+  use `omitCurrent` (notify on change, not a retained snapshot — the notification just says "re-read this").
+
+- **Subscription state is shared through the session row.** See [Persisted resource subscription state](#persisted-resource-subscription-state).
+  A GET close drops resource iterators but leaves pending server requests alone; those use per-call POST streams.
+  Session DELETE tears down both.
+
+- **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
+  assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a
+  `Last-Event-ID` header, `replaySince` re-sends only the frames after that id. The event-id sequence **and**
+  the buffer carry across a supersede (a fresh GET replacing the old one for the same session id), so ids stay
+  monotonic and no frame is lost across a reconnect.
+
+- **Test seams avoid loading thread/audit machinery in unit tests.** `_setSubscribeImplForTest`
+  (`resources.ts`) and `_setItcForTest` (`serverRequests.ts`) inject fakes so the unit suite needn't spin up
+  the audit log or ITC. Consequence: the subscribe **targeting** logic (`id`/`isCollection` derivation) is
+  _bypassed_ by the seam and is therefore covered at the **integration** level (`integrationTests/mcp/sse-listchanged.test.ts` N3
+  record / N4 collection), not in unit tests.
+
+- **Discovery filtering must mirror dispatch's ORDER _and_ its name namespace.**
+  `canRoleInvokeOperation` (`operationVisibility.ts`, shared by `tools/list` and the
+  `harper://operations` catalog) answers only the role-level question; per-target schema/table
+  checks still run at call time in `verifyPerms`. Three things it may **not** defer:
+
+  1. **The `operations` allowlist.** `verifyOperationsAllowlist` runs _ahead of every privilege
+     early-return_ in `verifyPerms` (harper#2176), super_user and structure_user included, so a
+     helper that short-circuits on a privilege flag advertises tools that fail closed on call.
+  2. **The `api_name` alias.** Dispatch tests the handler's canonical `api_name`, and eight ops are
+     published under a different name — `create_schema`/`drop_schema` (handlers
+     `createSchema`/`dropSchema`, api_names `create_database`/`drop_database`),
+     `describe_database`→`describe_schema`, `search_by_id`→`search_by_hash`, and the legacy
+     `add_`/`package_`/`deploy_custom_function_project` → `add_`/`package_`/`deploy_component`,
+     `delete_records_before`→`delete_files_before`. Matching the raw tool name disagrees in BOTH
+     directions. The alias table is hand-maintained because `OPERATION_FUNCTION_MAP` pulls in the
+     server and cannot be imported here; `unitTests/utility/operation_authorization.test.js` compares
+     discovery with gate 1 for every dispatched operation, so a drift fails there. Discovery still
+     advertises `get_backup`, `read_transaction_log` and `catchup` to a role that lists them, while
+     dispatch refuses them (their registrations deliberately carry a `null` `api_name`).
+  3. **`structure_user` is not one grant.** `STRUCTURE_USER_OPS` holds only the four
+     table/attribute ops; create/drop schema-or-database needs `structure_user === true`, so an
+     array grant (and `[]`, which is truthy) is denied for those four.
+
+  Group names resolve through `_expandedOperations ?? expandOperationsPerms` because the allowlist
+  stores groups (`read_only`, `standard_user`) that dispatch expands — a raw `includes`
+  under-advertises every op a role holds only via a group.
+
+  This is the class of code that goes stale silently: it was correct when written and was
+  invalidated by a change in a _different_ file, with no test failure to announce it. It lives in
+  one module for that reason — it was duplicated across the two surfaces, and keeping two copies in
+  step is how the original bug survived. Whenever `verifyPerms`' ordering, the `api_name` table, or
+  `STRUCTURE_USER_OPS` changes, re-check it.
+
+- **Operations-profile iterable results are collected before `wrapToolResult`.** Operation handlers
+  that return non-array iterables or async iterables (`read_audit_log`'s `groupRecordsInHistory`
+  generator, `get_analytics`'s async-mapped `ExtendedIterable`, full-text `search_by_conditions`,
+  and `search_by_id` / `search_by_hash`'s `getRecords` cursor) rely on the caller to drain them,
+  because `wrapToolResult` uses synchronous `JSON.stringify` (`tools/results.ts`). In
+  `makeOperationToolHandler` (`tools/operations.ts`), `collectIterableResult` drains any non-array,
+  non-`Readable`, non-`ArrayBufferView` iterable via `for await` (wiring `.mapError` when present,
+  awaiting element promises, and checking `context.signal`) up to `MAX_OPERATION_ITERABLE_ITEMS`
+  (10,000 items) and `MAX_OPERATION_ITERABLE_BYTES` (10 MiB), enforced by
+  `unitTests/components/mcp/tools/operations.test.js` and
+  `integrationTests/mcp/operations-iterable-results.test.ts`.
+
+## Persisted resource subscription state
+
+A successful subscription POST requires an acknowledgment that its URI generation is installed on the current GET.
+[`subscriptionState.ts`](subscriptionState.ts) watches the existing, non-replicating `system.mcp_session`
+row through `Table.subscribe`; it opens the watcher outside the request context before claiming a fresh
+`streamToken`. No thread address or custom inter-thread command is persisted or sent.
+
+Desired-state changes, token claims, and acknowledgments use the bounded storage lock in
+[`session.ts`](session.ts). The lock covers state reads/writes and synchronous teardown of terminally rejected iterators;
+resource installation and the 30-second acknowledgment wait happen outside it. An acknowledgment is valid only for the current
+token, at a revision at least as new as the request. This permits coalescing and lets a reconnect
+complete a waiting mutation without letting the old incarnation overwrite the new acknowledgment.
+An unsubscribe whose durable removal commits before the GET closes succeeds once the owner token clears.
+A superseded or unavailable GET returns 503 while the durable session exists; 404 means the session is absent.
+
+Each URI has a generation. Timeout cleanup removes only that generation; a later retry survives it.
+If cleanup cannot commit because storage is unavailable, the outcome remains ambiguous and the client must retry.
+Waiting mutations are bounded to 100 per worker and 25 per session.
+Tokens include Harper's existing process incarnation, so a token from an earlier process is never treated as a live GET. A worker killed within the current process can leave a token until reconnect; its requests wait for at most 30 seconds and return a retryable error.
+A replacement iterator is installed before the previous one stops, so re-subscribe has no registration gap.
+`addResourceSubscription` discards
+an installation that finishes after its GET closes. Terminal rejections are removed from the durable
+set, and a rejected replacement stops its prior iterator before acknowledgment. Each installation is bounded by the acknowledgment timeout; closing or timing out the GET releases reconciliation, and an iterator returned late is stopped by its original owner fence. A transient failure during initial restore closes the GET and returns retryable 503, retaining the URI for reconnect. Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
+
+Ordinary principals are reauthorized through the GET principal. Expiring ordinary credentials persist only their expiry; scoped-token principals persist their embedded role and expiry. Both use the existing pool with per-URI references. Reconstructed ordinary principals use the earlier POST/GET expiry, and permission refresh preserves the GET credential's expiry. Reconnect compares the GET scope once and caches each distinct stored grant comparison only for the initial restore. Unreferenced grants are pruned. Credentials and custom claims stay out of storage. Same-worker
+requests retain their full principal during installation. Reconnect rejects expired entries and requires a scoped GET to present the same username and role permissions (a refreshed expiry is allowed without extending the stored grant); a different credential with the same attribution username cannot inherit it. The notification callback closes the GET and its iterators on an update after either grant expires, including custom streams that do not enforce expiry themselves. Native table subscriptions may end at expiry before an update reaches that callback. Refreshing or reconnecting credentials does not extend an existing subscription; clients must re-subscribe with the replacement credential.
+
+Activity-only session writes do not trigger reconciliation: the watcher compares the token and revision.
+Native `Table.subscribe` enables auditing for a previously unaudited table, so opening a GET also makes
+subsequent session touches audited when `logging.auditLog` was disabled. This trades that opt-out cost
+for one authoritative row with the existing session TTL and non-replication rules.
+
+Verification: [`subscriptionState.test.js`](../../unitTests/components/mcp/subscriptionState.test.js)
+uses a real session table for installation, coalescing, timeout, ownership, and authorization cases.
+[`sse-listchanged.test.ts`](../../integrationTests/mcp/sse-listchanged.test.ts) selects distinct workers
+through their Unix socket mirrors and checks subscribe, reconnect, unsubscribe, and restoration after a process crash over HTTP.

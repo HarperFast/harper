@@ -15,6 +15,7 @@ const alasql = require('alasql');
 
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
+const { normalizeStatement } = require('#src/sqlEngine/parser/normalizer');
 const { EngineUnsupportedError } = require('#src/sqlEngine/errors');
 const { ClientError, IndexRebuildingError } = require('#src/utility/errors/hdbError');
 
@@ -306,6 +307,33 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		});
 	});
 
+	it('answers IS NOT NULL itself, the same as NOT (… IS NULL), instead of falling back', async () => {
+		const nullableTable = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'b', indexed: true, indexNulls: true },
+			],
+			rows: [
+				{ id: 1, b: 1 },
+				{ id: 2, b: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: nullableTable } }));
+		for (const where of ['b IS NOT NULL', 'NOT (b IS NULL)']) {
+			const data = await runSql(`SELECT id FROM dev.user WHERE id > 0 AND ${where}`);
+			assert.deepStrictEqual(
+				data.map((r) => r.id),
+				[1]
+			);
+			assert.deepStrictEqual(
+				nullableTable._lastTarget.conditions.find((c) => c.attribute === 'b'),
+				{ attribute: 'b', comparator: 'ne', value: null },
+				where
+			);
+		}
+	});
+
 	it('= with a quoted number stays strict (no numeric coercion, unlike IN)', async () => {
 		// Legacy returns nothing for `age = '30'` (numeric column, quoted literal);
 		// the new engine must too — the boolean expansion must not loosen numeric `=`.
@@ -380,6 +408,74 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		);
 		assert.strictEqual(mockTable._lastTarget.limit, 2);
 		assert.strictEqual(mockTable._lastTarget.offset, 1);
+	});
+
+	it('TOP n behaves like LIMIT n and pushes to Table.search', async () => {
+		// `SELECT TOP n` is AlaSQL's SQL-Server spelling of LIMIT; previously it was
+		// silently dropped, returning every row instead of n (and never falling back).
+		const data = await runSql('SELECT TOP 2 name FROM dev.user WHERE age > 0 ORDER BY age');
+		assert.deepStrictEqual(
+			data.map((r) => r.name),
+			['bob', 'alice']
+		);
+		assert.strictEqual(mockTable._lastTarget.limit, 2);
+	});
+
+	it('rejects TOP combined with LIMIT as ambiguous (→ legacy fallback)', async () => {
+		await assert.rejects(
+			() => runSql('SELECT TOP 2 name FROM dev.user WHERE age > 0 ORDER BY age LIMIT 3'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('floors a fractional LIMIT/OFFSET to match legacy truncation', async () => {
+		// AlaSQL parses `LIMIT 2.9`/`OFFSET 1.9` verbatim; legacy truncates them (2 rows,
+		// skip 1). PhysicalLimit's `yielded >= cap` check would instead over-yield (3 rows)
+		// on a fractional cap, so the normalizer floors both.
+		const data = await runSql('SELECT name FROM dev.user WHERE age > 0 ORDER BY age LIMIT 2.9 OFFSET 1.9');
+		assert.deepStrictEqual(
+			data.map((r) => r.name),
+			['alice', 'dave']
+		);
+		assert.strictEqual(mockTable._lastTarget.limit, 2);
+		assert.strictEqual(mockTable._lastTarget.offset, 1);
+	});
+
+	it('rejects TOP … PERCENT (fraction, not a count → legacy fallback)', async () => {
+		// AlaSQL sets top.value=50 and percent=true; mapping it to limit=50 would return
+		// all rows instead of 50% of them. Defer to legacy until percentage limiting exists.
+		await assert.rejects(
+			() => runSql('SELECT TOP 50 PERCENT name FROM dev.user WHERE age > 0 ORDER BY age'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('rejects a LIMIT/TOP of 0 (legacy treats 0 as "no limit" → all rows)', async () => {
+		// Legacy AlaSQL returns ALL rows for `LIMIT 0`/`TOP 0`; the new engine would return
+		// none. Defer to legacy so `auto` mode stays identical.
+		await assert.rejects(() => runSql('SELECT name FROM dev.user WHERE age > 0 LIMIT 0'), EngineUnsupportedError);
+		await assert.rejects(() => runSql('SELECT TOP 0 name FROM dev.user WHERE age > 0'), EngineUnsupportedError);
+	});
+
+	it('rejects a row count past legacy 32-bit coercion (→ legacy fallback)', async () => {
+		// Legacy coerces counts >= 2^31 to 32 bits (`LIMIT 2^32` returns none, huge OFFSET
+		// wraps to 0); the new engine would apply them literally. Defer to legacy.
+		await assert.rejects(
+			() => runSql('SELECT name FROM dev.user WHERE age > 0 LIMIT 4294967296'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('defers a present-but-unreadable LIMIT rather than silently dropping it', () => {
+		// Unreachable via SQL today (AlaSQL only accepts a numeric literal here), so this
+		// exercises the invariant at the AST level: a LIMIT clause that is present but not a
+		// static number must fall back, never return all rows unbounded.
+		const ast = {
+			from: [{ databaseid: 'dev', tableid: 'user' }],
+			columns: [{ columnid: '*' }],
+			limit: { value: null },
+		};
+		assert.throws(() => normalizeStatement(ast, 'select'), EngineUnsupportedError);
 	});
 
 	it('does NOT push LIMIT into the scan when a residual filter remains', async () => {
@@ -464,7 +560,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 	function makeThrowingTable(error) {
 		const table = makeMockTable({ primaryKey: 'id', attributes: [{ name: 'id', indexed: true }], rows: [] });
 		table.search = async function* () {
-			throw error;
+			yield Promise.reject(error);
 		};
 		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
 	}
@@ -502,5 +598,241 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 			);
 		});
 		assert.deepStrictEqual(data, [{ id: 'from-legacy' }]);
+	});
+
+	it('normalizes parenthesized NOT predicates to match unparenthesized forms and exclude NULLs (#1397)', async () => {
+		const table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'name', indexed: true, indexNulls: true },
+				{ name: 'age', indexed: true, indexNulls: true },
+			],
+			rows: [
+				{ id: 1, name: 'alice', age: 30 },
+				{ id: 2, name: 'bob', age: 25 },
+				{ id: 3, name: 'alice', age: 25 },
+				{ id: 4, name: null, age: null },
+				{ id: 5, name: 'alice', age: null },
+				{ id: 6, name: 'bob', age: null },
+				{ id: 7, name: 'bob', age: 30 },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
+
+		const pairs = [
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice')",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice'",
+				[2, 6, 7],
+			],
+			[
+				"SELECT id FROM dev.user WHERE name = 'alice' AND NOT (age = 25)",
+				"SELECT id FROM dev.user WHERE name = 'alice' AND NOT age = 25",
+				[1],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice' OR age = 25)",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice' AND NOT age = 25",
+				[7],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice' AND age = 30)",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice' OR NOT age = 30",
+				[2, 3, 6, 7],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (NOT (name = 'alice'))",
+				"SELECT id FROM dev.user WHERE name = 'alice'",
+				[1, 3, 5],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice' AND (age = 25 OR age > 28))",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice' OR NOT age = 25 AND NOT age > 28",
+				[2, 6, 7],
+			],
+		];
+
+		for (const [parenSql, unparenSql, expectedIds] of pairs) {
+			const unparenRows = await runSql(unparenSql);
+			const unparenTarget = table._lastTarget;
+			const parenRows = await runSql(parenSql);
+			const parenTarget = table._lastTarget;
+			assert.deepStrictEqual(unparenRows.map((r) => r.id).sort(), expectedIds, unparenSql);
+			assert.deepStrictEqual(parenRows.map((r) => r.id).sort(), expectedIds, parenSql);
+			assert.deepStrictEqual(parenTarget.conditions, unparenTarget.conditions, parenSql);
+		}
+
+		const orders = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'userId', indexed: true },
+				{ name: 'amount', indexed: true, indexNulls: true },
+			],
+			rows: [
+				{ id: 101, userId: 1, amount: 20 },
+				{ id: 102, userId: 2, amount: 10 },
+				{ id: 103, userId: 2, amount: 30 },
+				{ id: 104, userId: 6, amount: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table, orders } }));
+		const joinParen = await runSql(
+			"SELECT o.id FROM dev.user u INNER JOIN dev.orders o ON u.id = o.userId WHERE NOT (u.name = 'alice' OR o.amount = 10)"
+		);
+		const joinUnparen = await runSql(
+			"SELECT o.id FROM dev.user u INNER JOIN dev.orders o ON u.id = o.userId WHERE NOT u.name = 'alice' AND NOT o.amount = 10"
+		);
+		assert.deepStrictEqual(joinParen, [{ id: 103 }]);
+		assert.deepStrictEqual(joinParen, joinUnparen);
+	});
+
+	it('preserves truthy coercion on double negation of non-boolean operands (NOT (NOT col), NOT NOT col)', async () => {
+		const table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'name', indexed: true },
+				{ name: 'age', indexed: true },
+			],
+			rows: [
+				{ id: 1, name: 'alice', age: 30 },
+				{ id: 2, name: 'bob', age: 0 },
+				{ id: 3, name: '', age: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
+
+		const parenAge = await runSql('SELECT id FROM dev.user WHERE id > 0 AND NOT (NOT age)');
+		const unparenAge = await runSql('SELECT id FROM dev.user WHERE id > 0 AND NOT NOT age');
+		assert.deepStrictEqual(parenAge, [{ id: 1 }]);
+		assert.deepStrictEqual(unparenAge, [{ id: 1 }]);
+
+		const parenName = await runSql('SELECT id FROM dev.user WHERE id > 0 AND NOT (NOT name)');
+		assert.deepStrictEqual(parenName.map((r) => r.id).sort(), [1, 2]);
+	});
+
+	it('handles parenthesized expressions in projections, JOIN ON, HAVING, ORDER BY, and AND-in-OR WHERE', async () => {
+		const table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'name', indexed: true },
+				{ name: 'age', indexed: true },
+			],
+			rows: [
+				{ id: 1, name: 'alice', age: 30 },
+				{ id: 2, name: 'bob', age: 25 },
+				{ id: 3, name: 'alice', age: 25 },
+			],
+		});
+		const orders = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'userId', indexed: true },
+				{ name: 'amount', indexed: true },
+			],
+			rows: [
+				{ id: 101, userId: 1, amount: 20 },
+				{ id: 102, userId: 2, amount: 50 },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table, orders } }));
+
+		const projected = await runSql('SELECT id, (age + 5) * 2 AS computed FROM dev.user WHERE id = 1');
+		assert.deepStrictEqual(projected, [{ id: 1, computed: 70 }]);
+
+		const groupedAnd = await runSql("SELECT id FROM dev.user WHERE (name = 'alice' OR name = 'bob') AND age = 25");
+		assert.deepStrictEqual(groupedAnd.map((r) => r.id).sort(), [2, 3]);
+
+		const andInsideOr = await runSql("SELECT id FROM dev.user WHERE name = 'bob' OR name = 'alice' AND age = 25");
+		assert.deepStrictEqual(andInsideOr.map((r) => r.id).sort(), [2, 3]);
+		assert.strictEqual(table._lastTarget.conditions[0].operator, 'or');
+		assert.strictEqual(table._lastTarget.conditions[0].conditions[1].operator, 'and');
+
+		const joined = await runSql(
+			'SELECT o.id FROM dev.user u INNER JOIN dev.orders o ON (u.id = o.userId) WHERE (u.id > 0) ORDER BY (o.amount - u.id) DESC'
+		);
+		assert.deepStrictEqual(joined, [{ id: 102 }, { id: 101 }]);
+
+		const having = await runSql(
+			'SELECT name, COUNT(*) AS cnt FROM dev.user WHERE id > 0 GROUP BY name HAVING (COUNT(*) > 1)'
+		);
+		assert.deepStrictEqual(having, [{ name: 'alice', cnt: 2 }]);
+	});
+
+	it('rejects lone unindexed NOT predicate (both unparenthesized and parenthesized) with no usable index condition', async () => {
+		await assert.rejects(
+			() => runSql("SELECT id FROM dev.user WHERE NOT city = 'denver'"),
+			(err) => err instanceof EngineUnsupportedError && /no usable index condition/.test(err.message)
+		);
+		await assert.rejects(
+			() => runSql("SELECT id FROM dev.user WHERE NOT (city = 'denver')"),
+			(err) => err instanceof EngineUnsupportedError && /no usable index condition/.test(err.message)
+		);
+	});
+});
+
+describe('sqlEngine LIKE … ESCAPE through the pipeline (#3878)', () => {
+	const IPS = ['t_0', 'tx0', 't!x0', 't!_0', 't0%', 't0!z', 't0a'];
+	let originalEngine;
+	let table;
+
+	beforeEach(() => {
+		originalEngine = process.env.HARPER_SQL_ENGINE;
+		process.env.HARPER_SQL_ENGINE = 'new';
+		table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'ip', indexed: true },
+				{ name: 'note', indexed: false },
+			],
+			rows: IPS.map((ip, i) => ({ id: i + 1, ip, note: ip })),
+		});
+		binder._setDatabasesLoader(() => ({ dev: { addr: table } }));
+	});
+
+	afterEach(() => {
+		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
+		else process.env.HARPER_SQL_ENGINE = originalEngine;
+		binder._setDatabasesLoader(null);
+	});
+
+	const ips = (rows) => rows.map((r) => r.ip).sort();
+
+	it('pushes the unescaped literal as the index condition', async () => {
+		assert.deepStrictEqual(ips(await runSql("SELECT ip FROM dev.addr WHERE ip LIKE 't0!%' ESCAPE '!'")), ['t0%']);
+		assert.deepStrictEqual(table._lastTarget.conditions[0], { attribute: 'ip', comparator: 'equals', value: 't0%' });
+		assert.deepStrictEqual(ips(await runSql("SELECT ip FROM dev.addr WHERE ip LIKE 't!_%' ESCAPE '!'")), ['t_0']);
+		assert.deepStrictEqual(table._lastTarget.conditions[0], {
+			attribute: 'ip',
+			comparator: 'starts_with',
+			value: 't_',
+		});
+		assert.deepStrictEqual(ips(await runSql("SELECT ip FROM dev.addr WHERE ip LIKE 't0%'")), ['t0!z', 't0%', 't0a']);
+	});
+
+	it('evaluates an escaped pattern that has no index shape as a residual filter', async () => {
+		const rows = await runSql("SELECT ip FROM dev.addr WHERE id > 0 AND note LIKE 't!!_0' ESCAPE '!'");
+		assert.deepStrictEqual(ips(rows), ['t!_0', 't!x0']);
+		const notLike = await runSql("SELECT ip FROM dev.addr WHERE id > 0 AND note NOT LIKE '%!%' ESCAPE '!'");
+		assert.deepStrictEqual(ips(notLike), ['t!_0', 't!x0', 't0!z', 't0a', 't_0', 'tx0']);
+	});
+
+	it('rejects a malformed pattern with a client error instead of falling back to legacy', async () => {
+		process.env.HARPER_SQL_ENGINE = 'auto';
+		for (const sql of [
+			"SELECT ip FROM dev.addr WHERE note LIKE 't0!' ESCAPE '!'",
+			"SELECT ip FROM dev.addr WHERE note LIKE 't0!%' ESCAPE '!!'",
+		]) {
+			await assert.rejects(
+				() => runSql(sql),
+				(err) => err instanceof ClientError && !(err instanceof EngineUnsupportedError),
+				sql
+			);
+		}
 	});
 });

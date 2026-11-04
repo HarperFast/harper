@@ -1,0 +1,18 @@
+# eviction: 3600 holds the cleanup scan back, but the expiresAt sweep ignores it, so the test seeds a row that expires after the restart.
+type Session @table(database: "readonlyttl", expiration: 3600, eviction: 3600) @export {
+	id: ID @primaryKey
+	name: String @indexed
+	expiresAt: Float @expiresAt
+}
+
+type Plain @table(database: "readonlyttl") @export {
+	id: ID @primaryKey
+	name: String
+}
+
+# A caching table, so REST honors Cache-Control on it; each row points at the Session record with the same id.
+type SessionRef @table(database: "readonlyttl") @export {
+	id: ID @primaryKey
+	sessionId: ID
+	session: Session @relationship(from: sessionId)
+}

@@ -70,7 +70,7 @@ Example:
 ```
 type Post @table(table: "posts", database: "blog") {
 id: ID @primaryKey
-title: String @indexed(type: "fulltext")
+title: String @indexed
 body: String
 createdAt: Date @createdTime
 updatedAt: Date @updatedTime
@@ -105,6 +105,19 @@ directive @table(
 	total of expiration and eviction).
 	"""
 	scanInterval: Int
+	"""
+	RocksDB-only lifetime in seconds for a fetched local replica, defaulting to 3600. Set to 0
+	to stop new admissions and the replica sweep. Existing replicas remain until
+	overwritten or evicted. LMDB always proxies remote reads without storing replicas.
+	Schema rescans apply changes to loaded tables; existing deadlines are not rewritten.
+	"""
+	replicaExpiration: Float
+	"""
+	RocksDB-only fraction of the replica lifetime after which a read can renew it, defaulting to
+	0.5. Must be greater than 0 and at most 1; 1 keeps a fixed lifetime.
+	Schema rescans apply changes to loaded tables.
+	"""
+	replicaRefreshFraction: Float
 	"""
 	By default, all tables within a replicated database will be replicated. Transactions
 	are replicated atomically, which may involve data across multiple tables. However,
@@ -188,7 +201,9 @@ directive @indexed(
 	distance: String
 	"""
 	Construction effort/recall parameter (HNSW). Higher values improve recall at
-	the cost of build time and memory.
+	the cost of build time and memory. When omitted, it auto-scales with graph
+	size. Setting it pins both the build-side value and the search-side default;
+	changing it rebuilds the index.
 	"""
 	efConstruction: Int
 	"""
@@ -205,10 +220,65 @@ directive @indexed(
 	"""
 	mL: Int
 	"""
-	Search-time effort/recall parameter used during construction (implementation-
-	specific). Larger values typically yield better accuracy.
+	Search-time effort/recall parameter (HNSW): the candidate-list size used when
+	querying. Larger values typically yield better accuracy at the cost of query
+	latency. When both this and efConstruction are omitted, it auto-scales with
+	graph size, continuing past one million nodes up to 2048. Pin it when query
+	latency matters more than recall on large tables.
 	"""
 	efConstructionSearch: Int
+) on FIELD_DEFINITION
+
+"""
+A source attribute included in a full-text index.
+"""
+input FullTextSource {
+	name: String!
+	weight: Float! = 1.0
+	"""
+	Enable highlighting for this source. At least one source must opt in when @fullText.highlighting is set.
+	"""
+	highlight: Boolean
+	"""
+	Required for Blob sources. Only "text/plain" is supported.
+	"""
+	mediaType: String
+}
+
+"""
+An index-time synonym expansion rule.
+"""
+input FullTextSynonymRule {
+	source: String!
+	replacements: [String!]!
+}
+
+"""
+Opt-in highlighting limits. Omitting highlighting from @fullText disables it. At least one source
+must set highlight: true when these limits are present.
+"""
+input FullTextHighlighting {
+	maxFragments: Int! = 3
+	fragmentLength: Int! = 160
+}
+
+"""
+A query-only field naming a full-text index. It has no stored or selectable record value.
+"""
+scalar FullText
+
+"""
+Create a native full-text derived index over the listed source attributes. Declare it on a
+FullText field; the field name identifies the index.
+"""
+directive @fullText(
+	fields: [FullTextSource!]!
+	analyzer: String! = "english@2"
+	stopWords: Boolean! = true
+	positions: Boolean! = true
+	surfaceTerms: Boolean! = true
+	synonyms: [FullTextSynonymRule!]! = []
+	highlighting: FullTextHighlighting
 ) on FIELD_DEFINITION
 
 """
@@ -250,3 +320,11 @@ directive @relationship(
 	"""
 	to: String
 ) on FIELD_DEFINITION
+
+"""
+Hash the primary key to a fixed slot, whose database map names a shard.
+slots is database-wide, optional, and 1..65536; omitted adopts the map count or defaults to 1024.
+by and slotFrom are not supported yet (harper-pro#1178).
+The policy cannot be changed or removed after activation.
+"""
+directive @sharded(slots: Int, by: String, slotFrom: String) on OBJECT

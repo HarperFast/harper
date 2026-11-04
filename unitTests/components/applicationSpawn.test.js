@@ -16,14 +16,22 @@ const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const testUtils = require('../testUtils.js');
+const { waitFor } = require('../waitFor.js');
 testUtils.preTestPrep();
 
 const {
 	nonInteractiveSpawn,
 	terminateProcessTree,
 	waitForConfirmedTermination,
-	waitForWindowsTreeTermination,
 } = require('#src/components/Application');
+const {
+	isProcessGroupAlive,
+	registerProcessGroup,
+	unregisterProcessGroup,
+	addProcessGroup,
+	removeProcessGroup,
+	terminateProcessGroupsForThread,
+} = require('#src/server/threads/manageThreads');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
 let workDir;
@@ -167,16 +175,25 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 			process.exit(0);`
 		);
 		const childProcess = spawn(process.execPath, [parent], { stdio: 'ignore', detached: true });
+		const treeIdentity = { rootPid: childProcess.pid, rootKnownAt: Date.now() };
 		await once(childProcess, 'exit');
+		treeIdentity.rootExitedAt = Date.now();
 		// The direct child has already exited (exitCode is set) before termination is ever attempted —
 		// exactly the state that let the old exitCode/signalCode check skip probing the process group.
 		assert.notStrictEqual(childProcess.exitCode, null);
 
-		await delay(50);
-		const sizeBeforeTermination = (await require('node:fs/promises').stat(writesPath)).size;
-		assert.ok(sizeBeforeTermination > 0, 'descendant writer should have started before termination');
+		await waitFor(
+			async () => {
+				try {
+					return (await require('node:fs/promises').stat(writesPath)).size;
+				} catch {
+					return false;
+				}
+			},
+			{ message: 'descendant writer should have started before termination' }
+		);
 
-		await terminateProcessTree(childProcess, Promise.resolve());
+		await terminateProcessTree(childProcess, Promise.resolve(), treeIdentity);
 
 		const sizeAfterTermination = (await require('node:fs/promises').stat(writesPath)).size;
 		await delay(150); // asserting the non-event: the orphaned descendant must be gone, not still writing
@@ -222,17 +239,305 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		assert.equal(settled, true);
 	});
 
-	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {
-		let attempts = 0;
-		await waitForWindowsTreeTermination(
-			() => {
-				attempts++;
-				return false;
-			},
-			() => false,
-			5
+	it('treats a Linux process group containing only zombies as terminated', () => {
+		let now = 0;
+		const nextScan = () => (now += 1000);
+		const zombieGroup = (processIds) =>
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => processIds,
+				readStat: (path) =>
+					path === '/proc/123/stat' ? '123 (installer worker) Z 1 123 123' : '456 (installer child) Z 1 123 123',
+				now: nextScan,
+			});
+		assert.strictEqual(zombieGroup(['123', '456']), false);
+		assert.strictEqual(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['123', '456'],
+				readStat: (path) =>
+					path === '/proc/123/stat' ? '123 (installer) Z 1 123 123' : '456 (still running) S 1 123 123',
+				now: nextScan,
+			}),
+			true
 		);
-		assert.equal(attempts, 1);
+		assert.strictEqual(zombieGroup(['123']), false);
+		assert.strictEqual(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['456'],
+				readStat: (path) => {
+					if (path === '/proc/123/stat') throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+					return '456 (unreaped child) Z 1 123 123';
+				},
+				now: nextScan,
+			}),
+			false
+		);
+		assert.strictEqual(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['456'],
+				readStat: (path) => {
+					if (path === '/proc/123/stat') throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+					return '456 (running child) S 1 123 123';
+				},
+				now: nextScan,
+			}),
+			true
+		);
+		unregisterProcessGroup(123);
+	});
+
+	it('does not let an unrelated unreadable proc entry keep a Linux process group alive', () => {
+		// A pid we can't read (e.g. EACCES under hidepid/ProtectProc) cannot be one of our own
+		// children — we spawned them as this same user, so their stat is always readable — so it
+		// must not block confirming that a group whose own members are all zombie is gone.
+		const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+		assert.strictEqual(
+			isProcessGroupAlive(678, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['678', '679'],
+				readStat: (path) => {
+					if (path === '/proc/678/stat') return '678 (installer) Z 1 678 678';
+					throw permissionError;
+				},
+			}),
+			false
+		);
+		unregisterProcessGroup(678);
+	});
+
+	it('keeps a Linux process group alive when a scan read fails for a reason other than permission or absence', () => {
+		// Unlike EACCES/ENOENT (proof the pid isn't one of our own), an error like EMFILE or a torn
+		// read proves nothing either way, so it must stay conservative rather than skip the pid.
+		assert.strictEqual(
+			isProcessGroupAlive(680, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['680', '681'],
+				readStat: (path) => {
+					if (path === '/proc/680/stat') return '680 (installer) Z 1 680 680';
+					throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
+				},
+			}),
+			true
+		);
+		unregisterProcessGroup(680);
+	});
+
+	it('warns once when process-group termination remains unconfirmed', () => {
+		let now = 0;
+		const warnings = [];
+		const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => ['789'],
+			readStat: () => {
+				throw permissionError;
+			},
+			now: () => now,
+			warn: (message) => warnings.push(message),
+		};
+
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		now = 29999;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.deepStrictEqual(warnings, []);
+		now = 30000;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.deepStrictEqual(warnings, [
+			'Process group 789 termination remains unconfirmed after 30000ms: reading /proc/789/stat failed (EACCES)',
+		]);
+		now = 60000;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.strictEqual(warnings.length, 1);
+		unregisterProcessGroup(789);
+	});
+
+	it('does not trust a recycled Linux process-group leader pid', () => {
+		assert.strictEqual(
+			isProcessGroupAlive(234, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['234', '456'],
+				readStat: (path) =>
+					path === '/proc/234/stat' ? '234 (unrelated process) S 1 999 999' : '456 (installer child) Z 1 234 234',
+			}),
+			false
+		);
+	});
+
+	it('requires two all-zombie scans before reporting a Linux process group terminated', () => {
+		let scanCount = 0;
+		assert.strictEqual(
+			isProcessGroupAlive(345, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => {
+					scanCount++;
+					return ['345', '456'];
+				},
+				readStat: (path) =>
+					path === '/proc/345/stat' || scanCount === 1
+						? `${path === '/proc/345/stat' ? 345 : 456} (installer) Z 1 345 345`
+						: '456 (forked child) S 1 345 345',
+			}),
+			true
+		);
+		assert.strictEqual(scanCount, 2);
+		unregisterProcessGroup(345);
+	});
+
+	it('throttles Linux process-group scans and clears the throttle when unregistered', () => {
+		let now = 0;
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['456'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/456/stat') return `456 (installer child) ${childState} 1 567 567`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => now,
+		};
+
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		assert.strictEqual(scanCount, 1);
+		childState = 'Z';
+		now = 999;
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		assert.strictEqual(scanCount, 1);
+		now = 1000;
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 3);
+
+		childState = 'S';
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		const registrationGeneration = registerProcessGroup(567);
+		unregisterProcessGroup(567, registrationGeneration);
+		childState = 'Z';
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 6);
+	});
+
+	it('clears cached liveness when a PID is registered to a new generation', () => {
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['568'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/568/stat') return `568 (installer child) ${childState} 1 567 567`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => 0,
+		};
+
+		addProcessGroup(7, 567, 100, 90, 1);
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		childState = 'Z';
+		addProcessGroup(7, 567, 500, 490, 2);
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 3);
+		removeProcessGroup(7, 567, 2);
+	});
+
+	it('ignores an unregister from a thread that does not own the group id', () => {
+		// A group id is a PID, and the OS reuses it the moment the process exits. Thread A's
+		// UNREGISTER_PROCESS_GROUP can arrive after A already released the PID and thread B registered
+		// a new child that recycled it; clearing B's state there leaves B's termination with no
+		// identity to check, falling back to a `rootKnownAt` of now, which findWindowsTreeRoot accepts
+		// for whatever process holds the PID — the harper#2273 unrelated-process kill.
+		let now = 0;
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['4243'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/4243/stat') return `4243 (installer child) ${childState} 1 4242 4242`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => now,
+		};
+
+		// A owned the PID first — this is the case membership alone cannot tell apart, because A still
+		// holds it in its own set when its delayed unregister finally arrives
+		addProcessGroup(7, 4242, 100, 90);
+		addProcessGroup(11, 4242, 500, 400); // thread B's fresh child on the recycled PID
+		assert.strictEqual(isProcessGroupAlive(4242, options), true);
+		const scansBefore = scanCount;
+
+		removeProcessGroup(7, 4242); // thread A's late unregister, for the PID it used to own
+
+		childState = 'Z';
+		now = 1;
+		// B's group is still registered, so A's message must not reset the throttle that keeps this
+		// answer cached — a reset would rescan and report B's live group as gone
+		assert.strictEqual(isProcessGroupAlive(4242, options), true, "a foreign unregister must not clear B's state");
+		assert.strictEqual(scanCount, scansBefore, 'and must not force a rescan of it');
+
+		removeProcessGroup(11, 4242); // B's own unregister does clear it
+		assert.strictEqual(isProcessGroupAlive(4242, options), false);
+	});
+
+	it('does not terminate a group id a recycled PID has handed to another thread', async () => {
+		// The dead-owner sweep runs over the thread's own set, and that set still lists a PID whose
+		// process exited and whose id another thread's child now holds. Killing on membership alone is
+		// the harper#2273 unrelated-process kill, and waiting on it would block this termination until
+		// a stranger's process exits.
+		let now = 0;
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['5151'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/5151/stat') return `5151 (installer child) ${childState} 1 5150 5150`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => now,
+		};
+
+		addProcessGroup(21, 5150, 100, 90); // thread A registers it
+		addProcessGroup(22, 5150, 500, 400); // A's process exits, the OS hands the PID to B's child
+		assert.strictEqual(isProcessGroupAlive(5150, options), true);
+		const scansBefore = scanCount;
+
+		await terminateProcessGroupsForThread(21); // A is torn down before its unregister lands
+
+		childState = 'Z';
+		now = 1;
+		// a sweep that had cleared B's state would drop the throttle and rescan, reporting B's group gone
+		assert.strictEqual(isProcessGroupAlive(5150, options), true, "B's group must survive A's sweep");
+		assert.strictEqual(scanCount, scansBefore, 'and its cached liveness must be untouched');
+		// the stamp is still B's: removeProcessGroup only clears state whose stamp names the caller
+		removeProcessGroup(22, 5150);
+		assert.strictEqual(isProcessGroupAlive(5150, options), false);
 	});
 
 	it('terminates a detached process tree when its owning worker is force-terminated', async () => {

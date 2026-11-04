@@ -7,14 +7,15 @@ const assert = require('node:assert');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const path = require('path');
-const env_mgr = require('#src/utility/environment/environmentManager');
-const keys = rewire('#src/security/keys');
+const env_mgr = require('#js/utility/environment/environmentManager');
+const keys = rewire('#js/security/keys');
 const { generateSerialNumber } = require('#src/security/keys');
 const config_utils = require('#src/config/configUtils');
 const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
 const { waitFor } = require('../waitFor.js');
+const { _resetForTests: resetWatcherFallbackWarning } = require('#src/utility/watcherFallback');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -139,6 +140,10 @@ describe('Test keys module', () => {
 	});
 
 	it('Test loadCertificates loads certs from config file', async () => {
+		assert.ok(
+			keys.getPrivateKeys().get(actual_cert.private_key_name) === test_private_key,
+			'configured keys remain available through getPrivateKeys'
+		);
 		const all_certs = await keys.listCertificates();
 		let private_key_pass = true;
 		let cert_pass = false;
@@ -197,7 +202,59 @@ describe('Test keys module', () => {
 		const key_and_cert = await getCertAuthority();
 		expect(key_and_cert).to.exist;
 		expect(key_and_cert.ca).to.exist;
-		keys.__get__('privateKeys').set(actual_ca.private_key_name, test_private_key);
+		keys.getPrivateKeys().delete(actual_ca.private_key_name);
+	});
+
+	it('retains the cached configured authority key while its file is temporarily missing', async () => {
+		try {
+			await fs.writeFile(test_private_key_path, ca_key);
+			keys.getPrivateKeys();
+			await fs.remove(test_private_key_path);
+			const authority = await keys.getCertAuthority();
+			assert.ok(authority?.ca.name === actual_ca.name, 'the missing-file window must not lose the authority');
+			assert.ok(authority.private_key === ca_key, 'authority lookup must retain its last file-derived key');
+		} finally {
+			await fs.writeFile(test_private_key_path, test_private_key);
+			keys.getPrivateKeys();
+		}
+	});
+
+	it('refreshes configured keys for retrieval and when the certificate table triggers a rebuild', async function () {
+		this.timeout(15000);
+		const { databases } = require('#src/resources/databases');
+		const recordName = `configured-file-reload-${Date.now()}`;
+		const hostname = `${recordName}.harper.test`;
+		const rotated = await mkcert.createCert({
+			domains: [hostname],
+			validityDays: 1,
+			ca: { key: ca_key, cert: test_ca },
+		});
+		const record = {
+			name: recordName,
+			certificate: test_cert,
+			private_key_name: actual_cert.private_key_name,
+			hostnames: [hostname],
+			uses: ['mqtt'],
+		};
+		try {
+			await databases.system.hdb_certificate.put(record);
+			const server = { secureContexts: null, secureContextsListeners: [] };
+			await keys.createTLSSelector('mqtt').initialize(server);
+			assert.strictEqual(server.secureContexts.get(hostname).options.key, test_private_key);
+			await fs.writeFile(test_private_key_path, rotated.key);
+			assert.ok(
+				keys.getPrivateKeys().get(actual_cert.private_key_name) === rotated.key,
+				'key retrieval must refresh file-derived entries before a certificate-table update'
+			);
+			await databases.system.hdb_certificate.put({ ...record, certificate: rotated.cert });
+			await waitFor(() => server.secureContexts.get(hostname)?.options.key === rotated.key, {
+				timeout: 6000,
+				message: 'the table-triggered rebuild used a stale configured key',
+			});
+		} finally {
+			await fs.writeFile(test_private_key_path, test_private_key);
+			await databases.system.hdb_certificate.delete(recordName);
+		}
 	});
 
 	it('Test reviewSelfSignedCert create a new cert', async () => {
@@ -220,6 +277,63 @@ describe('Test keys module', () => {
 		keys.updateConfigCert('public/cert.pem', 'private/cert.pem', 'certificate/authority.pem');
 		const call = update_config_value_stub.getCalls().find((c) => c.args[0] === 'tls' || c.args[2]?.tls_privateKey);
 		expect(call).to.exist;
+	});
+
+	it('Test updateConfigCert skips tls_* writes when configured tls is an array', () => {
+		config_utils.getConfigFromFile.restore();
+		sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+			if (key === 'tls') {
+				return [
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+				];
+			}
+			if (key === 'rootPath') return root_path;
+			return undefined;
+		});
+		update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+		keys.updateConfigCert();
+		expect(update_config_value_stub.calledOnce).to.be.true;
+		const newCertsArg = update_config_value_stub.firstCall.args[2];
+		expect(Object.keys(newCertsArg).filter((k) => k.startsWith('tls_'))).to.deep.equal([]);
+	});
+
+	it('Test updateConfigCert skips flat tls_* and operationsApi_tls_* writes and logs a warning when sections are arrays', () => {
+		config_utils.getConfigFromFile.restore();
+		sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+			if (key === 'tls' || key === 'operationsApi_tls') {
+				return [
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+				];
+			}
+			if (key === 'rootPath') return root_path;
+			return undefined;
+		});
+		const warnStub = sandbox.stub();
+		const restoreLogger = keys.__set__('logger', { warn: warnStub });
+		const savedTlsCert = process.env.TLS_CERTIFICATE;
+		const savedOpsTlsCert = process.env.OPERATIONSAPI_TLS_CERTIFICATE;
+		process.env.TLS_CERTIFICATE = test_cert_path;
+		process.env.OPERATIONSAPI_TLS_CERTIFICATE = test_cert_path;
+		try {
+			update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+			keys.updateConfigCert();
+			expect(update_config_value_stub.calledOnce).to.be.true;
+			const newCertsArg = update_config_value_stub.firstCall.args[2];
+			expect(
+				Object.keys(newCertsArg).filter((k) => k.startsWith('tls_') || k.startsWith('operationsApi_tls_'))
+			).to.deep.equal([]);
+			expect(warnStub.calledTwice).to.be.true;
+			expect(warnStub.firstCall.args[0]).to.include('tls_certificate');
+			expect(warnStub.secondCall.args[0]).to.include('operationsApi_tls_certificate');
+		} finally {
+			restoreLogger();
+			if (savedTlsCert === undefined) delete process.env.TLS_CERTIFICATE;
+			else process.env.TLS_CERTIFICATE = savedTlsCert;
+			if (savedOpsTlsCert === undefined) delete process.env.OPERATIONSAPI_TLS_CERTIFICATE;
+			else process.env.OPERATIONSAPI_TLS_CERTIFICATE = savedOpsTlsCert;
+		}
 	});
 
 	it('hostnamesFromCert returns the correct hostnames', async () => {
@@ -437,10 +551,6 @@ describe('Test keys module', () => {
 					decoy('sel-decoy-' + Date.now()),
 				],
 				async () => {
-					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
-					// rebuild registration per test); the hdb_certificate subscription itself is retained
-					// regardless — that's a pre-existing createTLSSelector characteristic, not something
-					// this arg controls.
 					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
@@ -467,10 +577,6 @@ describe('Test keys module', () => {
 					decoy('sel-decoy-2-' + Date.now()),
 				],
 				async () => {
-					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
-					// rebuild registration per test); the hdb_certificate subscription itself is retained
-					// regardless — that's a pre-existing createTLSSelector characteristic, not something
-					// this arg controls.
 					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
@@ -589,76 +695,122 @@ describe('Test keys module', () => {
 		});
 	});
 
-	describe('private-key hot-reload triggers a TLS context rebuild', () => {
-		// handlePrivateKeyReload is the single chokepoint for both the chokidar watcher and the
-		// periodic poll. On a worker, the new cert arrives via the hdb_certificate subscription, but
-		// the key only lands in the in-thread privateKeys map — without a rebuild the worker keeps a
-		// secure context pairing the new cert with the old key. These tests pin the rotation guard
-		// (the part that decides whether a reload triggers a rebuild) directly.
-		let privateKeysMap;
-		let liveTLSRebuilders;
-		let handlePrivateKeyReload;
-		let spy;
-		let keyName;
+	describe('createTLSSelector initialized by a request (harper-pro#1189)', () => {
+		let databases;
+		let contextStorage;
+		let suspendDatabaseCommits;
+		let systemDescriptor;
+		let certificates;
+		const restores = [];
+		const restore = () => {
+			while (restores.length) restores.pop()();
+		};
+		// a suspended database fails every certificate-table call with DatabaseClosingError
+		const suspendSystemDatabase = () => {
+			const suspension = suspendDatabaseCommits([certificates.primaryStore.rootStore]);
+			restores.push(() => suspension.release());
+		};
 
 		beforeEach(() => {
-			privateKeysMap = keys.__get__('privateKeys');
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			handlePrivateKeyReload = keys.__get__('handlePrivateKeyReload');
-			keyName = 'unit-key-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.pem';
-			spy = sinon.spy();
-			liveTLSRebuilders.add(spy);
+			databases = require('#src/resources/databases').databases;
+			contextStorage = require('#src/resources/transaction').contextStorage;
+			({ suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction'));
+			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
+			certificates = databases.system.hdb_certificate;
 		});
 
 		afterEach(() => {
-			liveTLSRebuilders.delete(spy);
-			privateKeysMap.delete(keyName);
+			restore();
+			delete databases.system;
+			Object.defineProperty(databases, 'system', systemDescriptor);
 		});
 
-		it('rebuilds on the initial load of a key (recovery: key appears/restored after boot)', () => {
-			// At normal startup liveTLSRebuilders is empty so this is a no-op; once selectors are
-			// registered (modeled here by the spy), a key that first appears must rebuild or the
-			// worker would stay stranded on a context built without it.
-			handlePrivateKeyReload(keyName, 'KEY-A');
-			expect(privateKeysMap.get(keyName)).to.equal('KEY-A');
-			expect(spy.calledOnce, 'first appearance of a key must trigger a rebuild when rebuilders exist').to.be.true;
+		it('builds from the certificate table even when an anonymous request triggered it', async function () {
+			this.timeout(5000);
+			const anonymousRequest = { authorize: true, user: undefined };
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('replication', undefined, true);
+			await contextStorage.run(anonymousRequest, () => selector.initialize(pseudoServer));
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the selector must see the certificate table');
+			assert.strictEqual(anonymousRequest.authorize, true, "the request's authorization gate is left for the request");
+			assert.throws(
+				() => contextStorage.run(anonymousRequest, () => Array.from(certificates.search([]))),
+				/Must login/,
+				'the request itself still cannot read the certificate table'
+			);
 		});
 
-		it('rebuilds when the key rotates to a new value', () => {
-			privateKeysMap.set(keyName, 'KEY-A');
-			handlePrivateKeyReload(keyName, 'KEY-B');
-			expect(privateKeysMap.get(keyName)).to.equal('KEY-B');
-			expect(spy.calledOnce, 'a rotated key must trigger exactly one rebuild fan-out').to.be.true;
+		it('retries a one-shot initialization that rejected', async function () {
+			this.timeout(5000);
+			suspendSystemDatabase();
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('replication', undefined, false);
+			const failed = selector.initialize(pseudoServer);
+			await assert.rejects(failed, { name: 'DatabaseClosingError' });
+			assert.strictEqual(selector.ready, failed, 'holders reading `.ready` directly still see the failure');
+			restore();
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
 		});
 
-		it('does not rebuild when the reloaded key is unchanged', () => {
-			privateKeysMap.set(keyName, 'KEY-A');
-			handlePrivateKeyReload(keyName, 'KEY-A');
-			expect(spy.called, 'an identical-content reload must not trigger a rebuild').to.be.false;
+		it('keeps a rejected listener selector retrying until it recovers, still subscribed', async function () {
+			this.timeout(15000);
+			suspendSystemDatabase();
+			let notified = 0;
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [() => notified++] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await assert.rejects(selector.initialize(pseudoServer), { name: 'DatabaseClosingError' });
+			restore();
+			await waitFor(() => pseudoServer.secureContexts.size > 0, {
+				timeout: 5000,
+				message: 'a listener that never calls initialize() again must still recover',
+			});
+			assert.ok(notified > 0, 'listeners registered before the failure are told about the recovery');
+			assert.ok(await selector.ready, '`.ready` now reports the recovery');
+			// the first subscribe() threw; the retry must have subscribed, or certificate writes go unseen
+			const notifiedBeforeWrite = notified;
+			const [record] = Array.from(certificates.search([]));
+			await certificates.put({ ...record });
+			await waitFor(() => notified > notifiedBeforeWrite, {
+				timeout: 5000,
+				message: 'a certificate write after recovery must rebuild the selector',
+			});
 		});
-	});
 
-	describe('createTLSSelector live-reload registration', () => {
-		// Live server selectors must register for key-rotation rebuilds; transient single-use
-		// selectors (getReplicationCert) must not, or they would accumulate in the registry.
-		it('registers a rebuilder for a live selector but not for a transient one', async () => {
-			const liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			const snapshot = [...liveTLSRebuilders];
-			try {
-				const transient = keys.createTLSSelector('https', undefined, false);
-				await transient.initialize(null);
-				expect(liveTLSRebuilders.size, 'transient selector must not register').to.equal(snapshot.length);
-
-				const live = keys.createTLSSelector('https');
-				await live.initialize(null);
-				expect(liveTLSRebuilders.size, 'live selector must register exactly one rebuilder').to.equal(
-					snapshot.length + 1
-				);
-			} finally {
-				// Drop any rebuilders added by this test so later tests aren't perturbed.
-				liveTLSRebuilders.clear();
-				snapshot.forEach((r) => liveTLSRebuilders.add(r));
-			}
+		it('replaces a rejected listener attempt when initialize() is called again', async function () {
+			this.timeout(10000);
+			// Suspension fails subscribe() along with search(); this case needs a live subscription to retire,
+			// so only search() is made to fail.
+			let ended = false;
+			const replace = (name, implementation) => {
+				const own = Object.getOwnPropertyDescriptor(certificates, name);
+				certificates[name] = implementation(certificates[name]);
+				restores.push(() => (own ? Object.defineProperty(certificates, name, own) : delete certificates[name]));
+			};
+			replace(
+				'subscribe',
+				(subscribe) =>
+					function (...args) {
+						return subscribe.apply(this, args).then((subscription) => {
+							const end = subscription.end;
+							subscription.end = function () {
+								ended = true;
+								return end.apply(this, arguments);
+							};
+							return subscription;
+						});
+					}
+			);
+			replace('search', () => () => {
+				throw new Error('transient read');
+			});
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await assert.rejects(selector.initialize(pseudoServer), /transient read/);
+			restore();
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'the second initialization must run a fresh pass');
+			await waitFor(() => ended, { timeout: 2000, message: "the replaced attempt's subscription was not ended" });
 		});
 	});
 
@@ -694,11 +846,7 @@ describe('Test keys module', () => {
 			// while the race is unresolved, only settling once a real pass (with the table loaded)
 			// completes. This uses the real (debounced, ~1.5s) retry and real timers — no Sinon fake
 			// timers, no rewire access to internal state — condition-waiting on the actual observable
-			// transition instead. liveReload=false so this test's selector never registers with the
-			// module-level liveTLSRebuilders registry — a real selector (e.g. MQTT's) always defaults
-			// to true, but that registration isn't part of what this race is about, and leaving it true
-			// here would leak scheduleRebuild (and this test's pseudoServer/caCerts interaction) into
-			// every later test's private-key-reload rebuilds for the rest of the suite.
+			// transition instead. liveReload=false avoids leaving a subscription behind.
 			this.timeout(5000);
 			delete databases.system; // as on a worker thread before the system db has loaded
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
@@ -780,21 +928,15 @@ describe('Test keys module', () => {
 		// yet). Before this fix, that resolved `.ready` with an empty cert list — the exact
 		// customer-visible symptom this PR exists to fix.
 		let databases;
-		let liveTLSRebuilders;
-		let rebuildersSnapshot;
 		let searchStub;
 
 		beforeEach(() => {
 			databases = require('#src/resources/databases').databases;
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			rebuildersSnapshot = [...liveTLSRebuilders];
 			searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').returns([]);
 		});
 
 		afterEach(() => {
 			searchStub.restore();
-			liveTLSRebuilders.clear();
-			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
 		});
 
 		it('retries (does not resolve) for a live selector, then resolves with real certs once a rebuild sees them', async function () {
@@ -903,26 +1045,20 @@ describe('Test keys module', () => {
 		// updateTLS and re-subscribes when it changes. This test drives that path end-to-end through
 		// real module surfaces: the swap-detection can only run when something re-enters updateTLS,
 		// and here that trigger is the selector's still-live subscription on the OLD table firing on
-		// a write — the same trigger class (any scheduled rebuild) that a private-key reload or the
+		// a write — the same trigger class (any scheduled rebuild) that the
 		// zero-certs retry supplies in production.
 		let databases;
-		let liveTLSRebuilders;
-		let rebuildersSnapshot;
 		let realTable;
 		const swapTestCertName = 'swap-test-cert-' + Date.now();
 
 		beforeEach(() => {
 			databases = require('#src/resources/databases').databases;
 			realTable = databases.system.hdb_certificate;
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			rebuildersSnapshot = [...liveTLSRebuilders];
 		});
 
 		afterEach(async () => {
 			databases.system.hdb_certificate = realTable;
 			await realTable.delete(swapTestCertName).catch(() => {});
-			liveTLSRebuilders.clear();
-			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
 		});
 
 		it('re-subscribes to the new table instance and rebuilds contexts on the next rebuild after a swap', async function () {
@@ -974,6 +1110,441 @@ describe('Test keys module', () => {
 			// instance and re-read through it.
 			assert.ok(subscribeCalls >= 1, 'the rebuild must re-subscribe via the new table instance');
 			assert.ok(searchCallsOnNewTable > 0, 'the rebuild must re-read certificates through the new table instance');
+		});
+	});
+
+	describe('updateTLS transactional publication — retain-last-good on record failure (#2382)', () => {
+		// These tests pin harper#2382's replacement contract: a rebuild pass never publishes a
+		// state worse than the one being served (clear-first used to drop a mismatched record's
+		// hostnames to the self-signed default for days).
+		let databases;
+		let keyPairA;
+		let keyPairB;
+
+		before(async function () {
+			this.timeout(10000);
+			keyPairA = await mkcert.createCert({
+				domains: ['retain-a.harper.test'],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			keyPairB = await mkcert.createCert({
+				domains: ['retain-b.harper.test'],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+		});
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+		});
+
+		const uniqueName = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+		async function putRecord(name, certificate, keyName, hostnames, uses = ['mqtt']) {
+			await databases.system.hdb_certificate.put({
+				name,
+				certificate,
+				uses,
+				is_authority: false,
+				private_key_name: keyName,
+				hostnames,
+			});
+		}
+
+		async function healthySelector(recordName, keyName, hostname) {
+			keys.getPrivateKeys().set(keyName, keyPairA.key);
+			await putRecord(recordName, keyPairA.cert, keyName, [hostname]);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await selector.initialize(pseudoServer);
+			await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+				timeout: 6000,
+				message: 'baseline context for the test record never published',
+			});
+			return pseudoServer;
+		}
+
+		it('a record whose context fails to build keeps serving its last-good context, logs once, and heals on retry', async function () {
+			this.timeout(30000);
+			const recordName = uniqueName('retain');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const logCalls = [];
+			// keys.ts logs through a module-local component logger, not the global.
+			const tlsLogger = keys.__get__('logger');
+			const originalError = tlsLogger.error;
+			tlsLogger.error = (...args) => {
+				logCalls.push(args);
+				return originalError?.apply(tlsLogger, args);
+			};
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				const baselineDefault = pseudoServer.defaultContext;
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() =>
+					publishes.push(pseudoServer.secureContexts.get(hostname)?.certStart)
+				);
+
+				// Break the record: cert B in the table, key A still in the map — createSecureContext
+				// throws for this record on the next rebuild (the #2382 mismatch shape).
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(() => publishes.length >= 1, {
+					timeout: 6000,
+					message: 'the failing rebuild never published',
+				});
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'the failed record must keep its last-good context, not lose its hostname to the default'
+				);
+				assert.strictEqual(
+					pseudoServer.defaultContext,
+					baselineDefault,
+					'the default must not fall to a lower-quality survivor while the best record is retained'
+				);
+
+				// Throttling: the retry (backoff base 1.5s) reruns the same failure; the count of
+				// per-record error lines for this record must not grow while the signature is unchanged.
+				const failureLogs = () => logCalls.filter((args) => args.includes(recordName)).length;
+				const loggedAfterFirstPass = failureLogs();
+				assert.ok(loggedAfterFirstPass >= 1, 'the first failing pass must log the record error');
+				await waitFor(() => publishes.length >= 2, {
+					timeout: 10000,
+					message: 'the failure retry never ran a second pass',
+				});
+				assert.strictEqual(
+					failureLogs(),
+					loggedAfterFirstPass,
+					'an unchanged failure signature must not re-log per-record errors on every retry'
+				);
+
+				// Heal: key B arrives in the map. Nothing else triggers a rebuild — the failure retry
+				// itself must pick it up and converge, replacing the retained context with cert B.
+				keys.getPrivateKeys().set(keyName, keyPairB.key);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.options?.cert?.includes(keyPairB.cert), {
+					timeout: 15000,
+					message: 'the failure retry never healed the record after its key became available',
+				});
+			} finally {
+				tlsLogger.error = originalError;
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('deleting a record drops its contexts — retention never outlives the record', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('drop');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				await databases.system.hdb_certificate.delete(recordName);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname) === undefined, {
+					timeout: 6000,
+					message: 'a deleted record must drop its hostname contexts on the next pass',
+				});
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a successful pass drops hostnames the record no longer claims', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('rename');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const newHostname = `${recordName}-renamed.harper.test`;
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				await putRecord(recordName, keyPairA.cert, keyName, [newHostname]);
+				await waitFor(
+					() =>
+						pseudoServer.secureContexts.get(newHostname)?.name === recordName &&
+						pseudoServer.secureContexts.get(hostname) === undefined,
+					{ timeout: 6000, message: 'a successful pass must publish the new hostname and drop the old one' }
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a CA-set change does not cost a non-mTLS record its retention', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('castale');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const caName = uniqueName('retain-ca');
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.get(hostname)));
+				// Change the CA set and break the record in the same window. Without mTLS nothing in
+				// the context consults the CA set, so retention keeps serving the same object rather
+				// than dropping the record or paying for a rebuild.
+				await databases.system.hdb_certificate.put({
+					name: caName,
+					certificate: keyPairB.cert,
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(() => publishes.length >= 1, {
+					timeout: 8000,
+					message: 'the failing rebuild never published',
+				});
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'a non-mTLS record must retain its context across a CA-set change'
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(caName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it("an equal-quality sibling cannot take a failed record's hostname or the default on a tie", async function () {
+			this.timeout(20000);
+			const recordA = uniqueName('tie-a');
+			const recordB = uniqueName('tie-b');
+			const keyA = `${recordA}.pem`;
+			const keyB = `${recordB}.pem`;
+			const hostname = `${recordA}.harper.test`;
+			try {
+				// Baseline: A alone owns the hostname and the default.
+				const pseudoServer = await healthySelector(recordA, keyA, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				assert.strictEqual(pseudoServer.defaultContext?.name, recordA);
+
+				// Add B with equal quality claiming the SAME hostname, and break A in the same window.
+				// B builds; retained A must reclaim the hostname it owned and keep the default — ties
+				// go to the incumbent, not to whichever sibling happened to build this pass.
+				keys.getPrivateKeys().set(keyB, keyPairB.key);
+				await putRecord(recordB, keyPairB.cert, keyB, [hostname]);
+				await putRecord(recordA, keyPairB.cert, keyA, [hostname]); // cert B against key A: A now fails
+				await waitFor(
+					() => {
+						const context = pseudoServer.secureContexts.get(hostname);
+						return context && context.name === recordA && pseudoServer.defaultContext?.name === recordA;
+					},
+					{
+						timeout: 8000,
+						message: 'the failed incumbent lost its hostname or the default to an equal-quality sibling',
+					}
+				);
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'the retained incumbent must keep serving its last-good context'
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyA);
+				keys.getPrivateKeys().delete(keyB);
+				await databases.system.hdb_certificate.delete(recordA).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordB).catch(() => {});
+			}
+		});
+
+		it('a retained mTLS context stops trusting a removed client CA', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('carevoke');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const caName = uniqueName('revoked-ca');
+			try {
+				// The CA to revoke exists before the selector is built, so the baseline context's
+				// frozen ca: trust list includes it.
+				await databases.system.hdb_certificate.put({
+					name: caName,
+					certificate: keyPairB.cert,
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				keys.getPrivateKeys().set(keyName, keyPairA.key);
+				await putRecord(recordName, keyPairA.cert, keyName, [hostname]);
+				const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+				const selector = keys.createTLSSelector('mqtt', { requestCert: true }, true);
+				await selector.initialize(pseudoServer);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+					timeout: 6000,
+					message: 'baseline mTLS context for the test record never published',
+				});
+				const baseline = pseudoServer.secureContexts.get(hostname);
+				assert.ok(
+					baseline.options.ca?.includes(keyPairB.cert),
+					'the baseline trust list must include the CA about to be revoked'
+				);
+
+				// Revoke the CA while the record is failing: retention must publish a REBUILT context
+				// whose ca: no longer trusts the removed PEM — not the stale object.
+				await databases.system.hdb_certificate.delete(caName);
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(
+					() => {
+						const context = pseudoServer.secureContexts.get(hostname);
+						return (
+							context &&
+							context !== baseline &&
+							Array.isArray(context.options.ca) &&
+							context.options.ca.every((pem) => pem !== keyPairB.cert)
+						);
+					},
+					{ timeout: 8000, message: 'the retained context kept trusting the removed CA' }
+				);
+				assert.strictEqual(pseudoServer.secureContexts.get(hostname).name, recordName);
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(caName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a corrupt authority row is reported through the throttle, armed for retry, and never claims recovery', async function () {
+			// Recovery may ride a backed-off retry timer when the delete event coalesces into an
+			// already-armed rebuild, and every selector accumulated by this suite retries on its own
+			// schedule — generous timeout, condition-based waits.
+			this.timeout(60000);
+			const recordName = uniqueName('badca');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const corruptName = uniqueName('corrupt-ca');
+			const errorLogs = [];
+			const warnLogs = [];
+			const tlsLogger = keys.__get__('logger');
+			const originalError = tlsLogger.error;
+			const originalWarn = tlsLogger.warn;
+			tlsLogger.error = (...args) => {
+				errorLogs.push(args);
+				return originalError?.apply(tlsLogger, args);
+			};
+			tlsLogger.warn = (...args) => {
+				warnLogs.push(args);
+				return originalWarn?.apply(tlsLogger, args);
+			};
+			// A unique listener type makes this selector's failure logs attributable — foreign
+			// suite-accumulated selectors log the same record under their own types.
+			const listenerType = uniqueName('throttle-lens');
+			try {
+				keys.getPrivateKeys().set(keyName, keyPairA.key);
+				await putRecord(recordName, keyPairA.cert, keyName, [hostname], [listenerType]);
+				const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+				const selector = keys.createTLSSelector(listenerType, undefined, true);
+				await selector.initialize(pseudoServer);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+					timeout: 6000,
+					message: 'baseline context for the test record never published',
+				});
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.size));
+				await databases.system.hdb_certificate.put({
+					name: corruptName,
+					certificate: 'NOT-A-PEM',
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				const corruptErrors = () =>
+					errorLogs.filter((args) => args.includes(corruptName) && args.some((a) => String(a).includes(listenerType)))
+						.length;
+				await waitFor(() => corruptErrors() >= 1, {
+					timeout: 8000,
+					message: 'the corrupt authority row was never reported',
+				});
+				// Throttle invariant: this selector's failure logs are attributable via its unique
+				// listener type, so with a stable signature it must log EXACTLY once no matter how many
+				// foreign selectors also fail on the same record. Three completed passes guarantee an
+				// unthrottled implementation would have re-logged.
+				await waitFor(() => publishes.length >= 3, {
+					timeout: 30000,
+					message: 'the failure retry never completed further passes',
+				});
+				assert.strictEqual(
+					corruptErrors(),
+					1,
+					'an unchanged corrupt-row signature must log exactly once for this selector'
+				);
+				assert.ok(
+					!warnLogs.some((args) => String(args[0]).includes('recovered')),
+					'a pass that skipped a corrupt row must not claim recovery'
+				);
+				assert.ok(pseudoServer.secureContexts.get(hostname), 'healthy records must keep publishing');
+
+				// Recovery, state-based: the delete-triggered pass runs, publishes, and the corrupt
+				// failure stops being reported. (The 'recovered' log line itself needs a fully clean
+				// pass across every record, which is suite-order-dependent — not asserted here.)
+				const publishesBeforeDelete = publishes.length;
+				await databases.system.hdb_certificate.delete(corruptName);
+				await waitFor(() => publishes.length > publishesBeforeDelete, {
+					timeout: 30000,
+					message: 'no pass published after the corrupt row was removed',
+				});
+				const errorsAfterRecovery = corruptErrors();
+				await new Promise((resolve) => setTimeout(resolve, 2000));
+				assert.strictEqual(corruptErrors(), errorsAfterRecovery, 'a removed corrupt row must stop being reported');
+			} finally {
+				tlsLogger.error = originalError;
+				tlsLogger.warn = originalWarn;
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(corruptName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a whole-pass failure leaves the published state untouched and the retry heals it', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('passfail');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			let searchStub;
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				const baselineSize = pseudoServer.secureContexts.size;
+				const baselineDefault = pseudoServer.defaultContext;
+
+				searchStub = sandbox
+					.stub(databases.system.hdb_certificate, 'search')
+					.throws(new Error('injected pass failure'));
+				// Trigger a rebuild through the table subscription; the throwing stub itself is the
+				// observable that the pass ran (a failed pass never publishes).
+				await databases.system.hdb_certificate.put({ ...(await databases.system.hdb_certificate.get(recordName)) });
+				await waitFor(() => searchStub.called, {
+					timeout: 6000,
+					message: 'the failing pass never ran',
+				});
+				assert.strictEqual(pseudoServer.secureContexts.get(hostname), baselineContext);
+				assert.strictEqual(
+					pseudoServer.secureContexts.size,
+					baselineSize,
+					'a pass-level throw must not clear live state'
+				);
+				assert.strictEqual(pseudoServer.defaultContext, baselineDefault);
+
+				searchStub.restore();
+				searchStub = undefined;
+				// The armed failure retry must recover on its own once the table is readable again —
+				// observable via a publish (listeners only fire on a completed pass).
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.size));
+				await waitFor(() => publishes.length >= 1, {
+					timeout: 15000,
+					message: 'the retry never republished after the pass-level failure cleared',
+				});
+				assert.ok(pseudoServer.secureContexts.get(hostname), 'the record must survive the recovery pass');
+			} finally {
+				searchStub?.restore();
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
 		});
 	});
 
@@ -1068,6 +1639,121 @@ describe('Test keys module', () => {
 			const record = await certTable.get(certCn);
 			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
 		});
+
+		describe('ciphers and uses follow config while the certificate file is unchanged', () => {
+			const AES128 = 'TLS_AES_128_GCM_SHA256';
+			const AES256 = 'TLS_AES_256_GCM_SHA384';
+			let certCn;
+			let metadataCertPath;
+			let nextCertificate = 0;
+
+			beforeEach(() => {
+				// Reload callbacks retain their config, so earlier watches must not share this case's file or record.
+				certCn = `${actual_cert.name}-metadata-${++nextCertificate}`;
+				metadataCertPath = path.join(test_dir, `metadata-${nextCertificate}.pem`);
+				fs.copyFileSync(test_cert_path, metadataCertPath);
+			});
+
+			afterEach(async () => {
+				if (metadataCertPath) fs.removeSync(metadataCertPath);
+				if (certCn) await certTable.delete(certCn);
+			});
+			const stubTlsConfig = (config) => {
+				sandbox.restore();
+				sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+					if (key === 'tls') return config;
+					if (key === 'rootPath') return root_path;
+					return undefined;
+				});
+			};
+			const entry = (extra) => ({
+				name: certCn,
+				certificate: metadataCertPath,
+				privateKey: test_private_key_path,
+				...extra,
+			});
+			const loadFromNewerFile = async (extra) => {
+				await certTable.put({ ...originalRecord, name: certCn, file_timestamp: Date.now() - 24 * 60 * 60 * 1000 });
+				fs.utimesSync(metadataCertPath, new Date(), new Date());
+				stubTlsConfig(entry(extra));
+				await reloadCertificates();
+			};
+			const reloadWith = async (config) => {
+				stubTlsConfig(config);
+				await reloadCertificates();
+				return certTable.get(certCn);
+			};
+
+			it('updates ciphers and uses on the record when config changes and the file does not', async () => {
+				await loadFromNewerFile({ ciphers: AES128, uses: ['https'] });
+				let record = await certTable.get(certCn);
+				expect(record.ciphers).to.equal(AES128);
+				expect(record.uses).to.deep.equal(['https']);
+				const { file_timestamp, certificate } = record;
+
+				record = await reloadWith(entry({ ciphers: AES256, uses: ['https', 'operations-api'] }));
+				expect(record.ciphers).to.equal(AES256);
+				expect(record.uses).to.deep.equal(['https', 'operations-api']);
+				expect(record.file_timestamp, 'the unchanged file keeps its timestamp').to.equal(file_timestamp);
+				expect(record.certificate).to.equal(certificate);
+				expect(keys.resolveEffectiveTlsCiphers([], [record], 'https', false)).to.equal(AES256);
+			});
+
+			it('clears ciphers on the record when config no longer sets them', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				expect((await certTable.get(certCn)).ciphers).to.equal(AES128);
+
+				expect((await reloadWith(entry({}))).ciphers).to.not.be.ok;
+			});
+
+			it('keeps ciphers an operator set through setCertTable across a reload', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				await keys.setCertTable({ ...(await certTable.get(certCn)), name: certCn, ciphers: 'DEFAULT@SECLEVEL=0' });
+
+				const record = await reloadWith(entry({ ciphers: AES256 }));
+				expect(record.ciphers).to.equal('DEFAULT@SECLEVEL=0');
+				expect(record.file_timestamp, 'the API write keeps file_timestamp, so it is not the ownership signal').to.be.ok;
+			});
+
+			it('keeps following config after a setCertTable write that sets neither field', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				const { certificate } = await certTable.get(certCn);
+				await keys.setCertTable({ name: certCn, certificate });
+
+				const record = await reloadWith(entry({ ciphers: AES256 }));
+				expect(record.ciphers).to.equal(AES256);
+			});
+
+			it('adopts a record from before the ownership marker only when it already matches config', async () => {
+				const { from_config: _marker, ...legacy } = originalRecord;
+				const seedLegacy = (ciphers) =>
+					certTable.put({
+						...legacy,
+						name: certCn,
+						ciphers,
+						uses: ['https'],
+						file_timestamp: Date.now() + 24 * 60 * 60 * 1000,
+					});
+				fs.utimesSync(metadataCertPath, new Date(), new Date());
+
+				await seedLegacy('DEFAULT@SECLEVEL=0');
+				let record = await reloadWith(entry({ ciphers: AES256, uses: ['https'] }));
+				expect(record.ciphers, 'a differing unmarked record may be an operator edit').to.equal('DEFAULT@SECLEVEL=0');
+
+				await seedLegacy(AES128);
+				record = await reloadWith(entry({ ciphers: AES128, uses: ['https'] }));
+				expect(record.from_config).to.equal(true);
+				record = await reloadWith(entry({ ciphers: AES256, uses: ['https'] }));
+				expect(record.ciphers).to.equal(AES256);
+			});
+
+			it('lets the first config entry for a shared certificate file own the record', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+
+				const record = await reloadWith([entry({ ciphers: AES256 }), entry({ ciphers: 'HIGH' })]);
+				expect(record.ciphers).to.equal(AES256);
+			});
+		});
 	});
 
 	describe('loadAndWatch periodic re-read safety net (#586)', () => {
@@ -1075,19 +1761,35 @@ describe('Test keys module', () => {
 		const watchTimers = keys.__get__('certificateWatchTimers');
 		const watchPollers = keys.__get__('certificateWatchPollers');
 		const localSandbox = sinon.createSandbox();
+		const chokidar = require('chokidar');
+		const realChokidarWatch = chokidar.default.watch;
 		let watchPath;
 
+		// Never open a real watcher here: these tests exercise only the poll/reopen paths, and real
+		// watchers would leak fds and risk EMFILE across repeated runs.
+		const fakeWatcher = (captureHandler) => {
+			const watcher = {
+				on: (event, handler) => {
+					captureHandler?.(event, handler);
+					return watcher;
+				},
+				close: () => Promise.resolve(),
+			};
+			return watcher;
+		};
+
 		beforeEach(() => {
-			// Stub chokidar's watch so these tests exercise only the poll path and never open a real
-			// FSWatcher (real watchers would leak fds and risk EMFILE across repeated runs).
-			const chokidar = require('chokidar');
-			localSandbox.stub(chokidar, 'watch').returns({ on: () => {} });
+			chokidar.default.watch = () => fakeWatcher();
 			watchPath = path.join(test_dir, `watch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
 			fs.writeFileSync(watchPath, 'PEM-V1');
 		});
 
 		afterEach(() => {
+			chokidar.default.watch = realChokidarWatch;
 			localSandbox.restore();
+			// warnWatcherFallback's first-fallback gate is process-global; leaving it set would make a
+			// later suite's warning assertion silently observe nothing.
+			resetWatcherFallbackWarning();
 			const timer = watchTimers.get(watchPath);
 			if (timer) clearInterval(timer);
 			watchTimers.delete(watchPath);
@@ -1114,16 +1816,13 @@ describe('Test keys module', () => {
 		});
 
 		it("chokidar's 'change' event reloads even when it emits no stats (alwaysStat off)", () => {
-			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
+			// chokidar defaults alwaysStat:false, so the 'change' handler is called with undefined
 			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
 			let changeHandler;
-			localSandbox.restore();
-			const chokidar = require('chokidar');
-			localSandbox.stub(chokidar, 'watch').returns({
-				on: (event, handler) => {
+			chokidar.default.watch = () =>
+				fakeWatcher((event, handler) => {
 					if (event === 'change') changeHandler = handler;
-				},
-			});
+				});
 
 			const loaded = [];
 			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
@@ -1139,6 +1838,71 @@ describe('Test keys module', () => {
 			expect(loaded).to.eql(['PEM-V1', 'PEM-V2']);
 		});
 
+		it('reopens on polling when the watcher reports exhaustion', async () => {
+			// chokidar emits 'error' unguarded for any code other than ENOENT/ENOTDIR, so without a
+			// listener an ENOSPC here becomes an uncaughtException and the cert fast path dies silently.
+			const openedOptions = [];
+			const errorHandlers = [];
+			const rawHandlers = [];
+			const exhausted = () => Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' });
+			chokidar.default.watch = (_watchedPath, options) => {
+				openedOptions.push(options);
+				return fakeWatcher((event, handler) => {
+					if (event === 'error') errorHandlers.push(handler);
+					if (event === 'raw') rawHandlers.push(handler);
+				});
+			};
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+			expect(openedOptions).to.have.lengthOf(1);
+			expect(openedOptions[0].usePolling).to.equal(undefined);
+
+			errorHandlers[0](exhausted());
+			await new Promise((resolve) => setImmediate(resolve));
+
+			expect(openedOptions).to.have.lengthOf(2);
+			expect(openedOptions[1].usePolling).to.equal(true);
+			expect(rawHandlers).to.have.lengthOf(2, 'the reopened polling watcher must keep the raw-event re-check');
+
+			errorHandlers[0](exhausted());
+			errorHandlers[1](exhausted());
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(openedOptions).to.have.lengthOf(2);
+		});
+
+		it('a synchronous throw from close() stays inside the reopen chain', async () => {
+			// The reopen used to be spelled `Promise.resolve(opened.close())`, whose argument is
+			// evaluated eagerly: a close() that throws synchronously threw out of the 'error' listener
+			// itself, past the chained .catch(), and Node reported it as an uncaught exception instead
+			// of reopening on polling.
+			const openedOptions = [];
+			const errorHandlers = [];
+			chokidar.default.watch = (_watchedPath, options) => {
+				openedOptions.push(options);
+				const watcher = {
+					on: (event, handler) => {
+						if (event === 'error') errorHandlers.push(handler);
+						return watcher;
+					},
+					close: () => {
+						throw new Error('close failed synchronously');
+					},
+				};
+				return watcher;
+			};
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+			expect(openedOptions).to.have.lengthOf(1);
+
+			expect(() =>
+				errorHandlers[0](Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' }))
+			).to.not.throw();
+			await new Promise((resolve) => setImmediate(resolve));
+
+			expect(openedOptions).to.have.lengthOf(2);
+			expect(openedOptions[1].usePolling).to.equal(true);
+		});
+
 		it('does not reload when the file is unchanged (mtime fingerprint dedup)', () => {
 			const loaded = [];
 			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
@@ -1149,6 +1913,75 @@ describe('Test keys module', () => {
 			poll();
 			poll();
 			expect(loaded).to.eql(['PEM-V1']);
+		});
+
+		it('retries an unapplied pair even when neither file changed again', () => {
+			let accept = false;
+			let attempts = 0;
+			loadAndWatch(
+				watchPath,
+				() => {
+					attempts++;
+					return accept;
+				},
+				'certificate'
+			);
+			assert.strictEqual(attempts, 1);
+			accept = true;
+			watchPollers.get(watchPath)();
+			assert.strictEqual(attempts, 2);
+			watchPollers.get(watchPath)();
+			assert.strictEqual(attempts, 2);
+		});
+
+		it('rechecks a restored original inode after an unapplied renewal', () => {
+			const savedPath = watchPath + '.saved';
+			const loaded = [];
+			let acceptRestored = false;
+			try {
+				loadAndWatch(
+					watchPath,
+					(pem) => {
+						loaded.push(pem);
+						return pem === 'PEM-V1' && (loaded.length === 1 || acceptRestored);
+					},
+					'certificate'
+				);
+				fs.renameSync(watchPath, savedPath);
+				fs.writeFileSync(watchPath, 'PEM-V2');
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2']);
+				fs.removeSync(watchPath);
+				fs.renameSync(savedPath, watchPath);
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2', 'PEM-V1']);
+				acceptRestored = true;
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2', 'PEM-V1', 'PEM-V1']);
+				watchPollers.get(watchPath)();
+				assert.strictEqual(loaded.length, 4, 'a successfully restored pair should be deduplicated again');
+			} finally {
+				fs.removeSync(savedPath);
+			}
+		});
+
+		it('rechecks the certificate when only its related key changes', () => {
+			const keyPath = watchPath + '.key';
+			fs.writeFileSync(keyPath, 'KEY-A');
+			const loaded = [];
+			try {
+				loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate', [keyPath]);
+				assert.deepStrictEqual(loaded, ['PEM-V1']);
+				fs.writeFileSync(keyPath, 'KEY-B');
+				const future = (Date.now() + 5000) / 1000;
+				fs.utimesSync(keyPath, future, future);
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V1']);
+				watchPollers.get(watchPath)();
+				assert.strictEqual(loaded.length, 2);
+			} finally {
+				fs.removeSync(keyPath);
+			}
 		});
 
 		it('resolves the configured interval and registers an unref-ed poll timer', () => {
@@ -1190,14 +2023,6 @@ describe('Test keys module', () => {
 			expect(getCertificateWatchInterval()).to.equal(0);
 		});
 
-		it('registers a poll for a private-key watch (key poll must run on all threads, including workers)', () => {
-			// Private keys are loaded per-thread directly from disk (no hdb_certificate propagation), so
-			// the poll safety net must be wired for 'private key' watches regardless of thread. On the
-			// main thread the poller is registered either way; this asserts the key path stays wired.
-			loadAndWatch(watchPath, () => {}, 'private key');
-			expect(watchPollers.get(watchPath), 'a poller should be registered for the private key').to.exist;
-		});
-
 		it('does not register a poll timer when the interval is configured to 0', () => {
 			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
 				if (param === 'tls_certificateWatchInterval') return 0;
@@ -1207,6 +2032,103 @@ describe('Test keys module', () => {
 			loadAndWatch(watchPath, () => {}, 'certificate');
 
 			expect(watchTimers.get(watchPath), 'no timer should be registered when polling is disabled').to.be.undefined;
+		});
+	});
+
+	describe('loadAndWatch fingerprint latch rollback on failed apply (#2382)', () => {
+		// The latch must represent the last successfully APPLIED file, not the last attempted one:
+		// a callback that throws (bad read) or rejects (failed hdb_certificate write) used to leave
+		// the fingerprint latched, so both chokidar and the poll deduplicated the change forever and the
+		// renewal could never heal without another file write.
+		const loadAndWatch = keys.__get__('loadAndWatch');
+		const watchTimers = keys.__get__('certificateWatchTimers');
+		const watchPollers = keys.__get__('certificateWatchPollers');
+		const chokidar = require('chokidar');
+		const realChokidarWatch = chokidar.default.watch;
+		let watchPath;
+
+		const bumpMtime = () => {
+			const future = (Date.now() + 5000 + Math.random() * 5000) / 1000;
+			fs.utimesSync(watchPath, future, future);
+		};
+
+		beforeEach(() => {
+			chokidar.default.watch = () => ({
+				on: function () {
+					return this;
+				},
+				close: () => Promise.resolve(),
+			});
+			watchPath = path.join(test_dir, `latch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
+			fs.writeFileSync(watchPath, 'PEM-V1');
+		});
+
+		afterEach(() => {
+			chokidar.default.watch = realChokidarWatch;
+			const timer = watchTimers.get(watchPath);
+			if (timer) clearInterval(timer);
+			watchTimers.delete(watchPath);
+			watchPollers.delete(watchPath);
+			if (fs.existsSync(watchPath)) fs.removeSync(watchPath);
+		});
+
+		it('a synchronous callback throw unlatches the mtime so the poll retries', () => {
+			const calls = [];
+			let failNext = true;
+			loadAndWatch(
+				watchPath,
+				(pem) => {
+					calls.push(pem);
+					if (calls.length > 1 && failNext) {
+						failNext = false;
+						throw new Error('injected sync apply failure');
+					}
+				},
+				'certificate'
+			);
+			assert.deepStrictEqual(calls, ['PEM-V1']);
+
+			bumpMtime();
+			watchPollers.get(watchPath)(); // reload attempt — throws, must roll back the latch
+			assert.strictEqual(calls.length, 2);
+			watchPollers.get(watchPath)(); // same mtime again — must NOT be deduplicated away
+			assert.strictEqual(calls.length, 3, 'a failed apply must be retried by the next poll');
+			watchPollers.get(watchPath)(); // applied successfully — latched again
+			assert.strictEqual(calls.length, 3, 'a successful apply must re-latch and deduplicate');
+		});
+
+		it('an async rejection unlatches the mtime, and a stale rejection cannot unlatch a newer reload', async () => {
+			const outcomes = [];
+			loadAndWatch(watchPath, () => outcomes.shift(), 'certificate');
+
+			// First change: the callback's write rejects — the poll must retry this mtime.
+			let rejectFirst;
+			outcomes.push(new Promise((_, reject) => (rejectFirst = reject)));
+			bumpMtime();
+			watchPollers.get(watchPath)();
+			rejectFirst(new Error('injected write rejection'));
+			await new Promise((resolve) => setImmediate(resolve));
+
+			outcomes.push(Promise.resolve()); // the retry succeeds; consumption of the queue proves it ran
+			watchPollers.get(watchPath)();
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(outcomes.length, 0, 'the rejected apply must be retried on the next poll');
+
+			// Stale-rejection guard: a slow rejection from an OLD mtime must not unlatch a NEWER
+			// successful reload. Queue a pending promise, reload at mtime M2, then reload at M3
+			// successfully, then reject the M2 promise — the latch must stay at M3.
+			let rejectStale;
+			outcomes.push(new Promise((_, reject) => (rejectStale = reject)));
+			bumpMtime();
+			watchPollers.get(watchPath)(); // M2 attempt, left pending
+			outcomes.push(Promise.resolve());
+			bumpMtime();
+			watchPollers.get(watchPath)(); // M3 applied successfully
+			rejectStale(new Error('stale rejection'));
+			await new Promise((resolve) => setImmediate(resolve));
+			outcomes.push(Promise.resolve());
+			watchPollers.get(watchPath)(); // same M3 mtime — must stay deduplicated
+			assert.strictEqual(outcomes.length, 1, 'a stale rejection must not unlatch a newer successful reload');
 		});
 	});
 
@@ -1339,5 +2261,235 @@ describe('Test keys module', () => {
 			const records = [{ name: 'plain', uses: ['server'] }, null];
 			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
 		});
+	});
+
+	describe('self-signed review and renewal without a configured tls.privateKey', () => {
+		const realKeys = require('#src/security/keys');
+		const { X509Certificate, createPrivateKey, generateKeyPairSync } = require('node:crypto');
+		const nodeName = `renew-test-${process.pid}.harper.local`;
+		const keysDir = path.join(test_dir, 'keys');
+		const envProps = ['tls', 'tls_privateKey', 'node_hostname', 'rootPath'];
+		let savedEnv;
+		let savedBasePath;
+		let certTable;
+
+		before(() => {
+			certTable = require('#src/resources/databases').databases.system.hdb_certificate;
+			savedEnv = envProps.map((name) => [name, env_mgr.get(name)]);
+			savedBasePath = env_mgr.getHdbBasePath();
+			env_mgr.setHdbBasePath(test_dir);
+			env_mgr.setProperty('node_hostname', nodeName);
+			env_mgr.setProperty('rootPath', test_dir);
+			fs.ensureDirSync(keysDir);
+		});
+
+		after(async () => {
+			for (const [name, value] of savedEnv) env_mgr.setProperty(name, value);
+			env_mgr.setHdbBasePath(savedBasePath);
+			for (const row of await selfSignedRows()) await certTable.delete(row.name);
+		});
+
+		async function selfSignedRows() {
+			const rows = [];
+			for await (const row of certTable.search([{ attribute: 'is_self_signed', value: true }])) rows.push({ ...row });
+			return rows;
+		}
+
+		async function startWithoutSelfSigned(tlsConfig) {
+			env_mgr.setProperty('tls', tlsConfig);
+			env_mgr.setProperty('tls_privateKey', Array.isArray(tlsConfig) ? undefined : tlsConfig.privateKey);
+			for (const row of await selfSignedRows()) await certTable.delete(row.name);
+			fs.removeSync(path.join(keysDir, 'privateKey.pem'));
+		}
+
+		function assertUsablePair(rows) {
+			assert.strictEqual(rows.length, 2, JSON.stringify(rows.map((row) => row.name)));
+			const ca = rows.find((row) => row.is_authority);
+			const leaf = rows.find((row) => !row.is_authority);
+			assert.strictEqual(leaf.name, nodeName);
+			const caCert = new X509Certificate(ca.certificate);
+			const leafCert = new X509Certificate(leaf.certificate);
+			assert.ok(leafCert.checkIssued(caCert) && leafCert.verify(caCert.publicKey), 'leaf must be signed by the CA');
+			const key = createPrivateKey(fs.readFileSync(path.join(keysDir, ca.private_key_name)));
+			assert.ok(caCert.checkPrivateKey(key), `${ca.private_key_name} must hold the CA key`);
+			assert.strictEqual(leaf.private_key_name, ca.private_key_name);
+			return { ca, leaf };
+		}
+
+		it('generates a key and pair for an array tls whose entries name no privateKey', async () => {
+			await startWithoutSelfSigned([{ certificateAuthority: test_ca_path }]);
+			await realKeys.reviewSelfSignedCert();
+			const { ca } = assertUsablePair(await selfSignedRows());
+			assert.strictEqual(ca.private_key_name, 'privateKey.pem');
+		}).timeout(30000);
+
+		it('generates a key and pair for an object tls with privateKey unset', async () => {
+			await startWithoutSelfSigned({ certificateAuthority: test_ca_path, privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			assertUsablePair(await selfSignedRows());
+		}).timeout(30000);
+
+		it('never writes the generated key over an unusable configured key', async () => {
+			const edKeyPath = path.join(test_dir, 'ed25519-key.pem');
+			const edKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' });
+			fs.writeFileSync(edKeyPath, edKey);
+			await startWithoutSelfSigned({ privateKey: edKeyPath });
+			await realKeys.reviewSelfSignedCert();
+			const { ca } = assertUsablePair(await selfSignedRows());
+			assert.strictEqual(ca.private_key_name, 'privateKey.pem');
+			assert.strictEqual(fs.readFileSync(edKeyPath, 'utf8'), edKey);
+		}).timeout(30000);
+
+		it('renewal replaces the pair and retires stale self-signed rows', async () => {
+			await startWithoutSelfSigned({ privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			const before = assertUsablePair(await selfSignedRows());
+			await certTable.put({ ...before.ca, name: 'Harper-Certificate-Authority-stale' });
+			await realKeys.renewSelfSigned();
+			const after = assertUsablePair(await selfSignedRows());
+			assert.notStrictEqual(after.ca.certificate, before.ca.certificate);
+			assert.notStrictEqual(after.leaf.certificate, before.leaf.certificate);
+			assert.notStrictEqual(after.ca.private_key_name, before.ca.private_key_name, 'the old key file is not replaced');
+		}).timeout(60000);
+
+		it('a failed renewal leaves the previous pair in place', async () => {
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			await realKeys.reviewSelfSignedCert();
+			const before = await selfSignedRows();
+			assertUsablePair(before);
+			env_mgr.setProperty('tls_privateKey', null);
+			env_mgr.setHdbBasePath(path.join(test_dir, 'missing'));
+			try {
+				await assert.rejects(realKeys.renewSelfSigned());
+			} finally {
+				env_mgr.setHdbBasePath(test_dir);
+			}
+			assert.deepStrictEqual(
+				(await selfSignedRows()).map((row) => row.certificate).sort(),
+				before.map((row) => row.certificate).sort()
+			);
+		}).timeout(60000);
+
+		it('a renewal that fails while publishing rolls back and removes its generated key', async () => {
+			await startWithoutSelfSigned({ privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			const before = await selfSignedRows();
+			assertUsablePair(before);
+			const keyFiles = fs.readdirSync(keysDir).sort();
+			const hadOwnPatch = Object.prototype.hasOwnProperty.call(certTable, 'patch');
+			const patch = certTable.patch;
+			let patches = 0;
+			// the CA name repeats (node.hostname is set), so the first patch replaces the CA row in place
+			certTable.patch = function (...args) {
+				if (++patches === 2) throw new Error('injected leaf write failure');
+				return patch.apply(this, args);
+			};
+			try {
+				await assert.rejects(realKeys.renewSelfSigned(), /injected leaf write failure/);
+			} finally {
+				if (hadOwnPatch) certTable.patch = patch;
+				else delete certTable.patch;
+			}
+			assert.strictEqual(patches, 2);
+			assert.deepStrictEqual(
+				(await selfSignedRows()).map((row) => row.certificate).sort(),
+				before.map((row) => row.certificate).sort()
+			);
+			assert.deepStrictEqual(fs.readdirSync(keysDir).sort(), keyFiles);
+		}).timeout(60000);
+
+		it('keeps an unusable external row named after the node and names the self-signed leaf apart', async () => {
+			// named after this node but not covering its hostname, so selection does not find it
+			const external = await mkcert.createCert({
+				domains: ['elsewhere.harper.local'],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			const externalRow = {
+				name: nodeName,
+				uses: ['replication'],
+				certificate: external.cert,
+				private_key_name: 'external-key.pem',
+				is_authority: false,
+				is_self_signed: false,
+			};
+			await certTable.put(externalRow);
+			try {
+				await realKeys.reviewSelfSignedCert();
+				const pair = await selfSignedRows();
+				assert.deepStrictEqual(pair.map((row) => row.name).sort(), [
+					`Harper-Certificate-Authority-${nodeName}`,
+					`${nodeName}-self-signed`,
+				]);
+				await realKeys.renewSelfSigned();
+				const renewed = await selfSignedRows();
+				assert.deepStrictEqual(renewed.map((row) => row.name).sort(), pair.map((row) => row.name).sort());
+				assert.notDeepStrictEqual(
+					renewed.map((row) => row.certificate).sort(),
+					pair.map((row) => row.certificate).sort()
+				);
+				const current = await certTable.get(nodeName);
+				assert.strictEqual(current.certificate, external.cert);
+				assert.strictEqual(current.is_self_signed, false);
+			} finally {
+				await certTable.delete(nodeName);
+			}
+		}).timeout(60000);
+
+		it('a non-self-signed row under the CA name skips the CA and its leaf at boot, and fails renewal', async () => {
+			const caName = `Harper-Certificate-Authority-${nodeName}`;
+			await startWithoutSelfSigned({ privateKey: null });
+			await certTable.put({
+				name: caName,
+				uses: [],
+				certificate: test_ca,
+				private_key_name: 'missing-key.pem',
+				is_authority: true,
+				is_self_signed: false,
+			});
+			const keyFiles = fs.readdirSync(keysDir).sort();
+			try {
+				await realKeys.reviewSelfSignedCert();
+				assert.deepStrictEqual(await selfSignedRows(), []);
+				assert.deepStrictEqual(fs.readdirSync(keysDir).sort(), keyFiles, 'the unused generated key is removed');
+				await assert.rejects(realKeys.renewSelfSigned(), { statusCode: 409 });
+				assert.strictEqual((await certTable.get(caName)).certificate, test_ca);
+			} finally {
+				await certTable.delete(caName);
+			}
+		}).timeout(60000);
+
+		it('renewal keeps an external certificate for this node instead of a self-signed one', async () => {
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			await realKeys.reviewSelfSignedCert();
+			const external = await mkcert.createCert({
+				domains: [nodeName],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			fs.writeFileSync(path.join(keysDir, 'external-key.pem'), external.key);
+			const externalName = `external-${nodeName}`;
+			await certTable.put({
+				name: externalName,
+				uses: ['https'],
+				certificate: external.cert,
+				private_key_name: 'external-key.pem',
+				is_authority: false,
+				is_self_signed: false,
+			});
+			try {
+				await realKeys.renewSelfSigned();
+				const rows = await selfSignedRows();
+				assert.deepStrictEqual(
+					rows.map((row) => row.is_authority),
+					[true],
+					'only the self-signed CA is renewed; the external certificate serves replication'
+				);
+				assert.ok(await certTable.get(externalName));
+			} finally {
+				await certTable.delete(externalName);
+			}
+		}).timeout(60000);
 	});
 });

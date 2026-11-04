@@ -286,12 +286,20 @@ export function summarizeProfile(profile: any, topN: number): object {
 	return { totalMs: +totalMs.toFixed(1), sampleCount: samples.length, topFunctions };
 }
 
+export const INSPECTOR_TOOL_NAMES = {
+	attach: 'inspector_attach',
+	evaluate: 'inspector_evaluate',
+	setBreakpoint: 'inspector_set_breakpoint',
+	setLogpoint: 'inspector_set_logpoint',
+	profileCpu: 'inspector_profile_cpu',
+} as const;
+
 const workerIndexProp = { type: 'integer', minimum: 0, description: '0-based worker thread index' };
 
 export function buildInspectorTools(deps: InspectorDeps): AgentTool[] {
 	const attach: AgentTool = {
 		def: {
-			name: 'inspector_attach',
+			name: INSPECTOR_TOOL_NAMES.attach,
 			description:
 				'Attach the V8 inspector to a worker thread so it can be evaluated, breakpointed, or CPU-profiled. Requires threads_debug + threads_debug_startingPort. Rejects the main thread.',
 			parameters: { type: 'object', properties: { workerIndex: workerIndexProp }, required: ['workerIndex'] },
@@ -308,7 +316,7 @@ export function buildInspectorTools(deps: InspectorDeps): AgentTool[] {
 
 	const evaluate: AgentTool = {
 		def: {
-			name: 'inspector_evaluate',
+			name: INSPECTOR_TOOL_NAMES.evaluate,
 			description:
 				'Evaluate a JavaScript expression in a worker thread and return the result. Runs arbitrary code in the worker.',
 			parameters: {
@@ -340,7 +348,7 @@ export function buildInspectorTools(deps: InspectorDeps): AgentTool[] {
 
 	const setBreakpoint: AgentTool = {
 		def: {
-			name: 'inspector_set_breakpoint',
+			name: INSPECTOR_TOOL_NAMES.setBreakpoint,
 			description:
 				'Set a breakpoint by script URL + line in a worker. lineNumber is 0-based (CDP). On hit, a stack snapshot is written to the Harper log and the worker is auto-resumed (it is NOT left paused).',
 			parameters: {
@@ -376,7 +384,7 @@ export function buildInspectorTools(deps: InspectorDeps): AgentTool[] {
 
 	const setLogpoint: AgentTool = {
 		def: {
-			name: 'inspector_set_logpoint',
+			name: INSPECTOR_TOOL_NAMES.setLogpoint,
 			description:
 				'Set a non-pausing logpoint: logs an expression each time the line is hit, without stopping the worker. lineNumber is 0-based. Runs the expression in the worker.',
 			parameters: {
@@ -413,7 +421,7 @@ export function buildInspectorTools(deps: InspectorDeps): AgentTool[] {
 
 	const profileCpu: AgentTool = {
 		def: {
-			name: 'inspector_profile_cpu',
+			name: INSPECTOR_TOOL_NAMES.profileCpu,
 			description: 'Record a CPU profile of a worker for durationMs and return the hottest functions by self time.',
 			parameters: {
 				type: 'object',
