@@ -57,7 +57,7 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 
 > **Subscription message identity.** [sharedMessageEncoding.ts](serverHelpers/sharedMessageEncoding.ts) shares bytes by envelope identity and version ([subscriptionValueIdentity.test.js](../unitTests/resources/subscriptionValueIdentity.test.js)). Internal sharing is sound because `transactionBroadcast` forwards one audit envelope, `auditStore.getValue` memoizes per closure and `primaryStore.getEntry` guards versions.
 >
-> Custom Resources may reuse an envelope only with a changed version; mutating it without advancing the version can serve stale bytes. Messages without a version are not shared. Custom serializers must be pure in their input (`ContentTypeHandler.serialize`, `Server.ts`).
+> `DurableSubscriptionsSession` forwards the version to the delivery listener, which re-encodes on mismatch. Custom Resources may reuse an envelope only with a changed version; mutating it without advancing the version can serve stale bytes. Messages without a version are not shared. Custom serializers must be pure in their input (`ContentTypeHandler.serialize`, `Server.ts`).
 
 > **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
 > is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
