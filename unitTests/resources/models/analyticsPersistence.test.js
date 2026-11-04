@@ -1,7 +1,11 @@
 require('../../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath, ensureSystemTables } = require('../../testUtils');
-const { ModelCallAnalyticsWriter, getModelCallsTable } = require('#src/resources/models/analyticsTable');
+const {
+	ModelCallAnalyticsWriter,
+	getModelCallsTable,
+	MODEL_CALL_ATTRIBUTES,
+} = require('#src/resources/models/analyticsTable');
 const { transaction } = require('#src/resources/transaction');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -10,7 +14,7 @@ const { ACTION_32_BIT } = require('#src/resources/auditStore');
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 
 describe('Model-call analytics persistence', () => {
-	let writer, modelTable;
+	let writer, modelTable, writerTable;
 	const ids = [];
 
 	before(async () => {
@@ -21,16 +25,17 @@ describe('Model-call analytics persistence', () => {
 	});
 
 	beforeEach(() => {
+		writerTable = modelTable;
 		writer = new ModelCallAnalyticsWriter({ flushIntervalMs: 60000, cleanupIntervalMs: 60000 });
 	});
 
 	afterEach(async () => {
 		writer?.stop();
 		await writer?.flush();
-		for (const id of ids.splice(0)) await modelTable.primaryStore.remove(id);
+		for (const id of ids.splice(0)) await writerTable.primaryStore.remove(id);
 	});
 
-	it('persists every mixed-shape telemetry row with version metadata', async () => {
+	async function persistMixedRows() {
 		const records = [
 			{
 				backend: 'unknown',
@@ -54,22 +59,40 @@ describe('Model-call analytics persistence', () => {
 		for (const record of records) ids.push(writer.write(record));
 		await writer.flush();
 
-		if (isRocksDB) {
-			assert.strictEqual(
-				modelTable.primaryStore.getBinarySync(ids[4])[12],
-				0x42,
-				'the stream shape exercises classic structure id 0x42'
-			);
-		}
 		for (let index = 0; index < ids.length; index++) {
-			const entry = modelTable.primaryStore.getEntry(ids[index], { uncachedRead: true });
+			const entry = writerTable.primaryStore.getEntry(ids[index], { uncachedRead: true });
 			assert.ok(entry?.version > 0, 'telemetry must carry its table-write version');
 			assert.deepStrictEqual({ ...entry.value }, { ...records[index], id: ids[index] });
 			if (isRocksDB) {
-				const bytes = modelTable.primaryStore.getBinarySync(ids[index]);
+				const bytes = writerTable.primaryStore.getBinarySync(ids[index]);
 				assert.strictEqual(bytes.readUint32BE(8) >>> 24, ACTION_32_BIT);
 			}
 		}
+	}
+
+	it('persists every mixed-shape telemetry row with version metadata', persistMixedRows);
+
+	it('keeps the classic 0x42 fixture independent of earlier production-table shapes', async () => {
+		writer.stop();
+		writerTable = table({
+			database: 'model_analytics_shapes',
+			table: 'FreshModelCalls',
+			audit: false,
+			trackDeletes: false,
+			attributes: MODEL_CALL_ATTRIBUTES.map((attribute) => ({ ...attribute })),
+		});
+		writer = new ModelCallAnalyticsWriter({
+			flushIntervalMs: 60000,
+			cleanupIntervalMs: 60000,
+			getTable: () => writerTable,
+		});
+		await persistMixedRows();
+		if (isRocksDB)
+			assert.strictEqual(
+				writerTable.primaryStore.getBinarySync(ids[4])[12],
+				0x42,
+				'the stream shape exercises classic structure id 0x42'
+			);
 	});
 
 	it('rejects a failed batch commit, rolls back its rows, and can flush a later batch', async () => {
