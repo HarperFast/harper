@@ -138,6 +138,44 @@ describe('delegated reads reusing one query object', function () {
 		['loadAsInstance = false', () => FalseModeEmployee],
 	]) {
 		describe(mode, function () {
+			for (const [shape, create] of [
+				['object', () => ({})],
+				['array', () => []],
+				['RequestTarget', () => new RequestTarget()],
+			]) {
+				it(`preserves non-enumerable query controls on a ${shape}`, async function () {
+					const root = Object.defineProperties(create(), {
+						conditions: { value: [{ attribute: 'id', value: 'e1' }] },
+						select: { value: authoredSelect() },
+						checkPermission: { value: true },
+					});
+					for (const user of [broadUser, restrictedUser, broadUser])
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+					assertAuthored(root);
+				});
+			}
+
+			it('retains a non-enumerable filter on collection delete', async function () {
+				const Store = table({
+					database,
+					table: `HiddenDelete${mode.replaceAll(/[^a-z]/gi, '')}`,
+					attributes: [{ name: 'id', isPrimaryKey: true }],
+				});
+				class Delete extends Store {
+					static loadAsInstance = getTable().loadAsInstance;
+					allowDelete() {
+						return true;
+					}
+				}
+				await Store.put('keep', { id: 'keep' });
+				const root = Object.defineProperty({ id: null, isCollection: true, checkPermission: true }, 'conditions', {
+					value: [{ attribute: 'id', value: 'missing' }],
+				});
+				await Delete.delete(root, { user: broadUser });
+				assert.strictEqual((await Store.get('keep')).id, 'keep');
+				assert.strictEqual(root.conditions[0].value, 'missing');
+			});
+
 			it('reuses one-shot condition iterators without widening the next read', async function () {
 				const conditions = (function* () {
 					yield { attribute: 'id', value: 'e1' };

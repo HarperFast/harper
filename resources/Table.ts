@@ -7323,10 +7323,7 @@ export function makeTable(options): TableResourceClass {
 					if (!allowed) throw new AccessViolation(context?.user);
 					// The delete's internal scan is private dispatch state. Do not mutate or mark the
 					// caller target: another concurrent search using that identity must still run allowRead.
-					scanTarget = Object.assign(
-						new RequestTarget(target instanceof URLSearchParams ? target.toString() : undefined),
-						target
-					);
+					scanTarget = copyQueryTarget(target);
 					(scanTarget as any).checkPermission = false;
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them

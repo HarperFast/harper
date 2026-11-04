@@ -44,7 +44,12 @@ function copyQueryFields(source: any, stop = Object.prototype): PropertyDescript
 			if (!descriptor) continue;
 			if ('value' in descriptor) {
 				if (name === Symbol.iterator && typeof descriptor.value === 'function') {
-					descriptors[name] = { value: () => replayIterator(source), writable: true, configurable: true };
+					descriptors[name] = {
+						value: () => replayIterator(source),
+						writable: true,
+						enumerable: descriptor.enumerable,
+						configurable: true,
+					};
 					continue;
 				}
 				if (object !== source && typeof descriptor.value === 'function') continue;
@@ -90,11 +95,8 @@ export class RequestTarget extends URLSearchParams {
 			copy.#target = source.#target;
 			copy.#dispatchOwned = true;
 			const prototype = Object.getPrototypeOf(source);
-			if (prototype === RequestTarget.prototype) Object.assign(copy, source);
-			else {
-				Object.defineProperties(copy, copyQueryFields(source, RequestTarget.prototype));
-				Object.setPrototypeOf(copy, prototype);
-			}
+			Object.defineProperties(copy, copyQueryFields(source, RequestTarget.prototype));
+			Object.setPrototypeOf(copy, prototype);
 			return copy;
 		};
 	}
@@ -277,20 +279,17 @@ export function copyQueryTarget<T>(source: T): T {
 
 function copyQueryTargetShell<T>(source: T): T {
 	if (source instanceof RequestTarget) return copyRequestTarget(source) as T;
-	if (source instanceof URLSearchParams) return Object.assign(new URLSearchParams(source), source);
 	const prototype = Object.getPrototypeOf(source);
-	if (Array.isArray(source)) {
-		const copy = Object.assign([], source);
-		copy.length = source.length;
-		if (prototype !== Array.prototype) {
-			const descriptors = copyQueryFields(source, Array.prototype);
-			descriptors.length.configurable = false;
-			Object.defineProperties(copy, descriptors);
-			Object.setPrototypeOf(copy, prototype);
-		}
-		return copy as T;
+	if (source instanceof URLSearchParams) {
+		const copy = new URLSearchParams(URLSearchParams.prototype.entries.call(source));
+		Object.defineProperties(copy, copyQueryFields(source, URLSearchParams.prototype));
+		return Object.setPrototypeOf(copy, prototype);
 	}
-	if (prototype === Object.prototype) return { ...source };
+	if (Array.isArray(source)) {
+		const descriptors = copyQueryFields(source, Array.prototype);
+		descriptors.length.configurable = false;
+		return Object.setPrototypeOf(Object.defineProperties([], descriptors), prototype);
+	}
 	return Object.create(prototype, copyQueryFields(source));
 }
 
