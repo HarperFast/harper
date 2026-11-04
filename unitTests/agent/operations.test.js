@@ -34,7 +34,14 @@ describe('agent/operations set_agent_config', () => {
 			await execute(input);
 		}
 		assert.equal(patches.length, 2);
-		for (const input of [{ maxSessionTokens: 0 }, { maxTokens: 0 }, { maxToolResultBytes: 1023 }]) {
+		for (const input of [
+			{ maxSessionTokens: 0 },
+			{ maxTokens: 0 },
+			{ maxToolResultBytes: 1023 },
+			{ httpFetch: false, maxTurns: 3 },
+			{ componentsScope: '.', maxTurns: 3 },
+			{ configScope: '.', maxTurns: 3 },
+		]) {
 			assert.equal(accepts(input), false);
 			await assert.rejects(execute(input));
 		}

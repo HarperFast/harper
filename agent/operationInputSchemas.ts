@@ -32,6 +32,7 @@ export const AGENT_OPERATION_INPUT_SCHEMAS = {
 	},
 	set_agent_config: {
 		type: 'object',
+		not: { anyOf: [{ required: ['httpFetch'] }, { required: ['componentsScope'] }, { required: ['configScope'] }] },
 		properties: {
 			enabled: { type: 'boolean' },
 			provider: { type: 'string' },
