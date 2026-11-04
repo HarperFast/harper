@@ -6,51 +6,42 @@ import { getThisNodeName } from '../server/nodeName.ts';
 import { pack, unpack } from 'msgpackr';
 import type { Database } from 'lmdb';
 import { server } from '../server/Server.ts';
+import { commitAuditMetadata } from './auditStore.ts';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(auditStore) {
-	const idMappingRecordBuffer = auditStore.getBinary(REMOTE_NODE_IDS);
-	let idMappingRecord = idMappingRecordBuffer ? unpack(idMappingRecordBuffer) : null;
-	if (!idMappingRecord) {
-		idMappingRecord = { remoteNameToId: {} };
-	}
+	const stored = auditStore.getBinary(REMOTE_NODE_IDS);
+	const idMappingRecord = (stored ? unpack(stored) : null) ?? { remoteNameToId: {} };
 	// this is the default mapping for the local node (id of 0 is used for local)
-	const node_name = getThisNodeName();
 	idMappingRecord.nodeName = getThisNodeName();
-	const nameToId = idMappingRecord.remoteNameToId;
-	if (nameToId[node_name] !== 0) {
-		// if we don't have the local node id, we want to assign it and take over that id, but if there was a previous host name
-		// there, we need to reassign it and update the record and we want to assign a starting sequence id for it
-		let lastId = 0;
-		let previousLocalHostName: string;
+	if (idMappingRecord.remoteNameToId[idMappingRecord.nodeName] === 0) return idMappingRecord;
+	// Take over the local id inside the mapping transaction: a plain write here would erase another worker's
+	// mint. A previous host name holding id 0 moves to a new id, whose sequence cursor starts from our last one.
+	let reassignedId: number | undefined;
+	idMappingRecord.remoteNameToId = updateIdMapping(auditStore, (nameToId) => {
+		const nodeName = getThisNodeName();
+		reassignedId = undefined;
+		if (nameToId[nodeName] === 0) return false;
 		for (const name in nameToId) {
-			const id = nameToId[name];
-			if (id === 0) {
-				previousLocalHostName = name;
-			} else if (id > lastId) {
-				lastId = id;
+			if (nameToId[name] === 0) {
+				reassignedId = nextNodeId(nameToId);
+				nameToId[name] = reassignedId;
 			}
 		}
-		if (previousLocalHostName) {
-			// we need to reassign the local node id to the previous host name
-			lastId++;
-			nameToId[previousLocalHostName] = lastId;
-			// we need to update the sequence id for the previous host name, and have it start from our last sequence id
-			const seqKey = [Symbol.for('seq'), lastId];
-			auditStore.rootStore.dbisDb.transactionSync(() => {
-				// getSync (not get): a get() Promise on a RocksDB cache miss is truthy, so `!...get(seqKey)`
-				// would be false and skip initializing the seq record for the reassigned node id.
-				if (!(auditStore.rootStore.dbisDb as any).getSync(seqKey))
-					auditStore.rootStore.dbisDb.putSync(seqKey, {
-						seqId: lastTimeInAuditStore(auditStore) ?? 1,
-						nodes: [],
-					});
-			});
-		}
-		// now we can take over the local node id
-		nameToId[node_name] = 0;
-		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames(auditStore);
+		nameToId[nodeName] = 0;
+		return true;
+	});
+	if (reassignedId !== undefined) {
+		const seqKey = [Symbol.for('seq'), reassignedId];
+		auditStore.rootStore.dbisDb.transactionSync(() => {
+			// getSync (not get): a get() Promise on a RocksDB cache miss is truthy, so `!...get(seqKey)`
+			// would be false and skip initializing the seq record for the reassigned node id.
+			if (!(auditStore.rootStore.dbisDb as any).getSync(seqKey))
+				auditStore.rootStore.dbisDb.putSync(seqKey, {
+					seqId: lastTimeInAuditStore(auditStore) ?? 1,
+					nodes: [],
+				});
+		});
 	}
 	return idMappingRecord;
 }
@@ -58,55 +49,74 @@ export function exportIdMapping(auditStore) {
 	return getIdMappingRecord(auditStore).remoteNameToId;
 }
 
+function nextNodeId(nameToId: Record<string, number>): number {
+	let lastId = 0;
+	for (const name in nameToId) {
+		const id = nameToId[name];
+		if (id > lastId) lastId = id;
+	}
+	return lastId + 1;
+}
+
+/**
+ * One read-modify-write of the mapping under a store transaction, so two workers minting at once cannot
+ * hand one id to two names or drop each other's additions. Returns the mapping as committed.
+ */
+function updateIdMapping(auditStore: any, mutate: (nameToId: Record<string, number>) => boolean) {
+	let record: any;
+	commitAuditMetadata(
+		auditStore,
+		(read) => {
+			const stored = read(REMOTE_NODE_IDS);
+			record = (stored ? unpack(stored) : null) ?? { remoteNameToId: {} };
+			record.nodeName = getThisNodeName();
+			return mutate(record.remoteNameToId) ? [[REMOTE_NODE_IDS, pack(record)]] : undefined;
+		},
+		'node id mapping'
+	);
+	// another worker may have made this change first, leaving this thread's cached names stale either way
+	invalidateNodeNames(auditStore);
+	return record.remoteNameToId as Record<string, number>;
+}
+
+function hasUnmappedName(remoteMapping: Record<string, number>, nameToId: Record<string, number>): boolean {
+	for (const name in remoteMapping) if (nameToId[name] == undefined) return true;
+	return false;
+}
+
 /**
  * Take the remote node's long id to short id mapping and create a map from the remote node's short id to the local node short id.
  */
 export function remoteToLocalNodeId(remoteMapping: any, auditStore: any) {
-	const idMappingRecord = getIdMappingRecord(auditStore);
-	const nameToId = idMappingRecord.remoteNameToId;
-	const remoteToLocalId = new Map();
-	let hasChanges = false;
-	for (const remoteNodeName in remoteMapping) {
-		const remoteId = remoteMapping[remoteNodeName];
-		let localId = nameToId[remoteNodeName];
-		if (localId == undefined) {
-			let lastId = 0;
-			for (const name in nameToId) {
-				const id = nameToId[name];
-				if (id > lastId) {
-					lastId = id;
-				}
+	let nameToId = getIdMappingRecord(auditStore).remoteNameToId;
+	if (hasUnmappedName(remoteMapping, nameToId)) {
+		nameToId = updateIdMapping(auditStore, (stored) => {
+			let nextId = nextNodeId(stored);
+			let changed = false;
+			for (const remoteNodeName in remoteMapping) {
+				if (stored[remoteNodeName] != undefined) continue;
+				stored[remoteNodeName] = nextId++;
+				changed = true;
 			}
-			localId = lastId + 1;
-			nameToId[remoteNodeName] = localId;
-			hasChanges = true;
-		}
-		remoteToLocalId.set(remoteId, localId);
+			return changed;
+		});
 	}
-	if (hasChanges) {
-		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames(auditStore);
-	}
+	const remoteToLocalId = new Map();
+	for (const remoteNodeName in remoteMapping)
+		remoteToLocalId.set(remoteMapping[remoteNodeName], nameToId[remoteNodeName]);
 	return remoteToLocalId;
 }
 
 export function getIdOfRemoteNode(remoteNodeName, auditStore) {
-	const idMappingRecord = getIdMappingRecord(auditStore);
-	const nameToId = idMappingRecord.remoteNameToId;
-	let id = nameToId[remoteNodeName];
-	if (id == undefined) {
-		let lastId = 0;
-		for (const name in nameToId) {
-			const id = nameToId[name];
-			if (id > lastId) {
-				lastId = id;
-			}
-		}
-		id = lastId + 1;
-		nameToId[remoteNodeName] = id;
-		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames(auditStore);
+	let nameToId = getIdMappingRecord(auditStore).remoteNameToId;
+	if (nameToId[remoteNodeName] == undefined) {
+		nameToId = updateIdMapping(auditStore, (stored) => {
+			if (stored[remoteNodeName] != undefined) return false;
+			stored[remoteNodeName] = nextNodeId(stored);
+			return true;
+		});
 	}
+	const id = nameToId[remoteNodeName];
 	logger.trace?.('The remote node name map', remoteNodeName, nameToId, id);
 	return id;
 }
