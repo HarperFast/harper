@@ -98,8 +98,8 @@ Things that are easy to get wrong here:
 A replication source must tell a follower that missed purged entries from one whose source simply
 wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
 never existed or were removed. `Symbol.for('log-purge-bounds')` holds
-`{ epoch, trackedFrom, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`, and `getLogPurgeBound`
-returns an upper bound on every key a tracked prune removed from the named logs.
+`{ epoch, trackedFrom, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`. `getLogPurgeBounds` returns
+each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFrom` where tracking began.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
   every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`
@@ -127,9 +127,9 @@ returns an upper bound on every key a tracked prune removed from the named logs.
   position whenever a log has just gone idle, re-forcing the copy this record exists to avoid.
 - **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not
   set) when a log opens, closes or rotates, including the file being appended to. That cannot reach past
-  `bound` while `quietAt` is within the native retention; once it is not, and a pass has run within it,
-  `exposedBound` adds the native horizon, or the log's largest key at that pass if lower (every segment last
-  written before that pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
+  `bound` while `quietAt` is within the native retention; once it is not, `exposedBound` adds the native
+  horizon, or the log's largest key at the last pass if lower (every segment last written before that
+  pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
   that retention and each pass that observes writes a later `quietAt`, so an idle log on a running node never
   reaches the horizon. Passes skip observing while neither purge reaches past `epoch`; a boot just after such a
   window ends can take the reach for an idle log, which errs toward a copy.
