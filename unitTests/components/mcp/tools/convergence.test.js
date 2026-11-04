@@ -1,6 +1,4 @@
-// #1920 — a single class-level metadata source (docstring + `static properties`) must surface on
-// BOTH the MCP tool descriptors and the OpenAPI document. This is the cross-surface convergence the
-// #1095 acceptance called for; previously each surface was tested in isolation.
+// Class-level metadata must agree across MCP tool descriptors and OpenAPI.
 const assert = require('node:assert');
 const {
 	registerApplicationTools,
@@ -176,9 +174,7 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 	});
 });
 
-// #1941 / #1942 — the two surfaces used to diverge below the top level: OpenAPI dropped hints inside
-// nested objects, neither suppressed a hidden sub-property, and nullability was expressed three
-// different ways. These assert the same fragment on both surfaces, side by side.
+// Nested hints, visibility, and nullability must agree across surfaces.
 describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 	beforeEach(() => {
 		_resetRegistryForTest();

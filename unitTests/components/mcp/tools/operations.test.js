@@ -375,8 +375,7 @@ describe('mcp/tools/operations — registration', () => {
 	it('does not emit idempotentHint on the actual non-idempotent tools (add_user, add_role)', () => {
 		// add_user / add_role / create_* are NOT idempotent under MCP semantics — a second call
 		// returns an "already exists" error, so annotating them idempotent nudges LLMs into retry
-		// loops. IDEMPOTENT_OPERATIONS ships empty; verify that against the EMITTED tool annotations,
-		// not just the descriptions map (which would pass trivially).
+		// loops. Check the emitted tool annotations.
 		envOverrides.mcp_operations_allow = ['add_user', 'add_role', 'describe_all'];
 		_setOperationFunctionMapForTest(
 			makeOpMap([

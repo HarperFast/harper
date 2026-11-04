@@ -26,7 +26,7 @@
  */
 
 import { resolveBody } from './resolveBody.ts';
-import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
+import type { JsonSchemaFragment, JsonValue } from './jsonSchemaTypes.ts';
 import { attributeToFragment, jsonValueKey, type AttributeLike } from './jsonSchemaTypes.ts';
 import { ValidationError, type ValidationIssue } from '../utility/errors/hdbError.ts';
 
@@ -310,8 +310,17 @@ function isNullable(fragment: JsonSchemaFragment): boolean {
 	return fragment.nullable === true || (Array.isArray(fragment.type) && fragment.type.includes('null'));
 }
 
+// Shared only within one body validation; declarations may change before the next request.
+type EnumKeyCache = Map<readonly JsonValue[], Set<string>>;
+
 /** Validate a JSON value against a fragment (a subset of JSON Schema), pushing structured issues. Returns coerced value. */
-function validateValue(value: any, fragment: JsonSchemaFragment, path: string, issues: ValidationIssue[]): any {
+function validateValue(
+	value: any,
+	fragment: JsonSchemaFragment,
+	path: string,
+	issues: ValidationIssue[],
+	enumKeys?: EnumKeyCache
+): any {
 	if (!fragment || fragment.type == null) return value; // passthrough / untyped
 	if (value === undefined) return value; // absence is enforced by the parent object's `required`
 	if (value === null) {
@@ -345,7 +354,14 @@ function validateValue(value: any, fragment: JsonSchemaFragment, path: string, i
 		if (value && typeof value === 'object') {
 			try {
 				const key = jsonValueKey(value);
-				matches = fragment.enum.some((member) => member && typeof member === 'object' && jsonValueKey(member) === key);
+				let keys = enumKeys?.get(fragment.enum);
+				if (!keys) {
+					keys = new Set(
+						fragment.enum.filter((member) => member && typeof member === 'object').map((member) => jsonValueKey(member))
+					);
+					enumKeys?.set(fragment.enum, keys);
+				}
+				matches = keys.has(key);
 			} catch {}
 		}
 		if (!matches) {
@@ -358,15 +374,22 @@ function validateValue(value: any, fragment: JsonSchemaFragment, path: string, i
 		}
 	}
 	if (primary === 'array' && fragment.items && Array.isArray(value)) {
-		return value.map((el, i) => validateValue(el, fragment.items as JsonSchemaFragment, `${path}[${i}]`, issues));
+		const keys = enumKeys ?? new Map();
+		return value.map((el, i) => validateValue(el, fragment.items as JsonSchemaFragment, `${path}[${i}]`, issues, keys));
 	}
 	if (primary === 'object' && fragment.properties && value && typeof value === 'object') {
-		return validateObject(value, fragment, path, issues);
+		return validateObject(value, fragment, path, issues, enumKeys ?? new Map());
 	}
 	return value;
 }
 
-function validateObject(value: any, fragment: JsonSchemaFragment, path: string, issues: ValidationIssue[]): any {
+function validateObject(
+	value: any,
+	fragment: JsonSchemaFragment,
+	path: string,
+	issues: ValidationIssue[],
+	enumKeys: EnumKeyCache
+): any {
 	const props = fragment.properties ?? {};
 	const scope = path ? `${path}.` : '';
 	for (const key of fragment.required ?? []) {
@@ -377,7 +400,7 @@ function validateObject(value: any, fragment: JsonSchemaFragment, path: string, 
 	}
 	for (const [key, sub] of Object.entries(props)) {
 		if (value[key] !== undefined) {
-			const coerced = validateValue(value[key], sub, `${scope}${key}`, issues);
+			const coerced = validateValue(value[key], sub, `${scope}${key}`, issues, enumKeys);
 			if (coerced !== value[key]) value[key] = coerced;
 		}
 	}

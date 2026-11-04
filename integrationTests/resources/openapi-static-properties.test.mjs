@@ -84,8 +84,7 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('emits OpenAPI `nullable` for a top-level nullable property', () => {
-		// OpenAPI 3.0.3 has no union types. This was computed only to derive `required` and never
-		// emitted, so a nullable property was advertised as non-nullable (#1942).
+		// OpenAPI 3.0.3 represents a nullable union with the nullable keyword.
 		assert.equal(schema.properties.note.type, 'string');
 		assert.equal(schema.properties.note.nullable, true);
 	});

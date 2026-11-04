@@ -413,9 +413,7 @@ const warnedUnknownTypes = new Set<string>();
  * neither vocabulary. Harper recognizes both the capitalized GraphQL names (`String`, `Int`) and the
  * lowercase JSON Schema names a `static properties` fragment uses.
  *
- * An unrecognized name used to resolve differently per surface — MCP coerced it to `'string'`, OpenAPI
- * emitted an untyped `{}` — with no signal to the author. Warn once per name so a typo is visible
- * instead of silently producing two different wrong schemas (#1942).
+ * Warn once per unrecognized name so authors can distinguish a typo from an intentionally untyped field.
  */
 export function resolveDeclaredType(type: string | undefined, context?: string): JsonSchemaType | undefined {
 	if (!type) return undefined;

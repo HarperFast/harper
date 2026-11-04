@@ -471,8 +471,7 @@ describe('openApi — static-property union translation (3.0.3)', () => {
 	});
 
 	it('expresses a null-only declaration at every depth, not just the top level', () => {
-		// 3.0 cannot say `type: 'null'`, but it can say "only null" with a null-only enum. The nested and
-		// array-item paths went through a different branch than the top-level one and said nothing at all.
+		// OpenAPI 3.0 represents null-only values with a nullable, null-only enum.
 		const props = buildDocument().components.schemas.Widget.properties;
 		expect(props.nothing).to.deep.equal({ nullable: true, enum: [null] });
 		expect(props.nested.properties.deepNull).to.deep.equal({ nullable: true, enum: [null] });

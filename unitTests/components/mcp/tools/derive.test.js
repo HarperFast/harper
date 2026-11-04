@@ -218,14 +218,11 @@ describe('mcp/tools/schemas/derive', () => {
 	});
 });
 
-// #1941/#1942 follow-ups found in review of the shared-emitter refactor.
 describe('mcp/derive — hidden attributes and unrecognized types', () => {
 	const hiddenPk = [{ name: 'id', type: 'Int', isPrimaryKey: true, hidden: true }];
 
 	it('keeps the primary key typed on every verb even when it is @hidden', () => {
-		// The `id` argument addresses the record; it is not one of the record's fields, so @hidden must
-		// not strip it. Suppressing it produced a REQUIRED tool argument with no type at all, and the
-		// four derive sites disagreed with each other.
+		// The id argument addresses the record, so hiding record fields must not strip its type.
 		const get = deriveGetSchema(hiddenPk, undefined).properties.id;
 		const update = deriveUpdateSchema(hiddenPk, undefined).properties.id;
 		const del = deriveDeleteSchema(hiddenPk, undefined).properties.id;
@@ -241,7 +238,6 @@ describe('mcp/derive — hidden attributes and unrecognized types', () => {
 	});
 
 	it('still suppresses a hidden non-key attribute from the same schemas', () => {
-		// Guards the fix above from over-reaching: only the PK is exempt.
 		const attrs = [
 			{ name: 'id', type: 'String', isPrimaryKey: true },
 			{ name: 'secret', type: 'String', hidden: true },
@@ -251,8 +247,7 @@ describe('mcp/derive — hidden attributes and unrecognized types', () => {
 	});
 
 	it('does not warn for Harper primitives that carry no DATA_TYPES entry (Blob, Any)', () => {
-		// `Blob` and `Any` are in graphql.ts's PRIMITIVE_TYPES but absent from DATA_TYPES, so a naive
-		// lookup reported them as typos on every process start.
+		// Blob and Any are GraphQL primitives without DATA_TYPES entries.
 		const loggerModule = require('#src/utility/logging/harper_logger');
 		const logger = loggerModule.default || loggerModule;
 		const warnings = [];

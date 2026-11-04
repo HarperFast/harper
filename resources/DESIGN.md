@@ -91,9 +91,9 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## Typed, discoverable resources
 
-Runtime values carry the schema through type stripping (harper#1503). `attributeToSchema` emits MCP/OpenAPI; contract verbs validate before dispatch (`ValidationError`). `compileVerb` sets `bodyRequired` (`defineResource.test.js`).
+Values preserve schemas through type stripping (harper#1503). `attributeToSchema` emits MCP/OpenAPI; contract narrowing relies on every verb validating before dispatch (`ValidationError`). `compileVerb` alone sets `bodyRequired` (`defineResource.test.js`).
 
-Programmatic projections are live per read; MCP snapshots rebuild on registration. Invariants: `schemaProjectionInvariants.test.js`.
+Programmatic projections refresh per read; MCP snapshots rebuild on registration (`schemaProjectionInvariants.test.js`).
 
 ## Conventions
 

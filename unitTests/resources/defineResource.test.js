@@ -61,6 +61,25 @@ describe('defineResource / Resource.withSchema — runtime request contract', ()
 		);
 	});
 
+	it('refreshes object enum keys between requests', async () => {
+		const members = [{ a: 1 }];
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'array', items: { type: 'object', enum: members } }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		assert.deepEqual(await Api.post(targetWith('', null), [{ a: 1 }, { a: 1 }]), [{ a: 1 }, { a: 1 }]);
+		members[0].a = 2;
+		assert.deepEqual(await Api.post(targetWith('', null), [{ a: 2 }, { a: 2 }]), [{ a: 2 }, { a: 2 }]);
+		await assert.rejects(
+			Promise.resolve().then(() => Api.post(targetWith('', null), [{ a: 1 }])),
+			/must be one of/
+		);
+	});
+
 	describe('named multipart body validation', () => {
 		for (const variant of ['function', 'class']) {
 			it(`resolves named fields before validating the ${variant} contract`, async () => {
