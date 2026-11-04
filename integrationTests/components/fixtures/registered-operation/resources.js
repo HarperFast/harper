@@ -10,6 +10,7 @@ import { Readable } from 'node:stream';
 
 server.registerOperation({
 	name: 'component_registered_echo',
+	readOnly: true,
 	inputSchema: {
 		$schema: 'https://json-schema.org/draft/2020-12/schema',
 		type: 'object',

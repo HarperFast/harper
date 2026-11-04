@@ -6,6 +6,7 @@ export class OperationFunctionObject {
 	job_operation_function: Function | undefined;
 	inputSchema: object | undefined;
 	builtin = false;
+	readOnly = false;
 	httpMethod?: string;
 
 	constructor(

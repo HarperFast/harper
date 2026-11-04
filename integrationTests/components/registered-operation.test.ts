@@ -130,10 +130,18 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		const response = await mcp({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, sessionId);
 		strictEqual(response.status, 200);
 		const body = (await response.json()) as {
-			result: { tools: Array<{ name: string; inputSchema: object }> };
+			result: {
+				tools: Array<{
+					name: string;
+					inputSchema: object;
+					annotations?: { destructiveHint?: boolean; readOnlyHint?: boolean };
+				}>;
+			};
 		};
 		const tool = body.result.tools.find(({ name }) => name === 'component_registered_echo');
 		ok(tool);
+		strictEqual(tool.annotations?.destructiveHint, true, 'worker-only readOnly claims stay conservative');
+		strictEqual(tool.annotations?.readOnlyHint, undefined);
 		deepStrictEqual(tool.inputSchema, {
 			$schema: 'https://json-schema.org/draft/2020-12/schema',
 			type: 'object',

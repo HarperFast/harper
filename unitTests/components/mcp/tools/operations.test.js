@@ -301,6 +301,50 @@ describe('mcp/tools/operations — registration', () => {
 		}
 	});
 
+	it('gates an unknown default-glob component operation in the agent', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['search_and_purge', null, { type: 'object' }, false]]));
+		registerOperationsTools();
+		assert.equal(getTool('search_and_purge').annotations?.destructiveHint, true);
+		const { composeRegistryTools } = require('#src/agent/registryTools');
+		const { composeToolset } = require('#src/agent/toolset');
+		const { tools } = composeToolset({
+			registryTools: composeRegistryTools(SUPER, async () => SUPER),
+			allowDestructive: false,
+			onFollowup: async () => {},
+		});
+		assert.equal(
+			tools.some((tool) => tool.def.name === 'search_and_purge'),
+			false
+		);
+	});
+
+	it('honors a main-thread read-only declaration without weakening destructive names', () => {
+		const utils = require('#src/server/serverHelpers/serverUtilities');
+		const name = 'list_owned_read_only';
+		try {
+			server.registerOperation({ name, inputSchema: { type: 'object' }, readOnly: true, execute: async () => [] });
+			registerOperationsTools();
+			assert.equal(getTool(name).annotations?.readOnlyHint, true);
+			assert.notEqual(getTool(name).annotations?.destructiveHint, true);
+			_setOperationFunctionMapForTest(
+				new Map([
+					[
+						'remove_node',
+						{
+							inputSchema: { type: 'object' },
+							readOnly: true,
+						},
+					],
+				])
+			);
+			envOverrides.mcp_operations_allow = ['remove_node'];
+			assert.equal(getTool('remove_node').annotations?.readOnlyHint, undefined);
+			assert.equal(getTool('remove_node').annotations?.destructiveHint, true);
+		} finally {
+			utils.OPERATION_FUNCTION_MAP.delete(name);
+		}
+	});
+
 	it('keeps component destructive tools out of the agent default toolset', () => {
 		envOverrides.mcp_operations_allow = ['remove_node'];
 		_setOperationFunctionMapForTest(makeOpMap([['remove_node', null, null, false]]));

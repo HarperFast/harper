@@ -56,7 +56,7 @@ import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 // `startOnMainThread` — the provider below re-reads it per request rather than
 // snapshotting (#1562).
 type OperationFunction = (json: object) => unknown | Promise<unknown>;
-type OperationFunctionEntry = { inputSchema?: object; builtin?: boolean };
+type OperationFunctionEntry = { inputSchema?: object; builtin?: boolean; readOnly?: boolean };
 type OperationFunctionMap = Map<string, OperationFunctionEntry>;
 
 type ChooseOperation = (body: object) => OperationFunction;
@@ -472,12 +472,16 @@ export function makeOperationToolHandler(operationName: string) {
 function buildOperationToolDef(
 	operationName: string,
 	inputSchema: object,
-	builtin: boolean,
+	operation: OperationFunctionEntry,
 	permissive = false
 ): ToolDef {
+	const builtin = operation.builtin === true;
+	const destructive = isDestructive(operationName) || (!builtin && operation.readOnly !== true);
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
-	if (builtin && isReadOnly(operationName)) annotations.readOnlyHint = true;
-	if (isDestructive(operationName)) annotations.destructiveHint = true;
+	if (!destructive && ((builtin && isReadOnly(operationName)) || operation.readOnly === true)) {
+		annotations.readOnlyHint = true;
+	}
+	if (destructive) annotations.destructiveHint = true;
 	if (builtin && isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
@@ -501,7 +505,7 @@ function buildRegisteredOperationToolDef(
 			issue !== 'inconsistent' &&
 			config.allow?.some((pattern) => !pattern.includes('*') && pattern === operationName)
 		) {
-			return buildOperationToolDef(operationName, { type: 'object' }, operation.builtin === true, true);
+			return buildOperationToolDef(operationName, { type: 'object' }, operation, true);
 		}
 		const warningKey = `${operationName}:${issue}`;
 		if (!warnedMissingSchemas.has(warningKey)) {
@@ -520,7 +524,7 @@ function buildRegisteredOperationToolDef(
 	}
 	warnedMissingSchemas.delete(`${operationName}:missing`);
 	warnedMissingSchemas.delete(`${operationName}:inconsistent`);
-	return buildOperationToolDef(operationName, operation.inputSchema, operation.builtin === true);
+	return buildOperationToolDef(operationName, operation.inputSchema, operation);
 }
 
 /**

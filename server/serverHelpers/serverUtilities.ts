@@ -199,6 +199,8 @@ export type OperationDefinition = {
 	isJob?: boolean;
 	/** Advisory JSON Schema for MCP introspection. Metadata is validated; execute() must validate call arguments. */
 	inputSchema?: object;
+	/** Advisory safety claim for main-thread registrations only; known destructive names still override it. */
+	readOnly?: boolean;
 	parametersSchema?: any[];
 	// When set, the operation declares its authorization requirement to the central verifyPerms
 	// system so it participates in the role `operations` allowlist (grantable to a scoped role)
@@ -245,7 +247,12 @@ function registerOperation(operationDefinition: OperationDefinition) {
 	if (normalizedSchema.error) {
 		operationLog.warn(`Operation '${name}' inputSchema ignored: ${normalizedSchema.error}`);
 	}
-	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler, undefined, normalizedSchema.schema));
+	const operation = new OperationFunctionObject(handler, undefined, normalizedSchema.schema);
+	operation.readOnly = Object.hasOwn(operationDefinition, 'readOnly') && operationDefinition.readOnly === true;
+	OPERATION_FUNCTION_MAP.set(name as any, operation);
+	if (!isMainThread && operation.readOnly) {
+		operationLog.debug(`Operation '${name}' readOnly is only used for main-thread registrations`);
+	}
 	// Components load per-worker, so a registration made there is invisible to the main-thread
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
 	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that

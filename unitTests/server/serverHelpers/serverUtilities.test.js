@@ -1159,6 +1159,27 @@ describe('Test serverUtilities.js module ', () => {
 			assert.notEqual(original.name, 'test_name_pinning_op');
 		});
 
+		it('copies only an owned read-only declaration and clears it on re-registration', function () {
+			const name = 'test_owned_read_only_declaration';
+			const execute = async () => [];
+			const def = { name, execute, readOnly: true };
+			try {
+				server.registerOperation(def);
+				def.readOnly = false;
+				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).readOnly, true);
+				for (const next of [
+					{ name, execute },
+					Object.assign(Object.create({ readOnly: true }), { name, execute }),
+					{ name, execute, readOnly: 'true' },
+				]) {
+					server.registerOperation(next);
+					assert.notEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).readOnly, true);
+				}
+			} finally {
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+			}
+		});
+
 		it('stores a validated clone of registered operation inputSchema metadata', function () {
 			const name = 'test_schema_metadata_op';
 			const inputSchema = { type: 'object', properties: { value: { type: 'string' } } };

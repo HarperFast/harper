@@ -21,6 +21,7 @@
 import { registerOperationsTools } from '../components/mcp/tools/operations.ts';
 import {
 	listProfileTools,
+	getTool,
 	type AuthedUser,
 	type ToolCallContext,
 	type ToolDef as RegistryToolDef,
@@ -130,13 +131,18 @@ export function composeRegistryTools(listingUser: AuthedUser, resolveIdentity: (
 	return out;
 }
 
+function isDestructiveDef(def: RegistryToolDef): boolean {
+	return def.annotations?.destructiveHint === true;
+}
+
 function adaptRegistryTool(def: RegistryToolDef, resolveIdentity: () => Promise<AuthedUser>): AgentTool {
+	const destructive = isDestructiveDef(def);
 	const guard = RESULT_GUARDS.get(def.name);
 	return {
 		def: { name: def.name, description: def.description, parameters: def.inputSchema },
 		// The loop's approval gate keys off `destructive`; the registry expresses the same
 		// intent as the MCP `destructiveHint` annotation.
-		destructive: def.annotations?.destructiveHint === true,
+		destructive,
 		handler: async (args: object, ctx: AgentToolContext) => {
 			guard?.checkArgs(args);
 			// Resolve the enforcement identity fresh so a live role change is honored. If the
@@ -144,13 +150,20 @@ function adaptRegistryTool(def: RegistryToolDef, resolveIdentity: () => Promise<
 			// the loop turns that into a recoverable tool error rather than running with stale or
 			// escalated privileges.
 			const user = await resolveIdentity();
+			const current = getTool(def.name, 'operations');
+			if (!current || current.profile !== 'operations') {
+				throw new Error(`Operation tool '${def.name}' is no longer available; retry after registrations stabilize`);
+			}
+			if (!destructive && isDestructiveDef(current)) {
+				throw new Error(`Operation tool '${def.name}' safety changed; restart Harper to refresh the agent tools`);
+			}
 			const context: ToolCallContext = {
 				user,
 				profile: 'operations',
 				sessionId: ctx.sessionId,
 				...(ctx.signal ? { signal: ctx.signal } : {}),
 			};
-			const result = await def.handler(args, context);
+			const result = await current.handler(args, context);
 			// The loop records a tool observation from the return value and turns a thrown error
 			// into a structured `{ ok: false, error }` note for the next model turn. Mapping
 			// `isError` → throw keeps a Harper operation failure a recoverable observation rather
