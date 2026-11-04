@@ -32,10 +32,14 @@ Cycles must not overlap. `setInterval` does not await its async callback, so `ru
 holds a single-flight flag — two cycles reading the same cursor roll the same window up twice and
 double every count in it.
 
-Still open: `findLastAggregationTime` seeds both markers after a restart from the newest stored
-analytics record, whose `time` is an end-of-cycle stamp, so a restart mid-drain can skip the rest of
-the backlog; and `storeMetric` discards `table.put()`'s result, so the cursor advances past raw
-records whose aggregate rows failed to commit. Both need a cursor persisted with the rows.
+`storeMetric` handles synchronous and asynchronous write failures: overload (503) is debug-logged,
+other errors are warned, and the sample is dropped without retry. The wedged-commit regression in
+`noAbortAfterTxnLog.test.js` keeps rejected metrics from escaping the collector or leaking rejections.
+
+Still open: restart markers come from the newest stored analytics record, which can skip backlog;
+aggregate writes are not joined before advancing the cursor, so failed rows are lost. Synchronous
+refusals now drop a row instead of aborting a partially written cycle. Durable replay needs a cursor
+persisted with the rows.
 
 ## A reset ends the window that was being flushed too (`resources/analytics/write.ts`)
 

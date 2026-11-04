@@ -404,7 +404,15 @@ function storeMetric(table: Table, metric: Metric) {
 		...metric,
 	};
 	log.trace?.(`storing metric ${JSON.stringify(metricValue)}`);
-	table.put(metricValue.id, metricValue);
+	try {
+		Promise.resolve(table.put(metricValue.id, metricValue)).catch(logMetricWriteError);
+	} catch (error) {
+		logMetricWriteError(error);
+	}
+}
+
+function logMetricWriteError(error) {
+	log[error?.statusCode === 503 ? 'debug' : 'warn']?.('Unable to save analytics metric', error);
 }
 
 interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {

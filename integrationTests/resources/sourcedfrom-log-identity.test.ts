@@ -42,6 +42,27 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 		return { state: readiness.state, ownerEpoch: readiness.owner_epoch };
 	}
 
+	async function waitForSourceState(condition: (state: any) => boolean, message: string) {
+		let state;
+		try {
+			await waitFor(
+				async () => {
+					state = await request('/SourceState/');
+					return condition(state);
+				},
+				{ timeout: 30_000, message }
+			);
+		} catch (error) {
+			(error as Error).message += `; last source state: ${JSON.stringify({
+				entries: state?.entries?.slice(-20),
+				records: state?.records,
+				vector: state?.vector,
+			})}`;
+			throw error;
+		}
+		return state;
+	}
+
 	async function search(text: string) {
 		const records = await request('/Probe/', 'QUERY', {
 			conditions: [
@@ -145,16 +166,20 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 			]) {
 				await request(`/${source}/${id}`, 'PUT', { id, title, status: 'active', revision: 'r1' });
 			}
+			if (kind === 'Generic') {
+				await waitForSourceState((state) => {
+					const original = state.records[source].find((record) => record?.id === 's2');
+					return state.records[mirror].some(
+						(record) => record?.id === 's2' && record.value.revision === 'r1' && record.version === original?.version
+					);
+				}, `${mirror} must receive s2 revision r1 before its source is patched`);
+			}
 			await request(`/${source}/s2`, 'PATCH', { status: 'withdrawn', revision: 'r2' });
 
 			const isCaseRecord = ({ id }) => id === 's1' || id === 's2';
-			let state;
-			await waitFor(
-				async () => {
-					state = await request('/SourceState/');
-					return state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry)).length >= 3;
-				},
-				{ timeout: 30_000, message: `${mirror} must receive all three live writes without a cache read` }
+			const state = await waitForSourceState(
+				(state) => state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry)).length >= 3,
+				`${mirror} must receive all three live writes without a cache read`
 			);
 			const sourceEntries = state.entries.filter((entry) => entry.table === source && isCaseRecord(entry));
 			const mirrorEntries = state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry));
