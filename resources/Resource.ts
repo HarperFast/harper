@@ -31,6 +31,7 @@ import { makeSchemaClass, type Contract, type SchemaClass } from './defineResour
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
 import { compareKeys } from 'ordered-binary';
+import { recordAppliedSelect, publishAppliedSelect } from '../server/serverHelpers/contentTypes.ts';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -140,24 +141,29 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			const result = resource.get?.(query);
 			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
 			if (loadAsInstance === false) {
-				return result?.then
+				const authorized = result?.then
 					? result.then((result: any) => authorizeSearchResult(result, request?.user))
 					: authorizeSearchResult(result, request?.user);
+				return query?.select ? when(authorized, publishSelect) : authorized;
 			}
 			// for the new API we always apply select in the instance method
-			if (!loadAsInstance) return result;
+			if (!loadAsInstance) return query?.select ? when(result, publishSelect) : result;
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
+			function publishSelect(value) {
+				return publishAppliedSelect(resource, query, value);
+			}
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
+					const recordRows = (rows) => recordAppliedSelect(query, select, true, rows);
 					if (Array.isArray(result)) {
-						return settleAll(result.map(transform));
+						return when(settleAll(result.map(transform)), recordRows);
 					} else if (typeof result?.map === 'function') {
-						return result.map(transform);
+						return recordRows(result.map(transform));
 					} else {
-						return transform(result);
+						return when(transform(result), (record) => recordAppliedSelect(query, select, false, record));
 					}
 				}
 				return result;
@@ -379,7 +385,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
+						return when(Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform), (rows) =>
+							recordAppliedSelect(query, select, true, rows)
+						);
 					}
 					return result;
 				})

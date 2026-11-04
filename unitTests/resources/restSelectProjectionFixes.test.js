@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const { randomUUID } = require('node:crypto');
+const { ExtendedIterable } = require('@harperfast/extended-iterable');
 const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
@@ -1086,6 +1087,7 @@ describe('REST and operations API select projection fixes', function () {
 	describe('CSV scalar and tuple select projection (harper#1482)', function () {
 		let Plain;
 		let PlainAsyncMapped;
+		let CustomInstanceList;
 
 		before(async function () {
 			Plain = table({
@@ -1121,7 +1123,7 @@ describe('REST and operations API select projection fixes', function () {
 			const PlainInstance = class extends Plain {
 				static loadAsInstance = true;
 			};
-			const CustomInstanceList = class extends Resource {
+			CustomInstanceList = class extends Resource {
 				static loadAsInstance = true;
 				async get(target) {
 					if (target.id === '1') return { id: '1', name: 'One', extra: 'e1' };
@@ -1144,6 +1146,98 @@ describe('REST and operations API select projection fixes', function () {
 				}
 			};
 
+			const ownRecord = (target) => ({ id: target.id, name: 'Own', extra: 1 });
+			const orders = () => [
+				{ id: 'o1', name: 'First', total: 5 },
+				{ id: 'o2', name: 'Second', total: 7 },
+			];
+			mount(
+				'PlainOwnGet',
+				class extends Plain {
+					get(target) {
+						return ownRecord(target);
+					}
+				}
+			);
+			mount(
+				'PlainOwnGetStatic',
+				class extends Plain {
+					static loadAsInstance = false;
+					get(target) {
+						return ownRecord(target);
+					}
+				}
+			);
+			mount(
+				'PlainOrders',
+				class extends Plain {
+					get() {
+						return orders();
+					}
+				}
+			);
+			mount(
+				'PlainOrdersStatic',
+				class extends Plain {
+					static loadAsInstance = false;
+					get() {
+						return orders();
+					}
+				}
+			);
+			mount(
+				'PlainOrdersInstance',
+				class extends Plain {
+					static loadAsInstance = true;
+					get() {
+						return orders();
+					}
+				}
+			);
+			mount(
+				'CustomLazyOrdersInstance',
+				class extends Resource {
+					static loadAsInstance = true;
+					get() {
+						return new ExtendedIterable([
+							{ id: 'o1', meta: { gift: true } },
+							{ id: 'o2', meta: { gift: false } },
+						]);
+					}
+				}
+			);
+			mount(
+				'PlainStatic',
+				class extends Plain {
+					static loadAsInstance = false;
+				}
+			);
+			mount(
+				'PlainCopiedTarget',
+				class extends Plain {
+					get(target) {
+						return super.get({ ...target });
+					}
+				}
+			);
+			mount(
+				'SharedTargetSummary',
+				class extends Resource {
+					static async get(target) {
+						const name = await Plain.get(target);
+						return { name, inStock: true };
+					}
+				}
+			);
+			mount(
+				'CustomOrdersInstance',
+				class extends Resource {
+					static loadAsInstance = true;
+					get() {
+						return orders();
+					}
+				}
+			);
 			mount('Plain', Plain);
 			mount('PlainAsyncMapped', PlainAsyncMapped);
 			mount('PlainInstance', PlainInstance);
@@ -1518,6 +1612,74 @@ describe('REST and operations API select projection fixes', function () {
 
 			const missingCsv = await restGet('/Plain/does-not-exist?select(id)', { accept: 'text/csv' });
 			assert.strictEqual(missingCsv.status, 404);
+		});
+
+		it('returns every field in CSV when a Table subclass get override returns its own object (#4018)', async function () {
+			for (const path of ['/PlainOwnGet/a', '/PlainOwnGetStatic/a']) {
+				for (const select of ['select(name)', 'select([id,name])', 'select(id,name)']) {
+					const url = `${path}?${select}`;
+					const json = await restGet(url, { accept: 'application/json' });
+					assert.deepStrictEqual(json.body, { id: 'a', name: 'Own', extra: 1 }, url);
+					const csv = await restGet(url, { accept: 'text/csv' });
+					assert.strictEqual(csv.status, 200, url);
+					assert.strictEqual(csv.text, '"id","name","extra"\n"a","Own",1\n', url);
+				}
+			}
+		});
+
+		it('formats CSV from the projection that produced the response value, not from another read of the same target (#4018)', async function () {
+			const staticTuple = await restGet('/PlainStatic/z-1?select([id,note])', { accept: 'text/csv' });
+			assert.strictEqual(staticTuple.text, '"id","note"\n"z-1","n1"\n');
+			const staticArrayScalar = await restGet('/PlainStatic/z-1?select(tags)', { accept: 'text/csv' });
+			assert.strictEqual(staticArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');
+
+			const copiedArrayScalar = await restGet('/PlainCopiedTarget/z-1?select(tags)', { accept: 'text/csv' });
+			assert.strictEqual(copiedArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');
+			const copiedTuple = await restGet('/PlainCopiedTarget/z-1?select([id,note])', { accept: 'text/csv' });
+			assert.strictEqual(copiedTuple.text, '"id","note"\n"z-1","n1"\n');
+
+			const summaryJson = await restGet('/SharedTargetSummary/z-1?select(name)', { accept: 'application/json' });
+			assert.deepStrictEqual(summaryJson.body, { name: 'Zeta-1', inStock: true });
+			const summaryCsv = await restGet('/SharedTargetSummary/z-1?select(name)', { accept: 'text/csv' });
+			assert.strictEqual(summaryCsv.text, '"name","inStock"\n"Zeta-1","true"\n');
+		});
+
+		it('returns the selected value for a frozen programmatic target on a loadAsInstance resource', async function () {
+			assert.strictEqual(await CustomInstanceList.get(Object.freeze({ id: '1', select: 'id' })), '1');
+		});
+
+		it('returns one CSV row per element when a record URL get returns an array (#4018)', async function () {
+			for (const path of ['/PlainOrders/customer-1', '/PlainOrdersStatic/customer-1']) {
+				const url = `${path}?select(id,name)`;
+				const json = await restGet(url, { accept: 'application/json' });
+				assert.strictEqual(json.body.length, 2, url);
+				assert.strictEqual(json.body[0].total, 5, url);
+				const csv = await restGet(url, { accept: 'text/csv' });
+				assert.strictEqual(csv.status, 200, url);
+				assert.strictEqual(csv.text, '"id","name","total"\n"o1","First",5\n"o2","Second",7\n', url);
+			}
+			const lazyCsv = await restGet('/CustomLazyOrdersInstance/customer-1?select(meta)', { accept: 'text/csv' });
+			assert.strictEqual(lazyCsv.text, '"meta"\n"{""gift"":true}"\n"{""gift"":false}"\n');
+			for (const path of ['/PlainOrdersInstance/customer-1', '/CustomOrdersInstance/customer-1']) {
+				const keyedUrl = `${path}?select(id,name)`;
+				const json = await restGet(keyedUrl, { accept: 'application/json' });
+				assert.deepStrictEqual(
+					json.body,
+					[
+						{ id: 'o1', name: 'First' },
+						{ id: 'o2', name: 'Second' },
+					],
+					keyedUrl
+				);
+				const keyedCsv = await restGet(keyedUrl, { accept: 'text/csv' });
+				assert.strictEqual(keyedCsv.status, 200, keyedUrl);
+				assert.strictEqual(keyedCsv.text, '"id","name"\n"o1","First"\n"o2","Second"\n', keyedUrl);
+
+				const scalarCsv = await restGet(`${path}?select(id)`, { accept: 'text/csv' });
+				assert.strictEqual(scalarCsv.text, '"id"\n"o1"\n"o2"\n', path);
+				const tupleCsv = await restGet(`${path}?select([id,total])`, { accept: 'text/csv' });
+				assert.strictEqual(tupleCsv.text, '"id","total"\n"o1",5\n"o2",7\n', path);
+			}
 		});
 	});
 });

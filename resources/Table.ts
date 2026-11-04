@@ -311,6 +311,7 @@ import {
 	isScalarSelect,
 	isTupleSelect,
 	buildSelectColumns,
+	recordAppliedSelect,
 	type ColumnsList,
 } from '../server/serverHelpers/contentTypes.ts';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
@@ -4365,7 +4366,7 @@ export function makeTable(options): TableResourceClass {
 							const select = target?.select;
 							if (select && record != null) {
 								const transform = transformForSelect(select, this.constructor);
-								return transform(record);
+								return when(transform(record), (projected) => recordAppliedSelect(this, select, false, projected));
 							}
 							if (target?.property) {
 								return record?.[target.property];
@@ -4383,7 +4384,10 @@ export function makeTable(options): TableResourceClass {
 				const select = target?.select;
 				if (select && record != null && constructor.loadAsInstance !== true) {
 					const transform = transformForSelect(select, this.constructor);
-					return promiseNormalize(transform(record), target);
+					return promiseNormalize(
+						when(transform(record), (projected) => recordAppliedSelect(this, select, false, projected)),
+						target
+					);
 				}
 				return promiseNormalize(record, target);
 			}

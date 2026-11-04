@@ -37,6 +37,26 @@ export function isTupleSelect(select: any): boolean {
 	return Array.isArray(select) && Boolean((select as any).asArray);
 }
 
+type AppliedSelect = { select: any; rows: boolean; value: any };
+// Keyed by the object that applied the projection; CSV trusts an entry only for its exact value.
+const appliedSelects = new WeakMap<object, AppliedSelect>();
+
+export function recordAppliedSelect<T>(owner: any, select: any, rows: boolean, value: T): T {
+	if (owner && typeof owner === 'object') appliedSelects.set(owner, { select, rows, value });
+	return value;
+}
+
+export function publishAppliedSelect<T>(from: any, to: any, value: T): T {
+	const applied = from && typeof from === 'object' ? appliedSelects.get(from) : undefined;
+	if (applied?.value === value && to && typeof to === 'object') appliedSelects.set(to, applied);
+	return value;
+}
+
+function appliedSelectFor(target: any, data: any): AppliedSelect | undefined {
+	const applied = target && typeof target === 'object' ? appliedSelects.get(target) : undefined;
+	return applied?.value === data ? applied : undefined;
+}
+
 export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {
 	if (currentSelect) {
 		const columns: ColumnsList = [];
@@ -138,41 +158,29 @@ mediaTypes.set('application/x-msgpack', {
 	deserialize: unpack,
 	q: 0.9,
 });
-function hasFrameworkSelect(resource: any): boolean {
-	return Boolean(resource?.attributes || resource?.loadAsInstance === true);
+function csvColumns(data: any, target: any, resource: any) {
+	if (typeof data?.getColumns === 'function') return { columns: data.getColumns() };
+	const applied = appliedSelectFor(target, data);
+	if (applied) {
+		return { columns: buildSelectColumns(applied.select, resource?.attributes), singleRecord: !applied.rows };
+	}
+	return { fallbackColumns: target?.select ? buildSelectColumns(target.select, resource?.attributes) : undefined };
 }
 
 mediaTypes.set('text/csv', {
 	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const hasOwnColumns = typeof data?.getColumns === 'function';
-		const frameworkSelect = !hasOwnColumns && target?.select && hasFrameworkSelect(resource);
-		const selectColumns = frameworkSelect ? buildSelectColumns(target.select, resource?.attributes) : undefined;
-		const fallbackColumns =
-			!hasOwnColumns && !frameworkSelect && target?.select
-				? buildSelectColumns(target.select, resource?.attributes)
-				: undefined;
-		if (frameworkSelect && !target?.isCollection && data != null) {
-			return toCsvStream([data.toJSON ? data.toJSON() : data], selectColumns);
-		}
-		return toCsvStream(data, selectColumns, fallbackColumns);
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
+		if (singleRecord && data != null) return toCsvStream([data.toJSON ? data.toJSON() : data], columns);
+		return toCsvStream(data, columns, fallbackColumns);
 	},
 	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const hasOwnColumns = typeof data?.getColumns === 'function';
-		const frameworkSelect = !hasOwnColumns && target?.select && hasFrameworkSelect(resource);
-		const selectColumns = frameworkSelect ? buildSelectColumns(target.select, resource?.attributes) : undefined;
-		const fallbackColumns =
-			!hasOwnColumns && !frameworkSelect && target?.select
-				? buildSelectColumns(target.select, resource?.attributes)
-				: undefined;
-		const columns = hasOwnColumns ? data.getColumns() : selectColumns;
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
 		if (
 			data != null &&
-			!hasOwnColumns &&
-			(typeof data !== 'object' ||
-				(!data[Symbol.iterator] && !data[Symbol.asyncIterator]) ||
-				(frameworkSelect && !target?.isCollection))
+			(singleRecord ||
+				(!columns && (typeof data !== 'object' || (!data[Symbol.iterator] && !data[Symbol.asyncIterator]))))
 		) {
 			data = [data.toJSON ? data.toJSON() : data];
 		}
@@ -602,12 +610,15 @@ export function serialize(responseData, request, responseObject, target?, resour
 			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
+				const unwrapped = responseData;
 				responseData = responseData.mapError((error) => {
 					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
 					return row;
 				});
 				responseData.getColumns = getColumns;
+				const applied = appliedSelectFor(target, unwrapped);
+				if (applied) appliedSelects.set(target, { ...applied, value: responseData });
 			}
 			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
 			if (!canCompress) return serialized;
