@@ -700,11 +700,26 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 		try {
 			strictEqual(reconnected.status, 200);
 			await putWorkItem(ctx, username, { state: 'ordinary' });
-			strictEqual(await reconnected.next(matches, 1000), undefined, 'ordinary reconnect drops the scoped grant');
-			const subscribed = await mcpCall(ctx.harper.httpURL, scopedAuth, session, 'resources/subscribe', { uri }, 51);
+			const liveId = `${username}_live`;
+			const liveUri = new URL(`/WorkItem/${liveId}`, ctx.harper.httpURL).href;
+			const subscribed = await mcpCall(
+				ctx.harper.httpURL,
+				scopedAuth,
+				session,
+				'resources/subscribe',
+				{ uri: liveUri },
+				51
+			);
 			strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
-			await putWorkItem(ctx, username, { state: 'new-scoped-subscribe' });
-			ok(await reconnected.next(matches, 5000), 'an explicit live scoped subscribe can still deliver');
+			await putWorkItem(ctx, liveId, { state: 'new-scoped-subscribe' });
+			ok(
+				await reconnected.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === liveUri,
+					5000
+				),
+				'an explicit live scoped subscribe can still deliver'
+			);
+			strictEqual(await reconnected.next(matches, 0), undefined, 'the removed URI has no late notification');
 		} finally {
 			reconnected.close();
 		}
