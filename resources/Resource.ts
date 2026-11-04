@@ -23,7 +23,13 @@ import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
-import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget, markDispatchTarget } from './RequestTarget.ts';
+import {
+	AUTHORIZATION_SELECT,
+	RequestTarget,
+	copyQueryConditions,
+	dispatchTarget,
+	markDispatchTarget,
+} from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
@@ -870,7 +876,7 @@ function transactional(
 					// get the id part from an iterable query
 					id = [];
 					isCollection = true;
-					for (const part of idOrQuery) {
+					for (const part of copyQueryConditions(idOrQuery)) {
 						if (typeof part === 'object' && part) break;
 						id.push(part);
 					}

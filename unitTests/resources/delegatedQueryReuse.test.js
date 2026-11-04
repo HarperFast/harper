@@ -196,6 +196,32 @@ describe('delegated reads reusing one query object', function () {
 				assert.strictEqual(root.conditions, conditions);
 			});
 
+			for (const placement of ['root', 'conditions']) {
+				it(`reuses an iterable returning one cached iterator at ${placement}`, async function () {
+					const iterator = (function* () {
+						yield { attribute: 'id', value: 'e1' };
+					})();
+					const iterable = { [Symbol.iterator]: () => iterator };
+					const root = { select: authoredSelect(), checkPermission: true };
+					if (placement === 'root') root[Symbol.iterator] = iterable[Symbol.iterator];
+					else root.conditions = iterable;
+					for (const user of [broadUser, restrictedUser, broadUser])
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+				});
+			}
+
+			it('reads fresh predicates from a reusable iterable on each dispatch', async function () {
+				let id = 'e1';
+				const conditions = { [Symbol.iterator]: () => [{ attribute: 'id', value: id }][Symbol.iterator]() };
+				const root = { conditions, select: authoredSelect(), checkPermission: true };
+				assert.deepStrictEqual(await one(getTable().search(root, { user: broadUser })), expected(broadUser));
+				id = '50% off';
+				assert.deepStrictEqual(await one(getTable().search(root, { user: broadUser })), {
+					...expected(broadUser),
+					id,
+				});
+			});
+
 			it('replays a one-shot iterator returned by a private-field getter', async function () {
 				class Query {
 					#conditions = (function* () {

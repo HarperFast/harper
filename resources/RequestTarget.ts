@@ -13,12 +13,11 @@ let copyRequestTarget: (source: RequestTarget) => RequestTarget;
 const iteratorSnapshots = new WeakMap<object, { values?: any[]; error?: unknown }>();
 
 function replayIterator(source: any, iteratorMethod?: () => Iterator<any>): Iterator<any> {
-	let snapshot = iteratorSnapshots.get(source);
+	const iterator = (iteratorMethod ?? source[Symbol.iterator]).call(source);
+	let snapshot = iteratorSnapshots.get(iterator);
 	if (!snapshot) {
-		const iterator = (iteratorMethod ?? source[Symbol.iterator]).call(source);
-		if (iterator !== source) return iterator;
 		snapshot = {};
-		iteratorSnapshots.set(source, snapshot);
+		iteratorSnapshots.set(iterator, snapshot);
 		try {
 			snapshot.values = Array.from(iterator);
 		} catch (error) {
@@ -30,7 +29,7 @@ function replayIterator(source: any, iteratorMethod?: () => Iterator<any>): Iter
 	return snapshot.values[Symbol.iterator]();
 }
 
-function copyConditions(value: any): any {
+export function copyQueryConditions(value: any): any {
 	return value && !Array.isArray(value) && typeof value[Symbol.iterator] === 'function'
 		? { [Symbol.iterator]: () => replayIterator(value) }
 		: value;
@@ -66,7 +65,7 @@ function copyQueryFields(source: any, stop = Object.prototype, skipArrayIndices 
 					if (name === Symbol.iterator && typeof value === 'function') {
 						const iteratorMethod = value;
 						value = () => replayIterator(source, iteratorMethod);
-					} else if (name === 'conditions') value = copyConditions(value);
+					} else if (name === 'conditions') value = copyQueryConditions(value);
 					Object.defineProperty(receiver, name, {
 						value,
 						writable: true,
@@ -285,7 +284,7 @@ export type RequestTargetOrId = RequestTarget | Id;
 export function copyQueryTarget<T>(source: T): T {
 	const copy = copyQueryTargetShell(source);
 	const conditions = Object.getOwnPropertyDescriptor(copy, 'conditions');
-	if (conditions && 'value' in conditions) (copy as any).conditions = copyConditions(conditions.value);
+	if (conditions && 'value' in conditions) (copy as any).conditions = copyQueryConditions(conditions.value);
 	return copy;
 }
 
