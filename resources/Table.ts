@@ -8474,7 +8474,6 @@ export function makeTable(options): TableResourceClass {
 						// Plain JSON nested path: the leaf may not be declared in the
 						// schema. Fall back to the root attribute so we can validate
 						// existence without requiring the inner structure to be typed.
-						// The root's type is not the leaf's, so it never converts values.
 						attribute = findAttribute(attributes, attribute_name[0]);
 					}
 					if (!attribute) {
@@ -14683,8 +14682,8 @@ function createComputedFrom(computedFromExpression: string, attributesFallback?:
 	return script.runInThisContext()(attributesFallback);
 }
 
-// undefined is the default comparator, equals
-const ELEMENT_VALUE_COMPARATORS = new Set([
+// Pattern comparators (contains, starts_with, ends_with) stay out so their operand remains text.
+const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
 	undefined,
 	'equals',
 	'ne',
@@ -14700,10 +14699,9 @@ const ELEMENT_VALUE_COMPARATORS = new Set([
 	'gtle',
 ]);
 function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
-	// an array attribute's value comparators compare each immediate element; pattern
-	// comparators (contains, starts_with, ends_with) keep matching the operand as text
 	const compared =
-		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
+		attribute.elements?.type &&
+		ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
 			? attribute.elements
 			: attribute;
 	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
@@ -14717,7 +14715,7 @@ const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
  * @param attribute
  * @returns
  */
-export function coerceType(value: any, attribute: any, name = attribute?.name): any {
+export function coerceType(value: any, attribute: any, name?: string): any {
 	const type = attribute?.type;
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
@@ -14760,7 +14758,7 @@ export function coerceType(value: any, attribute: any, name = attribute?.name): 
 				return value;
 		}
 	} catch (error) {
-		error.message = `Invalid value for attribute ${name}: "${value}", expecting ${type}`;
+		error.message = `Invalid value for attribute ${name ?? attribute?.name}: "${value}", expecting ${type}`;
 		error.statusCode = 400;
 		throw error;
 	}

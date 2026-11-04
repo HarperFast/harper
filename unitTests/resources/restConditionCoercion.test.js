@@ -29,6 +29,7 @@ describe('REST condition value conversion', () => {
 				matrix: [[Int]]
 				code: String
 				extra: Any
+				tags: [Any]
 			}
 		`);
 		Brand = databases.restConditionCoercion.CoercionBrand;
@@ -40,7 +41,17 @@ describe('REST condition value conversion', () => {
 		])
 			await Brand.put(brand);
 		const products = [
-			{ id: 1, brandId: 1, price: 5, weight: 1.5, sizes: [5, 40], code: '007', matrix: [[176, 0]] },
+			{
+				id: 1,
+				brandId: 1,
+				price: 5,
+				weight: 1.5,
+				sizes: [5, 40],
+				code: '007',
+				matrix: [[176, 0]],
+				extra: 'abc',
+				tags: ['abc'],
+			},
 			{
 				id: 2,
 				brandId: 1,
@@ -50,7 +61,7 @@ describe('REST condition value conversion', () => {
 				code: '25',
 				extra: { tag: '123' },
 			},
-			{ id: 3, brandId: 2, price: 30, weight: 3.5, sizes: [17, 107], code: '30' },
+			{ id: 3, brandId: 2, price: 30, weight: 3.5, sizes: [17, 107], code: '30', extra: 123, tags: [123] },
 			{ id: 4, brandId: 2, price: 31, weight: 10.25, sizes: [31, 17], code: '31' },
 			{ id: 5, brandId: 3, price: 100, weight: 20, sizes: [100, 200], code: '100' },
 		];
@@ -106,8 +117,15 @@ describe('REST condition value conversion', () => {
 				assert.deepStrictEqual(await rest(Product, `${attribute}=lt=10`), [1]);
 				assert.deepStrictEqual(await rest(Product, `${attribute}==25`), [2]);
 				assert.deepStrictEqual(await rest(Product, `${attribute}=25`), [2]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=in=(25,31)`), [2, 4]);
 				assert.deepStrictEqual(await rest(Product, `${attribute}=ge=20&=le=30`), [2]);
 				assert.deepStrictEqual(await rest(Product, `${attribute}=ge=number:100`), [3, 5]);
+				assert.deepStrictEqual(
+					await collectIds(
+						Product.search({ conditions: [{ attribute, comparator: 'greater_than_equal', value: '100' }] })
+					),
+					[3, 5]
+				);
 			});
 			it(`${attribute}: pattern comparators keep a string operand`, async function () {
 				// as a string, 07 matches 107 but not 17
@@ -127,6 +145,12 @@ describe('REST condition value conversion', () => {
 				],
 			};
 			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [condition] })), [1]);
+		});
+		it('[Any] auto-casts value operands like a scalar Any attribute', async function () {
+			assert.deepStrictEqual(await rest(Product, 'tags=123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags==123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags=ge=100&=le=200'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags=abc'), [1]);
 		});
 	});
 
@@ -156,9 +180,16 @@ describe('REST condition value conversion', () => {
 		it('an undeclared JSON leaf keeps the decoded string', async function () {
 			assert.deepStrictEqual(await rest(Product, 'extra.tag==123'), [2]);
 		});
+		it('an Any path leaf auto-casts value operands like top-level Any and relationship[...] groups', async function () {
+			assert.deepStrictEqual(await rest(Product, 'extra=123'), [3]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra=123'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra=ge=100&=le=200'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products[extra=123]'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra=abc'), [1]);
+		});
 	});
 
-	it('strict equality on a typed attribute is converted, as before', async function () {
+	it('strict equality on a typed attribute is converted', async function () {
 		assert.deepStrictEqual(await rest(Product, 'price===25'), [2]);
 		assert.deepStrictEqual(await rest(Product, 'code===007'), [1]);
 		assert.deepStrictEqual(await rest(Product, 'sizes===25'), [2]);
