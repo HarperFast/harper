@@ -15,6 +15,7 @@
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
+import { waitFor } from '../../unitTests/waitFor.js';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -129,6 +130,7 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		const tool = body.result.tools.find(({ name }) => name === 'component_registered_echo');
 		ok(tool);
 		deepStrictEqual(tool.inputSchema, {
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
 			type: 'object',
 			properties: { value: { type: 'string' } },
 			required: ['value'],
@@ -187,6 +189,65 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		);
 		const hidden = (await hiddenCall.json()) as { error: { message: string } };
 		ok(hidden.error.message.includes('Unknown tool'), JSON.stringify(hidden));
+		const invalidMetadata = await op({ operation: 'component_registered_bad_schema' });
+		strictEqual(invalidMetadata.status, 200);
+		deepStrictEqual(invalidMetadata.body, { ok: true });
+		strictEqual(
+			body.result.tools.find(({ name }) => name === 'component_registered_draft_06')?.inputSchema['$schema'],
+			'http://json-schema.org/draft-06/schema#'
+		);
+		const draft06 = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 6,
+				method: 'tools/call',
+				params: { name: 'component_registered_draft_06', arguments: { value: 'draft-06-echo' } },
+			},
+			sessionId
+		);
+		const draft06Body = (await draft06.json()) as { result: { structuredContent: { echoed: string } } };
+		strictEqual(draft06Body.result.structuredContent.echoed, 'draft-06-echo');
+	});
+
+	test('a literal allow never exposes conflicting worker contracts and becomes visible after agreement', async () => {
+		const owners = new Set<number>();
+		await waitFor(
+			async () => {
+				const response = await op({ operation: 'component_registered_disagreement' });
+				if (response.status === 200) owners.add(response.body.threadId);
+				return owners.size === 2;
+			},
+			{ timeout: 15_000, interval: 50 }
+		);
+		const init = await mcp({
+			jsonrpc: '2.0',
+			id: 101,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'rollout', version: '0' } },
+		});
+		const sessionId = init.headers.get('mcp-session-id');
+		ok(sessionId);
+		await init.body?.cancel();
+		const listed = async () => {
+			const response = await mcp({ jsonrpc: '2.0', id: 102, method: 'tools/list' }, sessionId);
+			const body = (await response.json()) as { result: { tools: Array<{ name: string; inputSchema: object }> } };
+			return body.result.tools.find(({ name }) => name === 'component_registered_disagreement');
+		};
+		strictEqual(await listed(), undefined);
+		const first = await op({ operation: 'component_registered_align_schema' });
+		strictEqual(first.status, 200);
+		strictEqual(await listed(), undefined, 'the other worker still declares its old contract');
+		const updated = new Set([first.body.threadId]);
+		await waitFor(
+			async () => {
+				const response = await op({ operation: 'component_registered_align_schema' });
+				if (response.status === 200) updated.add(response.body.threadId);
+				return updated.size === 2;
+			},
+			{ timeout: 15_000, interval: 50 }
+		);
+		const tool = (await waitFor(listed, { timeout: 15_000, interval: 50 })) as { inputSchema: object };
+		deepStrictEqual(tool.inputSchema, { type: 'object', properties: { value: { type: 'string' } } });
 	});
 
 	test('repeated calls keep working (round-robin across registering workers)', async () => {

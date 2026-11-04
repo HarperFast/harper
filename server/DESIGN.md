@@ -260,7 +260,8 @@ built-in. `parametersSchema` is legacy REST metadata, not MCP input metadata.
 
 MCP requires schema metadata for default/glob matches. A literal `mcp.operations.allow` entry opts
 that operation into a permissive object contract if it lacks metadata, preserving existing explicit
-operator choices. Neither form overrides conflicting schemas from live workers. See the registry
+operator choices, including a mix of workers with and without schema metadata. This advertises no
+typed contract. Conflicting declared schemas are always withheld. See the registry
 and MCP operation tests for registration isolation, reference validation and opt-in behavior.
 
 ## Resource ↔ HTTP boundary

@@ -1,9 +1,6 @@
 /**
- * Transitional introspection schemas; runtime validation remains authoritative.
- * Replace these projections with contracts shared by validation and registration
- * when the Joi, legacy and inline validators have a common schema representation.
- * Protocol-facing descriptions stay in MCP; these contracts also serve other registrants.
- * operationInputSchemas.test.js checks representative Joi-backed contracts for drift.
+ * Hand-maintained projections until Joi, legacy and inline validation share reusable contracts.
+ * Runtime validation remains authoritative; protocol-specific help belongs to MCP.
  */
 export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 	// ─── describe_* ───────────────────────────────────────────────────────
@@ -297,28 +294,6 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 		type: 'object',
 		properties: {
 			metric: { type: 'string', description: 'Metric name to describe (use list_metrics to discover).' },
-		},
-		required: ['metric'],
-	},
-	get_metrics: {
-		type: 'object',
-		properties: {
-			metric: { type: 'string', description: 'Metric name (use list_metrics to discover available metrics).' },
-			get_attributes: {
-				type: 'array',
-				items: { type: 'string' },
-				description: 'Attribute names to project; defaults to all.',
-			},
-			start_time: {
-				type: 'number',
-				exclusiveMinimum: 0,
-				description: 'Epoch milliseconds — inclusive window start.',
-			},
-			end_time: { type: 'number', exclusiveMinimum: 0, description: 'Epoch milliseconds — exclusive window end.' },
-			log: {
-				type: 'string',
-				description: 'Transaction log name to filter on (rocksdb-txnlog-stats metric).',
-			},
 		},
 		required: ['metric'],
 	},

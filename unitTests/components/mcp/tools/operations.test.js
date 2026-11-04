@@ -466,9 +466,9 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 	const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
 	const { AGENT_OPERATION_INPUT_SCHEMAS } = require('#src/agent/operationInputSchemas');
 	const { OPERATION_DESCRIPTIONS } = require('#src/components/mcp/tools/schemas/operationDescriptions');
-	const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
+	const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
 
-	const allOpNames = Object.values(OPERATIONS_ENUM);
+	const allOpNames = [...new Set([...OPERATION_FUNCTION_MAP.keys(), ...Object.keys(AGENT_OPERATION_INPUT_SCHEMAS)])];
 
 	function globToRegex(pattern) {
 		const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
@@ -482,7 +482,7 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 	);
 
 	it('expansion covers a non-trivial set of operations (sanity check)', () => {
-		// Catches the case where OPERATIONS_ENUM goes missing in a build refactor.
+		// Guard against an empty registry making coverage vacuous.
 		assert.ok(expandedAllow.length >= 5, `expected DEFAULT_ALLOW to expand to >= 5 ops, got ${expandedAllow.length}`);
 	});
 

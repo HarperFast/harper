@@ -2,6 +2,7 @@
 
 // Runs in a fresh process so nothing another test loaded is already in the require cache.
 const modules = [
+	'#src/server/serverHelpers/validateOperationInputSchema',
 	'#src/resources/databases',
 	'#src/resources/auditStore',
 	'#src/resources/RocksTransactionLogStore',

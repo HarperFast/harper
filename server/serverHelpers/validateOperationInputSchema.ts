@@ -1,33 +1,35 @@
+import { loadNativePackage } from '../../utility/packageUtils.js';
+
 export const MAX_OPERATION_INPUT_SCHEMA_BYTES = 64 * 1024;
 
 const validators = new Map<string, any>();
 
-function getDialect(schemaId: unknown): { key: string; module: string; schemaId?: string } | { error: string } {
-	if (schemaId === undefined) return { key: 'draft-07', module: 'ajv' };
+function getDialect(schemaId: unknown): { key: string; entryPath: string; schemaId?: string } | { error: string } {
+	if (schemaId === undefined) return { key: 'draft-07', entryPath: '' };
 	if (typeof schemaId !== 'string') return { error: '$schema must be a string' };
 	if (/^https?:\/\/json-schema\.org\/draft-0?6\/schema#?$/.test(schemaId)) {
-		return { key: 'draft-06', module: 'ajv', schemaId: 'http://json-schema.org/draft-06/schema#' };
+		return { key: 'draft-06', entryPath: '', schemaId: 'http://json-schema.org/draft-06/schema#' };
 	}
 	if (/^https?:\/\/json-schema\.org\/draft-0?7\/schema#?$/.test(schemaId)) {
-		return { key: 'draft-07', module: 'ajv', schemaId: 'http://json-schema.org/draft-07/schema#' };
+		return { key: 'draft-07', entryPath: '', schemaId: 'http://json-schema.org/draft-07/schema#' };
 	}
 	if (/^https?:\/\/json-schema\.org\/draft\/2019-09\/schema#?$/.test(schemaId)) {
-		return { key: '2019-09', module: 'ajv/dist/2019', schemaId: 'https://json-schema.org/draft/2019-09/schema' };
+		return { key: '2019-09', entryPath: 'dist/2019', schemaId: 'https://json-schema.org/draft/2019-09/schema' };
 	}
 	if (/^https?:\/\/json-schema\.org\/draft\/2020-12\/schema#?$/.test(schemaId)) {
-		return { key: '2020-12', module: 'ajv/dist/2020', schemaId: 'https://json-schema.org/draft/2020-12/schema' };
+		return { key: '2020-12', entryPath: 'dist/2020', schemaId: 'https://json-schema.org/draft/2020-12/schema' };
 	}
 	return { error: `unsupported JSON Schema dialect '${schemaId}'` };
 }
 
-function getValidator(dialect: { key: string; module: string }): any {
+function getValidator(dialect: { key: string; entryPath: string }): any {
 	let validator = validators.get(dialect.key);
 	if (validator) return validator;
-	const AjvModule = require(dialect.module);
+	const AjvModule = loadNativePackage('ajv', dialect.entryPath);
 	const Ajv = AjvModule.default ?? AjvModule;
-	validator = new Ajv({ addUsedSchema: false, strict: false, validateSchema: true });
+	validator = new Ajv({ addUsedSchema: false, strict: false, validateSchema: true, validateFormats: false });
 	if (dialect.key === 'draft-06') {
-		validator.addMetaSchema(require('ajv/dist/refs/json-schema-draft-06.json'));
+		validator.addMetaSchema(loadNativePackage('ajv', 'dist/refs/json-schema-draft-06.json'));
 	}
 	validators.set(dialect.key, validator);
 	return validator;
@@ -57,7 +59,7 @@ export function normalizeOperationInputSchema(inputSchema: unknown): { schema?: 
 		try {
 			validator.compile(schemaToValidate);
 		} finally {
-			validator.removeSchema(schemaToValidate);
+			validator.removeSchema();
 		}
 		return { schema: schemaToValidate };
 	} catch (error) {

@@ -11,6 +11,7 @@ import { Readable } from 'node:stream';
 server.registerOperation({
 	name: 'component_registered_echo',
 	inputSchema: {
+		$schema: 'https://json-schema.org/draft/2020-12/schema',
 		type: 'object',
 		properties: { value: { type: 'string' } },
 		required: ['value'],
@@ -61,5 +62,39 @@ server.registerOperation({
 	inputSchema: { type: 'object', properties: { value: { $ref: '#/definitions/Missing' } } },
 	execute: async function componentRegisteredBadSchema() {
 		return { ok: true };
+	},
+});
+
+server.registerOperation({
+	name: 'component_registered_draft_06',
+	inputSchema: {
+		$schema: 'http://json-schema.org/draft-06/schema#',
+		type: 'object',
+		properties: { value: { type: 'string' } },
+	},
+	execute: async function componentRegisteredDraft06(op) {
+		return { echoed: op.value };
+	},
+});
+
+server.registerOperation({
+	name: 'component_registered_disagreement',
+	inputSchema: { type: 'object', properties: { worker: { const: threadId } } },
+	execute: async function componentRegisteredDisagreement() {
+		return { threadId };
+	},
+});
+
+server.registerOperation({
+	name: 'component_registered_align_schema',
+	execute: async function componentRegisteredAlignSchema() {
+		server.registerOperation({
+			name: 'component_registered_disagreement',
+			inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+			execute: async function componentRegisteredAgreed() {
+				return { threadId };
+			},
+		});
+		return { threadId };
 	},
 });

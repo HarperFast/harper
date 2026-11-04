@@ -239,8 +239,4 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// delete_transaction_logs_before: utility/logging/transactionLog.ts:43 — Prune transaction log before cutoff.
 	delete_transaction_logs_before:
 		'Deletes transaction-log entries before a timestamp for a specified table. Destructive bulk operation; pruned entries cannot be recovered.',
-
-	// get_metrics: resources/analytics/read.ts (analytics.getOp) — Alias for get_analytics.
-	get_metrics:
-		'Alias for get_analytics. Returns analytics metric values with optional attribute filtering and time windowing. Pair with list_metrics to discover available metrics.',
 };
