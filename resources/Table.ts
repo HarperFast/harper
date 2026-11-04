@@ -10947,8 +10947,10 @@ export function makeTable(options): TableResourceClass {
 					(!attribute.computedFromHash &&
 						functionFromResolvers.has(name) &&
 						functionFromResolvers.get(name) === this.userResolvers[name])
-				)
+				) {
 					delete this.userResolvers[name];
+					functionFromResolvers.delete(name);
+				}
 			}
 			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
 			// (setPrototypeOf keeps fast properties; Object.create(null) starts in dictionary mode)
@@ -11316,7 +11318,10 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			this.userResolvers[attribute_name] = resolver;
-			if (!isBranch && !deferComputedIndexRepair) requestComputedIndexRepair(TableResource);
+			if (deferComputedIndexRepair) return;
+			// registered by the application, so a later declaration that drops a function `from` keeps it
+			functionFromResolvers.delete(attribute_name);
+			if (!isBranch) requestComputedIndexRepair(TableResource);
 		}
 		/**
 		 * Override the default embedder for an `@embed` attribute. Return the vector to

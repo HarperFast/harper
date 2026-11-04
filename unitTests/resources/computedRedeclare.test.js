@@ -373,6 +373,17 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		Bare.setComputedAttribute('score', shared);
 		const Again = declare('ComputedSharedBare', { computed: true });
 		assert.strictEqual(Again.userResolvers.score, shared, "the other table's declaration removed this resolver");
+
+		const fromOwn = (record) => 'o-' + record.name;
+		declare('ComputedSharedFrom', { computed: { from: fromOwn } });
+		const Dropped = declare('ComputedSharedFrom', { computed: true });
+		Dropped.setComputedAttribute('score', fromOwn);
+		const Reloaded = declare('ComputedSharedFrom', { computed: true });
+		assert.strictEqual(
+			Reloaded.userResolvers.score,
+			fromOwn,
+			'an explicit registration of a dropped function was removed'
+		);
 	});
 
 	it('rebuilds a function index another thread built without the function', async () => {
