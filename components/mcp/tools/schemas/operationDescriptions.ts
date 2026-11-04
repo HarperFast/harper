@@ -43,10 +43,6 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	describe_metric:
 		'Returns attribute names and types for a specific metric in the analytics table. Pair with get_analytics or list_metrics.',
 
-	// list_agent_sessions: agent/operations.ts:101 — Super-user list of running agent sessions.
-	list_agent_sessions:
-		'Lists running MCP agent sessions. Requires super_user. Use to surface what the platform is currently running on behalf of which operator.',
-
 	// ─── DEFAULT_ALLOW: list_* ────────────────────────────────────────────
 	// list_users: security/user.ts:283 — Users + roles + permissions, secrets scrubbed.
 	list_users:

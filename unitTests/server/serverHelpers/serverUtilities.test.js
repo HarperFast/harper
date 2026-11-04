@@ -355,6 +355,10 @@ describe('Test serverUtilities.js module ', () => {
 				registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA),
 				[SCHEMA, { inputSchema }]
 			);
+			assert.deepEqual(
+				registeredOperations.getRemoteOperationInputSchemas((name) => name === SCHEMA),
+				[[SCHEMA, { inputSchema }]]
+			);
 		});
 
 		it('withholds a schema while live workers disagree during a rolling deploy', function () {

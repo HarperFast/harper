@@ -268,6 +268,26 @@ describe('mcp/tools/operations — registration', () => {
 		}
 	});
 
+	it('keeps component destructive tools out of the agent default toolset', () => {
+		envOverrides.mcp_operations_allow = ['remove_node'];
+		_setOperationFunctionMapForTest(makeOpMap([['remove_node', null, null, false]]));
+		registerOperationsTools();
+		assert.equal(getTool('remove_node').annotations.destructiveHint, true);
+		const { composeRegistryTools } = require('#src/agent/registryTools');
+		const { composeToolset } = require('#src/agent/toolset');
+		const registryTools = composeRegistryTools(SUPER, async () => SUPER);
+		assert.equal(registryTools.find((tool) => tool.def.name === 'remove_node').destructive, true);
+		const { tools } = composeToolset({
+			registryTools,
+			allowDestructive: false,
+			onFollowup: async () => {},
+		});
+		assert.equal(
+			tools.some((tool) => tool.def.name === 'remove_node'),
+			false
+		);
+	});
+
 	it('does not expose a glob-allowed operation without registered schema metadata', () => {
 		envOverrides.mcp_operations_allow = ['nonstandard_*'];
 		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, null]]));
@@ -519,7 +539,9 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 	});
 
 	it('every DEFAULT_ALLOW operation has an entry in OPERATION_DESCRIPTIONS', () => {
-		const missing = expandedAllow.filter((name) => !(name in OPERATION_DESCRIPTIONS));
+		const missing = expandedAllow.filter(
+			(name) => OPERATION_FUNCTION_MAP.get(name)?.builtin && !(name in OPERATION_DESCRIPTIONS)
+		);
 		assert.deepEqual(missing, [], `Operations on DEFAULT_ALLOW without a description: ${missing.join(', ')}`);
 	});
 

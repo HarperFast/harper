@@ -175,9 +175,15 @@ function dropRegistration(name: string) {
 	unregisterWorkerGrantableOperation(name);
 }
 
-export function getRemoteOperationInputSchemas(): Array<[string, RemoteOperationSchema]> {
+export function getRemoteOperationInputSchemas(
+	include?: (name: string) => boolean
+): Array<[string, RemoteOperationSchema]> {
 	if (!isMainThread) return [];
-	return [...registeredByWorker.keys()].map((name) => [name, getRemoteOperationInputSchema(name)!]);
+	const schemas: Array<[string, RemoteOperationSchema]> = [];
+	for (const name of registeredByWorker.keys()) {
+		if (!include || include(name)) schemas.push([name, getRemoteOperationInputSchema(name)!]);
+	}
+	return schemas;
 }
 
 export function getRemoteOperationInputSchema(name: string): RemoteOperationSchema | undefined {

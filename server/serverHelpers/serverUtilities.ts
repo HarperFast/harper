@@ -197,7 +197,7 @@ export type OperationDefinition = {
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
-	/** JSON Schema for protocol introspection; use this instead of legacy REST parametersSchema for MCP tools. */
+	/** JSON Schema (type: object) advertised to MCP; compiled and cloned at registration. */
 	inputSchema?: object;
 	parametersSchema?: any[];
 	// When set, the operation declares its authorization requirement to the central verifyPerms

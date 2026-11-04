@@ -95,7 +95,7 @@ function loadServerUtilities():
 			OPERATION_FUNCTION_MAP?: OperationFunctionMap;
 			chooseOperation?: ChooseOperation;
 			getRemoteOperationInputSchema?: (name: string) => RemoteOperationSchema | undefined;
-			getRemoteOperationInputSchemas?: () => Array<[string, RemoteOperationSchema]>;
+			getRemoteOperationInputSchemas?: (include?: (name: string) => boolean) => Array<[string, RemoteOperationSchema]>;
 			processLocalTransaction?: ProcessLocalTransaction;
 	  }
 	| undefined {
@@ -113,10 +113,10 @@ function getOperationFunctionMap(): OperationFunctionMap | undefined {
 	return utils?.OPERATION_FUNCTION_MAP;
 }
 
-function getRemoteOperationInputSchemas(): Array<[string, RemoteOperationSchema]> {
-	if (_remoteSchemasOverride) return _remoteSchemasOverride;
+function getRemoteOperationInputSchemas(include: (name: string) => boolean): Array<[string, RemoteOperationSchema]> {
+	if (_remoteSchemasOverride) return _remoteSchemasOverride.filter(([name]) => include(name));
 	if (_opMapOverride) return [];
-	return loadServerUtilities()?.getRemoteOperationInputSchemas?.() ?? [];
+	return loadServerUtilities()?.getRemoteOperationInputSchemas?.(include) ?? [];
 }
 
 function getRemoteOperationInputSchema(name: string): RemoteOperationSchema | undefined {
@@ -237,7 +237,7 @@ const STREAMING_OPERATIONS: ReadonlySet<string> = new Set(['get_backup', 'get_de
  * Read-only operations carry `readOnlyHint: true`. The category is wider
  * than the default allow list (some custom-allowed ops are also read-only
  * — `system_information`, for example). Any op matching one of these
- * prefixes or names is treated as read-only.
+ * prefixes or names is treated as read-only only for a built-in registration.
  */
 const READ_ONLY_PREFIXES: readonly string[] = ['describe_', 'list_', 'search_', 'get_', 'read_'];
 const READ_ONLY_NAMES: ReadonlySet<string> = new Set(['system_information', 'status']);
@@ -469,13 +469,6 @@ export function makeOperationToolHandler(operationName: string) {
 	};
 }
 
-/**
- * Build the `ToolDef` for one operation. Cheap and stateless — a def is a pure
- * function of the operation name (its schema, description, annotations, RBAC
- * predicate, and handler don't depend on the allow/deny config, which only
- * decides *whether* the op is exposed, checked per request in the provider).
- * `tools/list` isn't a hot path, so the provider rebuilds defs per call.
- */
 function buildOperationToolDef(
 	operationName: string,
 	inputSchema: object,
@@ -484,7 +477,7 @@ function buildOperationToolDef(
 ): ToolDef {
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
 	if (builtin && isReadOnly(operationName)) annotations.readOnlyHint = true;
-	if (builtin && isDestructive(operationName)) annotations.destructiveHint = true;
+	if (isDestructive(operationName)) annotations.destructiveHint = true;
 	if (builtin && isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
@@ -517,7 +510,7 @@ function buildRegisteredOperationToolDef(
 			const message =
 				issue === 'inconsistent'
 					? `MCP operations profile: '${operationName}' is registered by workers with different inputSchema values; withholding it until they agree`
-					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; pass inputSchema to server.registerOperation() or name it literally in mcp.operations.allow`;
+					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; ${operation.builtin ? 'name it literally in mcp.operations.allow' : 'pass inputSchema to server.registerOperation() or name it literally in mcp.operations.allow'}`;
 			harperLogger.warn(message);
 		}
 		return undefined;
@@ -546,8 +539,9 @@ const operationsToolProvider: ProfileToolProvider = {
 			const def = buildRegisteredOperationToolDef(operationName, operation, config);
 			if (def) defs.push(def);
 		}
-		for (const [operationName, remoteSchema] of getRemoteOperationInputSchemas()) {
-			if (opMap.has(operationName) || !isOperationAllowed(operationName, config)) continue;
+		for (const [operationName, remoteSchema] of getRemoteOperationInputSchemas(
+			(name) => !opMap.has(name) && isOperationAllowed(name, config)
+		)) {
 			const def = buildRegisteredOperationToolDef(
 				operationName,
 				{ inputSchema: remoteSchema.inputSchema },
