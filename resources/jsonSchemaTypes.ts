@@ -542,7 +542,14 @@ function emitAttributeSchema(
 				}
 			}
 		} else if (attr.properties) {
-			if (options.preserveTypeOptionality) {
+			if (
+				options.preserveTypeOptionality ||
+				(!attr.definition &&
+					attr.type !== undefined &&
+					(JSON_SCHEMA_SCALAR_TYPES.has(attr.type) ||
+						Object.hasOwn(DATA_TYPES, attr.type) ||
+						Object.hasOwn(UNMAPPED_HARPER_TYPES, attr.type)))
+			) {
 				if (attr.type !== undefined) Object.assign(fragment, options.mapPrimitive(attr.type, attr));
 			} else fragment.type = 'object';
 			fragment.properties = Object.create(null);
@@ -580,7 +587,7 @@ function emitAttributeSchema(
 		}
 
 		if (
-			options.preserveTypeOptionality &&
+			(options.preserveTypeOptionality || (attr.properties && fragment.type === 'array')) &&
 			(!unionTypes || unionTypes.length <= 1) &&
 			attr.elements &&
 			!fragment.items

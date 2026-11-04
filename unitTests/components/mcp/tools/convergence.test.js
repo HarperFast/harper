@@ -212,6 +212,95 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		return { mcp, openapi };
 	}
 
+	for (const [label, declaration, mcpType, openapiType] of [
+		['JSON scalar', { type: 'string' }, 'string', 'string'],
+		['JSON array', { type: 'array', items: { type: 'string' } }, 'array', 'array'],
+		['nullable scalar', { type: ['string', 'null'] }, ['string', 'null'], 'string'],
+		['nullable array', { type: ['array', 'null'], items: { type: 'string' } }, ['array', 'null'], 'array'],
+		['Harper scalar', { type: 'String' }, 'string', 'string'],
+		['Harper date', { type: 'Date' }, ['string', 'number'], 'string'],
+		['Harper blob', { type: 'Blob' }, 'string', 'string'],
+		['Harper any', { type: 'Any' }, undefined, undefined],
+	]) {
+		it(`preserves an explicit ${label} alongside conditional properties`, () => {
+			const { mcp, openapi } = bothSurfaces({
+				value: { ...declaration, properties: { label: { type: 'integer' } } },
+			});
+			assert.deepStrictEqual(mcp.value.type, mcpType);
+			assert.deepStrictEqual(openapi.value.type, openapiType);
+			for (const schema of [mcp.value, openapi.value]) {
+				assert.deepStrictEqual(schema.properties.label, { type: 'integer' });
+				if (declaration.items) assert.deepStrictEqual(schema.items, { type: 'string' });
+			}
+		});
+	}
+
+	it('preserves nested explicit types and primary-key addressing schemas', () => {
+		const { mcp, openapi } = bothSurfaces({
+			id: { type: 'string', primaryKey: true, properties: { label: { type: 'integer' } } },
+			profile: {
+				type: 'object',
+				properties: {
+					text: { type: 'string', properties: { label: { type: 'integer' } } },
+					tags: { type: 'array', properties: {}, items: { type: 'string' } },
+				},
+			},
+		});
+		for (const properties of [mcp, openapi, getTool('get_Thing').outputSchema.properties]) {
+			assert.strictEqual(properties.id.type, 'string');
+			assert.strictEqual(properties.profile.properties.text.type, 'string');
+			assert.strictEqual(properties.profile.properties.tags.type, 'array');
+			assert.deepStrictEqual(properties.profile.properties.tags.items, { type: 'string' });
+		}
+		for (const verb of ['get', 'delete', 'update']) {
+			assert.strictEqual(getTool(`${verb}_Thing`).inputSchema.properties.id.type, 'string');
+		}
+	});
+
+	it('keeps inference for omitted types and does not invent a type from items', () => {
+		const { mcp, openapi } = bothSurfaces({
+			profile: { properties: { label: { type: 'string' } } },
+			untyped: { items: { type: 'string' } },
+		});
+		for (const properties of [mcp, openapi]) {
+			assert.strictEqual(properties.profile.type, 'object');
+			assert.deepStrictEqual(properties.untyped, {});
+		}
+	});
+
+	for (const field of ['attributes', 'properties']) {
+		it(`keeps named legacy objects in ${field} arrays`, () => {
+			const resources = makeResources();
+			resources.get('Widget').Resource[field] = [
+				{ name: 'profile', type: 'LegacyProfile', properties: [{ name: 'label', type: 'String' }] },
+			];
+			_setResourcesForTest(resources);
+			registerApplicationTools();
+			assert.strictEqual(getTool('create_Widget').inputSchema.properties.profile.type, 'object');
+			assert.strictEqual(
+				generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget.properties.profile.type,
+				'object'
+			);
+		});
+	}
+
+	it('keeps named definitions whose names overlap JSON types', () => {
+		const resources = makeResources();
+		const definition = { type: 'number', attributes: [{ name: 'label', type: 'String' }] };
+		resources.get('Widget').Resource.attributes = [
+			{ name: 'profile', type: 'number', properties: definition.attributes, definition },
+		];
+		_setResourcesForTest(resources);
+		registerApplicationTools();
+		assert.strictEqual(getTool('create_Widget').inputSchema.properties.profile.type, 'object');
+		assert.deepStrictEqual(
+			generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget.properties.profile,
+			{
+				$ref: '#/components/schemas/number',
+			}
+		);
+	});
+
 	it('suppresses a hidden sub-property on both surfaces and never emits `hidden` as a schema key', () => {
 		const { mcp, openapi } = bothSurfaces({
 			profile: {

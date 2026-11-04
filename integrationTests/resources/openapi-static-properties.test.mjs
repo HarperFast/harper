@@ -73,6 +73,21 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		assert.deepEqual(create.inputSchema.required, ['status', 'note', 'extension']);
 	});
 
+	test('preserves explicit static types with conditional properties through OpenAPI and MCP', async () => {
+		const { tools } = await mcpClient.listTools();
+		const create = tools.find((tool) => tool.name === 'create_OrderSummary');
+		const get = tools.find((tool) => tool.name === 'get_OrderSummary');
+		for (const properties of [schema.properties, create.inputSchema.properties, get.outputSchema.properties]) {
+			assert.strictEqual(properties.conditionalText.type, 'string');
+			assert.strictEqual(properties.conditionalTags.type, 'array');
+			assert.deepStrictEqual(properties.conditionalTags.items, { type: 'string' });
+			assert.deepStrictEqual(properties.conditionalNullableTags.items, { type: 'string' });
+		}
+		assert.strictEqual(schema.properties.conditionalNullableTags.type, 'array');
+		assert.strictEqual(schema.properties.conditionalNullableTags.nullable, true);
+		assert.deepStrictEqual(create.inputSchema.properties.conditionalNullableTags.type, ['array', 'null']);
+	});
+
 	test('returns a record satisfying the MCP output schema with an undeclared required field', async () => {
 		await mcpClient.listTools();
 		const result = await mcpClient.callTool({ name: 'get_OrderSummary', arguments: { id: 'o1' } });

@@ -93,7 +93,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 `attributeToSchema` emits MCP/OpenAPI; contract narrowing requires every verb to validate. Only `compileVerb` sets `bodyRequired` (`defineResource.test.js`).
 
-Contracts preserve absent types and conditional `properties`/`items`; metadata infers types. Projections refresh per read; MCP rebuilds on registration (`schemaProjectionInvariants.test.js`).
+Contracts keep absent types; metadata infers omitted ones. Primitives retain conditional `properties`/`items`. Projections refresh per read; MCP rebuilds on registration (`schemaProjectionInvariants.test.js`).
 
 ## Conventions
 

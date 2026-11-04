@@ -18,6 +18,13 @@ export class OrderSummary extends Resource {
 		},
 		allHidden: { type: 'object', properties: { secret: { type: 'string', hidden: true } }, required: ['secret'] },
 		tags: { type: 'array', items: { type: 'string', enum: ['x', 'y'], description: 'Tag.' } },
+		conditionalText: { type: 'string', properties: { label: { type: 'integer' } } },
+		conditionalTags: { type: 'array', properties: { label: { type: 'integer' } }, items: { type: 'string' } },
+		conditionalNullableTags: {
+			type: ['array', 'null'],
+			properties: { label: { type: 'integer' } },
+			items: { type: 'string' },
+		},
 		anything: { type: 'array' },
 		payload: { enum: [{ a: 1, b: [true, null] }, ['x']], const: { b: [true, null], a: 1 } },
 		choice: { type: ['string', 'integer', 'null'], enum: ['a', 1] },
