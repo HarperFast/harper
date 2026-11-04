@@ -9,9 +9,7 @@
  * tool must never be shadowed by a same-named registry tool, since the two have
  * different runtime assumptions. Each operator group has a boot-time switch
  * (`agent.tools.*`, harper#3993); a group that is off is not composed, and its
- * names stay reserved. The schedule tool arrives built, like `http_fetch`: a
- * composition is replaced when `allowDestructive` changes, and a followup armed
- * before that must stay in the one `pending` map `cancelRun` clears.
+ * names stay reserved. The schedule tool arrives built, like `http_fetch`.
  */
 
 import { BEST_PRACTICE_TOOL_NAME } from './bestPractices.ts';

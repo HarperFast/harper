@@ -36,7 +36,6 @@ function opTool(overrides = {}) {
 	};
 }
 
-// The composer takes the schedule tool built, as the component builds it once at boot.
 const scheduleDeps = { scheduleTool: buildScheduleTool({ onFollowup: async () => {} }) };
 
 // composeRegistryTools takes (listingUser, resolveIdentity). Most tests use the same user for both.
@@ -499,11 +498,9 @@ describe('agent/toolset composeToolset — agent.tools switches (harper#3993)', 
 		const { id } = await schedule.handler({ delayMs: 60_000, prompt: 'later' }, { sessionId: 's1', scopes: {} });
 		try {
 			assert.strictEqual(first.scheduled.get(id)?.sessionId, 's1');
-			// What `setConfig` does when allowDestructive changes.
 			const second = composeToolset({ ...everything(), scheduleTool, allowDestructive: false });
 			assert.strictEqual(second.scheduled, first.scheduled);
 			assert.strictEqual(second.scheduled.get(id)?.sessionId, 's1');
-			// A group that is off hands out an empty map of its own, never the tool's.
 			const off = composeToolset({
 				...everything(),
 				scheduleTool,

@@ -150,7 +150,7 @@ suite('agent operator tool groups off at boot (harper#3993)', (ctx: any) => {
 		try {
 			await teardownHarper(ctx);
 		} finally {
-			await fake.close();
+			await fake?.close();
 		}
 	});
 
