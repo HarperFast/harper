@@ -655,6 +655,60 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 			postAgent.destroy();
 		}
 	});
+	test('an ordinary GET cannot inherit a scoped grant with the same attribution username', async () => {
+		const auth = adminAuth(ctx);
+		const username = `scoped_restore_${Date.now().toString(36)}`;
+		const role = `${username}_role`;
+		const password = 'ScopedRestore-credential!';
+		const minted = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'authorization': auth },
+			body: JSON.stringify({
+				operation: 'create_authentication_tokens',
+				username,
+				role: {
+					permission: {
+						data: {
+							tables: {
+								WorkItem: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			}),
+		});
+		const mintedBody = await minted.text();
+		strictEqual(minted.status, 200, mintedBody);
+		const scopedAuth = `Bearer ${JSON.parse(mintedBody).operation_token}`;
+		const session = await initialize(ctx.harper.httpURL, scopedAuth);
+		const uri = new URL(`/WorkItem/${username}`, ctx.harper.httpURL).href;
+		const matches = (message: any) =>
+			message?.method === 'notifications/resources/updated' && message?.params?.uri === uri;
+		const initial = await openSse(ctx.harper.httpURL, scopedAuth, session, 2500);
+		try {
+			strictEqual(initial.status, 200);
+			const subscribed = await mcpCall(ctx.harper.httpURL, scopedAuth, session, 'resources/subscribe', { uri }, 50);
+			strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+			await putWorkItem(ctx, username, { state: 'scoped' });
+			ok(await initial.next(matches, 5000), 'the scoped grant initially delivers');
+		} finally {
+			initial.close();
+		}
+		await op(ctx, { operation: 'add_role', role, permission: { super_user: false } });
+		await op(ctx, { operation: 'add_user', role, username, password, active: true });
+		const reconnected = await openSse(ctx.harper.httpURL, basicAuth(username, password), session, 2500);
+		try {
+			strictEqual(reconnected.status, 200);
+			await putWorkItem(ctx, username, { state: 'ordinary' });
+			strictEqual(await reconnected.next(matches, 1000), undefined, 'ordinary reconnect drops the scoped grant');
+			const subscribed = await mcpCall(ctx.harper.httpURL, scopedAuth, session, 'resources/subscribe', { uri }, 51);
+			strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+			await putWorkItem(ctx, username, { state: 'new-scoped-subscribe' });
+			ok(await reconnected.next(matches, 5000), 'an explicit live scoped subscribe can still deliver');
+		} finally {
+			reconnected.close();
+		}
+	});
 	test('N6: acknowledged subscription state is restored after a process crash and restart', async () => {
 		const auth = adminAuth(ctx);
 		const session = await initialize(ctx.harper.httpURL, auth);
