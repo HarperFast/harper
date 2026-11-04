@@ -171,7 +171,18 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					localPrincipals.get(generation) ??
 					(principalId ? session.subscriptionPrincipals?.[principalId] : record.user);
 				try {
-					if (!user || (user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000)) {
+					const differentScopedGrant =
+						initializing &&
+						record.user._scopedToken &&
+						principalId !==
+							createHash('sha256')
+								.update(JSON.stringify(subscriptionUser(record.user)))
+								.digest('hex');
+					if (
+						!user ||
+						differentScopedGrant ||
+						(user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000)
+					) {
 						rejected[uri] = { generation, result: 'permission-denied' };
 					} else if (await addResourceSubscription(sessionId, uri, user)) installed.set(uri, generation);
 					else rejected[uri] = { generation, result: 'not-subscribable' };
@@ -283,7 +294,10 @@ async function waitForApplied(
 	};
 	const inspect = (session: McpSessionRecord | null) => {
 		if (!session) return finish('session-gone');
-		if (!session.streamToken) return;
+		if (!session.streamToken) {
+			if (generation === undefined) finish('success');
+			return;
+		}
 		const ack = session.subscriptionAck;
 		// A coalesced reconcile may apply several revisions at once; only the current token can acknowledge them.
 		if (!ack || ack.token !== session.streamToken || ack.revision < revision) return;

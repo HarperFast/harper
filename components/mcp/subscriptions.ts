@@ -23,12 +23,13 @@ const live = new Map<string, Map<string, ResourceSubscription>>();
 /**
  * Start (or replace) a subscription for `uri` on `sessionId`. Pushes
  * `notifications/resources/updated` to the session's queue on each change.
- * Returns false if the URI isn't subscribable (caller maps that to `-32602`).
+ * Returns false if the URI isn't subscribable or its GET closes during installation.
  */
 export async function addResourceSubscription(sessionId: string, uri: string, user: AuthedUser): Promise<boolean> {
 	const owner = getRegisteredSession(sessionId);
 	if (!owner) return false;
 	const subscription = await subscribeToResource(uri, user, () => {
+		if (user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000) return;
 		const record = getRegisteredSession(sessionId);
 		if (record === owner) {
 			pushSessionFrame(record, {

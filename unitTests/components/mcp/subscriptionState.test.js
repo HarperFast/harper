@@ -348,6 +348,18 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptionPrincipals, {});
 	});
 
+	it('does not restore a stored grant onto a different scoped credential with the same username', async () => {
+		await open();
+		_setSubscribeImplForTest(async () => changeStream());
+		const broad = { ...USER, _scopedToken: true, authExpiresAt: Date.now() / 1000 + 60 };
+		assert.equal(await subscribe(URI, broad), 'success');
+		const narrow = { ...broad, role: { permission: {} } };
+		const replacement = registerSession(session.id, 'application', narrow);
+		assert.equal(await claimSubscriptionOwner(session.id, replacement.streamToken), true);
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+	});
+
 	it('rejects expired scoped-token state on reconnect', async () => {
 		await patchSession(session.id, {
 			subscriptions: [URI],
@@ -357,6 +369,25 @@ describe('MCP persisted subscription state', function () {
 		await open();
 		assert.equal(_liveSubscriptionCount(session.id), 0);
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+	});
+
+	it('does not deliver custom resource updates after the scoped grant expires', async () => {
+		const record = await open();
+		const stream = new IterableEventQueue();
+		stream.end = () => stream.close();
+		_setSubscribeImplForTest(async () => stream);
+		let updates = 0;
+		record.queue.on('data', (frame) => {
+			if (frame.data?.params?.uri === URI) updates++;
+		});
+		const authExpiresAt = Math.ceil(Date.now() / 1000) + 1;
+		assert.equal(await subscribe(URI, { ...USER, _scopedToken: true, authExpiresAt }), 'success');
+		stream.send({ id: 'before-expiry' });
+		await waitFor(() => updates === 1);
+		await waitFor(() => Date.now() >= authExpiresAt * 1000, 3000);
+		stream.send({ id: 'after-expiry' });
+		await new Promise(setImmediate);
+		assert.equal(updates, 1);
 	});
 
 	it('fails closed when a persisted scoped-principal reference is missing', async () => {
@@ -385,24 +416,33 @@ describe('MCP persisted subscription state', function () {
 		assert.equal(_liveSubscriptionCount(session.id), 1);
 	});
 
-	it('does not reopen resource iterators after activity-only writes', async () => {
-		await open();
-		let installs = 0;
-		_setSubscribeImplForTest(async () => {
-			installs++;
-			return changeStream();
-		});
+	it('acknowledges durable removal when the GET closes before applying it', async () => {
+		_setSubscriptionTimeoutForTest(1000);
+		const record = await open();
 		assert.equal(await subscribe(), 'success');
-		const before = await loadSession(session.id);
-		await patchSession(session.id, { lastActivity: Date.now() + 1, logLevel: 'debug' });
-		assert.equal((await loadSession(session.id)).subscriptionRevision, before.subscriptionRevision);
-		assert.equal(installs, 1);
+		const started = deferred();
+		const install = deferred();
+		_setSubscribeImplForTest(async () => {
+			started.resolve();
+			return install.promise;
+		});
+		const pending = subscribe(`${URI}/other`);
+		await started.promise;
+		try {
+			const removal = unsubscribe();
+			await waitFor(async () => !(await loadSession(session.id)).subscriptions.includes(URI));
+			record.queue.emit('close');
+			assert.equal(await removal, 'success');
+		} finally {
+			install.resolve(changeStream());
+			await pending;
+		}
 	});
 
 	it('closes the GET and its iterators when another request deletes the durable session', async () => {
 		await open();
 		assert.equal(await subscribe(), 'success');
-		await deleteSession(session.id);
+		await sessions.delete(session.id);
 		await waitFor(() => !getRegisteredSession(session.id));
 		assert.equal(_liveSubscriptionCount(session.id), 0);
 	});
