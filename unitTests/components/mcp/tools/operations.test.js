@@ -1166,6 +1166,41 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 });
 
 describe('mcp/tools/operations — remote warning lifetime', () => {
+	it('explains unclassified local defaults once per registration and accepts a read-only replacement', async () => {
+		const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const name = 'list_unclassified_warning_fixture';
+		const previousAllow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
+		const previousDeny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
+		const restore = pinLogConfig({ level: 'warn' });
+		const logPath = harperLogger.getLogFilePath();
+		const lines = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8') : '').split('\n');
+		try {
+			_resetRegistryForTest();
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, []);
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, []);
+			server.registerOperation({ name, inputSchema: { type: 'object' }, execute: async () => [] });
+			registerOperationsTools();
+			assert.equal(getTool(name), undefined);
+			listTools({ user: SUPER, profile: 'operations', sessionId: name });
+			harperLogger.warn(`${name}: listing complete`);
+			await waitFor(() => lines().some((line) => line.includes(`${name}: listing complete`)));
+			const warnings = lines().filter(
+				(line) => line.includes(`'${name}'`) && line.includes('read-only classification')
+			);
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0], /readOnly: true.*mcp.operations.allow.*replaces the defaults/);
+			server.registerOperation({ name, inputSchema: { type: 'object' }, readOnly: true, execute: async () => [] });
+			assert.equal(getTool(name).annotations.readOnlyHint, true);
+		} finally {
+			OPERATION_FUNCTION_MAP.delete(name);
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, previousAllow);
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, previousDeny);
+			_resetRegistryForTest();
+			restore();
+		}
+	});
+
 	for (const retirement of ['exit', 'failed port']) {
 		it(`deduplicates active warnings and resets them after final-owner ${retirement}`, async () => {
 			const remote = require('#src/server/serverHelpers/registeredOperations');

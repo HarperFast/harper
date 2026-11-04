@@ -432,6 +432,17 @@ suite('Component: registered-operation default MCP safety', (ctx: ContextWithHar
 	});
 	test('withholds forwarded read-only claims from default tools/list and tools/call', async () => {
 		const { username, password } = ctx.harper.admin;
+		const control = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+			},
+			body: JSON.stringify({ operation: 'search_registered_operation' }),
+		});
+		strictEqual(control.status, 200);
+		const controlBody: any = await control.json();
+		ok(controlBody.worker > 0, JSON.stringify(controlBody));
 		let sessionId: string | null;
 		async function request(body: object) {
 			return fetch(`${ctx.harper.operationsAPIURL}/mcp`, {
@@ -468,6 +479,6 @@ suite('Component: registered-operation default MCP safety', (ctx: ContextWithHar
 				params: { name: 'search_registered_operation', arguments: {} },
 			})
 		).json();
-		ok(called.error || called.result?.isError, JSON.stringify(called));
+		strictEqual(called.error?.message, 'Unknown tool: search_registered_operation');
 	});
 });

@@ -27,7 +27,7 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  * `verifyPerms` still gates the actual call. Operators who want any
  * of those opt in via `mcp.operations.allow`. Destructive ops carry
  * `destructiveHint: true` so well-behaved MCP clients can surface a
- * confirmation prompt. Component replacements need an owned `readOnly: true`
+ * confirmation prompt. Non-builtin operations need an owned `readOnly: true`
  * declaration for default visibility. Worker operations require an explicit
  * allow list, which replaces the defaults.
  *
@@ -79,6 +79,7 @@ let _remoteSchemasOverride: Array<[string, RemoteOperationSchema]> | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
 const warnedMissingSchemas = new Set<string>();
+const warnedUnclassifiedOperations = new WeakSet<OperationFunctionEntry>();
 onRemoteOperationUnregistered((name) => {
 	warnedMissingSchemas.delete(`${name}:missing`);
 	warnedMissingSchemas.delete(`${name}:inconsistent`);
@@ -522,7 +523,15 @@ function buildRegisteredOperationToolDef(
 	config: OperationsConfig,
 	issue: RemoteOperationSchema['issue'] = 'missing'
 ): ToolDef | undefined {
-	if (config.usingDefaults && !hasReadOnlyClassification(operationName, operation)) return undefined;
+	if (config.usingDefaults && !hasReadOnlyClassification(operationName, operation)) {
+		if (!warnedUnclassifiedOperations.has(operation)) {
+			warnedUnclassifiedOperations.add(operation);
+			harperLogger.warn(
+				`MCP operations profile: '${operationName}' lacks a read-only classification; declare readOnly: true on its main-thread registration only if it is read-only, or explicitly include it in mcp.operations.allow (which replaces the defaults)`
+			);
+		}
+		return undefined;
+	}
 	if (!operation.inputSchema) {
 		if (
 			issue !== 'inconsistent' &&
