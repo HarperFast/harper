@@ -360,7 +360,6 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			});
 		};
 		try {
-			// (a) Deploy policy uses the cleanup environment; cleanup policy uses another environment.
 			await replacePolicy(baseDeploy, { claims: { ...baseDeploy.claims, environment: 'preview-cleanup' } });
 			await replacePolicy(baseCleanup, { claims: { ...baseCleanup.claims, environment: 'staging' } });
 			const envDrifted = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
@@ -370,7 +369,6 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				'trust policy "github-actions-opsdrift-preview-cleanup" pins environment "staging", not "preview-cleanup"',
 			]);
 
-			// (b) Rewritten with repository / workflow_path instead of repository_id + workflow_ref.
 			await replacePolicy(baseDeploy, {
 				claims: {
 					repository: 'acme/opsdrift',
@@ -394,25 +392,29 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			assert.strictEqual(unpinned.branch, undefined);
 			assert.strictEqual(unpinned.repository_id, undefined);
 			assert.deepStrictEqual(unpinned.problems, [
-				'trust policy "github-actions-opsdrift-preview" no longer pins repository_id and workflow_ref',
-				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins repository_id and workflow_ref',
+				'trust policy "github-actions-opsdrift-preview" no longer pins a single repository_id and branch workflow_ref',
+				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins a single repository_id and branch workflow_ref',
 			]);
-			await replacePolicy(baseDeploy);
-			await replacePolicy(baseCleanup, {
+			await replacePolicy(baseDeploy, {
 				claims: {
-					repository: 'acme/opsdrift',
-					workflow_ref: baseCleanup.claims.workflow_ref,
-					event_name: 'pull_request_target',
-					environment: 'preview-cleanup',
+					...baseDeploy.claims,
+					environment: ['preview', 'staging'],
 				},
 			});
-			const noRepoId = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
-			assert.strictEqual(noRepoId.enabled, false);
-			assert.deepStrictEqual(noRepoId.problems, [
-				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins repository_id and workflow_ref',
+			await replacePolicy(baseCleanup, {
+				claims: {
+					...baseCleanup.claims,
+					repository_id: ['67890'],
+				},
+			});
+			const arrayPinned = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
+			assert.strictEqual(arrayPinned.enabled, false);
+			assert.deepStrictEqual(arrayPinned.problems, [
+				'trust policy "github-actions-opsdrift-preview" no longer pins event_name pull_request_target and a single environment',
+				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins a single repository_id and branch workflow_ref',
 			]);
 
-			// (c) Cleanup policy's audience, repository_id, or workflow_ref disagrees with the deploy policy's.
+			await replacePolicy(baseDeploy);
 			await replacePolicy(baseCleanup, {
 				audience: 'https://other.example.com:9925/',
 				claims: {
