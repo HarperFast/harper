@@ -24,9 +24,7 @@ async function unlockSafe(holder) {
 	if (!holder || typeof holder.unlock !== 'function') return;
 	try {
 		await holder.unlock();
-	} catch {
-		// Ignore unlock errors on already-released handles during teardown
-	}
+	} catch {}
 }
 
 // harper#3872: a commit's completeMidScopeCommit drops the chained links; their surviving record locks must reach the links that replace them

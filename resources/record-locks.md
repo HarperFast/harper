@@ -123,9 +123,11 @@ Consequences that shape the code:
   checked at entry, before any wait, and again on the link that will own the handle once the key is
   acquired, before admission (a write staged during the wait). The locked instance's own write can still be
   in its model hooks, outside `writesByKey`, so a fresh acquisition also refuses one `#stagedWrite()`
-  shows, before `#reloadLocked` would discard the changes it reads. A call whose hooks finish after
-  registration stages under the lock. `unlock()` keeps a joined write as the instance's saving operation;
-  changes it abandons, and those a fresh `lock()` reloads over, are discarded with their write generation
+  shows (`#hasStagedWriteFor`), before `#reloadLocked` would discard the changes it reads. "Pending" means
+  staged: a write still in its hooks or record load when the lock registers stages under the lock. An
+  instance joining a lock already in the registry keeps its changes only if its staged write is bound to
+  that lock. `unlock()` keeps a joined write as the instance's saving operation and clears a dropped one;
+  changes it abandons, and those a `lock()` reloads over, are discarded with their write generation
   closed (`#discardChanges`), so nested tracked objects in them 409. Covered by
   `recordLockPendingWrite.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry

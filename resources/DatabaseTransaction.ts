@@ -1525,8 +1525,10 @@ export class DatabaseTransaction implements Transaction {
 
 	/** Called on the chain root for a link leaving its chain. */
 	retainRecordLocksOf(link: DatabaseTransaction): void {
-		link.leftChain = true;
 		const recordLocks = link.recordLocks;
+		// Only a lock() waiting on the link reads leftChain; a lock-free link is left untouched.
+		if (!recordLocks && !link.pendingLocks) return;
+		link.leftChain = true;
 		if (!recordLocks) return;
 		link.recordLocks = undefined;
 		(this.detachedRecordLocks ??= new Map()).set(link.db.path, recordLocks);

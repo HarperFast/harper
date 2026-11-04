@@ -4447,6 +4447,13 @@ export function makeTable(options): TableResourceClass {
 			if (!operation || operation.saved || operation.dropped || operation instanceof ConditionLockWait) return;
 			return operation;
 		}
+		/**
+		 * A fresh lock() on this record would reload over this instance's staged write, which can still be in
+		 * its model hooks and so absent from `writesByKey`.
+		 */
+		#hasStagedWriteFor(keyId: unknown): boolean {
+			return keyId === writeKeyId(this.getId()) && this.#stagedWrite() !== undefined;
+		}
 		#whenStaged(staging: any) {
 			const updated = when(staging, () => this);
 			const saving = this.#savingOperation;
@@ -5153,6 +5160,9 @@ export function makeTable(options): TableResourceClass {
 			if (scoped && !scoped.isExpired()) {
 				const violation = scopeViolation(scoped, resolved, databaseName);
 				if (violation) return Promise.reject(violation);
+				// Only changes a write bound to this lock reads were made under it; others are discarded, as on a
+				// fresh acquisition.
+				const joined = this.#stagedWrite()?.lockHandle === scoped;
 				if (resolved.hold && !scoped.hold) {
 					// Upgrade scoped → hold: flip the existing handle object to hold mode so every
 					// instance that already references this handle stays valid.  Retiring and creating a
@@ -5160,12 +5170,12 @@ export function makeTable(options): TableResourceClass {
 					// 409 against a released handle).  The native key stays locked throughout.
 					scoped.upgradeToHold(resolved.lease);
 					detachScopedUpgradeWrite(link, keyId, scoped);
-					return Promise.resolve(this.#reloadLocked(id, scoped, true));
+					return Promise.resolve(this.#reloadLocked(id, scoped, joined));
 				}
-				// Already held with the same type: re-entrant return. Preserve any staged changes.
-				return Promise.resolve(this.#reloadLocked(id, scoped, true));
+				return Promise.resolve(this.#reloadLocked(id, scoped, joined));
 			}
-			if (link.hasPendingWriteTo(primaryStore, keyId)) return Promise.reject(pendingWriteLockError());
+			if (link.hasPendingWriteTo(primaryStore, keyId) || this.#hasStagedWriteFor(keyId))
+				return Promise.reject(pendingWriteLockError());
 			// Cluster scope needs a registered transport. An EXPLICIT { scope: 'cluster' } without one is
 			// a caller asking for a guarantee this node cannot make, so it fails closed rather than
 			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
@@ -5229,11 +5239,12 @@ export function makeTable(options): TableResourceClass {
 								databaseName
 							);
 							if (violation) throw violation;
+							const joined = this.#stagedWrite()?.lockHandle === acquired;
 							if (resolved.hold && !acquired.hold) {
 								acquired.upgradeToHold(resolved.lease);
 								detachScopedUpgradeWrite(link, keyId, acquired);
 							}
-							return this.#reloadLocked(id, acquired, true);
+							return this.#reloadLocked(id, acquired, joined);
 						}
 						return retryOnRemainingBudget();
 					},
@@ -5362,7 +5373,7 @@ export function makeTable(options): TableResourceClass {
 				// link that replaced it, or no later lookup through txnForContext finds it.
 				if (link.leftChain) lockLink = txnForContext(context);
 				// Nothing awaits from here to registerRecordLock, so a write staged during the wait is seen here.
-				if (lockLink.hasPendingWriteTo(primaryStore, keyId)) {
+				if (lockLink.hasPendingWriteTo(primaryStore, keyId) || this.#hasStagedWriteFor(keyId)) {
 					handle.release();
 					throw pendingWriteLockError();
 				}
@@ -5452,9 +5463,7 @@ export function makeTable(options): TableResourceClass {
 						throw error;
 					};
 					try {
-						// This instance's own write can still be awaiting async hooks, so it is not in writesByKey;
-						// the reload would discard the changes it reads.
-						if (keyId === writeKeyId(this.getId()) && this.#stagedWrite()) throw pendingWriteLockError();
+						if (this.#hasStagedWriteFor(keyId)) throw pendingWriteLockError();
 						const result = this.#reloadLocked(id, handle, false, { entry: admittedEntry });
 						return result?.then ? result.catch(releaseAfterReloadFailure) : result;
 					} catch (error) {
@@ -5549,18 +5558,16 @@ export function makeTable(options): TableResourceClass {
 			this.#lockHandle = undefined;
 			this.#lockWritable = false;
 			if (!handle) return Promise.resolve(false);
-			const staged = this.#stagedWrite();
-			// Changes made under the lock are abandoned with it, unless a staged write still reads them.
-			if (handle.released) {
-				if (!staged) this.#discardChanges();
-				return Promise.resolve(false);
-			}
-			const link = txnForContext(this.getContext());
+			const saving = this.#savingOperation;
 			// A scoped lock staged its write at lock() time; released before commit, that write must not
 			// run into the released-handle guard at the sweep. A joined write is the caller's own and
-			// stays, as an ordinary write (detachScopedUpgradeWrite).
-			if (staged?.lockHandle === handle && !staged.lockJoined) this.#savingOperation = null;
-			if (!staged || !this.#savingOperation) this.#discardChanges();
+			// stays, as an ordinary write (detachScopedUpgradeWrite). A dropped one would swallow the next save().
+			if (saving?.dropped || (saving && !saving.saved && saving.lockHandle === handle && !saving.lockJoined))
+				this.#savingOperation = null;
+			// Changes made under the lock are abandoned with it, unless a kept write still reads them.
+			if (!this.#stagedWrite()) this.#discardChanges();
+			if (handle.released) return Promise.resolve(false);
+			const link = txnForContext(this.getContext());
 			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());

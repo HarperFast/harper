@@ -310,6 +310,47 @@ describe('Record locks: lock() refuses a record its transaction has a pending wr
 		assert.throws(() => rec.set('n', 26), isConflict);
 	});
 
+	it('an instance joining a lock another instance holds in its transaction drops its own unstaged changes', async function () {
+		if (SKIP_ON_LMDB) return this.skip();
+		const recordId = makeId('join-unstaged');
+		await Audited.put({ id: recordId, n: 1, items: ['a'] });
+		const ctx = {};
+		await transaction(ctx, async () => {
+			const rec = await Audited.get(recordId, ctx);
+			rec.set('n', 99);
+			const captured = rec.items;
+			captured.push('stale');
+			const holder = await Audited.lock(recordId, undefined, ctx);
+			holder.set('tag', 'locked');
+			await holder.save();
+			await rec.lock();
+			assert.throws(() => captured.push('x'), isConflict);
+			rec.set('label', 'joined');
+			await rec.save();
+		});
+		const after = await Audited.get(recordId);
+		assert.strictEqual(after.n, 1);
+		assert.deepStrictEqual([...after.items], ['a']);
+		assert.strictEqual(after.tag, 'locked');
+		assert.strictEqual(after.label, 'joined');
+	});
+
+	it('an instance whose shared scoped lock another instance released can still write after its own unlock()', async function () {
+		if (SKIP_ON_LMDB) return this.skip();
+		const recordId = makeId('shared-scoped');
+		await Audited.put({ id: recordId, n: 1 });
+		const ctx = {};
+		await transaction(ctx, async () => {
+			const first = await Audited.lock(recordId, undefined, ctx);
+			const second = await Audited.lock(recordId, undefined, ctx);
+			assert.strictEqual(await second.unlock(), true);
+			assert.strictEqual(await first.unlock(), false);
+			first.addTo('n', 5);
+			await first.save();
+		});
+		assert.strictEqual((await Audited.get(recordId)).n, 6);
+	});
+
 	it('unlock() discards changes made under a lock it abandons, scoped or held', async function () {
 		if (SKIP_ON_LMDB) return this.skip();
 		const idScoped = makeId('abandoned-scoped');
