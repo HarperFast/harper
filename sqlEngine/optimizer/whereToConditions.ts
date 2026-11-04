@@ -17,6 +17,7 @@
  */
 
 import type { ExprNode } from '../parser/ast.ts';
+import { tokenizeLike } from '../expressions/like.ts';
 
 export interface DirectCondition {
 	attribute?: string;
@@ -388,11 +389,14 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			if (expr.expr.kind !== 'column') return undefined;
 			if (expr.pattern.kind !== 'literal' || typeof expr.pattern.value !== 'string') return undefined;
 			if (expr.negated) return undefined;
-			const pattern = expr.pattern.value;
-			const startsPct = pattern.startsWith('%');
-			const endsPct = pattern.endsWith('%');
-			const middle = pattern.slice(startsPct ? 1 : 0, endsPct ? pattern.length - 1 : undefined);
-			if (middle.includes('%') || middle.includes('_')) return undefined;
+			const tokens = tokenizeLike(expr.pattern.value, expr.escape);
+			const startsPct = tokens[0]?.kind === 'any';
+			const endsPct = tokens.at(-1)?.kind === 'any';
+			let middle = '';
+			for (const token of tokens.slice(startsPct ? 1 : 0, endsPct ? -1 : undefined)) {
+				if (token.kind !== 'literal') return undefined;
+				middle += token.char;
+			}
 			if (startsPct && endsPct) {
 				return { attribute: expr.expr.name, comparator: 'contains', value: middle };
 			}
