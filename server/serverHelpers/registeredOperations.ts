@@ -118,7 +118,11 @@ export function operationRegisteredHandler(event: {
 	let workerSchema: WorkerSchema = {};
 	if (inputSchema) {
 		try {
-			workerSchema = { inputSchema, canonical: canonicalJson(inputSchema) };
+			const canonical = canonicalJson(inputSchema);
+			workerSchema = [...workerSchemas.values()].find((schema) => schema.canonical === canonical) ?? {
+				inputSchema,
+				canonical,
+			};
 		} catch (error) {
 			operationLog.warn(`Ignoring invalid inputSchema announced for '${name}' by thread ${originator}`, error);
 		}

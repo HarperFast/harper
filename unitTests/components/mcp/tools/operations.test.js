@@ -108,11 +108,10 @@ describe('mcp/tools/operations — registration', () => {
 				['get_backup', async () => ({ backup: '' })],
 				['get_deployment', async () => ({})],
 				['get_deployment_payload', async () => ({})],
-				// These four ARE in the explicit safe list.
+				// These three ARE in the explicit safe list.
 				['get_job', async () => ({})],
 				['get_status', async () => ({})],
 				['get_analytics', async () => ({})],
-				['get_metrics', async () => ({})],
 			])
 		);
 
@@ -134,7 +133,7 @@ describe('mcp/tools/operations — registration', () => {
 			assert.ok(!names.has(sensitive), `${sensitive} must not be default-allowed`);
 		}
 		// Safe getters: IN the default surface.
-		for (const safe of ['get_job', 'get_status', 'get_analytics', 'get_metrics']) {
+		for (const safe of ['get_job', 'get_status', 'get_analytics']) {
 			assert.ok(names.has(safe), `${safe} should be default-allowed`);
 		}
 	});
@@ -291,11 +290,12 @@ describe('mcp/tools/operations — registration', () => {
 	});
 
 	it('allows an operator to opt a named schema-less operation into the permissive contract', () => {
-		envOverrides.mcp_operations_allow = ['insert'];
-		_setOperationFunctionMapForTest(makeOpMap([['insert', null, null]]));
+		envOverrides.mcp_operations_allow = ['custom_op'];
+		_setOperationFunctionMapForTest(makeOpMap([['custom_op', null, null]]));
 		registerOperationsTools();
 
-		assert.deepEqual(getTool('insert').inputSchema, { type: 'object' });
+		assert.deepEqual(getTool('custom_op').inputSchema, { type: 'object' });
+		assert.match(getTool('custom_op').description, /forwarded as-is/);
 	});
 
 	it('withholds default schema-less operations even when the default allow entry is literal', () => {
@@ -372,7 +372,6 @@ describe('mcp/tools/operations — registration', () => {
 				'get_job',
 				'get_status',
 				'get_analytics',
-				'get_metrics',
 				'system_information',
 				'read_log',
 				'read_audit_log',

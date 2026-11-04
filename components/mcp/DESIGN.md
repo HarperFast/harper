@@ -17,6 +17,8 @@ they expose — operations surfaces management operations as tools; application 
 Resources/tables. Profile gating runs throughout (`completeResourceArgument`, prompt visibility, tool
 `visibleTo`), so when adding a method, decide which profile(s) it belongs to rather than assuming both.
 
+Operation schema ownership, literal allow opt-ins and worker agreement: [server/DESIGN.md](../../server/DESIGN.md#operations-authorization-boundary).
+
 A handful of design points are non-obvious and easy to break:
 
 - **The application profile reads its own request body, so it enforces `http.maxRequestBodySize` itself.**

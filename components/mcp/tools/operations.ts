@@ -1,9 +1,10 @@
 import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/serverUtilities.ts';
 /**
  * Operations-profile tool generation. Exposes one MCP tool per Harper
- * operation that survives the `mcp.operations.allow` / `deny` filter, computed
- * *lazily* by walking Harper's live `OPERATION_FUNCTION_MAP` on each
- * `tools/list` / `tools/call`.
+ * operation that survives allow/deny and has a declared schema. Literal operator
+ * allow entries opt schema-less operations into a permissive contract; conflicting
+ * worker schemas stay hidden. Each request reads the live operation map and
+ * worker-registration bridge.
  *
  * The list is computed lazily (not snapshotted at registration) because
  * components register their operations via `server.registerOperation` during
@@ -16,7 +17,7 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  *
  * The default v1 allow list is read-only and intentionally narrow:
  * `describe_*`, `list_*`, `search_*`, plus an explicit set of safe
- * getters (`get_job`, `get_status`, `get_analytics`, `get_metrics`),
+ * getters (`get_job`, `get_status`, `get_analytics`),
  * `system_information`, `read_log`, `read_audit_log`. A `get_*` glob
  * was rejected because it would have matched `get_configuration`
  * (TLS/S3/auth secrets), `get_components` + `get_component_file` +
@@ -31,10 +32,11 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  * Tool dispatch delegates to `chooseOperation` + `processLocalTransaction`
  * — the same path Harper's REST `/operation` endpoint uses. That means
  * `verifyPerms` runs unchanged, replication catchup runs unchanged, and
- * server-side validation errors surface as `isError: true` results without
- * the MCP layer needing to know what each operation expects.
+ * server-side validation errors surface as `isError: true` results while
+ * advertised input contracts come from operation registration metadata.
  */
 import { Readable } from 'node:stream';
+import type { RemoteOperationSchema } from '../../../server/serverHelpers/registeredOperations.ts';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
@@ -64,7 +66,6 @@ interface OperationsConfig {
 	allow?: readonly string[];
 	deny?: readonly string[];
 }
-type RemoteOperationSchema = { inputSchema?: object; issue?: 'missing' | 'inconsistent' };
 
 // Test seams replace production dispatch when exercising registry behavior.
 let _opMapOverride: OperationFunctionMap | undefined;
@@ -149,7 +150,6 @@ export const DEFAULT_ALLOW: readonly string[] = [
 	'get_job',
 	'get_status',
 	'get_analytics',
-	'get_metrics',
 	'system_information',
 	'read_log',
 	'read_audit_log',
@@ -315,12 +315,14 @@ function getOperationsConfig(): OperationsConfig {
 	};
 }
 
-function buildDescription(operationName: string): string {
+function buildDescription(operationName: string, permissive: boolean): string {
 	const curated = Object.hasOwn(OPERATION_DESCRIPTIONS, operationName)
 		? OPERATION_DESCRIPTIONS[operationName]
 		: undefined;
 	if (curated) return curated;
-	return `Harper operation '${operationName}'. Arguments are described by its registered schema and validated by the operation handler.`;
+	return permissive
+		? `Harper operation '${operationName}'. Arguments are forwarded as-is; the server validates and returns a structured error on rejection.`
+		: `Harper operation '${operationName}'. Arguments are described by its registered schema and validated by the operation handler.`;
 }
 
 /**
@@ -475,14 +477,14 @@ export function makeOperationToolHandler(operationName: string) {
  * decides *whether* the op is exposed, checked per request in the provider).
  * `tools/list` isn't a hot path, so the provider rebuilds defs per call.
  */
-function buildOperationToolDef(operationName: string, inputSchema: object): ToolDef {
+function buildOperationToolDef(operationName: string, inputSchema: object, permissive = false): ToolDef {
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
 	if (isReadOnly(operationName)) annotations.readOnlyHint = true;
 	if (isDestructive(operationName)) annotations.destructiveHint = true;
 	if (isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
-		description: buildDescription(operationName),
+		description: buildDescription(operationName, permissive),
 		inputSchema,
 		profile: 'operations',
 		...(Object.keys(annotations).length > 0 ? { annotations } : {}),
@@ -502,7 +504,7 @@ function buildRegisteredOperationToolDef(
 			issue !== 'inconsistent' &&
 			config.allow?.some((pattern) => !pattern.includes('*') && pattern === operationName)
 		) {
-			return buildOperationToolDef(operationName, { type: 'object' });
+			return buildOperationToolDef(operationName, { type: 'object' }, true);
 		}
 		const warningKey = `${operationName}:${issue}`;
 		if (!warnedMissingSchemas.has(warningKey)) {

@@ -1168,25 +1168,6 @@ describe('Test serverUtilities.js module ', () => {
 			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
 		});
 
-		it('does not inherit a catalog schema when a component uses the same name', function () {
-			const name = 'get_metrics';
-			try {
-				server.registerOperation({ name, execute: async () => ({ custom: true }) });
-				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, undefined);
-			} finally {
-				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
-			}
-		});
-
-		it('stores an explicit component schema without name-based inheritance', function () {
-			const name = 'get_metrics';
-			const inputSchema = { type: 'object', properties: { custom: { type: 'string' } } };
-			server.registerOperation({ name, execute: async () => ({}), inputSchema });
-
-			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, inputSchema);
-			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
-		});
-
 		it('does not inherit a built-in schema when a component replaces that operation', function () {
 			const name = 'search_by_value';
 			const original = serverUtilities.OPERATION_FUNCTION_MAP.get(name);

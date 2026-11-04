@@ -88,7 +88,12 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 				mcp: {
 					operations: {
 						mountPath: '/mcp',
-						allow: ['component_registered_echo', 'component_registered_error', 'component_registered_*'],
+						allow: [
+							'component_registered_echo',
+							'component_registered_error',
+							'component_registered_disagreement',
+							'component_registered_*',
+						],
 					},
 				},
 			},

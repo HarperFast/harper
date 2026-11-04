@@ -1,6 +1,6 @@
 import { loadNativePackage } from '../../utility/packageUtils.js';
 
-export const MAX_OPERATION_INPUT_SCHEMA_BYTES = 64 * 1024;
+const MAX_OPERATION_INPUT_SCHEMA_BYTES = 64 * 1024;
 
 const validators = new Map<string, any>();
 
@@ -59,6 +59,7 @@ export function normalizeOperationInputSchema(inputSchema: unknown): { schema?: 
 		try {
 			validator.compile(schemaToValidate);
 		} finally {
+			// These private validators must not retain refs or nested IDs from another operation.
 			validator.removeSchema();
 		}
 		return { schema: schemaToValidate };

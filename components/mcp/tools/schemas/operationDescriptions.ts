@@ -25,8 +25,7 @@
  * description belongs alongside their implementation.
  *
  * Protocol-facing help stays in MCP; reusable input contracts belong to the
- * operation registry. A future shared validator/registration contract can own
- * both without moving MCP-specific guidance into runtime validation.
+ * operation registry; runtime validation remains authoritative.
  */
 export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// ─── DEFAULT_ALLOW: describe_* ────────────────────────────────────────

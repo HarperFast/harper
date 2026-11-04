@@ -238,7 +238,7 @@ Operation bodies are untrusted. `serverHandlers.handlePostRequest()` rejects pro
 
 Component registries are worker-local. OPERATION_REGISTERED carries name→thread routing, `grantable` (role/impersonation/OIDC allowlist eligibility, not authorization), and `inputSchema` to main. Extend that message for new main-thread consumers; enforcement stays in the worker's `chooseOperation()`.
 
-Registration clones and compiles the handler's own `inputSchema`, never inheriting by name. `parametersSchema` remains separate legacy REST metadata. MCP advertises typed contracts only when all live owners agree. Default/glob matches require schemas; a literal `mcp.operations.allow` entry preserves permissive compatibility, including mixed missing/present metadata. Conflicting declared schemas are always withheld. Registry and MCP operation tests pin these rules.
+Registration clones and compiles the handler's own `inputSchema`, never inheriting by name. MCP advertises typed contracts only when all live owners agree. Default/glob matches require schemas; a literal `mcp.operations.allow` entry preserves permissive compatibility, including mixed missing/present metadata. Conflicting declared schemas are always withheld. Equivalent schemas share metadata across workers.
 
 ## Resource ↔ HTTP boundary
 
