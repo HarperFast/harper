@@ -388,8 +388,8 @@ describe('test openApi module', () => {
 					},
 				});
 				const api = generateJsonApi(r, serverURL);
-				expect(api.components.schemas).to.have.property('Widget');
-				expect(api.components.schemas).not.to.have.property('Bad');
+				assert.ok(Object.hasOwn(api.components.schemas, 'Widget'));
+				assert.equal(Object.hasOwn(api.components.schemas, 'Bad'), false);
 			}
 		});
 

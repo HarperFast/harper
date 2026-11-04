@@ -108,7 +108,7 @@ describe('programmatic schema projection invariants', () => {
 		assert.throws(() => resolveAttributes({ properties: { value: { type: Array(1) } } }), /only strings/);
 	});
 
-	it('does not enforce advisory table enums in response schemas', async () => {
+	it('does not enforce advisory table enums in MCP inputs or responses', async () => {
 		const { defineTable, types } = require('#src/resources/defineTable');
 		const Table = defineTable(
 			'AdvisoryEnum',
@@ -116,7 +116,15 @@ describe('programmatic schema projection invariants', () => {
 			{ database: 'schemaProjection' }
 		);
 		await Table.put({ id: 'pending', status: 'pending' });
-		const { deriveGetOutputSchema } = require('#src/components/mcp/tools/schemas/derive');
+		const {
+			deriveGetOutputSchema,
+			deriveUpdateSchema,
+			deriveGetSchema,
+		} = require('#src/components/mcp/tools/schemas/derive');
+		assert.equal(deriveCreateSchema(resolveAttributes(Table)).properties.status.enum, undefined);
+		assert.equal(deriveUpdateSchema(resolveAttributes(Table)).properties.status.enum, undefined);
+		Table.attributes.find((attribute) => attribute.isPrimaryKey).enum = ['limited'];
+		assert.equal(deriveGetSchema(resolveAttributes(Table)).properties.id.enum, undefined);
 		const schema = deriveGetOutputSchema(resolveAttributes(Table));
 		assert.equal(schema.properties.status.enum, undefined);
 		const map = new Map([['AdvisoryEnum', { path: 'AdvisoryEnum', Resource: Table }]]);
@@ -145,6 +153,53 @@ describe('programmatic schema projection invariants', () => {
 		);
 	});
 
+	it('preserves hard constraints on Array-form programmatic declarations', () => {
+		const Resource = { prototype: { get() {} }, properties: [{ name: 'status', type: 'string', enum: ['open'] }] };
+		const attributes = resolveAttributes(Resource);
+		const { deriveGetOutputSchema } = require('#src/components/mcp/tools/schemas/derive');
+		assert.deepEqual(deriveGetOutputSchema(attributes).properties.status.enum, ['open']);
+		const map = new Map([['ArrayResource', { path: 'ArrayResource', Resource }]]);
+		map.allTypes = new Map();
+		const api = require('#src/resources/openApi').generateJsonApi(map, 'https://harper.fast');
+		assert.deepEqual(api.components.schemas.ArrayResource.properties.status.enum, ['open']);
+	});
+
+	it('keeps undeclared required fields out of attribute routes and search hints', () => {
+		const Resource = {
+			prototype: { get() {} },
+			properties: { id: { type: 'string', primaryKey: true } },
+			required: ['extension'],
+		};
+		const attributes = resolveAttributes(Resource);
+		const { deriveSearchSchema } = require('#src/components/mcp/tools/schemas/derive');
+		assert.deepEqual(deriveSearchSchema(attributes).properties.conditions.items.properties.attribute.enum, ['id']);
+		const map = new Map([['RequiredResource', { path: 'RequiredResource', Resource }]]);
+		map.allTypes = new Map();
+		const api = require('#src/resources/openApi').generateJsonApi(map, 'https://harper.fast');
+		assert.ok(Object.hasOwn(api.components.schemas.RequiredResource.properties, 'extension'));
+		assert.ok(api.components.schemas.RequiredResource.required.includes('extension'));
+		const parameters = api.paths['/RequiredResource/{id}.{property}'].get.parameters;
+		assert.deepEqual(parameters.find((parameter) => parameter.name === 'property').schema.enum, ['id']);
+		assert.equal(
+			api.paths['/RequiredResource/'].get.parameters.some((parameter) => parameter.name === 'extension'),
+			false
+		);
+	});
+
+	it('derives schemas from real recursive GraphQL table metadata', async () => {
+		await require('#src/resources/graphql').loadGQLSchema(`
+			type RecursiveProjectionNode { label: String children: [RecursiveProjectionNode] }
+			type RecursiveProjectionDoc @table(database: "schemaProjection") {
+				id: ID! @primaryKey
+				tree: RecursiveProjectionNode
+			}
+		`);
+		const Table = require('#src/resources/databases').databases.schemaProjection.RecursiveProjectionDoc;
+		const { deriveGetOutputSchema } = require('#src/components/mcp/tools/schemas/derive');
+		assert.equal(deriveCreateSchema(Table.attributes).properties.id.type, 'string');
+		assert.equal(deriveGetOutputSchema(Table.attributes).properties.id.type, 'string');
+	});
+
 	it('uses the non-enumerable target coordinates produced by the GraphQL parser', async () => {
 		await require('#src/resources/graphql').loadGQLSchema(`
 			type FeedbackAuthor @table(database: "schemaProjection") {
@@ -154,6 +209,7 @@ describe('programmatic schema projection invariants', () => {
 			type FeedbackBook @table(database: "schemaProjection") {
 				id: ID! @primaryKey
 				authorId: ID
+				payload: Blob
 				author: FeedbackAuthor @relationship(from: "authorId")
 			}
 		`);
@@ -163,5 +219,9 @@ describe('programmatic schema projection invariants', () => {
 		assert.equal(Object.prototype.propertyIsEnumerable.call(author, 'relationshipReference'), false);
 		assert.equal(emit(author).description, 'Reference to schemaProjection.FeedbackAuthor.');
 		assert.equal(emit(books).description, 'Reference to schemaProjection.FeedbackBook.');
+		const map = new Map([['FeedbackBook', { path: 'FeedbackBook', Resource: fixture.FeedbackBook }]]);
+		map.allTypes = new Map();
+		const api = require('#src/resources/openApi').generateJsonApi(map, 'https://harper.fast');
+		assert.equal(api.components.schemas.FeedbackBook.properties.payload.type, 'string');
 	});
 });

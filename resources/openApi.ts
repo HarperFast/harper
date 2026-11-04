@@ -4,10 +4,12 @@ import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
 import {
 	DATA_TYPES,
+	JSON_SCHEMA_SCALAR_TYPES,
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
 	isProgrammaticSchema,
+	isUndeclaredRequiredAttribute,
 	projectPropertiesToAttributes,
 	resolveAttributes,
 	resolveDeclaredType,
@@ -35,14 +37,20 @@ function attributeToOpenApiSchema(attr: AttributeLike, valueConstraints = true):
 	return attributeToSchema(attr, {
 		dialect: 'openapi-3.0.3',
 		valueConstraints,
-		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name),
+		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name, !valueConstraints),
 	});
 }
 
 /** Shared by the nested emitter and the top-level attribute loop so both warn on an unknown type. */
-function openApiPrimitive(type: string | undefined, attributeName: string | undefined): JsonSchemaFragment {
+function openApiPrimitive(
+	type: string | undefined,
+	attributeName: string | undefined,
+	isDeclaredReference = false
+): JsonSchemaFragment {
 	if (type === 'Any') return { format: type };
+	if (type === 'Blob') return { type: 'string' };
 	if (type === undefined) return {};
+	if (isDeclaredReference && !Object.hasOwn(DATA_TYPES, type) && !JSON_SCHEMA_SCALAR_TYPES.has(type)) return {};
 	const resolved = resolveDeclaredType(type, `OpenAPI property "${attributeName || '<unnamed>'}"`);
 	if (!resolved) return {};
 	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
@@ -203,18 +211,20 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					try {
 						props[name] = attributeToOpenApiSchema(attr, isProgrammaticSchema(attributes)) ?? {};
 					} catch (error) {
-						warnInvalidResourceSchema(resource.Resource, resource.path, error);
+						warnInvalidResourceSchema(resource.Resource, `${resource.path}.${name}`, error);
 						continue resourceLoop;
 					}
 				}
 				if (type === 'array' && attr.description && (relationship || def)) {
 					props[name].description = attr.description;
 				}
-				queryParamsArray.push(new Parameter(name, 'query', props[name]));
+				if (!isUndeclaredRequiredAttribute(attr)) queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
 		}
 
-		const propsArray = Object.keys(props);
+		const propsArray = attributes
+			.filter((attribute) => !isUndeclaredRequiredAttribute(attribute) && Object.hasOwn(props, attribute.name))
+			.map((attribute) => attribute.name);
 		const primaryKeyParam = new Parameter(primaryKey, 'path', { type: 'string', format: 'ID' });
 		primaryKeyParam.required = true;
 		primaryKeyParam.description = 'primary key of record';

@@ -27,7 +27,7 @@
 
 import { resolveBody } from './resolveBody.ts';
 import type { JsonSchemaFragment, JsonValue } from './jsonSchemaTypes.ts';
-import { attributeToFragment, jsonValueKey, type AttributeLike } from './jsonSchemaTypes.ts';
+import { attributeToFragment, jsonValueKey, schemaErrorMessage, type AttributeLike } from './jsonSchemaTypes.ts';
 import { ValidationError, type ValidationIssue } from '../utility/errors/hdbError.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -310,6 +310,15 @@ function isNullable(fragment: JsonSchemaFragment): boolean {
 	return fragment.nullable === true || (Array.isArray(fragment.type) && fragment.type.includes('null'));
 }
 
+function formatEnumValue(value: JsonValue): string {
+	if (typeof value === 'string') return value;
+	try {
+		return JSON.stringify(value) ?? String(value);
+	} catch {
+		return schemaErrorMessage(value);
+	}
+}
+
 // Shared only within one body validation; declarations may change before the next request.
 type EnumKeyCache = Map<readonly JsonValue[], Set<string>>;
 
@@ -368,7 +377,7 @@ function validateValue(
 			issues.push({
 				path,
 				code: 'enum',
-				message: `${path} must be one of: ${fragment.enum.map((member) => JSON.stringify(member)).join(', ')}`,
+				message: `${path} must be one of: ${fragment.enum.map(formatEnumValue).join(', ')}`,
 			});
 			return value;
 		}
@@ -523,7 +532,11 @@ function coerceScalar(
 		value = d;
 	}
 	if (fragment.enum && !fragment.enum.includes(value)) {
-		issues.push({ path, code: 'enum', message: `${path} must be one of: ${fragment.enum.join(', ')}` });
+		issues.push({
+			path,
+			code: 'enum',
+			message: `${path} must be one of: ${fragment.enum.map(formatEnumValue).join(', ')}`,
+		});
 	}
 	return value;
 }

@@ -15,6 +15,7 @@ import {
 	JSON_SCHEMA_SCALAR_TYPES,
 	attributeToSchema,
 	isProgrammaticSchema,
+	isUndeclaredRequiredAttribute,
 	resolveDeclaredType,
 	type AttributeLike,
 	type JsonSchemaFragment,
@@ -113,7 +114,7 @@ function attributeToProperty(attr: HarperAttribute, valueConstraints = true): ob
 			harperTypeToJsonSchema(
 				type,
 				a.name,
-				Boolean((a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+				Boolean(!valueConstraints || (a as HarperAttribute).relationship || (a as HarperAttribute).definition)
 			) as JsonSchemaFragment,
 	});
 }
@@ -123,16 +124,17 @@ function attributeToProperty(attr: HarperAttribute, valueConstraints = true): ob
  * of its fields, so a `@hidden` primary key still has to be typed here — otherwise the tool advertises
  * a required argument with no type at all. Falls back only when there is no primary key to describe.
  */
-function primaryKeySchema(pk: HarperAttribute | undefined): object {
+function primaryKeySchema(pk: HarperAttribute | undefined, valueConstraints: boolean): object {
 	if (!pk) return { type: 'string' };
 	return (
 		attributeToSchema(pk as AttributeLike, {
 			dialect: 'json-schema',
+			valueConstraints,
 			mapPrimitive: (type, a) =>
 				harperTypeToJsonSchema(
 					type,
 					a.name,
-					Boolean((a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+					Boolean(!valueConstraints || (a as HarperAttribute).relationship || (a as HarperAttribute).definition)
 				) as JsonSchemaFragment,
 			ignoreHidden: true,
 		}) ?? { type: 'string' }
@@ -191,7 +193,7 @@ function buildPropertiesObject(
 		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
 		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
 		if (mode !== 'read' && attr.relationship) continue;
-		const schema = attributeToProperty(attr);
+		const schema = attributeToProperty(attr, isProgrammaticSchema(attributes));
 		if (!schema) continue;
 		properties[attr.name] = schema;
 		if (mode === 'insert' && (attr.requiredOnSchema || attr.nullable === false) && !attr.isPrimaryKey) {
@@ -210,7 +212,7 @@ export function deriveGetSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const pkSchema = primaryKeySchema(pk);
+	const pkSchema = primaryKeySchema(pk, isProgrammaticSchema(attributes));
 	return {
 		type: 'object',
 		properties: {
@@ -231,7 +233,9 @@ export function deriveSearchSchema(
 ): object {
 	// `conditions` is freeform — Harper supports many comparators; we expose
 	// the common subset and rely on server-side validation for the rest.
-	const readableAttrs = attributes.filter((a) => attributeVisible(a, permissions, 'read'));
+	const readableAttrs = attributes.filter(
+		(a) => !isUndeclaredRequiredAttribute(a) && attributeVisible(a, permissions, 'read')
+	);
 	const attrNames = readableAttrs.map((a) => a.name);
 	return {
 		type: 'object',
@@ -298,7 +302,10 @@ export function deriveUpdateSchema(
 		type: 'object',
 		properties: {
 			id: pk
-				? { ...primaryKeySchema(pk), description: `Primary key (${pk.name}). Required.` }
+				? {
+						...primaryKeySchema(pk, isProgrammaticSchema(attributes)),
+						description: `Primary key (${pk.name}). Required.`,
+					}
 				: { type: 'string', description: 'Primary key. Required.' },
 			...properties,
 		},
@@ -315,7 +322,7 @@ export function deriveDeleteSchema(
 		type: 'object',
 		properties: {
 			id: pk
-				? { ...primaryKeySchema(pk), description: `Primary key (${pk.name}).` }
+				? { ...primaryKeySchema(pk, isProgrammaticSchema(attributes)), description: `Primary key (${pk.name}).` }
 				: { type: 'string', description: 'Primary key.' },
 		},
 		required: ['id'],
@@ -402,7 +409,7 @@ export function deriveCreateOutputSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const idSchema = primaryKeySchema(pk);
+	const idSchema = primaryKeySchema(pk, isProgrammaticSchema(attributes));
 	return {
 		type: 'object',
 		properties: {

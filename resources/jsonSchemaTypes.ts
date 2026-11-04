@@ -174,6 +174,11 @@ const MAX_SCHEMA_DEPTH = 100;
 class SchemaTraversalError extends Error {}
 
 const programmaticSchemas = new WeakSet<AttributeLike[]>();
+const undeclaredRequiredAttributes = new WeakSet<AttributeLike>();
+
+export function isUndeclaredRequiredAttribute(attribute: AttributeLike): boolean {
+	return undeclaredRequiredAttributes.has(attribute);
+}
 
 export function isProgrammaticSchema(attributes: AttributeLike[]): boolean {
 	return programmaticSchemas.has(attributes);
@@ -634,14 +639,21 @@ export function resolveAttributes(source?: {
 	required?: readonly string[];
 }): AttributeLike[] {
 	if (source?.attributes?.length) return source.attributes;
-	if (Array.isArray(source?.properties)) return source.properties;
+	if (Array.isArray(source?.properties)) {
+		programmaticSchemas.add(source.properties);
+		return source.properties;
+	}
 	if (source?.properties !== undefined) {
 		const required = validateTopLevelRequired(source.required);
 		const requiredNames = new Set(required);
 		const attributes = projectPropertiesToAttributes(source.properties);
 		for (const attr of attributes) if (requiredNames.has(attr.name)) attr.requiredOnSchema = true;
 		for (const name of required) {
-			if (!Object.hasOwn(source.properties, name)) attributes.push({ name, requiredOnSchema: true });
+			if (!Object.hasOwn(source.properties, name)) {
+				const attribute = { name, requiredOnSchema: true };
+				undeclaredRequiredAttributes.add(attribute);
+				attributes.push(attribute);
+			}
 		}
 		return attributes;
 	}
