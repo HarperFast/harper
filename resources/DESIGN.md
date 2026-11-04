@@ -91,11 +91,9 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## Typed, discoverable resources
 
-Values preserve schemas through type stripping (harper#1503). `attributeToSchema` emits MCP/OpenAPI; contract narrowing relies on every verb validating before dispatch (`ValidationError`). `compileVerb` alone sets `bodyRequired` (`defineResource.test.js`).
+`attributeToSchema` emits MCP/OpenAPI; contract narrowing requires every verb to validate. Only `compileVerb` sets `bodyRequired` (`defineResource.test.js`).
 
-Contract conversion preserves absent types: conditional `properties`/`items` do not imply a type. Metadata projection still infers object types (`openApi.test.js`).
-
-Programmatic projections refresh per read; MCP snapshots rebuild on registration (`schemaProjectionInvariants.test.js`).
+Contracts preserve absent types and conditional `properties`/`items`; metadata infers types. Projections refresh per read; MCP rebuilds on registration (`schemaProjectionInvariants.test.js`).
 
 ## Conventions
 
