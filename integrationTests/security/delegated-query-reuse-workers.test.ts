@@ -16,6 +16,7 @@ import { request } from 'node:http';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { NO_FULL_WORKER_COVERAGE, assertMultiWorker } from '../database/recordCachingWorkers.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/delegated-query-reuse');
 const PASSWORD = 'Reuse-query-4410!';
@@ -56,117 +57,120 @@ function getOnNewConnection(url: string, auth: string): Promise<{ status: number
 	});
 }
 
-suite('Delegated query object reuse across worker threads', (ctx: ContextWithHarper) => {
-	let admin: string;
+suite(
+	'Delegated query object reuse across worker threads',
+	{ skip: NO_FULL_WORKER_COVERAGE },
+	(ctx: ContextWithHarper) => {
+		let admin: string;
 
-	async function operation(body: Record<string, unknown>) {
-		const response = await fetch(ctx.harper.operationsAPIURL, {
-			method: 'POST',
-			headers: { 'Authorization': admin, 'Content-Type': 'application/json' },
-			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(45_000),
-		});
-		const text = await response.text();
-		assert.strictEqual(response.status, 200, `${body.operation}: ${text}`);
-	}
-	async function addUser(role: string, departmentAttributes: string[] | undefined) {
-		await operation({
-			operation: 'add_role',
-			role,
-			permission: {
-				super_user: false,
-				data: {
-					tables: {
-						ReuseEmployee: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
-						ReuseDepartment: {
-							read: true,
-							insert: false,
-							update: false,
-							delete: false,
-							attribute_permissions: departmentAttributes
-								? ['id', 'label', 'secret'].map((attribute_name) => ({
-										attribute_name,
-										read: departmentAttributes.includes(attribute_name),
-										insert: false,
-										update: false,
-									}))
-								: [],
+		async function operation(body: Record<string, unknown>) {
+			const response = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': admin, 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(45_000),
+			});
+			const text = await response.text();
+			assert.strictEqual(response.status, 200, `${body.operation}: ${text}`);
+		}
+		async function addUser(role: string, departmentAttributes: string[] | undefined) {
+			await operation({
+				operation: 'add_role',
+				role,
+				permission: {
+					super_user: false,
+					data: {
+						tables: {
+							ReuseEmployee: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							ReuseDepartment: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: departmentAttributes
+									? ['id', 'label', 'secret'].map((attribute_name) => ({
+											attribute_name,
+											read: departmentAttributes.includes(attribute_name),
+											insert: false,
+											update: false,
+										}))
+									: [],
+							},
 						},
 					},
 				},
-			},
-		});
-		await operation({ operation: 'add_user', username: role, password: PASSWORD, role, active: true });
-	}
-	async function searchRow(user: string) {
-		const response = await getOnNewConnection(`${ctx.harper.httpURL}/SearchAcrossWorkers/`, basic(user));
-		assert.strictEqual(response.status, 200, JSON.stringify(response.body));
-		assert.ok(Array.isArray(response.body) && response.body.length === 1, JSON.stringify(response.body));
-		assert.notStrictEqual(response.worker, 'undefined', 'the delegate reports its worker');
-		return { worker: response.worker, row: response.body[0] };
-	}
-
-	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: { threads: { count: 4 } },
-			env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
-		});
-		admin = basic(ctx.harper.admin.username, ctx.harper.admin.password);
-		await operation({
-			operation: 'insert',
-			schema: 'data',
-			table: 'ReuseDepartment',
-			records: [{ id: 'd1', label: 'Engineering', secret: 'payroll-code-7731' }],
-		});
-		await operation({
-			operation: 'insert',
-			schema: 'data',
-			table: 'ReuseEmployee',
-			records: [{ id: 'e1', name: 'Ada', departmentId: 'd1' }],
-		});
-		await addUser(BROAD, undefined);
-		await addUser(RESTRICTED, ['id', 'label']);
-		const deadline = Date.now() + 120_000;
-		for (;;) {
-			const probe = await fetch(`${ctx.harper.httpURL}/SearchFreshRoot/`, {
-				headers: { Authorization: admin },
-				signal: AbortSignal.timeout(10_000),
 			});
-			await probe.text();
-			if (probe.status !== 404) break;
-			if (Date.now() > deadline) throw new Error('SearchFreshRoot route never became ready');
-			await delay(500);
+			await operation({ operation: 'add_user', username: role, password: PASSWORD, role, active: true });
 		}
-	});
-
-	after(async () => {
-		await teardownHarper(ctx);
-	});
-
-	test('restricted requests on every broad-used worker never receive the department secret', async () => {
-		const broadWorkers = new Set<string>();
-		for (let i = 0; i < BROAD_REQUESTS; i++) {
-			const { worker, row } = await searchRow(BROAD);
-			assert.strictEqual(row.department?.secret, 'payroll-code-7731', `broad on worker ${worker}`);
-			broadWorkers.add(worker);
+		async function searchRow(user: string) {
+			const response = await getOnNewConnection(`${ctx.harper.httpURL}/SearchAcrossWorkers/`, basic(user));
+			assert.strictEqual(response.status, 200, JSON.stringify(response.body));
+			assert.ok(Array.isArray(response.body) && response.body.length === 1, JSON.stringify(response.body));
+			assert.notStrictEqual(response.worker, 'undefined', 'the delegate reports its worker');
+			return { worker: response.worker, row: response.body[0] };
 		}
-		// Bun and Windows route these connections to one worker; reuse on that worker is still exercised
-		if (process.env.HARPER_RUNTIME !== 'bun' && process.platform !== 'win32')
+
+		before(async () => {
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+				config: { threads: { count: 4 } },
+				env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
+			});
+			await assertMultiWorker(ctx);
+			admin = basic(ctx.harper.admin.username, ctx.harper.admin.password);
+			await operation({
+				operation: 'insert',
+				schema: 'data',
+				table: 'ReuseDepartment',
+				records: [{ id: 'd1', label: 'Engineering', secret: 'payroll-code-7731' }],
+			});
+			await operation({
+				operation: 'insert',
+				schema: 'data',
+				table: 'ReuseEmployee',
+				records: [{ id: 'e1', name: 'Ada', departmentId: 'd1' }],
+			});
+			await addUser(BROAD, undefined);
+			await addUser(RESTRICTED, ['id', 'label']);
+			const deadline = Date.now() + 120_000;
+			for (;;) {
+				const probe = await fetch(`${ctx.harper.httpURL}/SearchFreshRoot/`, {
+					headers: { Authorization: admin },
+					signal: AbortSignal.timeout(10_000),
+				});
+				await probe.text();
+				if (probe.status !== 404) break;
+				if (Date.now() > deadline) throw new Error('SearchFreshRoot route never became ready');
+				await delay(500);
+			}
+		});
+
+		after(async () => {
+			await teardownHarper(ctx);
+		});
+
+		test('restricted requests on every broad-used worker never receive the department secret', async () => {
+			const broadWorkers = new Set<string>();
+			for (let i = 0; i < BROAD_REQUESTS; i++) {
+				const { worker, row } = await searchRow(BROAD);
+				assert.strictEqual(row.department?.secret, 'payroll-code-7731', `broad on worker ${worker}`);
+				broadWorkers.add(worker);
+			}
 			assert.ok(broadWorkers.size > 1, `broad requests all reached worker ${[...broadWorkers]}`);
-		const unvisited = new Set(broadWorkers);
-		let sent = 0;
-		while (unvisited.size > 0 && sent < RESTRICTED_BUDGET) {
-			const { worker, row } = await searchRow(RESTRICTED);
-			sent++;
-			assert.deepStrictEqual(row.department, { id: 'd1', label: 'Engineering' }, `restricted on worker ${worker}`);
-			unvisited.delete(worker);
-		}
-		assert.strictEqual(
-			unvisited.size,
-			0,
-			`restricted requests never reached broad-used workers ${[...unvisited]} within ${RESTRICTED_BUDGET} requests`
-		);
-		const { worker, row } = await searchRow(BROAD);
-		assert.strictEqual(row.department?.secret, 'payroll-code-7731', `broad after restricted on worker ${worker}`);
-	});
-});
+			const unvisited = new Set(broadWorkers);
+			let sent = 0;
+			while (unvisited.size > 0 && sent < RESTRICTED_BUDGET) {
+				const { worker, row } = await searchRow(RESTRICTED);
+				sent++;
+				assert.deepStrictEqual(row.department, { id: 'd1', label: 'Engineering' }, `restricted on worker ${worker}`);
+				unvisited.delete(worker);
+			}
+			assert.strictEqual(
+				unvisited.size,
+				0,
+				`restricted requests never reached broad-used workers ${[...unvisited]} within ${RESTRICTED_BUDGET} requests`
+			);
+			const { worker, row } = await searchRow(BROAD);
+			assert.strictEqual(row.department?.secret, 'payroll-code-7731', `broad after restricted on worker ${worker}`);
+		});
+	}
+);
