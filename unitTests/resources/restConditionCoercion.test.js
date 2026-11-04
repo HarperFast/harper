@@ -142,6 +142,14 @@ describe('REST condition value conversion', () => {
 			assert.deepStrictEqual(await rest(Product, 'brand.id=ge=2'), [3, 4, 5]);
 			assert.deepStrictEqual(await rest(Product, 'brand.name==Acme'), [1, 2]);
 		});
+		it('same-record relationship[...] group', async function () {
+			assert.deepStrictEqual(await rest(Brand, 'products[price=ge=25&=le=30&sizes=ge=100]'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products[sizes=ct=07]'), [2]);
+			assert.deepStrictEqual(await rest(Product, 'brand[id=ge=2]'), [3, 4, 5]);
+			await assertRejects400(Brand, 'products[price=ge=abc]', 'price');
+			await assertRejects400(Brand, 'products[price=ge=25&=le=abc]', 'price');
+			await assertRejects400(Brand, 'products[sizes=ge=abc]', 'sizes');
+		});
 		it('an invalid related leaf value is a 400', async function () {
 			await assertRejects400(Brand, 'products.price=ge=abc', 'price');
 		});

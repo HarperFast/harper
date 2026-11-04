@@ -173,6 +173,7 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 	test('untyped condition values convert with the compared attribute type', async () => {
 		assert.deepStrictEqual(await get('/Brand/?products.price=ge=30&sort(id)&select(id,)'), [{ id: 42 }, { id: 44 }]);
 		assert.deepStrictEqual(await get('/Brand/?products.price=ge=30&=le=40&sort(id)&select(id,)'), [{ id: 42 }]);
+		assert.deepStrictEqual(await get('/Brand/?products[price=ge=30&=le=40]&sort(id)&select(id,)'), [{ id: 42 }]);
 		assert.deepStrictEqual(await get('/Product/?price=ge=10&=le=30&sort(id)&select(id,)'), [
 			{ id: 'p1' },
 			{ id: 'p4' },
