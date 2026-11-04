@@ -1009,6 +1009,7 @@ function transactional(
 			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
+			const callerTarget = query;
 			// For subscribe, register the resulting subscription for continuous re-authorization so it is
 			// terminated if the principal later loses access or its token expires (#1414). Non-subscribe
 			// actions run unchanged.
@@ -1025,7 +1026,12 @@ function transactional(
 				// than caller-owned target identity, preserves the static (target, message) signature when
 				// an override copies the target or delegates asynchronously after its own return settles.
 				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
-				const result = action(resource, query, context, data);
+				let result = action(resource, query, context, data);
+				if (loadAsInstance === false && options.method === 'get' && callerTarget !== query)
+					result = when(result, (value: any) => {
+						if (query.loadedFromSource !== undefined) callerTarget.loadedFromSource = query.loadedFromSource;
+						return value;
+					});
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) =>
 					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, selectedByCaller, context)

@@ -138,6 +138,43 @@ describe('delegated reads reusing one query object', function () {
 		['loadAsInstance = false', () => FalseModeEmployee],
 	]) {
 		describe(mode, function () {
+			it('reuses one-shot condition iterators without widening the next read', async function () {
+				const conditions = (function* () {
+					yield { attribute: 'id', value: 'e1' };
+				})();
+				const root = { conditions, select: authoredSelect(), checkPermission: true };
+				for (const user of [broadUser, restrictedUser, broadUser])
+					assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+				assert.strictEqual(root.conditions, conditions);
+			});
+
+			it('keeps condition iterator failures closed on reuse', async function () {
+				const failed = {
+					conditions: (function* () {
+						yield { attribute: 'id', value: 'e1' };
+						throw new Error('iterator failed');
+					})(),
+					checkPermission: true,
+				};
+				for (const user of [broadUser, restrictedUser])
+					await assert.rejects(async () => one(getTable().search(failed, { user })));
+			});
+
+			it('reads a private-field iterator on a query class', async function () {
+				class Query {
+					#conditions = [{ attribute: 'id', value: 'e1' }];
+					select = authoredSelect();
+					checkPermission = true;
+					[Symbol.iterator]() {
+						return this.#conditions[Symbol.iterator]();
+					}
+				}
+				const root = new Query();
+				for (const user of [broadUser, restrictedUser, broadUser])
+					assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+				assertAuthored(root);
+			});
+
 			for (const [order, users] of ORDERS) {
 				it(`search with one plain query object, ${order}`, async function () {
 					const root = searchRoot();
@@ -602,13 +639,14 @@ describe('delegated reads reusing one query object', function () {
 		for (const [name, getTable, authorize, armedOnQuery] of [
 			['a false-mode get', () => FalseModeLabel, undefined, true],
 			['a false-mode get armed through the context as well', () => FalseModeLabel, true, true],
+			['a false-mode get replacing an explicit permission', () => FalseModeLabel, true, broadUser.role.permission],
 			['a false-mode get armed only through the context', () => FalseModeLabel, true, false],
 			['a default-mode get', () => Label, undefined, true],
 			['a default-mode get armed only through the context', () => Label, true, false],
 		]) {
 			it(`${name} records it on the caller's query object`, async function () {
 				const id = `k-${name.replaceAll(' ', '-')}`;
-				const query = () => (armedOnQuery ? { id, checkPermission: true } : { id });
+				const query = () => (armedOnQuery ? { id, checkPermission: armedOnQuery } : { id });
 				const loadsBefore = sourceLoads;
 				const miss = query();
 				assert.deepStrictEqual(plain(await getTable().get(miss, { user: restrictedUser, authorize })), {
@@ -620,7 +658,7 @@ describe('delegated reads reusing one query object', function () {
 				const hit = query();
 				await getTable().get(hit, { user: restrictedUser, authorize });
 				assert.strictEqual(hit.loadedFromSource, false);
-				assert.strictEqual(hit.checkPermission, true);
+				assert.strictEqual(hit.checkPermission, armedOnQuery || true);
 				assert.deepStrictEqual(Object.getOwnPropertySymbols(hit), []);
 			});
 		}

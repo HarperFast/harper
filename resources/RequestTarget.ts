@@ -9,6 +9,32 @@ export let markDispatchTarget: (target: RequestTarget) => RequestTarget;
 let isDispatchTarget: (target: any) => boolean;
 let copyRequestTarget: (source: RequestTarget) => RequestTarget;
 
+// Reusing a caller-owned query must not lose predicates when its iterator has already been consumed.
+const iteratorSnapshots = new WeakMap<object, { values?: any[]; error?: unknown }>();
+
+function replayIterator(source: any): Iterator<any> {
+	let snapshot = iteratorSnapshots.get(source);
+	if (!snapshot) {
+		const iterator = source[Symbol.iterator]();
+		if (iterator !== source) return iterator;
+		snapshot = {};
+		iteratorSnapshots.set(source, snapshot);
+		try {
+			snapshot.values = Array.from(iterator);
+		} catch (error) {
+			snapshot.error = error;
+		}
+	}
+	if (Object.hasOwn(snapshot, 'error')) throw snapshot.error;
+	return snapshot.values![Symbol.iterator]();
+}
+
+function copyConditions(value: any): any {
+	return value && !Array.isArray(value) && typeof value[Symbol.iterator] === 'function'
+		? { [Symbol.iterator]: () => replayIterator(value) }
+		: value;
+}
+
 function copyQueryFields(source: any, stop = Object.prototype): PropertyDescriptorMap {
 	const descriptors: PropertyDescriptorMap = Object.create(null);
 	for (let object = source; object && object !== stop; object = Object.getPrototypeOf(object)) {
@@ -17,12 +43,16 @@ function copyQueryFields(source: any, stop = Object.prototype): PropertyDescript
 			const descriptor = Object.getOwnPropertyDescriptor(object, name);
 			if (!descriptor) continue;
 			if ('value' in descriptor) {
+				if (name === Symbol.iterator && typeof descriptor.value === 'function') {
+					descriptors[name] = { value: () => replayIterator(source), writable: true, configurable: true };
+					continue;
+				}
 				if (object !== source && typeof descriptor.value === 'function') continue;
 				descriptors[name] = { ...descriptor, writable: true, configurable: true };
 			} else {
 				const materialize = (receiver: any, value: any) => {
 					Object.defineProperty(receiver, name, {
-						value,
+						value: name === 'conditions' ? copyConditions(value) : value,
 						writable: true,
 						enumerable: descriptor.enumerable,
 						configurable: true,
@@ -239,6 +269,13 @@ export class RequestTarget extends URLSearchParams {
 export type RequestTargetOrId = RequestTarget | Id;
 
 export function copyQueryTarget<T>(source: T): T {
+	const copy = copyQueryTargetShell(source);
+	const conditions = Object.getOwnPropertyDescriptor(copy, 'conditions');
+	if (conditions && 'value' in conditions) (copy as any).conditions = copyConditions(conditions.value);
+	return copy;
+}
+
+function copyQueryTargetShell<T>(source: T): T {
 	if (source instanceof RequestTarget) return copyRequestTarget(source) as T;
 	if (source instanceof URLSearchParams) return Object.assign(new URLSearchParams(source), source);
 	const prototype = Object.getPrototypeOf(source);

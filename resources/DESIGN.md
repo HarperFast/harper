@@ -31,15 +31,15 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 ## Request admission authorizes exactly what the dispatch runs
 
-- `transactional()` resolves QUERY bodies, drops client `checkPermission`, and admits `select` through `allowRead`; search uses that projection (`permissions.test.js`).
+- `transactional()` resolves QUERY bodies first, drops client `checkPermission`, and admits `select` through `allowRead`; search uses that projection (`permissions.test.js`).
 - False-mode `search`/`query`/`get` await the named `SEARCH_AUTHORIZATION` gate; denial cannot become truncated success, derived transforms still run, and search starts before transaction settlement to retain its snapshot. Default-mode get already awaited `allowRead` (`asyncAllowReadSearchResults.test.js`).
 - False-mode array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
 - Materialized rows recheck `rowFilter` before `limit`.
-- `dispatchTarget` copies application roots before narrowing; transport roots retain cache state. Clones lose ownership; narrowed unowned roots are refused. Context arming persists; direct `allowRead` stays in-place (`delegatedQueryReuse.test.js`, `../integrationTests/security/delegated-query-reuse.test.ts`).
+- `dispatchTarget` copies application roots before narrowing; transport roots stay dispatch-owned. Clones lose ownership; narrowed unowned roots are refused. Context arming persists; `allowRead` stays in-place (`delegatedQueryReuse.test.js`, `../integrationTests/security/delegated-query-reuse.test.ts`).
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
-The synthesized target keeps collection status, or a batch becomes one null-keyed record. Each element gets its own `elementTargetFactory` target without `checkPermission`; a context there becomes data. Reject non-objects before dispatch. `settleElements` waits for all elements before unwinding, preventing partial PUTs; report the earliest-index error without `cause`. Static mode gets the whole array unguarded (`null` yields 500; `arrayPutCallerImpact.test.js`).
+The synthesized target keeps collection status, or a batch becomes one null-keyed record. Each element gets its own `elementTargetFactory` target without `checkPermission`; a context there becomes data. Reject non-objects before dispatch. `settleElements`, not `Promise.all`, waits for all elements before unwinding, preventing partial PUTs; report the earliest-index error without `cause`. Static mode gets the whole array unguarded (`null` yields 500; `arrayPutCallerImpact.test.js`).
 
 ## Sharding resolves fixed slots through an authoritative database map
 
@@ -100,7 +100,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 - **A static override owns the whole contract.** It resolves or consumes `data` (a promise, or a multipart `AsyncIterable<{ name, value }>` that `super.post` collects) and decides access itself; no `allow*` runs (`login.ts`).
 - `transactional()` resolves the body before `allow*` and passes both one object (`requestBody.test.js`).
 - Nested relationship constraints share `_prepareRelationshipSelection`. Predicates never mutate projection maps (`nestedRelationshipConstraints.test.js`).
-- `_authorizeRelatedSelection` copies named objects/arrays before writes. Request authority wins; named arrays isolate inner `select` from outer metadata (`selectorAuthorization.test.js`).
+- `_authorizeRelatedSelection` copies named selectors before writes. Request authority wins; arrays isolate inner `select` from metadata (`selectorAuthorization.test.js`).
 - Only records and relationship targets use a table's resolvers; plain JSON uses resolver-free `nestedSelectTransform` (`searchSelectProjection.test.js`).
 - Storage keeps only stored fields (`storedFieldsOnly`); `toJSON` is a projection.
 - **`relationship.from` accessors are synchronous** (v4 parity): `getSync`/`getEntry`, never `get()` (`query.test.js`). Resolving one marks the request uncacheable (`markRelatedReadUncacheable`), or a stale ETag yields a 304 (gap: unselected `@enumerable` links resolve in `toJSON` after the ETag).
