@@ -293,6 +293,7 @@ describe('Secondary-index range select', function () {
 			const queries = [
 				{ conditions: [{ attribute: 'score', comparator: 'between', value: [3, 6] }] },
 				{ conditions: [{ attribute: 'score', value: 4 }] },
+				{ conditions: [{ attribute: 'score', comparator: 'ne', value: null }] },
 				{
 					conditions: [{ attribute: 'score', comparator: 'gt', value: 6 }],
 					sort: { attribute: 'score', descending: true },
@@ -316,7 +317,7 @@ describe('Secondary-index range select', function () {
 			const queries = [
 				{ conditions: [{ attribute: 'name', comparator: 'ends_with', value: '-son' }], select: ['id', 'name'] },
 				{ conditions: [{ attribute: 'name', comparator: 'contains', value: '-1' }], select: ['id', 'name'] },
-				{ conditions: [{ attribute: 'score', comparator: 'ne', value: 5 }], select: ['id', 'score'] },
+				{ conditions: [{ attribute: 'score', comparator: 'in', value: [1, 8] }], select: ['id', 'score'] },
 				{ conditions: [{ attribute: 'score', comparator: 'in', value: [1, 8] }], select: ['id'] },
 				{ sort: { attribute: 'score' }, select: ['id', 'score'] },
 			];
@@ -346,6 +347,11 @@ describe('Secondary-index range select', function () {
 			await loads(
 				{ conditions: range, select: ['id', 'name'] },
 				records.map(({ id, name }) => ({ id, name }))
+			);
+			const notFive = await rows(Covered, { conditions: [{ attribute: 'score', comparator: 'ne', value: 5 }] });
+			await loads(
+				{ conditions: [{ attribute: 'score', comparator: 'ne', value: 5 }], select: ['id', 'score'] },
+				notFive.map(({ id, score }) => ({ id, score }))
 			);
 			const byLabel = [...records].sort((a, b) => (a.label < b.label ? -1 : 1));
 			await loads(
