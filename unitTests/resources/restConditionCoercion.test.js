@@ -242,8 +242,9 @@ describe('REST condition value conversion', () => {
 		assert.deepStrictEqual(await rest(Product, 'sizes===25'), [2]);
 	});
 
-	it('untyped attributes auto-cast only coercing operators and keep = / === / !== strict', async function () {
+	it('untyped attributes auto-cast only COERCIBLE_OPERATORS and keep = / === / !== and long comparator names strict', async function () {
 		assert.deepStrictEqual(await rest(Untyped, 'val==5'), [1]);
+		assert.deepStrictEqual(await rest(Untyped, 'val=ge=5&=le=5'), [1]);
 		assert.deepStrictEqual(await rest(Untyped, 'val=5'), [2]);
 		assert.deepStrictEqual(await rest(Untyped, 'val===5'), [2]);
 		assert.deepStrictEqual(await rest(Untyped, 'val!=5'), [2]);
@@ -257,7 +258,7 @@ describe('REST condition value conversion', () => {
 					],
 				})
 			),
-			[1]
+			[2]
 		);
 	});
 });
