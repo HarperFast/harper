@@ -32,6 +32,7 @@ import type {
 } from './ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { functionRegistry } from '../functions/registry.ts';
+import { assertLikeEscape, tokenizeLike } from '../expressions/like.ts';
 
 interface AlaSqlNode {
 	[key: string]: unknown;
@@ -455,12 +456,7 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 				};
 			case 'LIKE':
 			case 'NOT LIKE':
-				return {
-					kind: 'like',
-					expr: normalizeExpr(node.left as AlaSqlNode),
-					pattern: normalizeExpr(node.right as AlaSqlNode),
-					negated: op === 'NOT LIKE',
-				};
+				return normalizeLike(node, op === 'NOT LIKE');
 			case 'IS': {
 				let right = node.right as AlaSqlNode | undefined;
 				let negated = !!node.not;
@@ -484,4 +480,26 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 	}
 
 	throw new EngineUnsupportedError(`could not normalize expression`, node);
+}
+
+function normalizeLike(node: AlaSqlNode, negated: boolean): ExprNode {
+	const like: Extract<ExprNode, { kind: 'like' }> = {
+		kind: 'like',
+		expr: normalizeExpr(node.left as AlaSqlNode),
+		pattern: normalizeExpr(node.right as AlaSqlNode),
+		negated,
+	};
+	if (node.escape != null) {
+		const escape = normalizeExpr(node.escape as AlaSqlNode);
+		if (escape.kind !== 'literal') {
+			throw new EngineUnsupportedError('LIKE ESCAPE operand that is not a literal', node);
+		}
+		assertLikeEscape(escape.value);
+		like.escape = escape.value;
+	}
+	// Past this point scan validation can turn the error into a legacy fallback.
+	if (like.pattern.kind === 'literal' && typeof like.pattern.value === 'string') {
+		tokenizeLike(like.pattern.value, like.escape);
+	}
+	return like;
 }

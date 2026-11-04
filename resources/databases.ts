@@ -701,6 +701,8 @@ const PEER_REDEFINABLE_FIELDS = [
 	'version',
 	'elements',
 	'properties',
+	'computed',
+	'computedFromExpression',
 	'embed',
 	'decide',
 ];
@@ -5231,14 +5233,22 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// options, then sort keys and coerce numeric-looking string scalars so a representation-only
 			// difference (key order, string-vs-number) does not force a needless rebuild. harper#1357
 			const canonicalIndexKey = (indexed: any) => JSON.stringify(canonicalizeIndexOptions(stripSearchOnly(indexed)));
+			// A checkpoint certifies rows indexed under the old computation (`version` is how application code signals one)
+			// `true` and `{}` both mean a bare @computed
+			const computedShape = (computed: any) =>
+				computed ? JSON.stringify(computed === true ? {} : computed) : undefined;
+			const computationChanged =
+				computedShape(attributeDescriptor?.computed) !== computedShape(attribute.computed) ||
+				attributeDescriptor?.computedFromExpression !== attribute.computedFromExpression ||
+				attributeDescriptor?.version !== attribute.version;
 			const commonChanged =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
 				attributeDescriptor.nullable !== attribute.nullable ||
-				attributeDescriptor.version !== attribute.version ||
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
+				computationChanged ||
 				// Include `embed` so a source/model change refreshes the embed registry.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
 			// any metadata difference (drives persistence). `decide` is compared here and not in
@@ -5313,7 +5323,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 									attributeDescriptor.checkpointAlgorithm !== CHECKPOINT_ALGORITHM ||
 									compareKeys(attributeDescriptor.checkpointCertified, attributeDescriptor.lastIndexedKey) !== 0);
 							attribute.lastIndexedKey =
-								indexOptionsChanged || uncertifiedCheckpoint
+								indexOptionsChanged || computationChanged || uncertifiedCheckpoint
 									? undefined
 									: (attributeDescriptor?.lastIndexedKey ?? undefined);
 							if (attribute.lastIndexedKey !== undefined) {

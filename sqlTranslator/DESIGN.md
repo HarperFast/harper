@@ -29,3 +29,7 @@ Legacy SQL writes the authorized AST back out with `toString()` and AlaSQL parse
 Text `SQLSearch` builds after the check names columns only as `[<name>]`. `_processJoins` writes each table's primary-key result through `generatedName()`: bracketed, double-quoted only when the key holds `]`, refused when it holds both, so an alias holding `"` cannot end the name.
 
 Enforced by `unitTests/sqlTranslator/legacySqlText.test.js` and the quoted-string case in `integrationTests/security/sql-attribute-perms.test.ts`.
+
+## Legacy LIKE
+
+`installAlasqlLike` (`alasqlLike.ts`, applied by `alasqlFunctionImporter.ts`) replaces `alasql.utils.like`, whose per-pattern RegExp backtracks polynomially ([#1930](https://github.com/HarperFast/harper/issues/1930)), with the v2 engine's segment matcher in alasql's semantics: case-insensitive, `[set]` classes. RegExp syntax alasql leaked into its pattern (`\`, `^`, `$`, escape + letter) is literal. Under `sql.engine: auto` a LIKE with no index driver runs here, so this path must stay linear too. The same function wraps `alasql.yy.Op#toString` to keep `ESCAPE`: legacy SQL re-parses `where.toString()` (`SQLSearch._buildSQL`, `update.ts`, `deleteTranslator.ts`), and alasql's serialization drops it.

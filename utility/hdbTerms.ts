@@ -213,6 +213,12 @@ export const UPGRADE_JSON_FIELD_NAMES_ENUM = {
 	UPGRADE_VERSION: 'upgrade_version',
 } as const;
 
+/**
+ * Set by the Fastify injection on Bun and uWS, whose mock socket always reports 127.0.0.1, and stripped
+ * from client headers there; read by set_network_access's lockout check.
+ */
+export const INTERNAL_CLIENT_ADDRESS_HEADER = 'x-harper-internal-client-address';
+
 /** System table names */
 export const SYSTEM_TABLE_NAMES = {
 	JOB_TABLE_NAME: 'hdb_job',
@@ -233,6 +239,7 @@ export const SYSTEM_TABLE_NAMES = {
 	MODEL_DECISIONS_TABLE_NAME: 'hdb_model_decisions',
 	MODEL_OUTCOMES_TABLE_NAME: 'hdb_model_outcomes',
 	MODEL_CALIBRATIONS_TABLE_NAME: 'hdb_model_calibrations',
+	NETWORK_ACCESS_TABLE_NAME: 'hdb_network_access',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -380,6 +387,8 @@ export const OPERATIONS_ENUM = {
 	DISABLE_PREVIEWS: 'disable_previews',
 	FENCE_PREVIEW_RELEASES: 'fence_preview_releases',
 	GET_PREVIEW_POLICY: 'get_preview_policy',
+	SET_NETWORK_ACCESS: 'set_network_access',
+	GET_NETWORK_ACCESS: 'get_network_access',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',
@@ -388,6 +397,7 @@ export const OPERATIONS_ENUM = {
 	CANCEL_AGENT_RUN: 'cancel_agent_run',
 	APPROVE_AGENT_ACTION: 'approve_agent_action',
 	SET_AGENT_CONFIG: 'set_agent_config',
+	GET_AGENT_CONFIG: 'get_agent_config',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -711,6 +721,10 @@ export const CONFIG_PARAMS = {
 	AGENT_CONFIGSCOPE: 'agent_configScope',
 	AGENT_HTTPFETCH: 'agent_httpFetch',
 	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
+	AGENT_TOOLS_FILESYSTEM: 'agent_tools_filesystem',
+	AGENT_TOOLS_SCHEDULE: 'agent_tools_schedule',
+	AGENT_TOOLS_INSPECTOR: 'agent_tools_inspector',
+	AGENT_TOOLS_BESTPRACTICES: 'agent_tools_bestPractices',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',
