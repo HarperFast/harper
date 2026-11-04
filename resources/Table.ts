@@ -830,6 +830,7 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 	}
 	return iterable;
 }
+type UpdatePermission = boolean | { [attribute: string]: boolean };
 const RESTRICTED_REPLACEMENT = Object.freeze({});
 // a tracked payload keeps its values behind getRecord()
 function materialized(record: any) {
@@ -4417,29 +4418,19 @@ export function makeTable(options): TableResourceClass {
 		 */
 		allowUpdate(user: User, updatedData: Record, context: Context): boolean;
 		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
-		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, _context: Context): boolean | Promise<boolean> {
 			this.#updatableAttributes = undefined;
-			const tablePermission = getTablePermissions(user);
-			if (tablePermission?.update) {
-				const attribute_permissions = tablePermission.attribute_permissions;
-				if (attribute_permissions?.length > 0) {
-					// A REST body arrives here as a promise of the record. A body that fails to parse is left to fail the
-					// write itself, with its own error rather than an authorization one.
-					if (typeof (updatedData as any)?.then === 'function')
-						return (updatedData as any).then(
-							(data: Record) => TableResource.prototype.allowUpdate.call(this, user, data, context),
-							() => true
-						);
-					// an array body's keys are indices, not attributes, and its elements are later written unchecked
-					if (Array.isArray(updatedData)) return false;
-					const attrsForType = attributesAsObject(attribute_permissions, 'update');
-					for (const key in materialized(updatedData)) {
-						if (!attrsForType[key]) return false;
-					}
-					this.#updatableAttributes = attrsForType;
-				}
+			const allowed = allowTableUpdate(user, updatedData);
+			if (typeof (allowed as Promise<UpdatePermission>)?.then === 'function')
+				return (allowed as Promise<UpdatePermission>).then((permission) => this.#setUpdatePermission(permission));
+			return this.#setUpdatePermission(allowed as UpdatePermission);
+		}
+		#setUpdatePermission(permission: UpdatePermission): boolean {
+			if (typeof permission === 'object') {
+				this.#updatableAttributes = permission;
 				return true;
 			}
+			return permission;
 		}
 
 		/**
@@ -4449,30 +4440,7 @@ export function makeTable(options): TableResourceClass {
 		allowCreate(user: User, newData: Record, context: Context): boolean;
 		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
 		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
-			if (this.isCollection) {
-				const tablePermission = getTablePermissions(user);
-				if (tablePermission?.insert) {
-					const attribute_permissions = tablePermission.attribute_permissions;
-					if (attribute_permissions?.length > 0) {
-						if (typeof (newData as any)?.then === 'function')
-							return (newData as any).then(
-								(data: Record) => TableResource.prototype.allowCreate.call(this, user, data, context),
-								() => true
-							);
-						if (Array.isArray(newData)) return false;
-						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
-						for (const key in materialized(newData)) {
-							if (!attrsForType[key]) return false;
-						}
-					}
-					return true;
-				}
-			} else {
-				// creating *within* a record resource just means we are adding some data to a current record, which is
-				// an update to the record, it is not an insert of a new record into the table, so not a table create operation
-				// so does not use table insert permissions
-				return this.allowUpdate(user, newData, context);
-			}
+			return allowTableCreate(this, user, newData, context);
 		}
 
 		/**
@@ -12065,6 +12033,64 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		return withEntry(entry, id);
+	}
+
+	function allowTableUpdate<Record extends object>(
+		user: User,
+		updatedData: Record | Promise<Record>
+	): UpdatePermission | Promise<UpdatePermission> {
+		const tablePermission = getTablePermissions(user);
+		if (tablePermission?.update) {
+			const attribute_permissions = tablePermission.attribute_permissions;
+			if (attribute_permissions?.length > 0) {
+				// Direct instance callers can pass promises; dispatch resolves request bodies before this check.
+				if (typeof (updatedData as any)?.then === 'function')
+					return (updatedData as any).then(
+						(data: Record) => allowTableUpdate(user, data),
+						() => true
+					);
+				// an array body's keys are indices, not attributes, and its elements are later written unchecked
+				if (Array.isArray(updatedData)) return false;
+				const attrsForType = attributesAsObject(attribute_permissions, 'update');
+				for (const key in materialized(updatedData)) {
+					if (!attrsForType[key]) return false;
+				}
+				return attrsForType;
+			}
+			return true;
+		}
+	}
+
+	function allowTableCreate<Record extends object>(
+		resource: TableResource<Record>,
+		user: User,
+		newData: Record | Promise<Record>,
+		context: Context
+	): boolean | Promise<boolean> {
+		if (resource.isCollection) {
+			const tablePermission = getTablePermissions(user);
+			if (tablePermission?.insert) {
+				const attribute_permissions = tablePermission.attribute_permissions;
+				if (attribute_permissions?.length > 0) {
+					if (typeof (newData as any)?.then === 'function')
+						return (newData as any).then(
+							(data: Record) => allowTableCreate(resource, user, data, context),
+							() => true
+						);
+					if (Array.isArray(newData)) return false;
+					const attrsForType = attributesAsObject(attribute_permissions, 'insert');
+					for (const key in materialized(newData)) {
+						if (!attrsForType[key]) return false;
+					}
+				}
+				return true;
+			}
+		} else {
+			// creating *within* a record resource just means we are adding some data to a current record, which is
+			// an update to the record, it is not an insert of a new record into the table, so not a table create operation
+			// so does not use table insert permissions
+			return resource.allowUpdate(user, newData, context);
+		}
 	}
 
 	function getTablePermissions(user: User, target?: RequestTarget) {

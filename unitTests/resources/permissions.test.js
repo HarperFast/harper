@@ -5,7 +5,7 @@ const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { transaction } = require('#src/resources/transaction');
 const { GenericTrackedObject } = require('#src/resources/tracked');
-const { setTimeout } = require('node:timers/promises');
+const { setTimeout: delay } = require('node:timers/promises');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Permissions through Resource API', () => {
@@ -784,6 +784,45 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.ok(!('secret' in payload) && !('extra' in payload));
 	});
 
+	for (const loadAsInstance of [undefined, false]) {
+		it(`keeps a readonly field changed after authorization (loadAsInstance=${loadAsInstance})`, async function () {
+			class ConcurrentDoc extends DocTable {
+				static loadAsInstance = loadAsInstance;
+			}
+			const id = `concurrent-readonly-${loadAsInstance}`;
+			await seed(id);
+			const permission = title_owner_user.role.permission.test.tables.AttrPermDoc;
+			const user = {
+				role: {
+					permission: {
+						test: {
+							tables: {
+								AttrPermDoc: {
+									...permission,
+									attribute_permissions: [
+										...permission.attribute_permissions,
+										{ attribute_name: 'secret', read: false, insert: false, update: false },
+									],
+								},
+							},
+						},
+					},
+				},
+			};
+			const context = { user };
+			const resource = await ConcurrentDoc.getResource(id, context);
+			const payload = { title: 'restricted replacement' };
+			assert.strictEqual(await resource.allowUpdate(user, payload, context), true);
+			assert.deepStrictEqual(payload, { title: 'restricted replacement' });
+			await DocTable.patch(id, { secret: 'concurrent protected value' });
+			const target = new RequestTarget(`/${id}`);
+			target.id = id;
+			await resource.put(target, payload);
+			assert.equal((await DocTable.get(id)).secret, 'concurrent protected value');
+			assert.deepStrictEqual(payload, { title: 'restricted replacement' });
+		});
+	}
+
 	it('a full put drops a property the role can update but omitted', async function () {
 		await seed('put-2');
 		await DocTable.put('put-2', { title: 'only title' }, asUser());
@@ -906,10 +945,11 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		});
 	});
 
-	it('an allowUpdate override still receives a promised body', async function () {
+	it('an allowUpdate override receives the resolved body from current dispatch', async function () {
 		class PromiseHookDoc extends DocTable {
 			allowUpdate(user, data) {
-				return data.then((record) => record.title !== 'refused');
+				assert.equal(typeof data.then, 'undefined');
+				return data.title !== 'refused';
 			}
 		}
 		await seed('hook-1');
@@ -1131,7 +1171,7 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		})();
 		try {
 			await DocTable.publish('pub-1', { title: 'message' }, { user, authorize: true });
-			await Promise.race([reading, setTimeout(5000).then(() => assert.fail('no message delivered'))]);
+			await Promise.race([reading, delay(5000).then(() => assert.fail('no message delivered'))]);
 		} finally {
 			subscription.return?.();
 		}

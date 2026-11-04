@@ -2,7 +2,7 @@
 
 Authentication tokens, OIDC exchange and TLS material.
 
-**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts`, `certificateVerification/` or role attribute permissions (`permissionsTranslator.js`, `Table.ts` permission lookup).
+**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts`, `certificateVerification/` or role attribute permissions.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -295,32 +295,7 @@ Named-process probe and lock failures use `NamedProcessError`, a `ServerError` s
 
 ## Application lockdown seals the intrinsics by default (`security/intrinsicsLockdown.ts`)
 
-`applications.lockdown` makes prototype-pollution exploits against apps harder; it is not a sandbox. The default
-`seal-after-load` (and eager `seal`) seals 21 intrinsic globals (constructors plus `Math`, `JSON`, `Reflect` and
-`Atomics`) and their prototypes, plus `Function` and `Function.prototype`, once components have loaded. After that point no property can be added to or deleted
-from them, which is what a polluting key (`__proto__.isAdmin`, `constructor.prototype.isAdmin`) needs.
-Overwriting an existing property is still allowed: it is mostly a denial of service, not an escalation.
-
-Never make prototype properties read-only in a seal mode, whether by `Object.freeze`, `writable: false` or
-getter/setter accessors. A read-only elements kind on `Object.prototype` or `Array.prototype` moves every store
-into an array hole off V8's fast path, process-wide (about 45× for `new Array(n)` fills, about 3× for msgpackr
-decode). Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
-shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
-accessors.
-
-The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible. When a component
-replaces one of these globals while it loads, sealing locks both the replacement and the realm's original, which
-literals and async functions keep using. Freezing locks only the current global, because freezing the original
-would skip its overridable accessors.
-
-`lockDownIntrinsics` matches mode names exactly: any other truthy value, including a typo or a non-string, freezes
-eagerly (fails closed). A falsy value skips lockdown, like `none` (`security/jsLoader.ts`). Only fresh installs get
-the default: the installer writes the whole default config into each instance's `harper-config.yaml`, so an
-upgraded instance keeps the `freeze-after-load` it was installed with.
-
-Enforced by `unitTests/security/intrinsicsLockdown.test.js`, which runs each mode in a fresh `Worker` because
-lockdown cannot be undone in a realm, and by `integrationTests/components/intrinsics-lockdown.test.ts`. The cost of
-each mode is measured by `benchmarks/lockdown/run.mts`.
+`applications.lockdown` defaults to `seal-after-load` on fresh installs; an existing config keeps its prior mode. Sealing blocks prototype additions/deletions but allows overwrites; it is not a sandbox. Never make seal-mode prototype properties read-only: array-hole stores become about 45× slower and msgpackr decode about 3× slower; accessors prevent built-in inlining. Only freeze modes need `overridableProperty`. Sealing covers both replaced globals and their realm originals; freezing covers current globals only, keeping `Function.prototype` extensible. Unknown truthy modes freeze eagerly, falsy modes skip lockdown. `unitTests/security/intrinsicsLockdown.test.js` uses fresh workers per mode; integration: `integrationTests/components/intrinsics-lockdown.test.ts`; measurements: `benchmarks/lockdown/run.mts`.
 
 ## A scoped mirror is never advertised before its allowlist is read (`security/networkAccess.ts`)
 
@@ -332,6 +307,6 @@ each mode is measured by `benchmarks/lockdown/run.mts`.
 
 ## Attribute permissions on the resource path: key grant and restricted full puts (`Table.ts` `getTablePermissions`, `put`, harper#3284)
 
-The resource path reads the stored role permission, not the operations API's translation (`permissionsTranslator.getRolePermissions` stringifies the whole schema per call, and rebuilds the list from declared attributes, dropping listed properties that REST/MQTT writes store without declaring). `getTablePermissions` applies only the part that changes resource behavior: an unlisted primary key gets `implicitPrimaryKeyPermission`, built from the translator's own primitives. Nothing is granted on a keyless table. Memoized per table on the table permission object's identity, which the derived-role memo (keyed by role-record version) and the cached principal keep stable across requests.
+`getTablePermissions` adds only the unlisted key’s `implicitPrimaryKeyPermission`; full operations-API translation would drop listed undeclared properties. Explicit key denials, timestamps and sealed membership still apply. The per-permission memo resets in `updatedAttributes`.
 
-A full put by an attribute-restricted role must change only what the role may update, on every durable form of the write. `allowUpdate` records the role's update map on the instance (it never writes into the payload), and every later full put on that instance (`put`, or the `update(record, true)` that default static dispatch reaches) is staged as a patch: the payload, the primary key, and `undefined` for each omitted updatable stored attribute. It stays until the next `allowUpdate` on that instance, so neither an override's own write before `super.put` nor a retried `super.put` can turn the put into an unrestricted replace; any later full put through the same instance (a request's, or a kept `{ hold: true }` lock instance's) is restricted too. A patch is the only shape that holds the invariant: its log entry is base-independent (the transaction log is not rewritten on a commit retry), and it merges onto the base each attempt and each replica re-reads. With no base it validates as a full record, so a create still needs required attributes; a delete racing a retry can still leave a partial row, as for any PATCH. A source with `patch` gets the patch; a put-only source gets the record as known locally, as for any PATCH, so a cold cache can still drop protected attributes there. An attribute-restricted role cannot PUT or POST an array body: its elements are written without their own check. `allowUpdate`/`allowCreate` resolve a promised body (how a REST body reaches them) before checking its keys; the dispatcher still passes the promise, as the public `allow*` signature declares, and the upload still overlaps the record load. On a sealed table, only declared attributes count toward the key grant. Pinned by `unitTests/resources/permissions.test.js` and `integrationTests/security/resource-attribute-permissions.test.ts`.
+`allowTableUpdate` returns a checked update map to `allowUpdate`, never copying stored values into the payload. The map survives repeated puts and held locks until the next `allowUpdate`. `restrictedReplacement` stages full puts as patches: omitted writable stored attributes become `undefined`, protected ones remain absent. Patches merge on retry/replay/replication; full records would log stale protected values. Existing PATCH limits remain: delete/retry can leave a partial row, put-only sources with a cold cache can lose protected values, and operation-shaped values are operations. Restricted array bodies are refused. Dispatch resolves bodies before authorization; helpers also resolve direct instance promises without re-entering overrides. Enforcement: `unitTests/resources/permissions.test.js`, `unitTests/server/preconditions.test.js`, and `integrationTests/security/resource-attribute-permissions.test.ts`.
