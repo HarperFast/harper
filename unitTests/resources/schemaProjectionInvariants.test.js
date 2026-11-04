@@ -125,6 +125,8 @@ describe('programmatic schema projection invariants', () => {
 		assert.equal(deriveUpdateSchema(resolveAttributes(Table)).properties.status.enum, undefined);
 		Table.attributes.find((attribute) => attribute.isPrimaryKey).enum = ['limited'];
 		assert.equal(deriveGetSchema(resolveAttributes(Table)).properties.id.enum, undefined);
+		const programmatic = resolveAttributes({ properties: Table.attributes });
+		assert.deepEqual(deriveGetOutputSchema(programmatic).properties.status.enum, ['open', 'closed']);
 		const schema = deriveGetOutputSchema(resolveAttributes(Table));
 		assert.equal(schema.properties.status.enum, undefined);
 		const map = new Map([['AdvisoryEnum', { path: 'AdvisoryEnum', Resource: Table }]]);

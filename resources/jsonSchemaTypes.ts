@@ -640,8 +640,9 @@ export function resolveAttributes(source?: {
 }): AttributeLike[] {
 	if (source?.attributes?.length) return source.attributes;
 	if (Array.isArray(source?.properties)) {
-		programmaticSchemas.add(source.properties);
-		return source.properties;
+		const attributes = [...source.properties];
+		programmaticSchemas.add(attributes);
+		return attributes;
 	}
 	if (source?.properties !== undefined) {
 		const required = validateTopLevelRequired(source.required);

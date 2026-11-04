@@ -194,10 +194,9 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 
 		it('accepts an existing Array-form properties declaration', () => {
 			const attributes = [{ name: 'id', type: 'String' }];
-			assert.strictEqual(
-				require('#src/resources/jsonSchemaTypes').resolveAttributes({ properties: attributes }),
-				attributes
-			);
+			const projected = require('#src/resources/jsonSchemaTypes').resolveAttributes({ properties: attributes });
+			assert.notStrictEqual(projected, attributes);
+			assert.deepStrictEqual(projected, attributes);
 		});
 
 		it('rejects a non-array or non-string nested required declaration', () => {
