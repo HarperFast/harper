@@ -315,7 +315,7 @@ function getAttributeDescribePerm(permObj) {
  */
 function implicitPrimaryKeyPermission(attributePermissions, primaryKey) {
 	// a repeated attribute name takes its last entry, as getTableAttrPerms does
-	const byName = new Map(attributePermissions.map((permission) => [permission.attribute_name, permission]));
+	const byName = new Map<any, any>(attributePermissions.map((permission) => [permission.attribute_name, permission]));
 	const keyPermission = attrPermsTemplate(primaryKey);
 	for (const [name, permission] of byName) {
 		checkForHashPerms(

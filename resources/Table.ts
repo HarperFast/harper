@@ -4527,7 +4527,7 @@ export function makeTable(options): TableResourceClass {
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate && this.#updatableAttributes && isRecordRoot(updates)) {
 					this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
-					return when(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT), () => this);
+					return this.#whenStaged(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT));
 				} else if (fullUpdate) {
 					// legacy full update where we need to update the entire record, but the instance needs to continue
 					// track any further changes
