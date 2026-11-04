@@ -304,6 +304,7 @@ async function listUsersExternal(): Promise<User[]> {
 		delete user.hash;
 		delete user.refresh_token;
 		delete user.hash_function;
+		user.role = withoutSystemGrants(user.role, false);
 	});
 
 	return [...userData.values()];
@@ -362,22 +363,7 @@ function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
 
 const systemTablesByReadPerm = new Map<boolean, Record<string, UserRolePermissionTable>>();
 
-/**
- * `systemSchema.json` is install-time only; components create `hdb_scheduler_state`, `hdb_session`,
- * `hdb_status` and friends later, and a map built from the JSON alone reports those as nonexistent
- * to every caller, super_user included (harper#2120). The set comes from the live registry that
- * `describe_database` enumerates, so listed and addressable stay one set.
- *
- * Two constraints shape this. It must be a plain object, because operation forwarding
- * structured-clones the request — permissions included — to a worker thread, and a `Proxy` there
- * fails the whole operation with `DataCloneError`. And it must be updated **in place** rather than
- * replaced: `security/auth.ts` serves warmed authorization entries and `getSuperUser()` hands back
- * cached roles, neither of which re-reads a map, so a fresh object would leave those identities on
- * the stale one and reproduce the original 403.
- *
- * Entries are defined rather than assigned so a table named `__proto__` becomes an own property
- * instead of hitting the inherited setter.
- */
+// Warmed identities retain this map; forwarding requires it to remain a plain, cloneable object.
 function syncSystemTables(tables: Record<string, UserRolePermissionTable>, readPerm: boolean) {
 	const live = databases[terms.SYSTEM_SCHEMA_NAME];
 	const names = new Set([...Object.keys(systemSchema), ...(live ? Object.keys(live) : [])]);
@@ -406,13 +392,7 @@ function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePerm
 	return tables;
 }
 
-// Scoped to the system database: these events also fire for user tables, and resyncing on those
-// would be pure waste. `Table.dropTable()` deletes from the registry without emitting, so a table
-// dropped that way lingers here until the next system-table event — permissively, but only for a
-// table the data layer will then refuse as nonexistent anyway.
-//
-// Never allowed to throw: these listeners run inside `emit` during `getDatabases()` and `table()`,
-// so an exception here aborts schema loading and takes the node down. A stale map is a 403.
+// Registry listeners run during schema loading, so refresh failures must not abort startup.
 function refreshSystemTables() {
 	try {
 		for (const [readPerm, tables] of systemTablesByReadPerm) syncSystemTables(tables, readPerm);

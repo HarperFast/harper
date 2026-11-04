@@ -154,7 +154,7 @@ suite(
 			});
 		}
 
-		test('legacy role grants are omitted from list_roles and user_info', async () => {
+		test('legacy role grants are omitted from role and user introspection', async () => {
 			const listed = await client.req().send({ operation: 'list_roles' }).expect(200);
 			const role = listed.body.find((role: { role: string }) => role.role === LEGACY_ROLE);
 			strictEqual(role.permission.system, undefined);
@@ -165,6 +165,9 @@ suite(
 				.expect(200);
 			strictEqual(info.body.role.role, LEGACY_ROLE);
 			strictEqual(info.body.role.permission.system, undefined);
+			const users = await client.req().send({ operation: 'list_users' }).expect(200);
+			const listedUser = users.body.find((entry: { username: string }) => entry.username === LEGACY_READER.username);
+			strictEqual(listedUser.role.permission.system, undefined);
 		});
 
 		test('the legacy user cannot read a system table using its stored grant', async () => {

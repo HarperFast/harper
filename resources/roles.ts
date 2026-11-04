@@ -90,7 +90,7 @@ async function handleFile(rolesContent, ensureRoleFn: (role: any) => Promise<unk
 		if (role === null || typeof role !== 'object' || Array.isArray(role)) {
 			throw new ClientError(`Role '${roleName}' must be an object`);
 		}
-		if (Object.hasOwn(role.permission ?? role, 'system')) {
+		if (Object.hasOwn(role.permission || role, 'system')) {
 			throw new ClientError(`Role '${roleName}': ${HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED}`);
 		}
 	}

@@ -46,7 +46,7 @@ describe('System role permission boundary', () => {
 		});
 	}
 
-	for (const read of ['listRoles', 'getRoleByName', 'userInfo', 'listUsers']) {
+	for (const read of ['listRoles', 'getRoleByName', 'userInfo', 'listUsers', 'listUsersExternal']) {
 		it(`${read} normalizes legacy grants without changing storage and warns once`, async () => {
 			await insert.insert({
 				operation: 'insert',
@@ -70,6 +70,8 @@ describe('System role permission boundary', () => {
 				assert.strictEqual(users.get(ROLE + '_first').role.permission.system.tables.hdb_user.read, false);
 				assert.strictEqual(users.get(ROLE + '_second').role.permission.system.tables.hdb_user.read, false);
 				reported = await roles.getRoleByName(ROLE);
+			} else if (read === 'listUsersExternal') {
+				reported = (await user.listUsersExternal()).find((entry) => entry.username === ROLE + '_first').role;
 			} else if (read === 'userInfo') {
 				reported = (await user.userInfo({ hdb_user: { username: 'legacy', role: { id: ROLE } } })).role;
 			} else if (read === 'listRoles') {
@@ -77,13 +79,16 @@ describe('System role permission boundary', () => {
 			} else reported = await roles.getRoleByName(ROLE);
 			assert.strictEqual(reported.id, ROLE);
 			assert.strictEqual(reported.role, ROLE);
-			assert.deepStrictEqual(reported.permission, { super_user: false, operations: ['describe_database'] });
+			assert.strictEqual(reported.permission.system, undefined);
+			assert.strictEqual(reported.permission.super_user, false);
+			assert.deepStrictEqual(reported.permission.operations, ['describe_database']);
 			const stored = await databases.system.hdb_role.get(ROLE);
 			assert.ok(stored.permission.system, 'reads must not race a concurrent alter_role with a cleanup write');
 			await roles.listRoles();
 			await user.listUsers();
 			const warnings = logs.filter((line) => line.includes(`role '${ROLE}'`) && line.includes('hdb_user'));
 			assert.strictEqual(warnings.length, 1);
+			assert.strictEqual(logs.filter((line) => line.includes('Ignoring role-declared permissions')).length, 1);
 		});
 	}
 
