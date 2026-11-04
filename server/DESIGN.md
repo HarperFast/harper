@@ -234,35 +234,11 @@ Consequences worth knowing:
 
 ## Operations authorization boundary
 
-Operations request bodies are untrusted data. `serverHelpers/serverHandlers.ts → handlePostRequest()` rejects
-prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
-`serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
-internal callers pass bypass state as a separate argument and expose it to operation handlers only
-through `operationAuthorizationState.ts`'s async context. When an operation registered by a component
-must run on a worker, `registeredOperations.ts` carries that state in the same-process ITC envelope,
-separately from the structured-cloned body. Never attach trusted dispatch state to an operation
-payload.
+Operation bodies are untrusted. `serverHandlers.handlePostRequest()` rejects prototype-mutating keys and strips `bypass_auth`. `chooseOperation()` accepts bypass only as a separate trusted argument; `operationAuthorizationState` exposes it to handlers. Worker forwarding carries it in the ITC envelope, never the body.
 
-`server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
-registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
-during registration exists only in the worker that registered. The bridge carries name→thread
-routing (for execution forwarding), `grantable` (so `validateOperations` on main will accept the
-name in a role's `operations` allowlist), and normalized `inputSchema` metadata for main-thread MCP
-introspection. Grantability only widens what an allowlist may _name_; enforcement stays on the
-worker's `chooseOperation`. MCP exposes a worker-registered operation only while every live worker
-advertises the same schema, so a rolling deploy cannot pair one generation's schema with another
-generation's handler.
+Component registries are worker-local. OPERATION_REGISTERED carries name→thread routing, `grantable` (role/impersonation/OIDC allowlist eligibility, not authorization), and `inputSchema` to main. Extend that message for new main-thread consumers; enforcement stays in the worker's `chooseOperation()`.
 
-An operation intended for protocol introspection passes its own self-contained JSON Schema as
-`inputSchema` to `server.registerOperation()`. Registration clones and compiles it without changing
-the handler's validation. A component never inherits a contract by name, even when it replaces a
-built-in. `parametersSchema` is legacy REST metadata, not MCP input metadata.
-
-MCP requires schema metadata for default/glob matches. A literal `mcp.operations.allow` entry opts
-that operation into a permissive object contract if it lacks metadata, preserving existing explicit
-operator choices, including a mix of workers with and without schema metadata. This advertises no
-typed contract. Conflicting declared schemas are always withheld. See the registry
-and MCP operation tests for registration isolation, reference validation and opt-in behavior.
+Registration clones and compiles the handler's own `inputSchema`, never inheriting by name. `parametersSchema` remains separate legacy REST metadata. MCP advertises typed contracts only when all live owners agree. Default/glob matches require schemas; a literal `mcp.operations.allow` entry preserves permissive compatibility, including mixed missing/present metadata. Conflicting declared schemas are always withheld. Registry and MCP operation tests pin these rules.
 
 ## Resource ↔ HTTP boundary
 
