@@ -1250,6 +1250,14 @@ describe('REST and operations API select projection fixes', function () {
 				}
 			);
 			mount(
+				'PlainReparsedTarget',
+				class extends Plain {
+					get(target) {
+						return super.get(new RequestTarget(target.toString()));
+					}
+				}
+			);
+			mount(
 				'SharedTargetSummary',
 				class extends Resource {
 					static async get(target) {
@@ -1681,6 +1689,9 @@ describe('REST and operations API select projection fixes', function () {
 			const sparseKeyed = await restGet('/Plain/z-3?select(id,note)', { accept: 'text/csv' });
 			assert.strictEqual(sparseKeyed.text, '"id","note"\n"z-3",\n');
 
+			const reparsedTuple = await restGet('/PlainReparsedTarget/z-1?select([id,note])', { accept: 'text/csv' });
+			assert.strictEqual(reparsedTuple.text, '"id","note"\n"z-1","n1"\n');
+
 			const summaryJson = await restGet('/SharedTargetSummary/z-1?select(name)', { accept: 'application/json' });
 			assert.deepStrictEqual(summaryJson.body, { name: 'Zeta-1', inStock: true });
 			const summaryCsv = await restGet('/SharedTargetSummary/z-1?select(name)', { accept: 'text/csv' });
@@ -1700,6 +1711,10 @@ describe('REST and operations API select projection fixes', function () {
 				const csv = await restGet(url, { accept: 'text/csv' });
 				assert.strictEqual(csv.status, 200, url);
 				assert.strictEqual(csv.text, '"id","name","total"\n"o1","First",5\n"o2","Second",7\n', url);
+				for (const select of ['select(id)', 'select([id,total])']) {
+					const unprojected = await restGet(`${path}?${select}`, { accept: 'text/csv' });
+					assert.strictEqual(unprojected.text, '"id","name","total"\n"o1","First",5\n"o2","Second",7\n', select);
+				}
 			}
 			const lazyCsv = await restGet('/CustomLazyOrdersInstance/customer-1?select(meta)', { accept: 'text/csv' });
 			assert.strictEqual(lazyCsv.text, '"meta"\n"{""gift"":true}"\n"{""gift"":false}"\n');

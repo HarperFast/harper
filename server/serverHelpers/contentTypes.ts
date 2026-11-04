@@ -56,7 +56,14 @@ export function recordAppliedSelect<T>(context: any, select: any, rows: boolean,
 
 function appliedSelectFor(data: any, target: any): AppliedSelect | undefined {
 	const applied = data && typeof data === 'object' ? appliedSelects.get(data) : undefined;
-	return applied && applied.select === target?.select ? applied : undefined;
+	return applied && sameColumns(applied.select, target?.select) ? applied : undefined;
+}
+
+function sameColumns(select: any, other: any): boolean {
+	if (select === other) return true;
+	if (!Array.isArray(select) || !Array.isArray(other)) return false;
+	if (select.length !== other.length || isTupleSelect(select) !== isTupleSelect(other)) return false;
+	return select.every((column, index) => (column?.name ?? column) === (other[index]?.name ?? other[index]));
 }
 
 export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {
