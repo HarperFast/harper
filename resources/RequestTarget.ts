@@ -41,6 +41,7 @@ export function copyQueryConditions(value: any): any {
 
 function copyQueryFields(source: any, stop = Object.prototype, skipArrayIndices = false): PropertyDescriptorMap {
 	const descriptors: PropertyDescriptorMap = Object.create(null);
+	const seen = new Set<string | symbol>();
 	for (let object = source; object && object !== stop; object = Object.getPrototypeOf(object)) {
 		for (const name of Reflect.ownKeys(object)) {
 			if (
@@ -49,7 +50,8 @@ function copyQueryFields(source: any, stop = Object.prototype, skipArrayIndices 
 				(name === 'length' || (name !== '4294967295' && String(Number(name) >>> 0) === name))
 			)
 				continue;
-			if (Object.hasOwn(descriptors, name)) continue;
+			if (seen.has(name)) continue;
+			seen.add(name);
 			const descriptor = Object.getOwnPropertyDescriptor(object, name);
 			if (!descriptor) continue;
 			if ('value' in descriptor) {

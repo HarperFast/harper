@@ -165,6 +165,25 @@ describe('delegated reads reusing one query object', function () {
 				});
 			}
 
+			it('preserves an inherited row filter over an ancestor default', async function () {
+				class BaseQuery {}
+				BaseQuery.prototype.rowFilter = null;
+				class Query extends BaseQuery {
+					rowFilter(record) {
+						return record.id === 'e1';
+					}
+				}
+				const root = Object.assign(new Query(), {
+					conditions: [],
+					select: ['id'],
+					checkPermission: true,
+				});
+				for (let attempt = 0; attempt < 2; attempt++)
+					assert.deepStrictEqual(await rows(getTable().search(root, { user: broadUser })), [{ id: 'e1' }]);
+				assert.strictEqual(Object.hasOwn(root, 'rowFilter'), false);
+				assert.strictEqual(typeof root.rowFilter, 'function');
+			});
+
 			it('retains a non-enumerable filter on collection delete', async function () {
 				const Store = table({
 					database,
