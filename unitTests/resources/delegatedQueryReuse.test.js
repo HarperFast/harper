@@ -3,7 +3,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { cloneDeep } = require('lodash');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
-const { RequestTarget, markDispatchTarget } = require('#src/resources/RequestTarget');
+const { RequestTarget, markDispatchTarget, copyQueryTarget } = require('#src/resources/RequestTarget');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
@@ -200,6 +200,19 @@ describe('delegated reads reusing one query object', function () {
 				const root = new Query();
 				for (const user of [broadUser, restrictedUser, broadUser])
 					assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+			});
+
+			it('rejects reentrant replay while retaining the completed snapshot', async function () {
+				let reentrantChecks = 0;
+				const root = { select: authoredSelect(), checkPermission: true };
+				root.conditions = (function* () {
+					assert.throws(() => [...copyQueryTarget(root).conditions], /while it is running/);
+					reentrantChecks++;
+					yield { attribute: 'id', value: 'e1' };
+				})();
+				for (const user of [broadUser, restrictedUser, broadUser])
+					assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+				assert.strictEqual(reentrantChecks, 1);
 			});
 
 			it('keeps condition iterator failures closed on reuse', async function () {
