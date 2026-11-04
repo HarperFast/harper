@@ -5775,20 +5775,23 @@ function launchIndexing(Table: any, attributes: any[], indicesToRemove: any[], b
 	const markSettled = () => markAbandonedIndexBuild(Table, Table.primaryStore.rootStore, buildIds);
 	return runIndexing(Table, attributes, indicesToRemove, branchPath).then(markSettled, markSettled);
 }
+const DECLARATION_FIELDS = new Set([
+	'type',
+	'nullable',
+	'indexed',
+	'computed',
+	'computedFromExpression',
+	'computedFromHash',
+	'version',
+	'elements',
+	'properties',
+]);
 function declarationOf(attribute: any): string {
-	const { type, nullable, indexed, computed, computedFromExpression, computedFromHash, version, elements, properties } =
-		attribute;
-	return JSON.stringify([
-		type,
-		nullable,
-		indexed,
-		computed === true ? {} : computed,
-		computedFromExpression,
-		computedFromHash,
-		version,
-		elements,
-		properties,
-	]);
+	return JSON.stringify(
+		[...DECLARATION_FIELDS].map((field) =>
+			field === 'computed' && attribute.computed === true ? {} : attribute[field]
+		)
+	);
 }
 function needsResolvedRebuild(Table: any, attribute: any): boolean {
 	return (
@@ -5850,10 +5853,11 @@ export function requestComputedIndexRepair(Table: any): void {
 	const launch = () => {
 		const building = [];
 		for (const { attribute, descriptor, key } of claims) {
-			// runIndexing persists this attribute, so it takes exactly the catalog's fields
+			// runIndexing persists this attribute, so it takes the catalog's fields; the declaration's own are the
+			// same (declarationOf) and keep their runtime objects, such as a GraphQL `elements.definition`
 			for (const field of Object.keys(attribute))
-				if (!(field in descriptor) && field !== 'resolve') delete attribute[field];
-			for (const field in descriptor) if (field !== 'computed') attribute[field] = descriptor[field];
+				if (!(field in descriptor) && field !== 'resolve' && !DECLARATION_FIELDS.has(field)) delete attribute[field];
+			for (const field in descriptor) if (!DECLARATION_FIELDS.has(field)) attribute[field] = descriptor[field];
 			if (!descriptor.indexingPID) continue;
 			Object.defineProperty(attribute, 'key', { value: key, configurable: true });
 			armIndexBuild(attribute, Table.indices[attribute.name]);

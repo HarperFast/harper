@@ -464,6 +464,18 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		await settled(Rebuilt);
 	});
 
+	it('keeps the runtime parts of a declaration through a repair claim', async () => {
+		const Computed = await uncertified('ComputedRuntimeFields', [
+			{ name: 'score', type: 'String', indexed: true, computed: true, elements: { type: 'String' } },
+		]);
+		const live = Computed.attributes.find((attribute) => attribute.name === 'score');
+		const definition = { note: 'runtime only' };
+		Object.defineProperty(live.elements, 'definition', { value: definition, enumerable: false });
+		Computed.setComputedAttribute('score', (record) => 'r-' + record.name);
+		await settled(Computed);
+		assert.strictEqual(live.elements.definition, definition, 'the claim replaced a runtime declaration object');
+	});
+
 	it('holds no index for a repair claim that failed part way', async () => {
 		const Computed = await uncertified('ComputedClaimFails', [
 			{ name: 'first', type: 'String', indexed: true, computed: true },
