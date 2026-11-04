@@ -3,7 +3,7 @@ import { METRIC } from './metadata.ts';
 import type { NativeFullTextTelemetryHandle } from '../indexes/fullTextNativeBinding.ts';
 
 type ConfigureTelemetryOptions = Parameters<NativeFullTextTelemetryHandle['configureTelemetry']>[0];
-export type FullTextTelemetrySnapshot = ReturnType<NativeFullTextTelemetryHandle['telemetry']>;
+type FullTextTelemetrySnapshot = ReturnType<NativeFullTextTelemetryHandle['telemetry']>;
 
 export type FullTextTelemetryPolicy = Required<ConfigureTelemetryOptions> & {
 	enabled: boolean;
