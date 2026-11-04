@@ -118,6 +118,18 @@ describe('mcp/subscriptions', () => {
 		assert.equal(removeResourceSubscription('s1', URI), false, 'second unsubscribe is a no-op');
 	});
 
+	it('keeps a replacement of the only subscription registered, so unsubscribe still stops it', async () => {
+		registerSession('s1', 'application', USER);
+		const streams = [];
+		_setSubscribeImplForTest(async () => streams[streams.push(makeFakeStream()) - 1]);
+		await addResourceSubscription('s1', URI, USER);
+		await addResourceSubscription('s1', URI, USER);
+		assert.equal(streams[0].endCalls, 1, 'the predecessor is stopped');
+		assert.equal(_liveSubscriptionCount('s1'), 1);
+		assert.equal(removeResourceSubscription('s1', URI), true);
+		assert.equal(streams[1].endCalls, 1, 'the replacement is stopped by unsubscribe');
+	});
+
 	it('dropSessionSubscriptions stops all live subscriptions for a session', async () => {
 		registerSession('s1', 'application', USER);
 		await addResourceSubscription('s1', URI, USER);

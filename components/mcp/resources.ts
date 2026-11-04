@@ -478,7 +478,6 @@ async function subscribeToCustomResource(
 		subscription = changeStreamSubscription(uri, stream, false, true);
 	} catch (err) {
 		if (err instanceof AccessViolation) throw err;
-		// The author's error stays in the server log; the client sees only a generic failure.
 		harperLogger.error(`MCP subscribe for ${uri} failed:`, err);
 		// An unreleasable stream stays unsubscribable until the author changes it, so it is not retried.
 		if (err instanceof UnreleasableStreamError) return null;
@@ -586,7 +585,7 @@ function changeStreamSubscription(
 			started = true;
 			void (async () => {
 				try {
-					for (;;) {
+					while (!stopped) {
 						const { done, value } = await iterator.next();
 						if (done || stopped) break;
 						if (acknowledgeEvents) (value as { acknowledge?: () => void } | undefined)?.acknowledge?.();
@@ -657,7 +656,7 @@ async function trackPrincipalLifetime(subscription: ResourceSubscription, user: 
 }
 
 /** A rejection reason may be anything, `null` or a null-prototype object included. */
-export function describeError(err: unknown): string {
+function describeError(err: unknown): string {
 	try {
 		return err instanceof Error ? err.message : String(err);
 	} catch {

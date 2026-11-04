@@ -51,10 +51,10 @@ export async function addResourceSubscription(sessionId: string, uri: string, us
 	});
 	let bySession = live.get(sessionId);
 	if (!bySession) live.set(sessionId, (bySession = new Map()));
-	// Replace any existing subscription for the same URI (idempotent re-subscribe).
-	bySession.get(uri)?.stop();
+	// Publish the replacement before stopping its predecessor, whose onStop would otherwise empty the map.
+	const previous = bySession.get(uri);
 	bySession.set(uri, subscription);
-	// A stream that ends or is revoked on its own leaves no stale entry behind.
+	previous?.stop();
 	subscription.onStop(() => {
 		const entries = live.get(sessionId);
 		if (entries?.get(uri) !== subscription) return;
