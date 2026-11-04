@@ -3,9 +3,9 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { Resource } = require('#src/resources/Resource');
 const { transaction } = require('#src/resources/transaction');
 const { GenericTrackedObject } = require('#src/resources/tracked');
-const { setTimeout: delay } = require('node:timers/promises');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Permissions through Resource API', () => {
@@ -156,7 +156,7 @@ describe('Permissions through Resource API', () => {
 		for (const Denied of [DeniedGet, DeniedEnvelopeGet]) {
 			await assert.rejects(
 				Denied.get(new RequestTarget('?name=name-1'), context()),
-				(error) => error.name === 'AccessViolation' && error.statusCode === 403,
+				(error) => error.constructor.name === 'AccessViolation' && error.statusCode === 403,
 				Denied.name
 			);
 		}
@@ -601,6 +601,34 @@ describe('Permissions through Resource API', () => {
 		assert.strictEqual(collection.allowCreate(attribute_authorized_role, { prop1: 'forbidden' }, context), false);
 	});
 	for (const method of ['allowUpdate', 'allowCreate']) {
+		it(`propagates a rejected body from direct ${method}`, async function () {
+			const context = { user: attribute_authorized_role, authorize: true };
+			const target = method === 'allowCreate' ? new RequestTarget('/') : 'id-8';
+			const resource = await TestTable.getResource(target, context, { isCollection: method === 'allowCreate' });
+			const error = new SyntaxError('direct body failure');
+			await assert.rejects(
+				resource[method](attribute_authorized_role, Promise.reject(error), context),
+				(err) => err === error
+			);
+		});
+		it(`propagates a rejecting thenable from direct ${method}`, async function () {
+			const context = { user: attribute_authorized_role, authorize: true };
+			const target = method === 'allowCreate' ? new RequestTarget('/') : 'id-8';
+			const resource = await TestTable.getResource(target, context, { isCollection: method === 'allowCreate' });
+			const error = new SyntaxError('direct thenable failure');
+			await assert.rejects(
+				resource[method](
+					attribute_authorized_role,
+					{
+						then(resolve, reject) {
+							return Promise.reject(error).then(resolve, reject);
+						},
+					},
+					context
+				),
+				(err) => err === error
+			);
+		});
 		it(`does not re-enter a delegating ${method} override`, async function () {
 			let calls = 0;
 			class DelegatingTable extends TestTable {
@@ -720,13 +748,13 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		setMainIsWorker(true);
 		DocTable = table({
 			table: 'AttrPermDoc',
-			database: 'test',
+			database: 'attribute_permissions',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'owner' }, { name: 'secret' }],
 		});
 		title_owner_user = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermDoc: {
 								read: true,
@@ -748,6 +776,143 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 	});
 	const asUser = () => ({ user: title_owner_user, authorize: true });
 	const seed = (id) => DocTable.put(id, { id, title: 'seed', owner: 'o', secret: `${id} secret`, extra: 'undeclared' });
+
+	for (const loadAsInstance of [true, false]) {
+		for (const shape of [
+			'class-put',
+			'class-patch',
+			'static-patch',
+			'inherited-patch',
+			'object-put',
+			'object-patch',
+			'borrowed-patch',
+		]) {
+			it(`restricted source replacement uses implemented methods (${shape}, loadAsInstance=${loadAsInstance})`, async function () {
+				const id = 'source-1';
+				let stored = { id, title: 'seed', owner: 'owner', secret: 'protected' };
+				const calls = { get: 0, put: 0, patch: 0 };
+				let sourceChanges;
+				const get = () => {
+					calls.get++;
+					return { ...stored };
+				};
+				const put = (record) => {
+					calls.put++;
+					stored = { ...record };
+				};
+				const patch = (changes) => {
+					calls.patch++;
+					sourceChanges = { ...changes };
+					for (const key of Object.keys(changes)) {
+						if (changes[key] === undefined) delete stored[key];
+						else stored[key] = changes[key];
+					}
+				};
+				class PutSource extends Resource {
+					get() {
+						return get();
+					}
+					put(record) {
+						put(record);
+					}
+				}
+				class PatchSource extends PutSource {
+					patch(changes) {
+						patch(changes);
+					}
+				}
+				class StaticPatchSource extends PutSource {
+					static patch(_id, changes) {
+						patch(changes);
+					}
+				}
+				class InheritedPatchSource extends PatchSource {}
+				const source = {
+					'class-put': PutSource,
+					'class-patch': PatchSource,
+					'static-patch': StaticPatchSource,
+					'inherited-patch': InheritedPatchSource,
+				}[shape] ?? {
+					get,
+					put: (_id, record) => put(record),
+					...(shape === 'object-patch' ? { patch: (_id, changes) => patch(changes) } : {}),
+					...(shape === 'borrowed-patch' ? { patch: Resource.patch } : {}),
+				};
+				const name = `AttrPermSource_${shape.replaceAll('-', '_')}_${loadAsInstance}`;
+				const Cached = table({
+					table: name,
+					database: 'attribute_permissions',
+					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'owner' }, { name: 'secret' }],
+				});
+				Cached.loadAsInstance = loadAsInstance;
+				Cached.sourcedFrom(source);
+				assert.equal((await Cached.get(id)).secret, 'protected');
+				await Cached.put(id, { ...stored, title: 'unrestricted' });
+				assert.deepEqual(calls, { get: 1, put: 1, patch: 0 });
+				const permission = title_owner_user.role.permission.attribute_permissions.tables.AttrPermDoc;
+				const user = { role: { permission: { attribute_permissions: { tables: { [name]: permission } } } } };
+				const payload = { title: 'restricted' };
+				await Cached.put(id, payload, { user, authorize: true });
+				const usesPatch = shape.includes('patch') && shape !== 'borrowed-patch';
+				assert.deepEqual(calls, { get: 1, put: usesPatch ? 1 : 2, patch: usesPatch ? 1 : 0 });
+				assert.deepEqual(JSON.parse(JSON.stringify(stored)), { id, title: 'restricted', secret: 'protected' });
+				assert.deepEqual(JSON.parse(JSON.stringify(await Cached.get(id))), JSON.parse(JSON.stringify(stored)));
+				assert.deepEqual(payload, { title: 'restricted' });
+				if (usesPatch) {
+					assert.ok(Object.hasOwn(sourceChanges, 'owner'));
+					assert.strictEqual(sourceChanges.owner, undefined);
+					assert.ok(!Object.hasOwn(sourceChanges, 'secret'));
+				}
+				if (shape === 'class-put') {
+					const before = { ...calls };
+					await assert.rejects(
+						async () => Cached.patch(id, { title: 'ordinary patch' }),
+						(error) => error.statusCode === 405
+					);
+					assert.deepEqual(calls, before);
+				}
+			});
+		}
+	}
+
+	for (const loadAsInstance of [true, false]) {
+		it(`keeps a permitted non-callable then field (loadAsInstance=${loadAsInstance})`, async function () {
+			class ThenDoc extends DocTable {
+				static loadAsInstance = loadAsInstance;
+			}
+			const id = `then-data-${loadAsInstance}`;
+			await seed(id);
+			const permission = title_owner_user.role.permission.attribute_permissions.tables.AttrPermDoc;
+			const user = {
+				role: {
+					permission: {
+						attribute_permissions: {
+							tables: {
+								AttrPermDoc: {
+									...permission,
+									attribute_permissions: [
+										...permission.attribute_permissions,
+										{ attribute_name: 'then', read: true, insert: true, update: true },
+									],
+								},
+							},
+						},
+					},
+				},
+			};
+			const context = { user, authorize: true };
+			await transaction(context, async () => {
+				await ThenDoc.put(id, { title: 'then data', then: 'not callable' }, context);
+			});
+			assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.primaryStore.get(id))), {
+				id,
+				title: 'then data',
+				then: 'not callable',
+				secret: `${id} secret`,
+				extra: 'undeclared',
+			});
+		});
+	}
 
 	it('reads include the unlisted primary key and omit unlisted attributes', async function () {
 		await seed('read-1');
@@ -791,11 +956,11 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 			}
 			const id = `concurrent-readonly-${loadAsInstance}`;
 			await seed(id);
-			const permission = title_owner_user.role.permission.test.tables.AttrPermDoc;
+			const permission = title_owner_user.role.permission.attribute_permissions.tables.AttrPermDoc;
 			const user = {
 				role: {
 					permission: {
-						test: {
+						attribute_permissions: {
 							tables: {
 								AttrPermDoc: {
 									...permission,
@@ -920,30 +1085,100 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.equal((await DocTable.get('count-1')).secret, 'count-1 secret');
 	});
 
-	it('a promise handed straight to put is never staged as a restricted replacement', async function () {
-		await seed('direct-1');
-		const context = { user: title_owner_user };
-		let putAttempted = false;
-		await transaction(context, async () => {
-			const resource = await DocTable.getResource('direct-1', context);
-			assert.ok(resource.allowUpdate(title_owner_user, { title: 't' }, context));
-			const target = new RequestTarget('/direct-1');
-			target.id = 'direct-1';
-			putAttempted = true;
-			await resource.put(target, Promise.resolve({ title: 'x' }));
-		}).catch((error) => {
-			// both engines refuse to store a promise; anything before the put is a test failure
-			if (!putAttempted) throw error;
+	for (const loadAsInstance of [true, false]) {
+		for (const method of ['put', 'full update']) {
+			for (const kind of ['promise', 'thenable', 'array', 'null', 'primitive']) {
+				it(`refuses a direct ${kind} ${method} without changing storage (loadAsInstance=${loadAsInstance})`, async function () {
+					class DirectDoc extends DocTable {
+						static loadAsInstance = loadAsInstance;
+					}
+					const id = `direct-${loadAsInstance}-${method}-${kind}`;
+					await seed(id);
+					const context = { user: title_owner_user };
+					await assert.rejects(
+						transaction(context, async () => {
+							const target = new RequestTarget(`/${id}`);
+							target.id = id;
+							const resource = await DirectDoc.getResource(target, context);
+							assert.strictEqual(resource.getId(), id);
+							assert.strictEqual(resource.allowUpdate(title_owner_user, { title: 't' }, context), true);
+							const body =
+								kind === 'promise'
+									? Promise.resolve({ title: 'x' })
+									: kind === 'thenable'
+										? {
+												then(resolve) {
+													return Promise.resolve({ title: 'x' }).then(resolve);
+												},
+											}
+										: kind === 'array'
+											? [{ id, title: 'x' }]
+											: kind === 'null'
+												? null
+												: 0;
+							if (method === 'put') await resource.put(target, body);
+							else {
+								await resource.update(body, true);
+								await resource.save();
+							}
+						}),
+						(error) => error.statusCode === 400 && /requires a record/.test(error.message)
+					);
+					assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get(id))), {
+						id,
+						title: 'seed',
+						owner: 'o',
+						secret: `${id} secret`,
+						extra: 'undeclared',
+					});
+				});
+			}
+		}
+		it(`refuses a directly authorized thenable PUT (loadAsInstance=${loadAsInstance})`, async function () {
+			class DirectDoc extends DocTable {
+				static loadAsInstance = loadAsInstance;
+			}
+			const id = `checked-thenable-${loadAsInstance}`;
+			await seed(id);
+			const context = { user: title_owner_user };
+			await assert.rejects(
+				transaction(context, async () => {
+					const target = new RequestTarget(`/${id}`);
+					target.id = id;
+					target.checkPermission = true;
+					const resource = await DirectDoc.getResource(target, context);
+					await resource.put(target, {
+						then(resolve, reject) {
+							return Promise.resolve({ title: 'x' }).then(resolve, reject);
+						},
+					});
+				}),
+				(error) => error.statusCode === 400 && /requires a record/.test(error.message)
+			);
+			assert.equal((await DocTable.get(id)).secret, `${id} secret`);
+			assert.equal((await DocTable.get(id)).title, 'seed');
 		});
-		assert.ok(putAttempted);
-		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('direct-1'))), {
-			id: 'direct-1',
-			title: 'seed',
-			owner: 'o',
-			secret: 'direct-1 secret',
-			extra: 'undeclared',
+		it(`rejects a failed directly authorized PUT (loadAsInstance=${loadAsInstance})`, async function () {
+			class DirectDoc extends DocTable {
+				static loadAsInstance = loadAsInstance;
+			}
+			const id = `checked-reject-${loadAsInstance}`;
+			await seed(id);
+			const context = { user: title_owner_user };
+			await assert.rejects(
+				transaction(context, async () => {
+					const target = new RequestTarget(`/${id}`);
+					target.id = id;
+					target.checkPermission = true;
+					const resource = await DirectDoc.getResource(target, context);
+					await resource.put(target, Promise.reject(new SyntaxError('direct body failure')));
+				}),
+				(error) => error.statusCode === 403 && error.constructor.name === 'AccessViolation'
+			);
+			assert.equal((await DocTable.get(id)).secret, `${id} secret`);
+			assert.equal((await DocTable.get(id)).title, 'seed');
 		});
-	});
+	}
 
 	it('an allowUpdate override receives the resolved body from current dispatch', async function () {
 		class PromiseHookDoc extends DocTable {
@@ -1001,7 +1236,7 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		const user = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermDoc: {
 								read: true,
@@ -1049,11 +1284,11 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 	});
 
 	it('a published message may carry a field named getRecord', async function () {
-		const permission = title_owner_user.role.permission.test.tables.AttrPermDoc;
+		const permission = title_owner_user.role.permission.attribute_permissions.tables.AttrPermDoc;
 		const user = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermDoc: {
 								...permission,
@@ -1112,7 +1347,7 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.equal(stored.extra, 'undeclared');
 	});
 
-	it('a restricted full put is logged as a patch, which replay and replication apply onto their own base', async function () {
+	it('a restricted full put is logged as a patch with its merged value', async function () {
 		await seed('log-1');
 		await DocTable.put('log-1', { title: 'logged' }, asUser());
 		const history = await DocTable.getHistoryOfRecord('log-1');
@@ -1142,11 +1377,11 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 
 	it('authorizing a publish does not add stored values to the message', async function () {
 		await seed('pub-1');
-		const permission = title_owner_user.role.permission.test.tables.AttrPermDoc;
+		const permission = title_owner_user.role.permission.attribute_permissions.tables.AttrPermDoc;
 		const user = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermDoc: {
 								...permission,
@@ -1169,10 +1404,17 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 				break;
 			}
 		})();
+		let deadline;
 		try {
 			await DocTable.publish('pub-1', { title: 'message' }, { user, authorize: true });
-			await Promise.race([reading, delay(5000).then(() => assert.fail('no message delivered'))]);
+			await Promise.race([
+				reading,
+				new Promise((_, reject) => {
+					deadline = setTimeout(() => reject(new Error('no message delivered')), 5000);
+				}),
+			]);
 		} finally {
+			clearTimeout(deadline);
 			subscription.return?.();
 		}
 		assert.deepEqual(JSON.parse(JSON.stringify(received[0])), { title: 'message' });
@@ -1190,7 +1432,7 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 	const roleWith = (attribute_permissions) => ({
 		role: {
 			permission: {
-				test: {
+				attribute_permissions: {
 					tables: {
 						AttrPermKey: { read: true, insert: true, update: true, delete: false, attribute_permissions },
 					},
@@ -1203,7 +1445,7 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 		setMainIsWorker(true);
 		KeyTable = table({
 			table: 'AttrPermKey',
-			database: 'test',
+			database: 'attribute_permissions',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'title' },
@@ -1319,7 +1561,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 		setMainIsWorker(true);
 		Keyless = table({
 			table: 'AttrPermKeyless',
-			database: 'test',
+			database: 'attribute_permissions',
 			schemaDefined: true,
 			attributes: [
 				{ name: 'title', type: 'String' },
@@ -1329,7 +1571,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 		user = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermKeyless: {
 								read: true,
@@ -1358,7 +1600,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 	it('a sealed table accepts a restricted full put when the role lists an undeclared attribute', async function () {
 		const Sealed = table({
 			table: 'AttrPermSealed',
-			database: 'test',
+			database: 'attribute_permissions',
 			sealed: true,
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'secret' }],
 		});
@@ -1366,7 +1608,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 		const sealedUser = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermSealed: {
 								read: true,
@@ -1390,7 +1632,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 	it('a restricted full put omitting a required attribute the role may update is rejected', async function () {
 		const Required = table({
 			table: 'AttrPermRequired',
-			database: 'test',
+			database: 'attribute_permissions',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'title', type: 'String', nullable: false },
@@ -1401,7 +1643,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 		const requiredUser = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermRequired: {
 								read: true,
@@ -1428,7 +1670,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 	it('a sealed table grants no primary key from an undeclared listed attribute', async function () {
 		const Sealed = table({
 			table: 'AttrPermSealedKey',
-			database: 'test',
+			database: 'attribute_permissions',
 			sealed: true,
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
 		});
@@ -1436,7 +1678,7 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 		const user = {
 			role: {
 				permission: {
-					test: {
+					attribute_permissions: {
 						tables: {
 							AttrPermSealedKey: {
 								read: true,

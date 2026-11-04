@@ -235,7 +235,7 @@ suite('Attribute permissions on the resource path (harper#3284)', (ctx: ContextW
 		deepStrictEqual(await storedAsAdmin('admin-1'), { id: 'admin-1', title: 'admin title' });
 	});
 
-	test('a REST PUT or PATCH body with a then field is accepted', async () => {
+	test('super-user REST body resolution accepts a non-callable then field', async () => {
 		for (const [method, body] of [
 			['PUT', { title: 'then put', then: 'not a function' }],
 			['PATCH', { then: 'patched' }],

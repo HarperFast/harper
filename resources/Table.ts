@@ -4492,11 +4492,12 @@ export function makeTable(options): TableResourceClass {
 				// TODO: Remove from transaction
 				return this;
 			}
+			if (fullUpdate && this.#updatableAttributes) {
+				this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
+				return this.#whenStaged(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT));
+			}
 			if (typeof updates === 'object' && updates) {
-				if (fullUpdate && this.#updatableAttributes && isRecordRoot(updates)) {
-					this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
-					return this.#whenStaged(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT));
-				} else if (fullUpdate) {
+				if (fullUpdate) {
 					// legacy full update where we need to update the entire record, but the instance needs to continue
 					// track any further changes
 					if (Object.isFrozen(updates)) updates = { ...updates };
@@ -5700,7 +5701,7 @@ export function makeTable(options): TableResourceClass {
 						if (!allowed) {
 							throw new AccessViolation((context as any).user);
 						}
-						if (this.#updatableAttributes && isRecordRoot(record)) {
+						if (this.#updatableAttributes) {
 							const id = requestTargetToId(target as any);
 							return when(
 								this.#stageChanges(
@@ -5915,7 +5916,11 @@ export function makeTable(options): TableResourceClass {
 					}
 				} else {
 					// incremental update
-					if ((this.constructor as any).source.patch) {
+					const source = (this.constructor as any).source;
+					if (
+						source.patch &&
+						(options !== RESTRICTED_REPLACEMENT || !source.patch.reliesOnPrototype || source.prototype?.patch)
+					) {
 						return () => (this.constructor as any).source.patch(id, recordUpdate, context);
 					} else if ((this.constructor as any).source.put) {
 						// if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
@@ -12045,10 +12050,7 @@ export function makeTable(options): TableResourceClass {
 			if (attribute_permissions?.length > 0) {
 				// Direct instance callers can pass promises; dispatch resolves request bodies before this check.
 				if (typeof (updatedData as any)?.then === 'function')
-					return (updatedData as any).then(
-						(data: Record) => allowTableUpdate(user, data),
-						() => true
-					);
+					return (updatedData as any).then((data: Record) => allowTableUpdate(user, data));
 				// an array body's keys are indices, not attributes, and its elements are later written unchecked
 				if (Array.isArray(updatedData)) return false;
 				const attrsForType = attributesAsObject(attribute_permissions, 'update');
@@ -12073,10 +12075,7 @@ export function makeTable(options): TableResourceClass {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				if (attribute_permissions?.length > 0) {
 					if (typeof (newData as any)?.then === 'function')
-						return (newData as any).then(
-							(data: Record) => allowTableCreate(resource, user, data, context),
-							() => true
-						);
+						return (newData as any).then((data: Record) => allowTableCreate(resource, user, data, context));
 					if (Array.isArray(newData)) return false;
 					const attrsForType = attributesAsObject(attribute_permissions, 'insert');
 					for (const key in materialized(newData)) {
@@ -12137,6 +12136,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
 		record = materialized(record);
+		if (!isRecordRoot(record)) throw new ClientError('A restricted full replacement requires a record', 400);
 		const changes: any = { ...record };
 		if (primaryKey)
 			Object.defineProperty(changes, primaryKey, { value: id, enumerable: true, writable: true, configurable: true });
