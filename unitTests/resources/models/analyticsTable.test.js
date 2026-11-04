@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
+const { waitFor } = require('../../waitFor');
 require('#src/resources/databases');
 const { ModelCallAnalyticsWriter } = require('#src/resources/models/analyticsTable');
 
@@ -222,7 +223,7 @@ describe('ModelCallAnalyticsWriter', () => {
 			});
 			small.write(makeRecord());
 			small.write(makeRecord());
-			await small.flush();
+			await waitFor(() => table.store.size === 2);
 			assert.strictEqual(small.bufferSize, 0);
 			assert.strictEqual(table.store.size, 2);
 			small.stop();

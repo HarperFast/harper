@@ -167,10 +167,18 @@ export class ModelCallAnalyticsWriter {
 
 	async flush(): Promise<void> {
 		const target = this.#lastAdmittedId;
+		let failed = false;
+		let failure: unknown;
 		while (this.#attemptedThrough < target) {
 			this.#flushImmediate?.ref?.();
-			await (this.#flushPromise ?? this.#startBatch(false));
+			try {
+				await (this.#flushPromise ?? this.#startBatch(false));
+			} catch (error) {
+				if (!failed) failure = error;
+				failed = true;
+			}
 		}
+		if (failed) throw failure;
 	}
 
 	#scheduleFlush(): void {
@@ -197,7 +205,7 @@ export class ModelCallAnalyticsWriter {
 					if (this.#buffer.length >= this.#maxBufferSize) this.#scheduleFlush();
 				});
 			this.#flushPromise = pending;
-			// Automatic batches are already logged; explicit flush callers still receive the rejection.
+			// Every failed batch is already logged; explicit joiners still receive the rejection.
 			pending.catch(() => {});
 			return pending;
 		});
@@ -211,10 +219,10 @@ export class ModelCallAnalyticsWriter {
 	}
 
 	async #writeBatch(batch: BufferedRecord[]): Promise<void> {
-		// A flush must not join the request that filled the buffer or created the timer.
 		try {
 			if (isReadOnlyMode()) return;
 			const tbl = this.#getTable();
+			// A batch must not join the request that filled the buffer or created the timer.
 			await transaction({}, async (txn) => {
 				const puts: Array<{ id: number; promise: Promise<unknown> }> = [];
 				for (const record of batch) {
@@ -261,7 +269,7 @@ export class ModelCallAnalyticsWriter {
 		}
 	}
 
-	/** Stop the periodic timers. After stop, `write()` is a no-op and `flush()` still works. */
+	/** Stop admission and intervals. An armed batch may finish; flush() drains any waiting rows. */
 	stop(): void {
 		this.#stopped = true;
 		if (this.#flushTimer) clearInterval(this.#flushTimer);

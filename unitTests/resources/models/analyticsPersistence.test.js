@@ -247,10 +247,12 @@ describe('Model-call analytics persistence', function () {
 		const bad = writer.write({ backend: 'test', method: 'generate', latency_ms: 'invalid', success: true });
 		const good = writer.write({ backend: 'test', method: 'generate', latency_ms: 2, success: true });
 		ids.push(bad, good);
+		writer.stop();
 		await assert.rejects(writer.flush());
-		await writer.flush();
 		assert.strictEqual(writerTable.primaryStore.getEntry(bad), undefined);
-		assert.strictEqual(writerTable.primaryStore.getEntry(good, { uncachedRead: true }).value.latency_ms, 2);
+		const entry = writerTable.primaryStore.getEntry(good, { uncachedRead: true });
+		assert.ok(entry, 'flush must attempt the waiting row before rejecting');
+		assert.strictEqual(entry.value.latency_ms, 2);
 	});
 
 	it('commits a flush independently of an ambient transaction that aborts', async () => {

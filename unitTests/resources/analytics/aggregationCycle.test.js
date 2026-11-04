@@ -197,14 +197,14 @@ describe('analytics aggregation cycle', () => {
 
 	it('keeps its place when a cycle finds nothing to aggregate', async function () {
 		this.timeout(30000);
-		const bootstrapKey = lastRawKey();
+		const lastReportKey = lastRawKey();
 		await runCycle();
 		await nextPeriod();
 		// Nothing is left, so this cycle reads no record at all — and a raw report can be invisible to
 		// it for reasons other than being late, since `recordAnalytics` does not await its `put`.
 		await runCycle();
 
-		await seedRawReports([rawReport(bootstrapKey + 1, 'AggWindowLate')]);
+		await seedRawReports([rawReport(lastReportKey + 1, 'AggWindowLate')]);
 		await nextPeriod();
 		await runCycle();
 

@@ -12,7 +12,7 @@ Declarations compile to `fullTextIndexes`/`fullTextFields` (`fullTextSchema.ts`)
 
 ## A primitive-id static get skips instance dispatch only behind its gate
 
-`registerPrimitiveIdGet` admits only the exact class and dispatch-preserving contexts, comparing hooks to their originals. **Add new instance-get hooks to its gate.** Async loads return to instance dispatch so authorization runs (`tableGetPrimitiveId.test.js`).
+`registerPrimitiveIdGet` gates exact classes (subclass constructors may have effects), original hooks and dispatch-preserving contexts. **Gate every new instance-get hook.** Async loads re-enter instance dispatch for authorization (`tableGetPrimitiveId.test.js`).
 
 ## An audit record carries two clocks; identity is (nodeId, log key), never a version
 
@@ -38,7 +38,7 @@ Declarations compile to `fullTextIndexes`/`fullTextFields` (`fullTextSchema.ts`)
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
-Array PUT synthesizes a collection target; each object gets an `elementTargetFactory` target without `checkPermission` or context as data. Non-objects are refused first. `settleElements` waits for all, then reports the earliest-index error without `cause`, preventing partial PUTs. Static classes get the array unchanged; null elements yield 500 (`arrayPutCallerImpact.test.js`).
+Array PUT requires a collection target or writes one null-keyed record. `elementTargetFactory` supplies each object's target without `checkPermission`; context in that slot would become data. Non-objects fail first. `settleElements` waits for all dispatched work so the transaction cannot unwind under a slow write; earliest-index error wins without `cause`. Static classes get the array unchanged; null elements yield 500 (`arrayPutCallerImpact.test.js`).
 
 ## Sharding resolves fixed slots through an authoritative database map
 
@@ -118,7 +118,7 @@ v4 (msgpackr v1) reads struct headers `0x20-0x3f` as integers, so a struct-encod
 
 ## Raw primary rows need explicit metadata
 
-`RecordEncoder` treats `0x42` as a RocksDB timestamp; classic record id 2 uses the same byte. Table writes supply the header; raw puts do not. Embedded audit values deliberately use `noMetadata` ([telemetry consequence](models/DESIGN.md#telemetry-writes-use-the-table-path)).
+`0x42` denotes both a RocksDB timestamp and classic record id 2. Table writes supply metadata; raw puts do not. Embedded audit values use `noMetadata` ([telemetry consequence](models/DESIGN.md#telemetry-writes-use-the-table-path)).
 
 ## Non-`initStore` structure saves read inside their own transaction
 
