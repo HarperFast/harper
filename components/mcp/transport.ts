@@ -252,8 +252,6 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 		return { status: 403, headers: {} };
 	}
 
-	// Adopt the persisted sliding-window update so later writes cannot roll
-	// lastActivity back; loadSession rejects partial rows from DELETE/patch races.
 	session = await touchSession(session);
 
 	// A client's response to a server→client request (#3.7): route it to the
@@ -410,7 +408,9 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	const record = registerSession(sessionId, request.profile, effectiveUser(request));
 	if (!(await claimSubscriptionOwner(sessionId, record.streamToken))) {
 		record.queue.emit('close');
-		return { status: 404, headers: {} };
+		return (await loadSession(sessionId))
+			? { status: 503, headers: { 'Retry-After': '1' } }
+			: { status: 404, headers: {} };
 	}
 	// Seed the live record with any previously-set logging level so a reconnect
 	// (or a setLevel that preceded this stream) keeps delivering notifications/message.
@@ -953,7 +953,10 @@ async function dispatchResourcesSubscribe(
 		);
 	}
 	if (result === 'internal-error') {
-		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource subscription failed'));
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource subscription failed; retry the request')
+		);
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -979,7 +982,10 @@ async function dispatchResourcesUnsubscribe(
 			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe timed out; retry the request')
 		);
 	} else if (result === 'internal-error') {
-		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed'));
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed; retry the request')
+		);
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }

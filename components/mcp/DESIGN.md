@@ -152,7 +152,7 @@ A handful of design points are non-obvious and easy to break:
 
 ## Persisted resource subscription state
 
-The current GET incarnation must install the durable URI set before a subscription POST succeeds.
+A successful subscription POST requires an acknowledgment that its URI generation is installed on the current GET.
 [`subscriptionState.ts`](subscriptionState.ts) watches the existing, non-replicating `system.mcp_session`
 row through `Table.subscribe`; it opens the watcher outside the request context before claiming a fresh
 `streamToken`. No thread address or custom inter-thread command is persisted or sent.
@@ -162,9 +162,14 @@ Desired-state changes, token claims, and acknowledgments use the bounded storage
 30-second acknowledgment wait happen outside it. An acknowledgment is valid only for the current
 token, at a revision at least as new as the request. This permits coalescing and lets a reconnect
 complete a waiting mutation without letting the old incarnation overwrite the new acknowledgment.
+A superseded or unavailable GET returns 503 while the durable session exists; 404 means the session is absent.
 
 Each URI has a generation. Timeout cleanup removes only that generation; a later retry survives it.
-The GET stops replaced generations before installing new ones, and `addResourceSubscription` discards
+If cleanup cannot commit because storage is unavailable, the outcome remains ambiguous and the client must retry.
+Waiting mutations are bounded to 100 per worker and 25 per session.
+Tokens include Harper's existing process incarnation, so a token from an earlier process is never treated as a live GET. A worker killed within the current process can leave a token until reconnect; its requests wait for at most 30 seconds and return a retryable error.
+A replacement iterator is installed before the previous one stops, so re-subscribe has no registration gap.
+`addResourceSubscription` discards
 an installation that finishes after its GET closes. Terminal rejections are removed from the durable
 set. Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
 
@@ -180,4 +185,4 @@ for one authoritative row with the existing session TTL and non-replication rule
 Verification: [`subscriptionState.test.js`](../../unitTests/components/mcp/subscriptionState.test.js)
 uses a real session table for installation, coalescing, timeout, ownership, and authorization cases.
 [`sse-listchanged.test.ts`](../../integrationTests/mcp/sse-listchanged.test.ts) selects distinct workers
-through their Unix socket mirrors and checks subscribe, reconnect, and unsubscribe over HTTP.
+through their Unix socket mirrors and checks subscribe, reconnect, unsubscribe, and restoration after a process crash over HTTP.

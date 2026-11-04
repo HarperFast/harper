@@ -1,8 +1,10 @@
+const { processIncarnation } = require('#src/server/threads/processIncarnation');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../../testUtils');
 const { waitFor } = require('../../waitFor');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
+const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const {
 	createSession,
 	loadSession,
@@ -76,7 +78,7 @@ describe('MCP persisted subscription state', function () {
 	});
 	afterEach(async () => {
 		_resetSessionRegistryForTest();
-		await waitFor(async () => !(await loadSession(session.id))?.streamToken);
+		if (session) await waitFor(async () => !(await loadSession(session.id))?.streamToken);
 		_resetSubscriptionsForTest();
 		_setSubscribeImplForTest(undefined);
 		_setResourcesForTest(undefined);
@@ -152,6 +154,33 @@ describe('MCP persisted subscription state', function () {
 		assert.equal(await result, 'success');
 	});
 
+	it('keeps delivering from an existing subscription while a replacement is installing', async () => {
+		const record = await open();
+		const original = new IterableEventQueue();
+		original.end = () => original.close();
+		_setSubscribeImplForTest(async () => original);
+		assert.equal(await subscribe(), 'success');
+		let updates = 0;
+		record.queue.on('data', (frame) => {
+			if (frame.data?.params?.uri === URI) updates++;
+		});
+		const started = deferred();
+		const install = deferred();
+		_setSubscribeImplForTest(async () => {
+			started.resolve();
+			return install.promise;
+		});
+		const replacing = subscribe();
+		await started.promise;
+		try {
+			original.send({ id: '1' });
+			await waitFor(() => updates > 0);
+		} finally {
+			install.resolve(changeStream());
+			assert.equal(await replacing, 'success');
+		}
+	});
+
 	it('stops a late install after its GET closes', async () => {
 		_setSubscriptionTimeoutForTest(25);
 		const record = await open();
@@ -197,14 +226,57 @@ describe('MCP persisted subscription state', function () {
 		assert.equal(_liveSubscriptionCount(session.id), 1);
 	});
 
+	it('rejects subscribe and completes unsubscribe for a token left by an earlier process', async () => {
+		await patchSession(session.id, { subscriptions: [URI], streamToken: 'earlier-process:stream' });
+		try {
+			assert.equal(await subscribe(URI + 'other'), 'no-live-stream');
+			assert.equal(await unsubscribe(), 'success');
+			assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+		} finally {
+			await patchSession(session.id, { streamToken: undefined });
+		}
+	});
+
 	it('removes only its own generation after a timeout', async () => {
-		await patchSession(session.id, { streamToken: 'dead-owner' });
+		await patchSession(session.id, { streamToken: `${processIncarnation}:dead-owner` });
 		_setSubscriptionTimeoutForTest(10);
 		assert.equal(await subscribe(), 'timeout');
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 		await patchSession(session.id, { streamToken: undefined });
 		await open();
 		assert.equal(_liveSubscriptionCount(session.id), 0);
+	});
+
+	it('does not let an older failed subscribe remove a newer retry generation', async () => {
+		await patchSession(session.id, { streamToken: `${processIncarnation}:waiting-owner` });
+		const first = subscribe();
+		await waitFor(async () => (await loadSession(session.id)).subscriptionGenerations?.[URI]);
+		const firstGeneration = (await loadSession(session.id)).subscriptionGenerations[URI];
+		const retry = subscribe();
+		await waitFor(async () => (await loadSession(session.id)).subscriptionGenerations[URI] !== firstGeneration);
+		await open();
+		assert.equal(await first, 'internal-error');
+		assert.equal(await retry, 'success');
+		assert.deepEqual((await loadSession(session.id)).subscriptions, [URI]);
+		assert.equal(_liveSubscriptionCount(session.id), 1);
+	});
+
+	it('bounds one session backlog while admitting another session', async () => {
+		await patchSession(session.id, { streamToken: `${processIncarnation}:unreachable-owner` });
+		_setSubscriptionTimeoutForTest(25);
+		const backlog = Array.from({ length: 25 }, (_, index) => subscribe(URI + index));
+		try {
+			assert.equal(await subscribe(URI + 'overflow'), 'internal-error');
+			const other = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			assert.equal(
+				await updateResourceSubscription({ session: other, operation: 'subscribe', uri: URI, user: USER }),
+				'no-live-stream'
+			);
+			await Promise.all(backlog);
+		} finally {
+			await Promise.allSettled(backlog);
+			await patchSession(session.id, { streamToken: undefined });
+		}
 	});
 
 	it('returns a terminal permission denial and removes the rejected desired entry', async () => {
@@ -246,7 +318,7 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 	});
 
-	it('ignores activity-only writes without reopening resource iterators', async () => {
+	it('does not reopen resource iterators after activity-only writes', async () => {
 		await open();
 		let installs = 0;
 		_setSubscribeImplForTest(async () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { processIncarnation } from '../../server/threads/processIncarnation.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -15,11 +16,13 @@ import type { AuthedUser } from './toolRegistry.ts';
 
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
 const MAX_PENDING = 100;
+const MAX_PENDING_PER_SESSION = 25;
+const pendingBySession = new Map<string, number>();
 let responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS;
 let pending = 0;
 const localPrincipals = new Map<string, AuthedUser>();
 
-export type SubscriptionRouteResult =
+type SubscriptionRouteResult =
 	'success' | 'not-subscribable' | 'permission-denied' | 'no-live-stream' | 'timeout' | 'internal-error';
 type Rejected = NonNullable<McpSessionRecord['subscriptionAck']>['rejected'];
 type Watcher = { end(): void; on?: (event: string, listener: () => void) => void };
@@ -57,7 +60,7 @@ async function watchSession(
 	return subscription;
 }
 
-export function subscriptionUser(user: AuthedUser): AuthedUser {
+function subscriptionUser(user: AuthedUser): AuthedUser {
 	return {
 		...(user.username !== undefined ? { username: user.username } : {}),
 		...(user.authExpiresAt !== undefined ? { authExpiresAt: user.authExpiresAt } : {}),
@@ -129,9 +132,10 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 				continue;
 			seenRevision = revision;
 			const uris = new Set(session.subscriptions ?? []);
+			if (revision === 0 && uris.size === 0) continue;
 			const generationOf = (uri: string) => session.subscriptionGenerations?.[uri] ?? '';
-			for (const [uri, generation] of installed) {
-				if (!uris.has(uri) || generationOf(uri) !== generation) {
+			for (const uri of installed.keys()) {
+				if (!uris.has(uri)) {
 					removeResourceSubscription(sessionId, uri);
 					installed.delete(uri);
 				}
@@ -141,7 +145,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 			}
 			for (const uri of uris) {
 				const generation = generationOf(uri);
-				if (installed.has(uri) || rejected[uri]) continue;
+				if (installed.get(uri) === generation || rejected[uri]) continue;
 				const user = localPrincipals.get(generation) ?? session.subscriptionPrincipals?.[uri] ?? record.user;
 				try {
 					if (user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000) {
@@ -225,7 +229,8 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 		return current();
 	} catch (error) {
 		fail();
-		throw error;
+		harperLogger.trace('MCP subscription watcher could not open', error);
+		return false;
 	}
 }
 
@@ -275,16 +280,19 @@ export async function updateResourceSubscription(args: {
 	uri: string;
 	user?: AuthedUser;
 }): Promise<SubscriptionRouteResult> {
-	if (pending >= MAX_PENDING) return 'internal-error';
-	pending++;
 	const { session, operation, uri, user } = args;
+	const sessionPending = pendingBySession.get(session.id) ?? 0;
+	if (pending >= MAX_PENDING || sessionPending >= MAX_PENDING_PER_SESSION) return 'internal-error';
+	pending++;
+	pendingBySession.set(session.id, sessionPending + 1);
 	const generation = operation === 'subscribe' ? randomUUID() : undefined;
 	let outcome: SubscriptionRouteResult = 'internal-error';
 	if (generation && user) localPrincipals.set(generation, user);
 	try {
 		const changed = await withSessionSubscriptionLock(session.id, async (latest) => {
 			if (!latest) return { result: 'no-live-stream' as const };
-			if (operation === 'subscribe' && (!latest.streamToken || !user)) return { result: 'no-live-stream' as const };
+			const live = !!processIncarnation && latest.streamToken?.startsWith(`${processIncarnation}:`) === true;
+			if (operation === 'subscribe' && (!live || !user)) return { result: 'no-live-stream' as const };
 			const subscriptions = (latest.subscriptions ?? []).filter((value) => value !== uri);
 			const generations = { ...latest.subscriptionGenerations };
 			const principals = { ...latest.subscriptionPrincipals };
@@ -302,7 +310,7 @@ export async function updateResourceSubscription(args: {
 				subscriptionPrincipals: principals,
 				subscriptionRevision: revision,
 			});
-			return { revision, live: !!latest.streamToken };
+			return { revision, live };
 		});
 		outcome =
 			'result' in changed
@@ -334,6 +342,9 @@ export async function updateResourceSubscription(args: {
 		}
 		if (generation) localPrincipals.delete(generation);
 		pending--;
+		const remaining = pendingBySession.get(session.id)! - 1;
+		if (remaining) pendingBySession.set(session.id, remaining);
+		else pendingBySession.delete(session.id);
 	}
 	return outcome;
 }

@@ -24,7 +24,12 @@ import { readdir } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { Agent, request as httpRequest } from 'node:http';
 
-import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import {
+	setupHarperWithFixture,
+	startHarper,
+	teardownHarper,
+	type ContextWithHarper,
+} from '@harperfast/integration-testing';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/custom-resources');
 
@@ -341,30 +346,31 @@ async function openSseWithAgent(
 			} catch {
 				continue;
 			}
-			parsed.push(message);
-			for (let i = waiters.length - 1; i >= 0; i--) {
-				if (waiters[i].predicate(message)) {
-					waiters[i].resolve(message);
-					waiters.splice(i, 1);
-				}
-			}
+			const waiting = waiters.findIndex((waiter) => waiter.predicate(message));
+			if (waiting === -1) parsed.push(message);
+			else waiters.splice(waiting, 1)[0].resolve(message);
 		}
 	});
 
 	return {
 		status: response.statusCode ?? 0,
 		next(predicate, timeoutMs) {
-			const existing = parsed.find(predicate);
-			if (existing) return Promise.resolve(existing);
+			const existing = parsed.findIndex(predicate);
+			if (existing !== -1) return Promise.resolve(parsed.splice(existing, 1)[0]);
 			return new Promise((resolveNext) => {
-				const timer = setTimeout(() => resolveNext(undefined), timeoutMs);
-				waiters.push({
+				const timer = setTimeout(() => {
+					const index = waiters.indexOf(waiter);
+					if (index !== -1) waiters.splice(index, 1);
+					resolveNext(undefined);
+				}, timeoutMs);
+				const waiter = {
 					predicate,
-					resolve: (message) => {
+					resolve: (message: any) => {
 						clearTimeout(timer);
 						resolveNext(message);
 					},
-				});
+				};
+				waiters.push(waiter);
 			});
 		},
 		close() {
@@ -482,8 +488,9 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 		const auth = adminAuth(ctx);
 		const session = await initialize(ctx.harper.httpURL, auth);
 		const socketDir = join(ctx.harper.dataRootDir, 'sockets');
-		const mirrors = (await readdir(socketDir)).filter((name) => /^\d+-.*:9926\.sock$/.test(name)).sort();
-		ok(mirrors.length >= 2, `expected at least two application worker mirrors: ${mirrors}`);
+		const names = await readdir(socketDir);
+		const mirrors = names.filter((name) => /^\d+-.*9927\.sock$/.test(name)).sort();
+		ok(mirrors.length >= 2, `expected at least two application worker mirrors: ${JSON.stringify(names)}`);
 		function workerAgent(mirror: string): Agent {
 			const agent = new Agent({ keepAlive: true, maxSockets: 1 });
 			agent.createConnection = () => createConnection(join(socketDir, mirror));
@@ -560,6 +567,65 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 			sse.close();
 			getAgent.destroy();
 			postAgent.destroy();
+		}
+	});
+	test('N6: acknowledged subscription state is restored after a process crash and restart', async () => {
+		const auth = adminAuth(ctx);
+		const session = await initialize(ctx.harper.httpURL, auth);
+		const id = `crash_subscription_${Date.now().toString(36)}`;
+		const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+		await putWorkItem(ctx, id, { state: 'before-crash' });
+		const first = await openSse(new URL('/mcp', ctx.harper.httpURL).href, auth, session);
+		let restored: Awaited<ReturnType<typeof openSse>> | undefined;
+		try {
+			strictEqual(first.status, 200);
+			const subscribed = await mcpCall(ctx.harper.httpURL, auth, session, 'resources/subscribe', { uri }, 30);
+			strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+			const cancelledAfterCrash = await mcpCall(
+				ctx.harper.httpURL,
+				auth,
+				session,
+				'resources/subscribe',
+				{ uri: uri + '-cancelled' },
+				31
+			);
+			strictEqual(cancelledAfterCrash.error, undefined);
+			await new Promise<void>((resolveExit) => {
+				ctx.harper.process.once('exit', () => resolveExit());
+				ctx.harper.process.kill('SIGKILL');
+			});
+			first.close();
+			await startHarper(ctx, {
+				config: {
+					threads: { count: 4 },
+					tls: { unixDomainSockets: true },
+					mcp: { operations: { mountPath: '/mcp' }, application: { mountPath: '/mcp' } },
+				},
+			});
+			const unsubscribed = await mcpCall(
+				ctx.harper.httpURL,
+				auth,
+				session,
+				'resources/unsubscribe',
+				{ uri: uri + '-cancelled' },
+				32
+			);
+			strictEqual(unsubscribed.error, undefined, 'a previous process token does not delay unsubscribe');
+			const noStream = await mcpCall(ctx.harper.httpURL, auth, session, 'resources/subscribe', { uri }, 33);
+			strictEqual(noStream.error?.code, -32602, 'a previous process token is not a live GET');
+			restored = await openSse(new URL('/mcp', ctx.harper.httpURL).href, auth, session);
+			strictEqual(restored.status, 200, 'the durable MCP session survives the crash');
+			await putWorkItem(ctx, id, { state: 'after-restart' });
+			ok(
+				await restored.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+					5000
+				),
+				'the reconnected GET delivers the persisted resource subscription'
+			);
+		} finally {
+			first.close();
+			restored?.close();
 		}
 	});
 });

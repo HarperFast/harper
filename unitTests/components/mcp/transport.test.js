@@ -1,3 +1,4 @@
+const { processIncarnation } = require('#src/server/threads/processIncarnation');
 const assert = require('node:assert');
 const rewire = require('rewire');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
@@ -279,6 +280,47 @@ describe('mcp/transport', () => {
 			assert.equal(restoredUser.password, 'do-not-forward');
 			assert.equal(restoredUser.customClaim, 'not-in-contract');
 			res.sseIterable.emit('close');
+		});
+
+		it('keeps a valid session and its replacement GET when an earlier GET is superseded', async () => {
+			await patchSession(sessionId, { subscriptions: ['https://app.test/Product/restore'] });
+			let release;
+			let started;
+			const installing = new Promise((resolve) => (started = resolve));
+			const blocked = new Promise((resolve) => (release = resolve));
+			let attempts = 0;
+			const stream = () => ({
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}) };
+				},
+			});
+			_setSubscribeImplForTest(async () => {
+				if (++attempts === 1) {
+					started();
+					return blocked;
+				}
+				return stream();
+			});
+			try {
+				const get = () =>
+					handleMcpRequest(
+						makeReq({ method: 'GET', headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' } })
+					);
+				const first = get();
+				await installing;
+				const replacement = await get();
+				assert.equal(replacement.status, 200);
+				release(stream());
+				const superseded = await first;
+				assert.equal(superseded.status, 503);
+				assert.ok(await loadSession(sessionId));
+				assert.equal(getRegisteredSession(sessionId).queue, replacement.sseIterable);
+				replacement.sseIterable.emit('close');
+			} finally {
+				release(stream());
+				_setSubscribeImplForTest(undefined);
+			}
 		});
 
 		it('accepts a matching MCP-Protocol-Version and returns Method-not-found for unknown methods', async () => {
@@ -1293,7 +1335,7 @@ describe('mcp/transport', () => {
 			it('returns a retryable internal error when the persisted owner never acknowledges', async () => {
 				_resetSessionRegistryForTest();
 				await waitFor(async () => !(await loadSession(sessionId)).streamToken);
-				await patchSession(sessionId, { streamToken: 'crashed-owner' });
+				await patchSession(sessionId, { streamToken: `${processIncarnation}:crashed-owner` });
 				_setSubscriptionTimeoutForTest(10);
 				const res = await handleMcpRequest(
 					makeReq({

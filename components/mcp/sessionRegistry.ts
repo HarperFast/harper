@@ -18,6 +18,7 @@
  */
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
 import { randomUUID } from 'node:crypto';
+import { processIncarnation } from '../../server/threads/processIncarnation.ts';
 import type { McpLogLevel } from './logging.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 import type { McpProfile } from './transport.ts';
@@ -100,7 +101,7 @@ export function registerSession(sessionId: string, profile: McpProfile, user: Au
 	const queue = new IterableEventQueue<SseEvent>();
 	const record: RegisteredSession = {
 		sessionId,
-		streamToken: randomUUID(),
+		streamToken: `${processIncarnation}:${randomUUID()}`,
 		profile,
 		user,
 		queue,
