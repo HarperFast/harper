@@ -5708,7 +5708,7 @@ function isCertifiedCheckpointAlgorithm(algorithm: unknown): boolean {
 }
 // Computed by code the catalog does not hold (a function `from` or a setComputedAttribute resolver), so a
 // thread without that code builds its index with undefined values.
-export function isApplicationComputed(attribute: any): boolean {
+function isApplicationComputed(attribute: any): boolean {
 	return Boolean(attribute?.computed) && !attribute.computedFromExpression && !attribute.relationship;
 }
 function isRealResolver(resolver: any): boolean {
@@ -5750,6 +5750,22 @@ function launchIndexing(Table: any, attributes: any[], indicesToRemove: any[], b
 	const markSettled = () => markAbandonedIndexBuild(Table, Table.primaryStore.rootStore, buildIds);
 	return runIndexing(Table, attributes, indicesToRemove, branchPath).then(markSettled, markSettled);
 }
+// What the repair claim must find unchanged in the catalog before it rebuilds from this thread's attribute
+function declarationOf(attribute: any): string {
+	const { type, nullable, indexed, computed, computedFromExpression, computedFromHash, version, elements, properties } =
+		attribute;
+	return JSON.stringify([
+		type,
+		nullable,
+		indexed,
+		computed === true ? {} : computed,
+		computedFromExpression,
+		computedFromHash,
+		version,
+		elements,
+		properties,
+	]);
+}
 function needsResolvedRebuild(Table: any, attribute: any): boolean {
 	return (
 		isApplicationComputed(attribute) &&
@@ -5764,9 +5780,11 @@ function needsResolvedRebuild(Table: any, attribute: any): boolean {
 }
 /**
  * Rebuilds each index of an application-computed attribute that now has a resolver but whose catalog
- * descriptor does not certify one covered its rows. The claim is made under catalog serialization against
- * the current descriptor, so of several threads registering the same resolver only the first builds; the
- * caller is never failed by it (a registration must not fail application loading).
+ * descriptor does not certify one covered its rows. Runs on every resolver registration (including the
+ * function `from` resolvers `updatedAttributes` installs) and catalog refresh. The claim is made under
+ * catalog serialization against the current descriptor, so of several threads registering the same
+ * resolver only the first builds; the caller is never failed by it (a registration must not fail
+ * application loading).
  */
 export function requestComputedIndexRepair(Table: any): void {
 	if (isReadOnlyMode() || !Table.attributes?.some((attribute) => needsResolvedRebuild(Table, attribute))) return;
@@ -5788,8 +5806,7 @@ export function requestComputedIndexRepair(Table: any): void {
 				!isApplicationComputed(descriptor) ||
 				!descriptor.indexed ||
 				descriptor.indexed.type ||
-				descriptor.computedFromHash !== attribute.computedFromHash ||
-				descriptor.version !== attribute.version
+				declarationOf(descriptor) !== declarationOf(attribute)
 			)
 				continue;
 			if (!hasRecords) {
@@ -5798,7 +5815,7 @@ export function requestComputedIndexRepair(Table: any): void {
 				Table.dbisDB.putSync(key, { ...descriptor, checkpointAlgorithm: RESOLVED_CHECKPOINT_ALGORITHM });
 				continue;
 			}
-			for (const field in descriptor) if (!(field in attribute)) attribute[field] = descriptor[field];
+			for (const field in descriptor) if (field !== 'computed') attribute[field] = descriptor[field];
 			delete attribute.lastIndexedKey;
 			delete attribute.checkpointCertified;
 			Object.defineProperty(attribute, 'key', { value: key, configurable: true });
@@ -5984,8 +6001,11 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		const applicationComputed = attributes.map(isApplicationComputed);
 		// per attribute: every row this build covers so far was computed by a registered resolver
 		const resolvedThroughout: boolean[] = [];
+		// a scan that visited no rows proves nothing, so the resolver must be registered at stamp time too
 		const checkpointAlgorithmOf = (i: number) =>
-			applicationComputed[i] && resolvedThroughout[i] ? RESOLVED_CHECKPOINT_ALGORITHM : CHECKPOINT_ALGORITHM;
+			applicationComputed[i] && resolvedThroughout[i] && isRealResolver(Table.userResolvers?.[attributes[i].name])
+				? RESOLVED_CHECKPOINT_ALGORITHM
+				: CHECKPOINT_ALGORITHM;
 		const tracksResolvers = applicationComputed.some(Boolean);
 		const resolverArrived = () =>
 			tracksResolvers &&
@@ -6130,7 +6150,11 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					const attribute = attributes[i];
 					delete attribute.lastIndexedKey;
 					delete attribute.checkpointCertified;
-					if (applicationComputed[i] && !resolvedThroughout[i]) {
+					if (
+						applicationComputed[i] &&
+						!resolvedThroughout[i] &&
+						isRealResolver(Table.userResolvers?.[attribute.name])
+					) {
 						resolvedThroughout[i] = true;
 						attributesToClear.push(attribute);
 					}

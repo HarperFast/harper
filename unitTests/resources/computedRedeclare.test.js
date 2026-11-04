@@ -264,25 +264,33 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		const Bare = declare('ComputedSequence', { ...Replaced.dbisDB.getSync(key), computed: true });
 		assert.notStrictEqual(Bare.indexingOperation, removedBuild, 'changing a function to bare did not rebuild');
 		await Bare.indexingOperation;
+		await catalogFlushed(Bare);
+		assert.deepStrictEqual(await idsWithScore(Bare, 'b-n1'), [], 'the removed function still computed the index');
+		assert.strictEqual(Bare.dbisDB.getSync(key).checkpointAlgorithm, CHECKPOINT_ALGORITHM);
+		const bareBuild = Bare.indexingOperation;
+		Bare.setComputedAttribute('score', (record) => 'c-' + record.name);
+		assert.notStrictEqual(Bare.indexingOperation, bareBuild, 'a resolver for the bare attribute did not rebuild');
+		await Bare.indexingOperation;
+		await assertScores(Bare, (name) => 'c-' + name);
 
 		const Stored = declare('ComputedSequence', {});
 		await Stored.indexingOperation;
 		const Unresolved = declare('ComputedSequence', { computed: true });
 		await Unresolved.indexingOperation;
 		await catalogFlushed(Unresolved);
-		assert.deepStrictEqual(await idsWithScore(Unresolved, 'c-n1'), []);
+		assert.deepStrictEqual(await idsWithScore(Unresolved, 'd-n1'), []);
 		assert.strictEqual(Unresolved.dbisDB.getSync(key).checkpointAlgorithm, CHECKPOINT_ALGORITHM);
 
 		const unresolvedBuild = Unresolved.indexingOperation;
-		Unresolved.setComputedAttribute('score', (record) => 'c-' + record.name);
+		Unresolved.setComputedAttribute('score', (record) => 'd-' + record.name);
 		assert.notStrictEqual(Unresolved.indexingOperation, unresolvedBuild, 'a late resolver did not rebuild');
 		await Unresolved.indexingOperation;
 		await catalogFlushed(Unresolved);
-		await assertScores(Unresolved, (name) => 'c-' + name);
+		await assertScores(Unresolved, (name) => 'd-' + name);
 		assert.strictEqual(Unresolved.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
 
 		const resolvedBuild = Unresolved.indexingOperation;
-		Unresolved.setComputedAttribute('score', (record) => 'c-' + record.name);
+		Unresolved.setComputedAttribute('score', (record) => 'd-' + record.name);
 		assert.strictEqual(Unresolved.indexingOperation, resolvedBuild, 'a certified index was rebuilt');
 	});
 
@@ -327,6 +335,7 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		await Computed.indexingOperation;
 		await catalogFlushed(Computed);
 		const key = 'ComputedLegacyStamp/score';
+		assert.strictEqual(Computed.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
 		// what a release before resolver certification left on every completed index
 		const written = Computed.dbisDB.put(key, {
 			...Computed.dbisDB.getSync(key),

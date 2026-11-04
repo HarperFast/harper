@@ -10939,7 +10939,8 @@ export function makeTable(options): TableResourceClass {
 				const attribute = computedByName.get(name);
 				if (
 					!attribute ||
-					(!attribute.computedFromExpression && schemaExpressionResolvers.has(this.userResolvers[name]))
+					(!attribute.computedFromExpression && schemaExpressionResolvers.has(this.userResolvers[name])) ||
+					(!attribute.computedFromHash && functionFromResolvers.has(this.userResolvers[name]))
 				)
 					delete this.userResolvers[name];
 			}
@@ -11190,7 +11191,10 @@ export function makeTable(options): TableResourceClass {
 				if (attribute.computedFromExpression) {
 					schemaExpressionResolvers.add(resolver);
 					this.userResolvers[attribute.name] = resolver;
-				} else this.setComputedAttribute(attribute.name, resolver);
+				} else {
+					functionFromResolvers.add(resolver);
+					this.setComputedAttribute(attribute.name, resolver);
+				}
 			}
 			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
 			primaryKeyAttribute = nextPrimaryKeyAttribute;
@@ -14680,6 +14684,8 @@ function noop() {
 
 // Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
 const schemaExpressionResolvers = new WeakSet<Function>();
+// A declared function `from`; an attribute that keeps it carries `computedFromHash` (databases.ts), even one read from the catalog.
+const functionFromResolvers = new WeakSet<Function>();
 /**
  * Recreate a computed "from" function from a stored expression string. This is used when a table
  * is loaded from metadata on a thread that hasn't loaded the GraphQL schema, so the computed
