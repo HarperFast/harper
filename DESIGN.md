@@ -53,8 +53,8 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 ## resources/audit-retention.md — audit retention and cleanup
 
 - [Audit retention floor](resources/audit-retention.md#audit-retention-floor) · [Per-log purge bounds](resources/audit-retention.md#per-log-purge-bounds) — What pruning removed, per database (`Table.commit` skips walks under it) and per log.
-- [Audit retention cleanup is a self-rearming, engine-independent lifecycle](resources/audit-retention.md#audit-retention-cleanup-is-a-self-rearming-engine-independent-lifecycle) — One `scheduleAuditCleanup` call re-arms until the root store closes; engines differ in the work per pass, not in the lifecycle.
-- [Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise](resources/audit-retention.md#audit-entry-removal-loops-must-track-every-removeauditentryremoveentry-promise) — Every removal promise in a batch loop needs a rejection handler attached immediately.
+- [Audit retention cleanup is a self-rearming, engine-independent lifecycle](resources/audit-retention.md#audit-retention-cleanup-is-a-self-rearming-engine-independent-lifecycle) — One `scheduleAuditCleanup` call re-arms until the root store closes; engines differ in per-pass work, not lifecycle.
+- [Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise](resources/audit-retention.md#audit-entry-removal-loops-must-track-every-removeauditentryremoveentry-promise) — Attach each removal promise's rejection handler immediately.
 
 ## resources/record-locks.md — `table.lock()`
 
