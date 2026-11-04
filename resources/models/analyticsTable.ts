@@ -158,29 +158,42 @@ export class ModelCallAnalyticsWriter {
 		this.#buffer = [];
 		const tbl = this.#getTable();
 		// A flush must not join the request that filled the buffer or created the timer.
-		await transaction({}, async (context) => {
-			const puts: Array<{ id: number; promise: Promise<unknown> }> = [];
-			for (const record of batch) {
-				try {
-					const result = tbl.put(record, context);
-					if (result && typeof (result as { then?: unknown }).then === 'function') {
-						puts.push({ id: record.id, promise: result as Promise<unknown> });
-					}
-				} catch (err) {
-					log.warn?.(`Model-call analytics put failed for id=${record.id}: ${(err as Error)?.message ?? err}`);
-				}
-			}
-			if (puts.length > 0) {
-				const results = await Promise.allSettled(puts.map((p) => p.promise));
-				for (let i = 0; i < results.length; i++) {
-					const r = results[i];
-					if (r.status === 'rejected') {
-						const reason = r.reason as { message?: string } | undefined;
-						log.warn?.(`Model-call analytics async put failed for id=${puts[i].id}: ${reason?.message ?? r.reason}`);
+		try {
+			await transaction({}, async (txn) => {
+				const puts: Array<{ id: number; promise: Promise<unknown> }> = [];
+				for (const record of batch) {
+					try {
+						const result = tbl.put(record, txn);
+						if (result && typeof (result as { then?: unknown }).then === 'function') {
+							puts.push({ id: record.id, promise: result as Promise<unknown> });
+						}
+					} catch (err) {
+						log.warn?.(`Model-call analytics put failed for id=${record.id}: ${(err as Error)?.message ?? err}`);
 					}
 				}
-			}
-		});
+				if (puts.length > 0) {
+					const results = await Promise.allSettled(puts.map((p) => p.promise));
+					for (let i = 0; i < results.length; i++) {
+						const r = results[i];
+						if (r.status === 'rejected') {
+							const reason = r.reason as { message?: string } | undefined;
+							log.warn?.(`Model-call analytics async put failed for id=${puts[i].id}: ${reason?.message ?? r.reason}`);
+						}
+					}
+				}
+			});
+		} catch (error) {
+			log.warn?.(
+				'Model-call analytics batch commit failed',
+				{
+					batchSize: batch.length,
+					firstId: batch[0].id,
+					lastId: batch[batch.length - 1].id,
+				},
+				error
+			);
+			throw error;
+		}
 	}
 
 	async cleanup(): Promise<void> {

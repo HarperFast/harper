@@ -19,7 +19,7 @@ it stops at `firstForPeriod + toPeriod` so one cycle's main-thread msgpackr deco
   a backlog longer than one window and every report written while the cycle ran, because nothing
   reads below the cursor again.
 - **A cycle that reads nothing leaves it where it is.** An empty scan is not proof that nothing is
-  there: `recordAnalytics` does not await its `primaryStore.put`, so a report can be uncommitted and
+  there: `recordAnalytics` does not await its table `put`, so a report can be uncommitted and
   invisible to the scan while carrying a key older than anything the cycle could compare against. No
   wall-clock reading is safe to put in the cursor for the same reason.
 

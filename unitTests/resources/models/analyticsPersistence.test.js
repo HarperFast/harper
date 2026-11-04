@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath, ensureSystemTables } = require('../../testUtils');
 const { ModelCallAnalyticsWriter, getModelCallsTable } = require('#src/resources/models/analyticsTable');
 const { transaction } = require('#src/resources/transaction');
+const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { ACTION_32_BIT } = require('#src/resources/auditStore');
 
@@ -69,6 +70,29 @@ describe('Model-call analytics persistence', () => {
 				assert.strictEqual(bytes.readUint32BE(8) >>> 24, ACTION_32_BIT);
 			}
 		}
+	});
+
+	it('rejects a failed batch commit, rolls back its rows, and can flush a later batch', async () => {
+		const target = table({
+			database: 'test',
+			table: 'AnalyticsCommitFailure',
+			audit: false,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'latency_ms', type: 'Int' },
+			],
+		});
+		writer.stop();
+		writer = new ModelCallAnalyticsWriter({ flushIntervalMs: 60000, cleanupIntervalMs: 60000, getTable: () => target });
+		const good = writer.write({ backend: 'test', method: 'generate', latency_ms: 1, success: true });
+		const bad = writer.write({ backend: 'test', method: 'generate', latency_ms: 'invalid', success: true });
+		await assert.rejects(writer.flush());
+		assert.strictEqual(target.primaryStore.getEntry(good), undefined);
+		assert.strictEqual(target.primaryStore.getEntry(bad), undefined);
+		const next = writer.write({ backend: 'test', method: 'generate', latency_ms: 2, success: true });
+		await writer.flush();
+		assert.strictEqual(target.primaryStore.getEntry(next, { uncachedRead: true }).value.latency_ms, 2);
+		await target.primaryStore.remove(next);
 	});
 
 	it('commits a flush independently of an ambient transaction that aborts', async () => {

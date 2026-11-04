@@ -142,7 +142,7 @@ describe('ModelCallAnalyticsWriter', () => {
 			assert.ok(typeof stored.id === 'number', 'id should be a numeric monotonic timestamp');
 		});
 
-		it('continues writing remaining records when one put rejects asynchronously (no silent loss)', async () => {
+		it('continues staging remaining records when one table put rejects asynchronously', async () => {
 			let callCount = 0;
 			const rejections = [];
 			const asyncTable = {
@@ -151,7 +151,7 @@ describe('ModelCallAnalyticsWriter', () => {
 					const id = record.id;
 					callCount++;
 					if (callCount === 2) {
-						const p = Promise.reject(new Error('async LMDB rejection'));
+						const p = Promise.reject(new Error('simulated staging rejection'));
 						rejections.push(p);
 						// Avoid unhandled-rejection warnings if the writer doesn't await fast.
 						p.catch(() => {});
@@ -181,7 +181,7 @@ describe('ModelCallAnalyticsWriter', () => {
 			assert.strictEqual(rejections.length, 1);
 		});
 
-		it('continues writing remaining records when one put throws', async () => {
+		it('continues staging remaining records when one table put throws', async () => {
 			let callCount = 0;
 			const throwingTable = {
 				store: new Map(),
