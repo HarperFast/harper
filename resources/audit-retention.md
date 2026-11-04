@@ -99,7 +99,7 @@ A replication source must tell a follower that missed purged entries from one wh
 wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
 never existed or were removed. `Symbol.for('log-purge-bounds')` holds
 `{ epoch, unobserved, trackedFrom, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`. `getLogPurgeBounds` returns
-each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFrom` where tracking began.
+each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFrom` where tracking began; a resume needs both, reading `getLogPurgeTrackedFrom` second so a prune between the reads errs toward a copy, and either returning undefined means the store cannot say.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
   every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`

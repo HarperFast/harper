@@ -247,7 +247,7 @@ describe('per-log purge bounds', function () {
 			epoch: floor,
 			cutoff: floor,
 			observedAt: Date.now(),
-			logs: { 'folded-origin': [floor, Date.now(), floor], 'pruned-origin': [real, Date.now(), real] },
+			logs: { 'folded-origin': [floor, 1, floor], 'pruned-origin': [real, Date.now(), real] },
 		});
 		assert.strictEqual(getLogPurgeTrackedFrom(auditStore), floor);
 		const bounds = getLogPurgeBounds(auditStore, ['folded-origin', 'pruned-origin', 'new-origin']);
@@ -269,15 +269,19 @@ describe('per-log purge bounds', function () {
 		assert.strictEqual(stored().unobserved, 0);
 	});
 
-	it('answers a boot purge whose last pass is stamped ahead of the clock with where tracking began', async function () {
+	it('answers a boot purge after the clock moved back past its last pass with where tracking began', async function () {
 		if (isLMDB) return this.skip();
-		const Table = backdatedTable(400 * DAY_MS);
+		const Table = freshTable();
 		await Table.put('rollback', { name: 'x' });
-		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
-		record.observedAt = Date.now() + DAY_MS;
-		writeRecord(Table.auditStore, record);
-		await tick();
-		const bootedAt = Date.now();
+		const realNow = Date.now;
+		const ahead = realNow() + DAY_MS;
+		Date.now = () => ahead;
+		try {
+			raiseAuditFloor(Table.auditStore, ahead - 1000, true);
+		} finally {
+			Date.now = realNow;
+		}
+		const bootedAt = realNow();
 		assert.strictEqual(bootPurge(Table, 0), 0);
 		assert.ok(getLogPurgeTrackedFrom(Table.auditStore) >= bootedAt);
 	});

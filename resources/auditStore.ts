@@ -963,7 +963,13 @@ function decodeLogPurgeBounds(auditStore: any, stored: any): LogPurgeBounds | un
 		if (!Array.isArray(entry) || entry.length !== 3 || !entry.every(isPurgeBoundValue)) return undefined;
 	}
 	const predatesSplit = value.trackedFrom === undefined && isRocksStore(auditStore);
-	if (predatesSplit) for (const name in logs) if (logs[name][0] === value.epoch) logs[name][0] = 0;
+	if (predatesSplit) {
+		for (const name in logs) {
+			const entry = logs[name];
+			if (entry[0] === value.epoch) entry[0] = 0;
+			if (entry[2] === value.epoch) entry[2] = 0;
+		}
+	}
 	return {
 		epoch: value.unobserved ?? (predatesSplit ? 0 : value.epoch),
 		trackedFrom: value.trackedFrom ?? value.epoch,
@@ -974,7 +980,7 @@ function decodeLogPurgeBounds(auditStore: any, stored: any): LogPurgeBounds | un
 }
 
 // past the native horizon too: a log that rocksdb-js emptied before tracking began may not be listed at all. LMDB's
-// one log is compared only from the merged start, so its epoch keeps the tracking start and its pass stays one cursor.
+// one log is compared only from the merged start, so its epoch keeps the tracking start.
 function freshLogPurgeBounds(auditStore: any, floor: number, nativeHorizon = 0): LogPurgeBounds {
 	const trackedFrom = Math.max(floor, nativeHorizon);
 	return {
@@ -1004,7 +1010,7 @@ function recordedEntry(recorded: LogPurgeBounds, name: string): LogPurgeEntry {
 /** A log's bound as recorded, raised to its largest key, up to the native purge horizon, once a pass has not seen it quiet within that horizon. */
 function exposedBound(recorded: LogPurgeBounds, name: string, nativeHorizon: number): number {
 	const [bound, quietAt, maxKey] = recordedEntry(recorded, name);
-	// what no pass has seen is `trackedFrom`'s to answer, and `maxKey` is 0 for a log no pass recorded
+	// what no pass has seen is `trackedFrom`'s to answer
 	const native = quietAt < nativeHorizon ? Math.min(nativeHorizon, maxKey) : 0;
 	return Math.max(recorded.epoch, bound, native);
 }
@@ -1145,6 +1151,7 @@ function logPurgeBoundsCover(
 ): boolean {
 	if (!recorded || cutoff > recorded.cutoff) return false;
 	if (!observed) return recorded.epoch >= cutoff;
+	if (observed.size === 0 && recorded.trackedFrom < cutoff) return false;
 	const refreshBefore = nativeHorizon > 0 ? (now + nativeHorizon) / 2 : 0;
 	if (recorded.observedAt < refreshBefore) return false;
 	for (const [name, [bound, quietAt, maxKey]] of observed) {
