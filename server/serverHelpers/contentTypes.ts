@@ -61,9 +61,14 @@ function appliedSelectFor(data: any, target: any): AppliedSelect | undefined {
 
 function sameColumns(select: any, other: any): boolean {
 	if (select === other) return true;
-	if (!Array.isArray(select) || !Array.isArray(other)) return false;
+	if (!Array.isArray(select) || !Array.isArray(other))
+		return !Array.isArray(select) && !Array.isArray(other) && columnName(select) === columnName(other);
 	if (select.length !== other.length || isTupleSelect(select) !== isTupleSelect(other)) return false;
-	return select.every((column, index) => (column?.name ?? column) === (other[index]?.name ?? other[index]));
+	return select.every((column, index) => columnName(column) === columnName(other[index]));
+}
+
+function columnName(column: any) {
+	return column?.name ?? column;
 }
 
 export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {

@@ -1691,6 +1691,8 @@ describe('REST and operations API select projection fixes', function () {
 
 			const reparsedTuple = await restGet('/PlainReparsedTarget/z-1?select([id,note])', { accept: 'text/csv' });
 			assert.strictEqual(reparsedTuple.text, '"id","note"\n"z-1","n1"\n');
+			const reparsedNested = await restGet('/PlainReparsedTarget/z-1?select(child{id,label})', { accept: 'text/csv' });
+			assert.strictEqual(reparsedNested.text, '"child"\n"{""id"":""c1"",""label"":""child-label-v1""}"\n');
 
 			const summaryJson = await restGet('/SharedTargetSummary/z-1?select(name)', { accept: 'application/json' });
 			assert.deepStrictEqual(summaryJson.body, { name: 'Zeta-1', inStock: true });
