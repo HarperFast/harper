@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { setTimeout: delay } = require('node:timers/promises');
+require('#src/resources/databases');
 const { ModelCallAnalyticsWriter } = require('#src/resources/models/analyticsTable');
 
 // In-memory table doubles cover buffering and error handling; analyticsPersistence.test.js covers storage.
@@ -222,8 +222,7 @@ describe('ModelCallAnalyticsWriter', () => {
 			});
 			small.write(makeRecord());
 			small.write(makeRecord());
-			// The size-cap flush is fire-and-forget; give microtasks a turn.
-			await delay(5);
+			await small.flush();
 			assert.strictEqual(small.bufferSize, 0);
 			assert.strictEqual(table.store.size, 2);
 			small.stop();
