@@ -22,6 +22,17 @@ const { randomUUID } = require('node:crypto');
 const { jobWorkerOptions } = require('#src/server/jobs/jobRunner');
 const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 
+function persistedClosedMetric(workerId, label) {
+	for (const { value } of getDatabases().system.hdb_raw_analytics.primaryStore.getRange({
+		start: false,
+		end: Infinity,
+	})) {
+		if (value.threadId !== workerId) continue;
+		const row = value.metrics.find((row) => row.path === label && row.native_state === 'closed');
+		if (row) return row;
+	}
+}
+
 it('commits main-thread final analytics before exit and reopens the real store', async function () {
 	this.timeout(60_000);
 	const { execFile } = require('node:child_process');
@@ -167,17 +178,9 @@ it('flushes actual job-worker analytics before cleanup acknowledgement and persi
 		assert.ok(ackIndex > finalIndex, 'terminal analytics must finish before job cleanup acknowledgement');
 		const finalReportIndex = messages.findLastIndex((message) => message.type === 'analytics-report');
 		assert.ok(finalReportIndex > finalIndex && finalReportIndex < ackIndex);
-		const stored = [];
-		for (const { value } of getDatabases().system.hdb_raw_analytics.primaryStore.getRange({
-			start: false,
-			end: Infinity,
-		}))
-			if (value.threadId === workerId) stored.push(...value.metrics);
-		assert.ok(
-			stored.some(
-				(row) => row.path === label && row.native_state === 'closed' && row.native_operations_close_completed === '1'
-			)
-		);
+		const persisted = () => persistedClosedMetric(workerId, label);
+		await waitFor(persisted, 5000);
+		assert.strictEqual(persisted().native_operations_close_completed, '1');
 	} finally {
 		try {
 			if (worker && worker.threadId !== -1) await worker.terminate();
@@ -258,16 +261,7 @@ it('delivers final native telemetry after deferred scope close and before worker
 			.flatMap((message) => message.report?.metrics ?? [])
 			.find((row) => row.path === label + '-previous');
 		assert.strictEqual(pending?.native_state, 'closed', 'shutdown must preserve an already pending closed-handle row');
-		const persisted = () => {
-			for (const { value } of getDatabases().system.hdb_raw_analytics.primaryStore.getRange({
-				start: false,
-				end: Infinity,
-			})) {
-				if (value.threadId !== workerId) continue;
-				const row = value.metrics.find((row) => row.path === label && row.native_state === 'closed');
-				if (row) return row;
-			}
-		};
+		const persisted = () => persistedClosedMetric(workerId, label);
 		await waitFor(persisted, 5000);
 		assert.strictEqual(persisted().native_operations_close_completed, '1');
 	} finally {

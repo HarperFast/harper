@@ -124,14 +124,17 @@ async function spawnMocha(profile, pair) {
 	child.stderr.on('data', capture);
 	let timedOut = false;
 	let killTimer;
+	let spawnError;
 	const timer = setTimeout(() => {
 		timedOut = true;
 		child.kill('SIGTERM');
 		killTimer = setTimeout(() => child.kill('SIGKILL'), 5000).unref();
 	}, options.duration + 120_000);
 	const result = await new Promise((resolveChild) => {
-		child.once('error', (error) => resolveChild({ code: null, signal: null, spawnError: error.message }));
-		child.once('close', (code, signal) => resolveChild({ code, signal }));
+		child.on('error', (error) => {
+			spawnError ??= error.message;
+		});
+		child.once('close', (code, signal) => resolveChild({ code, signal, spawnError }));
 	}).finally(() => {
 		clearTimeout(timer);
 		clearTimeout(killTimer);
@@ -145,7 +148,7 @@ async function spawnMocha(profile, pair) {
 			2
 		)
 	);
-	if (result.code !== 0 || timedOut || logError || !existsSync(join(directory, 'result.json')))
+	if (result.code !== 0 || spawnError || timedOut || logError || !existsSync(join(directory, 'result.json')))
 		throw new Error(`${profile} pair ${pair} failed; retained ${directory}`);
 	return JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
 }

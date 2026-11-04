@@ -213,6 +213,17 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				6,
 				`separate local commits must have distinct keys: ${JSON.stringify(entries)}`
 			);
+			if (kind === 'Generic') {
+				await request(`/${source}/s2`, 'PUT', { id: 's2', title: 'burst', revision: 'r3' });
+				await request(`/${source}/s2`, 'PATCH', { revision: 'r4' });
+				await waitForSourceState((state) => {
+					const original = state.records[source].find((record) => record?.id === 's2');
+					return state.records[mirror].some(
+						(record) => record?.id === 's2' && record.value.revision === 'r4' && record.version === original?.version
+					);
+				}, `${mirror} must receive the newest burst revision and source version`);
+				await assertIndexProgress('genericburst', [0, 0.5, 0.25], before);
+			}
 		});
 
 		test(`${kind} multi-record live apply keeps each transaction grouped under one fresh key`, async () => {

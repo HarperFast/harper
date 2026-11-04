@@ -11,6 +11,7 @@ const {
 	encodeFullTextCursorPayload,
 } = require('#src/resources/indexes/fullTextDerivedIndex');
 const { DERIVED_INDEX_ACCEPTED } = require('#src/resources/derivedIndexRuntime');
+const { FullTextTelemetryCollector } = require('#src/resources/analytics/fullTextTelemetry');
 const {
 	subscribeFullTextTelemetry,
 	registerNativeFullTextTelemetry,
@@ -25,6 +26,154 @@ const limits = {
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,
 };
+
+for (const demand of ['consumer', 'operator', 'default']) {
+	const description =
+		demand === 'default'
+			? 'keeps default recording disabled after a rejected close'
+			: `disables native recording after a rejected close when the last ${demand} demand was removed`;
+	it(description, async function () {
+		this.timeout(20_000);
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const binding = await loadFullTextNativeBinding();
+		const id = `close-disabled-${demand}-${process.pid}`;
+		const writer = await binding.openNativeFullTextIndex({
+			path: join(setupTestDBPath(), id),
+			indexId: id,
+			generation: 'g1',
+			fields: [{ name: 'title' }],
+			analyzer: 'english@2',
+			positions: true,
+			limits,
+		});
+		let errors = 0;
+		const collector = new FullTextTelemetryCollector({ onError: () => errors++ });
+		const policy = { histograms: true, snapshotBytes: true, intervalMilliseconds: 1000 };
+		let removeDemand = () => {};
+		if (demand === 'consumer') removeDemand = collector.subscribe(() => {}, policy);
+		else if (demand === 'operator') {
+			collector.setOperatorPolicy({ ...policy, enabled: true });
+			removeDemand = () => collector.setOperatorPolicy({ enabled: false });
+		}
+		const recording = () => {
+			const { histogramsEnabled, snapshotBytesEnabled } = writer.telemetry().native;
+			return { histogramsEnabled, snapshotBytesEnabled };
+		};
+		const initiallyRecording = demand !== 'default';
+		try {
+			collector.register(writer, id, 'writer');
+			assert.deepStrictEqual(recording(), {
+				histogramsEnabled: initiallyRecording,
+				snapshotBytesEnabled: initiallyRecording,
+			});
+			await writer.applyMutationBatch({ upserts: [{ id: 'dirty', fields: { title: 'catalog widget' } }], deletes: [] });
+			collector.beforeClose(writer);
+			const closing = writer.close({ mode: 'require-clean' });
+			removeDemand();
+			assert.strictEqual(collector.collecting, false);
+			assert.strictEqual(collector.scheduled, false);
+			assert.deepStrictEqual(recording(), {
+				histogramsEnabled: initiallyRecording,
+				snapshotBytesEnabled: initiallyRecording,
+			});
+			await assert.rejects(closing, (error) => error.code === 'E_DIRTY_CLOSE');
+			collector.closeFailed(writer);
+			assert.strictEqual(writer.status().state, 'open');
+			assert.strictEqual(collector.collecting, false);
+			assert.strictEqual(collector.scheduled, false);
+			assert.deepStrictEqual(recording(), { histogramsEnabled: false, snapshotBytesEnabled: false });
+			await writer.applyMutationBatch({ upserts: [{ id: 'later', fields: { title: 'still writable' } }], deletes: [] });
+			assert.strictEqual(writer.status().state, 'open');
+			assert.deepStrictEqual(recording(), { histogramsEnabled: false, snapshotBytesEnabled: false });
+			assert.strictEqual(errors, 0);
+		} finally {
+			removeDemand();
+			collector.beforeClose(writer);
+			try {
+				await writer.close({ mode: 'rollback' });
+				collector.afterClose(writer);
+			} finally {
+				collector.stop();
+			}
+		}
+	});
+}
+
+it('reconciles removed recording demand through a real backend close failure', async function () {
+	this.timeout(20_000);
+	if (!(await supportsPublishedFullTextBinding())) this.skip();
+	const binding = await loadFullTextNativeBinding();
+	const id = `close-backend-disabled-${process.pid}`;
+	const lifecycle = new NativeFullTextDerivedIndexLifecycle({
+		storePath: join(setupTestDBPath(), id),
+		storeName: 'catalog.Product.title',
+		indexId: id,
+		sourceGeneration: 'generation-1',
+		fields: [{ name: 'title' }],
+		analyzer: 'english@2',
+		positions: true,
+		limits,
+		binding,
+	});
+	await lifecycle.initialize({ reclaimRetired: false });
+	let writer;
+	let removeConsumer = () => {};
+	removeConsumer = subscribeFullTextTelemetry(
+		(sample) => {
+			if (sample.index === id && sample.stage === 'closing') removeConsumer();
+		},
+		{ histograms: true, snapshotBytes: true, intervalMilliseconds: 1000 }
+	);
+	const backend = new FullTextDerivedIndexBackend({
+		id,
+		lifecycle: {
+			inspect: () => lifecycle.inspect(),
+			reset: (epoch) => lifecycle.reset(epoch),
+			async open() {
+				writer = await lifecycle.open();
+				return writer;
+			},
+		},
+		closeTimeoutMilliseconds: 5000,
+		shutdownTimeoutMilliseconds: 10_000,
+	});
+	backend.attach({
+		isOwnerEpoch: (epoch) => epoch === 1n,
+		getReadiness: () => ({ state: 'ready', ownerEpoch: 1n, rebuildAttempts: 0 }),
+		publicationChanged() {},
+	});
+	const cursor = { format: 1, logs: { local: 1 } };
+	try {
+		backend.getDurableCursor();
+		assert.strictEqual(
+			backend.deliver({ ownerEpoch: 1n, transactions: [], records: [], through: cursor, bytes: 0 }),
+			DERIVED_INDEX_ACCEPTED
+		);
+		backend.flush();
+		await waitFor(() => backend.getDurableCursor()?.logs.local === 1, 5000);
+		assert.strictEqual(writer.telemetry().native.histogramsEnabled, true);
+		assert.strictEqual(writer.telemetry().native.snapshotBytesEnabled, true);
+		await writer.applyMutationBatch({ upserts: [{ id: 'dirty', fields: { title: 'catalog widget' } }], deletes: [] });
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		assert.strictEqual(writer.telemetry().native.operations.close.errors.E_DIRTY_CLOSE, 1n);
+		assert.strictEqual(writer.status().state, 'open');
+		assert.strictEqual(fullTextTelemetryCollector.collecting, false);
+		assert.strictEqual(fullTextTelemetryCollector.scheduled, false);
+		const { histogramsEnabled, snapshotBytesEnabled } = writer.telemetry().native;
+		assert.deepStrictEqual(
+			{ histogramsEnabled, snapshotBytesEnabled },
+			{ histogramsEnabled: false, snapshotBytesEnabled: false }
+		);
+		await writer.applyMutationBatch({ upserts: [{ id: 'later', fields: { title: 'still writable' } }], deletes: [] });
+		await writer.publish(encodeFullTextCursorPayload(cursor));
+		await backend.shutdown(1n);
+		assert.strictEqual(writer.status().state, 'closed');
+	} finally {
+		removeConsumer();
+		if (writer && writer.status().state !== 'closed') await writer.close({ mode: 'rollback' });
+		await backend.shutdown(1n);
+	}
+});
 
 it('keeps observing an installed real writer after a rejected require-clean close and closes on retry', async function () {
 	this.timeout(20_000);

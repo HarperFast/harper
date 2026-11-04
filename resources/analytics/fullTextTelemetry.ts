@@ -271,6 +271,7 @@ export class FullTextTelemetryCollector {
 		entry.closing = false;
 		this.#closeHook(() => {
 			if (this.collecting) this.#observe(entry);
+			else if (!entry.configured) this.#configure(entry);
 			this.#schedule();
 		});
 	}
