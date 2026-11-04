@@ -12,10 +12,10 @@ let copyRequestTarget: (source: RequestTarget) => RequestTarget;
 // Reusing a caller-owned query must not lose predicates when its iterator has already been consumed.
 const iteratorSnapshots = new WeakMap<object, { values?: any[]; error?: unknown }>();
 
-function replayIterator(source: any): Iterator<any> {
+function replayIterator(source: any, iteratorMethod?: () => Iterator<any>): Iterator<any> {
 	let snapshot = iteratorSnapshots.get(source);
 	if (!snapshot) {
-		const iterator = source[Symbol.iterator]();
+		const iterator = (iteratorMethod ?? source[Symbol.iterator]).call(source);
 		if (iterator !== source) return iterator;
 		snapshot = {};
 		iteratorSnapshots.set(source, snapshot);
@@ -63,7 +63,10 @@ function copyQueryFields(source: any, stop = Object.prototype, skipArrayIndices 
 				descriptors[name] = { ...descriptor, writable: true, configurable: true };
 			} else {
 				const materialize = (receiver: any, value: any) => {
-					value = name === 'conditions' ? copyConditions(value) : value;
+					if (name === Symbol.iterator && typeof value === 'function') {
+						const iteratorMethod = value;
+						value = () => replayIterator(source, iteratorMethod);
+					} else if (name === 'conditions') value = copyConditions(value);
 					Object.defineProperty(receiver, name, {
 						value,
 						writable: true,

@@ -241,6 +241,23 @@ describe('delegated reads reusing one query object', function () {
 				['class', class {}],
 				['RequestTarget subclass', RequestTarget],
 			]) {
+				it(`reads an iterator getter on a query ${shape}`, async function () {
+					class Query extends Base {
+						#conditions = [{ attribute: 'id', value: 'e1' }];
+						select = authoredSelect();
+						checkPermission = true;
+						get [Symbol.iterator]() {
+							return function () {
+								return this.#conditions[Symbol.iterator]();
+							};
+						}
+					}
+					const root = new Query();
+					for (const user of [broadUser, restrictedUser, broadUser])
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+					assertAuthored(root);
+				});
+
 				it(`reads a private-field iterator on a query ${shape}`, async function () {
 					class Query extends Base {
 						#conditions = [{ attribute: 'id', value: 'e1' }];
