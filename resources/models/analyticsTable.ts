@@ -117,6 +117,7 @@ export class ModelCallAnalyticsWriter {
 	#getTable: () => any;
 	#stopped = false;
 	#flushPromise?: Promise<void>;
+	#flushRequested = false;
 	#flushImmediate?: NodeJS.Immediate;
 	#scheduledResolve?: () => void;
 	#lastAdmittedId = 0;
@@ -183,11 +184,14 @@ export class ModelCallAnalyticsWriter {
 	}
 
 	#scheduleFlush(): void {
-		if (!this.#stopped && !this.#flushPromise && this.#buffer.length) this.#startBatch(true);
+		if (this.#stopped || !this.#buffer.length) return;
+		if (this.#flushPromise) this.#flushRequested = true;
+		else this.#startBatch(true);
 	}
 
 	#startBatch(defer: boolean): Promise<void> {
 		return contextStorage.exit(() => {
+			this.#flushRequested = false;
 			const batch = this.#buffer;
 			this.#buffer = [];
 			const ready = defer
@@ -203,7 +207,7 @@ export class ModelCallAnalyticsWriter {
 					this.#attemptedThrough = batch[batch.length - 1].id;
 					this.#flushPromise = undefined;
 					this.#reportDropped();
-					if (this.#buffer.length >= this.#maxBufferSize) this.#scheduleFlush();
+					if (this.#flushRequested || this.#buffer.length >= this.#maxBufferSize) this.#scheduleFlush();
 				});
 			this.#flushPromise = pending;
 			pending.catch(() => {});

@@ -22,7 +22,8 @@ describe('Model-call analytics persistence', function () {
 	let writer, modelTable, writerTable;
 	const ids = [];
 
-	before(async () => {
+	before(async function () {
+		this.timeout(30000);
 		setupTestDBPath();
 		setMainIsWorker(true);
 		await ensureSystemTables();
@@ -116,6 +117,39 @@ describe('Model-call analytics persistence', function () {
 		await Promise.all([first, second]);
 		assert.strictEqual(factories, 2);
 		for (const id of ids) assert.ok(modelTable.primaryStore.getEntry(id, { uncachedRead: true }));
+	});
+
+	it('remembers a cadence tick while a real table put is still in flight', async () => {
+		writer.stop();
+		let release;
+		let entered = false;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		class SlowCalls extends modelTable {
+			async put(...args) {
+				if (!entered) {
+					entered = true;
+					await gate;
+				}
+				return super.put(...args);
+			}
+		}
+		writer = new ModelCallAnalyticsWriter({ flushIntervalMs: 1000, getTable: () => SlowCalls });
+		ids.push(writer.write({ backend: 'slow', method: 'generate', latency_ms: 1, success: true }));
+		const first = writer.flush();
+		try {
+			await waitFor(() => entered);
+			const waiting = writer.write({ backend: 'waiting', method: 'generate', latency_ms: 1, success: true });
+			ids.push(waiting);
+			await new Promise((resolve) => setTimeout(resolve, 1100));
+			release();
+			await first;
+			await waitFor(() => modelTable.primaryStore.getEntry(waiting, { uncachedRead: true }), 500);
+		} finally {
+			release();
+			await first;
+		}
 	});
 
 	it('bounds overload to one batch and one waiting buffer, then re-arms automatically', async () => {
