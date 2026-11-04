@@ -69,6 +69,12 @@ const inputSchemaByWorker = new Map<string, Map<number, WorkerSchema>>();
 // Per originator, not per name: a rolling deploy whose new generation drops `requiresSuperUser`
 // must keep routing the name while retracting grantability, which a name-level flag cannot express.
 const grantableByWorker = new Map<string, Set<number>>();
+const retirementListeners = new Set<(name: string) => void>();
+
+export function onRemoteOperationUnregistered(listener: (name: string) => void): () => void {
+	retirementListeners.add(listener);
+	return () => retirementListeners.delete(listener);
+}
 const pendingExecutions = new Map<
 	number,
 	{ targetThreadId: number; resolve: (result: any) => void; reject: (error: Error) => void }
@@ -112,19 +118,21 @@ export function operationRegisteredHandler(event: {
 	workerIds.add(originator);
 	let workerSchemas = inputSchemaByWorker.get(name);
 	if (!workerSchemas) inputSchemaByWorker.set(name, (workerSchemas = new Map()));
-	let workerSchema: WorkerSchema = {};
+	let workerSchema: WorkerSchema | undefined;
 	if (inputSchema) {
 		try {
 			const canonical = canonicalJson(inputSchema);
-			workerSchema = [...workerSchemas.values()].find((schema) => schema.canonical === canonical) ?? {
-				inputSchema,
-				canonical,
-			};
+			for (const schema of workerSchemas.values()) {
+				if (schema.canonical !== canonical) continue;
+				workerSchema = schema;
+				break;
+			}
+			workerSchema ??= { inputSchema, canonical };
 		} catch (error) {
 			operationLog.warn(`Ignoring invalid inputSchema announced for '${name}' by thread ${originator}`, error);
 		}
 	}
-	workerSchemas.set(originator, workerSchema);
+	workerSchemas.set(originator, workerSchema ?? {});
 	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's
 	// chooseOperation. A re-announcement that drops the permission retracts this thread's claim.
 	setWorkerGrantable(name, originator, grantable === true);
@@ -173,6 +181,13 @@ function dropRegistration(name: string) {
 	inputSchemaByWorker.delete(name);
 	grantableByWorker.delete(name);
 	unregisterWorkerGrantableOperation(name);
+	for (const listener of retirementListeners) {
+		try {
+			listener(name);
+		} catch (error) {
+			operationLog.error(`Remote operation retirement listener failed for '${name}'`, error);
+		}
+	}
 }
 
 export function getRemoteOperationInputSchemas(

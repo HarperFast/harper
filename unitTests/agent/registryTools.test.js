@@ -279,7 +279,11 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 			new Map(
 				[...operations.keys()].map((name) => [
 					name,
-					{ operation_function: (body) => operations.get(name)(body), inputSchema: OPERATION_INPUT_SCHEMAS[name] },
+					{
+						builtin: true,
+						operation_function: (body) => operations.get(name)(body),
+						inputSchema: OPERATION_INPUT_SCHEMAS[name],
+					},
 				])
 			)
 		);

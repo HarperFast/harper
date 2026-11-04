@@ -99,3 +99,10 @@ server.registerOperation({
 		return { threadId };
 	},
 });
+
+server.registerOperation({
+	name: 'search_registered_operation',
+	inputSchema: { type: 'object' },
+	readOnly: true,
+	execute: async () => ({ worker: threadId }),
+});

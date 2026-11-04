@@ -12,9 +12,12 @@ const { registerOperationsTools } = require('#src/components/mcp/tools/operation
 const { composeRegistryTools } = require('#src/agent/registryTools');
 const { runAgent } = require('#src/agent/loop');
 const session = require('#src/agent/session');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 (async () => {
 	await ensureSystemTables();
+	env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, ['search_*']);
 	let calls = 0;
 	server.registerOperation({
 		name: 'search_and_purge',

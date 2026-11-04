@@ -262,8 +262,14 @@ describe('mcp/tools/operations — registration', () => {
 		_setRemoteOperationInputSchemasForTest([['search_and_reindex', { inputSchema: { type: 'object' } }]]);
 		registerOperationsTools();
 		for (const name of ['search_by_value', 'search_and_reindex']) {
+			assert.equal(getTool(name), undefined);
+		}
+		assert.deepEqual(listTools({ user: SUPER, profile: 'operations', sessionId: 's' }).tools, []);
+		envOverrides.mcp_operations_allow = ['search_*'];
+		for (const name of ['search_by_value', 'search_and_reindex']) {
 			const tool = getTool(name);
 			assert.equal(tool.annotations?.readOnlyHint, undefined);
+			assert.equal(tool.annotations?.destructiveHint, true);
 			assert.match(tool.description, /registered schema/);
 		}
 	});
@@ -304,6 +310,10 @@ describe('mcp/tools/operations — registration', () => {
 	it('gates an unknown default-glob component operation in the agent', () => {
 		_setOperationFunctionMapForTest(makeOpMap([['search_and_purge', null, { type: 'object' }, false]]));
 		registerOperationsTools();
+		assert.equal(getTool('search_and_purge'), undefined);
+		envOverrides.mcp_operations_allow = [];
+		assert.equal(getTool('search_and_purge'), undefined);
+		envOverrides.mcp_operations_allow = ['search_*'];
 		assert.equal(getTool('search_and_purge').annotations?.destructiveHint, true);
 		const { composeRegistryTools } = require('#src/agent/registryTools');
 		const { composeToolset } = require('#src/agent/toolset');
@@ -1133,4 +1143,56 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assert.match(payload.message, /aborted/i);
 		assertSpecLegal(res);
 	});
+});
+
+describe('mcp/tools/operations — remote warning lifetime', () => {
+	for (const retirement of ['exit', 'failed port']) {
+		it(`deduplicates active warnings and resets them after final-owner ${retirement}`, async () => {
+			const remote = require('#src/server/serverHelpers/registeredOperations');
+			const { notifyThreadExit } = require('#src/server/threads/manageThreads');
+			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+			const name = `search_warning_retirement_${retirement.replace(' ', '_')}`;
+			const previousAllow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
+			const previousDeny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
+			const workers = retirement === 'exit' ? [9_000_460, 9_000_461, 9_000_462] : [9_000_463, 9_000_464, 9_000_465];
+			const restore = pinLogConfig({ level: 'warn' });
+			const logPath = harperLogger.getLogFilePath();
+			const lines = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8') : '').split('\n');
+			const warnings = () =>
+				lines().filter((line) => line.includes(`'${name}'`) && line.includes('without inputSchema'));
+			const list = () => listTools({ user: SUPER, profile: 'operations', sessionId: name, limit: 200 });
+			try {
+				_resetRegistryForTest();
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, ['search_warning_retirement_*']);
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, []);
+				registerOperationsTools();
+				for (const originator of workers.slice(0, 2))
+					remote.operationRegisteredHandler({ message: { name, originator } });
+				assert.equal(getTool(name), undefined);
+				list();
+				await waitFor(() => warnings().length === 1);
+				notifyThreadExit(workers[0]);
+				list();
+				harperLogger.warn(`${name}: partial-owner listing complete`);
+				await waitFor(() => lines().some((line) => line.includes(`${name}: partial-owner listing complete`)));
+				assert.equal(warnings().length, 1);
+				if (retirement === 'exit') notifyThreadExit(workers[1]);
+				else
+					await assert.rejects(
+						remote.getRemoteOperationFunction(name)({ operation: name }),
+						/no worker thread is available/
+					);
+				assert.equal(remote.getRemoteOperationInputSchema(name), undefined);
+				remote.operationRegisteredHandler({ message: { name, originator: workers[2] } });
+				list();
+				await waitFor(() => warnings().length === 2);
+			} finally {
+				for (const id of workers) notifyThreadExit(id);
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, previousAllow);
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, previousDeny);
+				_resetRegistryForTest();
+				restore();
+			}
+		});
+	}
 });

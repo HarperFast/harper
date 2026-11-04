@@ -416,3 +416,58 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		});
 	});
 });
+
+suite('Component: registered-operation default MCP safety', (ctx: ContextWithHarper) => {
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+			config: {
+				threads: { count: 2 },
+				logging: { console: true, level: 'error' },
+				mcp: { operations: { mountPath: '/mcp' } },
+			},
+		});
+	});
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+	test('withholds forwarded read-only claims from default tools/list and tools/call', async () => {
+		const { username, password } = ctx.harper.admin;
+		let sessionId: string | null;
+		async function request(body: object) {
+			return fetch(`${ctx.harper.operationsAPIURL}/mcp`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json, text/event-stream',
+					'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+					...(sessionId ? { 'Mcp-Session-Id': sessionId, 'MCP-Protocol-Version': '2025-06-18' } : {}),
+				},
+				body: JSON.stringify(body),
+			});
+		}
+		const init = await request({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'default-safety', version: '1' } },
+		});
+		strictEqual(init.status, 200);
+		sessionId = init.headers.get('mcp-session-id');
+		await init.arrayBuffer();
+		const listed: any = await (await request({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })).json();
+		ok(listed.result.tools.some((tool: any) => tool.name === 'describe_all'));
+		strictEqual(
+			listed.result.tools.some((tool: any) => tool.name === 'search_registered_operation'),
+			false
+		);
+		const called: any = await (
+			await request({
+				jsonrpc: '2.0',
+				id: 3,
+				method: 'tools/call',
+				params: { name: 'search_registered_operation', arguments: {} },
+			})
+		).json();
+		ok(called.error || called.result?.isError, JSON.stringify(called));
+	});
+});

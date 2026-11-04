@@ -15,7 +15,7 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  * would silently have no effect — #1562. Walking the live map per request
  * removes the ordering dependence and stays consistent as components load.
  *
- * The default v1 allow list is read-only and intentionally narrow:
+ * The default v1 allow list requires a read-only classification and is intentionally narrow:
  * `describe_*`, `list_*`, `search_*`, plus an explicit set of safe
  * getters (`get_job`, `get_status`, `get_analytics`),
  * `system_information`, `read_log`, `read_audit_log`. A `get_*` glob
@@ -27,7 +27,9 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  * `verifyPerms` still gates the actual call. Operators who want any
  * of those opt in via `mcp.operations.allow`. Destructive ops carry
  * `destructiveHint: true` so well-behaved MCP clients can surface a
- * confirmation prompt.
+ * confirmation prompt. Component replacements need an owned `readOnly: true`
+ * declaration for default visibility. Worker operations require an explicit
+ * allow list, which replaces the defaults.
  *
  * Tool dispatch delegates to `chooseOperation` + `processLocalTransaction`
  * — the same path Harper's REST `/operation` endpoint uses. That means
@@ -36,7 +38,10 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  * advertised input contracts come from operation registration metadata.
  */
 import { Readable } from 'node:stream';
-import type { RemoteOperationSchema } from '../../../server/serverHelpers/registeredOperations.ts';
+import {
+	onRemoteOperationUnregistered,
+	type RemoteOperationSchema,
+} from '../../../server/serverHelpers/registeredOperations.ts';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
@@ -65,6 +70,7 @@ type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) =>
 interface OperationsConfig {
 	allow?: readonly string[];
 	deny?: readonly string[];
+	usingDefaults: boolean;
 }
 
 // Test seams replace production dispatch when exercising registry behavior.
@@ -73,6 +79,10 @@ let _remoteSchemasOverride: Array<[string, RemoteOperationSchema]> | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
 const warnedMissingSchemas = new Set<string>();
+onRemoteOperationUnregistered((name) => {
+	warnedMissingSchemas.delete(`${name}:missing`);
+	warnedMissingSchemas.delete(`${name}:inconsistent`);
+});
 
 export function _setOperationFunctionMapForTest(m: OperationFunctionMap | undefined): void {
 	_opMapOverride = m;
@@ -296,15 +306,19 @@ function matchesAny(operation: string, patterns: readonly string[] | undefined):
 }
 
 function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
-	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
-	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
-	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
+	if (config.usingDefaults && DEFAULT_EXCLUDED.has(operation)) return false;
+	const allowList = config.usingDefaults ? DEFAULT_ALLOW : config.allow;
 	if (!matchesAny(operation, allowList)) return false;
 	if (matchesAny(operation, config.deny)) return false;
 	return true;
 }
 
-export const _isOperationAllowedForTest = isOperationAllowed;
+export function _isOperationAllowedForTest(
+	operation: string,
+	config: Pick<OperationsConfig, 'allow' | 'deny'>
+): boolean {
+	return isOperationAllowed(operation, { ...config, usingDefaults: !config.allow?.length });
+}
 
 function getOperationsConfig(): OperationsConfig {
 	const allow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
@@ -312,6 +326,7 @@ function getOperationsConfig(): OperationsConfig {
 	return {
 		allow: Array.isArray(allow) ? (allow as readonly string[]) : undefined,
 		deny: Array.isArray(deny) ? (deny as readonly string[]) : undefined,
+		usingDefaults: !Array.isArray(allow) || allow.length === 0,
 	};
 }
 
@@ -469,6 +484,13 @@ export function makeOperationToolHandler(operationName: string) {
 	};
 }
 
+function hasReadOnlyClassification(operationName: string, operation: OperationFunctionEntry): boolean {
+	return (
+		!isDestructive(operationName) &&
+		((operation.builtin === true && isReadOnly(operationName)) || operation.readOnly === true)
+	);
+}
+
 function buildOperationToolDef(
 	operationName: string,
 	inputSchema: object,
@@ -478,7 +500,7 @@ function buildOperationToolDef(
 	const builtin = operation.builtin === true;
 	const destructive = isDestructive(operationName) || (!builtin && operation.readOnly !== true);
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
-	if (!destructive && ((builtin && isReadOnly(operationName)) || operation.readOnly === true)) {
+	if (hasReadOnlyClassification(operationName, operation)) {
 		annotations.readOnlyHint = true;
 	}
 	if (destructive) annotations.destructiveHint = true;
@@ -500,6 +522,7 @@ function buildRegisteredOperationToolDef(
 	config: OperationsConfig,
 	issue: RemoteOperationSchema['issue'] = 'missing'
 ): ToolDef | undefined {
+	if (config.usingDefaults && !hasReadOnlyClassification(operationName, operation)) return undefined;
 	if (!operation.inputSchema) {
 		if (
 			issue !== 'inconsistent' &&
@@ -546,25 +569,29 @@ const operationsToolProvider: ProfileToolProvider = {
 			const def = buildRegisteredOperationToolDef(operationName, operation, config);
 			if (def) defs.push(def);
 		}
-		for (const [operationName, remoteSchema] of getRemoteOperationInputSchemas(
-			(name) => !opMap.has(name) && isOperationAllowed(name, config)
-		)) {
-			const def = buildRegisteredOperationToolDef(
-				operationName,
-				{ inputSchema: remoteSchema.inputSchema },
-				config,
-				remoteSchema.issue
-			);
-			if (def) defs.push(def);
+		// Forwarded registrations cannot make an owned read-only claim.
+		if (!config.usingDefaults) {
+			for (const [operationName, remoteSchema] of getRemoteOperationInputSchemas(
+				(name) => !opMap.has(name) && isOperationAllowed(name, config)
+			)) {
+				const def = buildRegisteredOperationToolDef(
+					operationName,
+					{ inputSchema: remoteSchema.inputSchema },
+					config,
+					remoteSchema.issue
+				);
+				if (def) defs.push(def);
+			}
 		}
 		return defs;
 	},
 	get(operationName: string): ToolDef | undefined {
 		const opMap = getOperationFunctionMap();
 		if (!opMap) return undefined;
+		const config = getOperationsConfig();
 		let operation = opMap.get(operationName);
 		let issue: RemoteOperationSchema['issue'];
-		if (!operation) {
+		if (!operation && !config.usingDefaults) {
 			const remote = getRemoteOperationInputSchema(operationName);
 			if (remote) {
 				operation = { inputSchema: remote.inputSchema };
@@ -572,7 +599,6 @@ const operationsToolProvider: ProfileToolProvider = {
 			}
 		}
 		if (!operation) return undefined;
-		const config = getOperationsConfig();
 		if (!isOperationAllowed(operationName, config)) return undefined;
 		return buildRegisteredOperationToolDef(operationName, operation, config, issue);
 	},

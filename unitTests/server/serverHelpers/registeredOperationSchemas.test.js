@@ -2,10 +2,39 @@ const assert = require('node:assert');
 const {
 	operationRegisteredHandler,
 	getRemoteOperationInputSchema,
+	getRemoteOperationFunction,
+	onRemoteOperationUnregistered,
 } = require('#src/server/serverHelpers/registeredOperations');
 const { notifyThreadExit } = require('#src/server/threads/manageThreads');
 
 describe('worker operation schema consistency', function () {
+	it('retires only the last owner and isolates retirement listeners on failed ports', async function () {
+		const name = 'test_remote_retirement_listener';
+		const retired = [];
+		const unsubscribeThrowing = onRemoteOperationUnregistered((retiredName) => {
+			if (retiredName === name) throw new Error('intentional retirement listener failure');
+		});
+		const unsubscribe = onRemoteOperationUnregistered((retiredName) => retired.push(retiredName));
+		try {
+			for (const originator of [9_000_450, 9_000_451]) {
+				operationRegisteredHandler({ message: { name, originator } });
+			}
+			notifyThreadExit(9_000_450);
+			assert.equal(retired.includes(name), false);
+			await assert.rejects(getRemoteOperationFunction(name)({ operation: name }), /no worker thread is available/);
+			assert.deepEqual(
+				retired.filter((value) => value === name),
+				[name]
+			);
+			assert.equal(getRemoteOperationInputSchema(name), undefined);
+		} finally {
+			unsubscribeThrowing();
+			unsubscribe();
+			notifyThreadExit(9_000_450);
+			notifyThreadExit(9_000_451);
+		}
+	});
+
 	it('shares equivalent schemas across owners and retains them when the first owner exits', function () {
 		const name = 'test_shared_worker_schema';
 		const first = { type: 'object', properties: { value: { type: 'string' } } };
