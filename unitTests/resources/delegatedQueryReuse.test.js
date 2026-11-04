@@ -210,6 +210,53 @@ describe('delegated reads reusing one query object', function () {
 				});
 			}
 
+			for (const placement of ['root', 'conditions']) {
+				it(`reads a next-only iterator at ${placement}`, async function () {
+					const iterable = {
+						[Symbol.iterator]() {
+							let done = false;
+							return {
+								next() {
+									if (done) return { done: true };
+									done = true;
+									return { done: false, value: { attribute: 'id', value: 'e1' } };
+								},
+							};
+						},
+					};
+					const root = { select: authoredSelect(), checkPermission: true };
+					if (placement === 'root') root[Symbol.iterator] = iterable[Symbol.iterator];
+					else root.conditions = iterable;
+					for (const user of [broadUser, restrictedUser, broadUser])
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+				});
+			}
+
+			it('retains a next-only iterable filter on collection delete', async function () {
+				const Store = getTable();
+				class Delete extends Store {
+					static loadAsInstance = Store.loadAsInstance;
+					allowDelete() {
+						return true;
+					}
+				}
+				const conditions = {
+					[Symbol.iterator]() {
+						let done = false;
+						return {
+							next() {
+								if (done) return { done: true };
+								done = true;
+								return { done: false, value: { attribute: 'id', value: 'missing' } };
+							},
+						};
+					},
+				};
+				await Store.put('keep-next-only', { id: 'keep-next-only' });
+				await Delete.delete({ id: null, isCollection: true, checkPermission: true, conditions }, { user: broadUser });
+				assert.strictEqual((await Store.get('keep-next-only')).id, 'keep-next-only');
+			});
+
 			it('reads fresh predicates from a reusable iterable on each dispatch', async function () {
 				let id = 'e1';
 				const conditions = { [Symbol.iterator]: () => [{ attribute: 'id', value: id }][Symbol.iterator]() };

@@ -19,7 +19,7 @@ function replayIterator(source: any, iteratorMethod?: () => Iterator<any>): Iter
 		snapshot = {};
 		iteratorSnapshots.set(iterator, snapshot);
 		try {
-			snapshot.values = Array.from(iterator);
+			snapshot.values = Array.from({ [Symbol.iterator]: () => iterator });
 		} catch (error) {
 			snapshot.error = error;
 		}
