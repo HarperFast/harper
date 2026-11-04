@@ -328,6 +328,26 @@ describe('mcp/tools/operations — registration', () => {
 		);
 	});
 
+	it('keeps the built-in agent session listing visible under defaults', () => {
+		const { buildOperations } = require('#src/agent/operations');
+		const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
+		const operation = buildOperations({}).find((op) => op.name === 'list_agent_sessions');
+		const previous = OPERATION_FUNCTION_MAP.get(operation.name);
+		try {
+			server.registerOperation(operation);
+			registerOperationsTools();
+			assert.equal(getTool(operation.name)?.annotations?.readOnlyHint, true);
+			assert.ok(
+				listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.some(
+					(tool) => tool.name === operation.name
+				)
+			);
+		} finally {
+			if (previous) OPERATION_FUNCTION_MAP.set(operation.name, previous);
+			else OPERATION_FUNCTION_MAP.delete(operation.name);
+		}
+	});
+
 	it('honors a main-thread read-only declaration without weakening destructive names', () => {
 		const utils = require('#src/server/serverHelpers/serverUtilities');
 		const name = 'list_owned_read_only';

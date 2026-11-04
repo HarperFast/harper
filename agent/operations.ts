@@ -53,6 +53,7 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 		},
 		{
 			name: OPERATIONS_ENUM.LIST_AGENT_SESSIONS,
+			readOnly: true,
 			execute: async (op) => listAgentSessions(op, deps),
 			inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.list_agent_sessions,
 			requiresSuperUser: true,
