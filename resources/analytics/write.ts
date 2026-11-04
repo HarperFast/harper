@@ -1380,14 +1380,15 @@ function recordAnalytics(message, worker?) {
 	}
 	report.id = getNextMonotonicTime();
 	try {
-		Promise.resolve(getRawAnalyticsTable().put(report, {})).catch((error) =>
-			log.warn?.('Unable to save raw analytics report', error)
-		);
+		Promise.resolve(getRawAnalyticsTable().put(report, {})).catch(logRawAnalyticsWriteError);
 	} catch (error) {
-		log.warn?.('Unable to save raw analytics report', error);
+		logRawAnalyticsWriteError(error);
 	}
 	if (!scheduledTasksRunning) startScheduledTasks();
 	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);
+}
+function logRawAnalyticsWriteError(error) {
+	log[error?.statusCode === 503 ? 'debug' : 'warn']?.('Unable to save raw analytics report', error);
 }
 let lastAppend;
 let analyticsLog;

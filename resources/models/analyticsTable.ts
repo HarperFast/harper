@@ -251,7 +251,7 @@ export class ModelCallAnalyticsWriter {
 				}
 			});
 		} catch (error) {
-			log.warn?.(
+			log[(error as { statusCode?: number })?.statusCode === 503 ? 'debug' : 'warn']?.(
 				'Model-call analytics batch commit failed',
 				{
 					batchSize: batch.length,
