@@ -29,11 +29,14 @@ GET /Product/?category=software&inStock=true
 
 <VersionBadge version="v4.3.0" />
 
-Query for null values or non-null values:
+Query for records that store `null`, or for records whose value is present and not `null`:
 
 ```http
 GET /Product/?discount=null
+GET /Product/?discount=ne=null
 ```
+
+`discount=null` matches records that store `null` in `discount`. A record that omits `discount` matches neither query. See [Null and Omitted Values](#null-and-omitted-values) for how other comparators treat null and omitted values.
 
 Note: Only indexes created in v4.3.0 or later support null indexing. Existing indexes must be rebuilt (removed and re-added) to support null queries.
 
@@ -41,19 +44,23 @@ Note: Only indexes created in v4.3.0 or later support null indexing. Existing in
 
 Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompub-fiql-00) syntax for comparison operators:
 
-| Operator             | Meaning                                |
-| -------------------- | -------------------------------------- |
-| `==`                 | Equal                                  |
-| `=lt=`               | Less than                              |
-| `=le=`               | Less than or equal                     |
-| `=gt=`               | Greater than                           |
-| `=ge=`               | Greater than or equal                  |
-| `=ne=`, `!=`         | Not equal                              |
-| `=ct=`               | Contains (strings)                     |
-| `=sw=`, `==<value>*` | Starts with (strings)                  |
-| `=ew=`               | Ends with (strings)                    |
-| `=`, `===`           | Strict equality (no type conversion)   |
-| `!==`                | Strict inequality (no type conversion) |
+| Operator                                  | Meaning                                 |
+| ----------------------------------------- | --------------------------------------- |
+| `==`                                      | Equal                                   |
+| `=lt=`                                    | Less than                               |
+| `=le=`                                    | Less than or equal                      |
+| `=gt=`                                    | Greater than                            |
+| `=ge=`                                    | Greater than or equal                   |
+| `=ne=`, `!=`                              | Not equal                               |
+| `=between=(low,high)`, `=gele=(low,high)` | At least `low` and at most `high`       |
+| `=gelt=(low,high)`                        | At least `low` and less than `high`     |
+| `=gtle=(low,high)`                        | Greater than `low` and at most `high`   |
+| `=gtlt=(low,high)`                        | Greater than `low` and less than `high` |
+| `=ct=`                                    | Contains (strings)                      |
+| `=sw=`, `==<value>*`                      | Starts with (strings)                   |
+| `=ew=`                                    | Ends with (strings)                     |
+| `=`, `===`                                | Strict equality (no type conversion)    |
+| `!==`                                     | Strict inequality (no type conversion)  |
 
 Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. Each has a negated form: `=not_matches=`, `=not_matches_all=`, `=not_matches_phrase=`, `=not_matches_prefix=`, `=not_matches_fuzzy=`, and `=not_matches_fuzzy_prefix=`. Combine a negated condition with a positive full-text condition on the same index; a structured filter alone does not qualify. These use the full-text index rather than ordinary string comparisons. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
@@ -64,6 +71,7 @@ GET /Product/?price=gt=100
 GET /Product/?price=le=20
 GET /Product/?name==Keyboard*
 GET /Product/?category=software&price=gt=100&price=lt=200
+GET /Product/?price=between=(100,200)
 ```
 
 For date fields, colons must be URL-encoded as `%3A`:
@@ -127,6 +135,60 @@ For FIQL comparators (`==`, `!=`, `=gt=`, etc.), Harper applies automatic type c
 If the attribute specifies a type in the schema (e.g., `Float`), values are always converted to that type before searching.
 
 For strict operators (`=`, `===`, `!==`), no automatic type conversion is applied — the value is decoded as a URL-encoded string, and the attribute type (if declared in the schema) dictates type conversion.
+
+### Null and Omitted Values
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+:::note Pending release
+
+Targeted for v5.4.0; not released yet. See [Match null and omitted values the same way whether a condition leads the scan or filters](https://github.com/HarperFast/harper/pull/3925).
+
+:::
+
+A record can store `null` in an attribute, or omit the attribute. Comparators treat a null value and an omitted value the same way, except `==null`, which matches a stored `null` only. The rules hold whether or not the attribute is indexed, and whichever condition Harper runs first:
+
+- `ne` (`!=`) with a non-null value matches null and omitted values.
+- No range comparator (`lt`, `le`, `gt`, `ge`, `between`, `gele`, `gelt`, `gtle`, `gtlt`) matches a null or omitted value.
+- A `null` lower bound means no lower bound: `ge=null` and `gt=null` match every non-null value, and `between=(null,10)` returns the same records as `le=10`. A `null` upper bound, `lt=null` and `le=null` match nothing.
+- On an array attribute, `ne=v` matches a record when at least one element is not `v`. An array whose elements all equal `v` (`["sale"]`, `["sale", "sale"]`) does not match, an empty array matches no `ne` condition, and a null or omitted array matches `ne=v` for a non-null `v`.
+
+For example, with this schema and data:
+
+```graphql
+type Product @table @export {
+	id: ID @primaryKey
+	discount: Int @indexed
+	tags: [String] @indexed
+}
+```
+
+| `id` | `discount` | `tags`             |
+| ---- | ---------- | ------------------ |
+| 1    | `5`        | `["sale"]`         |
+| 2    | `10`       | `["sale", "new"]`  |
+| 3    | `null`     | `["sale", "sale"]` |
+| 4    | omitted    | `[]`               |
+| 5    | `15`       | `null`             |
+| 6    | `20`       | omitted            |
+
+| Query                                      | Matching `id`s |
+| ------------------------------------------ | -------------- |
+| `GET /Product/?discount=ne=5`              | 2, 3, 4, 5, 6  |
+| `GET /Product/?discount=ne=null`           | 1, 2, 5, 6     |
+| `GET /Product/?discount=null`              | 3              |
+| `GET /Product/?discount=lt=12`             | 1, 2           |
+| `GET /Product/?discount=ge=null`           | 1, 2, 5, 6     |
+| `GET /Product/?discount=between=(null,10)` | 1, 2           |
+| `GET /Product/?discount=between=(10,null)` | none           |
+| `GET /Product/?tags=ne=sale`               | 2, 5, 6        |
+| `GET /Product/?tags=ne=null`               | 1, 2, 3        |
+
+The table lists which records match, not their order. Sorting puts null and omitted values first, or last with `-`, with no guaranteed order between the two. `GET /Product/?discount=ne=5&sort(discount)` returns 3 and 4 in either order, then 2, 5, 6.
+
+Before v5.4.0, results depended on the query plan: an indexed `ne` that led the query dropped null and omitted values, `ge=null` and `between=(null,x)` matched stored `null` values, and `ne` compared an unindexed array as a whole.
+
+SQL follows different rules: `<>` and `NOT IN` exclude null and omitted values, and `IS NULL` matches both. See [NULL and omitted values in SQL](../operations-api/sql.md#null-and-omitted-values).
 
 ## Unions (OR Logic)
 
@@ -205,6 +267,8 @@ Sort results by one or more properties. Prefix `+` or no prefix = ascending; `-`
 GET /Product/?rating=gt=3&sort(+name)
 GET /Product/?sort(+rating,-price)
 ```
+
+<VersionBadge type="changed" version="v5.4.0" /> A sort also applies when a condition on the sort attribute cannot read that attribute's index, as with an unindexed attribute, or `ne` with a non-null value on an attribute other than the primary key (`?discount=ne=5&sort(discount)`). Harper then collects and sorts every matching record in memory before applying `limit()`, so a small page does not reduce the work. Before v5.4.0, such a query could return records in primary-key order. See [Sorting](../resources/query-optimization.md#sorting) for performance guidance.
 
 ## Pagination and Total Count
 

@@ -97,6 +97,16 @@ WHERE d.owner_name IN ('Kyle', 'Zach')
 ORDER BY d.dog_name
 ```
 
+### NULL and Omitted Values
+
+`WHERE` treats an omitted attribute as `NULL`:
+
+- `IS NULL` matches records that store `null` and records that omit the attribute. `IS NOT NULL` matches the rest.
+- `<>` and `NOT IN` with non-null values exclude `NULL` and omitted values.
+- <VersionBadge type="changed" version="v5.4.0" /> With the default `auto` engine, a range (`<`, `<=`, `>`, `>=`, `BETWEEN`) compared with a `NULL` literal matches no rows. Before v5.4.0, it could fail with an `Invalid value for attribute` error, and `BETWEEN NULL AND x` could return rows whose value is `NULL`. This change is pending release; see [Match null and omitted values the same way whether a condition leads the scan or filters](https://github.com/HarperFast/harper/pull/3925).
+
+Use `IS NULL` and `IS NOT NULL` to test for `NULL`. REST and Resource API conditions follow different rules: `ne` with a non-null value matches null and omitted values, and a `null` lower bound means no lower bound. See [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
+
 ---
 
 ## Query Performance
@@ -155,7 +165,7 @@ For queries the new engine plans (the default under `auto`), a handful of non-st
 - **`OFFSET` past the end of a result returns no rows.** The legacy engine could still return rows when the `OFFSET` exceeded the number of matches.
 - **A `NULL`-valued expression result is returned as an explicit `null`** rather than omitted from the row. A computed column or `COALESCE` that evaluates to `NULL` — or `UPPER(<null>)` — now yields `null` (the legacy engine dropped the key, and `UPPER` of a `NULL` returned the literal string `"NULL"`).
 
-These are deliberate corrections toward standard SQL, applied when the new engine serves the query — not fallbacks. If your application depended on a legacy quirk, adjust for the standard behavior.
+These are deliberate corrections toward standard SQL, applied when the new engine serves the query — not fallbacks. If your application depended on a legacy quirk, adjust for the standard behavior. For how `WHERE` compares `NULL` and omitted values, including the v5.4.0 change to ranges compared with `NULL`, see [NULL and Omitted Values](#null-and-omitted-values).
 
 ### Practical guidance
 

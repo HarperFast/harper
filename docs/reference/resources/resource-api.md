@@ -1070,6 +1070,25 @@ Product.search({ conditions: [{ attribute: ['brand', 'name'], value: 'Harper' }]
 
 <VersionBadge version="v4.3.0" />
 
+#### Null and omitted values
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+:::note Pending release
+
+Targeted for v5.4.0; not released yet. See [Match null and omitted values the same way whether a condition leads the scan or filters](https://github.com/HarperFast/harper/pull/3925).
+
+:::
+
+Conditions treat a stored `null` and an omitted attribute the same way, except `equals` with a `null` value, which matches a stored `null` only. `not_equal` with a non-null value matches null and omitted values, and `not_equal` with `null` matches values that are present and not `null`. No range comparator matches a null or omitted value, and a `null` lower bound means no lower bound. On an array attribute, `not_equal` matches a record when at least one element differs. These rules hold whether or not the attribute is indexed, and whichever condition runs first. See [Null and Omitted Values](../rest/querying.md#null-and-omitted-values) for the full rules and the sample data used here:
+
+```javascript
+// ids 2, 3, 4, 5 and 6: the null and omitted discounts match
+Product.search({ conditions: [{ attribute: 'discount', comparator: 'not_equal', value: 5 }] });
+// ids 1 and 2: the same records as less_than_equal 10
+Product.search({ conditions: [{ attribute: 'discount', comparator: 'between', value: [null, 10] }] });
+```
+
 ### `operator`
 
 Top-level `and` (default) or `or` for the `conditions` array.
@@ -1235,7 +1254,7 @@ Sort order object:
 
 For top-level collection queries, Harper uses an index to provide sort order, so a `sort` needs one of:
 
-- An `@indexed` sort `attribute`. Harper aligns the scan with the index automatically — **no condition is required**, and the condition (if any) does not have to be on the sort attribute.
+- An `@indexed` sort `attribute`. Harper aligns the scan with the index automatically — **no condition is required**, and the condition (if any) does not have to be on the sort attribute. A condition on the sort attribute that cannot read its index is the exception; see below.
 - At least one `conditions` entry (on **any** attribute) when the sort `attribute` is not indexed. Harper filters by the condition and then orders the result set in memory.
 
 Only the combination of a non-indexed sort `attribute` **and** zero conditions is rejected:
@@ -1254,6 +1273,8 @@ Product.search({
 ```
 
 Alternatively, pass `allowFullScan: true` to permit an unconditional ordered scan, or — if order doesn't matter — omit `sort` entirely and `search({})` will iterate without an index requirement.
+
+<VersionBadge type="changed" version="v5.4.0" /> An indexed sort `attribute` does not guarantee an index-ordered scan. When the condition Harper runs first is on the sort attribute but cannot read that attribute's index, as with `not_equal` and a non-null value on an attribute other than the primary key, Harper collects and sorts every matching record in memory before applying `offset` and `limit`. Before v5.4.0, such a query, or one whose condition was on an unindexed sort attribute, could return records in primary-key order. See [Sorting](./query-optimization.md#sorting).
 
 <VersionBadge type="changed" version="v5.4.0" /> When `attribute` is a path array that traverses a to-many relationship, each parent's sort key is the list of its related records' values in relationship order: the related records' primary-key order in the foreign-key index for a `@relationship(to: ...)` field (not sorted by the target attribute or reduced to a min/max), or the stored foreign-key array order for a `@relationship(from: ...)` array. Top-level `conditions` on a relationship restrict which parents match and which children `select` returns, but do not narrow the related records loaded into each parent's sort key. Lists compare element by element (`['alpha']` < `['alpha', 'delta']` < `['bravo']`), and `descending: true` reverses that order. A parent with no related records has an empty list (`[]`), a related record that omits the sort attribute (or an unresolved ID in a `@relationship(from: ...)` array without `filterMissing`) produces `undefined` at that position, and an explicit `null` attribute produces `null`: both `null` and `undefined` sort before booleans, numbers, and strings (`[]` and `[undefined]` compare as equal because reading past the end of a shorter array yields `undefined`). Across multiple to-many hops, each hop produces a list in relationship order, so two to-many hops compare a nested list of lists per parent (`[]` < `[[], ['a']]` < `[['b']]`). The index-or-condition rule above checks `@indexed` on the target attribute at the end of the path. List-per-parent sorting runs in memory when the target attribute is not `@indexed` (with a condition or `allowFullScan: true`), when a more selective condition on another attribute leads the query, or when `enforceExecutionOrder: true` is set, loading the related records for every matched parent; if the target attribute is `@indexed` and no more selective condition on another attribute leads the query, Harper instead drives the scan from the related table's index join (yielding each parent at its first matching index entry and, when unconditional, omitting parents with no related records). Note that, unlike a nested `select` sort (`select: [{ name: 'products', sort: { attribute: 'price' } }]`), which checks read permissions on the child sort attribute and orders children within each parent, a top-level `sort` orders the parent records and does not currently enforce `attribute_permissions` on the related sort attribute, so restricting read access to a child attribute does not prevent ordering parent records by it:
 

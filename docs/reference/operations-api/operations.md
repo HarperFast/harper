@@ -301,7 +301,7 @@ Returns records with a matching value on any attribute. Supports wildcards (e.g.
 
 ### `search_by_conditions`
 
-Returns records matching one or more conditions. Supports `operator` (`and`/`or`), `offset`, `limit`, nested `conditions` groups, and `sort` with multi-level tie-breaking. Full-text conditions use comparators such as `matches` and `matches_prefix`; see [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs and limits.
+Returns records matching one or more conditions. Supports `operator` (`and`/`or`), `offset`, `limit`, nested `conditions` groups, and `sort` with multi-level tie-breaking. Full-text conditions use comparators such as `matches` and `matches_prefix`; see [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs and limits. Conditions match null and omitted values by the rules in [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
 
 ```json
 {
@@ -2626,7 +2626,7 @@ Detailed documentation: [Analytics Operations](../analytics/operations.md)
 
 ### `get_analytics`
 
-Retrieves analytics data. Supports `start_time`/`end_time` (Unix ms), `get_attributes`, and `conditions` (same format as `search_by_conditions`).
+Retrieves analytics data. Supports `start_time`/`end_time` (Unix ms), `get_attributes`, and `conditions` (same format as `search_by_conditions`, including its [null and omitted value rules](../rest/querying.md#null-and-omitted-values)).
 
 ```json
 {

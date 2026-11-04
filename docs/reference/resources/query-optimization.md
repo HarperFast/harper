@@ -36,15 +36,15 @@ When a query is executed, conditions are evaluated against the database. Indexed
 
 ### Index Performance Characteristics
 
-| Operator                                                             | Uses index         | Notes                                                                    |
-| -------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------ |
-| `equals`                                                             | Yes                | Fast lookup in sorted index                                              |
-| `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal` | Yes                | Range scan in sorted index; narrower range = faster                      |
-| `starts_with`                                                        | Yes                | Prefix search in sorted index                                            |
-| `not_equal`                                                          | No                 | Full scan required (unless combined with selective indexed condition)    |
-| `contains`                                                           | No                 | Full scan required                                                       |
-| `ends_with`                                                          | No                 | Full scan required                                                       |
-| `!= null`                                                            | Yes (special case) | Can use indexes to find non-null records; only helpful for sparse fields |
+| Operator                                                             | Uses index         | Notes                                                                                                                                           |
+| -------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `equals`                                                             | Yes                | Fast lookup in sorted index                                                                                                                     |
+| `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal` | Yes                | Range scan in sorted index; narrower range = faster                                                                                             |
+| `starts_with`                                                        | Yes                | Prefix search in sorted index                                                                                                                   |
+| `not_equal` with a non-null value                                    | No                 | Full scan required (unless combined with selective indexed condition); a `sort` on the same attribute runs in memory, except on the primary key |
+| `contains`                                                           | No                 | Full scan required                                                                                                                              |
+| `ends_with`                                                          | No                 | Full scan required                                                                                                                              |
+| `!= null`                                                            | Yes (special case) | Can use indexes to find non-null records; only helpful for sparse fields                                                                        |
 
 **Rule of thumb**: Use `equals`, range operators, and `starts_with` on indexed fields. Avoid `contains`, `ends_with`, and `not_equal` as the sole or first condition in large datasets.
 
@@ -169,10 +169,12 @@ type Brand @table {
 
 Sorting can significantly impact query performance.
 
-- **Aligned sort and index**: If the sort attribute is the same indexed field used in the primary condition, Harper can use the index to retrieve results already in order — very fast.
-- **Unaligned sort**: If the sort is on a different field than the condition, or the sort field is not indexed, Harper must retrieve and sort all matching records. For large result sets this can be slow, and it also **defeats streaming** (see below).
+- **Aligned sort and index**: If the sort attribute is the same indexed field used in the primary condition, and that condition reads the field's index (such as `equals`, a range, or `starts_with`), Harper can use the index to retrieve results already in order — very fast.
+- **Unaligned sort**: If the sort is on a different field than the condition, the sort field is not indexed, or the condition on it cannot read its index (such as `not_equal` with a non-null value on an attribute other than the primary key), Harper must retrieve and sort all matching records. For large result sets this can be slow, and it also **defeats streaming** (see below). A `limit` does not reduce this work: Harper sorts every match before returning the page.
 
-Best practice: sort on the same indexed field you are filtering on, or sort on a secondary indexed field with a narrow enough condition to produce a manageable result set.
+<VersionBadge type="changed" version="v5.4.0" /> Before v5.4.0, a sort on the same attribute as an unindexed condition or a `not_equal` condition could return records in primary-key order; Harper now sorts them. This change is pending release; see [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
+
+Best practice: sort on the same indexed field you are filtering on with an index-reading condition, or sort on a secondary indexed field with a narrow enough condition to produce a manageable result set.
 
 ## Streaming
 
