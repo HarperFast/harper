@@ -40,7 +40,7 @@ export const AGENT_OPERATION_INPUT_SCHEMAS = {
 			maxTurns: { type: 'integer', minimum: 1 },
 			maxCostUsd: { type: ['number', 'null'], minimum: 0 },
 			maxSessionTokens: { type: ['integer', 'null'], minimum: 1 },
-			maxTokens: { type: 'integer', minimum: 1 },
+			maxTokens: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
 			maxToolResultBytes: { type: 'integer', minimum: 1024, maximum: 1_048_576 },
 			autoApprove: { type: 'boolean' },
 			allowDestructive: { type: 'boolean' },

@@ -2,8 +2,6 @@ import { loadNativePackage } from '../../utility/packageUtils.js';
 
 const MAX_OPERATION_INPUT_SCHEMA_BYTES = 64 * 1024;
 
-const validators = new Map<string, any>();
-
 function getDialect(schemaId: unknown): { key: string; entryPath: string; schemaId?: string } | { error: string } {
 	if (schemaId === undefined) return { key: 'draft-07', entryPath: '' };
 	if (typeof schemaId !== 'string') return { error: '$schema must be a string' };
@@ -22,16 +20,13 @@ function getDialect(schemaId: unknown): { key: string; entryPath: string; schema
 	return { error: `unsupported JSON Schema dialect '${schemaId}'` };
 }
 
-function getValidator(dialect: { key: string; entryPath: string }): any {
-	let validator = validators.get(dialect.key);
-	if (validator) return validator;
+function createValidator(dialect: { key: string; entryPath: string }): any {
 	const AjvModule = loadNativePackage('ajv', dialect.entryPath);
 	const Ajv = AjvModule.default ?? AjvModule;
-	validator = new Ajv({ addUsedSchema: false, strict: false, validateSchema: true, validateFormats: false });
+	const validator = new Ajv({ addUsedSchema: false, strict: false, validateSchema: true, validateFormats: false });
 	if (dialect.key === 'draft-06') {
 		validator.addMetaSchema(loadNativePackage('ajv', 'dist/refs/json-schema-draft-06.json'));
 	}
-	validators.set(dialect.key, validator);
 	return validator;
 }
 
@@ -51,17 +46,25 @@ export function normalizeOperationInputSchema(inputSchema: unknown): { schema?: 
 		if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
 			return { error: 'inputSchema must be a JSON object' };
 		}
-		if (schema.type !== 'object') return { error: "inputSchema must declare type: 'object'" };
+		if (!Object.hasOwn(schema, 'type') || schema.type !== 'object') {
+			return { error: "inputSchema must declare type: 'object'" };
+		}
+		// These exact empty-object contracts are valid without loading a compiler.
+		if (
+			Object.keys(schema).every((key) => key === 'type' || key === 'properties') &&
+			(!Object.hasOwn(schema, 'properties') ||
+				(schema.properties &&
+					typeof schema.properties === 'object' &&
+					!Array.isArray(schema.properties) &&
+					Object.keys(schema.properties).length === 0))
+		)
+			return { schema };
 		const dialect = getDialect(schema.$schema);
 		if ('error' in dialect) return dialect;
-		const validator = getValidator(dialect);
 		const schemaToValidate = dialect.schemaId ? { ...schema, $schema: dialect.schemaId } : schema;
-		try {
-			validator.compile(schemaToValidate);
-		} finally {
-			// These private validators must not retain refs or nested IDs from another operation.
-			validator.removeSchema();
-		}
+		// Ajv's compiler scope retains generated functions even after removeSchema().
+		// Keep each instance local so replaced registrations can be collected.
+		createValidator(dialect).compile(schemaToValidate);
 		return { schema: schemaToValidate };
 	} catch (error) {
 		return { error: error instanceof Error ? error.message : String(error) };

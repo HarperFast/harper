@@ -268,6 +268,39 @@ describe('mcp/tools/operations — registration', () => {
 		}
 	});
 
+	it('uses the local dispatch owner despite conflicting same-named worker registrations', async () => {
+		const name = 'test_local_dispatch_schema_owner';
+		const utils = require('#src/server/serverHelpers/serverUtilities');
+		const remote = require('#src/server/serverHelpers/registeredOperations');
+		const { notifyThreadExit } = require('#src/server/threads/manageThreads');
+		const inputSchema = { type: 'object', properties: { value: { type: 'string' } } };
+		envOverrides.mcp_operations_allow = [name];
+		try {
+			server.registerOperation({ name, inputSchema, execute: async (body) => ({ owner: 'main', value: body.value }) });
+			for (const [originator, type] of [
+				[9_000_401, 'number'],
+				[9_000_402, 'boolean'],
+			]) {
+				remote.operationRegisteredHandler({
+					message: {
+						name,
+						originator,
+						inputSchema: { type: 'object', properties: { value: { type } } },
+					},
+				});
+			}
+			assert.equal(remote.getRemoteOperationInputSchema(name).issue, 'inconsistent');
+			registerOperationsTools();
+			assert.deepEqual(getTool(name).inputSchema, inputSchema);
+			const body = { operation: name, value: 'local-contract' };
+			assert.deepEqual(await utils.chooseOperation(body, true)(body), { owner: 'main', value: 'local-contract' });
+		} finally {
+			utils.OPERATION_FUNCTION_MAP.delete(name);
+			notifyThreadExit(9_000_401);
+			notifyThreadExit(9_000_402);
+		}
+	});
+
 	it('keeps component destructive tools out of the agent default toolset', () => {
 		envOverrides.mcp_operations_allow = ['remove_node'];
 		_setOperationFunctionMapForTest(makeOpMap([['remove_node', null, null, false]]));

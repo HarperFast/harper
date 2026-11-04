@@ -506,11 +506,14 @@ function buildRegisteredOperationToolDef(
 		const warningKey = `${operationName}:${issue}`;
 		if (!warnedMissingSchemas.has(warningKey)) {
 			warnedMissingSchemas.add(warningKey);
-			const source = config.allow?.length ? ' is named by mcp.operations.allow but' : '';
+			const source = config.allow?.length ? ' matches mcp.operations.allow but' : '';
+			const defaultsNote = config.allow?.length
+				? ''
+				: '; an explicit allow list replaces the defaults, so include the default entries you still need';
 			const message =
 				issue === 'inconsistent'
 					? `MCP operations profile: '${operationName}' is registered by workers with different inputSchema values; withholding it until they agree`
-					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; ${operation.builtin ? 'name it literally in mcp.operations.allow' : 'pass inputSchema to server.registerOperation() or name it literally in mcp.operations.allow'}`;
+					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; ${operation.builtin ? 'name it literally in mcp.operations.allow' : 'pass inputSchema to server.registerOperation() or name it literally in mcp.operations.allow'}${defaultsNote}`;
 			harperLogger.warn(message);
 		}
 		return undefined;

@@ -2,6 +2,20 @@ const assert = require('node:assert');
 const { normalizeOperationInputSchema } = require('#src/server/serverHelpers/validateOperationInputSchema');
 
 describe('operation input schema reference validation', function () {
+	it('clones empty-object contracts without weakening schema validation', function () {
+		for (const schema of [{ type: 'object' }, { type: 'object', properties: {} }]) {
+			const result = normalizeOperationInputSchema(schema);
+			assert.equal(result.error, undefined);
+			assert.deepEqual(result.schema, schema);
+			assert.notStrictEqual(result.schema, schema);
+		}
+		for (const properties of [null, [], false, 0, 'object']) {
+			assert.ok(normalizeOperationInputSchema({ type: 'object', properties }).error);
+		}
+		assert.ok(normalizeOperationInputSchema({ type: 'object', properties: {}, $ref: '#/missing' }).error);
+		assert.ok(normalizeOperationInputSchema({ type: 'object', $schema: 'unknown' }).error);
+	});
+
 	it('rejects unresolved local references before publishing metadata', function () {
 		const result = normalizeOperationInputSchema({
 			type: 'object',

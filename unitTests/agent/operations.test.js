@@ -29,15 +29,18 @@ describe('agent/operations set_agent_config', () => {
 		for (const input of [
 			{ maxCostUsd: null, maxSessionTokens: null },
 			{ maxTokens: 8192, maxToolResultBytes: 2048, maxSessionTokens: 200000 },
+			{ maxToolResultBytes: 1_048_576 },
 		]) {
 			assert.ok(accepts(input), JSON.stringify(accepts.errors));
 			await execute(input);
 		}
-		assert.equal(patches.length, 2);
+		assert.equal(patches.length, 3);
 		for (const input of [
 			{ maxSessionTokens: 0 },
 			{ maxTokens: 0 },
+			{ maxTokens: 1e20 },
 			{ maxToolResultBytes: 1023 },
+			{ maxToolResultBytes: 1_048_577 },
 			{ httpFetch: false, maxTurns: 3 },
 			{ componentsScope: '.', maxTurns: 3 },
 			{ configScope: '.', maxTurns: 3 },
