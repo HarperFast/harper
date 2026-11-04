@@ -154,6 +154,9 @@ export type StorageSpaceStats = {
 	// Whether these numbers reflect a quota (accurate for what Harper can actually write) or
 	// raw filesystem-level statfs (can be wildly wrong under a quota-limited data directory).
 	basis: 'quota' | 'filesystem';
+	// When these numbers were measured (ms since epoch): the quota file's own sample time, which can
+	// be minutes older than the read, or the time of the statfs call.
+	updatedAt: number;
 };
 
 /**
@@ -178,14 +181,16 @@ export async function getStorageSpaceStats(path: string): Promise<StorageSpaceSt
 		(await isPathWithinRoot(rootPath, path))
 	) {
 		const available = Math.max(0, status.quotaBytes - status.usedBytes);
-		return { available, free: available, size: status.quotaBytes, basis: 'quota' };
+		return { available, free: available, size: status.quotaBytes, basis: 'quota', updatedAt: status.updatedAt };
 	}
+	const updatedAt = Date.now();
 	const fsStats = await statfs(path);
 	return {
 		available: fsStats.bavail * fsStats.bsize,
 		free: fsStats.bfree * fsStats.bsize,
 		size: fsStats.blocks * fsStats.bsize,
 		basis: 'filesystem',
+		updatedAt,
 	};
 }
 

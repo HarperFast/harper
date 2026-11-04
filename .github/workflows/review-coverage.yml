@@ -119,10 +119,13 @@ jobs:
             resources/PrimaryRocksDatabase.ts
             replication/**
             bin/copyDb.ts
+            dataLayer/archiveStaging.ts
             dataLayer/backupRepository.ts
             dataLayer/harperBridge/ResourceBridge.ts
             dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.js
             dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.ts
+            dataLayer/restoreChild.ts
+            dataLayer/restoreChildCommands.ts
             dataLayer/restoreMarker.ts
             dataLayer/rocksdbBackup.ts
             dataLayer/schemaDescribe.ts
@@ -148,6 +151,7 @@ jobs:
             resources/subscriptionCheckpoint.ts
             resources/transactionLogAbortMarkers.ts
             server/http.ts
+            server/replicationMembership.ts
             server/transactionLogCooling.ts
             utility/environment/systemInformation.ts
             utility/lmdb/commonUtility.ts

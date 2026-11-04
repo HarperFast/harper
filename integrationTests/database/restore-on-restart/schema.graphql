@@ -1,0 +1,6 @@
+# Declared by this component, so the component holds the database open for as long as it runs.
+type RestoreRestartItem @table(database: "restore_on_restart") @export {
+	id: ID @primaryKey
+	label: String @indexed
+	data: Blob
+}

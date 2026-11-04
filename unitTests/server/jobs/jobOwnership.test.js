@@ -62,7 +62,7 @@ describe('jobOwnership', function () {
 	});
 
 	afterEach(async function () {
-		await removeSeededJobs(seeded);
+		await removeSeededJobs(seeded ?? []);
 	});
 
 	describe('stampJobOwner', function () {
@@ -145,6 +145,16 @@ describe('jobOwnership', function () {
 			assert.strictEqual(await statusOf(errored), JOB_STATUS_ENUM.ERROR);
 		});
 
+		it('leaves a job whose outcome a durable record still decides, and settles the rest', async function () {
+			const deferred = await seedJob({ owner_instance: randomUUID(), deferred_to: 'restore-intent' });
+			const interrupted = await seedJob({ owner_instance: randomUUID() });
+			seeded.push(deferred, interrupted);
+
+			assert.strictEqual(await reconcileInterruptedJobs(new Set([deferred])), 1);
+			assert.strictEqual(await statusOf(deferred), JOB_STATUS_ENUM.IN_PROGRESS);
+			assert.strictEqual(await statusOf(interrupted), JOB_STATUS_ENUM.ERROR);
+		});
+
 		it('is idempotent — a second pass finds nothing left to settle', async function () {
 			const id = await seedJob({ owner_instance: randomUUID() });
 			seeded.push(id);
@@ -185,6 +195,14 @@ describe('jobOwnership', function () {
 
 			assert.strictEqual(await settleAbandonedJob(id), false);
 			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.COMPLETE);
+		});
+
+		it('leaves a deferred job to the record that will settle it', async function () {
+			const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID, deferred_to: 'restore receipt' });
+			seeded.push(id);
+
+			assert.strictEqual(await settleAbandonedJob(id), false);
+			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.IN_PROGRESS);
 		});
 
 		it('does not rewrite the message of a job that already failed', async function () {

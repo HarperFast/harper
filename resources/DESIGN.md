@@ -362,13 +362,9 @@ A read transaction belongs to one database, so a related read uses the related t
 
 `loadEnv.ts` defers an encrypted value until a decryptor registers (`deferEncryptedEnvValue`), then replays it; ciphertext is never exposed (`secretDeferredReplay.test.js`).
 
-## Closing an LMDB database closes its environment, never its dbis
+## `closeDatabase` closes every alias, wrapper and table
 
-Closing a dbi after its environment is a use-after-free, so `closeDatabase` closes an LMDB root once, skipping dbis. Only `closed` counts: lmdb-js resolves `close()` early during a read (`lmdbCloseCompletion.test.js`). A rescan (`getDatabases`) opens every `.mdb` under the storage paths, and lmdb-js double-frees on a failed open, so **every `.mdb` there must be LMDB** (harper#2669).
-
-## RocksDB teardown closes every wrapper the database opened
-
-A redeclare reuses open wrappers (`internalDbisFor`, `indexFor`). Every wrapper is recorded in `ownedRocksStores` and closed before the root, or `restore_backup` finds the database open (harper#3120). Never close one just because the graph dropped it (`closeLoadedDatabases.test.js`).
+Every alias sharing a root closes with it (`collectDatabaseGraph`). An LMDB root closes once, skipping dbis (use-after-free once the environment closes); only `closed` counts: lmdb-js resolves `close()` early during a read (`lmdbCloseCompletion.test.js`). A RocksDB redeclare reuses open wrappers (`internalDbisFor`, `indexFor`); all are recorded in `ownedRocksStores` and closed before the root, or `restore_backup` sees the database open (harper#3120), never because the graph dropped one (`closeLoadedDatabases.test.js`). Tables are disposed (`cleanup`) only once nothing can resume maintenance. A rescan (`getDatabases`) opens every `.mdb` in storage paths, and lmdb-js double-frees on a failed open, so **each must be LMDB** (harper#2669).
 
 ## A local-only write marks its record and audit entry, and replay keeps the mark
 

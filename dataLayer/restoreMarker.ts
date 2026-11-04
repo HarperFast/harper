@@ -4,6 +4,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'no
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
+import {
+	RESTORE_RECEIPT_SUFFIX,
+	readRestoreReceipt,
+	readRestoreReceiptFile,
+	receiptBlocksDiscovery,
+} from './restoreReceipt.ts';
 import { fsyncDirectory, pathPresent, writeFileDurably } from '../utility/durableFile.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
@@ -40,7 +46,9 @@ import logger from '../utility/logging/harper_logger.ts';
  *   Before it, a claimed restore is held off every open by the lock alone, so a crash while claimed
  *   (verifying, closing) leaves nothing that blocks the intact database once the lock is released. Its first line records the database
  *   directory name as a fallback so the startup scan can map a marker whose database directory is
- *   missing without decoding the hashed key.
+ *   missing without decoding the hashed key. A third line, `source <id>`, records which backup
+ *   repository the restore reads (`restoreSourceId`) so a rerun can prove the debris is its own;
+ *   markers written before that line existed have none.
  *
  *   The rename is what makes the marker trustworthy: the marker path only ever holds the previous
  *   content or the complete new content, so a torn write can never replace a valid marker with one
@@ -84,6 +92,11 @@ function restoreMetaKey(dbPath: string): string {
 	return createHash('sha256').update(basename(dbPath)).digest('hex').slice(0, 32);
 }
 
+/** A restore metadata file of this database, keyed the way its lock and marker are. */
+export function restoreMetaFilePath(dbPath: string, suffix: string): string {
+	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + suffix);
+}
+
 export function restoreLockPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_LOCK_SUFFIX);
 }
@@ -96,7 +109,8 @@ export function droppingMarkerPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DROPPING_MARKER_SUFFIX);
 }
 
-export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
+/** `pending`: no marker yet, but a restore receipt that has not committed reserves the database. */
+export type RestoreState = 'in-progress' | 'incomplete' | 'pending' | 'clear';
 /** The states that mean "do not load" — what `withRestoreExclusion` reports to its caller. */
 export type BlockedRestoreState = Exclude<RestoreState, 'clear'>;
 
@@ -118,6 +132,8 @@ export type RestoreLock = {
 	token: number;
 	/** The database directory this lock guards. */
 	dbPath: string;
+	/** `restoreSourceId` of the repository this restore reads; recorded on the marker it publishes. */
+	source?: string;
 	/**
 	 * True when a `.restoring` marker already existed at `beginRestore` time — i.e. this restore is a
 	 * recovery attempt over a possibly half-purged directory. A pre-existing marker must never be
@@ -143,8 +159,13 @@ export type RestoreLock = {
  * holds the lock exclusively, which every open (`withRestoreExclusion`) contends with.
  */
 export function checkRestoreState(dbPath: string): RestoreState {
-	if (!pathPresent(restoringMarkerPath(dbPath))) return 'clear';
+	if (!pathPresent(restoringMarkerPath(dbPath))) return receiptReservesDatabase(dbPath) ? 'pending' : 'clear';
 	return restoreLockHeldExclusively(dbPath) ? 'in-progress' : 'incomplete';
+}
+
+/** A receipt that is not committed — or cannot be read — reserves its database just as a marker does. */
+function receiptReservesDatabase(dbPath: string): boolean {
+	return receiptBlocksDiscovery(readRestoreReceipt(dbPath));
 }
 
 /** Whether a restore or a drop holds this database's lock, which a marker-less claim is held by alone. */
@@ -213,13 +234,15 @@ export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: 
 		// propagates: silently opening with no exclusion is the window this guard exists to close.
 		if (!isUnwritableRootError(error)) throw error;
 		warnOnceUnwritableRoot(dbPath, error);
-		return pathPresent(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
+		if (pathPresent(restoringMarkerPath(dbPath))) return blocked('incomplete');
+		return receiptReservesDatabase(dbPath) ? blocked('pending') : open();
 	}
 	// tryFileLock throws on an open failure and returns 0 only on contention, so a zero token means
 	// an exclusive holder — a restore or a drop — and nothing else.
 	if (token === 0) return blocked('in-progress');
 	try {
 		if (pathPresent(restoringMarkerPath(dbPath))) return blocked('incomplete');
+		if (receiptReservesDatabase(dbPath)) return blocked('pending');
 		return open();
 	} finally {
 		fileLockRelease(token);
@@ -236,6 +259,7 @@ export function acquireRestoreLock(dbPath: string): RestoreLock {
 	mkdirSync(metaDir, { recursive: true });
 	if (createMetaDir) fsyncDirectory(dirname(metaDir));
 	const token = tryFileLock(restoreLockPath(dbPath));
+	if (token !== 0) assertNoRestoreChild(dbPath, token);
 	if (token === 0) {
 		// flock reports contention, not who holds it, and every open holds this shared for its duration
 		// — so naming a restore here would send the operator hunting one that need not exist.
@@ -246,6 +270,40 @@ export function acquireRestoreLock(dbPath: string): RestoreLock {
 		throw error;
 	}
 	return { token, dbPath, preexisting: false };
+}
+
+const RESTORE_CHILD_LOCK_SUFFIX = '.child.lock';
+
+/**
+ * A restore child takes this lock for its whole life, and the OS drops it only when the child is gone.
+ * Its parent's exclusive restore lock does not outlive the parent, so a claim checks this too: a
+ * child that outlived a dead parent must never find its target purged or claimed under its handles.
+ */
+export function restoreChildLockPath(dbPath: string): string {
+	return restoreMetaFilePath(dbPath, RESTORE_CHILD_LOCK_SUFFIX);
+}
+
+function assertNoRestoreChild(dbPath: string, heldToken: number): void {
+	const childLockPath = restoreChildLockPath(dbPath);
+	// only a child creates this file, so its absence means none has ever run for this database
+	if (!pathPresent(childLockPath)) return;
+	let childToken: number;
+	try {
+		childToken = tryFileLock(childLockPath);
+	} catch (error) {
+		fileLockRelease(heldToken);
+		throw error;
+	}
+	if (childToken !== 0) {
+		fileLockRelease(childToken);
+		return;
+	}
+	fileLockRelease(heldToken);
+	const error: any = new Error(
+		`Cannot claim the database at ${dbPath}: a restore process for it is still running; retry once it exits`
+	);
+	error.statusCode = 409;
+	throw error;
 }
 
 /**
@@ -278,12 +336,36 @@ function publishMarker(dbPath: string, markerPath: string, content: string): voi
 	writeFileDurably(markerPath, content, restoreMetaKey(dbPath) + MARKER_TEMP_SUFFIX);
 }
 
-function publishRestoringMarker(dbPath: string): void {
+const MARKER_SOURCE_PREFIX = 'source ';
+
+/** A path-free identity for a backup repository: markers are readable by anyone with the data dir. */
+export function restoreSourceId(backupDir: string): string {
+	return createHash('sha256').update(resolve(backupDir)).digest('hex');
+}
+
+function publishRestoringMarker(dbPath: string, source: string | undefined): void {
 	publishMarker(
 		dbPath,
 		restoringMarkerPath(dbPath),
-		`${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n`
+		`${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n` +
+			(source ? `${MARKER_SOURCE_PREFIX}${source}\n` : '')
 	);
+}
+
+/**
+ * The source recorded on an intact restoring marker, or undefined when there is no marker, it is not
+ * intact, or it predates source recording. A third line that is not a source line is returned as-is,
+ * so it matches no repository instead of reading as a legacy marker.
+ */
+export function readRestoringMarkerSource(dbPath: string): string | undefined {
+	let lines: string[];
+	try {
+		lines = readFileSync(restoringMarkerPath(dbPath), 'utf8').split('\n', 3);
+	} catch {
+		return undefined;
+	}
+	if (lines[0] !== basename(dbPath) || !lines[2]) return undefined;
+	return lines[2].startsWith(MARKER_SOURCE_PREFIX) ? lines[2].slice(MARKER_SOURCE_PREFIX.length) : lines[2];
 }
 
 /**
@@ -294,16 +376,22 @@ function publishRestoringMarker(dbPath: string): void {
  * `beforePublishMarker` runs synchronously under the lock, after admission, so a caller can durably
  * claim its source before a crash can leave a restoring marker behind. It receives `preexisting` —
  * the marker reading taken under this lock — so a caller can tell an interrupted restore of this
- * same target from a directory that was never ours.
+ * same target from a directory that was never ours. `sourceDir` is the backup repository being
+ * restored from; the marker this claim publishes records its `restoreSourceId`.
  *
  * An intact marker is left exactly as it is. A recovery attempt runs over a directory an earlier
  * restore may have half-purged, so the marker it finds is the only thing keeping that directory
  * from loading as healthy; rewriting it buys nothing (the content it would write is the content
  * already there) and risks everything.
  */
-export function claimRestore(dbPath: string, beforePublishMarker?: (preexisting: boolean) => void): RestoreLock {
+export function claimRestore(
+	dbPath: string,
+	beforePublishMarker?: (preexisting: boolean, lock: RestoreLock) => void,
+	sourceDir?: string
+): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
+	if (sourceDir !== undefined) lock.source = restoreSourceId(sourceDir);
 	// Sampled while holding the lock, not before it: a restore that waited out an earlier one would
 	// otherwise carry the earlier run's "no marker" reading, and on its own pre-destruction failure
 	// clear the marker protecting a directory that run had already half-purged.
@@ -314,9 +402,16 @@ export function claimRestore(dbPath: string, beforePublishMarker?: (preexisting:
 			error.statusCode = 409;
 			throw error;
 		}
-		beforePublishMarker?.(lock.preexisting);
+		beforePublishMarker?.(lock.preexisting, lock);
 		if (lock.preexisting) {
-			if (!markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
+			// A claim the callback admitted owns the target from here on, so a marker naming another
+			// repository is re-published with this one: an interruption must leave a marker this restore's
+			// rerun can prove is its own.
+			if (
+				!markerIsIntact(markerPath, dbPath) ||
+				(lock.source !== undefined && pathPresent(markerPath) && readRestoringMarkerSource(dbPath) !== lock.source)
+			)
+				publishRestoringMarker(dbPath, lock.source);
 			// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
 			// have been interrupted between the rename and this flush, which would leave the directory
 			// entry — the thing the startup scan reads — still only in the page cache.
@@ -331,12 +426,16 @@ export function claimRestore(dbPath: string, beforePublishMarker?: (preexisting:
 
 /** Publish the marker before the first destructive step of a claimed restore; a no-op over an intact one. */
 export function markRestoreDestructive(lock: RestoreLock): void {
-	if (!markerIsIntact(restoringMarkerPath(lock.dbPath), lock.dbPath)) publishRestoringMarker(lock.dbPath);
+	if (!markerIsIntact(restoringMarkerPath(lock.dbPath), lock.dbPath)) publishRestoringMarker(lock.dbPath, lock.source);
 }
 
 /** `claimRestore` and `markRestoreDestructive` together, for a caller with nothing to do between them. */
-export function beginRestore(dbPath: string, beforePublishMarker?: (preexisting: boolean) => void): RestoreLock {
-	const lock = claimRestore(dbPath, beforePublishMarker);
+export function beginRestore(
+	dbPath: string,
+	beforePublishMarker?: (preexisting: boolean) => void,
+	sourceDir?: string
+): RestoreLock {
+	const lock = claimRestore(dbPath, beforePublishMarker, sourceDir);
 	try {
 		markRestoreDestructive(lock);
 	} catch (error) {
@@ -508,6 +607,13 @@ export function beginDatabaseDrop(
 			error.statusCode = 409;
 			throw error;
 		}
+		if (receiptReservesDatabase(dbPath)) {
+			const error: any = new Error(
+				`Database '${databaseName}' is reserved by a restore that has not finished; finish or cancel it before dropping it`
+			);
+			error.statusCode = 409;
+			throw error;
+		}
 		if (preexisting) {
 			const marker = readDatabaseDropMarker(dbPath);
 			if (marker?.databaseName !== databaseName) {
@@ -615,13 +721,30 @@ export function scanBlockedRestores(databasesRoot: string): Array<[string, Resto
 	const databaseNamesByMarker = new Map(
 		readdirSync(databasesRoot, { withFileTypes: true })
 			.filter((entry) => entry.name !== RESTORE_META_DIR)
-			.map((entry) => [restoreMetaKey(join(databasesRoot, entry.name)) + RESTORING_MARKER_SUFFIX, entry.name])
+			.map((entry) => [restoreMetaKey(join(databasesRoot, entry.name)), entry.name])
 	);
 	const blocked: Array<[string, RestoreState]> = [];
+	const seen = new Set<string>();
 	for (const entry of readdirSync(metaDir, { withFileTypes: true })) {
-		if (!entry.isFile() || !entry.name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
+		if (!entry.isFile()) continue;
+		if (entry.name.endsWith(RESTORE_RECEIPT_SUFFIX)) {
+			// A receipt names its database by path, and may precede the database directory itself.
+			const read = readRestoreReceiptFile(join(metaDir, entry.name));
+			const dbName =
+				read.kind === 'valid'
+					? basename(read.receipt.database_path)
+					: databaseNamesByMarker.get(entry.name.slice(0, -RESTORE_RECEIPT_SUFFIX.length));
+			if (!dbName || seen.has(dbName)) continue;
+			const state = checkRestoreState(join(databasesRoot, dbName));
+			if (state !== 'clear') {
+				seen.add(dbName);
+				blocked.push([dbName, state]);
+			}
+			continue;
+		}
+		if (!entry.name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
 		const markerPath = join(metaDir, entry.name);
-		let dbName = databaseNamesByMarker.get(entry.name);
+		let dbName = databaseNamesByMarker.get(entry.name.slice(0, -RESTORING_MARKER_SUFFIX.length));
 		if (!dbName) {
 			try {
 				dbName = readFileSync(markerPath, 'utf8').split('\n', 1)[0];
@@ -630,8 +753,12 @@ export function scanBlockedRestores(databasesRoot: string): Array<[string, Resto
 			}
 			if (!dbName || restoringMarkerPath(join(databasesRoot, dbName)) !== markerPath) continue;
 		}
+		if (seen.has(dbName)) continue;
 		const state = checkRestoreState(join(databasesRoot, dbName));
-		if (state !== 'clear') blocked.push([dbName, state]);
+		if (state !== 'clear') {
+			seen.add(dbName);
+			blocked.push([dbName, state]);
+		}
 	}
 	return blocked;
 }

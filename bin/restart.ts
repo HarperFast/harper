@@ -13,6 +13,7 @@ import {
 	getRunningIsolatedApplications,
 	onMessageByType,
 	shutdownWorkersNow,
+	shutdownWorkers,
 } from '../server/threads/manageThreads.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
@@ -50,7 +51,7 @@ if (isMainThread) {
 					scope: message.scope,
 					scopeFallback: message.scopeFallback,
 				});
-			else restart({ operation: 'restart' });
+			else restart({ operation: 'restart', drain: message.drain === true });
 		} finally {
 			port.postMessage({ type: 'restart-complete' });
 		}
@@ -106,6 +107,9 @@ async function restart(req: any) {
 				// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
 				// connections and hanging. So we need to explicitly close down all the workers and then start the new process
 				// and shut down.
+				// A restart that is about to replace a database's files lets in-flight requests finish
+				// first, and never starts a replacement worker that could reopen it.
+				if (req.drain) await shutdownWorkers('http');
 				hdbLogger.debug('Shutdown workers');
 				await shutdownWorkersNow();
 				const { closeServers } = await import('../server/threads/threadServer.ts');
@@ -132,6 +136,7 @@ async function restart(req: any) {
 		// Post msg to main parent thread requesting it restart (so the main thread can process.exit())
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
+			drain: req.drain === true,
 		});
 	}
 

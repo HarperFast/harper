@@ -12,7 +12,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, getRegistryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
-import { stampDatabaseDirectory } from '../resources/auditStore.ts';
+import { fileIdentity, statArchiveFile } from '../utility/fileIdentity.ts';
+import { publishRestore } from './restorePublication.ts';
+import { runRestoreChild } from './restoreChildRunner.ts';
+import { cancelRestartRestore, requestRestartRestore, resumeRestartRestore } from './restoreIntent.ts';
+import { readRestoreReceipt } from './restoreReceipt.ts';
+import { currentJobId } from '../server/jobs/deferredJobCompletion.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -29,20 +34,17 @@ import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.ts';
 import {
 	claimRestore,
-	markRestoreDestructive,
 	restoreLockHeldExclusively,
-	clearRestoringMarker,
-	abandonRestore,
 	checkRestoreState,
-	releaseRestoreLock,
+	readRestoringMarkerSource,
+	restoreSourceId,
 	type RestoreLock,
 } from './restoreMarker.ts';
 import {
 	assertBackupsUnpinned,
-	pinBackup,
 	readBackupPins,
-	unpinBackup,
 	withBackupRepositoryLock,
+	withBackupRepositoryReadAccess,
 } from './backupRepository.ts';
 import {
 	ARCHIVE_MANIFEST_ENTRY,
@@ -52,13 +54,11 @@ import {
 } from './backupArchiveManifest.ts';
 import { pathPresent } from '../utility/durableFile.ts';
 import {
-	assertBlobSnapshotRestorable,
-	assertEngineOnlyRestoreAllowed,
 	blobSnapshotDir,
 	blobsReadmeContent,
 	deleteBlobSnapshot,
+	fsyncTree,
 	purgeBlobSnapshots,
-	restoreBlobSnapshot,
 	snapshotBlobs,
 	walkBlobFiles,
 } from './blobBackup.ts';
@@ -69,6 +69,7 @@ import {
 	readBackupManifest,
 	writeBackupManifest,
 	type BackupManifest,
+	type BackupManifestDetails,
 } from './backupManifest.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
@@ -90,6 +91,18 @@ export class BackupNotFoundError extends ClientError {
 	}
 }
 
+/** A restore that named no source fell back to the latest backup; when there is none, say what it could name. */
+export function restoreSourceHint(
+	error: unknown,
+	databaseName: string,
+	requestedBackupId: number | undefined
+): unknown {
+	if (requestedBackupId !== undefined || !(error instanceof BackupNotFoundError)) return error;
+	return new BackupNotFoundError(
+		`Database '${databaseName}' has no backup to restore. To restore a get_backup archive, pass file=<path> (or url= or s3=); to restore a managed backup, take one with create_backup first.`
+	);
+}
+
 export class BackupInProgressError extends ClientError {
 	constructor(message: string) {
 		super(message, 409);
@@ -107,7 +120,7 @@ export class BackupInProgressError extends ClientError {
  * job operations (create/verify/restore) this runs in the request-context validator, before any job
  * record is created.
  */
-function requireSuperUser(request: any, operationName: string): void {
+export function requireSuperUser(request: any, operationName: string): void {
 	if (!request?.hdb_user?.role?.permission?.super_user) {
 		throw new ClientError(`Operation '${operationName}' is restricted to super_user roles`, 403);
 	}
@@ -120,7 +133,7 @@ export function getBackupsRoot(): string {
 	return getBackupDirPath(getHdbBasePath());
 }
 
-function getDatabaseName(request: any): string {
+export function getDatabaseName(request: any): string {
 	const databaseName = request.database || request.schema || 'data';
 	validateDatabaseName(databaseName);
 	return databaseName;
@@ -203,7 +216,8 @@ function requireBackupRepositoryAccess(databaseName: string, operation: string):
 
 function requireBackupRepositoryDirectory(databaseName: string): string {
 	const backupDir = backupDirForDatabase(databaseName);
-	if (!existsSync(backupDir)) {
+	// the engine's own directory, not the folder: an archive restore's staging creates the folder alone
+	if (!existsSync(join(backupDir, 'meta'))) {
 		throw new BackupNotFoundError(
 			`Database '${databaseName}' is not loaded and has no backup repository at ${backupDir}`
 		);
@@ -331,18 +345,35 @@ async function requireBackupComplete(
  * specific id that exists in the engine but has no manifest is rejected as incomplete; without a
  * requested id, the latest *complete* backup is chosen.
  */
-async function resolveCompleteBackup(
+export async function resolveCompleteBackup(
 	backupDir: string,
 	requestedId: number | undefined,
-	databaseName: string
-): Promise<{ backupId: number; manifest: BackupManifest }> {
+	databaseName: string,
+	acceptIncompatible = false
+): Promise<{ backupId: number; manifest: BackupManifest; waived: string[] }> {
 	const resolved = await resolveCompleteBackupManifest(backupDir, requestedId, databaseName);
 	// Both restore paths come through here, ahead of anything destructive. A manifest with no
 	// `producer` KEY predates the field and is this instance's own lineage, so it is accepted; a key
 	// that is present but unreadable is the malformed case and refuses, since Harper only ever writes
 	// the key alongside a value.
-	if (Object.hasOwn(resolved.manifest, 'producer')) assertArchiveRestorable(resolved.manifest.producer!);
-	return resolved;
+	const waived = Object.hasOwn(resolved.manifest, 'producer')
+		? assertArchiveRestorable(resolved.manifest.producer!, { acceptIncompatible })
+		: [];
+	return { ...resolved, waived };
+}
+
+export function logCompatibilityWaived(
+	databaseName: string,
+	backupId: number,
+	manifest: BackupManifest,
+	waived: string[]
+) {
+	if (waived.length === 0) return;
+	const producer = manifest.producer;
+	logger.warn(
+		`Restoring backup ${backupId} of database '${databaseName}' with accept_incompatible_backup; waived: ${waived.join('; ')}. ` +
+			`Producer: Harper ${producer?.harper_version ?? 'unknown'}, rocksdb-js ${producer?.rocksdb_js_version ?? 'unknown'}`
+	);
 }
 
 async function resolveCompleteBackupManifest(
@@ -400,7 +431,8 @@ async function finalizeBackup(
 	backupDir: string,
 	backupId: number,
 	databaseName: string,
-	blobs: boolean
+	blobs: boolean,
+	details: BackupManifestDetails = {}
 ): Promise<void> {
 	try {
 		const blobRoots = getBlobPathsForDatabaseName(databaseName);
@@ -408,6 +440,8 @@ async function finalizeBackup(
 		// because that copy is the longest stretch an outside writer could remove it in.
 		await assertBackupStillPresent(backupDir, backupId, databaseName);
 		if (blobs) await snapshotBlobs(backupDir, backupId, blobRoots);
+		// the manifest says complete; a restore that trusts it purges the live generation before reading the blobs
+		if (blobs) await fsyncTree(blobSnapshotDir(backupDir, backupId));
 		await assertBackupStillPresent(backupDir, backupId, databaseName);
 		await writeBackupManifest(
 			backupDir,
@@ -418,7 +452,8 @@ async function finalizeBackup(
 				blobs,
 				blobRootCount: blobs ? blobRoots.length : 0,
 				roles: await collectDatabaseRoleNames(databaseName),
-			})
+			}),
+			details
 		);
 	} catch (error) {
 		await deleteBackupManifest(backupDir, backupId).catch(() => {});
@@ -582,39 +617,91 @@ export async function validateVerifyBackup(request: any) {
 export async function verifyBackup(request: any) {
 	const databaseName = getDatabaseName(request);
 	requireBackupRepositoryAccess(databaseName, OPERATIONS_ENUM.VERIFY_BACKUP);
-	return verifyBackupOffline(databaseName, requireBackupId(request.backup_id), request.verify_checksum);
+	return verifyBackupOffline(databaseName, requireBackupId(request.backup_id), request.verify_checksum, {
+		inChild: true,
+	});
 }
 
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
-	requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
-	const databaseName = getDatabaseName(request);
-	if (databaseName === 'system') {
-		throw new ClientError(
-			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system`
-		);
+	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readOnlineRestoreRequest(request);
+	const { hasArchiveSource, validateArchiveSource } = await import('./restoreArchive.ts');
+	const fromArchive = hasArchiveSource(request);
+	if (fromArchive) validateArchiveSource(request);
+	else {
+		const archiveOnly = ['sha256', 'declared_size', 'upload_digest'].filter((field) => request[field] !== undefined);
+		if (archiveOnly.length > 0) {
+			throw new ClientError(
+				`${archiveOnly.map((field) => `'${field}'`).join(', ')} describe an archive, but no archive was sent; pass file=<path> (or url= or s3=)`
+			);
+		}
 	}
-	if (request.target_database !== undefined) {
-		// silently ignoring this would destructively restore over the source database instead of
-		// the copy the caller asked for
-		throw new ClientError(
-			`'target_database' is not supported while Harper is running (restore_backup always restores in place); stop the server and run: harper restore_backup database=${databaseName} target_database=<name>`
-		);
+	if (resume || cancel) return;
+	if (!fromArchive) {
+		const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
+		try {
+			await resolveCompleteBackup(
+				backupDirForDatabase(databaseName),
+				requestedBackupId,
+				databaseName,
+				acceptIncompatible
+			);
+		} catch (error) {
+			throw restoreSourceHint(error, databaseName, requestedBackupId);
+		}
 	}
-	const backupDir = backupDirForDatabase(databaseName);
-	await resolveCompleteBackup(
-		backupDir,
-		request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
-		databaseName
-	);
 	// Only a loaded database that actually has tables can be validated as a single-root RocksDB
 	// store here (an empty/tableless database has no table to resolve a root store from, and an
 	// unloaded one recovering an interrupted restore isn't open yet); those cases are validated when
 	// the restore job runs. `Object.keys` skips the DEFINED_TABLES symbol, so an empty database is 0.
-	const loaded = getDatabases()[databaseName];
-	if (loaded != null && Object.keys(loaded).length > 0) {
+	const loaded = getDatabases()[targetDatabase];
+	if (targetDatabase === databaseName && loaded != null && Object.keys(loaded).length > 0) {
 		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);
 	}
+}
+
+/** The options an online restore_backup accepts, validated the same way at submission and in the job. */
+function readOnlineRestoreRequest(request: any) {
+	const databaseName = getDatabaseName(request);
+	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
+	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
+	const immutableSource = requireBooleanOption(request.immutable_source, 'immutable_source');
+	const acceptUnverifiedBlobs = requireBooleanOption(request.accept_unverified_blobs, 'accept_unverified_blobs');
+	if (request.target_database !== undefined) validateDatabaseName(request.target_database);
+	const targetDatabase: string = request.target_database ?? databaseName;
+	const onRestart = requireBooleanOption(request.on_restart, 'on_restart');
+	const resume = requireBooleanOption(request.resume, 'resume');
+	const cancel = requireBooleanOption(request.cancel, 'cancel');
+	const retainPrevious =
+		request.retain_previous === undefined || requireBooleanOption(request.retain_previous, 'retain_previous');
+	const refuse = (message: string) => {
+		throw new ClientError(message);
+	};
+	if (resume && cancel) refuse(`'resume' and 'cancel' cannot be combined`);
+	if ((resume || cancel) && (request.backup_id !== undefined || onRestart))
+		refuse(`'resume' and 'cancel' act on the pending restart restore; omit 'backup_id' and 'on_restart'`);
+	if (immutableSource && (onRestart || resume))
+		refuse(`'immutable_source' cannot be combined with a restart restore, whose pins protect its source`);
+	if (request.retain_previous !== undefined && !onRestart) refuse(`'retain_previous' applies only with 'on_restart'`);
+	if (request.target_database !== undefined && (onRestart || resume || cancel))
+		refuse(`'target_database' is never held by a component, so it restores online; omit 'on_restart'`);
+	if (databaseName === 'system' || targetDatabase === 'system') {
+		throw new ClientError(
+			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system`
+		);
+	}
+	return {
+		databaseName,
+		targetDatabase,
+		allowEngineOnly,
+		acceptIncompatible,
+		immutableSource,
+		acceptUnverifiedBlobs,
+		onRestart,
+		resume,
+		cancel,
+		retainPrevious,
+	};
 }
 
 /**
@@ -624,157 +711,167 @@ export async function validateRestoreBackup(request: any) {
  * everywhere.
  */
 export async function restoreBackup(request: any) {
-	const databaseName = getDatabaseName(request);
-	if (databaseName === 'system') {
-		throw new ClientError(
-			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system`
-		);
-	}
-	if (request.target_database !== undefined) {
-		throw new ClientError(
-			`'target_database' is not supported while Harper is running (restore_backup always restores in place); stop the server and run: harper restore_backup database=${databaseName} target_database=<name>`
-		);
-	}
-	const backupDir = backupDirForDatabase(databaseName);
+	const {
+		databaseName,
+		targetDatabase,
+		allowEngineOnly,
+		acceptIncompatible,
+		immutableSource,
+		acceptUnverifiedBlobs,
+		onRestart,
+		resume,
+		cancel,
+		retainPrevious,
+	} = readOnlineRestoreRequest(request);
+	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	// a loaded database *with tables* knows its real directory via its root store (which can differ
 	// from the computed default, e.g. legacy layouts); fall back to the computed path when the
 	// database is unloaded (recovering an interrupted restore) or empty (no table to resolve a root
 	// store from — Object.keys skips the DEFINED_TABLES symbol)
-	const loaded = getDatabases()[databaseName];
+	const loaded = inPlace ? getDatabases()[databaseName] : undefined;
 	const databaseDir =
 		loaded != null && Object.keys(loaded).length > 0
 			? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
-			: resolveDatabasePath(databaseName);
-	const blobRoots = getBlobPathsForDatabaseName(databaseName);
-	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
-	const pinId = restorePinId(databaseDir);
-	const restoreToken = randomUUID();
-	let destructionStarted = false;
-	// Selection and every check derived from it run under the repository lock, so they apply to the
-	// backup the claim pins; the claim is published before the marker under both locks, so a crash
-	// cannot leave a marked database with an unprotected source.
-	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
-		// tells us whether blobs were captured so we restore them only when they were
-		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
-		// reject a backup with more blob roots than the current config *before* anything destructive —
-		// restoring it would mis-address blobs (records persist their root index)
-		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
-		assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: selected.manifest.blobs, allowEngineOnly });
-		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, () =>
-			pinBackup(backupDir, pinId, selected.backupId, `restore of database '${databaseName}'`, databaseDir)
-		);
-		return { lock: claimed, ...selected };
-	});
+			: resolveDatabasePath(targetDatabase);
+	if (cancel) return cancelRestartRestore(databaseName, databaseDir);
+	if (resume) return resumeRestartRestore(databaseName, databaseDir, currentJobId());
+	const { hasArchiveSource, releaseStagingIfUnowned, stageArchiveForRestore } = await import('./restoreArchive.ts');
+	const archive = hasArchiveSource(request) ? await stageArchiveForRestore(request, databaseName) : undefined;
 	try {
-		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
-		// Each thread also rescans, and the held restore lock (later the marker) keeps it from reloading.
-		try {
-			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close', restoreToken));
-		} catch {
-			throw new BackupInProgressError(
-				`Cannot restore database '${databaseName}': not every worker completed the blob-save barrier before the acknowledgement deadline. Retry the restore after the stalled work has cleared.`
-			);
+		const source = {
+			backupDir: archive?.backupDir ?? backupDirForDatabase(databaseName),
+			requestedBackupId: archive?.backupId ?? requestedBackupId,
+			restoredFrom: archive?.restoredFrom,
+			sourceKind: archive ? ('staged_tree' as const) : undefined,
+		};
+		if (onRestart) {
+			return await requestRestartRestore({
+				databaseName,
+				databaseDir,
+				...source,
+				rollbackDir: backupDirForDatabase(databaseName),
+				allowEngineOnly,
+				acceptIncompatible,
+				acceptUnverifiedBlobs,
+				retainPrevious,
+				jobId: currentJobId(),
+				requestedBy: request.hdb_user?.username,
+			});
 		}
-		// A live component (or the system database) can hold its own handle on the database that
-		// Harper does not track and cannot close, so verify actual process-wide closure before
-		// purging — restoring under an open instance would corrupt it. If handles remain, fail
-		// with a clear pointer to the offline CLI path rather than purging.
-		await verifyDatabaseClosed(databaseDir, databaseName);
-		// Only once writes are refused: a write acknowledged during verification would be lost to the purge.
-		await assertBackupReadable(backupDir, backupId, manifest, databaseName, databaseName, () => lock.preexisting);
-		// The claim keeps Harper from reopening it, but a component opening the path directly could have.
-		await verifyDatabaseClosed(databaseDir, databaseName);
-		markRestoreDestructive(lock);
-		destructionStarted = true;
-		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
-		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
-		// blob roots untouched); the manifest, not the mere presence of a snapshot dir, is the source
-		// of truth so a mid-copy or absent snapshot can't be misread
-		if (manifest.blobs) {
-			await restoreBlobSnapshot(backupDir, backupId, databaseName, getBlobPathsForDatabaseName(databaseName));
-		}
-		await stampDatabaseDirectory(databaseDir, { carriesLog: true });
-	} catch (error: any) {
-		// Leave the marker (so startup/rescan detection reports an incomplete restore until a rerun
-		// succeeds) when either the destructive purge has begun, OR this attempt was itself a recovery
-		// over a pre-existing marker: in that case the directory may already be half-purged from an
-		// earlier failed restore, so clearing the marker and reloading it as healthy would surface
-		// partial/corrupt data. Only a *fresh* marker on a *previously healthy* database that failed
-		// before any destruction is safe to clear.
-		if (destructionStarted || lock.preexisting) {
-			// The marker stays, so the database is unloadable until a rerun — and the rerun needs this
-			// backup. The pin stays with it, and lapses on its own once the marker is gone.
-			abandonRestore(lock);
-			// The restore is over even though it failed, so release the workers' blob fence. Without this
-			// the fence outlives the attempt: the marker keeps the database from loading, but an operator
-			// who gives up and drops/recreates the name instead of rerunning gets a database whose writes
-			// are refused by a fence no restore owns any more. Treated as a replaced generation because
-			// destruction may have begun -- forgoing a deletion only leaks a file for the orphan sweep,
-			// while performing a stale one destroys restored bytes.
-			try {
-				await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, true));
-			} catch (releaseError) {
-				// Never mask the restore failure with a broadcast failure; the fence is worker-local state
-				// and a process restart clears it regardless.
-				logger.error(`Could not release the blob fence after a failed restore of '${databaseName}'`, releaseError);
-			}
-			// wrap rather than mutate error.message: a frozen/library error can have a non-writable
-			// message (assigning it throws TypeError under 'use strict')
-			throw new Error(
-				`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
-				{ cause: error }
-			);
-		}
-		// nothing destructive happened and the marker was fresh — clear it and let every thread reload
-		// the intact database
-		releaseRestoreClaim(backupDir, pinId, lock, databaseName);
-		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, false));
-		throw error;
+		const result = await restoreOnline(request, {
+			databaseName,
+			targetDatabase,
+			inPlace,
+			databaseDir,
+			...source,
+			allowEngineOnly,
+			acceptIncompatible,
+			acceptUnverifiedBlobs,
+			immutableSource,
+		});
+		return archive?.missingRoles.length ? { ...result, missing_roles: archive.missingRoles } : result;
+	} finally {
+		if (archive) releaseStagingIfUnowned(archive.stagingDir);
 	}
-	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
-	// signal again: with the marker gone, every thread's rescan reloads the restored database
-	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
-	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
+}
+
+function restoreOnline(
+	request: any,
+	options: {
+		databaseName: string;
+		targetDatabase: string;
+		inPlace: boolean;
+		databaseDir: string;
+		backupDir: string;
+		requestedBackupId?: number;
+		restoredFrom?: string;
+		sourceKind?: 'staged_tree';
+		allowEngineOnly: boolean;
+		acceptIncompatible: boolean;
+		acceptUnverifiedBlobs: boolean;
+		immutableSource: boolean;
+	}
+) {
+	const { databaseName, targetDatabase, inPlace, databaseDir, backupDir, requestedBackupId, restoredFrom, sourceKind } =
+		options;
+	const { allowEngineOnly, acceptIncompatible, acceptUnverifiedBlobs, immutableSource } = options;
+	const restoreToken = randomUUID();
+	return publishRestore({
+		route: 'online',
+		sourceDatabase: databaseName,
+		targetDatabase,
+		inPlace,
+		backupDir,
+		databaseDir,
+		blobRoots: getBlobPathsForDatabaseName(targetDatabase),
+		requestedBackupId,
+		restoredFrom,
+		sourceKind,
+		allowEngineOnly,
+		acceptIncompatible,
+		acceptUnverifiedBlobs,
+		immutableSource,
+		checkPeers: true,
+		probeEngineLock: true,
+		jobId: currentJobId(),
+		requestedBy: request.hdb_user?.username,
+		online: {
+			async close() {
+				// Block new blob saves, drain in-flight saves, and close the target across all worker threads.
+				// Each thread also rescans, and the held restore lock (later the marker) keeps it from reloading.
+				try {
+					await signalling.signalSchemaChange(restoreSchemaEvent(targetDatabase, databaseDir, 'close', restoreToken));
+				} catch {
+					throw new BackupInProgressError(
+						`Cannot restore database '${targetDatabase}': not every worker completed the blob-save barrier before the acknowledgement deadline. Retry the restore after the stalled work has cleared.`
+					);
+				}
+				// A live component can hold its own handle on the database that Harper does not track and
+				// cannot close, so verify actual process-wide closure before anything destructive.
+				await verifyDatabaseClosed(databaseDir, targetDatabase);
+			},
+			release: (generationReplaced) =>
+				signalling.signalSchemaChange(
+					restoreSchemaEvent(targetDatabase, databaseDir, 'reload', restoreToken, generationReplaced)
+				),
+			publish: () =>
+				signalling.signalSchemaChange(restoreSchemaEvent(targetDatabase, databaseDir, 'reload', restoreToken)),
+		},
+	});
 }
 
 /**
- * Retire a finished restore: marker, then claim, then the destination lock. While the database is
- * still marked a rerun is required and the rerun needs this backup, so the claim has to outlive the
- * marker — a crash the other way round leaves an unloadable database whose source a purge may
- * delete. Both happen under the restore lock, so no later attempt can have written a claim at this
- * same id yet; one stranded after the marker is gone simply lapses and is swept.
+ * How a restore holds its repository: the management lock, or — for a repository the operator
+ * declared immutable — read access alone, with no lock and no write of any kind.
  */
-function releaseRestoreClaim(backupDir: string, pinId: string, lock: RestoreLock, databaseName: string): void {
-	try {
-		clearRestoringMarker(lock);
-		try {
-			unpinBackup(backupDir, pinId);
-		} catch (error) {
-			logger.error(
-				`Could not release the backup claim after restoring '${databaseName}'; it lapses with the marker`,
-				error
-			);
-		}
-	} finally {
-		releaseRestoreLock(lock);
-	}
+export function withRepository(immutableSource: boolean) {
+	return immutableSource ? withBackupRepositoryReadAccess : withBackupRepositoryLock;
+}
+
+export function warnImmutableSource(databaseName: string, backupDir: string): void {
+	logger.warn(
+		`Restoring database '${databaseName}' with immutable_source: the backup repository at ${backupDir} is ` +
+			`neither locked nor claimed, so nothing stops another writer from changing it during the restore`
+	);
 }
 
 /**
  * `restoreToken` identifies the restore that owns the blob fence. Two restores of the same database
  * can overlap, so a worker releases the fence only for the token that established it -- see
- * `resumeBlobSavesAfterRestore`.
+ * `resumeBlobSavesForRestore`.
  */
 function restoreSchemaEvent(
 	databaseName: string,
+	databaseDir: string,
 	restorePhase: 'close' | 'reload',
 	restoreToken: string,
 	generationReplaced = true
 ) {
 	const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName);
 	message.restorePhase = restorePhase;
+	// a thread that loaded this directory only under a sibling alias still has to close it
+	message.databaseDir = databaseDir;
 	message.restoreToken = restoreToken;
 	// Tells a worker whether the blob roots it fenced were actually replaced. A restore that failed its
 	// admission checks destroyed nothing, so that worker's queued reclamations are still valid.
@@ -797,7 +894,7 @@ const DATABASE_CLOSE_POLL_INTERVAL_MS = 250;
  * component is holding the database open (Harper can neither detect which component nor force its
  * handle closed), so an online in-place restore is not possible and the offline CLI is the path.
  */
-async function verifyDatabaseClosed(databaseDir: string, databaseName: string): Promise<void> {
+export async function verifyDatabaseClosed(databaseDir: string, databaseName: string): Promise<void> {
 	const targetPath = resolve(databaseDir);
 	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
 	for (;;) {
@@ -828,13 +925,14 @@ export function restorePinId(databaseDir: string): string {
  * claimRestore's own error message carries the filesystem path (useful in CLI/server logs);
  * client-facing operations report by database name instead.
  */
-function beginRestoreForDatabase(
+export function beginRestoreForDatabase(
 	databaseDir: string,
 	databaseName: string,
-	beforePublishMarker: (preexisting: boolean) => void
+	backupDir: string,
+	beforePublishMarker: (preexisting: boolean, lock: RestoreLock) => void
 ): RestoreLock {
 	try {
-		return claimRestore(databaseDir, beforePublishMarker);
+		return claimRestore(databaseDir, beforePublishMarker, backupDir);
 	} catch (error) {
 		if (error.statusCode === 409) {
 			throw new BackupInProgressError(
@@ -853,7 +951,7 @@ function beginRestoreForDatabase(
  * follow-on). We match conservatively and fail *closed* on a hit so the offline restore never purges
  * a database another process still has open.
  */
-function isRocksDbLockError(error: any): boolean {
+export function isRocksDbLockError(error: any): boolean {
 	const message = typeof error?.message === 'string' ? error.message : '';
 	return (
 		/lock file:/i.test(message) ||
@@ -1201,6 +1299,48 @@ restore_backup): https://docs.harperdb.io/reference/v5/operations-api/operations
 // --- offline CLI paths (server stopped) ---
 
 /**
+ * The rollback copy a restart restore takes of the database it is about to replace. Everything else
+ * that would back up a database a restore has reserved is refused (createBackupOffline); this is the
+ * one caller allowed through, and only for the operation whose pending receipt reserves it.
+ */
+export async function createPreRestoreBackup(
+	databaseName: string,
+	databaseDir: string,
+	backupDir: string,
+	operationId: string
+): Promise<number> {
+	const read = readRestoreReceipt(databaseDir);
+	if (read.kind !== 'valid' || read.receipt.operation_id !== operationId || read.receipt.state !== 'pending') {
+		throw new BackupInProgressError(
+			`Database '${databaseName}' is not reserved by restore ${operationId}; its pre-restore backup was not taken`
+		);
+	}
+	if (!existsSync(join(databaseDir, 'CURRENT'))) {
+		throw new BackupNotFoundError(`No RocksDB database found at ${databaseDir}`);
+	}
+	const database = RocksDatabase.open(databaseDir);
+	try {
+		return await withBackupRepositoryLock(
+			backupDir,
+			databaseName,
+			async () => {
+				let id;
+				try {
+					id = await database.backup(backupDir, { transactionLogs: true });
+				} catch (error) {
+					throw mapLockedError(error, databaseName);
+				}
+				await finalizeBackup(backupDir, id, databaseName, true, { pre_restore_for: operationId });
+				return id;
+			},
+			true
+		);
+	} finally {
+		database.close();
+	}
+}
+
+/**
  * Offline create: open the RocksDatabase directly, run an ordinary incremental directory backup
  * into the configured backup root, and close. RocksDB is single-writer, so this collides on the
  * database lock if the server is running — callers guard on the server being stopped.
@@ -1216,7 +1356,7 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 	const restoreState = marked === 'clear' && restoreLockHeldExclusively(databaseDir) ? 'in-progress' : marked;
 	if (restoreState !== 'clear') {
 		throw new BackupInProgressError(
-			`Database '${databaseName}' has an ${restoreState === 'in-progress' ? 'active' : 'incomplete'} restore; rerun restore_backup before backing up`
+			`Database '${databaseName}' has an ${restoreState === 'in-progress' || restoreState === 'pending' ? 'active' : 'incomplete'} restore; ${restoreState === 'pending' ? 'finish or cancel it' : 'rerun restore_backup'} before backing up`
 		);
 	}
 	const database = RocksDatabase.open(databaseDir);
@@ -1259,132 +1399,62 @@ export async function restoreBackupOffline(
 	databaseName: string,
 	requestedBackupId?: number,
 	targetDatabase?: string,
-	allowEngineOnlyOption?: boolean
+	allowEngineOnlyOption?: boolean,
+	acceptIncompatibleOption?: boolean,
+	immutableSourceOption?: boolean,
+	acceptUnverifiedBlobsOption?: boolean,
+	archiveFile?: string
 ) {
-	// Validated the same way the online path validates it, so a malformed opt-in is refused rather than
-	// silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
+	// Validated the same way the online path validates them, so a malformed opt-in is refused rather
+	// than silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
 	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
+	const acceptIncompatible = requireBooleanOption(acceptIncompatibleOption, 'accept_incompatible_backup');
+	const immutableSource = requireBooleanOption(immutableSourceOption, 'immutable_source');
+	const acceptUnverifiedBlobs = requireBooleanOption(acceptUnverifiedBlobsOption, 'accept_unverified_blobs');
 	validateDatabaseName(databaseName);
-	const backupDir = backupDirForDatabase(databaseName);
 	if (targetDatabase !== undefined) validateDatabaseName(targetDatabase);
-	const databaseDir = resolveDatabasePath(targetDatabase ?? databaseName);
-	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
-	const pinId = restorePinId(databaseDir);
-	let destructionStarted = false;
-	// Unlike online, verify before the claim: with no live writers to refuse, a crash mid-verify then
-	// leaves the database loadable. Claim before marking under both locks, and mark before probing.
-	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		// resolve to the latest complete backup (or the requested id, rejected if incomplete)
-		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
-		// reject a backup with more blob roots than the target's current config before anything
-		// destructive (records persist their root index, so collapsing would mis-address blobs)
-		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
-		assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, {
-			backupHasBlobs: selected.manifest.blobs,
-			allowEngineOnly,
-		});
-		await assertBackupReadable(
-			backupDir,
-			selected.backupId,
-			selected.manifest,
-			databaseName,
-			targetDatabase ?? databaseName,
-			() => checkRestoreState(databaseDir) === 'incomplete'
-		);
-		const claimed = await beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
-			// Inside the reservation, so a create_database racing this restore cannot pass the absence
-			// check and then lose the database it just made. Debris this source left is exempt, or the
-			// rerun wedges for good — a drop refuses a marked directory too, and the marker keeps the pin
-			// live. A marker records only the directory name, so this source's own pin is what proves
-			// the debris is ours. Known gap: a pin that outlived its marker vouches for a later,
-			// unrelated one (harper#3106).
-			const ourInterruptedRestore = preexisting && readBackupPins(backupDir).some((pin) => pin.pin_id === pinId);
-			if (
-				targetDatabase !== undefined &&
-				targetDatabase !== databaseName &&
-				!ourInterruptedRestore &&
-				!isMissingOrEmptyDir(databaseDir)
-			) {
-				throw new ClientError(
-					`target_database '${targetDatabase}' already exists at ${databaseDir}; restoring into it would destroy it — choose a new name, or restore in place by omitting target_database`
-				);
-			}
-			pinBackup(
-				backupDir,
-				pinId,
-				selected.backupId,
-				`restore of database '${targetDatabase ?? databaseName}'`,
-				databaseDir
-			);
-		});
-		return { lock: claimed, ...selected };
-	});
-	try {
-		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
-		// a heuristic: the PID file is briefly absent mid-`harper restart`, and backups.restore's
-		// purgeAllFiles never takes RocksDB's own lock. Probe that lock by opening the database — a live
-		// holder makes open throw its LOCK-file error (isRocksDbLockError) — so we fail closed rather
-		// than purge a database another process still has open. A directory that fails to open for any
-		// *other* reason (corrupt or half-restored) is exactly what restore recovers, so only a lock
-		// conflict aborts.
-		if (existsSync(join(databaseDir, 'CURRENT'))) {
-			let handle: RocksDatabase | undefined;
-			try {
-				handle = RocksDatabase.open(databaseDir);
-			} catch (error: any) {
-				if (isRocksDbLockError(error)) {
-					throw new BackupInProgressError(
-						`Cannot restore database '${databaseName}': it is open by a running Harper process — stop Harper before restoring offline`
-					);
-				}
-				// otherwise corrupt/half-restored — fall through and let restore recover it
-			}
-			handle?.close();
-		}
-		markRestoreDestructive(lock);
-		destructionStarted = true;
-		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
-		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)
-		if (manifest.blobs) {
-			await restoreBlobSnapshot(
-				backupDir,
-				backupId,
-				databaseName,
-				getBlobPathsForDatabaseName(targetDatabase ?? databaseName)
-			);
-		}
-		await stampDatabaseDirectory(databaseDir, { carriesLog: true });
-	} catch (error: any) {
-		// Preserve the marker on a destructive failure or a recovery over a pre-existing marker (see
-		// the online restoreBackup for the rationale); otherwise clear the fresh marker so an intact,
-		// merely-locked database is not left flagged as an incomplete restore.
-		// The pin stays exactly as long as the marker does: a retained marker means a rerun is required,
-		// and the rerun needs this backup to still be there.
-		if (destructionStarted || lock.preexisting) abandonRestore(lock);
-		else {
-			releaseRestoreClaim(backupDir, pinId, lock, databaseName);
-		}
-		// preserve typed client errors (e.g. the 409 lock probe) unwrapped; only wrap an opaque restore
-		// failure after destruction has begun
-		if (destructionStarted && !(error instanceof ClientError)) {
-			throw new Error(
-				`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
-				{ cause: error }
-			);
-		}
-		throw error;
+	const target = targetDatabase ?? databaseName;
+	const restoreArchive = archiveFile === undefined ? undefined : await import('./restoreArchive.ts');
+	let archive: Awaited<ReturnType<NonNullable<typeof restoreArchive>['stageArchiveForRestore']>> | undefined;
+	if (restoreArchive) {
+		// the same process and machine: the file is read in place, as a local server reads it
+		const serverPath = resolve(archiveFile!);
+		const request = {
+			server_path: serverPath,
+			server_path_identity: fileIdentity(statArchiveFile(serverPath)),
+			accept_incompatible_backup: acceptIncompatible,
+			...(requestedBackupId !== undefined ? { backup_id: requestedBackupId } : {}),
+			...(immutableSource ? { immutable_source: true } : {}),
+		};
+		restoreArchive.validateArchiveSource(request);
+		archive = await restoreArchive.stageArchiveForRestore(request, databaseName);
 	}
-	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
-	return {
-		database: databaseName,
-		backup_id: backupId,
-		restored_to: databaseDir,
-		...(allowEngineOnly ? { allow_engine_only: true } : {}),
-	};
+	try {
+		return await publishRestore({
+			route: 'offline',
+			sourceDatabase: databaseName,
+			targetDatabase: target,
+			inPlace: target === databaseName,
+			backupDir: archive?.backupDir ?? backupDirForDatabase(databaseName),
+			databaseDir: resolveDatabasePath(target),
+			blobRoots: getBlobPathsForDatabaseName(target),
+			requestedBackupId: archive?.backupId ?? requestedBackupId,
+			restoredFrom: archive?.restoredFrom,
+			sourceKind: archive ? 'staged_tree' : undefined,
+			allowEngineOnly,
+			acceptIncompatible,
+			acceptUnverifiedBlobs,
+			immutableSource,
+			checkPeers: target !== 'system',
+			probeEngineLock: true,
+		});
+	} finally {
+		if (archive) restoreArchive!.releaseStagingIfUnowned(archive.stagingDir);
+	}
 }
 
 /** Where each restore path calls this, and why, is in dataLayer/DESIGN.md (harper#2965). */
-async function assertBackupReadable(
+export async function assertBackupReadable(
 	backupDir: string,
 	backupId: number,
 	manifest: BackupManifest,
@@ -1410,7 +1480,7 @@ async function assertBackupReadable(
 	}
 }
 
-async function verifyBackupFiles(
+export async function verifyBackupFiles(
 	backupDir: string,
 	backupId: number,
 	manifest: BackupManifest,
@@ -1424,6 +1494,38 @@ async function verifyBackupFiles(
 		);
 	}
 	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables });
+}
+
+/**
+ * Refuse to claim an existing, non-empty restore target unless it is debris of this repository's own
+ * interrupted restore: that exemption is what keeps a rerun from wedging for good, since a drop
+ * refuses a marked directory too and the marker keeps the pin live. A marker that records its source
+ * proves ownership only by matching this repository; one written before sources were recorded falls
+ * back to this repository's pin on the target, which a pin stranded past its own marker can still
+ * vouch for. A rerun from a newly staged archive matches neither, so a restore record on the target
+ * proves it too: only an admitted claim writes one, and a takeover writes its own before it republishes
+ * the marker, so the two can briefly name different sources. Restoring a database in
+ * place is not a claim on someone else's directory.
+ */
+export function assertTargetClaimable(
+	target: { databaseDir: string; databaseName: string; inPlace: boolean },
+	backupDir: string,
+	preexisting: boolean
+): void {
+	if (target.inPlace) return;
+	if (preexisting) {
+		const markerSource = readRestoringMarkerSource(target.databaseDir);
+		const recorded = readRestoreReceipt(target.databaseDir);
+		const ours =
+			markerSource === undefined
+				? readBackupPins(backupDir).some((pin) => pin.pin_id === restorePinId(target.databaseDir))
+				: markerSource === restoreSourceId(backupDir) || recorded.kind === 'valid';
+		if (ours) return;
+	}
+	if (isMissingOrEmptyDir(target.databaseDir)) return;
+	throw new ClientError(
+		`target_database '${target.databaseName}' already exists at ${target.databaseDir}; restoring into it would destroy it — choose a new name, or restore in place by omitting target_database`
+	);
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
@@ -1448,13 +1550,30 @@ export async function listBackupsOffline(databaseName: string) {
 	);
 }
 
-export async function verifyBackupOffline(databaseName: string, backupId: number, verifyChecksum?: boolean) {
+export async function verifyBackupOffline(
+	databaseName: string,
+	backupId: number,
+	verifyChecksum?: boolean,
+	{ inChild = false }: { inChild?: boolean } = {}
+) {
 	validateDatabaseName(databaseName);
 	const verifyWithChecksum = requireBooleanOption(verifyChecksum, 'verify_checksum');
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
 	const manifest = await requireBackupComplete(backupDir, backupId, databaseName);
-	await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum);
+	if (inChild) {
+		// inside a running server the native verifier reads untrusted files, so an abort costs the child
+		await runRestoreChild('verify', {
+			backupDir,
+			backupId,
+			manifest,
+			databaseName,
+			verifyWithChecksum,
+			verifyTables: true,
+		});
+	} else {
+		await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum, true);
+	}
 	return { database: databaseName, backup_id: backupId, ok: true, blobs: manifest.blobs };
 }
 
