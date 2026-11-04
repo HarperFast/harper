@@ -6092,6 +6092,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			// before it are recomputed rather than sealed into the index.
 			for (;;) {
 				for (const attribute of attributesToClear) {
+					if (restarted && buildSuperseded(Table, attributes)) return;
 					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
 					attribute.dbi.customIndex?.resetDerivedStorage?.();
 					if (attribute.dbi.clearAsync) {
