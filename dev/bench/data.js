@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793783164171,
+  "lastUpdate": 1793783168956,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -32899,6 +32899,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 3113.4,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "df882a311be6dd4c5c18f71c675e0ccba93fc9f7",
+          "message": "Omit reload markers from audit history; return an empty history for a record with no audit entry (#3494)\n\n* Skip reload markers in the audit history readers; return an empty history for an unaudited record\n\ngetHistory and getHistoryOfRecord excluded eviction and lock-control entries but not the\nwhole-table reload marker, so read_audit_log returned type:'reload' entries with a null id\nand, on RocksDB, grouped one into a user transaction. isNonHistoryType now owns the\nexclusion for both readers. The startTime replay and previousCount backfill keep handling\nthe marker themselves (refuse or re-snapshot).\n\ngetHistoryOfRecord threw for an entry with no audit position (an LMDB entry written without\na local audit time), which read_audit_log by hash_value turned into HTTP 500. It now returns\nan empty history, as it does for an absent record.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016q5qJ8dVxeE9co9xaEPQtp\nDispatch-Task: pr-maint-9c4f1f0aa5c37bd0cdb8f905b8b9ebea\n\n* Say why replay and backfill do not use isNonHistoryType\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016q5qJ8dVxeE9co9xaEPQtp\nDispatch-Task: pr-maint-9c4f1f0aa5c37bd0cdb8f905b8b9ebea\n\n* Drop a test comment that restates the next line\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016q5qJ8dVxeE9co9xaEPQtp\nDispatch-Task: pr-maint-9c4f1f0aa5c37bd0cdb8f905b8b9ebea\n\n* Note the history-reader filter in audit-retention.md; resources/DESIGN.md has no byte headroom\n\nresources/DESIGN.md sits at its ceiling on main, so the note moves beside the\nexisting `getHistory` bullet in audit-retention.md.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nDispatch-Task: rebase-merge-kriszyp-harper-3494-5975580c897c\n\n---------\n\nCo-authored-by: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-04T06:13:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/df882a311be6dd4c5c18f71c675e0ccba93fc9f7"
+        },
+        "date": 1793783167837,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3806.82,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3806.82,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 219.3,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 483.4,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 602.2,
             "unit": "ms"
           }
         ]
