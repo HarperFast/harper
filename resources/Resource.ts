@@ -154,11 +154,11 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
 					if (Array.isArray(result)) {
-						return recordAppliedSelect(select, true, settleAll(result.map(transform)));
+						return recordAppliedSelect(request, select, true, settleAll(result.map(transform)));
 					} else if (typeof result?.map === 'function') {
-						return recordAppliedSelect(select, true, result.map(transform));
+						return recordAppliedSelect(request, select, true, result.map(transform));
 					} else {
-						return recordAppliedSelect(select, false, transform(result));
+						return recordAppliedSelect(request, select, false, transform(result));
 					}
 				}
 				return result;
@@ -381,6 +381,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
 						return recordAppliedSelect(
+							request,
 							select,
 							true,
 							Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform)

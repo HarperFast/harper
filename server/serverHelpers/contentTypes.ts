@@ -40,12 +40,16 @@ export function isTupleSelect(select: any): boolean {
 type AppliedSelect = { select: any; rows: boolean };
 // Keyed by the projected value. A primitive needs no entry: its one column is the target's select.
 const appliedSelects = new WeakMap<object, AppliedSelect>();
+const CSV_TYPE = /text\/csv/i;
 
-export function recordAppliedSelect<T>(select: any, rows: boolean, value: T): T | Promise<T> {
+export function recordAppliedSelect<T>(context: any, select: any, rows: boolean, value: T): T | Promise<T> {
 	// a keyed projection sets every selected key, so its rows name their own columns
 	if (!(isScalarSelect(select) || isTupleSelect(select))) return value;
+	// the same negotiation input findBestSerializer reads; anything else never reaches the CSV serializer
+	const accept = context?.requestedContentType ?? (context?.headers?.asObject || context?.headers)?.accept;
+	if (typeof accept !== 'string' || !CSV_TYPE.test(accept)) return value;
 	if (typeof (value as any)?.then === 'function')
-		return (value as any).then((settled: T) => recordAppliedSelect(select, rows, settled));
+		return (value as any).then((settled: T) => recordAppliedSelect(context, select, rows, settled));
 	if (value && typeof value === 'object') appliedSelects.set(value, { select, rows });
 	return value;
 }
@@ -608,15 +612,14 @@ export function serialize(responseData, request, responseObject, target?, resour
 			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
-				const unwrapped = responseData;
+				const appliedSelect = contentType === 'text/csv' && appliedSelects.get(responseData);
 				responseData = responseData.mapError((error) => {
 					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
 					return row;
 				});
 				responseData.getColumns = getColumns;
-				const applied = contentType === 'text/csv' && appliedSelects.get(unwrapped);
-				if (applied) appliedSelects.set(responseData, applied);
+				if (appliedSelect) appliedSelects.set(responseData, appliedSelect);
 			}
 			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
 			if (!canCompress) return serialized;
