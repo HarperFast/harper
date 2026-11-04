@@ -299,12 +299,20 @@ async function userInfo(body): Promise<string | User> {
  */
 async function listUsersExternal(): Promise<User[]> {
 	const userData = await listUsers();
+	const externalRoles = new Map<UserRole, UserRole>();
 	userData.forEach((user) => {
 		delete user.password;
 		delete user.hash;
 		delete user.refresh_token;
 		delete user.hash_function;
-		user.role = withoutSystemGrants(user.role, false);
+		if (user.role) {
+			let externalRole = externalRoles.get(user.role);
+			if (!externalRole) {
+				externalRole = withoutSystemGrants(user.role, false);
+				externalRoles.set(user.role, externalRole);
+			}
+			user.role = externalRole;
+		}
 	});
 
 	return [...userData.values()];

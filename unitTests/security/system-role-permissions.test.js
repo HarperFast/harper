@@ -71,7 +71,21 @@ describe('System role permission boundary', () => {
 				assert.strictEqual(users.get(ROLE + '_second').role.permission.system.tables.hdb_user.read, false);
 				reported = await roles.getRoleByName(ROLE);
 			} else if (read === 'listUsersExternal') {
-				reported = (await user.listUsersExternal()).find((entry) => entry.username === ROLE + '_first').role;
+				const previousCache = await user.getUsersWithRolesCache();
+				const cachedUsers = await user.listUsers();
+				await user.setUsersWithRolesCache(cachedUsers);
+				try {
+					const users = await user.listUsersExternal();
+					reported = users.find((entry) => entry.username === ROLE + '_first').role;
+					assert.strictEqual(users.find((entry) => entry.username === ROLE + '_second').role, reported);
+					assert.strictEqual(await user.getUsersWithRolesCache(), cachedUsers);
+					assert.strictEqual(cachedUsers.get(ROLE + '_first').role.permission.system.tables.hdb_user.read, false);
+					assert.strictEqual(reported.permission.system, undefined);
+					const nextUsers = await user.listUsersExternal();
+					assert.notStrictEqual(nextUsers.find((entry) => entry.username === ROLE + '_first').role, reported);
+				} finally {
+					await user.setUsersWithRolesCache(previousCache);
+				}
 			} else if (read === 'userInfo') {
 				reported = (await user.userInfo({ hdb_user: { username: 'legacy', role: { id: ROLE } } })).role;
 			} else if (read === 'listRoles') {
