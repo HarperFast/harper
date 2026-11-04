@@ -1,7 +1,13 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, CHECKPOINT_ALGORITHM } = require('#src/resources/databases');
+const {
+	table,
+	CHECKPOINT_ALGORITHM,
+	RESOLVED_CHECKPOINT_ALGORITHM,
+	databaseEventsEmitter,
+	__setReadOnlyModeForTest,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('re-declaring a table that adds or removes a bare @computed (harper#3782)', () => {
@@ -169,5 +175,205 @@ describe('re-declaring a table that adds or removes a bare @computed (harper#378
 		const build = Bare.indexingOperation;
 		const Empty = declare('ComputedBareShape', { computed: {} });
 		assert.strictEqual(Empty.indexingOperation, build, 'an equivalent bare declaration must not rebuild');
+	});
+});
+
+describe('re-declaring a table reports and rebuilds only a real computed change (harper#3970, #3971, #3972)', () => {
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	async function catalogFlushed(Table) {
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+	}
+
+	function declare(name, scoreAttribute) {
+		return table({
+			table: name,
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'name', type: 'String' },
+				{ name: 'score', type: 'String', indexed: true, ...scoreAttribute },
+			],
+		});
+	}
+
+	async function populate(Table, count = 5) {
+		let lastPut;
+		for (let i = 0; i < count; i++) lastPut = Table.put({ id: 'k-' + i, name: 'n' + i });
+		await lastPut;
+	}
+
+	async function idsWithScore(Table, value) {
+		const ids = [];
+		for await (const record of Table.search({ conditions: [{ attribute: 'score', value }] })) ids.push(record.id);
+		return ids;
+	}
+
+	async function assertScores(Table, scoreOf, count = 5) {
+		for (let i = 0; i < count; i++)
+			assert.deepStrictEqual(await idsWithScore(Table, scoreOf('n' + i)), ['k-' + i], `row k-${i} is not indexed`);
+	}
+
+	// Every case is the same table, so each step starts from the durable state the one before it left.
+	it('re-declares one table through a no-op, a replaced function, a removal and a late resolver', async () => {
+		// a new function with the same source on every call, as each application load produces
+		const prefixFrom = (prefix) => new Function('record', `return '${prefix}-' + record.name;`);
+		const key = 'ComputedSequence/score';
+		const First = declare('ComputedSequence', { computed: { from: prefixFrom('a') } });
+		await populate(First);
+		await First.indexingOperation;
+		await catalogFlushed(First);
+		await assertScores(First, (name) => 'a-' + name);
+		assert.strictEqual(First.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
+
+		let announced = 0;
+		const onUpdate = (updated) => {
+			if (updated.tableName === 'ComputedSequence') announced++;
+		};
+		databaseEventsEmitter.on('updateTable', onUpdate);
+		try {
+			const build = First.indexingOperation;
+			const schemaVersion = First.schemaVersion;
+			const NoOp = declare('ComputedSequence', { computed: { from: prefixFrom('a') } });
+			assert.strictEqual(NoOp.indexingOperation, build, 'a no-op re-declare rebuilt the index');
+			assert.strictEqual(NoOp.schemaVersion, schemaVersion, 'a no-op re-declare reported a schema change');
+			assert.strictEqual(announced, 0, 'a no-op re-declare announced the table');
+
+			// the attribute as the catalog holds it, which is what a thread that loaded the table from the catalog re-declares
+			const FromCatalog = declare('ComputedSequence', { ...First.dbisDB.getSync(key) });
+			assert.strictEqual(FromCatalog.indexingOperation, build, 'a catalog-sourced re-declare rebuilt the index');
+			assert.strictEqual(FromCatalog.schemaVersion, schemaVersion);
+			assert.strictEqual(announced, 0);
+		} finally {
+			databaseEventsEmitter.off('updateTable', onUpdate);
+		}
+
+		const replacedBuild = First.indexingOperation;
+		const Replaced = declare('ComputedSequence', { computed: { from: prefixFrom('b') } });
+		assert.notStrictEqual(Replaced.indexingOperation, replacedBuild, 'a replaced function did not rebuild');
+		await Replaced.indexingOperation;
+		await assertScores(Replaced, (name) => 'b-' + name);
+		assert.deepStrictEqual(await idsWithScore(Replaced, 'a-n1'), [], 'the old function left its keys');
+
+		// a copy of the catalog attribute declared bare is a removal of the function, not its carried hash
+		const removedBuild = Replaced.indexingOperation;
+		const Bare = declare('ComputedSequence', { ...Replaced.dbisDB.getSync(key), computed: true });
+		assert.notStrictEqual(Bare.indexingOperation, removedBuild, 'changing a function to bare did not rebuild');
+		await Bare.indexingOperation;
+
+		const Stored = declare('ComputedSequence', {});
+		await Stored.indexingOperation;
+		const Unresolved = declare('ComputedSequence', { computed: true });
+		await Unresolved.indexingOperation;
+		await catalogFlushed(Unresolved);
+		assert.deepStrictEqual(await idsWithScore(Unresolved, 'c-n1'), []);
+		assert.strictEqual(Unresolved.dbisDB.getSync(key).checkpointAlgorithm, CHECKPOINT_ALGORITHM);
+
+		const unresolvedBuild = Unresolved.indexingOperation;
+		Unresolved.setComputedAttribute('score', (record) => 'c-' + record.name);
+		assert.notStrictEqual(Unresolved.indexingOperation, unresolvedBuild, 'a late resolver did not rebuild');
+		await Unresolved.indexingOperation;
+		await catalogFlushed(Unresolved);
+		await assertScores(Unresolved, (name) => 'c-' + name);
+		assert.strictEqual(Unresolved.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
+
+		const resolvedBuild = Unresolved.indexingOperation;
+		Unresolved.setComputedAttribute('score', (record) => 'c-' + record.name);
+		assert.strictEqual(Unresolved.indexingOperation, resolvedBuild, 'a certified index was rebuilt');
+	});
+
+	it('restarts a backfill whose resolver registers mid-scan', async () => {
+		const Plain = declare('ComputedMidScan', {});
+		await populate(Plain, 300);
+		await Plain.indexingOperation;
+		const resolver = (record) => 'm-' + record.name;
+		const resolvers = Plain.userResolvers;
+		let reads = 0;
+		// registers the resolver from inside the scan, after some rows were computed without it
+		Object.defineProperty(resolvers, 'score', {
+			configurable: true,
+			enumerable: true,
+			get() {
+				if (++reads < 40) return undefined;
+				Plain.setComputedAttribute('score', resolver);
+				return resolvers.score;
+			},
+			set(value) {
+				if (value?.unresolved) return;
+				Object.defineProperty(resolvers, 'score', { value, writable: true, configurable: true, enumerable: true });
+			},
+		});
+		const MidScan = declare('ComputedMidScan', { computed: true });
+		const build = MidScan.indexingOperation;
+		await build;
+		await catalogFlushed(MidScan);
+		assert.ok(reads >= 40, 'the resolver was not registered during the scan');
+		assert.strictEqual(MidScan.indexingOperation, build, 'the build should restart itself, not need a repair');
+		await assertScores(MidScan, (name) => 'm-' + name, 300);
+		assert.strictEqual(
+			MidScan.dbisDB.getSync('ComputedMidScan/score').checkpointAlgorithm,
+			RESOLVED_CHECKPOINT_ALGORITHM
+		);
+	});
+
+	it('rebuilds an index without resolver certification once, when its resolver registers', async () => {
+		const Computed = declare('ComputedLegacyStamp', { computed: true });
+		Computed.setComputedAttribute('score', (record) => 'l-' + record.name);
+		await populate(Computed);
+		await Computed.indexingOperation;
+		await catalogFlushed(Computed);
+		const key = 'ComputedLegacyStamp/score';
+		// what a release before resolver certification left on every completed index
+		const written = Computed.dbisDB.put(key, {
+			...Computed.dbisDB.getSync(key),
+			checkpointAlgorithm: CHECKPOINT_ALGORITHM,
+		});
+		if (written?.then) await written;
+
+		const Restarted = declare('ComputedLegacyStamp', { computed: true });
+		const declared = Restarted.indexingOperation;
+		__setReadOnlyModeForTest(true);
+		try {
+			Restarted.setComputedAttribute('score', (record) => 'l-' + record.name);
+		} finally {
+			__setReadOnlyModeForTest(undefined);
+		}
+		assert.strictEqual(Restarted.indexingOperation, declared, 'a read-only server started a rebuild');
+
+		Restarted.setComputedAttribute('score', (record) => 'l-' + record.name);
+		const repair = Restarted.indexingOperation;
+		assert.notStrictEqual(repair, declared, 'an uncertified index was not rebuilt');
+		Restarted.setComputedAttribute('score', (record) => 'l-' + record.name);
+		assert.strictEqual(Restarted.indexingOperation, repair, 'a second registration claimed a second build');
+		await repair;
+		await catalogFlushed(Restarted);
+		await assertScores(Restarted, (name) => 'l-' + name);
+		assert.strictEqual(Restarted.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
+	});
+
+	it('rebuilds a function index another thread built without the function', async () => {
+		const from = (record) => 'f-' + record.name;
+		const Computed = declare('ComputedRecoveredFunction', { computed: { from } });
+		await populate(Computed);
+		await Computed.indexingOperation;
+		await catalogFlushed(Computed);
+		const key = 'ComputedRecoveredFunction/score';
+		const written = Computed.dbisDB.put(key, {
+			...Computed.dbisDB.getSync(key),
+			checkpointAlgorithm: CHECKPOINT_ALGORITHM,
+		});
+		if (written?.then) await written;
+
+		const build = Computed.indexingOperation;
+		const Redeclared = declare('ComputedRecoveredFunction', { computed: { from } });
+		assert.notStrictEqual(Redeclared.indexingOperation, build, 'registering the function did not rebuild');
+		await Redeclared.indexingOperation;
+		await catalogFlushed(Redeclared);
+		await assertScores(Redeclared, (name) => 'f-' + name);
+		assert.strictEqual(Redeclared.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
 	});
 });

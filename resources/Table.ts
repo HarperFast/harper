@@ -168,6 +168,7 @@ import {
 	openReplicaDeadlineStore,
 	replicaDeadlinesCatalogKey,
 	REPLICA_DEADLINES_STORE,
+	requestComputedIndexRepair,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
@@ -336,6 +337,8 @@ export type Attribute = {
 	computed?: any;
 	resolve?: any;
 	computedFromExpression?: any;
+	// source hash of a function `from`, which the catalog cannot hold
+	computedFromHash?: string;
 	embed?: { source: string; model: string };
 	decide?: DecideConfig;
 	version?: any;
@@ -11296,6 +11299,7 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			this.userResolvers[attribute_name] = resolver;
+			if (!isBranch) requestComputedIndexRepair(TableResource);
 		}
 		/**
 		 * Override the default embedder for an `@embed` attribute. Return the vector to
