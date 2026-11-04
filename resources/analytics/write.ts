@@ -206,12 +206,9 @@ export function flushAnalyticsForExit(): Promise<void> {
 	clearTimeout(sendAnalyticsTimeout);
 	sendAnalyticsTimeout = null;
 	return (exitAnalyticsFlush = contextStorage.exit(async () => {
-		try {
-			await runningAnalyticsFlush;
-		} finally {
-			if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
-			else for (const listener of [...analyticsListeners]) listener([], true);
-		}
+		await runningAnalyticsFlush?.catch(() => {});
+		if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
+		else for (const listener of [...analyticsListeners]) listener([], true);
 	}));
 }
 
@@ -234,10 +231,12 @@ function sendAnalytics() {
 		// One more timer turn: a stall that ran past the deadline is recorded by the event loop
 		// sampler's overdue firing, which libuv runs before a timer armed now, and the read below
 		// would otherwise reset that sample away.
-		sendAnalyticsTimeout = setTimeout(() => {
-			void flushAnalytics().catch((error) => harperLogger.warn('Analytics flush failed', error));
-		}, 0).unref();
+		sendAnalyticsTimeout = setTimeout(flushPeriodicAnalytics, 0).unref();
 	}, analyticsDelay).unref();
+}
+
+function flushPeriodicAnalytics(): void {
+	void flushAnalytics().catch((error) => log.error?.('Analytics flush failed', error));
 }
 
 function flushAnalytics(final = false): Promise<void> {

@@ -33,7 +33,10 @@ if (workerData.failPeriodic) {
 }
 const order = [];
 analytics.setAnalyticsEnabled(true);
-analytics.addAnalyticsListener((_metrics, final) => order.push(final ? 'final-delivered' : 'ordinary-delivered'));
+analytics.addAnalyticsListener((_metrics, final) => {
+	order.push(final ? 'final-delivered' : 'ordinary-delivered');
+	if (final && workerData.failFinal) throw new Error('final-window-regression');
+});
 analytics.recordAction(() => {
 	order.push('ordinary-started');
 	queueMicrotask(() => {
@@ -42,13 +45,18 @@ analytics.recordAction(() => {
 		assert.strictEqual(analytics.flushAnalyticsForExit(), completed);
 		completed.then(
 			() => {
+				assert.ok(!workerData.failFinal);
 				parentPort.postMessage({ type: 'flush-completed', order });
 				parentPort.close();
 			},
 			(error) => {
-				throw error;
+				assert.ok(workerData.failFinal);
+				assert.match(error.message, /final-window-regression/);
+				parentPort.postMessage({ type: 'final-error-propagated', order });
+				parentPort.close();
 			}
 		);
 	});
+	if (workerData.failOverlap) throw new Error('overlapping-periodic-regression');
 	return { count: 1 };
 }, 'shutdown-overlap');

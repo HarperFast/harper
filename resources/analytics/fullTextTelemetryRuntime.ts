@@ -59,6 +59,8 @@ export function initializeFullTextTelemetry(): void {
 					const rows = fullTextTelemetryCollector.collectFinalRows();
 					if (persistenceActive && checkAnalyticsEnabled(false)) metrics.push(...rows);
 				}
+			} catch {
+				reportFailure();
 			} finally {
 				removeListener?.();
 				fullTextTelemetryCollector.stop();

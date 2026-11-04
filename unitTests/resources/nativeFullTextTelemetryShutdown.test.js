@@ -41,6 +41,30 @@ it('logs a failing periodic analytics window without preventing the final flush'
 	}
 });
 
+for (const mode of ['failOverlap', 'failFinal'])
+	it(`preserves final-flush rejection ownership (${mode})`, async function () {
+		this.timeout(60_000);
+		await ensureSystemTables();
+		const worker = startWorker(require.resolve('./fixtures/analyticsExitFlush.cjs'), {
+			name: 'http',
+			autoRestart: false,
+			workerData: { [mode]: true },
+		});
+		const messages = [];
+		worker.prependListener('message', (message) => messages.push(structuredClone(message)));
+		try {
+			const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(55_000) });
+			assert.strictEqual(code, 0);
+			assert.ok(
+				messages.some(
+					(message) => message.type === (mode === 'failFinal' ? 'final-error-propagated' : 'flush-completed')
+				)
+			);
+		} finally {
+			if (worker.threadId !== -1) await worker.terminate();
+		}
+	});
+
 it('waits for an in-flight analytics window before delivering exactly one final window', async function () {
 	this.timeout(60_000);
 	await ensureSystemTables();
