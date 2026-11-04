@@ -4,7 +4,7 @@ Rules code cannot state: invariant, rationale, enforcing symbol/test. Navigation
 
 ## Full-text declarations and reader snapshots
 
-`fullTextSchema.ts` declarations are nonstored, nonselectable `fullTextIndexes`/`fullTextFields`, never `attributes`. Writes ignore reader readiness (`assertFullTextWrite`). Each search leases one reader; only idle readers reload (`#acquireSearchReader`, `fullTextQueryIndex.test.js`). Hydration rechecks source versions: native snapshots are not record snapshots. Capture native budgets before `startHTTPThreads()`; earlier workers fail.
+Declarations compile to `fullTextIndexes`/`fullTextFields` (`fullTextSchema.ts`), never `attributes`: they hold no stored or selectable value. Write guards ignore reader readiness (`assertFullTextWrite`). One reader lease spans a search; only an idle reader reloads (`#acquireSearchReader`, `fullTextQueryIndex.test.js`). A native snapshot is not a record snapshot, so hydration re-checks source versions. Native budgets are fixed before `startHTTPThreads()`; a worker started before capture fails.
 
 ## A bare nullish id is never a collection target for `get` or `delete`
 
@@ -32,10 +32,10 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 ## Request admission authorizes exactly what the dispatch runs
 
 - `transactional()` resolves QUERY bodies first, drops client `checkPermission`, and admits `select` through `allowRead`; search uses that projection (`permissions.test.js`).
-- False-mode `search`/`query`/`get` await the named `SEARCH_AUTHORIZATION` gate; denial cannot become truncated success, derived transforms still run, and search starts before transaction settlement to retain its snapshot. Default-mode get adds no promise step; `allowRead` was already awaited (`asyncAllowReadSearchResults.test.js`).
+- False-mode `search`/`query`/`get` await the named `SEARCH_AUTHORIZATION` gate; denial cannot become truncated success, derived transforms still run, and search starts before transaction settlement to retain its snapshot. Default-mode admission adds no promise step; `allowRead` was already awaited (`asyncAllowReadSearchResults.test.js`).
 - False-mode array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
 - Materialized rows recheck `rowFilter` before `limit`.
-- `dispatchTarget` owns application copies; transport roots narrow in place. Unowned narrowed roots are refused. Context arming persists; `allowRead` stays in-place (`delegatedQueryReuse.test.js`).
+- `markDispatchTarget` brands transport roots for in-place narrowing; `dispatchTarget` copies other roots. Unowned narrowed roots fail closed; context arming persists (`delegatedQueryReuse.test.js`).
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
@@ -100,7 +100,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 - **A static override owns the whole contract.** It resolves or consumes `data` (a promise, or a multipart `AsyncIterable<{ name, value }>` that `super.post` collects) and decides access itself; no `allow*` runs (`login.ts`).
 - `transactional()` resolves the body before `allow*` and passes both one object (`requestBody.test.js`).
 - Nested relationship constraints share `_prepareRelationshipSelection`. Predicates never mutate projection maps (`nestedRelationshipConstraints.test.js`).
-- `_authorizeRelatedSelection` copies named selectors before writes. Request authority wins; arrays isolate inner `select` from metadata (`selectorAuthorization.test.js`).
+- `_authorizeRelatedSelection` copies named selectors before writes. Request authority wins; arrays isolate `select` from metadata (`selectorAuthorization.test.js`).
 - Only records and relationship targets use a table's resolvers; plain JSON uses resolver-free `nestedSelectTransform` (`searchSelectProjection.test.js`).
 - Storage keeps only stored fields (`storedFieldsOnly`); `toJSON` is a projection.
 - **`relationship.from` accessors are synchronous** (v4 parity): `getSync`/`getEntry`, never `get()` (`query.test.js`). Resolving one marks the request uncacheable (`markRelatedReadUncacheable`), or a stale ETag yields a 304 (gap: unselected `@enumerable` links resolve in `toJSON` after the ETag).

@@ -1027,7 +1027,7 @@ function transactional(
 				// an override copies the target or delegates asynchronously after its own return settles.
 				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				let result = action(resource, query, context, data);
-				if (loadAsInstance === false && options.method === 'get' && callerTarget !== query)
+				if (options.method === 'get' && callerTarget !== query)
 					result = when(result, (value: any) => {
 						if (query.loadedFromSource !== undefined) callerTarget.loadedFromSource = query.loadedFromSource;
 						return value;

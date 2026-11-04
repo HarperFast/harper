@@ -3,6 +3,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { cloneDeep } = require('lodash');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
+const { Resource } = require('#src/resources/Resource');
 const { RequestTarget, markDispatchTarget, copyQueryTarget } = require('#src/resources/RequestTarget');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -74,7 +75,7 @@ function refusedAsStale(error) {
 
 describe('delegated reads reusing one query object', function () {
 	this.timeout(30000);
-	let Employee, FalseModeEmployee, Label, FalseModeLabel, previousMainIsWorker;
+	let Employee, FalseModeEmployee, Label, FalseModeLabel, DelegatingLabel, previousMainIsWorker;
 	let sourceLoads = 0;
 	before(async function () {
 		setupTestDBPath();
@@ -124,6 +125,15 @@ describe('delegated reads reusing one query object', function () {
 		});
 		FalseModeLabel = class extends Label {
 			static loadAsInstance = false;
+		};
+		DelegatingLabel = class extends Resource {
+			allowRead() {
+				return true;
+			}
+			get(target) {
+				target.checkPermission = true;
+				return Label.get(target, this.getContext());
+			}
 		};
 		await Department.put('d1', { id: 'd1', label: 'Engineering', secret: 'payroll' });
 		await Employee.put('e1', { id: 'e1', name: 'Ada', departmentId: 'd1' });
@@ -714,6 +724,7 @@ describe('delegated reads reusing one query object', function () {
 			['a false-mode get replacing an explicit permission', () => FalseModeLabel, true, broadUser.role.permission],
 			['a false-mode get armed only through the context', () => FalseModeLabel, true, false],
 			['a default-mode get', () => Label, undefined, true],
+			['a default-mode delegate', () => DelegatingLabel, undefined, true],
 			['a default-mode get armed only through the context', () => Label, true, false],
 		]) {
 			it(`${name} records it on the caller's query object`, async function () {
