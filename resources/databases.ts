@@ -5792,7 +5792,6 @@ function needsResolvedRebuild(Table: any, attribute: any): boolean {
 		isApplicationComputed(attribute) &&
 		Boolean(attribute.indexed) &&
 		!attribute.indexed.type &&
-		!attribute.indexingPID &&
 		attribute.checkpointAlgorithm !== RESOLVED_CHECKPOINT_ALGORITHM &&
 		Boolean(Table.indices[attribute.name]) &&
 		!Table.indices[attribute.name].isIndexing &&

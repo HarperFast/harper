@@ -433,6 +433,20 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		assert.ok(!Computed.indices.score.isIndexing);
 	});
 
+	it("repairs an index whose live attribute still carries a finished build's claim", async () => {
+		const Computed = await uncertified('ComputedStaleClaim', [
+			{ name: 'score', type: 'String', indexed: true, computed: true },
+		]);
+		// a re-declare during a build copies its claim onto the attribute that becomes live, and the build's
+		// completion clears only its own attribute objects
+		Computed.attributes.find((attribute) => attribute.name === 'score').indexingPID = process.pid;
+		const build = Computed.indexingOperation;
+		Computed.setComputedAttribute('score', (record) => 'j-' + record.name);
+		assert.notStrictEqual(Computed.indexingOperation, build, 'a stale in-memory claim blocked the repair');
+		await settled(Computed);
+		await assertScores(Computed, (name) => 'j-' + name);
+	});
+
 	it('holds no index for a repair claim that failed part way', async () => {
 		const Computed = await uncertified('ComputedClaimFails', [
 			{ name: 'first', type: 'String', indexed: true, computed: true },
