@@ -32,7 +32,7 @@ describe('Model-call analytics persistence', () => {
 	afterEach(async () => {
 		writer?.stop();
 		await writer?.flush();
-		for (const id of ids.splice(0)) await writerTable.primaryStore.remove(id);
+		for (const id of ids.splice(0)) await writerTable?.primaryStore.remove(id);
 	});
 
 	async function persistMixedRows() {
