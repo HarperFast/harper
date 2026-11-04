@@ -1,6 +1,6 @@
 # SQL engine v2
 
-## LIKE: one tokenizer, linear matcher
+## LIKE
 
 `tokenizeLike` (`expressions/like.ts`) is the only definition of a v2 LIKE pattern: literal characters, `_` (one character), `%` (any run); the `ESCAPE` character, checked before the wildcards, makes the next character literal. Every consumer calls it: `normalizeLike` (`parser/normalizer.ts`) to validate, `compileExpr` to build the row matcher, and `leafToCondition` (`optimizer/whereToConditions.ts`) to build index conditions. A pushed index condition replaces the row filter with no re-check, so a second reading of the pattern selects or deletes the wrong rows: before [#3878](https://github.com/HarperFast/harper/issues/3878), the index rewrite read `'t0!%' ESCAPE '!'` as `starts_with 't0!'`.
 
