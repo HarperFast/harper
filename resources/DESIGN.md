@@ -32,10 +32,10 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 ## Request admission authorizes exactly what the dispatch runs
 
 - `transactional()` resolves QUERY bodies first, drops client `checkPermission`, and admits `select` through `allowRead`; search uses that projection (`permissions.test.js`).
-- False-mode `search`/`query`/`get` await the named `SEARCH_AUTHORIZATION` gate; denial cannot become truncated success, derived transforms still run, and search starts before transaction settlement to retain its snapshot. Default-mode get already awaited `allowRead` (`asyncAllowReadSearchResults.test.js`).
+- False-mode `search`/`query`/`get` await the named `SEARCH_AUTHORIZATION` gate; denial cannot become truncated success, derived transforms still run, and search starts before transaction settlement to retain its snapshot. Default-mode get adds no promise step; `allowRead` was already awaited (`asyncAllowReadSearchResults.test.js`).
 - False-mode array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
 - Materialized rows recheck `rowFilter` before `limit`.
-- `dispatchTarget` copies application roots before narrowing; transport roots stay dispatch-owned. Clones lose ownership; narrowed unowned roots are refused. Context arming persists; `allowRead` stays in-place (`delegatedQueryReuse.test.js`, `../integrationTests/security/delegated-query-reuse.test.ts`).
+- `dispatchTarget` owns application copies; transport roots narrow in place. Unowned narrowed roots are refused. Context arming persists; `allowRead` stays in-place (`delegatedQueryReuse.test.js`).
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
@@ -104,7 +104,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 - Only records and relationship targets use a table's resolvers; plain JSON uses resolver-free `nestedSelectTransform` (`searchSelectProjection.test.js`).
 - Storage keeps only stored fields (`storedFieldsOnly`); `toJSON` is a projection.
 - **`relationship.from` accessors are synchronous** (v4 parity): `getSync`/`getEntry`, never `get()` (`query.test.js`). Resolving one marks the request uncacheable (`markRelatedReadUncacheable`), or a stale ETag yields a 304 (gap: unselected `@enumerable` links resolve in `toJSON` after the ETag).
-- Async related reads use `loadEntries`; `toMany` picks one/many; `getReadTransactionGuard` rechecks after each await (`relationshipAsyncReads.test.js`); sync reads stay synchronous. Gaps: caching `.to` `asArray` may yield Promises (harper#3588); adaptive index switching uses `getSync`. Restrictions and sibling filters use symbol keys (`relationshipRestriction`), avoiding map-name collisions. AND conditions, including to-one hops and nested-select conditions, meet one related row whichever leads; OR scopes narrow neither sibling joins nor selects (`relationshipConditionScope.test.js`; gaps: OR multi-hop/to-one→to-many, harper#3762).
+- Async related reads use `loadEntries`; `toMany` picks one/many; `getReadTransactionGuard` rechecks after each await (`relationshipAsyncReads.test.js`); sync reads stay synchronous. Gaps: caching `.to` `asArray` may yield Promises (harper#3588); adaptive index switching uses `getSync`. Restrictions and sibling filters use symbol keys (`relationshipRestriction`), avoiding map-name collisions. AND conditions on one relationship, including to-one hops and nested-select conditions, meet one related row whichever leads; OR scopes narrow neither sibling joins nor selects (`relationshipConditionScope.test.js`; gaps: OR multi-hop/to-one→to-many, harper#3762).
 - **`@relationship(from, to)` joins `related[to] == local[from]`.** The resolver, `joinTo`/`joinFrom`, `transformEntryForSelect` and `filterByType` must agree.
 - `updatedAttributes` precompiles expressions before mutating, and retires removed accessors.
 - A new `_writeUpdate` early return follows the blob protocol. A new `Table.ts` section starts with `// #section:`.

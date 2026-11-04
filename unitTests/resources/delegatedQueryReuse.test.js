@@ -186,6 +186,22 @@ describe('delegated reads reusing one query object', function () {
 				assert.strictEqual(root.conditions, conditions);
 			});
 
+			it('replays a one-shot iterator returned by a private-field getter', async function () {
+				class Query {
+					#conditions = (function* () {
+						yield { attribute: 'id', value: 'e1' };
+					})();
+					get conditions() {
+						return this.#conditions;
+					}
+					select = authoredSelect();
+					checkPermission = true;
+				}
+				const root = new Query();
+				for (const user of [broadUser, restrictedUser, broadUser])
+					assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+			});
+
 			it('keeps condition iterator failures closed on reuse', async function () {
 				const failed = {
 					conditions: (function* () {
@@ -198,20 +214,25 @@ describe('delegated reads reusing one query object', function () {
 					await assert.rejects(async () => one(getTable().search(failed, { user })));
 			});
 
-			it('reads a private-field iterator on a query class', async function () {
-				class Query {
-					#conditions = [{ attribute: 'id', value: 'e1' }];
-					select = authoredSelect();
-					checkPermission = true;
-					[Symbol.iterator]() {
-						return this.#conditions[Symbol.iterator]();
+			for (const [shape, Base] of [
+				['class', class {}],
+				['RequestTarget subclass', RequestTarget],
+			]) {
+				it(`reads a private-field iterator on a query ${shape}`, async function () {
+					class Query extends Base {
+						#conditions = [{ attribute: 'id', value: 'e1' }];
+						select = authoredSelect();
+						checkPermission = true;
+						[Symbol.iterator]() {
+							return this.#conditions[Symbol.iterator]();
+						}
 					}
-				}
-				const root = new Query();
-				for (const user of [broadUser, restrictedUser, broadUser])
-					assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
-				assertAuthored(root);
-			});
+					const root = new Query();
+					for (const user of [broadUser, restrictedUser, broadUser])
+						assert.deepStrictEqual(await one(getTable().search(root, { user })), expected(user));
+					assertAuthored(root);
+				});
+			}
 
 			for (const [order, users] of ORDERS) {
 				it(`search with one plain query object, ${order}`, async function () {

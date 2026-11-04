@@ -26,7 +26,8 @@ function replayIterator(source: any): Iterator<any> {
 		}
 	}
 	if (Object.hasOwn(snapshot, 'error')) throw snapshot.error;
-	return snapshot.values![Symbol.iterator]();
+	if (!snapshot.values) throw new TypeError('Cannot reuse a query iterator while it is running');
+	return snapshot.values[Symbol.iterator]();
 }
 
 function copyConditions(value: any): any {
@@ -35,10 +36,16 @@ function copyConditions(value: any): any {
 		: value;
 }
 
-function copyQueryFields(source: any, stop = Object.prototype): PropertyDescriptorMap {
+function copyQueryFields(source: any, stop = Object.prototype, skipArrayIndices = false): PropertyDescriptorMap {
 	const descriptors: PropertyDescriptorMap = Object.create(null);
 	for (let object = source; object && object !== stop; object = Object.getPrototypeOf(object)) {
 		for (const name of Reflect.ownKeys(object)) {
+			if (
+				skipArrayIndices &&
+				typeof name === 'string' &&
+				(name === 'length' || (name !== '4294967295' && String(Number(name) >>> 0) === name))
+			)
+				continue;
 			if (Object.hasOwn(descriptors, name)) continue;
 			const descriptor = Object.getOwnPropertyDescriptor(object, name);
 			if (!descriptor) continue;
@@ -56,8 +63,9 @@ function copyQueryFields(source: any, stop = Object.prototype): PropertyDescript
 				descriptors[name] = { ...descriptor, writable: true, configurable: true };
 			} else {
 				const materialize = (receiver: any, value: any) => {
+					value = name === 'conditions' ? copyConditions(value) : value;
 					Object.defineProperty(receiver, name, {
-						value: name === 'conditions' ? copyConditions(value) : value,
+						value,
 						writable: true,
 						enumerable: descriptor.enumerable,
 						configurable: true,
@@ -91,7 +99,8 @@ export class RequestTarget extends URLSearchParams {
 		isDispatchTarget = (target) => #dispatchOwned in target && target.#dispatchOwned === true;
 		copyRequestTarget = (source) => {
 			const copy = new RequestTarget();
-			for (const [name, value] of source) URLSearchParams.prototype.append.call(copy, name, value);
+			for (const [name, value] of URLSearchParams.prototype.entries.call(source))
+				URLSearchParams.prototype.append.call(copy, name, value);
 			copy.#target = source.#target;
 			copy.#dispatchOwned = true;
 			const prototype = Object.getPrototypeOf(source);
@@ -286,6 +295,11 @@ function copyQueryTargetShell<T>(source: T): T {
 		return Object.setPrototypeOf(copy, prototype);
 	}
 	if (Array.isArray(source)) {
+		if (prototype === Array.prototype && !Object.hasOwn(source, 'constructor'))
+			return Object.defineProperties(
+				Array.prototype.slice.call(source),
+				copyQueryFields(source, Array.prototype, true)
+			);
 		const descriptors = copyQueryFields(source, Array.prototype);
 		descriptors.length.configurable = false;
 		return Object.setPrototypeOf(Object.defineProperties([], descriptors), prototype);
