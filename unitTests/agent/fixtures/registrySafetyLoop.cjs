@@ -1,5 +1,10 @@
 const assert = require('node:assert');
 require('../../mocha.init.js');
+function finish(code) {
+	// Register last so RocksDB flushes before its files are removed.
+	process.on('exit', require('../../perPidRoot.js').removePerPidRoot);
+	process.exit(code);
+}
 require('#src/server/serverHelpers/serverUtilities');
 const { server } = require('#src/server/Server');
 const { ensureSystemTables } = require('../../testUtils.js');
@@ -46,8 +51,35 @@ const session = require('#src/agent/session');
 	assert.equal(saved.status, 'awaiting_approval');
 	assert.equal(saved.pendingApprovals[0].toolName, 'search_and_purge');
 	assert.equal(calls, 0);
-	process.exit(0);
+	let oldCalls = 0;
+	let replacementCalls = 0;
+	server.registerOperation({
+		name: 'search_by_value',
+		readOnly: true,
+		inputSchema: { type: 'object' },
+		execute: async () => {
+			oldCalls++;
+			return {};
+		},
+	});
+	const liveTool = composeRegistryTools(user, async () => {
+		await Promise.resolve();
+		server.registerOperation({
+			name: 'search_by_value',
+			inputSchema: { type: 'object' },
+			execute: async () => {
+				replacementCalls++;
+				return {};
+			},
+		});
+		return user;
+	}).find((t) => t.def.name === 'search_by_value');
+	assert.equal(liveTool.destructive, false);
+	await assert.rejects(liveTool.handler({}, { sessionId: created.session_id }), /safety changed/);
+	assert.equal(oldCalls, 0);
+	assert.equal(replacementCalls, 0);
+	finish(0);
 })().catch((error) => {
 	console.error(error);
-	process.exit(1);
+	finish(1);
 });

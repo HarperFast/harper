@@ -189,8 +189,8 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Operations that carry `destructiveHint: true` when opted into the allow
- * list. The hint lets MCP clients surface a confirmation prompt before
+ * Names that always carry `destructiveHint: true`, even with a read-only claim.
+ * The hint lets MCP clients surface a confirmation prompt before
  * calling. It is **not** an authorization check — Harper's `verifyPerms`
  * still runs at the actual dispatch site.
  */

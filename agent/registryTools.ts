@@ -152,10 +152,14 @@ function adaptRegistryTool(def: RegistryToolDef, resolveIdentity: () => Promise<
 			const user = await resolveIdentity();
 			const current = getTool(def.name, 'operations');
 			if (!current || current.profile !== 'operations') {
-				throw new Error(`Operation tool '${def.name}' is no longer available; retry after registrations stabilize`);
+				throw new Error(
+					`Operation tool '${def.name}' is no longer available to the agent (removed, denied, or withheld)`
+				);
 			}
 			if (!destructive && isDestructiveDef(current)) {
-				throw new Error(`Operation tool '${def.name}' safety changed; restart Harper to refresh the agent tools`);
+				throw new Error(
+					`Operation tool '${def.name}' safety changed; load its registration before the agent, or declare readOnly: true only if it is read-only`
+				);
 			}
 			const context: ToolCallContext = {
 				user,
