@@ -337,7 +337,6 @@ export type Attribute = {
 	computed?: any;
 	resolve?: any;
 	computedFromExpression?: any;
-	// source hash of a function `from`, which the catalog cannot hold
 	computedFromHash?: string;
 	embed?: { source: string; model: string };
 	decide?: DecideConfig;

@@ -1,6 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const {
 	table,
 	CHECKPOINT_ALGORITHM,
@@ -218,7 +218,6 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 			assert.deepStrictEqual(await idsWithScore(Table, scoreOf('n' + i)), ['k-' + i], `row k-${i} is not indexed`);
 	}
 
-	// Every case is the same table, so each step starts from the durable state the one before it left.
 	it('re-declares one table through a no-op, a replaced function, a removal and a late resolver', async () => {
 		// a new function with the same source on every call, as each application load produces
 		const prefixFrom = (prefix) => new Function('record', `return '${prefix}-' + record.name;`);
@@ -395,6 +394,82 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 			undefined,
 			'a function the catalog no longer declares kept resolving'
 		);
+	});
+
+	// a finishing build can start a repair, which publishes a new operation
+	async function settled(Table) {
+		let operation;
+		do {
+			operation = Table.indexingOperation;
+			await operation;
+		} while (operation !== Table.indexingOperation);
+		await catalogFlushed(Table);
+	}
+
+	async function uncertified(name, attributes) {
+		const Built = table({
+			table: name,
+			database: 'test',
+			schemaDefined: true,
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }, { name: 'name', type: 'String' }, ...attributes],
+		});
+		await populate(Built);
+		await Built.indexingOperation;
+		await catalogFlushed(Built);
+		return Built;
+	}
+
+	it('leaves a repair to the thread whose claim the catalog already holds', async () => {
+		const Computed = await uncertified('ComputedClaimedElsewhere', [
+			{ name: 'score', type: 'String', indexed: true, computed: true },
+		]);
+		const key = 'ComputedClaimedElsewhere/score';
+		// another thread's claim: durable, while this thread's own attribute and index still look idle
+		const written = Computed.dbisDB.put(key, { ...Computed.dbisDB.getSync(key), indexingPID: process.pid + 1 });
+		if (written?.then) await written;
+		const build = Computed.indexingOperation;
+		Computed.setComputedAttribute('score', (record) => 'c-' + record.name);
+		assert.strictEqual(Computed.indexingOperation, build, 'a build the catalog shows claimed was claimed again');
+		assert.ok(!Computed.indices.score.isIndexing);
+	});
+
+	it('holds no index for a repair claim that failed part way', async () => {
+		const Computed = await uncertified('ComputedClaimFails', [
+			{ name: 'first', type: 'String', indexed: true, computed: true },
+			{ name: 'second', type: 'String', indexed: true, computed: true },
+		]);
+		const resolver = (record) => 'p-' + record.name;
+		Computed.userResolvers.second = resolver;
+		let puts = 0;
+		const originalPutSync = Computed.dbisDB.putSync;
+		const restore = stubMethod(Computed.dbisDB, 'putSync', function (...args) {
+			if (++puts === 2) throw new Error('catalog write failed');
+			return originalPutSync.apply(this, args);
+		});
+		const before = Computed.indexingOperation;
+		try {
+			Computed.setComputedAttribute('first', resolver);
+		} finally {
+			restore();
+		}
+		// LMDB rolls back the whole claim transaction; RocksDB keeps the first claim, so its build runs
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb')
+			assert.strictEqual(Computed.indexingOperation, before, 'a claim its transaction rolled back started a build');
+		else assert.notStrictEqual(Computed.indexingOperation, before, 'a durable claim was not built');
+		await settled(Computed);
+		for (const name of ['first', 'second']) {
+			assert.ok(!Computed.indices[name].isIndexing, `${name} is held as indexing with no build`);
+			assert.ok(!Computed.dbisDB.getSync('ComputedClaimFails/' + name).indexingPID, `${name} kept a claim`);
+		}
+
+		Computed.setComputedAttribute('first', resolver);
+		await settled(Computed);
+		for (const name of ['first', 'second'])
+			assert.strictEqual(
+				Computed.dbisDB.getSync('ComputedClaimFails/' + name).checkpointAlgorithm,
+				RESOLVED_CHECKPOINT_ALGORITHM,
+				`${name} was not rebuilt once the catalog accepted the claim`
+			);
 	});
 
 	it('rebuilds a function index another thread built without the function', async () => {

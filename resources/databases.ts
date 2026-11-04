@@ -5772,7 +5772,6 @@ function launchIndexing(Table: any, attributes: any[], indicesToRemove: any[], b
 	const markSettled = () => markAbandonedIndexBuild(Table, Table.primaryStore.rootStore, buildIds);
 	return runIndexing(Table, attributes, indicesToRemove, branchPath).then(markSettled, markSettled);
 }
-// What the repair claim must find unchanged in the catalog before it rebuilds from this thread's attribute
 function declarationOf(attribute: any): string {
 	const { type, nullable, indexed, computed, computedFromExpression, computedFromHash, version, elements, properties } =
 		attribute;
@@ -6217,7 +6216,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						logger.error(`Could not flush the indexes of ${Table.tableName} before marking them complete`, error);
 					}
 				}
-				// a replacement build owns the index now; it must not lose the entries it has written
 				if (restarted && buildSuperseded(Table, attributes)) return;
 				if (!restart && !resolverArrived()) break;
 				if (buildSuperseded(Table, attributes)) return;
