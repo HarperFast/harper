@@ -14702,10 +14702,14 @@ const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
 	'gtle',
 ]);
 function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
-	const canonical = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
 	const compared =
-		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(canonical) ? attribute.elements : attribute;
-	if (!compared.type && !COERCIBLE_OPERATORS[canonical]) return value;
+		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
+			? attribute.elements
+			: attribute;
+	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) {
+		const canonical = ALTERNATE_COMPARATOR_NAMES[comparator];
+		if (!canonical || canonical === 'ne' || !COERCIBLE_OPERATORS[canonical]) return value;
+	}
 	if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
 	return coerceType(value, compared, attribute.name);
 }

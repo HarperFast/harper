@@ -8,10 +8,10 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const { writeKey } = require('ordered-binary');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
-// Contract under test: resources/DESIGN.md → "What do chained conditions mean over array
-// values?". Convention: tests titled `pins harper#NNNN` assert today's defective output so
-// the suite stays green; each has an it.skip twin asserting the correct behavior to enable
-// when the defect is fixed. The harper#2434 and harper#2433 twins are live.
+// Contract under test: resources/DESIGN.md → "Chained query conditions scope one array
+// element; FIQL tokens always advance". Convention: tests titled `pins harper#NNNN` assert
+// today's defective output so the suite stays green; each has an it.skip twin asserting the
+// correct behavior to enable when the defect is fixed. The harper#2434 and harper#2433 twins are live.
 describe('Array-valued property scoping', () => {
 	let Widgets;
 

@@ -1,12 +1,12 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { databases } = require('#src/resources/databases');
+const { databases, table } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('REST condition value conversion', () => {
-	let Brand, Product;
+	let Brand, Product, Untyped;
 
 	before(async function () {
 		setupTestDBPath();
@@ -67,6 +67,16 @@ describe('REST condition value conversion', () => {
 		];
 		for (const product of products)
 			await Product.put({ ...product, pricePlain: product.price, sizesPlain: product.sizes });
+		Untyped = table({
+			table: 'CoercionUntyped',
+			database: 'restConditionCoercion',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true, type: 'Int' },
+				{ name: 'val', indexed: true },
+			],
+		});
+		await Untyped.put({ id: 1, val: 5 });
+		await Untyped.put({ id: 2, val: '5' });
 	});
 
 	async function collectIds(iterable) {
@@ -166,6 +176,19 @@ describe('REST condition value conversion', () => {
 			);
 			assert.strictEqual(prepared.conditions[0].value, 0.5);
 		});
+		it('an empty operand follows the element type (null for numeric elements, empty string for String/Any)', async function () {
+			assert.strictEqual(
+				Product._prepareQueryConditions([{ attribute: 'sizes', comparator: 'equals', value: '' }], undefined, {})
+					.conditions[0].value,
+				null
+			);
+			assert.strictEqual(
+				Product._prepareQueryConditions([{ attribute: 'tags', comparator: 'equals', value: '' }], undefined, {})
+					.conditions[0].value,
+				''
+			);
+			assert.deepStrictEqual(await rest(Product, 'tags='), []);
+		});
 	});
 
 	describe('paths convert with the leaf type (harper#3940)', () => {
@@ -209,5 +232,24 @@ describe('REST condition value conversion', () => {
 		assert.deepStrictEqual(await rest(Product, 'price===25'), [2]);
 		assert.deepStrictEqual(await rest(Product, 'code===007'), [1]);
 		assert.deepStrictEqual(await rest(Product, 'sizes===25'), [2]);
+	});
+
+	it('untyped attributes auto-cast only coercing operators and keep = / === / !== strict', async function () {
+		assert.deepStrictEqual(await rest(Untyped, 'val==5'), [1]);
+		assert.deepStrictEqual(await rest(Untyped, 'val=5'), [2]);
+		assert.deepStrictEqual(await rest(Untyped, 'val===5'), [2]);
+		assert.deepStrictEqual(await rest(Untyped, 'val!=5'), [2]);
+		assert.deepStrictEqual(await rest(Untyped, 'val!==5'), [1]);
+		assert.deepStrictEqual(
+			await collectIds(
+				Untyped.search({
+					conditions: [
+						{ attribute: 'val', comparator: 'greater_than_equal', value: '5' },
+						{ attribute: 'val', comparator: 'less_than_equal', value: '5' },
+					],
+				})
+			),
+			[1]
+		);
 	});
 });
