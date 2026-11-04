@@ -9,19 +9,16 @@
  * tool must never be shadowed by a same-named registry tool, since the two have
  * different runtime assumptions. Each operator group has a boot-time switch
  * (`agent.tools.*`, harper#3993); a group that is off is not composed, and its
- * names stay reserved.
+ * names stay reserved. The schedule tool arrives built, like `http_fetch`: a
+ * composition is replaced when `allowDestructive` changes, and a followup armed
+ * before that must stay in the one `pending` map `cancelRun` clears.
  */
 
 import { BEST_PRACTICE_TOOL_NAME } from './bestPractices.ts';
 import { fsTools } from './tools/fsTools.ts';
 import { HTTP_FETCH_TOOL_NAME } from './tools/httpFetchTool.ts';
 import { INSPECTOR_TOOL_NAMES } from './tools/inspectorTool.ts';
-import {
-	buildScheduleTool,
-	SCHEDULE_TOOL_NAME,
-	type ScheduleToolDeps,
-	type ScheduledFollowup,
-} from './tools/scheduleTool.ts';
+import { SCHEDULE_TOOL_NAME, type ScheduledFollowup, type ScheduleTool } from './tools/scheduleTool.ts';
 import type { AgentTool, AgentToolSwitches } from './types.ts';
 
 export const ALL_TOOL_SWITCHES_ON: Readonly<AgentToolSwitches> = Object.freeze({
@@ -39,11 +36,13 @@ export const OPERATOR_TOOL_NAMES: ReadonlySet<string> = new Set([
 	BEST_PRACTICE_TOOL_NAME,
 ]);
 
-export interface ComposeToolsetOpts extends ScheduleToolDeps {
+export interface ComposeToolsetOpts {
 	/** When `false`, destructive tools are filtered out at composition time. */
 	allowDestructive?: boolean;
 	/** The boot-time `agent.tools` switches. Absent: every group is composed. */
 	tools?: AgentToolSwitches;
+	/** `schedule_followup`, built once by the caller (`buildScheduleTool`); absent when there is nothing to call back. */
+	scheduleTool?: ScheduleTool;
 	/** `http_fetch` built from the boot-time `agent.httpFetch` policy; absent when the policy disables it. */
 	httpFetchTool?: AgentTool;
 	/** `harper_best_practice`; absent when the skills package ships no rules. */
@@ -69,7 +68,7 @@ export interface ComposedToolset {
 
 export function composeToolset(opts: ComposeToolsetOpts): ComposedToolset {
 	const switches = opts.tools ?? ALL_TOOL_SWITCHES_ON;
-	const schedule = switches.schedule ? buildScheduleTool(opts) : undefined;
+	const schedule = switches.schedule ? opts.scheduleTool : undefined;
 	// Operator-only tools own their names whether or not their group is composed, so disabling a
 	// group never admits a same-named extra or registry tool in its place.
 	const extras = (opts.extraTools ?? []).filter((tool) => !OPERATOR_TOOL_NAMES.has(tool.def.name));

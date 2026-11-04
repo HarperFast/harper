@@ -19,6 +19,7 @@ const { addTool, setProfileToolProvider, _resetRegistryForTest } = require('#src
 const { composeRegistryTools, _resetRegistryToolsForTests } = require('#src/agent/registryTools');
 const { composeToolset } = require('#src/agent/toolset');
 const { buildHttpFetchTool } = require('#src/agent/tools/httpFetchTool');
+const { buildScheduleTool } = require('#src/agent/tools/scheduleTool');
 
 const SUPER_USER = { username: 'agent', role: { permission: { super_user: true } } };
 const RESTRICTED = { username: 'ro', role: { permission: { super_user: false } } };
@@ -35,7 +36,8 @@ function opTool(overrides = {}) {
 	};
 }
 
-const scheduleDeps = { onFollowup: async () => {} };
+// The composer takes the schedule tool built, as the component builds it once at boot.
+const scheduleDeps = { scheduleTool: buildScheduleTool({ onFollowup: async () => {} }) };
 
 // composeRegistryTools takes (listingUser, resolveIdentity). Most tests use the same user for both.
 const identity = (user) => async () => user;
@@ -392,7 +394,6 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 describe('agent/toolset composeToolset — agent.tools switches (harper#3993)', () => {
 	const { ALL_TOOL_SWITCHES_ON, OPERATOR_TOOL_NAMES } = require('#src/agent/toolset');
 	const { INSPECTOR_TOOL_NAMES, buildInspectorTools } = require('#src/agent/tools/inspectorTool');
-	const scheduleDeps = { onFollowup: async () => {} };
 	const FS_NAMES = ['read_file', 'write_file', 'list_dir', 'grep_files', 'tail_file'];
 	const INSPECTOR_NAMES = Object.values(INSPECTOR_TOOL_NAMES);
 
@@ -489,6 +490,30 @@ describe('agent/toolset composeToolset — agent.tools switches (harper#3993)', 
 		});
 		assert.deepStrictEqual(names(composed), ['custom']);
 		assert.strictEqual(composed.tools[0], custom);
+	});
+
+	it('keeps the same pending map across a recomposition, so a cancel after an allowDestructive flip still clears a followup', async () => {
+		const scheduleTool = buildScheduleTool({ onFollowup: async () => {} });
+		const first = composeToolset({ ...everything(), scheduleTool, allowDestructive: true });
+		const schedule = first.tools.find((t) => t.def.name === 'schedule_followup');
+		const { id } = await schedule.handler({ delayMs: 60_000, prompt: 'later' }, { sessionId: 's1', scopes: {} });
+		try {
+			assert.strictEqual(first.scheduled.get(id)?.sessionId, 's1');
+			// What `setConfig` does when allowDestructive changes.
+			const second = composeToolset({ ...everything(), scheduleTool, allowDestructive: false });
+			assert.strictEqual(second.scheduled, first.scheduled);
+			assert.strictEqual(second.scheduled.get(id)?.sessionId, 's1');
+			// A group that is off hands out an empty map of its own, never the tool's.
+			const off = composeToolset({
+				...everything(),
+				scheduleTool,
+				tools: { ...ALL_TOOL_SWITCHES_ON, schedule: false },
+			});
+			assert.notStrictEqual(off.scheduled, first.scheduled);
+			assert.strictEqual(off.scheduled.size, 0);
+		} finally {
+			clearTimeout(first.scheduled.get(id)?.timer);
+		}
 	});
 
 	it('allowDestructive still filters the composed groups', () => {

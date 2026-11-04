@@ -25,6 +25,7 @@ import { workers } from '../server/threads/manageThreads.ts';
 import { ALL_TOOL_SWITCHES_ON, composeToolset } from './toolset.ts';
 import { buildInspectorTools } from './tools/inspectorTool.ts';
 import { buildHttpFetchTool, operationsApiPortsFrom, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
+import { buildScheduleTool } from './tools/scheduleTool.ts';
 import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
@@ -131,6 +132,12 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	// Built from the boot config, never `liveConfig`: no runtime config change can widen what it reaches.
 	const httpFetchTool = buildHttpFetchTool(config.httpFetch, resolveOperationsApiPorts());
 
+	// Built once too: `setConfig` recomposes the toolset when `allowDestructive` changes, and a followup
+	// armed before that has to stay in the map `cancelRun` clears, or the cancel leaves its timer live.
+	const scheduleTool = config.tools.schedule
+		? buildScheduleTool({ onFollowup: (sessionId, prompt) => handleFollowup(sessionId, prompt) })
+		: undefined;
+
 	// The grounding + best-practices portion of the system prompt is static for the component's
 	// lifetime (scopes don't change), so build it once here; only the operator's per-run
 	// `systemPromptAppend` is folded on at run time in `startRun`.
@@ -147,7 +154,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			tools: config.tools,
 			httpFetchTool,
 			bestPracticeTool,
-			onFollowup: (sessionId, prompt) => handleFollowup(sessionId, prompt),
+			scheduleTool,
 			inspectorTools,
 			registryTools,
 		});

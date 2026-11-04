@@ -26,10 +26,13 @@ export interface ScheduleToolDeps {
 	onFollowup: (sessionId: string, prompt: string) => Promise<void> | void;
 }
 
-export function buildScheduleTool(deps: ScheduleToolDeps): {
+/** The tool and the followups it has armed. `pending` lives as long as the tool: a timer deletes its own entry when it fires. */
+export interface ScheduleTool {
 	tool: AgentTool;
 	pending: Map<string, ScheduledFollowup>;
-} {
+}
+
+export function buildScheduleTool(deps: ScheduleToolDeps): ScheduleTool {
 	const pending = new Map<string, ScheduledFollowup>();
 	const tool: AgentTool = {
 		def: {
