@@ -56,9 +56,11 @@
  * registration for that reason. The stream is released with `end()` when it
  * has one, else its iterator's `return()`; a stream with no `end()` is refused
  * when its iterator has no `return()`, or is an async generator, whose
- * `return()` cannot interrupt a pending await. The MCP layer adds only identity-lifetime
- * revocation (token expiry, a removed user or role); resource-specific access
- * changes after subscribe are the author's to enforce.
+ * `return()` cannot interrupt a pending await and skips an unstarted body (a
+ * source the method opened before returning a refused generator stays open, so
+ * open sources inside the returned stream). The MCP layer adds only
+ * identity-lifetime revocation (token expiry, a removed user or role);
+ * resource-specific access changes after subscribe are the author's to enforce.
  */
 import type { McpProfile } from './transport.ts';
 import type { AuthedUser } from './toolRegistry.ts';

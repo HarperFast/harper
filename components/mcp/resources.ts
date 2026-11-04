@@ -461,7 +461,6 @@ export async function subscribeToResource(
 	return stream ? changeStreamSubscription(uri, stream, true) : null;
 }
 
-/** Runs the author's `subscribe` in a transaction carrying the user, without `authorize` as `readCustomResource`. */
 async function subscribeToCustomResource(
 	uri: string,
 	subscribe: NonNullable<CustomResourceDef['subscribe']>,
@@ -479,7 +478,7 @@ async function subscribeToCustomResource(
 	} catch (err) {
 		if (err instanceof AccessViolation) throw err;
 		harperLogger.error(`MCP subscribe for ${uri} failed:`, err);
-		// An unreleasable stream stays unsubscribable until the author changes it, so it is not retried.
+		// Terminal: retrying cannot make the stream releasable.
 		if (err instanceof UnreleasableStreamError) return null;
 		throw err;
 	}
@@ -520,7 +519,6 @@ async function acquireChangeStream(
 	return isChangeStream(result) ? result : null;
 }
 
-/** An author's stream that cannot be released: retrying cannot change that. */
 class UnreleasableStreamError extends Error {}
 
 function isChangeStream(value: unknown): value is ResourceChangeStream {

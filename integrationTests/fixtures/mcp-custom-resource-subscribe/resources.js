@@ -1,14 +1,8 @@
-// Custom MCP resources with `subscribe` (#3250). `notes:///{id}` returns an
-// in-memory change stream with `end()`; `notes-return:///{id}` one released only
-// through its iterator's `return()`; `rows:///{id}` subscribes through the Note
-// table under the session user; `plain:///readme` declares no subscribe.
-// Probe (REST) reports what the subscribe methods saw and emits changes; the
-// suite runs one worker, so this state is the state the MCP session uses.
+// The suite runs one worker, so the state here is the state the MCP session uses.
 import { RequestTarget, getUser } from 'harper';
 
 const state = (globalThis.__MCP_SUBSCRIBE_3250__ ??= { subscribes: [], released: [], streams: new Map() });
 
-// One open stream per id: a later subscribe for the same id replaces the entry.
 class NoteStream {
 	constructor(id, kind) {
 		this.id = id;
@@ -130,7 +124,6 @@ export class Probe extends Resource {
 	static async get() {
 		return { subscribes: state.subscribes, released: state.released, open: [...state.streams.keys()] };
 	}
-	// POST /Probe/ { id } emits one change on that id's open stream
 	static async post(_target, data) {
 		const { id } = (await data) ?? {};
 		const stream = state.streams.get(id);

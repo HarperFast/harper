@@ -20,7 +20,6 @@ const { waitFor } = require('../../waitFor');
 const USER = { username: 'mcp_sub_user', role: { permission: { super_user: false } } };
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 
-// A controllable change stream; `withEnd: false` leaves only the iterator's return() to release it.
 function makeStream({ withEnd = true, end, onReturn } = {}) {
 	const buffered = [];
 	let resolveNext = null;
@@ -327,7 +326,6 @@ describe('mcp custom resources/subscribe (#3250)', () => {
 				subscription.stop();
 			});
 
-			// no hdb_user record backs `local`, so a recheck would revoke it
 			it('keeps the local principal, which is not registered', async () => {
 				const before = _liveSubscriptionCount();
 				const stream = makeStream();

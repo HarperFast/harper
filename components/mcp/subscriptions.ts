@@ -35,7 +35,6 @@ export async function addResourceSubscription(sessionId: string, uri: string, us
 		subscription.stop();
 		return false;
 	}
-	// Delivery starts only once admitted, so a superseded GET never receives a change.
 	subscription.start(() => {
 		if (Date.now() >= Math.min(user.authExpiresAt ?? Infinity, owner.user.authExpiresAt ?? Infinity) * 1000) {
 			owner.queue.close();
