@@ -145,7 +145,8 @@ describe('Model-call analytics persistence', function () {
 			await new Promise((resolve) => setTimeout(resolve, 1100));
 			release();
 			await first;
-			await waitFor(() => modelTable.primaryStore.getEntry(waiting, { uncachedRead: true }), 500);
+			assert.strictEqual(writer.bufferSize, 0, 'settlement must take the waiting buffer before another timer tick');
+			await waitFor(() => modelTable.primaryStore.getEntry(waiting, { uncachedRead: true }));
 		} finally {
 			release();
 			await first;
