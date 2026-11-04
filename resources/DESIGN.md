@@ -285,7 +285,7 @@ A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so 
 
 - A floor publishes only after the pass that captured it drains cleanly (`passCapture`).
 - `admitCheckpoint` is rechecked at each yield against `readOriginStateEpoch`.
-- The `startTime` gate drops a late lower-key commit: a live certified subscription is `ungated`; a `startTime` replay hands off by drain, bar same-thread (`handOffReplay`, harper#2311).
+- The `startTime` gate drops a late lower-key commit: a live certified subscription is `ungated`; a `startTime` replay reads `until` the broadcast, bar same-thread and LMDB (harper#2311).
 - Only an origin's direct route sets its current generation; floors never order generations.
 - `updateRecordedSequenceId` is the only writer of a `[seq, P]` row. An audit-less copy writes its bounds (`writeCopyBounds`) before the copied rows; they void older routes (`subscribeCheckpoint.test.js`).
 

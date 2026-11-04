@@ -110,15 +110,11 @@ import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import {
 	addSubscription,
+	broadcastRange,
 	certifiedFloors,
 	certifiedThrough,
 	completedReplayThrough,
-	drainCount,
-	handOffReplay,
-	releaseReplayFloor,
-	replayRecordKey,
-	requestDrain,
-	type ReplayedIds,
+	isDispatching,
 } from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
@@ -9201,7 +9197,7 @@ export function makeTable(options): TableResourceClass {
 					// a certified subscription takes every live entry from here: the key gate would drop a late
 					// lower-key commit that a floor then certifies as delivered
 					subscription.ungated = true;
-					releaseReplayFloor(subscription);
+					subscription.liveFloor = -Infinity;
 				};
 				const filtersWithoutKey = Boolean(rowFilter || eventFilter) && !request.filterKey;
 				const checkpointScopeId = scope();
@@ -9414,30 +9410,24 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
-						// a clean drain dispatched everything read before it, so only what was handled since the last
-						// one can still reach the live path; a same-thread registry never drains and keeps the key gate
-						const handsOff = drainCount(subscription) !== undefined;
-						let replayed: { drain: number; ids: ReplayedIds } | undefined;
-						const noteReplayed = (auditRecord: any, recordKey: any) => {
-							const drain = drainCount(subscription)!;
-							if (replayed?.drain !== drain) replayed = { drain, ids: new Map() };
-							const nodeId = auditRecord.nodeId ?? 0;
-							let byKey = replayed.ids.get(nodeId);
-							if (!byKey) replayed.ids.set(nodeId, (byKey = new Map()));
-							let records = byKey.get(auditRecord.txnLogKey);
-							if (!records) byKey.set(auditRecord.txnLogKey, (records = new Set()));
-							records.add(recordKey);
-						};
+						let endedTxn = true;
+						const liveRange = broadcastRange(subscription);
+						// subscribed from a listener: the broadcast already stands past the entry it is walking, and may yet
+						// walk it to this subscription, so the replay starts once this dispatch has finished
+						if (liveRange && isDispatching(subscription)) {
+							await rest();
+							if (!isActive()) return;
+						}
 						const replayRange = auditStore.getRange({
 							start: startTime,
 							exclusiveStart: true,
 							snapshot: false, // no need for a snapshot, audits don't change
+							until: liveRange,
 						});
 						try {
 							for (const auditRecord of replayRange) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
-									if (replayed) requestDrain(subscription);
 									await rest();
 									if (!isActive()) return;
 									if (checkResume) {
@@ -9446,6 +9436,7 @@ export function makeTable(options): TableResourceClass {
 										resumeCheckedThrough = auditRecord.txnLogKey;
 									}
 								}
+								endedTxn = auditRecord.endTxn;
 								// an entry that failed to decode names no table, so a checked replay cannot rule it out
 								if (checkResume && auditRecord.type === undefined) {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
@@ -9472,13 +9463,10 @@ export function makeTable(options): TableResourceClass {
 									return;
 								}
 								// a marker is table-wide, as the live broadcast delivers it
-								if (resnapshots) {
-									reloadPending = true;
-									if (handsOff) noteReplayed(auditRecord, null);
-								} else if (thisId == null || isReload || isDescendantId(thisId, id)) {
+								if (resnapshots) reloadPending = true;
+								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									// converted as the live path would, since the replay stands in for it while live entries drop
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
-									if (handsOff) noteReplayed(auditRecord, isReload ? null : replayRecordKey(id));
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -9488,7 +9476,6 @@ export function makeTable(options): TableResourceClass {
 												if (!checkResume(unreadableLogRefusal(replayRange))) return;
 												resumeCheckedThrough = auditRecord.txnLogKey;
 											}
-											if (replayed) requestDrain(subscription);
 											if ((await subscription.waitForDrain()) === false) return;
 										}
 									}
@@ -9497,15 +9484,16 @@ export function makeTable(options): TableResourceClass {
 							}
 							// the finished cursor reads no more commits, so live ones wait behind the scan
 							if (reloadPending) pendingRealTimeQueue = [];
-							if (handsOff) {
-								const ids = replayed?.drain === drainCount(subscription) ? replayed.ids : undefined;
-								handOffReplay(subscription, startTime ?? -Infinity, ids);
+							// this is the turn the cursor reported done, so live delivery starts exactly where the replay stopped
+							if (liveRange) {
+								subscription.ungated = true;
+								subscription.liveFloor = startTime ?? -Infinity;
 							}
 							dropDuringReplay = false;
 							if (reloadPending) {
 								reloadPending = false;
 								if (!(await sendCurrentScope())) return;
-								if (!handsOff) {
+								if (!liveRange) {
 									const replayedThrough = handledTxnLogKey;
 									pendingRealTimeQueue = pendingRealTimeQueue.filter(
 										(event) => (event.localTime ?? event.version) > replayedThrough
@@ -9519,7 +9507,9 @@ export function makeTable(options): TableResourceClass {
 									pendingRealTimeQueue.length = kept;
 								}
 							}
-							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
+							// the broadcast can stand inside a transaction, and live delivery finishes what the replay began
+							if (handledTxnLogKey !== undefined && (!liveRange || endedTxn))
+								subscription!.startTime = handledTxnLogKey;
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
 							// replay is done, we can start sending real-time messages again

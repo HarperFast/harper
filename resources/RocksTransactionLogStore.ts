@@ -27,9 +27,17 @@ const HAS_PREVIOUS_VERSION = 0x20000000;
 type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	addLog(logName: string);
 	removeLog(logName: string);
+	sourceOf(log: TransactionLog): IterableIterator<TransactionEntry> | undefined;
 };
 
-type TrackedIterator = IterableIterator<TransactionEntry> & { lastVersion?: number; lastEndTxn?: boolean };
+type TrackedIterator = IterableIterator<TransactionEntry> & {
+	lastVersion?: number;
+	lastEndTxn?: boolean;
+	peek(): IteratorResult<TransactionEntry>;
+	close(): void;
+	/** The log's own iterator, the only thing rocksdb-js accepts as another reader's `until`. */
+	source: IterableIterator<TransactionEntry>;
+};
 type NamedTransactionEntry = TransactionEntry & { logName?: string };
 export type ExactStartFailure = 'missing' | 'incomplete' | 'duplicate';
 
@@ -40,6 +48,8 @@ export type TransactionLogIterable = Iterable<AuditRecord> & {
 	failedLogs: Set<string>;
 	/** Physical logs whose requested exact transaction could not form one unambiguous resume boundary. */
 	exactStartFailures: Map<string, ExactStartFailure>;
+	/** A log's own iterator in this range, for another range to read `until`; only on a range over every log. */
+	sourceOf?(log: TransactionLog): IterableIterator<TransactionEntry> | undefined;
 };
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
@@ -302,6 +312,16 @@ export class RocksTransactionLogStore extends EventEmitter {
 		 * replication, where every healthy entry would otherwise pay bookkeeping nothing consumes.
 		 */
 		trackCorruptTransactions?: boolean;
+		/**
+		 * Hold each log's next entry unconsumed until it is returned, so the log's iterator stands at the first
+		 * entry this range has not returned, and another range can read `until` it.
+		 */
+		peekAhead?: boolean;
+		/**
+		 * A `peekAhead` range. Each log stops at the entry that range returns next and resumes as it advances, so
+		 * a pull that reports done found every log caught up with it in that same turn.
+		 */
+		until?: TransactionLogIterable;
 	}): TransactionLogIterable {
 		let iterable = new ExtendedIterable<TransactionEntry>();
 		let aggregateIterator: TransactionLogIterator;
@@ -311,12 +331,14 @@ export class RocksTransactionLogStore extends EventEmitter {
 		const failedLogs = new Set<string>();
 		const exactStartFailures = new Map<string, ExactStartFailure>();
 		const failedIterators = new WeakSet<IterableIterator<TransactionEntry>>();
-		const safeNext = (iterator: IterableIterator<TransactionEntry>, log: TransactionLog) => {
+		const safeNext = (iterator: TrackedIterator, log: TransactionLog, peek = false) => {
 			if (failedIterators.has(iterator)) return { value: undefined, done: true } as IteratorResult<TransactionEntry>;
 			try {
-				return iterator.next();
+				return peek ? iterator.peek() : iterator.next();
 			} catch (error) {
 				failedIterators.add(iterator);
+				// nothing reads this log from here on, so it no longer bounds a reader `until` it
+				iterator.close();
 				failedLogs.add(log.name);
 				harperLogger.error('Transaction log iterator failed; terminating this log', error, {
 					log: log.name,
@@ -356,14 +378,16 @@ export class RocksTransactionLogStore extends EventEmitter {
 		// removed log is spliced out of the aggregate.
 		const trackCorruptFrames = (log: TransactionLog, queryOptions: typeof options): TrackedIterator => {
 			const report = reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`);
-			const iterator: TrackedIterator = endIteratorOnCorruptFrame(log.query(queryOptions), (error) => {
+			const source = log.query(queryOptions as any);
+			const iterator = endIteratorOnCorruptFrame(source, (error) => {
 				corruptFrameStop.breaks++;
 				if (iterator.lastVersion !== undefined && iterator.lastEndTxn !== true) {
 					corruptFrameStop.truncatedVersions.add(iterator.lastVersion);
 				}
 				if (isMidLogBreak(error)) corruptFrameStop.midLogBreak = true;
 				report(error);
-			});
+			}) as TrackedIterator;
+			iterator.source = source;
 			// Set here, once, rather than left for the per-entry write sites below to add these fields
 			// on their first call: every TrackedIterator then reaches its final shape before any entry
 			// is consumed, so the hot per-entry writes hit an already-stable shape instead of each
@@ -454,6 +478,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
+							if (options.until) {
+								// where that range has no iterator yet, it will read this log from its start
+								queryOptions = { ...queryOptions, until: options.until.sourceOf(log) } as any;
+							}
 							iterators.push(trackCorruptFrames(log, queryOptions));
 							expectedExactStarts.push(expectedExactStart);
 						}
@@ -475,7 +503,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 			const pull = (i: number) => {
 				const iterator = iterators[i];
-				const result = safeNext(iterator, logs[i]);
+				const result = safeNext(iterator, logs[i], options.peekAhead);
 				const expected = expectedExactStarts[i];
 				if (expected !== undefined && !observedExactStarts.has(logs[i].name)) {
 					observedExactStarts.add(logs[i].name);
@@ -540,7 +568,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 								iterators[earliestIndex].lastVersion = earliest.timestamp;
 								iterators[earliestIndex].lastEndTxn = earliest.endTxn;
 							}
-							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
+							if (options.peekAhead) {
+								iterators[earliestIndex].next();
+								nextEntries[earliestIndex] = pull(earliestIndex);
+							} else nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							midTransaction = !earliest.endTxn;
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
@@ -571,6 +602,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 						observedExactStarts.delete(logName);
 						options.excludeLogs.push(logName);
 					}
+				},
+				sourceOf: (log: TransactionLog) => {
+					syncLogs();
+					return iterators[logs.indexOf(log)]?.source;
 				},
 			};
 			iterable.iterate = () => aggregateIterator;
@@ -639,6 +674,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		if (aggregateIterator?.addLog) {
 			mappedAggregateIterable.addLog = aggregateIterator.addLog;
 			mappedAggregateIterable.removeLog = aggregateIterator.removeLog;
+			mappedAggregateIterable.sourceOf = aggregateIterator.sourceOf;
 		}
 		mappedAggregateIterable.corruptFrameStop = corruptFrameStop;
 		mappedAggregateIterable.failedLogs = failedLogs;

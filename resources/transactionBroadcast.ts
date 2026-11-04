@@ -10,7 +10,6 @@ import {
 	type CertifiedFloors,
 } from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
-import { toBufferKey } from 'ordered-binary';
 import type { Id } from './ResourceInterface.ts';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
@@ -88,7 +87,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
 			// and still match older version numbers that may commit in the future. But we have to start
 			// immediately so we are at the right position.
-			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({});
+			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({ peekAhead: true });
 			// LMDB passes read from lastTxnTime, which no pass advanced while nothing was subscribed
 			else if (committedThrough !== undefined) databaseSubscriptions.lastTxnTime = committedThrough;
 			else if (auditStore.rootStore?.status !== 'closing' && auditStore.rootStore?.status !== 'closed')
@@ -264,7 +263,10 @@ export function completedReplayThrough(subscription: any, key: number): void {
 	if (!subscription.reportsProgress || !subscriptions?.progressConsumers || subscriptions.progressStopped) return;
 	if (subscriptions.sameThread) return;
 	if (!advanceProgress(subscriptions, key, subscriptions.auditStore?.subscriptionLogRange)) return;
-	schedulePass(subscriptions);
+	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
+	if (subscriptions.auditStore?.rootStore?.status !== 'open') return;
+	subscriptions.notifyScheduled = true;
+	setImmediate(() => notifyFromTransactionData(subscriptions, subscriptions.auditStore.subscriptionLogRange, true));
 }
 
 function stopProgress(databaseSubscriptions: any) {
@@ -397,72 +399,19 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 	}
 }
 
-export type ReplayedIds = Map<number, Map<number, Set<string | null | undefined>>>;
-interface ReplayGate {
-	/** -Infinity takes entries at any key; a number, not undefined, so the per-record compare stays numeric */
-	after: number;
-	ids?: ReplayedIds;
-}
-
-/** The record's key encoding: distinct ids never share one, and routing text would merge `['a', 'b']` with `'a/b'`. */
-export function replayRecordKey(recordId: any): string | undefined {
-	return recordId === undefined ? undefined : toBufferKey(recordId).toString('latin1');
-}
-
-function replayHandled(ids: ReplayedIds, auditRecord: any, timestamp: number, isReload: boolean): boolean {
-	const records = ids.get(auditRecord.nodeId ?? 0)?.get(timestamp);
-	return records !== undefined && records.has(isReload ? null : replayRecordKey(auditRecord.recordId));
-}
-
 /**
- * The cross-thread registry's count of clean drains, or undefined for a same-thread registry, whose passes carry
- * one commit's entries and so never show that the log was drained.
+ * The range the broadcast reads, which a replay reads `until` so the two meet at one log position: every entry
+ * below it is the replay's, every entry at or above it the broadcast's. Undefined keeps a replay on the key gate:
+ * LMDB reads by key, so a key is a position, and a same-thread registry has no shared cursor (harper#3980).
  */
-export function drainCount(subscription: any): number | undefined {
+export function broadcastRange(subscription: any): any {
 	const subscriptions = subscription.subscriptions?.tables?.envs;
 	if (!subscriptions || subscriptions.sameThread) return;
-	return subscriptions.drains ?? 0;
+	return subscriptions.auditStore?.subscriptionLogRange;
 }
 
-/** An idle database runs no pass of its own, so a replay asks for one to bound what it must remember. */
-export function requestDrain(subscription: any): void {
-	const subscriptions = subscription.subscriptions?.tables?.envs;
-	if (subscriptions && !subscriptions.sameThread) schedulePass(subscriptions);
-}
-
-function schedulePass(subscriptions: any): void {
-	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
-	const auditStore = subscriptions.auditStore;
-	if (auditStore?.rootStore?.status !== 'open') return;
-	subscriptions.notifyScheduled = true;
-	setImmediate(() =>
-		notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditStore.subscriptionLogRange : null, true)
-	);
-}
-
-/**
- * Hands a finished replay to live delivery. Must run in the same turn the replay's cursor reported done: every entry
- * dispatched while the replay dropped live ones was visible before that read, so the replay read it, and `ids`
- * (what it handled since the last clean drain) covers the ones the broadcast has not dispatched yet.
- */
-export function handOffReplay(subscription: any, after: number, ids: ReplayedIds | undefined): void {
-	subscription.ungated = true;
-	const subscriptions = subscription.subscriptions?.tables?.envs;
-	if (!subscriptions || (after === -Infinity && !ids)) return;
-	subscription.replayGate = { after, ids };
-	if (!ids) return;
-	(subscriptions.replayTails ??= new Set()).add(subscription);
-	schedulePass(subscriptions);
-}
-
-/**
- * A certified subscription takes every live entry: a floor would drop a late commit below it that a certificate
- * then passes. The replay's identities stay until the next clean drain.
- */
-export function releaseReplayFloor(subscription: any): void {
-	const gate = subscription.replayGate;
-	if (gate?.ids) gate.after = -Infinity;
-	else subscription.replayGate = undefined;
+export function isDispatching(subscription: any): boolean {
+	return subscription.subscriptions?.tables?.envs?.dispatching === true;
 }
 
 /**
@@ -489,7 +438,8 @@ class Subscription extends IterableEventQueue {
 	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
 	ungated?: boolean;
-	replayGate?: ReplayGate;
+	/** The one key gate an `ungated` subscription keeps: the start a replay was asked for. A number, so the compare stays numeric. */
+	liveFloor = -Infinity;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;
@@ -504,10 +454,6 @@ class Subscription extends IterableEventQueue {
 			this.subscriptions = null;
 			const envSubscriptions = subscriptions.tables?.envs;
 			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
-			if (this.replayGate) {
-				this.replayGate = undefined;
-				envSubscriptions?.replayTails?.delete(this);
-			}
 			if (this.reportsProgress) {
 				this.reportsProgress = false;
 				if (envSubscriptions?.progressConsumers > 0) envSubscriptions.progressConsumers--;
@@ -663,15 +609,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 										!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
 									)
 										continue;
-									if (subscription.ungated) {
-										const gate = subscription.replayGate;
-										if (
-											gate !== undefined &&
-											(gate.after >= timestamp ||
-												(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, false)))
-										)
-											continue;
-									} else if (subscription.startTime >= timestamp) continue;
+									if ((subscription.ungated ? subscription.liveFloor : subscription.startTime) >= timestamp) continue;
 									try {
 										let beginTxn;
 										if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
@@ -720,16 +658,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						try {
 							for (let i = 0, length = keySubscriptions.length; i < length; i++) {
 								const subscription = keySubscriptions[i];
-								if (!subscription.subscriptions) continue;
-								if (subscription.ungated) {
-									const gate = subscription.replayGate;
-									if (
-										gate !== undefined &&
-										(gate.after >= timestamp ||
-											(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, true)))
-									)
-										continue;
-								} else if (subscription.startTime >= timestamp) continue;
+								if (
+									!subscription.subscriptions ||
+									(subscription.ungated ? subscription.liveFloor : subscription.startTime) >= timestamp
+								)
+									continue;
 								try {
 									subscription.listener(null, auditRecord, timestamp, false);
 								} catch (error) {
@@ -766,18 +699,6 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 		subscriptions.pendingTxnSubscribers = null;
-		// A failed or corrupt log ends its iterator for good, so what it left undispatched is never dispatched later.
-		if (!iteratorFailed && !subscriptions.sameThread) {
-			subscriptions.drains = (subscriptions.drains ?? 0) + 1;
-			if (subscriptions.replayTails) {
-				for (const subscription of subscriptions.replayTails) {
-					const gate = subscription.replayGate;
-					if (gate.after === -Infinity) subscription.replayGate = undefined;
-					else gate.ids = undefined;
-				}
-				subscriptions.replayTails = undefined;
-			}
-		}
 		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
 			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}
