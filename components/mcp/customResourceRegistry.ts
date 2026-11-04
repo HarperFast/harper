@@ -85,6 +85,9 @@ export type CustomResourceReadResult = string | CustomResourceContent | object;
  * What an author `subscribe` returns: values are opaque change triggers. Without
  * `end()`, its iterator must have a `return()` that releases the source.
  */
+/** An author's subscribe that can never yield a releasable stream; retrying cannot change that. */
+export class UnsubscribableError extends Error {}
+
 export type CustomResourceSubscription = AsyncIterable<unknown> & { end?: () => unknown };
 
 export interface CustomResourceDef {

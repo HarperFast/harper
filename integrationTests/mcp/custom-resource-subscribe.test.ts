@@ -1,9 +1,5 @@
 /**
- * #3250 — `resources/subscribe` on custom `mcpResources` URIs. The fixture declares entries whose
- * `subscribe` method returns an author change stream (`notes:///{id}`, released with `end()`;
- * `notes-return:///{id}`, released only through `return()`), one that subscribes through a table
- * under the session user (`rows:///{id}`), and one without `subscribe` (`plain:///readme`). Its REST
- * `Probe` reports what the subscribe methods saw and which streams were released, and emits changes.
+ * #3250 — `resources/subscribe` on custom `mcpResources` URIs.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/mcp/custom-resource-subscribe.test.ts"
@@ -105,7 +101,6 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 		return JSON.parse(text);
 	}
 
-	/** Open the GET SSE stream; `next` resolves the first JSON-RPC frame matching, or undefined on timeout. */
 	async function openSse(session: Session): Promise<{
 		next: (predicate: (msg: any) => boolean, timeoutMs: number) => Promise<any | undefined>;
 		close: () => void;
@@ -194,7 +189,6 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 		return state;
 	}
 
-	/** Emit one change on the open author stream for `id`; false when no stream for it is open. */
 	async function emit(id: string): Promise<boolean> {
 		const res = await fetch(new URL('/Probe/', ctx.harper.httpURL), {
 			method: 'POST',

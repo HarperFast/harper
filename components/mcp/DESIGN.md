@@ -94,7 +94,7 @@ A handful of design points are non-obvious and easy to break:
   `matchCustomResource(profile, uri)` first, exactly as `readResource` does, so read and subscribe resolve the
   same entry; an entry without `subscribe` stays `-32602`. The author's method runs in the read path's
   user-carrying transaction and the returned iterable is consumed after it ends, which is why generator methods
-  are refused at registration. A stream is refused at subscribe (`UnreleasableStreamError`, terminal
+  are refused at registration. A stream is refused at subscribe (`UnsubscribableError`, terminal
   `not-subscribable`, so restore prunes it instead of closing the GET on every reconnect) when it has no `end()`
   and its iterator has no `return()` or is an async generator, whose `return()` skips an unstarted body and
   cannot interrupt a pending await. Custom values are opaque: only audit-log events get `acknowledge()`. Release
@@ -104,7 +104,8 @@ A handful of design points are non-obvious and easy to break:
   A custom stream is registered with `registerLiveSubscription` for identity lifetime only (token expiry, removed
   user or role; scoped tokens are never re-resolved, the local principal is exempt), as `Resource.subscribe`
   does for row-backed ones; an expired or stale principal is verified before admission. Access changes after
-  subscribe are the author's to enforce.
+  subscribe are the author's to enforce. Restore treats a custom URI the worker cannot resolve as not subscribable and
+  prunes it, so upgrade every worker before declaring `subscribe`; after a rollback clients subscribe again.
 
 - **Subscription state is shared through the session row.** See [Persisted resource subscription state](#persisted-resource-subscription-state).
   A GET close drops resource iterators but leaves pending server requests alone; those use per-call POST streams.

@@ -86,7 +86,6 @@ export class NotesMcp extends Resource {
 		target.id = params.id;
 		target.omitCurrent = true;
 		target.checkPermission = true;
-		// single-arg: runs under the user-carrying transaction the MCP layer opened
 		return tables.Note.subscribe(target);
 	}
 }

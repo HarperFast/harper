@@ -51,6 +51,7 @@ import {
 	listCustomResources,
 	listCustomResourceTemplates,
 	matchCustomResource,
+	UnsubscribableError,
 	type CustomResourceDef,
 } from './customResourceRegistry.ts';
 import type { McpProfile } from './transport.ts';
@@ -479,7 +480,7 @@ async function subscribeToCustomResource(
 		if (err instanceof AccessViolation) throw err;
 		harperLogger.error(`MCP subscribe for ${uri} failed:`, err);
 		// Terminal: retrying cannot make the stream releasable.
-		if (err instanceof UnreleasableStreamError) return null;
+		if (err instanceof UnsubscribableError) return null;
 		throw err;
 	}
 	try {
@@ -519,8 +520,6 @@ async function acquireChangeStream(
 	return isChangeStream(result) ? result : null;
 }
 
-class UnreleasableStreamError extends Error {}
-
 function isChangeStream(value: unknown): value is ResourceChangeStream {
 	return typeof (value as ResourceChangeStream | null)?.[Symbol.asyncIterator] === 'function';
 }
@@ -557,8 +556,8 @@ function changeStreamSubscription(
 					: undefined;
 		if (unreleasable) {
 			release(uri, () => iterator.return?.());
-			throw new UnreleasableStreamError(
-				`subscribe for ${uri} returned ${unreleasable}; return a stream with end(), such as a Table.subscribe() result`
+			throw new UnsubscribableError(
+				`subscribe for ${uri} returned ${unreleasable}; return a stream whose end() releases its source, such as a Table.subscribe() result`
 			);
 		}
 	}

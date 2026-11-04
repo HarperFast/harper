@@ -1388,7 +1388,7 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 		}
 	});
 
-	it('refuses a generator subscribe on a subclass registered after the walk', async () => {
+	it('refuses a generator subscribe on a subclass registered after the walk, as not subscribable', async () => {
 		class Base {
 			async readPage() {
 				return 'x';
@@ -1407,7 +1407,7 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 			async *watchPage() {}
 		}
 		registry.get('Docs').Resource = Sub;
-		await assert.rejects(subscribeToCustomResource('docs:///index', SUPER, 'application'), /generator/);
+		assert.equal(await subscribeToCustomResource('docs:///index', SUPER, 'application'), null);
 	});
 
 	it('rebuild clears stale custom resources (removed class leaves no entry behind)', () => {

@@ -53,6 +53,7 @@ import {
 	type CustomResourceDef,
 	type CustomResourceReadResult,
 	type CustomResourceSubscription,
+	UnsubscribableError,
 	type ResourceReadContext,
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
@@ -1313,10 +1314,10 @@ function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClass
 		const method = instance[methodName] as
 			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceSubscription) | undefined;
 		if (typeof method !== 'function') {
-			throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
+			throw new UnsubscribableError(`method '${methodName}' is not a function on the constructed Resource`);
 		}
 		if (isGeneratorFunction(method)) {
-			throw new Error(
+			throw new UnsubscribableError(
 				`subscribe method '${methodName}' is a generator; return an async iterable from a regular method`
 			);
 		}
