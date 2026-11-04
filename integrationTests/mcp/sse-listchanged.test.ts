@@ -290,6 +290,12 @@ async function openSse(
 	};
 }
 
+function workerAgent(socketDir: string, mirror: string): Agent {
+	const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+	agent.createConnection = () => createConnection(join(socketDir, mirror));
+	return agent;
+}
+
 /** Open SSE on the sole socket in `agent`, pinning the stream to that socket's worker. */
 async function openSseWithAgent(
 	baseUrl: string,
@@ -491,13 +497,8 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 		const names = await readdir(socketDir);
 		const mirrors = names.filter((name) => /^\d+-.*9927\.sock$/.test(name)).sort();
 		ok(mirrors.length >= 2, `expected at least two application worker mirrors: ${JSON.stringify(names)}`);
-		function workerAgent(mirror: string): Agent {
-			const agent = new Agent({ keepAlive: true, maxSockets: 1 });
-			agent.createConnection = () => createConnection(join(socketDir, mirror));
-			return agent;
-		}
-		const getAgent = workerAgent(mirrors[0]);
-		const postAgent = workerAgent(mirrors[1]);
+		const getAgent = workerAgent(socketDir, mirrors[0]);
+		const postAgent = workerAgent(socketDir, mirrors[1]);
 		const getThreadId = await workerIdentity(ctx.harper.httpURL, auth, getAgent, 0);
 		const postThreadId = await workerIdentity(ctx.harper.httpURL, auth, postAgent, 0);
 		ok(getThreadId !== postThreadId, 'the GET and POST mirrors select different HTTP workers');
@@ -565,6 +566,91 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 			);
 		} finally {
 			sse.close();
+			getAgent.destroy();
+			postAgent.destroy();
+		}
+	});
+	test('ordinary bearer expiry is enforced when subscribe and GET use distinct workers', async (t) => {
+		if (process.platform === 'win32') {
+			t.skip('Harper forces one HTTP worker on Windows');
+			return;
+		}
+		const auth = adminAuth(ctx);
+		const session = await initialize(ctx.harper.httpURL, auth);
+		const socketDir = join(ctx.harper.dataRootDir, 'sockets');
+		const mirrors = (await readdir(socketDir)).filter((name) => /^\d+-.*9927\.sock$/.test(name)).sort();
+		ok(mirrors.length >= 2);
+		const getAgent = workerAgent(socketDir, mirrors[0]);
+		const postAgent = workerAgent(socketDir, mirrors[1]);
+		try {
+			const getThread = await workerIdentity(ctx.harper.httpURL, auth, getAgent, 0);
+			const postThread = await workerIdentity(ctx.harper.httpURL, auth, postAgent, 0);
+			ok(getThread !== postThread);
+			const sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, 0);
+			try {
+				strictEqual(sse.status, 200);
+				const id = `bearer_expiry_${Date.now().toString(36)}`;
+				const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+				await putWorkItem(ctx, id, { state: 'pending' });
+				const tokenResponse = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', 'authorization': auth },
+					body: JSON.stringify({
+						operation: 'create_authentication_tokens',
+						username: ctx.harper.admin.username,
+						password: ctx.harper.admin.password,
+						expires_in: '8s',
+					}),
+				});
+				strictEqual(tokenResponse.status, 200);
+				const { operation_token } = (await tokenResponse.json()) as { operation_token: string };
+				ok(operation_token);
+				const { exp } = JSON.parse(Buffer.from(operation_token.split('.')[1], 'base64url').toString());
+				ok(Number.isFinite(exp));
+				const subscribed = await mcpCallWithAgent(
+					ctx.harper.httpURL,
+					`Bearer ${operation_token}`,
+					postAgent,
+					session,
+					'resources/subscribe',
+					{ uri },
+					40,
+					0
+				);
+				strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+				const matches = (message: any) =>
+					message?.method === 'notifications/resources/updated' && message?.params?.uri === uri;
+				await putWorkItem(ctx, id, { state: 'before-expiry' });
+				ok(await sse.next(matches, 5000), 'updates arrive before the POST bearer expires');
+				while (Date.now() < exp * 1000) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+				await putWorkItem(ctx, id, { state: 'after-expiry' });
+				strictEqual(await sse.next(matches, 1000), undefined, 'expired POST bearer cannot deliver updates');
+				sse.close();
+				const reconnected = await openSseWithAgent(ctx.harper.httpURL, auth, postAgent, session, 0);
+				try {
+					strictEqual(reconnected.status, 200);
+					await putWorkItem(ctx, id, { state: 'reconnected-after-expiry' });
+					strictEqual(await reconnected.next(matches, 1000), undefined, 'reconnect cannot extend bearer expiry');
+					const resubscribed = await mcpCallWithAgent(
+						ctx.harper.httpURL,
+						auth,
+						getAgent,
+						session,
+						'resources/subscribe',
+						{ uri },
+						41,
+						0
+					);
+					strictEqual(resubscribed.error, undefined, JSON.stringify(resubscribed.error));
+					await putWorkItem(ctx, id, { state: 'fresh-subscription' });
+					ok(await reconnected.next(matches, 5000), 'a fresh subscription restores delivery');
+				} finally {
+					reconnected.close();
+				}
+			} finally {
+				sse.close();
+			}
+		} finally {
 			getAgent.destroy();
 			postAgent.destroy();
 		}

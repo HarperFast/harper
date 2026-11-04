@@ -90,6 +90,13 @@ function subscriptionUser(user: AuthedUser): AuthedUser {
 	};
 }
 
+function restorePrincipal(principal: AuthedUser | undefined, owner: AuthedUser): AuthedUser | undefined {
+	if (!principal || principal._scopedToken === true) return principal;
+	return (principal.authExpiresAt ?? Infinity) < (owner.authExpiresAt ?? Infinity)
+		? { ...owner, authExpiresAt: principal.authExpiresAt }
+		: owner;
+}
+
 function subscriptionScope(user: AuthedUser): string {
 	return JSON.stringify({ ...subscriptionUser(user), authExpiresAt: undefined });
 }
@@ -189,7 +196,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 				const principalId = session.subscriptionPrincipalIds?.[uri];
 				const user =
 					localPrincipals.get(generation) ??
-					(principalId ? session.subscriptionPrincipals?.[principalId] : record.user);
+					(principalId ? restorePrincipal(session.subscriptionPrincipals?.[principalId], record.user) : record.user);
 				try {
 					let differentScopedGrant = false;
 					if (initializing && reconnectScope !== undefined && user) {
@@ -375,8 +382,8 @@ export async function updateResourceSubscription(args: {
 			if (generation) {
 				subscriptions.push(uri);
 				generations[uri] = generation;
-				if (user?._scopedToken) {
-					const principal = subscriptionUser(user);
+				if (user?._scopedToken || user?.authExpiresAt !== undefined) {
+					const principal = user._scopedToken ? subscriptionUser(user) : { authExpiresAt: user.authExpiresAt };
 					const id = createHash('sha256').update(JSON.stringify(principal)).digest('hex');
 					principalIds[uri] = id;
 					principals[id] = principal;

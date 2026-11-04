@@ -9,6 +9,7 @@ const {
 const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const { localPrincipal } = require('#src/security/user');
+const { waitFor } = require('../../waitFor');
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -189,6 +190,18 @@ describe('mcp/listChanged', () => {
 		// The session's user reference should have been swapped in-place so
 		// subsequent diffs run against current perms too.
 		assert.equal(rec.user, aliceWithFoo, 'record.user updated to the freshly-resolved user');
+	});
+
+	it('preserves the GET credential expiry when refreshing its permissions', async () => {
+		initListChanged();
+		const authExpiresAt = Date.now() / 1000 + 60;
+		const record = registerSession('sid', 'application', { ...ALICE, authExpiresAt });
+		const fresh = { username: ALICE.username, role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user.role === fresh.role);
+		assert.equal(record.user.authExpiresAt, authExpiresAt);
+		assert.equal(fresh.authExpiresAt, undefined);
 	});
 
 	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {

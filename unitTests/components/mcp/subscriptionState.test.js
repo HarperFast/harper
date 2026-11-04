@@ -359,7 +359,7 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 	});
 
-	it('preserves a local principal but persists only scoped-token authorization fields', async () => {
+	it('preserves local principals and sanitizes pooled scoped grants', async () => {
 		await open();
 		let received;
 		_setSubscribeImplForTest(async (_path, user) => {
@@ -386,6 +386,77 @@ describe('MCP persisted subscription state', function () {
 		assert.equal(Object.keys((await loadSession(session.id)).subscriptionPrincipals).length, 1);
 		assert.equal(await unsubscribe(URI + 'other'), 'success');
 		assert.deepEqual((await loadSession(session.id)).subscriptionPrincipals, {});
+	});
+
+	it('persists ordinary bearer expiry without storing its permissions or credentials', async () => {
+		await open();
+		const bearer = { ...USER, authExpiresAt: Date.now() / 1000 + 60, password: 'not-for-storage' };
+		assert.equal(await subscribe(URI, bearer), 'success');
+		const saved = await loadSession(session.id);
+		assert.deepEqual(saved.subscriptionPrincipals[saved.subscriptionPrincipalIds[URI]], {
+			authExpiresAt: bearer.authExpiresAt,
+		});
+	});
+
+	it('restores ordinary bearer expiry without extending it to the reconnect credential', async () => {
+		await open();
+		const bearer = { ...USER, authExpiresAt: Date.now() / 1000 + 60 };
+		assert.equal(await subscribe(URI, bearer), 'success');
+		let received;
+		_setSubscribeImplForTest(async (_path, user) => {
+			received = user;
+			return changeStream();
+		});
+		const refreshed = { ...USER, authExpiresAt: bearer.authExpiresAt + 60 };
+		const record = registerSession(session.id, 'application', refreshed);
+		assert.equal(await claimSubscriptionOwner(session.id, record.streamToken), true);
+		assert.equal(received.authExpiresAt, bearer.authExpiresAt);
+		assert.equal(received.role, refreshed.role);
+	});
+
+	it('retains the GET principal when its expiry is earlier than the stored bearer expiry', async () => {
+		await patchSession(session.id, {
+			subscriptions: [URI],
+			subscriptionPrincipals: { bearer: { authExpiresAt: Date.now() / 1000 + 120 } },
+			subscriptionPrincipalIds: { [URI]: 'bearer' },
+		});
+		const user = { ...USER, authExpiresAt: Date.now() / 1000 + 60 };
+		let received;
+		_setSubscribeImplForTest(async (_path, principal) => {
+			received = principal;
+			return changeStream();
+		});
+		const record = registerSession(session.id, 'application', user);
+		assert.equal(await claimSubscriptionOwner(session.id, record.streamToken), true);
+		assert.equal(received, user);
+	});
+
+	it('reconstructs remote ordinary bearer expiry using the current GET permissions', async () => {
+		const record = await open();
+		const stream = new IterableEventQueue();
+		stream.end = () => stream.close();
+		let received;
+		_setSubscribeImplForTest(async (_path, user) => {
+			received = user;
+			return stream;
+		});
+		const authExpiresAt = Math.ceil(Date.now() / 1000) + 1;
+		await patchSession(session.id, {
+			subscriptions: [URI],
+			subscriptionGenerations: { [URI]: 'remote-bearer' },
+			subscriptionPrincipals: { bearer: { authExpiresAt } },
+			subscriptionPrincipalIds: { [URI]: 'bearer' },
+			subscriptionRevision: 1,
+		});
+		await waitFor(() => _liveSubscriptionCount(session.id) === 1);
+		assert.equal(received.role, record.user.role);
+		assert.equal(received.username, record.user.username);
+		assert.equal(received.authExpiresAt, authExpiresAt);
+		assert.equal(received._scopedToken, undefined);
+		await waitFor(() => Date.now() >= authExpiresAt * 1000, 3000);
+		stream.send({ id: 'after-expiry' });
+		await waitFor(() => !getRegisteredSession(session.id));
+		assert.equal(stream.closed, true);
 	});
 
 	it('does not restore a stored grant onto a different scoped credential with the same username', async () => {
