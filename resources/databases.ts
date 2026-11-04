@@ -5860,6 +5860,7 @@ export function requestComputedIndexRepair(Table: any): void {
 			// runIndexing persists this attribute, so it takes the catalog's fields; the declaration's own are the
 			// same (declarationOf) and keep their runtime objects, such as a GraphQL `elements.definition`
 			for (const field in descriptor) if (!DECLARATION_FIELDS.has(field)) attribute[field] = descriptor[field];
+			for (const field of ['lastIndexedKey', 'checkpointCertified', 'indexingFailed']) delete attribute[field];
 			Object.defineProperty(attribute, 'key', { value: key, configurable: true });
 			armIndexBuild(attribute, Table.indices[attribute.name]);
 			logger.info(`reindex ${Table.databaseName}.${Table.tableName}.${attribute.name}: reason=resolver-registered`);
