@@ -808,6 +808,33 @@ describe('delegated reads reusing one query object', function () {
 	});
 
 	describe('cache disposition', function () {
+		for (const [shape, lock] of [
+			['frozen', Object.freeze],
+			['sealed', Object.seal],
+			['readonly status', (target) => Object.defineProperty(target, 'loadedFromSource', { value: undefined })],
+		]) {
+			for (const [mode, getTable] of [
+				['default', () => Label],
+				['false', () => FalseModeLabel],
+				['delegate', () => DelegatingLabel],
+			]) {
+				it(`serves cache misses and hits for a ${shape} ${mode} target`, async function () {
+					const id = `locked-${shape}-${mode}`;
+					const loadsBefore = sourceLoads;
+					for (let read = 0; read < 2; read++) {
+						const target = lock({ id, checkPermission: true });
+						assert.deepStrictEqual(plain(await getTable().get(target, { user: restrictedUser })), {
+							id,
+							text: `label ${id}`,
+						});
+						assert.strictEqual(target.loadedFromSource, undefined);
+						assert.strictEqual(target.checkPermission, true);
+					}
+					assert.strictEqual(sourceLoads, loadsBefore + 1);
+				});
+			}
+		}
+
 		for (const [name, getTable, authorize, armedOnQuery] of [
 			['a false-mode get', () => FalseModeLabel, undefined, true],
 			['a false-mode get armed through the context as well', () => FalseModeLabel, true, true],

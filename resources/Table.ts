@@ -298,7 +298,13 @@ import {
 	getStorageSpaceStats,
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
-import { AUTHORIZATION_SELECT, RequestTarget, dispatchTarget, copyQueryTarget } from './RequestTarget.ts';
+import {
+	AUTHORIZATION_SELECT,
+	RequestTarget,
+	dispatchTarget,
+	copyQueryTarget,
+	setLoadedFromSource,
+} from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
@@ -12295,11 +12301,6 @@ export function makeTable(options): TableResourceClass {
 		throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
 	}
 
-	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {
-		// cache disposition is a per-get result, recorded on the RequestTarget of the get (#1576)
-		// target may be a primitive id on instance-API calls, which can't hold the flag
-		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
-	}
 	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
 		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
 	}

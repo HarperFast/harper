@@ -29,6 +29,10 @@ function replayIterator(source: any, iteratorMethod?: () => Iterator<any>): Iter
 	return snapshot.values[Symbol.iterator]();
 }
 
+export function setLoadedFromSource(target: any, loadedFromSource: boolean): void {
+	if (target && typeof target === 'object') Reflect.set(target, 'loadedFromSource', loadedFromSource);
+}
+
 export function copyQueryConditions(value: any): any {
 	return value && !Array.isArray(value) && typeof value[Symbol.iterator] === 'function'
 		? { [Symbol.iterator]: () => replayIterator(value) }

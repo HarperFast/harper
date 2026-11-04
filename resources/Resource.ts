@@ -29,6 +29,7 @@ import {
 	copyQueryConditions,
 	dispatchTarget,
 	markDispatchTarget,
+	setLoadedFromSource,
 } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
@@ -1035,7 +1036,7 @@ function transactional(
 				let result = action(resource, query, context, data);
 				if (options.method === 'get' && callerTarget !== query)
 					result = when(result, (value: any) => {
-						if (query.loadedFromSource !== undefined) callerTarget.loadedFromSource = query.loadedFromSource;
+						if (query.loadedFromSource !== undefined) setLoadedFromSource(callerTarget, query.loadedFromSource);
 						return value;
 					});
 				if (!isSubscribeAction) return result;
