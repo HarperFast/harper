@@ -182,6 +182,8 @@ Activity-only session writes do not trigger reconciliation: the watcher compares
 Native `Table.subscribe` enables auditing for a previously unaudited table, so opening a GET also makes
 subsequent session touches audited when `logging.auditLog` was disabled. This trades that opt-out cost
 for one authoritative row with the existing session TTL and non-replication rules.
+A local RocksDB smoke sample (2026-11-03, 100 sequential GET claims without resource subscriptions)
+measured claim latency at 0.332 ms median and 2.369 ms p95. This is not a production throughput or audit-retention benchmark.
 
 Verification: [`subscriptionState.test.js`](../../unitTests/components/mcp/subscriptionState.test.js)
 uses a real session table for installation, coalescing, timeout, ownership, and authorization cases.
