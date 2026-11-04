@@ -1000,7 +1000,7 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 			assert.strictEqual(Object.hasOwn(stored, 'owner'), true);
 			assert.strictEqual(stored.owner, undefined);
 			assert.ok(Object.keys(stored).includes('owner'));
-			const { pack, unpack } = require('msgpackr');
+			const { pack, unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const decoded = unpack(pack(stored));
 			assert.strictEqual(Object.hasOwn(decoded, 'owner'), true);
 			assert.strictEqual(decoded.owner, undefined);
