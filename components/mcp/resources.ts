@@ -479,7 +479,6 @@ async function subscribeToCustomResource(
 	} catch (err) {
 		if (err instanceof AccessViolation) throw err;
 		harperLogger.error(`MCP subscribe for ${uri} failed:`, err);
-		// Terminal: retrying cannot make the stream releasable.
 		if (err instanceof UnsubscribableError) return null;
 		throw err;
 	}
