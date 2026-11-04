@@ -87,15 +87,17 @@ server.registerOperation({
 });
 
 server.registerOperation({
-	name: 'component_registered_align_schema',
-	execute: async function componentRegisteredAlignSchema() {
-		server.registerOperation({
-			name: 'component_registered_disagreement',
-			inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
-			execute: async function componentRegisteredAgreed() {
-				return { threadId };
-			},
-		});
+	name: `component_registered_owner_${threadId}`,
+	inputSchema: { type: 'object', properties: { align: { type: 'boolean' } } },
+	execute: async function componentRegisteredOwner(op) {
+		if (op.align)
+			server.registerOperation({
+				name: 'component_registered_disagreement',
+				inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+				execute: async function componentRegisteredAgreed() {
+					return { threadId };
+				},
+			});
 		return { threadId };
 	},
 });

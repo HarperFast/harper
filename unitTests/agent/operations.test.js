@@ -44,6 +44,7 @@ describe('agent/operations set_agent_config', () => {
 			{ httpFetch: false, maxTurns: 3 },
 			{ componentsScope: '.', maxTurns: 3 },
 			{ configScope: '.', maxTurns: 3 },
+			{ tools: { filesystem: false }, maxTurns: 3 },
 		]) {
 			assert.equal(accepts(input), false);
 			await assert.rejects(execute(input));
