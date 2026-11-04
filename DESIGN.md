@@ -168,7 +168,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## components/mcp/
 
-- [MCP protocol surface (`components/mcp/`)](components/mcp/DESIGN.md#mcp-protocol-surface-componentsmcp) — Two profiles (operations, application) share the dispatcher; every method decides which profile it belongs to.
+- [Protocol profiles](components/mcp/DESIGN.md#mcp-protocol-surface-componentsmcp) · [Persisted subscriptions and GET acknowledgments](components/mcp/DESIGN.md#persisted-resource-subscription-state).
 
 ## agent/ — built-in agent
 
