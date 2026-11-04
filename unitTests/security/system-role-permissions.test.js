@@ -9,7 +9,7 @@ const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
 const logger = require('#src/utility/logging/harper_logger');
 
-const ROLE = 'test_system_grant_boundary';
+const ROLE = '000_test_system_grant_boundary';
 const system = {
 	tables: { hdb_user: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] } },
 };
@@ -75,7 +75,10 @@ describe('System role permission boundary', () => {
 			} else if (read === 'userInfo') {
 				reported = (await user.userInfo({ hdb_user: { username: 'legacy', role: { id: ROLE } } })).role;
 			} else if (read === 'listRoles') {
-				reported = (await roles.listRoles()).find((role) => role.id === ROLE);
+				const listed = await roles.listRoles();
+				assert.strictEqual(listed[0].id, ROLE);
+				reported = listed[0];
+				assert.strictEqual(logs.filter((line) => line.includes(`role '${ROLE}'`)).length, 1);
 			} else reported = await roles.getRoleByName(ROLE);
 			assert.strictEqual(reported.id, ROLE);
 			assert.strictEqual(reported.role, ROLE);

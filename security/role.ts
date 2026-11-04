@@ -220,5 +220,5 @@ export async function listRoles() {
 		get_attributes: ['*'],
 	};
 
-	return Array.from((await pSearchSearchByValue(searchObj)) ?? [], withoutSystemGrants);
+	return Array.from((await pSearchSearchByValue(searchObj)) ?? [], (role) => withoutSystemGrants(role));
 }
