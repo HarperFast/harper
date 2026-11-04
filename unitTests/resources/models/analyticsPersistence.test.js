@@ -97,7 +97,7 @@ describe('Model-call analytics persistence', () => {
 
 	it('rejects a failed batch commit, rolls back its rows, and can flush a later batch', async () => {
 		const target = table({
-			database: 'test',
+			database: 'model_analytics_commit_failure',
 			table: 'AnalyticsCommitFailure',
 			audit: false,
 			attributes: [
