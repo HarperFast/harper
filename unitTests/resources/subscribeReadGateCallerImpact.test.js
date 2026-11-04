@@ -140,7 +140,6 @@ describe('Subscribe read gate: caller impact', () => {
 			const request = { omitCurrent: true };
 			await admitted(Allowing.subscribe(request, undefined, armed(nonReader)));
 			assert.strictEqual(allowReadCalls, 1);
-			// armed by the context, but consumed only on the gate's copy, so the next dispatch is gated again
 			assert.strictEqual(request.checkPermission, true);
 		});
 

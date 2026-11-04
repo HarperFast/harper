@@ -1,16 +1,3 @@
-/**
- * One query object reused by a delegate across requests is authorized for each requesting principal.
- *
- * The documented delegate pattern (resource-api.md, `checkPermission`): a resource calls
- * `tables.X.search(query, context)` / `tables.X.get(query, context)` with `checkPermission: true` on the
- * query. Each delegate in the fixture keeps ONE module-level query object and reuses it on every request.
- * Two principals differ only in the related table's attribute permissions: `restricted` may not read
- * `ReuseDepartment.secret`. Whichever principal used the query first, the second must receive its own
- * projection; the query object must come back as the application wrote it.
- *
- * Reproduction:
- *   npm run test:integration -- "integrationTests/security/delegated-query-reuse.test.ts"
- */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { resolve } from 'node:path';

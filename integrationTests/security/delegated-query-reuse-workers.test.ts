@@ -1,15 +1,3 @@
-/**
- * The reused delegate query object of `delegated-query-reuse.test.ts`, under four HTTP worker threads.
- *
- * Each worker holds its own copy of the module-level query object, so a restricted request only exercises
- * reuse when it lands on a worker an earlier broad request already used. Every request opens its own
- * connection to spread requests across workers, and the delegate reports its worker in `x-worker`; the test
- * keeps sending restricted requests until each broad-used worker has served one, and fails if routing
- * never gets there.
- *
- * Reproduction:
- *   npm run test:integration -- "integrationTests/security/delegated-query-reuse-workers.test.ts"
- */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { request } from 'node:http';
