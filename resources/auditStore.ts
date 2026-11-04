@@ -969,7 +969,6 @@ function observeLogPurgeBounds(
 		observed.set(LMDB_PURGE_LOG, [bound, now, bound]);
 		return observed;
 	}
-	// the furthest either purge reaches: this prune's cutoff, or rocksdb-js's own retention when it reaches further
 	const reach = Math.max(cutoff, nativeHorizon);
 	const rootStore = auditStore.rootStore;
 	let names: string[];
@@ -1000,7 +999,6 @@ function observeLogPurgeBounds(
 			observed.set(name, [quietAt >= reach ? known : Math.max(known, reach), quietAt, UNKNOWN_MAXIMUM]);
 		}
 	}
-	// a recorded log with no files left is empty, so quiet
 	const listed = new Set(names);
 	for (const name in recorded.logs)
 		if (!listed.has(name)) {
