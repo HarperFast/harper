@@ -59,7 +59,6 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 	it('surfaces the docstring and per-property descriptions on both MCP tools and OpenAPI', () => {
 		const resources = makeResources();
 
-		// MCP side
 		_setResourcesForTest(resources);
 		registerApplicationTools();
 		const get = getTool('get_Widget');
@@ -71,13 +70,11 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 		);
 		assert.equal(create.inputSchema.properties.label.description, 'Human-readable label');
 
-		// OpenAPI side — same source
 		const api = generateJsonApi(resources, 'https://harper.fast');
 		const schema = api.components.schemas.Widget;
 		assert.equal(schema.description, 'A widget in the catalog.', 'OpenAPI schema should carry the docstring');
 		assert.equal(schema.properties.label.description, 'Human-readable label');
 
-		// Convergence: the per-property description is identical on both surfaces.
 		assert.equal(create.inputSchema.properties.label.description, schema.properties.label.description);
 	});
 
@@ -321,8 +318,6 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		assert.deepEqual(mcp.note.type, ['string', 'null'], 'mcp top-level union');
 		assert.deepEqual(mcp.wrapper.properties.inner.type, ['string', 'null'], 'mcp nested union');
 		assert.equal(mcp.note.nullable, undefined, 'mcp must not emit the OpenAPI keyword');
-		// OpenAPI 3.0.3 has no union types: the `nullable` keyword, at BOTH levels (it was previously
-		// emitted only on nested properties and silently dropped at the top level).
 		assert.equal(openapi.note.type, 'string', 'openapi top-level stays a single type');
 		assert.equal(openapi.note.nullable, true, 'openapi top-level nullable is emitted');
 		assert.equal(openapi.wrapper.properties.inner.nullable, true, 'openapi nested nullable is emitted');
@@ -374,8 +369,6 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 	});
 
 	it('emits an unrecognized type name as untyped on both surfaces instead of diverging', () => {
-		// MCP used to coerce an unknown name to `string` while OpenAPI emitted `{}` — two different
-		// wrong answers from one typo, with no signal to the author.
 		const { mcp, openapi } = bothSurfaces({ weird: { type: 'Text' } });
 		assert.equal(mcp.weird.type, undefined, 'mcp does not invent a type');
 		assert.equal(openapi.weird.type, undefined, 'openapi does not invent a type');
@@ -422,8 +415,6 @@ describe('attributeToSchema — emitter edge cases (#1941, #1942)', () => {
 	});
 
 	it('does not resolve Object.prototype members as type names', () => {
-		// `DATA_TYPES` is an object literal, so a bare index put a function (or Object.prototype) into
-		// the emitted schema and suppressed the warning for a genuinely bogus name.
 		for (const bogus of ['constructor', '__proto__', 'toString']) {
 			assert.equal(resolveDeclaredType(bogus), undefined, `${bogus} must not resolve`);
 		}

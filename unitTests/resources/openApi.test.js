@@ -480,8 +480,6 @@ describe('openApi — static-property union translation (3.0.3)', () => {
 	});
 });
 
-// #1942 follow-up: `required: []` is invalid under JSON Schema draft-04, which OpenAPI 3.0.3
-// inherits — a resource whose attributes are all nullable produced exactly that.
 describe('openApi — empty required omission', () => {
 	it('omits the top-level `required` key when no attribute is non-nullable', () => {
 		class AllOptional {}

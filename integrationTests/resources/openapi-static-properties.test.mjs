@@ -1,11 +1,6 @@
 /**
  * OpenAPI emission for a programmatic Resource's `static properties` (#1941/#1942).
  *
- * The existing `apiTests/open-api.test.mjs` asserts the document's *structure* — that `paths` and
- * `components.schemas` exist. Nothing asserted the emitted property schemas, so a wrong `nullable`, a
- * leaked `@hidden` field, or a dropped nested `enum` would ship green. These emitter behaviors are
- * per-surface and easy to regress silently, so they are pinned against the real document here.
- *
  * Skipped on Windows for the same reason as the sibling suite: `restart_service http_workers` after a
  * component install crashes Harper on the single-worker model (HarperFast/harper#549).
  */
