@@ -5738,6 +5738,9 @@ function stampComputedFromHash(attribute: any) {
 }
 function claimIndexBuild(attribute: any, dbi: any, restartGeneration: number) {
 	stampIndexBuildClaim(attribute, restartGeneration);
+	armIndexBuild(attribute, dbi);
+}
+function armIndexBuild(attribute: any, dbi: any) {
 	dbi.isIndexing = true;
 	Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
 }
@@ -5844,7 +5847,7 @@ export function requestComputedIndexRepair(Table: any): void {
 			for (const field of Object.keys(attribute)) if (!(field in build) && field !== 'resolve') delete attribute[field];
 			for (const field in build) if (field !== 'computed') attribute[field] = build[field];
 			Object.defineProperty(attribute, 'key', { value: key, configurable: true });
-			claimIndexBuild(attribute, Table.indices[attribute.name], restartGeneration);
+			armIndexBuild(attribute, Table.indices[attribute.name]);
 			logger.info(`reindex ${Table.databaseName}.${Table.tableName}.${attribute.name}: reason=resolver-registered`);
 			claimed.push(attribute);
 		}
@@ -6107,6 +6110,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				let nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 				let nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 				let restart = false;
+				// a resolver registers only between event turns, so its state is re-read after each await
+				let resolverStateCurrent = false;
 				// this means that a new attribute has been introduced that needs to be indexed
 				for (const { key, value: record } of Table.primaryStore.getRange({
 					start,
@@ -6114,6 +6119,16 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					versions: true,
 					snapshot: false, // don't hold a read transaction this whole time
 				})) {
+					if (tracksResolvers && !resolverStateCurrent) {
+						resolverStateCurrent = true;
+						if (resolverArrived()) {
+							restart = true;
+							break;
+						}
+						for (let i = 0; i < attributesLength; i++)
+							if (applicationComputed[i] && !isRealResolver(Table.userResolvers?.[attributes[i].name]))
+								resolvedThroughout[i] = false;
+					}
 					const atInterval = ++indexed % INDEXING_YIELD_INTERVAL === 0;
 					// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 					//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
@@ -6132,8 +6147,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 							const index = attribute.dbi;
 							const onPutRejected = putRejectionHandlers[i];
 							try {
-								if (applicationComputed[i] && resolvedThroughout[i] && !isRealResolver(Table.userResolvers?.[property]))
-									resolvedThroughout[i] = false;
 								const resolver = attribute.resolve;
 								const value = record && (resolver ? resolver(record) : record[property]);
 								if (index.customIndex) {
@@ -6171,20 +6184,22 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						await persistCheckpoint(key);
 						return;
 					}
-					if (resolverArrived()) {
-						restart = true;
-						break;
-					}
 					if (atInterval && indexed >= nextCheckpointRecord && performance.now() >= nextCheckpointAt) {
 						nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 						nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 						await checkpointing;
+						resolverStateCurrent = false;
 						checkpointing = persistCheckpoint(key);
 					}
 					// Checked once per record, so a record's own fan-out can overshoot before the bound applies.
-					while (pendingMutations.size > MAX_OUTSTANDING_INDEXING) await nextSettlement();
-					if (atInterval || didSynchronousIndexing || pendingMutations.size > MIN_OUTSTANDING_INDEXING)
+					while (pendingMutations.size > MAX_OUTSTANDING_INDEXING) {
+						await nextSettlement();
+						resolverStateCurrent = false;
+					}
+					if (atInterval || didSynchronousIndexing || pendingMutations.size > MIN_OUTSTANDING_INDEXING) {
 						await yieldEventTurn();
+						resolverStateCurrent = false;
+					}
 				}
 				await checkpointing;
 				// A mutation that rejects after completion is declared has no build left to park.
@@ -6219,8 +6234,10 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				restarted = true;
 			}
 		}
-		await checkpointing;
-		await drainMutations();
+		if (attributesLength === 0) {
+			await checkpointing;
+			await drainMutations();
+		}
 		if (attributesLength === 0 && !hadIndexingErrors) {
 			try {
 				await flushIndexStores(Table.primaryStore.rootStore);
