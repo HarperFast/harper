@@ -24,7 +24,8 @@ npm run format:write       # Prettier
 
 # Test — run specific suites
 npm run test:unit                  # All unit tests (mocha)
-npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources)
+npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources, install)
+npm run test:unit:install          # Installer suite, its own process: it closes and recreates the shared system database
 npm run test:unit:resources        # Resource layer tests
 npm run test:unit:server           # Server layer tests
 npm run test:unit:dataLayer        # Data layer tests
@@ -83,7 +84,7 @@ The universal abstraction. Everything that can be queried or mutated — databas
 
 Static methods (`Resource.get`, `Resource.put`, `Resource.post`, `Resource.delete`, `Resource.patch`, `Resource.subscribe`) are the protocol entry points: the REST layer dispatches to the _class_ (`server/REST.ts`, inside a request-level `transaction()`), and the base implementations are `transactional()` wrappers that resolve an instance and delegate to the matching instance method. **New `Resource` subclasses here override instance methods** and leave the statics generic. Overriding a static entry point is a deliberate act that takes over the whole wrapper contract — including `data` resolution and the `allow*` gate — see `resources/DESIGN.md` → Conventions for the two obligations it saddles you with. Note this is _core's_ convention: the public [Harper best-practice skills](https://github.com/HarperFast/skills) tell **application** authors to implement REST verbs as statics on their own component resources; choose based on the situation.
 
-`Table.ts` is the database table implementation (4744 lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Use `resources/DESIGN.md` as a section index instead of reading top-to-bottom.**
+`Table.ts` is the database table implementation (over ten thousand lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Find code through [resources/MAP.md](resources/MAP.md) instead of reading top-to-bottom, and read the [resources/DESIGN.md](resources/DESIGN.md) note before changing code it names.**
 
 **Data Layer** (`dataLayer/`)  
 Legacy translation modules plus SQL translation (`sqlTranslator/`) via AlaSQL; these should be avoided. The storage engine is selectable via `HARPER_STORAGE_ENGINE=lmdb`.
@@ -104,7 +105,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 - **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. **See [components/DESIGN.md](components/DESIGN.md)** (deploys, load lifecycle) and [components/mcp/DESIGN.md](components/mcp/DESIGN.md). Tests: `unitTests/components/`.
 - **`server/`** — HTTP/WS/MQTT/etc. Entry: `operationsServer.ts` (boot), `http.ts` (native HTTP). **See [server/DESIGN.md](server/DESIGN.md).** Tests: `unitTests/server/`.
-- **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/DESIGN.md](resources/DESIGN.md).** Tests: `unitTests/resources/`.
+- **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/MAP.md](resources/MAP.md)** (where things are) and [resources/DESIGN.md](resources/DESIGN.md) (rules). Tests: `unitTests/resources/`.
 - **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Backup/restore and the version gate live here too: [dataLayer/DESIGN.md](dataLayer/DESIGN.md). Tests: `unitTests/dataLayer/`.
 - **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. **See [config/DESIGN.md](config/DESIGN.md).** Tests: `unitTests/config/`.
 - **`utility/`** — logging, errors, helpers. [utility/DESIGN.md](utility/DESIGN.md). Tests: `unitTests/utility/`.
@@ -140,11 +141,19 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ## Detailed navigation
 
-For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
+Find code by symbol instead of reading files top-to-bottom:
+
+- **Symbols:** `npm run outline -- <file|dir>` prints a file's nested declarations (classes, functions, methods, and the declarations inside factories such as `makeTable()`) and its `// #section:` markers, with line ranges; `npm run outline -- resources/Table.ts` takes under a second. In Claude sessions the LSP tool's document and workspace symbol lookups do the same.
+- **Concepts:** a directory's `MAP.md` points each file and each question a reader brings at the symbols that answer it. Claude Code loads it through that directory's `CLAUDE.md`; Codex and Gemini do not, so read the directory's map from the list below before its source.
+- **Invariants:** the directory's `DESIGN.md`, indexed from [DESIGN.md](DESIGN.md): why the code is the way it is, kept within the byte budgets that file sets.
+
+Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked here): [resources/MAP.md](resources/MAP.md).
+
+For megafiles and complex subsystems, the design notes to read first:
 
 | If you are touching…                                   | Read first                                                 |
 | ------------------------------------------------------ | ---------------------------------------------------------- |
-| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md)                 |
+| Anything in `resources/` (especially `Table.ts`)       | [resources/MAP.md](resources/MAP.md)                       |
 | HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)                       |
 | Record-store internals (commit timing, blobs, encoder) | [resources/DESIGN.md](resources/DESIGN.md)                 |
 | `table.lock()`, record-lock ownership                  | [resources/record-locks.md](resources/record-locks.md)     |

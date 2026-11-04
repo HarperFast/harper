@@ -12,13 +12,14 @@ import uniqBy from 'lodash/uniqBy.js';
 import alasql from 'alasql';
 alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
+import { generatedName } from '../sqlTranslator/legacySqlText.ts';
 import clone from 'clone';
 import RecursiveIterator from 'recursive-iterator';
 import log from '../utility/logging/harper_logger.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import harperBridge from './harperBridge/harperBridge.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import { DatabaseClosingError, DatabaseShardingHeldError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { ClientError, DatabaseClosingError, DatabaseShardingHeldError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
@@ -129,7 +130,7 @@ class SQLSearch {
 				return emptySqlResults;
 			}
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -159,7 +160,7 @@ class SQLSearch {
 			// Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
 			joinResults = await this._processJoins();
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from processJoins in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -179,7 +180,7 @@ class SQLSearch {
 			searchResults = await this._finalSQL();
 			return searchResults;
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from finalSQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -519,6 +520,7 @@ class SQLSearch {
 				let sql = this._buildSQL(false);
 				results = await alasql.promise(sql);
 			} catch (e) {
+				if (e instanceof ClientError) throw e;
 				log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
 				log.error(e);
 				throw new Error('There was a problem with the SQL statement');
@@ -992,7 +994,7 @@ class SQLSearch {
 				table: table.as ? table.as_orig : table.tableid_orig,
 				keys: new Set(),
 			});
-			select.push(`${table.as ? table.as : table.tableid}.\`${hash}\` AS "${tableKey}.${hash}"`);
+			select.push(`${table.as ? table.as : table.tableid}.\`${hash}\` AS ${generatedName(`${tableKey}.${hash}`)}`);
 
 			existingAttributes[table.as ? table.as_orig : table.tableid_orig] =
 				this.data[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`].__mergedAttributes;
@@ -1047,6 +1049,7 @@ class SQLSearch {
 			joined = await alasql.promise(finalSqlOperation, tableData);
 			tableData = null;
 		} catch (err) {
+			if (err instanceof ClientError) throw err;
 			log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
 			log.error(err);
 			throw new Error('There was a problem processing the data.');
@@ -1271,6 +1274,7 @@ class SQLSearch {
 			}
 			log.trace(`Final AlaSQL results data included ${finalResults.length} rows`);
 		} catch (err) {
+			if (err instanceof ClientError) throw err;
 			log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
 			log.error(err);
 			throw new Error('There was a problem running the generated sql.');

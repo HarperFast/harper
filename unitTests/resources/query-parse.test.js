@@ -6,6 +6,14 @@ const { RequestTarget } = require('#src/resources/RequestTarget');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Parsing queries', () => {
 	before(function () {});
+	it('decodes a request target id only where it is percent-encoded', function () {
+		assert.strictEqual(new RequestTarget('/user%201').id, 'user 1');
+		assert.strictEqual(new RequestTarget('/user1').id, 'user1');
+		assert.strictEqual(new RequestTarget('/a+b').id, 'a+b');
+		assert.strictEqual(new RequestTarget('/user1?select=name').id, 'user1');
+		assert.strictEqual(new RequestTarget('/sub/').id, 'sub/');
+		assert.throws(() => new RequestTarget('/100%'), URIError);
+	});
 	it('Basic AND query', function () {
 		const query = parseQuery('id=1&name=2');
 		const conditions = Array.from(query);
@@ -207,10 +215,43 @@ describe('Parsing queries', () => {
 		assert.strictEqual(group.conditions.length, 2);
 		assert.strictEqual(group.conditions[0].attribute, 'title');
 		assert.strictEqual(group.conditions[0].value, 'x');
-		assert.strictEqual(group.conditions[1].name, 'children');
+		assert.strictEqual(group.conditions[1].attribute, 'children');
+		assert.strictEqual(group.conditions[1].name, undefined);
 		assert.strictEqual(group.conditions[1].conditions.length, 1);
 		assert.strictEqual(group.conditions[1].conditions[0].attribute, 'label');
 		assert.strictEqual(group.conditions[1].conditions[0].value, 'y');
+	});
+	it('Parses a same-record relationship condition with OR, nested groups and a nested relationship', function () {
+		const query = parseQuery(
+			'products[name=Cable&price=ge=30]&departments.staff[employees[tag=t&level=ge=3]|(a=1&b=2)]'
+		);
+		assert.strictEqual(query.parseError, undefined);
+		assert.strictEqual(query.operator, 'and');
+		const [products, staff] = query.conditions;
+		assert.strictEqual(products.attribute, 'products');
+		assert.strictEqual(products.operator, 'and');
+		assert.deepStrictEqual(
+			products.conditions.map(({ attribute, comparator, value }) => [attribute, comparator, value]),
+			[
+				['name', 'equals', 'Cable'],
+				['price', 'ge', '30'],
+			]
+		);
+		assert.deepStrictEqual(staff.attribute, ['departments', 'staff']);
+		assert.strictEqual(staff.operator, 'or');
+		assert.strictEqual(staff.conditions[0].attribute, 'employees');
+		assert.strictEqual(staff.conditions[0].conditions.length, 2);
+		assert.strictEqual(staff.conditions[1].attribute, undefined);
+		assert.strictEqual(staff.conditions[1].conditions.length, 2);
+	});
+	it('Keeps select() brackets as nested selections and rejects a bracket in a value', function () {
+		const query = parseQuery('products[name=Cable]&select(id,products[name=Cable&select(id,)])');
+		assert.strictEqual(query.parseError, undefined);
+		assert.strictEqual(query.conditions[0].attribute, 'products');
+		assert.strictEqual(query.select[1].name, 'products');
+		assert.strictEqual(query.select[1].attribute, undefined);
+		assert.strictEqual(query.select[1].conditions[0].attribute, 'name');
+		assert.ok(new RequestTarget('?name=x[y]').parseError);
 	});
 	it('Multi-part properties', function () {
 		let query = parseQuery('name.subname=2');

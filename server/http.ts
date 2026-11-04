@@ -21,6 +21,7 @@ import {
 } from './threads/isolatedApplications.ts';
 import { claimListener, listenerOwner, shouldBindListenerHere } from './threads/workerPools.ts';
 import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
+import { allowedSourcesFor, watchNetworkAccess } from '../security/networkAccess.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage, STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
@@ -158,8 +159,8 @@ function ownershipOf(entry: {
  * that already rebound it). Unlike cleanupUdsFiles, a failed bind never produced a socket of its own,
  * so 'absent' here just means no bind ever won this path — not evidence of a live replacement — and
  * is safe to retract stale metadata for (see server/DESIGN.md's UDS ownership note for why this can't
- * require 'owned': the only real caller, an overlong path, fails before listen() ever runs, so this
- * worker's own identity is never recorded).
+ * require 'owned': its callers, an overlong path and a per-thread mirror skipped because its pool owns
+ * it, never run listen(), so this worker's own identity is never recorded).
  */
 export function markUdsBindFailed(socketPath: string) {
 	failedUdsPaths.add(socketPath);
@@ -168,6 +169,10 @@ export function markUdsBindFailed(socketPath: string) {
 	try {
 		unlinkSync(entry.yamlPath);
 	} catch {}
+}
+
+export function isUdsBindFailed(socketPath: string): boolean {
+	return failedUdsPaths.has(socketPath);
 }
 
 export function cleanupUdsFiles() {
@@ -185,8 +190,8 @@ export function cleanupUdsFiles() {
 		// coincidentally re-match a path it no longer has any claim to; clearing it here makes a
 		// repeat call a guaranteed no-op instead of a second chance to delete a stranger's files.
 		entry.identity = undefined;
-		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its only caller runs
-		// synchronously before any bind attempt, with no window for anyone else to be mid-flight),
+		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its callers run instead of a
+		// bind attempt, on a path nothing else binds, with no window for anyone else to be mid-flight),
 		// this function's second call (process.on('exit')) can land seconds after the first, while
 		// a concurrently-booting replacement — on the non-overlapping-restart platforms, started
 		// right after this worker's SHUTDOWN, not after it fully exits — may have already written
@@ -204,7 +209,11 @@ export function cleanupUdsFiles() {
 	}
 }
 
-/** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
+/**
+ * Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server.
+ * Returns whether the file now holds it. A server in a network access scope writes nothing until that
+ * scope's allowlist has been read, so a restricted port is never advertised as unrestricted.
+ */
 export function writeUdsMetadata(
 	yamlPath: string,
 	port: number | string,
@@ -212,7 +221,9 @@ export function writeUdsMetadata(
 	protocol?: string,
 	mtlsForwarding = true,
 	route: { application: string; hosts: string[] } | undefined = isolatedApplicationRoute()
-) {
+): boolean {
+	const allowedSources = secureServer.networkAccessScope && allowedSourcesFor(secureServer.networkAccessScope);
+	if (secureServer.networkAccessScope && !allowedSources) return false;
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
 	// Routing identity, separate from certificate coverage: a proxy sends this application's hosts to
@@ -236,6 +247,11 @@ export function writeUdsMetadata(
 	if (mtlsForwarding && secureServer.verifiesClientCerts) {
 		yaml += `mtls: true\n`;
 		if (secureServer.mtlsRequired) yaml += `mtlsRequired: true\n`;
+	}
+	// absent = unrestricted
+	if (allowedSources?.length > 0) {
+		yaml += `allowedSources:\n`;
+		for (const cidr of allowedSources) yaml += `  - ${JSON.stringify(cidr)}\n`;
 	}
 	yaml += `certificates:\n`;
 	if (contexts?.size > 0) {
@@ -270,9 +286,21 @@ export function writeUdsMetadata(
 	}
 	try {
 		atomicWriteFile(yamlPath, yaml, { maxRetries: 0 });
+		return true;
 	} catch (error) {
 		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
+		return false;
 	}
+}
+
+export function publishUdsMetadata(ready: Promise<unknown>, secureServer: any, writeMetadata: () => boolean) {
+	// A certificate change arms the watch too, so a scoped mirror is still published after a boot TLS
+	// pass that rejected `ready`; re-watching republishes.
+	const publish = secureServer.networkAccessScope
+		? () => watchNetworkAccess(secureServer.networkAccessScope, writeMetadata)
+		: writeMetadata;
+	ready.then(publish, (error) => harperLogger.error('TLS initialization failed for a UDS mirror', error));
+	secureServer.secureContextsListeners?.push(publish);
 }
 
 export function ensureSocketsDirectory(): string | undefined {
@@ -1088,6 +1116,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.appliedCiphers = options.ciphers ?? null;
 			server.verifiesClientCerts = Boolean(mtls || isMtls);
 			server.mtlsRequired = Boolean(mtlsRequired);
+			if (isOperationsServer) server.networkAccessScope = 'operations';
 			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
@@ -1167,12 +1196,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
 			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
 			// socket's bind outcome, so without this check a failed mirror could still get advertised.
-			const writeMetadata = () => {
-				if (!failedUdsPaths.has(udsPath))
-					writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
-			};
-			options.SNICallback.ready.then(writeMetadata);
-			server.secureContextsListeners.push(writeMetadata);
+			const writeMetadata = () =>
+				failedUdsPaths.has(udsPath) || writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			publishUdsMetadata(options.SNICallback.ready, server, writeMetadata);
 
 			// Optional cleartext HTTP/2 mirror (spike: HARPER_H2C_UDS=1). A separate socket
 			// (`<worker>-<port>-h2.sock`) so a fronting proxy can route by negotiated ALPN:
@@ -1204,11 +1230,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				SERVERS[udsPathH2] = h2Front;
 				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
 
-				const writeMetadataH2 = () => {
-					if (!failedUdsPaths.has(udsPathH2)) writeUdsMetadata(yamlPathH2, port, server, 'h2');
-				};
-				options.SNICallback.ready.then(writeMetadataH2);
-				server.secureContextsListeners.push(writeMetadataH2);
+				const writeMetadataH2 = () => failedUdsPaths.has(udsPathH2) || writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				publishUdsMetadata(options.SNICallback.ready, server, writeMetadataH2);
 			}
 		}
 	}
@@ -1256,6 +1279,7 @@ export function makeUwsHandler(
 					headers: request.headers.asObject,
 					body: request.body, // stream; inject() consumes it as the payload
 					user: request.user,
+					ip: isOperationsServer ? request.ip : undefined,
 				});
 				const respHeaders = new Headers();
 				for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -1308,7 +1332,7 @@ export function makeUwsHandler(
 		if (receivedAt !== undefined)
 			recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
-		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
+		if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logHttpRequest(request, status, requestId, executionTime);
 		// Static handlers (the only handlesHeaders producers) return a `send` SendStream that writes
 		// its own headers/body to a Node ServerResponse via .pipe(). uWS has no such object, and a
@@ -1320,7 +1344,9 @@ export function makeUwsHandler(
 			const sent = await bufferSendStream(response.body, headers, status, request.signal);
 			return { status: sent.status, headers, handlesHeaders: true, body: sent.body };
 		}
-		const body = await normalizeUwsBody(response.body, request.signal);
+		let body = response.body;
+		if (body == null) body = null;
+		else if (!isFinalUwsBody(body)) body = await normalizeUwsBody(body, request);
 		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
 	const rejectionHeaders = readRejectionHeaders(isOperationsServer);
@@ -1342,12 +1368,6 @@ export function makeUwsHandler(
 	);
 }
 
-/**
- * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
- * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
- * stream it incrementally (buffering an SSE/event-stream body here would never return). `signal`
- * aborts the collapse of a sync iterable if the client disconnects mid-response.
- */
 /**
  * Drive a `send` SendStream to completion against a Writable shim, capturing the headers it writes
  * (setHeader/writeHead) onto `headers` and the status it sets (statusCode/writeHead) and buffering
@@ -1405,14 +1425,24 @@ function bufferSendStream(
 	});
 }
 
+function isFinalUwsBody(body: unknown): body is string | Uint8Array {
+	return typeof body === 'string' || body instanceof Uint8Array;
+}
+
+/**
+ * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
+ * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
+ * stream it incrementally (buffering an SSE/event-stream body here would never return). A client
+ * disconnect stops the collapse of a sync iterable.
+ */
 async function normalizeUwsBody(
 	body: any,
-	signal?: AbortSignal
+	request: { readonly isAborted: boolean }
 ): Promise<string | Buffer | Uint8Array | Readable | null> {
 	if (body == null) return null;
-	if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) return body;
+	if (isFinalUwsBody(body)) return body;
 	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
-	if (typeof body.then === 'function') return normalizeUwsBody(await body, signal);
+	if (typeof body.then === 'function') return normalizeUwsBody(await body, request);
 	// Already a Node stream — stream it as-is (re-wrapping in Readable.from breaks destroy propagation).
 	if (typeof body.pipe === 'function') return body;
 	// Async-iterable (e.g. an event queue) — adapt to a Readable and stream it.
@@ -1421,7 +1451,7 @@ async function normalizeUwsBody(
 	if (body[Symbol.iterator]) {
 		const chunks: Buffer[] = [];
 		for (const chunk of body) {
-			if (signal?.aborted) throw new Error('client aborted');
+			if (request.isAborted) throw new Error('client aborted');
 			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 		}
 		return Buffer.concat(chunks);
@@ -1523,7 +1553,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
 				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
-				recordActionBinary(1, 'response_' + status, handlerPath, method);
+				if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logHttpRequest(request, status, requestId, executionTime);
 				// Convert body to something Bun's Response can accept
 				if (body instanceof ReadableStream) {
@@ -1637,6 +1667,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 			const tlsSelector = createTLSSelector(usageType ?? 'server', mtls);
 			// Create a pseudo-server object so the TLS selector can store secureContexts on it
 			const pseudoServer: any = { ports: [port], secureContexts: null, secureContextsListeners: [] };
+			if (isOperationsServer) pseudoServer.networkAccessScope = 'operations';
 			tlsSelector.initialize(pseudoServer);
 			config.tlsSelector = tlsSelector;
 			config.pseudoServer = pseudoServer;
@@ -1678,12 +1709,22 @@ const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
  */
 function injectToFastify(
 	fastify: any,
-	req: { method: string; url: string; headers: Record<string, any>; body?: Buffer | Readable; user?: any }
+	req: {
+		method: string;
+		url: string;
+		headers: Record<string, any>;
+		body?: Buffer | Readable;
+		user?: any;
+		ip?: string;
+	}
 ) {
 	const headers: Record<string, any> = {};
 	for (const key in req.headers) {
-		if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = req.headers[key];
+		const lowerKey = key.toLowerCase();
+		if (lowerKey !== INTERNAL_USER_HEADER && lowerKey !== terms.INTERNAL_CLIENT_ADDRESS_HEADER)
+			headers[key] = req.headers[key];
 	}
+	if (req.ip) headers[terms.INTERNAL_CLIENT_ADDRESS_HEADER] = req.ip;
 	// Both callers pass already-lowercased header keys (uWS lowercases at the protocol level →
 	// RequestHeaders.asObject; Bun's webRequest.headers.forEach yields lowercase), so the literal
 	// 'authorization' lookup is reliable — the pre-auth user is only forwarded when the client sent
@@ -1716,6 +1757,7 @@ export async function bunDelegateToNodeServer(
 				headers,
 				body,
 				user: bunRequest?.user,
+				ip: bunRequest?.isOperationsServer ? bunRequest.ip : undefined,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -2257,7 +2299,7 @@ function recordOutcome(
 	method: string
 ) {
 	recordActionBinary(status < 400, 'success', handlerPath, method);
-	recordActionBinary(1, 'response_' + status, handlerPath, method);
+	if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
 	logRequest(nodeRequest, status, requestId, executionTime);
 }
 
@@ -2275,10 +2317,11 @@ export function logRequest(nodeRequest: IncomingMessage, status: number, request
 		);
 	}
 }
-function headersToString(headers: any) {
+const CREDENTIAL_HEADER = /^(?:authorization|proxy-authorization|cookie)$/i;
+export function headersToString(headers: any) {
 	const result: string[] = [];
 	for (const name in headers) {
-		result.push(`${name}: ${headers[name]}`);
+		result.push(`${name}: ${CREDENTIAL_HEADER.test(name) ? '[REDACTED]' : headers[name]}`);
 	}
 	return result.join(', ');
 }

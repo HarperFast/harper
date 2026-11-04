@@ -12,7 +12,7 @@ import type { StatusOptions } from '../../utility/logging/logger.ts';
 import { isErrorLike, setStatusHandler } from '../../utility/logging/harper_logger.ts';
 import { types } from 'node:util';
 import { MAX_SET_TIMEOUT_MS } from '../../utility/hdbTerms.ts';
-import { redactUrlCredentials } from './ComponentStatusRegistry.ts';
+import { redactUrlCredentials } from '../../utility/urlCredentials.ts';
 
 const LOG_TO_STATUS_LEVEL = {
 	fatal: COMPONENT_STATUS_LEVELS.ERROR,

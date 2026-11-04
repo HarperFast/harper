@@ -10,11 +10,7 @@ Use the symbol and section names below to navigate; line numbers drift.
 
 ## Three HTTP stacks coexist — know which one
 
-| Stack                         | File                  | Used for                                                                                                                                                                                        |
-| ----------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Native**                    | `http.ts`             | Direct socket handling for application-level HTTP/1.1, HTTPS, HTTP/2, and WebSockets. Highest performance. This is the path most user requests take (REST, GraphQL, custom resource endpoints). |
-| **Operations API**            | `operationsServer.ts` | Fastify-based JSON operations API (`{operation: 'create_table', ...}`). Internal/admin surface — not on the hot path for application data.                                                      |
-| **Custom Functions (legacy)** | `fastifyRoutes.ts`    | Legacy custom functions only. Wraps Fastify with autoload. Don't add new code here.                                                                                                             |
+Native `http.ts`, the Fastify operations API (`operationsServer.ts`) and legacy custom functions (`fastifyRoutes.ts`); [AGENTS.md](../AGENTS.md) (Server) says what each serves.
 
 A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Of the two Fastify files only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`. Its `preValidation` chain (`reqBodyValidationHandler`, then `authHandler`) needs each hook to signal completion exactly once: Fastify's hook runner does not make `done` single-use, and the async `onSend` hooks keep `reply.sent` false long enough for a second call to reach `authHandler`. `unitTests/server/serverHelpers/reqBodyValidationHandler.test.js` pins it.
 
@@ -88,10 +84,10 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.                                                                                                                                                                                              |
 
 Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.ts`.
-Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
-calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN makes that worker terminal. HTTP startup checks the flag after startup/component awaits and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, registered drains, scope disposal and branch-database closure before exit; the existing termination backstops still bound cleanup. Main startup and rolling reloads also check resumed awaits before starting replacements.
-`shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
-and it force-terminates the remaining worker set rather than waiting for application drain hooks.
+Once set, it blocks every worker replacement path and makes new `startWorker()`
+calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN is terminal. HTTP startup checks the flag after each await and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, drains, scope disposal and branch-database closure. Main startup and rolling reloads recheck it before starting replacements.
+A signal runs `shutdownProcess()`: SHUTDOWN with `exitDeadline` reaches every live worker (`wasShutdown` precedes a restart's SHUTDOWN). Scopes close after servers drain, main disposes after workers exit, and `process.exit` runs once; the storage close stays unbounded (rocksdb-js#1001).
+`shutdownWorkersNow()` stays immediate: best-effort SHUTDOWN, then force-termination.
 
 A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
 `SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a
@@ -100,7 +96,7 @@ component deploy is not live pool-wide until `restartWorkers()` resolves. For th
 started after their predecessor releases its exclusive ports (Windows/macOS/Bun) — and reports how
 many workers it left on the old code because a replacement never came up, versus how many
 replacements never started after their predecessor was already gone. Other thread types start their
-replacement without being awaited. Each wait is bounded by a per-worker startup backstop, so
+replacement without being awaited. A per-worker startup backstop bounds each wait, so
 resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
 "the component is live" must await it (see `deployComponent` in `components/operations.ts`).
 
@@ -110,7 +106,7 @@ nothing until main posts `CHILD_ADMITTED` (`threadServer.startServers`, `threads
 as an ordinary `SHUTDOWN`. Since it binds nothing, it boots beside its predecessor even where the two cannot share
 a port, and the predecessor is retired at admission. Restarts that start replacements are serialized on main
 (`replacementRestarts`), none starts one while a release is armed (`untilNoCertificationArmed`), and the worker
-that asked for a certifying restart is replaced last.
+asking for a certifying restart is replaced last.
 
 Every HTTP worker's load report also lists the applications its loader placed on it (`applicationsPlacedOnThisThread`),
 which main keeps as what that worker may hold until it exits, since nothing unloads an application; one that has not
@@ -229,7 +225,7 @@ Consequences worth knowing:
 
 ## Operations authorization boundary
 
-Operations request bodies are untrusted data. `serverHelpers/serverHandlers.js → handlePostRequest()` rejects
+Operations request bodies are untrusted data. `serverHelpers/serverHandlers.ts → handlePostRequest()` rejects
 prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
 `serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
 internal callers pass bypass state as a separate argument and expose it to operation handlers only
@@ -258,11 +254,11 @@ The header-aware `getDeserializer` in `contentTypes.ts` selects built-in multipa
 
 ### Streaming startup errors
 
-SSE and NDJSON serializers eagerly take and hold their first iterator step for GET requests; HEAD takes the same step when `REST.ts` waits for it, then discards the body, so HEAD answers the status GET would. HEAD of an event stream (`Accept: text/event-stream`, dispatched as CONNECT) is not started: a subscription's first event can be indefinitely far off, and an async generator's `return()` waits behind it. `REST.ts` waits through the next event-loop turn for that step: an immediate rejection remains an HTTP error rendered as Problem Details, while a first item or the cutoff commits the stream. Mutating requests do not use the startup-status gate because their transaction has already committed by this point; all of their stream failures use the in-band form. Later GET failures are terminal, format-valid records (`event: harper-error` for SSE and a reserved control record for NDJSON). Keep the decision in the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract; transports must not independently prefetch the iterator.
+SSE and NDJSON serializers eagerly take and hold their first iterator step for GET; HEAD takes the same step when `REST.ts` waits for it, then discards the body so HEAD answers GET's status. HEAD of an event stream (`Accept: text/event-stream`, dispatched as CONNECT) is not started: a subscription's first event can be indefinitely far off, and an async generator's `return()` waits behind it. `REST.ts` waits one event-loop turn for that step: an immediate rejection stays a Problem Details HTTP error, while a first item or the cutoff commits the stream. Mutating requests skip the startup-status gate because their transaction has already committed; all of their stream failures are in-band. Later GET failures are terminal, format-valid records (`event: harper-error` for SSE and a reserved control record for NDJSON). Keep the decision in the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract; transports must not independently prefetch the iterator.
 
 SSE terminal event data uses `{ error: <code-or-class>, message: <message>, status?: <status> }`; NDJSON wraps the same object as `{ "$harperStreamError": { ... } }` so it cannot be mistaken for an ordinary row with an `error` field.
-Sources with `mapError` remain unmapped for these two formats so their failures reach this single contract instead of becoming legacy data records.
-Generic JSON-array streaming has no record that can mark an array failed (an ordinary row may carry an `error` field), so `JSONStream` writes a `{ error: "<name>: <message>" }` element only as a diagnostic (best-effort: a consumer applying backpressure when the failure lands loses it, never the abort), omits the closing `]`, and fails its Readable (`destroy(error)`); every sink then aborts the transfer ([below](#a-streamed-response-is-completed-only-when-its-source-ends-cleanly-serverhttpts-serverserverhelpersuwsserverts)). A rejected promise element or a row that fails to serialize fails the stream the same way, its element taking the row's place. The failure is thrown, never yielded, so backpressure cannot leave a written element without the failure that follows it. Mutating requests are no exception: their writes have committed, so a client that retries an aborted POST can repeat them; the element keeps `replicationUnconfirmed`/`retryable: false` for a client that reads the partial body. A local JSON export writes a temporary sibling and renames it over the target only on success, so a failed export rejects and leaves the target as it was. Rows that a `mapError` mapper recovers stay row values, but only a row's own failure is recovered: `ReadSnapshotExpiredError` (the snapshot is gone, so no later row can be read) is rethrown by both the REST and the operations-API mapper and fails the stream even when raised inside a row's nested read, and neither surface installs the mapper for NDJSON or event streams. The CSV stream is piped with `stream.pipeline` so that failure reaches the transport instead of surfacing as an uncaught exception. A slow client that stalls a collection read past `storage.maxTransactionOpenTime` hits this through `ReadSnapshotExpiredError`. Pinned by `unitTests/server/serverHelpers/JSONStream.test.js`, `unitTests/server/serverHelpers/rowErrorRecovery.test.js`, `integrationTests/server/stream-error-contract.test.ts`, `integrationTests/server/stream-snapshot-expiry.test.ts` and `integrationTests/server/stream-row-error-recovery.test.ts`.
+Sources with `mapError` remain unmapped for both so their failures reach this single contract instead of becoming legacy data records.
+Generic JSON-array streaming has no record that can mark an array failed (an ordinary row may carry an `error` field), so `JSONStream` writes a `{ error: "<name>: <message>" }` diagnostic element (best-effort: lost if backpressured, never the abort), omits the closing `]`, and destroys its Readable (`destroy(error)`); every sink then aborts the transfer ([below](#a-streamed-response-is-completed-only-when-its-source-ends-cleanly-serverhttpts-serverserverhelpersuwsserverts)). A rejected promise element or a row that fails to serialize fails the stream the same way in the row's place. The failure is thrown, never yielded, so backpressure cannot leave a written element without the failure that follows it. Mutating requests are no exception: their writes have committed, so a client that retries an aborted POST can repeat them; the element keeps `replicationUnconfirmed`/`retryable: false` for a client reading the partial body. A local JSON export writes a temporary sibling and renames it over the target only on success, so a failed export rejects and leaves the target intact. Rows that a `mapError` mapper recovers become plain `{ error, message, ...partialObject }` rows (kept in JSON, CBOR, and MessagePack; CSV keeps the key with blank cells unless `error`/`message` are in the column set, or drops later data columns if a failing first row sets the header), and only a row's own failure is recovered: `ReadSnapshotExpiredError` (the snapshot is gone, so no later row can be read) is rethrown by both the REST and operations-API mappers and fails the stream even inside a row's nested read. The CSV stream is piped with `stream.pipeline` so failure reaches the transport instead of raising an uncaught exception. A slow client that stalls a collection read past `storage.maxTransactionOpenTime` hits this via `ReadSnapshotExpiredError`. Pinned by `unitTests/server/serverHelpers/JSONStream.test.js`, `unitTests/server/serverHelpers/rowErrorRecovery.test.js`, `integrationTests/server/stream-error-contract.test.ts`, `integrationTests/server/stream-snapshot-expiry.test.ts` and `integrationTests/server/stream-row-error-recovery.test.ts`.
 REST problem details publish only an explicitly negative `retryable: false` hint; a missing hint is unknown.
 All three terminal records add `replicationUnconfirmed: true` for a reported commit whose local writes landed
 but whose confirmation failed, and `retryable: false` for that outcome or another explicitly non-retryable error.
@@ -623,7 +619,7 @@ through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` f
 registration, including Fastify's non-function listener) and cascade to Fastify via the
 `status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
 on the **main thread**, and the main thread loads components with `resources.isWorker = false`
-(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+(`server/loadRootComponents.ts`), so the componentLoader's `resources.isWorker &&
 extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
 `handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
 `universalHeaders` is per-thread module state, populated only where the http component loads.
@@ -813,7 +809,7 @@ the bare message until harper#2703, so the same error carried an error code on t
 REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
 close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.
 
-## `serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.js`)
+## `serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.ts`)
 
 `handlePostRequest` logs every error it throws, at error level or the error's own higher `fatal`/`notify`, and records it against its request; `serverErrorHandler`, which Fastify calls next with the same request, skips that error. Keep the log in `handlePostRequest` rather than moving it to the handler: `serverErrorHandler` logs an error with no `logLevel` of its own at info, below the default `warn`, so most operation errors would disappear from a default log; and a custom-function route that catches `hdbCore.request()`'s rejection never reaches the handler at all. The record is keyed by request, not by error, so an error object that surfaces again in another request is still logged there.
 
@@ -861,43 +857,20 @@ Not covered: only the finally selected candidate is resolved, so a vanished dire
 
 uWS force-closes a completed `Connection: close` response while an upload is still arriving, which can lose its status to EPIPE. `uwsServer.ts` flushes a non-empty coarse-limit 413 chunk before discarding bytes until body end or a one-second deadline; that absolute resource bound guarantees early status, not complete framing for a sender that ignores it. Destroying a paused Readable does not clear its queue, so teardown removes data listeners and reads out queued bytes in bounded chunks before retaining the response. Native abort disarms the finisher independently of handler cancellation. "uWS oversized TCP uploads" in `unitTests/server/serverHelpers/uwsServer.test.js` pins these paths and unchanged immediate keep-alive rejection. Other rejection sites, including downstream responses from `contentTypes.ts`'s default 10 MB limit, still end immediately and remain outside this coarse-cap correction.
 
+## uWS and PROXY v2 peer-address text is Node's `socket.remoteAddress` text (`server/serverHelpers/peerAddress.ts`)
+
+uWS and PROXY v2 TCP6 headers hand Harper raw address bytes. `formatPeerAddress` writes them as libuv's `inet_ntop` does, so a uWS peer's `request.ip` reads as the same peer's does on Node (`::1`; `::ffff:127.0.0.1` for an IPv4 client of a dual-stack listener), and so does a PROXY v2 TCP6 source. PROXY v1 passes the proxy's own text through. `unitTests/server/serverHelpers/peerAddress.test.js` pins it against `net.SocketAddress`. One gap: Node appends `%<zone>` to a link-local peer, and raw bytes carry no scope id. Local trust compares exact forms through `isLocalPeerAddress` (`127.0.0.x`, `::ffff:127.0.0.x`, `::1`), never a substring, because the Node form of IPv4-compatible `::7f00:1` is `::127.0.0.1`.
+
 ## Dedicated worker pools own their listeners and load no applications (`server/threads/workerPools.ts`)
 
-A dedicated pool (today only `replication`, sized by `replication.threads` in `server/threads/socketRouter.ts`) is a set of workers of
-a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0
-and last-worker duties never land on one. The invariants:
+A dedicated pool (today only `replication`, sized by `replication.threads` in `server/threads/socketRouter.ts`) is a set of workers of a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0 and last-worker duties never land on one. The invariants:
 
-- **Default sizing and port admission.** When `replication.threads` is unset (`undefined`, `null`, or
-  `''`), `replicationThreadCount(n)` defaults it to `Math.floor(n / 2)` for `n >= 2` and `0` for
-  `n < 2`, where `n` is the effective HTTP worker count after `DEV_MODE` (`bin/run.ts`) and the `win32`
-  single-worker clamp (`effectiveHttpThreadCount`). An explicit non-negative integer (`0` or positive)
-  is honored as-is. A `replication` pool requires a dedicated `replication.port` or
-  `replication.securePort` that is not shared with `http` or `operationsApi.network`; when
-  `replication.threads` was explicitly set, a missing or shared replication port throws in
-  `admittedWorkerPools`, whereas a defaulted pool logs a warning and falls back to `0` (`[]`). With
-  `threads.count: 0` there is no pool, and an explicit `replication.threads > 0` is logged and ignored.
-- **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted
-  built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
-  Anything an application installs per thread (for example `Table.setResidency`,
-  `Table.setResidencyById`, or a `setComputedAttribute` resolver) is absent there. Registering
-  `Table.setResidency`, `Table.setResidencyById`, or an indexed `Table.setComputedAttribute` function
-  while `isWorkerPoolActive('replication')` is true logs a once-per-table-per-thread error naming
-  `replication.threads: 0` in `harper-config.yaml` as the opt-out; `Table.unresolvedComputedIndexes()`
-  names the indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly,
-  and a pool worker that resolves one anyway throws instead of indexing `undefined`.
-- **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
-  `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
-  that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.
-  Without `SO_REUSEPORT` only pool member 0 binds, and it retries `EADDRINUSE` for up to a minute
-  because its restarted predecessor keeps the port through its shutdown drain. A pool worker then fails
-  startup on `EADDRINUSE` rather than reporting ready with no listener; a drain longer than that minute
-  costs auto-restarts of the replacement until the port frees.
-- **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup and passed to every
-  worker in `workerData.workerPools`, so an owned port is never handed back to HTTP workers while the
-  pool restarts. Changing the pool size needs a full restart.
-- **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` (an
-  operator restart) restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts
-  overlap like HTTP ones.
+- **Default sizing and port admission.** An unset `replication.threads` (`undefined`, `null`, or `''`) defaults via `replicationThreadCount(n)` to `Math.floor(n / 2)` for `n >= 2` and `0` for `n < 2`, where `n` is the HTTP worker count after `DEV_MODE` and the `win32` single-worker clamp (`effectiveHttpThreadCount`); an explicit non-negative integer is honored as-is. The pool needs a dedicated `replication.port` or `replication.securePort` not shared with `http` or `operationsApi.network`: an explicit size with a missing or shared port throws in `admittedWorkerPools`, a defaulted one logs a warning and falls back to `0`. With `threads.count: 0` there is no pool (an explicit `replication.threads > 0` is logged and ignored).
+- **A defaulted pool waits on the first HTTP worker's load (harper-pro#1197).** A defaulted size above 0 starts _pending_: main counts it active, so placement defers to it, while HTTP workers (`workerData.pendingWorkerPools`) treat it as not yet active, so registration-time choices (a UDS mirror) assume they bind the port, and none binds before the decision. The first admitted shared (non-isolated) HTTP worker's load report decides (`decideWorkerPools`), since shared workers load the same applications: any `poolUnsupportedTables` entry declines the pool with one warning, and `startHTTPThreads` starts pool slots only after. A table first registered by a deferred component load or later deploy is warned, not re-decided. An explicit size never pends.
+- **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage. Per-thread application installs are absent there, so `Table.setResidency`, `Table.setResidencyById` and a resolver for an indexed `setComputedAttribute` are deprecated as of 5.4: registering one warns once per table per thread, pool or not. A pool worker throws rather than index `undefined` for a computed index it cannot resolve; `Table.unresolvedComputedIndexes()` names them.
+- **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/`server.socket` options to claim a port (and its UDS mirrors); `listenOnPorts` then binds it only on that pool's workers, and a pool worker binds nothing else. Without `SO_REUSEPORT` only pool member 0 binds, retrying `EADDRINUSE` for up to a minute while its restarted predecessor drains; a pool worker then fails startup rather than reporting ready with no listener, so a longer drain costs auto-restarts until the port frees.
+- **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup (once a pending pool is decided) and passed to every worker in `workerData.workerPools`, so a restarting pool's port never goes back to HTTP workers. Changing the pool size needs a full restart.
+- **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts overlap like HTTP ones.
 
 ## An unread multipart upload is discarded once its response has finished (`server/serverHelpers/multipartParser.ts`)
 
@@ -967,7 +940,7 @@ The first successful call latches, including on an unset value: V8 flags cannot 
 
 An entry that is not a flag fails startup, by design, unlike `threads.maxHeapMemory`, which recovers an unstartable value at the point of use (harper-pro#558). What #558 guards against is a value that one replicated `set_configuration` writes to every peer, so the next rolling restart stops the whole cluster. Here the Joi pattern (`validation/configValidator.ts`) refuses an entry that is not a flag before the write lands, because `updateConfigValue` validates before writing. So a non-flag entry can only come from an operator at boot (file edit, env var, `HARPER_SET_CONFIG`), and it stops the node with an error naming `threads.v8Flags`. The pattern checks only the prefix. A prefix-valid set that aborts V8 (for example `--abort-on-contradictory-flags` with a contradicting pair) can still be replicated, and each node then aborts natively at its next process start; that is the accepted cost of an unrestricted expert setting. Joi also runs at boot, so it usually rejects the value before `applyConfiguredV8Flags` does. The point-of-use check covers values that bypass Joi.
 
-`v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying at `startHTTPThreads` entry places that abort before Harper serves.
+`v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying after query-policy validation in `startHTTPThreads` places that abort before Harper serves.
 
 ## Server starts enable Node's compile cache before their first worker (`server/threads/compileCache.ts`)
 

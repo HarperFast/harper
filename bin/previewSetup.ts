@@ -1,9 +1,10 @@
 import chalk from 'chalk';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { cliOperations, transportContext } from './cliOperations.ts';
 import {
+	assertGithubVariableSettable,
 	checkPreviewWorkflowFile,
 	rawStringArg,
 	readCheckoutWorkflow,
@@ -11,7 +12,7 @@ import {
 	resolveSetupTarget,
 	setupGithubVariable,
 } from './deploySetupGithubActions.ts';
-import { fetchSecretsPublicKey, sealDeployCredential } from './deploySetup.ts';
+import { fetchSecretsPublicKey, resolveDeployToken, sealDeployCredential } from './deploySetup.ts';
 import {
 	CI_PREVIEW_OPERATIONS,
 	PREVIEW_CLEANUP_ENVIRONMENT,
@@ -222,8 +223,21 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
+	assertGithubVariableSettable(repository, PREVIEW_TARGET_VARIABLE, audience, args.allow_unverified === true);
 	// Before anything is written: a cluster without secret custody cannot hold the credential.
 	const secretsKey = credential ? await fetchSecretsPublicKey(transport) : undefined;
+	const token = secretsKey ? await resolveDeployToken(args, 'github') : undefined;
+	if (writeWorkflow && checkout) {
+		if (existsSync(checkout.path)) {
+			throw usageError(`${workflow} appeared while setup ran; run setup again to check it. Nothing was changed.`);
+		}
+		try {
+			mkdirSync(dirname(checkout.path), { recursive: true });
+			accessSync(dirname(checkout.path), constants.W_OK);
+		} catch (error) {
+			throw usageError(`Cannot write ${workflow}: ${(error as Error).message}. Nothing was changed.`);
+		}
+	}
 
 	const enabled: any = await cliOperations(
 		{
@@ -255,14 +269,19 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 	);
 
 	if (secretsKey) {
-		const { secretName } = await sealDeployCredential(args, transport, 'github', names.components, secretsKey);
+		const { secretName } = await sealDeployCredential(
+			{ ...args, token },
+			transport,
+			'github',
+			names.components,
+			secretsKey
+		);
 		console.log(
 			chalk.green(`✓ Sealed a GitHub credential for every preview of ${app} as secret "${secretName}".`) +
 				chalk.gray('\n  `harper preview deploy credential=true` uses it.')
 		);
 	}
 	if (writeWorkflow && checkout) {
-		mkdirSync(dirname(checkout.path), { recursive: true });
 		writeFileSync(
 			checkout.path,
 			starterPreviewWorkflow({

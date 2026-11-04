@@ -21,6 +21,7 @@ const {
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 const { publishOriginFloor, reservedLocalKey } = require('#src/resources/originClosedFloor');
 const { replayLogs } = require('#src/resources/replayLogs');
+const { setAbortMarkersForTests } = require('#src/resources/transactionLogAbortMarkers');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Transaction, constants } = require('@harperfast/rocksdb-js');
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
@@ -30,6 +31,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Transactions are never aborted once durably written to the transaction log', function () {
 	if (isLMDB) return;
+	let priorAbortMarkers;
 
 	const MAX_RETRIES = 40;
 	const WELL_PAST_BUDGET_MS = 3_600_000;
@@ -41,6 +43,7 @@ describe('Transactions are never aborted once durably written to the transaction
 	const onUnhandled = (error) => unhandled.push(error);
 
 	before(function () {
+		priorAbortMarkers = setAbortMarkersForTests(false);
 		setupTestDBPath();
 		setMainIsWorker(true);
 		AuditedA = table({
@@ -66,6 +69,7 @@ describe('Transactions are never aborted once durably written to the transaction
 
 	after(() => {
 		process.removeListener('unhandledRejection', onUnhandled);
+		setAbortMarkersForTests(priorAbortMarkers ?? true);
 	});
 
 	afterEach(async function () {

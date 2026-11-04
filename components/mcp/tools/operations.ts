@@ -161,6 +161,7 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'exchange_oidc_token',
 	'enable_previews',
 	'disable_previews',
+	'fence_preview_releases',
 	'get_preview_policy',
 ]);
 
@@ -183,6 +184,7 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'drop_user',
 	'drop_role',
 	'disable_previews',
+	'fence_preview_releases',
 	'restart',
 	'restart_service',
 	'set_configuration',

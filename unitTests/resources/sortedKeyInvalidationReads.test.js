@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { searchByIndex, filterByType } = require('#src/resources/search');
+const { searchByIndex, filterByType, relationshipRestriction } = require('#src/resources/search');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { INVALIDATED } = require('#src/resources/Table');
@@ -339,22 +339,28 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 				.map((row) => row.id)
 				.sort();
 		assert.deepStrictEqual(await parentIds([byId]), ['p1', 'p2']);
-		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'name'], comparator: 'ne', value: 'x' }]), [
-			'p2',
-		]);
-		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'id'], comparator: 'ne', value: 'x' }]), [
-			'p1',
-			'p2',
-		]);
-		assert.deepStrictEqual(await parentIds([byId, { attribute: ['children', 'id'], comparator: 'ne', value: 'c2' }]), [
-			'p2',
-		]);
+		const sameChild = (condition) => ({
+			attribute: 'children',
+			conditions: [{ attribute: 'id', comparator: 'in', value: ['c2', 'c3'] }, condition],
+		});
+		for (const [condition, separately, together] of [
+			[{ attribute: 'name', comparator: 'ne', value: 'x' }, ['p1', 'p2'], ['p2']],
+			[{ attribute: 'id', comparator: 'ne', value: 'x' }, ['p1', 'p2'], ['p1', 'p2']],
+			[{ attribute: 'id', comparator: 'ne', value: 'c2' }, ['p1', 'p2'], ['p2']],
+		]) {
+			assert.deepStrictEqual(
+				await parentIds([byId, { ...condition, attribute: ['children', condition.attribute] }]),
+				separately,
+				JSON.stringify(condition)
+			);
+			assert.deepStrictEqual(await parentIds([sameChild(condition)]), together, JSON.stringify(condition));
+		}
 
 		const readTxn = Parent._readTxnForContext({});
 		const scan = (filters) => {
 			const filtered = {};
 			const results = searchByIndex(byId, readTxn, false, Parent, { filtered });
-			filtered.children.filters = filters;
+			relationshipRestriction(filtered, 'children').filters = filters;
 			return results;
 		};
 		const keyNot = (value) => filterByType({ attribute: 'id', comparator: 'ne', value }, Child, {}, null, true);
