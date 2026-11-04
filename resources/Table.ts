@@ -10800,6 +10800,16 @@ export function makeTable(options): TableResourceClass {
 			const decideNames = new Set(this.decideAttributes.map((a) => a.name));
 			for (const name of Object.keys(this.userDeciders)) if (!decideNames.has(name)) delete this.userDeciders[name];
 			for (const name of this.userSetDeciders) if (!decideNames.has(name)) this.userSetDeciders.delete(name);
+			const computedByName = new Map<string, any>();
+			for (const a of this.attributes as any[]) if (a?.computed && !a.relationship) computedByName.set(a.name, a);
+			for (const name of Object.keys(this.userResolvers)) {
+				const attribute = computedByName.get(name);
+				if (
+					!attribute ||
+					(!attribute.computedFromExpression && schemaExpressionResolvers.has(this.userResolvers[name]))
+				)
+					delete this.userResolvers[name];
+			}
 			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
 			// (setPrototypeOf keeps fast properties; Object.create(null) starts in dictionary mode)
 			const nextPropertyResolvers = Object.setPrototypeOf(
