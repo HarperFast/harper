@@ -48,6 +48,7 @@ import { collapseData } from '../../resources/tracked.ts';
 import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
+import { originFloorsDurable } from '../../resources/originClosedFloor.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.ts';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
@@ -617,6 +618,12 @@ export class ResourceBridge extends BridgeMethods {
 						// bound, so it cannot remove an entry the floor does not cover.
 						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
 						raiseAuditFloor(table.auditStore, pruneEnd);
+						// the floor and purge bounds reach disk before the files they account for are unlinked
+						if (originFloorsDurable(table.primaryStore)) {
+							await table.primaryStore.syncWal();
+							// a drop or restore may have closed this handle while the sync was pending
+							if (table.primaryStore.status !== 'open') break;
+						}
 						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
