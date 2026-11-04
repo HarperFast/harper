@@ -303,6 +303,7 @@ import {
 	RequestTarget,
 	dispatchTarget,
 	copyQueryTarget,
+	copyQueryConditions,
 	setLoadedFromSource,
 } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -1487,8 +1488,10 @@ function copySelection(select) {
 
 function searchConditions(target: any): any[] {
 	const conditions = target.conditions;
-	if (!conditions) return Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
-	if (conditions.length === undefined) return conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
+	if (!conditions)
+		return Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(copyQueryConditions(target)) : [];
+	if (conditions.length === undefined)
+		return conditions[Symbol.iterator] ? Array.from(copyQueryConditions(conditions)) : [conditions];
 	return conditions;
 }
 

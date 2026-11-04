@@ -257,6 +257,26 @@ describe('delegated reads reusing one query object', function () {
 				assert.strictEqual((await Store.get('keep-next-only')).id, 'keep-next-only');
 			});
 
+			for (const placement of ['root', 'conditions']) {
+				it(`retains cached iterator predicates on trusted reads at ${placement}`, async function () {
+					let done = false;
+					const iterator = {
+						next() {
+							if (done) return { done: true };
+							done = true;
+							return { done: false, value: { attribute: 'id', value: 'e1' } };
+						},
+					};
+					const iterable = { [Symbol.iterator]: () => iterator };
+					const root = { select: authoredSelect() };
+					if (placement === 'root') root[Symbol.iterator] = iterable[Symbol.iterator];
+					else root.conditions = iterable;
+					for (let read = 0; read < 3; read++)
+						assert.deepStrictEqual(await one(getTable().search(root, { user: broadUser })), expected(broadUser));
+					assert.strictEqual(root.checkPermission, undefined);
+				});
+			}
+
 			it('reads fresh predicates from a reusable iterable on each dispatch', async function () {
 				let id = 'e1';
 				const conditions = { [Symbol.iterator]: () => [{ attribute: 'id', value: id }][Symbol.iterator]() };
