@@ -5,8 +5,9 @@
  * session + URI; the durable list of subscribed URIs lives on the `mcp_session`
  * record and is reconciled by `subscriptionState.ts` on changes and reconnect. Each
  * change pushes a `notifications/resources/updated` frame onto the session's
- * GET-stream queue. Row-backed URIs only — `subscribeToResource` returns null
- * for anything that isn't a subscribable application resource.
+ * GET-stream queue. `subscribeToResource` decides what is subscribable:
+ * row-backed application resources and custom `mcpResources` entries that
+ * declare `subscribe` (#3250).
  *
  * Per-worker, like the session registry: a subscription is bound to the worker
  * holding the session's SSE stream; the audit-log broadcast delivers changes
@@ -28,7 +29,14 @@ const live = new Map<string, Map<string, ResourceSubscription>>();
 export async function addResourceSubscription(sessionId: string, uri: string, user: AuthedUser): Promise<boolean> {
 	const owner = getRegisteredSession(sessionId);
 	if (!owner) return false;
-	const subscription = await subscribeToResource(uri, user, () => {
+	const subscription = await subscribeToResource(uri, user, owner.profile);
+	if (!subscription) return false;
+	if (getRegisteredSession(sessionId) !== owner) {
+		subscription.stop();
+		return false;
+	}
+	// Delivery starts only once admitted, so a superseded GET never receives a change.
+	subscription.start(() => {
 		if (Date.now() >= Math.min(user.authExpiresAt ?? Infinity, owner.user.authExpiresAt ?? Infinity) * 1000) {
 			owner.queue.close();
 			return;
@@ -41,16 +49,18 @@ export async function addResourceSubscription(sessionId: string, uri: string, us
 			});
 		}
 	});
-	if (!subscription) return false;
-	if (getRegisteredSession(sessionId) !== owner) {
-		subscription.stop();
-		return false;
-	}
 	let bySession = live.get(sessionId);
 	if (!bySession) live.set(sessionId, (bySession = new Map()));
 	// Replace any existing subscription for the same URI (idempotent re-subscribe).
 	bySession.get(uri)?.stop();
 	bySession.set(uri, subscription);
+	// A stream that ends or is revoked on its own leaves no stale entry behind.
+	subscription.onStop(() => {
+		const entries = live.get(sessionId);
+		if (entries?.get(uri) !== subscription) return;
+		entries.delete(uri);
+		if (entries.size === 0) live.delete(sessionId);
+	});
 	return true;
 }
 

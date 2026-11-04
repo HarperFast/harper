@@ -1,0 +1,5 @@
+# A table-backed custom resource subscribes through Note, under the subscribing user's RBAC.
+type Note @table @export {
+	id: ID @primaryKey
+	text: String
+}

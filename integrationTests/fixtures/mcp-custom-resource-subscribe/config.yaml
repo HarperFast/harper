@@ -1,0 +1,6 @@
+# Fixture for MCP resources/subscribe on custom mcpResources URIs (#3250).
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true

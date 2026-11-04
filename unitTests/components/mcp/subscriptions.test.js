@@ -7,6 +7,7 @@ const {
 	_resetSubscriptionsForTest,
 } = require('#src/components/mcp/subscriptions');
 const { _setSubscribeImplForTest } = require('#src/components/mcp/resources');
+const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
 const {
 	registerSession,
 	getRegisteredSession,
@@ -123,5 +124,75 @@ describe('mcp/subscriptions', () => {
 		dropSessionSubscriptions('s1');
 		assert.equal(fake.endCalls, 1);
 		assert.equal(_liveSubscriptionCount('s1'), 0);
+	});
+
+	describe('custom resources (#3250)', () => {
+		const NOTE = 'notes:///n1';
+		let seenProfile;
+		beforeEach(() => {
+			seenProfile = undefined;
+			addCustomResource({
+				uriTemplate: 'notes:///{id}',
+				name: 'note',
+				profile: 'application',
+				read: async () => 'x',
+				subscribe: async (_params, context) => {
+					seenProfile = context.profile;
+					return fake;
+				},
+			});
+		});
+		afterEach(() => clearProfileCustomResources('application'));
+
+		it('subscribes through the owning GET profile and pushes the subscribed URI on each value', async () => {
+			registerSession('s1', 'application', USER);
+			const frames = framesOf('s1');
+			assert.equal(await addResourceSubscription('s1', NOTE, USER), true);
+			assert.equal(seenProfile, 'application');
+			fake.push({ opaque: true });
+			await new Promise((r) => setImmediate(r));
+			assert.equal(frames.length, 1);
+			assert.equal(frames[0].params.uri, NOTE);
+		});
+
+		it('is not subscribable from a session of another profile', async () => {
+			registerSession('s1', 'operations', USER);
+			assert.equal(await addResourceSubscription('s1', NOTE, USER), false);
+			assert.equal(seenProfile, undefined);
+		});
+
+		it('releases the stream and delivers nothing when its GET is superseded during setup', async () => {
+			registerSession('s1', 'application', USER);
+			clearProfileCustomResources('application');
+			let finishSetup;
+			addCustomResource({
+				uriTemplate: 'notes:///{id}',
+				name: 'note',
+				profile: 'application',
+				read: async () => 'x',
+				subscribe: () => new Promise((resolve) => (finishSetup = () => resolve(fake))),
+			});
+			const pending = addResourceSubscription('s1', NOTE, USER);
+			await new Promise((r) => setImmediate(r));
+			registerSession('s1', 'application', USER);
+			const frames = framesOf('s1');
+			finishSetup();
+			assert.equal(await pending, false);
+			fake.push({});
+			await new Promise((r) => setImmediate(r));
+			assert.equal(fake.endCalls, 1);
+			assert.deepEqual(frames, []);
+			assert.equal(_liveSubscriptionCount('s1'), 0);
+		});
+
+		it('drops its live entry when the stream ends on its own', async () => {
+			registerSession('s1', 'application', USER);
+			framesOf('s1');
+			await addResourceSubscription('s1', NOTE, USER);
+			assert.equal(_liveSubscriptionCount('s1'), 1);
+			fake.end();
+			await new Promise((r) => setImmediate(r));
+			assert.equal(_liveSubscriptionCount('s1'), 0);
+		});
 	});
 });

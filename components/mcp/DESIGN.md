@@ -90,6 +90,22 @@ A handful of design points are non-obvious and easy to break:
   and receives nothing. `harper://*` pseudo-resources are **list-changed-only** (not row-backed). Subscriptions
   use `omitCurrent` (notify on change, not a retained snapshot — the notification just says "re-read this").
 
+- **Custom resources subscribe through the read resolver (#3250).** `subscribeToResource` calls
+  `matchCustomResource(profile, uri)` first, exactly as `readResource` does, so read and subscribe resolve the
+  same entry; an entry without `subscribe` stays `-32602`. The author's method runs in the read path's
+  user-carrying transaction and the returned iterable is consumed after it ends, which is why generator methods
+  are refused at registration. A stream is refused at subscribe (`UnreleasableStreamError`, terminal
+  `not-subscribable`, so restore prunes it instead of closing the GET on every reconnect) when it has no `end()`
+  and its iterator has no `return()` or is an async generator, whose `return()` skips an unstarted body and
+  cannot interrupt a pending await. Custom values are opaque: only audit-log events get `acknowledge()`. Release
+  is one idempotent `stop()` for both sources (`end()`, else the iterator's `return()`), also run when iteration
+  ends or throws and for a stream acquired by a transaction that then failed to commit (`acquireChangeStream`).
+  The handle is unstarted until `addResourceSubscription` admits it, so a superseded GET never receives a change.
+  A custom stream is registered with `registerLiveSubscription` for identity lifetime only (token expiry, removed
+  user or role; scoped tokens are never re-resolved, the local principal is exempt), as `Resource.subscribe`
+  does for row-backed ones; an expired or stale principal is verified before admission. Access changes after
+  subscribe are the author's to enforce.
+
 - **Subscription state is shared through the session row.** See [Persisted resource subscription state](#persisted-resource-subscription-state).
   A GET close drops resource iterators but leaves pending server requests alone; those use per-call POST streams.
   Session DELETE tears down both.
