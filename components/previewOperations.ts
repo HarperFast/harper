@@ -373,12 +373,11 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		else if (policy.invalid_reason) problems.push(`trust policy "${id}" ${policy.invalid_reason}`);
 		else if (policy.user !== names.user) problems.push(`trust policy "${id}" names user "${policy.user}"`);
 		else {
-			if (
-				policy.claims?.event_name !== 'pull_request_target' ||
-				typeof policy.claims?.environment !== 'string' ||
-				!policy.claims.environment
-			) {
-				problems.push(`trust policy "${id}" no longer pins event_name pull_request_target and a single environment`);
+			if (policy.claims?.event_name !== 'pull_request_target') {
+				problems.push(`trust policy "${id}" no longer pins event_name "pull_request_target"`);
+			}
+			if (typeof policy.claims?.environment !== 'string' || !policy.claims.environment) {
+				problems.push(`trust policy "${id}" no longer pins environment as a non-empty string`);
 			} else if (id === names.policy && policy.claims.environment === PREVIEW_CLEANUP_ENVIRONMENT) {
 				problems.push(`trust policy "${id}" pins environment "${PREVIEW_CLEANUP_ENVIRONMENT}", which is for cleanup`);
 			} else if (id === names.cleanupPolicy && policy.claims.environment !== PREVIEW_CLEANUP_ENVIRONMENT) {
@@ -387,7 +386,7 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 				);
 			}
 			if (!hasRepositoryId(policy) || !hasWorkflowRef(policy)) {
-				problems.push(`trust policy "${id}" no longer pins a single repository_id and branch workflow_ref`);
+				problems.push(`trust policy "${id}" no longer pins repository_id and a branch workflow_ref as strings`);
 			}
 			if (id === names.cleanupPolicy && deploy) {
 				if (policy.audience !== deploy.audience) {
