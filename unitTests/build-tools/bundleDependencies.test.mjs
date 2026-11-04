@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire, findPackageJSON } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -213,6 +214,41 @@ describe('portable production dependency bundle', function () {
 		const optionalOnly = structuredClone(realLock);
 		delete optionalOnly.packages['node_modules/@types/readable-stream'].dependencies['@types/node'];
 		assert.ok(!bundlePlan(optionalOnly).packages.has('node_modules/@types/node'));
+	});
+
+	it('uses this checkout as the integration framework host without a second fulltext engine', () => {
+		const root = fileURLToPath(new URL('../../', import.meta.url));
+		const require = createRequire(join(root, 'package.json'));
+		const framework = require.resolve('@harperfast/integration-testing');
+		assert.strictEqual(realpathSync(findPackageJSON('harper', framework)), realpathSync(join(root, 'package.json')));
+		const realLock = JSON.parse(readFileSync(join(root, 'package-lock.json')));
+		const manifest = JSON.parse(readFileSync(join(root, 'package.json')));
+		for (const [key, entry] of Object.entries(realLock.packages)) {
+			if (key.endsWith('/harper')) assert.strictEqual(realpathSync(join(root, key)), realpathSync(root));
+			if (/node_modules\/@harperfast\/fulltext(?:-|$)/.test(key)) {
+				assert.strictEqual(entry.version, manifest.optionalDependencies['@harperfast/fulltext']);
+			}
+		}
+		assert.ok(!bundlePlan(realLock).packages.has('node_modules/harper'));
+		assert.ok(!bundlePlan(realLock).packages.has('node_modules/@harperfast/integration-testing'));
+	});
+
+	it('removes development host policy from the release without removing other overrides', () => {
+		writeSource();
+		const file = join(source, 'package.json');
+		const manifest = JSON.parse(readFileSync(file));
+		manifest.devDependencies.harper = 'file:.';
+		manifest.overrides = { '@harperfast/integration-testing': { harper: '$harper' }, 'parent': { child: '1.0.1' } };
+		writeFileSync(file, JSON.stringify(manifest));
+		symlinkSync(source, join(source, 'node_modules/harper'), 'junction');
+		const stage = prepareBundle(source, join(directory, 'stage'));
+		const packaged = JSON.parse(readFileSync(join(stage, 'package.json')));
+		assert.ok(!packaged.devDependencies);
+		assert.deepStrictEqual(packaged.overrides, { parent: { child: '1.0.1' } });
+		assert.deepStrictEqual(JSON.parse(readFileSync(file)), manifest);
+		packaged.overrides['@harperfast/integration-testing'] = { harper: '$harper' };
+		writeFileSync(join(stage, 'package.json'), JSON.stringify(packaged));
+		assert.throws(() => checkBundle(stage, join(source, 'package-lock.json')), /development host override/);
 	});
 
 	it('keeps uWebSockets.js as a dev dependency and optional peer in the real manifest', () => {

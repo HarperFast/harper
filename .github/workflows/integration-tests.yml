@@ -120,6 +120,7 @@ jobs:
             dist/
             static/
             node_modules/
+            !node_modules/harper
             package.json
           retention-days: 7
 
@@ -257,6 +258,7 @@ jobs:
             dist/
             static/
             node_modules/
+            !node_modules/harper
             package.json
           retention-days: 1
 

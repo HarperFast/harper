@@ -34,6 +34,10 @@ Integration tests require a built distribution of Harper. Run this before execut
 npm run build
 ```
 
+The development dependency graph links `node_modules/harper` to this checkout, so `npx harper` uses its built CLI. The framework can select another build through `harperBinPath` or `HARPER_INTEGRATION_TEST_INSTALL_SCRIPT`; CI pins the latter to `dist/bin/harper.js`. Keep the build current before running tests.
+
+Use `npm ci` to clean dependencies. The local Harper link is a symlink (a junction on Windows); do not use cleanup or copy tools that follow directory links back into the checkout.
+
 ### Loopback Addresses
 
 Running tests concurrently requires multiple loopback addresses. Linux systems have these enabled by default; macOS and Windows do not.
