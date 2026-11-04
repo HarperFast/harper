@@ -158,8 +158,8 @@ row through `Table.subscribe`; it opens the watcher outside the request context 
 `streamToken`. No thread address or custom inter-thread command is persisted or sent.
 
 Desired-state changes, token claims, and acknowledgments use the bounded storage lock in
-[`session.ts`](session.ts). The lock covers only reads and writes; resource installation and the
-30-second acknowledgment wait happen outside it. An acknowledgment is valid only for the current
+[`session.ts`](session.ts). The lock covers state reads/writes and synchronous teardown of terminally rejected iterators;
+resource installation and the 30-second acknowledgment wait happen outside it. An acknowledgment is valid only for the current
 token, at a revision at least as new as the request. This permits coalescing and lets a reconnect
 complete a waiting mutation without letting the old incarnation overwrite the new acknowledgment.
 An unsubscribe whose durable removal commits before the GET closes succeeds once the owner token clears.
