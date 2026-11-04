@@ -32,7 +32,7 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 ## Request admission authorizes exactly what the dispatch runs
 
 - `transactional()` resolves QUERY bodies first, drops client `checkPermission`, and admits `select` through `allowRead`; search uses that projection (`permissions.test.js`).
-- False-mode `search`/`query`/`get` await the named `SEARCH_AUTHORIZATION` gate; denial cannot become truncated success, derived transforms still run, and search starts before transaction settlement to retain its snapshot. Default-mode admission adds no promise step; `allowRead` was already awaited (`asyncAllowReadSearchResults.test.js`).
+- False-mode `search`/`query`/`get` await `SEARCH_AUTHORIZATION`: denial rejects, derived transforms still run, and search starts before transaction settlement to preserve its snapshot. Default admission adds no promise; `allowRead` was awaited (`asyncAllowReadSearchResults.test.js`).
 - False-mode array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
 - Materialized rows recheck `rowFilter` before `limit`.
 - `markDispatchTarget` brands transport roots for in-place narrowing; `dispatchTarget` copies other roots. Unowned narrowed roots fail closed; context arming persists (`delegatedQueryReuse.test.js`).
