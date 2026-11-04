@@ -5751,6 +5751,12 @@ function stampIndexBuildClaim(attribute: any, restartGeneration: number) {
 	attribute.indexingBuildId = randomBytes(8).toString('hex');
 	delete attribute.indexingFailed;
 }
+function buildSuperseded(Table: any, attributes: any[]): boolean {
+	return (
+		generationSuperseded(Table) ||
+		attributes.some((attribute) => Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== attribute.indexingBuildId)
+	);
+}
 function generationSuperseded(Table: any): boolean {
 	return (
 		(workerData && workerData.restartNumber !== manageThreads.restartNumber) ||
@@ -6035,7 +6041,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		let indexed = 0;
 		const attributesLength = attributes.length;
 		const applicationComputed = attributes.map(isApplicationComputed);
-		// per attribute: every row this build covers so far was computed by a registered resolver
+		// per attribute: every row covered so far was computed by a registered resolver
 		const resolvedThroughout: boolean[] = [];
 		// a scan that visited no rows proves nothing, so the resolver must be registered at stamp time too
 		const checkpointAlgorithmOf = (i: number) =>
@@ -6081,6 +6087,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				}
 			};
 			let attributesToClear = start === undefined ? attributes : [];
+			let restarted = false;
 			// A resolver that registers mid-scan restarts the scan from the first record, so the rows scanned
 			// before it are recomputed rather than sealed into the index.
 			for (;;) {
@@ -6095,6 +6102,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						await attribute.dbi.clear();
 					}
 				}
+				if (restarted && buildSuperseded(Table, attributes)) return;
 				let nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 				let nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 				let restart = false;
@@ -6180,9 +6188,19 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				await checkpointing;
 				// A mutation that rejects after completion is declared has no build left to park.
 				await drainMutations();
+				// the tail since the last checkpoint is not durable until flushed; announcing the index complete
+				// before that would outlive a crash that loses it
+				if (!restart && !hadIndexingErrors) {
+					try {
+						await flushIndexStores(Table.primaryStore.rootStore);
+					} catch (error) {
+						hadIndexingErrors = true;
+						logger.error(`Could not flush the indexes of ${Table.tableName} before marking them complete`, error);
+					}
+				}
 				if (!restart && !resolverArrived()) break;
-				// a replacement generation owns the build now; it must not lose the entries it has written
-				if (generationSuperseded(Table)) return;
+				// a replacement build owns the index now; it must not lose the entries it has written
+				if (buildSuperseded(Table, attributes)) return;
 				// The checkpoint goes before the clear, so a crash in between cannot resume past cleared entries.
 				const puts = [];
 				for (let i = 0; i < attributesLength; i++) {
@@ -6193,17 +6211,16 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					puts.push(Table.dbisDB.put(attribute.key, attribute));
 				}
 				await Promise.all(puts);
-				if (generationSuperseded(Table)) return;
+				if (buildSuperseded(Table, attributes)) return;
 				// every index restarts, since a custom index is not known to accept a key indexed twice
 				attributesToClear = attributes;
 				start = undefined;
+				restarted = true;
 			}
 		}
 		await checkpointing;
 		await drainMutations();
-		// the tail since the last checkpoint is not durable until flushed; announcing the index complete
-		// before that would outlive a crash that loses it
-		if (!hadIndexingErrors) {
+		if (attributesLength === 0 && !hadIndexingErrors) {
 			try {
 				await flushIndexStores(Table.primaryStore.rootStore);
 			} catch (error) {

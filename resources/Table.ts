@@ -1851,6 +1851,7 @@ export function makeTable(options): TableResourceClass {
 	// a stored table permission (stable per role record version) -> that permission with the primary key's implicit grant
 	let primaryKeyGranted = new WeakMap<object, any>();
 	let declaredAttributeNames: Set<string>;
+	let deferComputedIndexRepair = false;
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
 	// that don't resolve to another entity — harper#1484). Table-typed computed attributes and non-enumerable
@@ -11187,15 +11188,22 @@ export function makeTable(options): TableResourceClass {
 					nextPropertyResolvers[attribute.name].directReturn = true;
 				}
 			}
-			for (const [attribute, resolver] of computedResolvers) {
-				if (attribute.computedFromExpression) {
-					schemaExpressionResolvers.add(resolver);
-					this.userResolvers[attribute.name] = resolver;
-				} else {
-					functionFromResolvers.add(resolver);
-					this.setComputedAttribute(attribute.name, resolver);
+			// one repair request for all of them, so their rebuilds share one scan
+			deferComputedIndexRepair = true;
+			try {
+				for (const [attribute, resolver] of computedResolvers) {
+					if (attribute.computedFromExpression) {
+						schemaExpressionResolvers.add(resolver);
+						this.userResolvers[attribute.name] = resolver;
+					} else {
+						functionFromResolvers.add(resolver);
+						this.setComputedAttribute(attribute.name, resolver);
+					}
 				}
+			} finally {
+				deferComputedIndexRepair = false;
 			}
+			if (!isBranch && computedResolvers.size > 0) requestComputedIndexRepair(TableResource);
 			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
 			primaryKeyAttribute = nextPrimaryKeyAttribute;
 			expiresAtProperty = nextExpiresAtProperty;
@@ -11303,7 +11311,7 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			this.userResolvers[attribute_name] = resolver;
-			if (!isBranch) requestComputedIndexRepair(TableResource);
+			if (!isBranch && !deferComputedIndexRepair) requestComputedIndexRepair(TableResource);
 		}
 		/**
 		 * Override the default embedder for an `@embed` attribute. Return the vector to
