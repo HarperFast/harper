@@ -122,7 +122,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
 import { credentialRejectionError } from './credentialRejection.ts';
-import { databases, databaseEventsEmitter, getDatabases, onUpdatedTable } from '../resources/databases.ts';
+import { databases, getDatabases, onUpdatedTable, onRemovedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
 import { deliveryCertified } from '../resources/transactionBroadcast.ts';
@@ -380,6 +380,7 @@ function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
 }
 
 const systemTablesByReadPerm = new Map<boolean, Record<string, UserRolePermissionTable>>();
+let watchingSystemTables = false;
 
 // Warmed identities retain this map; forwarding requires it to remain a plain, cloneable object.
 function syncSystemTables(tables: Record<string, UserRolePermissionTable>, readPerm: boolean) {
@@ -401,6 +402,7 @@ function syncSystemTables(tables: Record<string, UserRolePermissionTable>, readP
 }
 
 function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePermissionTable> {
+	watchSystemTables();
 	let tables = systemTablesByReadPerm.get(readPerm);
 	if (!tables) {
 		tables = {};
@@ -418,12 +420,17 @@ function refreshSystemTables() {
 		harperLogger.error('Failed to refresh system table permissions; they may be stale', error);
 	}
 }
-databaseEventsEmitter.on('updateTable', (table) => {
-	if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
-});
-databaseEventsEmitter.on('dropTable', (_tableName, databaseName) => {
-	if (databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
-});
+// databases imports Resource, which imports this module before the registry is initialized.
+function watchSystemTables() {
+	if (watchingSystemTables) return;
+	onUpdatedTable((table) => {
+		if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+	});
+	onRemovedTable((_tableName, databaseName) => {
+		if (databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+	});
+	watchingSystemTables = true;
+}
 
 /**
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthorization.
